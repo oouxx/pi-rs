@@ -4,7 +4,7 @@
 
 ## 使用rust完整复刻https://github.com/earendil-works/pi/tree/main/packages/coding-agent 
 ## 对https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-core/src/providers 做一层thin wrapper 实现https://github.com/earendil-works/pi/tree/main/packages/ai
-## 使用ratatui 实现https://github.com/earendil-works/pi/tree/main/packages/tui
+## 使用  实现https://github.com/earendil-works/pi/tree/main/packages/tui
 
 ## 上面四个拆分为四个crate分别是pi-agent-core, pi-coding-agent, pi-ai, pi-tui
 

@@ -123,6 +123,15 @@ pub enum ContentBlock {
     },
 }
 
+impl ContentBlock {
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentBlock::Text {
+            text: text.into(),
+            text_signature: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Model {
     pub provider: String,

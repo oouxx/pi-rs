@@ -1,0 +1,19 @@
+[package]
+name = "pi-ai"
+version = "0.1.0"
+edition = "2021"
+description = "Thin wrapper around rig-core providers, implementing pi's AI package (Rust port of @earendil-works/pi-ai)"
+license = "MIT"
+
+[dependencies]
+rig-core = { version = "0.7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "macros", "rt"] }
+tokio-stream = "0.1"
+async-trait = "0.1"
+futures = "0.3"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

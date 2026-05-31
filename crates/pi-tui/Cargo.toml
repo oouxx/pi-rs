@@ -1,0 +1,17 @@
+[package]
+name = "pi-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal UI framework with ratatui-based rendering, component tree, and keyboard handling (Rust port of @earendil-works/pi-tui)"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1", features = ["sync", "macros", "rt", "io-std", "time", "signal"] }
+futures = "0.3"
+unicode-width = "0.2"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

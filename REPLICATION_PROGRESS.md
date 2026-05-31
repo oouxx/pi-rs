@@ -11,9 +11,9 @@
 |-------|-----------|:---:|:---:|:---:|:---:|:---:|
 | pi-agent-core | `packages/agent` | 29 | 8,933 | 141/141 ✅ | ✅ | ~80% |
 | pi-coding-agent | `packages/coding-agent` | 33 | 7,582 | 88 ❌ | ❌ | ~35% |
-| pi-ai | `packages/ai` | 16 | 3,782 | 109/109 ✅ | ✅ | ~40% |
+| pi-ai | `packages/ai` | 18 | 4,820 | 120/120 ✅ | ✅ | ~45% |
 | pi-tui | `packages/tui` | 12 | 3,202 | 96/96 ✅ | ✅ | ~30% |
-| **合计** | | **90** | **23,499** | **346** | | |
+| **合计** | | **92** | **24,537** | **357** | | |
 
 pi-coding-agent 编译错误：`core::skills::Skill` 缺少 `instructions` 字段（2 处）。
 

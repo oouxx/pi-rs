@@ -311,4 +311,31 @@ mod tests {
         assert!(providers.contains(&"xai"));
         assert!(providers.contains(&"openrouter"));
     }
+
+    #[test]
+    fn test_new_providers_accessible() {
+        // Verify the newly added providers are available
+        assert!(get_model("cerebras", "llama3.1-8b").is_some());
+        assert!(get_model("mistral", "codestral-latest").is_some());
+        assert!(get_model("mistral", "mistral-large-latest").is_some());
+        assert!(get_model("together", "deepseek-ai/DeepSeek-R1").is_some());
+        assert!(get_model("fireworks", "accounts/fireworks/models/deepseek-r1").is_some());
+        assert!(get_model("minimax", "MiniMax-M1").is_some());
+        assert!(get_model("moonshotai", "kimi-k2").is_some());
+        assert!(get_model("kimi-coding", "kimi-coding").is_some());
+        assert!(get_model("cloudflare-workers-ai", "@cf/meta/llama-4-scout-17b-16e-instruct").is_some());
+    }
+
+    #[test]
+    fn test_new_providers_in_get_providers() {
+        let providers = get_providers();
+        assert!(providers.contains(&"cerebras"));
+        assert!(providers.contains(&"mistral"));
+        assert!(providers.contains(&"together"));
+        assert!(providers.contains(&"fireworks"));
+        assert!(providers.contains(&"minimax"));
+        assert!(providers.contains(&"moonshotai"));
+        assert!(providers.contains(&"kimi-coding"));
+        assert!(providers.contains(&"cloudflare-workers-ai"));
+    }
 }

@@ -493,7 +493,7 @@ pub struct VercelGatewayRouting {
 // Model with compat typing
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCost {
     pub input: f64,

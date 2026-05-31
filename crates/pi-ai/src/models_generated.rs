@@ -303,6 +303,259 @@ pub fn models() -> HashMap<&'static str, ModelMap> {
     });
     map.insert("openrouter", openrouter);
 
+    // --- cerebras ---
+    let mut cerebras = HashMap::new();
+    cerebras.insert("llama3.1-8b", Model {
+        id: "llama3.1-8b".into(),
+        name: "Llama 3.1 8B".into(),
+        api: "openai-completions".into(),
+        provider: "cerebras".into(),
+        base_url: "https://api.cerebras.ai/v1".into(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.1, output: 0.1, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 32000,
+        max_tokens: 8000,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    cerebras.insert("gpt-oss-120b", Model {
+        id: "gpt-oss-120b".into(),
+        name: "GPT OSS 120B".into(),
+        api: "openai-completions".into(),
+        provider: "cerebras".into(),
+        base_url: "https://api.cerebras.ai/v1".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.25, output: 0.69, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 131072,
+        max_tokens: 32768,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("cerebras", cerebras);
+
+    // --- mistral ---
+    let mut mistral = HashMap::new();
+    mistral.insert("codestral-latest", Model {
+        id: "codestral-latest".into(),
+        name: "Codestral (latest)".into(),
+        api: "mistral-conversations".into(),
+        provider: "mistral".into(),
+        base_url: "https://api.mistral.ai".into(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.2, output: 0.6, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 256000,
+        max_tokens: 8192,
+        headers: None,
+        compat: None,
+    });
+    mistral.insert("mistral-large-latest", Model {
+        id: "mistral-large-latest".into(),
+        name: "Mistral Large (latest)".into(),
+        api: "mistral-conversations".into(),
+        provider: "mistral".into(),
+        base_url: "https://api.mistral.ai".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into(), "image".into()],
+        cost: ModelCost { input: 2.0, output: 6.0, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 256000,
+        max_tokens: 32768,
+        headers: None,
+        compat: None,
+    });
+    map.insert("mistral", mistral);
+
+    // --- together ---
+    let mut together = HashMap::new();
+    together.insert("deepseek-ai/DeepSeek-R1", Model {
+        id: "deepseek-ai/DeepSeek-R1".into(),
+        name: "DeepSeek R1 (Together)".into(),
+        api: "openai-completions".into(),
+        provider: "together".into(),
+        base_url: "https://api.together.xyz".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 7.0, output: 7.0, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 131072,
+        max_tokens: 32768,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            thinking_format: Some("together".into()),
+            ..Default::default()
+        })),
+    });
+    together.insert("meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", Model {
+        id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8".into(),
+        name: "Llama 4 Maverick".into(),
+        api: "openai-completions".into(),
+        provider: "together".into(),
+        base_url: "https://api.together.xyz".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into(), "image".into()],
+        cost: ModelCost { input: 0.2, output: 0.6, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 131072,
+        max_tokens: 8192,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            thinking_format: Some("together".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("together", together);
+
+    // --- fireworks ---
+    let mut fireworks = HashMap::new();
+    fireworks.insert("accounts/fireworks/models/deepseek-r1", Model {
+        id: "accounts/fireworks/models/deepseek-r1".into(),
+        name: "DeepSeek R1 (Fireworks)".into(),
+        api: "openai-completions".into(),
+        provider: "fireworks".into(),
+        base_url: "https://api.fireworks.ai/inference".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 8.0, output: 8.0, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 131072,
+        max_tokens: 32768,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("fireworks", fireworks);
+
+    // --- minimax ---
+    let mut minimax = HashMap::new();
+    minimax.insert("MiniMax-M1", Model {
+        id: "MiniMax-M1".into(),
+        name: "MiniMax M1".into(),
+        api: "openai-completions".into(),
+        provider: "minimax".into(),
+        base_url: "https://api.minimax.chat/v1".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.4, output: 1.6, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 1048576,
+        max_tokens: 32768,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("minimax", minimax);
+
+    // --- moonshotai ---
+    let mut moonshotai = HashMap::new();
+    moonshotai.insert("kimi-k2", Model {
+        id: "kimi-k2".into(),
+        name: "Kimi K2".into(),
+        api: "openai-completions".into(),
+        provider: "moonshotai".into(),
+        base_url: "https://api.moonshot.cn/v1".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.5, output: 1.5, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 1048576,
+        max_tokens: 32768,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("moonshotai", moonshotai);
+
+    // --- kimi-coding ---
+    let mut kimi_coding = HashMap::new();
+    kimi_coding.insert("kimi-coding", Model {
+        id: "kimi-coding".into(),
+        name: "Kimi Coding".into(),
+        api: "openai-completions".into(),
+        provider: "kimi-coding".into(),
+        base_url: "https://api.kimi.com/v1".into(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.5, output: 2.0, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 262144,
+        max_tokens: 32768,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("kimi-coding", kimi_coding);
+
+    // --- cloudflare ---
+    let mut cloudflare = HashMap::new();
+    cloudflare.insert("@cf/meta/llama-4-scout-17b-16e-instruct", Model {
+        id: "@cf/meta/llama-4-scout-17b-16e-instruct".into(),
+        name: "Llama 4 Scout".into(),
+        api: "openai-completions".into(),
+        provider: "cloudflare-workers-ai".into(),
+        base_url: "https://api.cloudflare.com/client/v4".into(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
+        context_window: 8192,
+        max_tokens: 4096,
+        headers: None,
+        compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            supports_store: Some(false),
+            supports_developer_role: Some(false),
+            supports_usage_in_streaming: Some(false),
+            max_tokens_field: Some("max_tokens".into()),
+            ..Default::default()
+        })),
+    });
+    map.insert("cloudflare-workers-ai", cloudflare);
+
     map
 }
 

@@ -1,8 +1,11 @@
+//! Streaming entry points for pi-ai.
+//!
+//! Provides `stream()`, `complete()`, `stream_simple()`, and `complete_simple()`
+//! as the main API for calling LLM providers.
+
 use crate::api_registry::get_api_provider;
 use crate::env_api_keys::get_env_api_key;
-use crate::types::{
-    AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions,
-};
+use crate::types::{AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 /// Check if an explicit API key was provided.
@@ -10,11 +13,8 @@ fn has_explicit_api_key(api_key: Option<&str>) -> bool {
     api_key.map_or(false, |k| !k.trim().is_empty())
 }
 
-/// Resolve API key from options or environment, returning updated options.
-fn with_env_api_key(
-    model: &Model,
-    options: Option<StreamOptions>,
-) -> Option<StreamOptions> {
+/// Resolve API key from options or environment.
+fn with_env_api_key(model: &Model, options: Option<StreamOptions>) -> Option<StreamOptions> {
     let mut opts = options.unwrap_or_default();
     if has_explicit_api_key(opts.api_key.as_deref()) {
         return Some(opts);
@@ -25,18 +25,12 @@ fn with_env_api_key(
     Some(opts)
 }
 
-/// Resolve the API provider for a given API, throwing if none registered.
+/// Resolve the API provider for a given API, panicking if none registered.
 fn resolve_api_provider(api: &str) -> crate::api_registry::ApiProvider {
-    get_api_provider(api).unwrap_or_else(|| {
-        panic!("No API provider registered for api: {}", api)
-    })
+    get_api_provider(api).unwrap_or_else(|| panic!("No API provider registered for api: {}", api))
 }
 
 /// Stream a completion from the given model.
-///
-/// Returns an `AssistantMessageEventStream` that emits events as the model
-/// generates content. Call `.result()` on the stream to await the final
-/// `AssistantMessage`.
 pub fn stream(
     model: &Model,
     context: &Context,
@@ -44,13 +38,10 @@ pub fn stream(
 ) -> AssistantMessageEventStream {
     let provider = resolve_api_provider(&model.api);
     let opts = with_env_api_key(model, options);
-    let boxed_stream = (provider.stream)(model, context, opts.as_ref());
-    AssistantMessageEventStream::new(boxed_stream)
+    (provider.stream)(model, context, opts.as_ref())
 }
 
-/// Complete a request and return the final `AssistantMessage`.
-///
-/// Convenience wrapper around `stream()` that calls `.result()` internally.
+/// Complete a request and return the final AssistantMessage.
 pub async fn complete(
     model: &Model,
     context: &Context,
@@ -67,13 +58,10 @@ pub fn stream_simple(
 ) -> AssistantMessageEventStream {
     let provider = resolve_api_provider(&model.api);
     let opts = options.unwrap_or_default();
-    let boxed_stream = (provider.stream_simple)(model, context, Some(&opts));
-    AssistantMessageEventStream::new(boxed_stream)
+    (provider.stream_simple)(model, context, Some(&opts))
 }
 
 /// Complete a request using simplified options.
-///
-/// Convenience wrapper around `stream_simple()` that calls `.result()` internally.
 pub async fn complete_simple(
     model: &Model,
     context: &Context,

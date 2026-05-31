@@ -1,23 +1,28 @@
+//! API provider registry — maps API names to streaming functions.
+//!
+//! Providers are registered by API format (e.g., "openai-completions", "anthropic-messages").
+//! Different backends within the same API format are distinguished by their Model configuration.
+
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::types::{AssistantMessageEvent, Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::utils::event_stream::AssistantMessageEventStream;
 
-/// The function signature for a streaming provider implementation.
-pub type ApiStreamFn = Box<
-    dyn Fn(&Model, &Context, Option<&StreamOptions>) -> Box<dyn futures::Stream<Item = AssistantMessageEvent> + Unpin + Send>
+/// Streaming function signature (full options).
+pub type ApiStreamFn = Arc<
+    dyn Fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream + Send + Sync,
+>;
+
+/// Streaming function signature (simple options).
+pub type ApiStreamSimpleFn = Arc<
+    dyn Fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream
         + Send
         + Sync,
 >;
 
-/// The function signature for a simple streaming provider implementation.
-pub type ApiStreamSimpleFn = Box<
-    dyn Fn(&Model, &Context, Option<&SimpleStreamOptions>) -> Box<dyn futures::Stream<Item = AssistantMessageEvent> + Unpin + Send>
-        + Send
-        + Sync,
->;
-
-/// An API provider that can handle streaming completions.
+/// An API provider registered for a specific API format.
+#[derive(Clone)]
 pub struct ApiProvider {
     pub api: String,
     pub stream: ApiStreamFn,
@@ -25,36 +30,33 @@ pub struct ApiProvider {
 }
 
 struct RegisteredProvider {
-    provider: ApiProvider,
+    provider: Arc<ApiProvider>,
     source_id: Option<String>,
 }
 
 static REGISTRY: std::sync::LazyLock<RwLock<HashMap<String, RegisteredProvider>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Register an API provider implementation.
+/// Register an API provider. If a provider with the same API already exists, it is replaced.
 pub fn register_api_provider(provider: ApiProvider, source_id: Option<&str>) {
     let mut registry = REGISTRY.write().unwrap();
     registry.insert(
         provider.api.clone(),
         RegisteredProvider {
-            provider,
+            provider: Arc::new(provider),
             source_id: source_id.map(|s| s.to_string()),
         },
     );
 }
 
 /// Look up a registered API provider by API name.
+/// Returns a cloneable handle — each call copies the Arc, so it's cheap.
 pub fn get_api_provider(api: &str) -> Option<ApiProvider> {
     let registry = REGISTRY.read().unwrap();
     registry.get(api).map(|r| ApiProvider {
         api: r.provider.api.clone(),
-        stream: Box::new(|_, _, _| {
-            panic!("Provider streams cannot be cloned — use the original")
-        }),
-        stream_simple: Box::new(|_, _, _| {
-            panic!("Provider streams cannot be cloned — use the original")
-        }),
+        stream: Arc::clone(&r.provider.stream),
+        stream_simple: Arc::clone(&r.provider.stream_simple),
     })
 }
 
@@ -65,12 +67,8 @@ pub fn get_api_providers() -> Vec<ApiProvider> {
         .values()
         .map(|r| ApiProvider {
             api: r.provider.api.clone(),
-            stream: Box::new(|_, _, _| {
-                panic!("Provider streams cannot be cloned — use get_api_provider")
-            }),
-            stream_simple: Box::new(|_, _, _| {
-                panic!("Provider streams cannot be cloned — use get_api_provider")
-            }),
+            stream: Arc::clone(&r.provider.stream),
+            stream_simple: Arc::clone(&r.provider.stream_simple),
         })
         .collect()
 }

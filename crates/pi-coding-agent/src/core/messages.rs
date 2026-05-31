@@ -1,4 +1,4 @@
-use pi_agent_core::pi_ai_types::{ContentBlock, Message};
+use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason};
 use pi_agent_core::types::{AgentMessage, CustomContent};
 
 pub const COMPACTION_SUMMARY_PREFIX: &str =
@@ -124,8 +124,11 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 api: api.clone(),
                 provider: provider.clone(),
                 model: model.clone(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
                 usage: usage.clone(),
-                stop_reason: stop_reason.clone(),
+                stop_reason: stop_reason.clone().unwrap_or(StopReason::Error),
                 error_message: error_message.clone(),
                 timestamp: *timestamp,
             }),
@@ -140,7 +143,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 tool_call_id: tool_call_id.clone(),
                 tool_name: tool_name.clone(),
                 content: content.clone(),
-                details: details.clone(),
+                details: Some(details.clone()),
                 is_error: *is_error,
                 timestamp: *timestamp,
             }),

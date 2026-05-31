@@ -118,11 +118,13 @@ pub fn process_proxy_event(
                 partial.content.push(ContentBlock::Thinking {
                     thinking: String::new(),
                     thinking_signature: None,
+                    redacted: None,
                 });
             }
             partial.content[content_index] = ContentBlock::Thinking {
                 thinking: String::new(),
                 thinking_signature: None,
+                redacted: None,
             };
             Some(crate::pi_ai_types::AssistantMessageEvent::ThinkingStart {
                 content_index,
@@ -173,12 +175,14 @@ pub fn process_proxy_event(
                     id: String::new(),
                     name: String::new(),
                     arguments: serde_json::Value::Object(serde_json::Map::new()),
+                    thought_signature: None,
                 });
             }
             partial.content[content_index] = ContentBlock::ToolCall {
                 id,
                 name: tool_name,
                 arguments: serde_json::Value::Object(serde_json::Map::new()),
+                thought_signature: None,
             };
             Some(crate::pi_ai_types::AssistantMessageEvent::ToolCallStart {
                 content_index,
@@ -215,11 +219,13 @@ pub fn process_proxy_event(
                     id,
                     name,
                     arguments,
+                    ..
                 }) => crate::pi_ai_types::ToolCall {
                     type_field: "toolCall".to_string(),
                     id: id.clone(),
                     name: name.clone(),
                     arguments: arguments.clone(),
+                    thought_signature: None,
                 },
                 _ => return None,
             };
@@ -230,7 +236,7 @@ pub fn process_proxy_event(
             })
         }
         ProxyAssistantMessageEvent::Done { reason, usage } => {
-            partial.stop_reason = Some(reason.clone());
+            partial.stop_reason = reason.clone();
             partial.usage = usage.unwrap_or_default();
             Some(crate::pi_ai_types::AssistantMessageEvent::Done {
                 reason,
@@ -242,7 +248,7 @@ pub fn process_proxy_event(
             error_message,
             usage,
         } => {
-            partial.stop_reason = Some(reason.clone());
+            partial.stop_reason = reason.clone();
             partial.error_message = Some(error_message);
             partial.usage = usage.unwrap_or_default();
             Some(crate::pi_ai_types::AssistantMessageEvent::Error {
@@ -278,8 +284,11 @@ pub async fn stream_proxy(
         api: model.api.clone(),
         provider: model.provider.clone(),
         model: model.id.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
         usage: Usage::default(),
-        stop_reason: None,
+        stop_reason: StopReason::Stop,
         error_message: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     };

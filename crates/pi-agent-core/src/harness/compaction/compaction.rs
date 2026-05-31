@@ -257,7 +257,7 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                         crate::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
                             thinking_parts.push(thinking.clone());
                         }
-                        crate::pi_ai_types::ContentBlock::ToolCall {
+                        crate::pi_ai_types::ContentBlock::ToolCall { 
                             name, arguments, ..
                         } => {
                             let args_str = arguments.to_string();
@@ -353,19 +353,19 @@ mod tests {
 
     fn create_user_message(text: &str) -> AgentMessage {
         AgentMessage::User {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             timestamp: 1000,
         }
     }
 
     fn create_assistant_message(text: &str, usage: Usage) -> AgentMessage {
         AgentMessage::Assistant {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
             usage,
-            stop_reason: Some(crate::pi_ai_types::StopReason::EndTurn),
+            stop_reason: Some(crate::pi_ai_types::StopReason::Stop),
             error_message: None,
             timestamp: 1000,
         }
@@ -375,7 +375,7 @@ mod tests {
         AgentMessage::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             timestamp: 1000,
@@ -384,10 +384,9 @@ mod tests {
 
     fn create_mock_usage(input: u64, output: u64) -> Usage {
         Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_read_input_tokens: None,
-            cache_write_input_tokens: None,
+            input,
+            output,
+            ..Usage::default()
         }
     }
 
@@ -460,7 +459,7 @@ mod tests {
     fn test_estimate_tokens_custom_blocks() {
         let msg = AgentMessage::Custom {
             custom_type: "note".to_string(),
-            content: crate::types::CustomContent::Blocks(vec![ContentBlock::text("Block content")]),
+            content: crate::types::CustomContent::Blocks(vec![ContentBlock::Text { text: "Block content".to_string(), text_signature: None }]),
             display: true,
             details: None,
             timestamp: 1000,
@@ -716,7 +715,7 @@ mod tests {
     #[test]
     fn test_serialize_conversation_user() {
         let messages = vec![Message::User {
-            content: vec![ContentBlock::text("Hello")],
+            content: vec![ContentBlock::Text { text: "Hello".to_string(), text_signature: None }],
             timestamp: 1000,
         }];
         let result = serialize_conversation(&messages);
@@ -726,12 +725,15 @@ mod tests {
     #[test]
     fn test_serialize_conversation_assistant() {
         let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::text("Hi there")],
+            content: vec![ContentBlock::Text { text: "Hi there".to_string(), text_signature: None }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
             usage: create_mock_usage(100, 50),
-            stop_reason: Some(crate::pi_ai_types::StopReason::EndTurn),
+            stop_reason: crate::pi_ai_types::StopReason::Stop,
             error_message: None,
             timestamp: 1000,
         }];
@@ -744,8 +746,8 @@ mod tests {
         let messages = vec![Message::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::text("File content")],
-            details: serde_json::Value::Object(Default::default()),
+            content: vec![ContentBlock::Text { text: "File content".to_string(), text_signature: None }],
+            details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
             timestamp: 1000,
         }];
@@ -759,12 +761,16 @@ mod tests {
             content: vec![ContentBlock::Thinking {
                 thinking: "Let me think...".to_string(),
                 thinking_signature: None,
+                redacted: None,
             }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
             usage: create_mock_usage(100, 50),
-            stop_reason: Some(crate::pi_ai_types::StopReason::EndTurn),
+            stop_reason: crate::pi_ai_types::StopReason::Stop,
             error_message: None,
             timestamp: 1000,
         }];
@@ -779,12 +785,16 @@ mod tests {
                 id: "tool-1".to_string(),
                 name: "read".to_string(),
                 arguments: serde_json::json!({"path": "src/main.rs"}),
+                thought_signature: None,
             }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
             usage: create_mock_usage(100, 50),
-            stop_reason: Some(crate::pi_ai_types::StopReason::EndTurn),
+            stop_reason: crate::pi_ai_types::StopReason::Stop,
             error_message: None,
             timestamp: 1000,
         }];
@@ -799,8 +809,8 @@ mod tests {
         let messages = vec![Message::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::text(&long_content)],
-            details: serde_json::Value::Object(Default::default()),
+            content: vec![ContentBlock::Text { text: long_content.clone(), text_signature: None }],
+            details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
             timestamp: 1000,
         }];
@@ -925,6 +935,7 @@ mod tests {
                 id: "tool-1".to_string(),
                 name: "write".to_string(),
                 arguments: serde_json::json!({"path": "written.ts"}),
+                thought_signature: None,
             }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),

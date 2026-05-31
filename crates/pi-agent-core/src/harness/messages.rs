@@ -1,6 +1,6 @@
 
 
-use crate::pi_ai_types::{ContentBlock, Message};
+use crate::pi_ai_types::{ContentBlock, Message, StopReason};
 use crate::types::AgentMessage;
 
 pub const COMPACTION_SUMMARY_PREFIX: &str =
@@ -93,8 +93,11 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 api: api.clone(),
                 provider: provider.clone(),
                 model: model.clone(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
                 usage: usage.clone(),
-                stop_reason: stop_reason.clone(),
+                stop_reason: stop_reason.clone().unwrap_or(StopReason::Error),
                 error_message: error_message.clone(),
                 timestamp: *timestamp,
             }),
@@ -109,7 +112,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 tool_call_id: tool_call_id.clone(),
                 tool_name: tool_name.clone(),
                 content: content.clone(),
-                details: details.clone(),
+                details: Some(details.clone()),
                 is_error: *is_error,
                 timestamp: *timestamp,
             }),
@@ -199,14 +202,14 @@ mod tests {
 
     fn create_user_message(text: &str) -> AgentMessage {
         AgentMessage::User {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             timestamp: 1000,
         }
     }
 
     fn create_assistant_message(text: &str) -> AgentMessage {
         AgentMessage::Assistant {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
@@ -307,7 +310,7 @@ mod tests {
         let messages = vec![AgentMessage::ToolResult {
             tool_call_id: "tc-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::text("file contents")],
+            content: vec![ContentBlock::Text { text: "file contents".to_string(), text_signature: None }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             timestamp: 1000,
@@ -415,7 +418,7 @@ mod tests {
     fn test_convert_to_llm_custom_blocks() {
         let messages = vec![AgentMessage::Custom {
             custom_type: "note".to_string(),
-            content: crate::types::CustomContent::Blocks(vec![ContentBlock::text("Block content")]),
+            content: crate::types::CustomContent::Blocks(vec![ContentBlock::Text { text: "Block content".to_string(), text_signature: None }]),
             display: true,
             details: None,
             timestamp: 1000,

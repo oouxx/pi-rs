@@ -80,6 +80,7 @@ mod tests {
                 id: "tool-1".to_string(),
                 name: name.to_string(),
                 arguments: serde_json::json!({"path": path}),
+                thought_signature: None,
             }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
@@ -142,7 +143,7 @@ mod tests {
     #[test]
     fn test_extract_file_ops_from_non_assistant_message() {
         let msg = AgentMessage::User {
-            content: vec![ContentBlock::text("Hello")],
+            content: vec![ContentBlock::Text { text: "Hello".to_string(), text_signature: None }],
             timestamp: 1000,
         };
         let mut file_ops = FileOperations::new();
@@ -157,6 +158,7 @@ mod tests {
                 id: "tool-1".to_string(),
                 name: "read".to_string(),
                 arguments: serde_json::json!({"query": "test"}),
+                thought_signature: None,
             }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),

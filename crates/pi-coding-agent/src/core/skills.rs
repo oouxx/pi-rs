@@ -208,6 +208,7 @@ mod tests {
         let skills = vec![Skill {
             name: "git-workflow".to_string(),
             description: "Git workflow helper".to_string(),
+            instructions: "Use git commands to help with workflows".to_string(),
             file_path: "/home/user/.pi/agent/skills/git-workflow/SKILL.md".to_string(),
             source: SkillSource::User,
             disable_model_invocation: false,
@@ -230,6 +231,7 @@ mod tests {
         let skills = vec![Skill {
             name: "internal".to_string(),
             description: "Internal skill".to_string(),
+            instructions: "Internal processing instructions".to_string(),
             file_path: "/path/SKILL.md".to_string(),
             source: SkillSource::Path,
             disable_model_invocation: true,

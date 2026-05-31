@@ -65,7 +65,7 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
             session: Arc::new(RwLock::new(session)),
             env,
             model: Arc::new(RwLock::new(model)),
-            thinking_level: Arc::new(RwLock::new(opts.thinking_level.unwrap_or(ThinkingLevel::Off))),
+            thinking_level: Arc::new(RwLock::new(opts.thinking_level.unwrap_or_else(|| "off".to_string()))),
             tools: Arc::new(RwLock::new(HashMap::new())),
             active_tool_names: Arc::new(RwLock::new(opts.active_tool_names.unwrap_or_default())),
             resources: Arc::new(RwLock::new(opts.resources.unwrap_or(AgentHarnessResources {
@@ -101,15 +101,15 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
     }
 
     pub async fn thinking_level(&self) -> ThinkingLevel {
-        *self.thinking_level.read().await
+        self.thinking_level.read().await.clone()
     }
 
     pub async fn set_thinking_level(&self, level: ThinkingLevel) -> std::result::Result<(), HarnessError> {
-        let _previous = *self.thinking_level.read().await;
-        *self.thinking_level.write().await = level;
+        let _previous = self.thinking_level.read().await.clone();
+        *self.thinking_level.write().await = level.clone();
         let mut session = self.session.write().await;
         let _ = session
-            .append_thinking_level_change(format!("{:?}", level))
+            .append_thinking_level_change(level.clone())
             .await;
         Ok(())
     }

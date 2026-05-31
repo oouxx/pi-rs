@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex, RwLock};
 
-use crate::pi_ai_types::{AssistantMessage, Model, ThinkingLevel};
+use crate::pi_ai_types::{AssistantMessage, Model, ModelCost, ThinkingLevel};
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
     BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, QueueMode,
@@ -139,13 +139,18 @@ impl Agent {
                 provider: String::new(),
                 api: String::new(),
                 id: String::new(),
+                name: String::new(),
+                base_url: String::new(),
                 context_window: 0,
                 max_tokens: 0,
-                cost_input: 0.0,
-                cost_output: 0.0,
+                cost: ModelCost::default(),
                 reasoning: false,
+                thinking_level_map: None,
+                input: vec![],
+                headers: None,
+                compat: None,
             },
-            thinking_level: ThinkingLevel::Off,
+            thinking_level: "off".to_string(),
             tools: Vec::new(),
             messages: Vec::new(),
             is_streaming: false,
@@ -349,7 +354,7 @@ impl Agent {
 
         let config = crate::agent_loop::AgentLoopConfig {
             model,
-            reasoning: if thinking_level == ThinkingLevel::Off {
+            reasoning: if thinking_level == "off".to_string() {
                 None
             } else {
                 Some(thinking_level)
@@ -430,7 +435,7 @@ impl Agent {
 
         let config = crate::agent_loop::AgentLoopConfig {
             model,
-            reasoning: if thinking_level == ThinkingLevel::Off {
+            reasoning: if thinking_level == "off".to_string() {
                 None
             } else {
                 Some(thinking_level)

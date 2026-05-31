@@ -91,10 +91,10 @@ pub fn create_agent_session(
     };
 
     let thinking_level = match initial_model.thinking_level.as_str() {
-        "high" => ThinkingLevel::High,
-        "medium" => ThinkingLevel::Medium,
-        "low" => ThinkingLevel::Low,
-        _ => ThinkingLevel::Medium,
+        "high" => "high".to_string(),
+        "medium" => "medium".to_string(),
+        "low" => "low".to_string(),
+        _ => "medium".to_string(),
     };
 
     let resource_options = ResourceLoaderOptions {

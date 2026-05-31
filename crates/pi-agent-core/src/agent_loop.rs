@@ -41,7 +41,7 @@ struct ExecutedToolCallBatch {
 
 fn create_error_tool_result(message: &str) -> AgentToolResult<serde_json::Value> {
     AgentToolResult {
-        content: vec![ContentBlock::text(message)],
+        content: vec![ContentBlock::Text { text: message.to_string(), text_signature: None }],
         details: serde_json::Value::Object(Default::default()),
         terminate: None,
     }
@@ -519,6 +519,7 @@ fn extract_tool_calls(message: &AgentMessage) -> Vec<AgentToolCall> {
                     id,
                     name,
                     arguments,
+                    ..
                 } => Some(AgentToolCall {
                     id: id.clone(),
                     name: name.clone(),
@@ -550,7 +551,7 @@ async fn stream_assistant_response(
     let llm_messages = convert_to_llm(&messages);
 
     let pi_context = crate::pi_ai_types::Context {
-        system_prompt: context.system_prompt.clone(),
+        system_prompt: if context.system_prompt.is_empty() { None } else { Some(context.system_prompt.clone()) },
         messages: llm_messages,
         tools: None,
     };
@@ -623,8 +624,11 @@ async fn stream_assistant_response(
         api: model.api.clone(),
         provider: model.provider.clone(),
         model: model.id.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
         usage: Usage::default(),
-        stop_reason: Some(StopReason::Error),
+        stop_reason: StopReason::Error,
         error_message: Some("Stream ended without done/error event".to_string()),
         timestamp: chrono::Utc::now().timestamp_millis(),
     });
@@ -654,7 +658,7 @@ fn agent_message_from_assistant(msg: &AssistantMessage) -> AgentMessage {
         provider: msg.provider.clone(),
         model: msg.model.clone(),
         usage: msg.usage.clone(),
-        stop_reason: msg.stop_reason.clone(),
+        stop_reason: Some(msg.stop_reason.clone()),
         error_message: msg.error_message.clone(),
         timestamp: msg.timestamp,
     }
@@ -766,7 +770,7 @@ async fn run_loop(
     stream_fn: &StreamFn,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut config_model = initial_config.model.clone();
-    let mut config_reasoning = initial_config.reasoning;
+    let mut config_reasoning = initial_config.reasoning.clone();
     let mut first_turn = true;
 
     let mut pending_messages: Vec<AgentMessage> = if let Some(get_steering) = &initial_config.get_steering_messages {
@@ -822,7 +826,7 @@ async fn run_loop(
             let message = stream_assistant_response(
                 current_context,
                 &config_model,
-                config_reasoning,
+                config_reasoning.clone(),
                 stream_fn,
                 &stream_options,
                 &initial_config.convert_to_llm,
@@ -837,7 +841,7 @@ async fn run_loop(
 
             let stop_reason = message.stop_reason.clone();
             match stop_reason {
-                Some(StopReason::Error) | Some(StopReason::Aborted) => {
+                StopReason::Error | StopReason::Aborted => {
                     emit(AgentEvent::TurnEnd {
                         message: agent_msg,
                         tool_results: Vec::new(),

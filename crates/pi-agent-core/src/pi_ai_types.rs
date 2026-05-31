@@ -1,164 +1,20 @@
-use serde::{Deserialize, Serialize};
+//! Re-exports from pi_ai::types for use within pi-agent-core.
+//!
+//! All AI-related types live in the pi-ai crate. This module re-exports
+//! them directly, plus adds a few pi-agent-core-specific types and helpers.
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type")]
-pub enum TextContent {
-    #[serde(rename = "text")]
-    Text { text: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type")]
-pub enum ImageContent {
-    #[serde(rename = "image")]
-    Image {
-        url: Option<String>,
-        data: Option<String>,
-        media_type: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type")]
-pub enum ThinkingContent {
-    #[serde(rename = "thinking")]
-    Thinking {
-        thinking: String,
-        thinking_signature: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolCall {
-    #[serde(rename = "type")]
-    pub type_field: String,
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Usage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_input_tokens: Option<u64>,
-    pub cache_write_input_tokens: Option<u64>,
-}
-
-impl Default for Usage {
-    fn default() -> Self {
-        Self {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_input_tokens: None,
-            cache_write_input_tokens: None,
-        }
-    }
-}
-
-pub const EMPTY_USAGE: Usage = Usage {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_input_tokens: None,
-    cache_write_input_tokens: None,
+pub use pi_ai::types::{
+    AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic,
+    AssistantMessageEvent, CacheRetention, ContentBlock, Context, ImagesModel,
+    Message, Model, ModelCompat, ModelCost, OpenAICompletionsCompat,
+    OpenAIResponsesCompat, OpenRouterRouting, ProviderResponse,
+    SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets, ThinkingLevel,
+    ThinkingLevelMap, Tool, ToolCall, Transport, Usage, UsageCost, VercelGatewayRouting,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum StopReason {
-    EndTurn,
-    ToolUse,
-    Aborted,
-    Error,
-}
+pub use pi_ai::models::{calculate_cost, get_model, get_models, get_providers};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "role")]
-pub enum Message {
-    #[serde(rename = "user")]
-    User {
-        content: Vec<ContentBlock>,
-        timestamp: i64,
-    },
-    #[serde(rename = "assistant")]
-    Assistant {
-        content: Vec<ContentBlock>,
-        api: String,
-        provider: String,
-        model: String,
-        usage: Usage,
-        stop_reason: Option<StopReason>,
-        error_message: Option<String>,
-        timestamp: i64,
-    },
-    #[serde(rename = "toolResult")]
-    ToolResult {
-        tool_call_id: String,
-        tool_name: String,
-        content: Vec<ContentBlock>,
-        details: serde_json::Value,
-        is_error: bool,
-        timestamp: i64,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type")]
-pub enum ContentBlock {
-    #[serde(rename = "text")]
-    Text { text: String, text_signature: Option<String> },
-    #[serde(rename = "thinking")]
-    Thinking { thinking: String, thinking_signature: Option<String> },
-    #[serde(rename = "toolCall")]
-    ToolCall {
-        id: String,
-        name: String,
-        arguments: serde_json::Value,
-    },
-    #[serde(rename = "image")]
-    Image {
-        url: Option<String>,
-        data: Option<String>,
-        media_type: Option<String>,
-    },
-}
-
-impl ContentBlock {
-    pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text {
-            text: text.into(),
-            text_signature: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Model {
-    pub provider: String,
-    pub api: String,
-    pub id: String,
-    pub context_window: u64,
-    pub max_tokens: u64,
-    pub cost_input: f64,
-    pub cost_output: f64,
-    pub reasoning: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ThinkingLevel {
-    Off,
-    Low,
-    Medium,
-    High,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -167,65 +23,145 @@ pub enum ToolExecutionMode {
     Parallel,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum AssistantMessageEvent {
-    Start { partial: AssistantMessage },
-    TextStart { content_index: usize, partial: AssistantMessage },
-    TextDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    TextEnd { content_index: usize, content: String, partial: AssistantMessage },
-    ThinkingStart { content_index: usize, partial: AssistantMessage },
-    ThinkingDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    ThinkingEnd { content_index: usize, content: String, partial: AssistantMessage },
-    ToolCallStart { content_index: usize, partial: AssistantMessage },
-    ToolCallDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    ToolCallEnd { content_index: usize, tool_call: ToolCall, partial: AssistantMessage },
-    Done { reason: StopReason, message: AssistantMessage },
-    Error { reason: StopReason, error: AssistantMessage },
+pub type StreamResponse = Box<dyn futures::Stream<Item = AssistantMessageEvent> + Send + Unpin>;
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+pub fn empty_usage() -> Usage {
+    Usage::default()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AssistantMessage {
-    pub content: Vec<ContentBlock>,
-    pub api: String,
-    pub provider: String,
-    pub model: String,
-    pub usage: Usage,
-    pub stop_reason: Option<StopReason>,
-    pub error_message: Option<String>,
-    pub timestamp: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Context {
-    pub system_prompt: String,
-    pub messages: Vec<Message>,
-    pub tools: Option<Vec<Tool>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ThinkingBudgets {
-    pub minimal: Option<u64>,
-    pub low: Option<u64>,
-    pub medium: Option<u64>,
-    pub high: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Transport {
-    Sse,
-    Websocket,
-    WebsocketCached,
-    Auto,
-}
-
-pub type StreamResponse = futures::stream::BoxStream<'static, AssistantMessageEvent>;
-
-pub fn create_error_tool_result(message: &str) -> crate::types::AgentToolResult<serde_json::Value> {
+pub fn create_error_tool_result(
+    message: &str,
+) -> crate::types::AgentToolResult<serde_json::Value> {
     crate::types::AgentToolResult {
-        content: vec![ContentBlock::text(message)],
+        content: vec![text_block(message)],
         details: serde_json::Value::Object(Default::default()),
         terminate: None,
+    }
+}
+
+/// Create a text ContentBlock.
+pub fn text_block(text: impl Into<String>) -> ContentBlock {
+    ContentBlock::Text { text: text.into(), text_signature: None }
+}
+
+/// Create a thinking ContentBlock.
+pub fn thinking_block(thinking: impl Into<String>) -> ContentBlock {
+    ContentBlock::Thinking { thinking: thinking.into(), thinking_signature: None, redacted: None }
+}
+
+/// Create a tool call ContentBlock.
+pub fn tool_call_block(id: String, name: String, arguments: serde_json::Value) -> ContentBlock {
+    ContentBlock::ToolCall { id, name, arguments, thought_signature: None }
+}
+
+/// Create an image ContentBlock.
+pub fn image_block(data: String, mime_type: String) -> ContentBlock {
+    ContentBlock::Image { data, mime_type }
+}
+
+/// ModelCost helper.
+pub fn model_cost(input: f64, output: f64, cache_read: f64, cache_write: f64) -> ModelCost {
+    ModelCost { input, output, cache_read, cache_write }
+}
+
+/// Create an AssistantMessage without optional fields.
+pub fn assistant_message(
+    content: Vec<ContentBlock>,
+    api: String,
+    provider: String,
+    model: String,
+    usage: Usage,
+    stop_reason: StopReason,
+    timestamp: i64,
+) -> AssistantMessage {
+    AssistantMessage {
+        content, api, provider, model,
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage,
+        stop_reason,
+        error_message: None,
+        timestamp,
+    }
+}
+
+/// Create an AssistantMessage with an error message.
+pub fn assistant_message_error(
+    content: Vec<ContentBlock>,
+    api: String,
+    provider: String,
+    model: String,
+    usage: Usage,
+    stop_reason: StopReason,
+    error_message: String,
+    timestamp: i64,
+) -> AssistantMessage {
+    AssistantMessage {
+        content, api, provider, model,
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage,
+        stop_reason,
+        error_message: Some(error_message),
+        timestamp,
+    }
+}
+
+/// Create a User Message (pi_ai type).
+pub fn user_msg(content: Vec<ContentBlock>, timestamp: i64) -> Message {
+    Message::User { content, timestamp }
+}
+
+/// Create an Assistant Message (pi_ai type).
+pub fn assistant_msg(
+    content: Vec<ContentBlock>,
+    api: String,
+    provider: String,
+    model: String,
+    usage: Usage,
+    stop_reason: StopReason,
+    timestamp: i64,
+) -> Message {
+    Message::Assistant {
+        content, api, provider, model,
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage,
+        stop_reason,
+        error_message: None,
+        timestamp,
+    }
+}
+
+/// Create a ToolResult Message (pi_ai type).
+pub fn tool_result_msg(
+    tool_call_id: String,
+    tool_name: String,
+    content: Vec<ContentBlock>,
+    is_error: bool,
+    timestamp: i64,
+) -> Message {
+    Message::ToolResult { tool_call_id, tool_name, content, details: None, is_error, timestamp }
+}
+
+/// ThinkingLevel constants (pi_ai uses type alias String).
+pub const THINKING_OFF: &str = "off";
+pub const THINKING_LOW: &str = "low";
+pub const THINKING_MEDIUM: &str = "medium";
+pub const THINKING_HIGH: &str = "high";
+
+/// Create a Context with system_prompt: Option<String>.
+pub fn make_context(system_prompt: String, messages: Vec<Message>, tools: Option<Vec<Tool>>) -> Context {
+    Context {
+        system_prompt: if system_prompt.is_empty() { None } else { Some(system_prompt) },
+        messages,
+        tools,
     }
 }

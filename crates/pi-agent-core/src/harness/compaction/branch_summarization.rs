@@ -214,19 +214,19 @@ mod tests {
 
     fn create_user_message(text: &str) -> AgentMessage {
         AgentMessage::User {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             timestamp: 1000,
         }
     }
 
     fn create_assistant_message(text: &str) -> AgentMessage {
         AgentMessage::Assistant {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
             usage: Usage::default(),
-            stop_reason: Some(crate::pi_ai_types::StopReason::EndTurn),
+            stop_reason: Some(crate::pi_ai_types::StopReason::Stop),
             error_message: None,
             timestamp: 1000,
         }
@@ -236,7 +236,7 @@ mod tests {
         AgentMessage::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             timestamp: 1000,

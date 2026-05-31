@@ -39,6 +39,10 @@ impl ModelRegistry {
         }
     }
 
+    pub fn builtin_models_list() -> Vec<Model> {
+        builtin_models()
+    }
+
     pub fn find(&self, provider: &str, model_id: &str) -> Option<Model> {
         let models = self.models.read().unwrap();
         models

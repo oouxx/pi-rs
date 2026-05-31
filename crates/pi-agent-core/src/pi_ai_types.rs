@@ -202,3 +202,30 @@ pub struct Context {
     pub messages: Vec<Message>,
     pub tools: Option<Vec<Tool>>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThinkingBudgets {
+    pub minimal: Option<u64>,
+    pub low: Option<u64>,
+    pub medium: Option<u64>,
+    pub high: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Transport {
+    Sse,
+    Websocket,
+    WebsocketCached,
+    Auto,
+}
+
+pub type StreamResponse = futures::stream::BoxStream<'static, AssistantMessageEvent>;
+
+pub fn create_error_tool_result(message: &str) -> crate::types::AgentToolResult<serde_json::Value> {
+    crate::types::AgentToolResult {
+        content: vec![ContentBlock::text(message)],
+        details: serde_json::Value::Object(Default::default()),
+        terminate: None,
+    }
+}

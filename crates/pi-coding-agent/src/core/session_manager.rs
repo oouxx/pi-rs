@@ -409,6 +409,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    pub fn default_session_dir(cwd: &str, agent_dir: &str) -> String {
+        let path = std::path::Path::new(agent_dir).join("sessions");
+        path.to_string_lossy().to_string()
+    }
+
     pub fn new(
         cwd: &str,
         session_dir: &str,

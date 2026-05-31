@@ -783,4 +783,259 @@ mod tests {
         assert!(json.contains("\"id\":\"claude-sonnet-4-6\""));
         assert!(json.contains("\"contextWindow\":200000"));
     }
+
+    // --- Supplementary tests matching TS originals ---
+
+    #[test]
+    fn test_content_block_text_roundtrip() {
+        let block = ContentBlock::Text {
+            text: "hello world".into(),
+            text_signature: Some("sig123".into()),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::Text { text, text_signature } => {
+                assert_eq!(text, "hello world");
+                assert_eq!(text_signature, Some("sig123".into()));
+            }
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_call_roundtrip() {
+        let block = ContentBlock::ToolCall {
+            id: "tc_1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "/tmp/test.txt"}),
+            thought_signature: None,
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::ToolCall { id, name, arguments, .. } => {
+                assert_eq!(id, "tc_1");
+                assert_eq!(name, "read_file");
+                assert_eq!(arguments, serde_json::json!({"path": "/tmp/test.txt"}));
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_thinking_roundtrip() {
+        let block = ContentBlock::Thinking {
+            thinking: "Let me think...".into(),
+            thinking_signature: Some("think_sig".into()),
+            redacted: Some(false),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::Thinking { thinking, thinking_signature, redacted } => {
+                assert_eq!(thinking, "Let me think...");
+                assert_eq!(thinking_signature, Some("think_sig".into()));
+                assert_eq!(redacted, Some(false));
+            }
+            _ => panic!("expected Thinking"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_image_roundtrip() {
+        let block = ContentBlock::Image {
+            data: "base64data".into(),
+            mime_type: "image/png".into(),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("\"image\""));
+        assert!(json.contains("\"mimeType\":\"image/png\""));
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::Image { data, mime_type } => {
+                assert_eq!(data, "base64data");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn test_tool_call_serialization() {
+        let tc = ToolCall::new("call_1".into(), "my_tool".into(), serde_json::json!({"arg": 1}));
+        let json = serde_json::to_string(&tc).unwrap();
+        assert!(json.contains("\"type\":\"toolCall\""));
+        assert!(json.contains("\"id\":\"call_1\""));
+        assert!(json.contains("\"name\":\"my_tool\""));
+    }
+
+    #[test]
+    fn test_usage_with_all_fields() {
+        let usage = Usage {
+            input: 1000,
+            output: 500,
+            cache_read: 200,
+            cache_write: 100,
+            total_tokens: 1800,
+            cost: UsageCost {
+                input: 0.003,
+                output: 0.0075,
+                cache_read: 0.0003,
+                cache_write: 0.003,
+                total: 0.0138,
+            },
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(json.contains("\"input\":1000"));
+        assert!(json.contains("\"output\":500"));
+        assert!(json.contains("\"cacheRead\":200"));
+        assert!(json.contains("\"cacheWrite\":100"));
+        assert!(json.contains("\"totalTokens\":1800"));
+    }
+
+    #[test]
+    fn test_assistant_message_event_start_roundtrip() {
+        let msg = AssistantMessage {
+            content: vec![ContentBlock::text("hi")],
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 1234567890,
+        };
+        let event = AssistantMessageEvent::Start { partial: msg.clone() };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"start\""));
+        let parsed: AssistantMessageEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AssistantMessageEvent::Start { partial } => {
+                assert_eq!(partial.model, "gpt-4o");
+            }
+            _ => panic!("expected Start"),
+        }
+    }
+
+    #[test]
+    fn test_assistant_message_event_error_roundtrip() {
+        let mut msg = AssistantMessage {
+            content: vec![],
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Error,
+            error_message: Some("prompt is too long".into()),
+            timestamp: 1234567890,
+        };
+        let event = AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: msg.clone(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"error\""));
+        let parsed: AssistantMessageEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AssistantMessageEvent::Error { reason, error } => {
+                assert_eq!(reason, StopReason::Error);
+                assert_eq!(error.error_message, Some("prompt is too long".into()));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_stop_reason_all_variants_serialize() {
+        let variants = vec![
+            (StopReason::Stop, "\"stop\""),
+            (StopReason::Length, "\"length\""),
+            (StopReason::ToolUse, "\"toolUse\""),
+            (StopReason::Error, "\"error\""),
+            (StopReason::Aborted, "\"aborted\""),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_message_deserialize_user_with_multiple_content_blocks() {
+        let json = r#"{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "text", "text": "world"}
+            ],
+            "timestamp": 123456
+        }"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        match msg {
+            Message::User { content, timestamp } => {
+                assert_eq!(content.len(), 2);
+                assert_eq!(timestamp, 123456);
+            }
+            _ => panic!("expected User"),
+        }
+    }
+
+    #[test]
+    fn test_model_with_compat_openai() {
+        let model = Model {
+            id: "gpt-4o".into(),
+            name: "GPT-4o".into(),
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            base_url: "https://api.openai.com".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".into(), "image".into()],
+            cost: ModelCost { input: 2.5, output: 10.0, cache_read: 1.25, cache_write: 0.0 },
+            context_window: 128000,
+            max_tokens: 16384,
+            headers: None,
+            compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+                supports_store: Some(true),
+                max_tokens_field: Some("max_completion_tokens".into()),
+                ..Default::default()
+            })),
+        };
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(json.contains("\"supportsStore\":true"));
+        assert!(json.contains("\"maxTokensField\":\"max_completion_tokens\""));
+    }
+
+    #[test]
+    fn test_stream_options_default() {
+        let opts = StreamOptions::default();
+        assert!(opts.temperature.is_none());
+        assert!(opts.max_tokens.is_none());
+        assert!(opts.api_key.is_none());
+    }
+
+    #[test]
+    fn test_context_serialization() {
+        let ctx = Context {
+            system_prompt: Some("You are helpful.".into()),
+            messages: vec![Message::User {
+                content: vec![ContentBlock::text("hi")],
+                timestamp: 0,
+            }],
+            tools: Some(vec![Tool {
+                name: "echo".into(),
+                description: "Echoes input".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            }]),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("\"systemPrompt\":\"You are helpful.\""));
+        assert!(json.contains("\"tools\""));
+    }
 }

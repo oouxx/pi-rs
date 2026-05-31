@@ -205,3 +205,269 @@ pub fn collect_entries_for_branch_summary(
 
     (entries.to_vec(), file_ops)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::types::SessionTreeEntry;
+    use crate::pi_ai_types::{ContentBlock, Usage};
+
+    fn create_user_message(text: &str) -> AgentMessage {
+        AgentMessage::User {
+            content: vec![ContentBlock::text(text)],
+            timestamp: 1000,
+        }
+    }
+
+    fn create_assistant_message(text: &str) -> AgentMessage {
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text(text)],
+            api: "anthropic-messages".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
+            usage: Usage::default(),
+            stop_reason: Some(crate::pi_ai_types::StopReason::EndTurn),
+            error_message: None,
+            timestamp: 1000,
+        }
+    }
+
+    fn create_tool_result_message(text: &str) -> AgentMessage {
+        AgentMessage::ToolResult {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "read".to_string(),
+            content: vec![ContentBlock::text(text)],
+            details: serde_json::Value::Object(Default::default()),
+            is_error: false,
+            timestamp: 1000,
+        }
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_basic() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Hello"),
+            },
+            SessionTreeEntry::Message {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_assistant_message("Hi"),
+            },
+        ];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert_eq!(prep.messages.len(), 2);
+        assert!(prep.total_tokens > 0);
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_with_token_budget() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Hello world this is a longer message"),
+            },
+            SessionTreeEntry::Message {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_assistant_message("Short reply"),
+            },
+            SessionTreeEntry::Message {
+                id: "e3".to_string(),
+                parent_id: Some("e2".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Another message here"),
+            },
+        ];
+        let prep = prepare_branch_entries(&entries, 3);
+        assert!(prep.messages.len() < entries.len());
+        assert!(prep.total_tokens <= 3);
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_skips_tool_results() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Hello"),
+            },
+            SessionTreeEntry::Message {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_tool_result_message("result"),
+            },
+        ];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert_eq!(prep.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_with_compaction() {
+        let entries = vec![
+            SessionTreeEntry::Compaction {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                summary: "Previous summary".to_string(),
+                first_kept_entry_id: "e0".to_string(),
+                tokens_before: 1000,
+                details: None,
+                from_hook: None,
+            },
+            SessionTreeEntry::Message {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Hello"),
+            },
+        ];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert_eq!(prep.messages.len(), 2);
+        assert!(matches!(prep.messages[0], AgentMessage::CompactionSummary { .. }));
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_with_branch_summary() {
+        let entries = vec![
+            SessionTreeEntry::BranchSummary {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                from_id: "branch-id".to_string(),
+                summary: "Branch summary".to_string(),
+                details: None,
+                from_hook: None,
+            },
+            SessionTreeEntry::Message {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Hello"),
+            },
+        ];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert_eq!(prep.messages.len(), 2);
+        assert!(matches!(prep.messages[0], AgentMessage::BranchSummary { .. }));
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_empty() {
+        let entries: Vec<SessionTreeEntry> = vec![];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert!(prep.messages.is_empty());
+        assert_eq!(prep.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_preserves_order() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("First"),
+            },
+            SessionTreeEntry::Message {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_assistant_message("Second"),
+            },
+        ];
+        let prep = prepare_branch_entries(&entries, 0);
+        match &prep.messages[0] {
+            AgentMessage::User { content, .. } => {
+                if let ContentBlock::Text { text, .. } = &content[0] {
+                    assert_eq!(text, "First");
+                }
+            }
+            _ => panic!("Expected User message first"),
+        }
+    }
+
+    #[test]
+    fn test_collect_entries_for_branch_summary_basic() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("Hello"),
+            },
+        ];
+        let (result_entries, file_ops) = collect_entries_for_branch_summary(&entries);
+        assert_eq!(result_entries.len(), 1);
+        assert!(file_ops.read.is_empty());
+        assert!(file_ops.written.is_empty());
+        assert!(file_ops.edited.is_empty());
+    }
+
+    #[test]
+    fn test_collect_entries_for_branch_summary_with_details() {
+        let entries = vec![
+            SessionTreeEntry::BranchSummary {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                from_id: "branch-id".to_string(),
+                summary: "Summary".to_string(),
+                details: Some(serde_json::json!({
+                    "readFiles": ["read1.rs", "read2.rs"],
+                    "modifiedFiles": ["mod1.rs"]
+                })),
+                from_hook: Some(false),
+            },
+        ];
+        let (_, file_ops) = collect_entries_for_branch_summary(&entries);
+        assert_eq!(file_ops.read, vec!["read1.rs", "read2.rs"]);
+        assert_eq!(file_ops.edited, vec!["mod1.rs"]);
+    }
+
+    #[test]
+    fn test_collect_entries_for_branch_summary_skips_hook_entries() {
+        let entries = vec![
+            SessionTreeEntry::BranchSummary {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                from_id: "branch-id".to_string(),
+                summary: "Summary".to_string(),
+                details: Some(serde_json::json!({
+                    "readFiles": ["read1.rs"],
+                    "modifiedFiles": ["mod1.rs"]
+                })),
+                from_hook: Some(true),
+            },
+        ];
+        let (_, file_ops) = collect_entries_for_branch_summary(&entries);
+        assert!(file_ops.read.is_empty());
+        assert!(file_ops.edited.is_empty());
+    }
+
+    #[test]
+    fn test_collect_entries_for_branch_summary_no_details() {
+        let entries = vec![
+            SessionTreeEntry::BranchSummary {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                from_id: "branch-id".to_string(),
+                summary: "Summary".to_string(),
+                details: None,
+                from_hook: Some(false),
+            },
+        ];
+        let (_, file_ops) = collect_entries_for_branch_summary(&entries);
+        assert!(file_ops.read.is_empty());
+    }
+}

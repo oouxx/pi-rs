@@ -1,6 +1,6 @@
 use pi_agent_core::pi_ai_types::Model;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ContextUsage {
     pub total_tokens: u64,
     pub context_window: u64,

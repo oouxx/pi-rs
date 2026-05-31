@@ -15,5 +15,6 @@ pub mod session_manager;
 pub mod settings_manager;
 pub mod skills;
 pub mod slash_commands;
+pub mod sdk;
 pub mod system_prompt;
 pub mod tools;

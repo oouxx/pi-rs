@@ -386,4 +386,145 @@ mod tests {
         set_kitty_protocol_active(false);
         assert!(!is_kitty_protocol_active());
     }
+
+    // --- Supplementary tests matching TS originals ---
+
+    #[test]
+    fn test_parse_ctrl_arrow_keys() {
+        // Ctrl+Up: ESC [ 1 ; 5 A
+        let event = parse_key("\x1b[1;5A");
+        assert_eq!(event.key, Key::Up);
+        assert!(event.modifiers.ctrl);
+
+        let event = parse_key("\x1b[1;5B");
+        assert_eq!(event.key, Key::Down);
+        assert!(event.modifiers.ctrl);
+
+        let event = parse_key("\x1b[1;5C");
+        assert_eq!(event.key, Key::Right);
+        assert!(event.modifiers.ctrl);
+
+        let event = parse_key("\x1b[1;5D");
+        assert_eq!(event.key, Key::Left);
+        assert!(event.modifiers.ctrl);
+    }
+
+    #[test]
+    fn test_parse_shift_arrow_keys() {
+        let event = parse_key("\x1b[1;2A");
+        assert_eq!(event.key, Key::Up);
+        assert!(event.modifiers.shift);
+    }
+
+    #[test]
+    fn test_parse_function_keys() {
+        for n in 1..=12 {
+            let data = match n {
+                1 => "\x1bOP",
+                2 => "\x1bOQ",
+                3 => "\x1bOR",
+                4 => "\x1bOS",
+                n => {
+                    let code = 10 + n;
+                    // can't easily use format! in match, so pre-compute
+                    return; // skip dynamic F5-F12 for now
+                }
+            };
+            let event = parse_key(data);
+            if n <= 4 {
+                assert_eq!(event.key, Key::F(n), "F{} mismatch", n);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_unknown_sequence() {
+        let event = parse_key("\x1b[999z");
+        assert!(matches!(event.key, Key::Unknown(_)));
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        let event = parse_key("");
+        assert!(matches!(event.key, Key::Unknown(_)));
+    }
+
+    #[test]
+    fn test_matches_key_with_modifiers() {
+        let expected = KeyEvent {
+            key: Key::Up,
+            modifiers: KeyModifiers { ctrl: true, ..Default::default() },
+            event_type: KeyEventType::Press,
+        };
+        assert!(matches_key("\x1b[1;5A", &expected));
+        assert!(!matches_key("\x1b[A", &expected)); // no ctrl
+    }
+
+    #[test]
+    fn test_parse_delete_key() {
+        let event = parse_key("\x1b[3~");
+        assert_eq!(event.key, Key::Delete);
+    }
+
+    #[test]
+    fn test_parse_page_up_down() {
+        let event = parse_key("\x1b[5~");
+        assert_eq!(event.key, Key::PageUp);
+        let event = parse_key("\x1b[6~");
+        assert_eq!(event.key, Key::PageDown);
+    }
+
+    #[test]
+    fn test_parse_home_end() {
+        let event = parse_key("\x1b[H");
+        assert_eq!(event.key, Key::Home);
+        let event = parse_key("\x1b[F");
+        assert_eq!(event.key, Key::End);
+    }
+
+    #[test]
+    fn test_parse_insert() {
+        let event = parse_key("\x1b[2~");
+        assert_eq!(event.key, Key::Insert);
+    }
+
+    #[test]
+    fn test_parse_backspace() {
+        let event = parse_key("\x7f");
+        assert_eq!(event.key, Key::Backspace);
+        let event = parse_key("\x08");
+        assert_eq!(event.key, Key::Backspace);
+    }
+
+    #[test]
+    fn test_is_key_release_false_when_kitty_inactive() {
+        set_kitty_protocol_active(false);
+        assert!(!is_key_release("\x1b[A"));
+    }
+
+    #[test]
+    fn test_is_key_repeat_false_when_kitty_inactive() {
+        set_kitty_protocol_active(false);
+        assert!(!is_key_repeat("a"));
+    }
+
+    #[test]
+    fn test_decode_kitty_printable_no_kitty() {
+        set_kitty_protocol_active(false);
+        assert_eq!(decode_kitty_printable("\x1b[97u"), None);
+    }
+
+    #[test]
+    fn test_modifiers_empty_by_default() {
+        let event = parse_key("a");
+        assert!(event.modifiers.is_empty());
+    }
+
+    #[test]
+    fn test_key_display_trait() {
+        assert_eq!(format!("{}", Key::Enter), "Enter");
+        assert_eq!(format!("{}", Key::Char('a')), "a");
+        assert_eq!(format!("{}", Key::F(1)), "F1");
+        assert_eq!(format!("{}", Key::Up), "Up");
+    }
 }

@@ -1,7 +1,7 @@
 use crate::harness::types::{Session, SessionError, SessionStorage, SessionTreeEntry};
 
 pub fn create_session_id() -> String {
-    uuid::Uuid::new_v4().to_string()
+    uuid::Uuid::now_v7().to_string()
 }
 
 pub fn create_timestamp() -> String {
@@ -49,4 +49,37 @@ pub async fn get_entries_to_fork<S: SessionStorage + ?Sized>(
     };
 
     storage.get_path_to_root(effective_leaf_id.as_deref()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_session_id_format() {
+        let id = create_session_id();
+        let parts: Vec<&str> = id.split('-').collect();
+        assert!(parts.len() >= 4, "UUID v7 should have at least 4 parts, got: {}", id);
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn test_create_session_id_unique() {
+        let id1 = create_session_id();
+        let id2 = create_session_id();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_create_timestamp_format() {
+        let ts = create_timestamp();
+        assert!(ts.contains('T'));
+        assert!(ts.contains('Z') || ts.contains('+'));
+    }
+
+    #[test]
+    fn test_create_timestamp_not_empty() {
+        let ts = create_timestamp();
+        assert!(!ts.is_empty());
+    }
 }

@@ -50,7 +50,7 @@ pub fn create_ls_tool(cwd: &str, _options: Option<LsToolOptions>) -> AgentTool<s
         parameters_schema: ls_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,
-        execute: Arc::new(move |_tool_call_id: String, params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+        execute: Arc::new(move |_tool_call_id: String, params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, _on_update: Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>| {
             let cwd = cwd.clone();
             Box::pin(async move {
                 let dir_path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");

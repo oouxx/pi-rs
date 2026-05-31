@@ -10,6 +10,7 @@ use crate::core::diagnostics::ResourceDiagnostic;
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub instructions: String,
     pub file_path: String,
     pub source: SkillSource,
     pub disable_model_invocation: bool,
@@ -123,10 +124,12 @@ fn load_skill_from_file(path: &Path, source: SkillSource) -> Option<Skill> {
     let content = std::fs::read_to_string(path).ok()?;
     let file_name = path.file_stem()?.to_str()?.to_string();
     let description = extract_description(&content).unwrap_or_default();
+    let instructions = content.clone();
 
     Some(Skill {
         name: file_name,
         description,
+        instructions,
         file_path: path.to_string_lossy().to_string(),
         source,
         disable_model_invocation: content.contains("disableModelInvocation: true"),

@@ -3,45 +3,148 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex, RwLock};
 
-use crate::pi_ai_types::{ContentBlock, Model, StopReason, ThinkingLevel, EMPTY_USAGE};
-use crate::types::{AgentContext, AgentEvent, AgentMessage, AgentState};
+use crate::pi_ai_types::{AssistantMessage, Model, ThinkingLevel};
+use crate::types::{
+    AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
+    BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, QueueMode,
+    ShouldStopAfterTurnFn, StreamFn, TransformContextFn,
+};
 
-type AgentEventListener = Box<
+struct PendingMessageQueue {
+    messages: Vec<AgentMessage>,
+    mode: QueueMode,
+}
+
+impl PendingMessageQueue {
+    fn new(mode: QueueMode) -> Self {
+        Self {
+            messages: Vec::new(),
+            mode,
+        }
+    }
+
+    fn enqueue(&mut self, message: AgentMessage) {
+        self.messages.push(message);
+    }
+
+    fn drain(&mut self) -> Vec<AgentMessage> {
+        match self.mode {
+            QueueMode::All => std::mem::take(&mut self.messages),
+            QueueMode::OneAtATime => {
+                if self.messages.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.messages.remove(0)]
+                }
+            }
+        }
+    }
+
+    fn has_items(&self) -> bool {
+        !self.messages.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.messages.clear();
+    }
+}
+
+type AgentEventListener = Arc<
     dyn Fn(AgentEvent, Option<watch::Receiver<bool>>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
         + Sync,
 >;
 
-#[allow(dead_code)]
-struct ActiveRun {
-    tx: tokio::sync::oneshot::Sender<()>,
-    abort_handle: tokio::task::JoinHandle<()>,
+pub struct AgentOptions {
+    pub initial_state: Option<AgentState>,
+    pub convert_to_llm: Option<ConvertToLlmFn>,
+    pub transform_context: Option<TransformContextFn>,
+    pub stream_fn: Option<StreamFn>,
+    pub get_api_key: Option<GetApiKeyFn>,
+    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
+    pub before_tool_call: Option<BeforeToolCallFn>,
+    pub after_tool_call: Option<AfterToolCallFn>,
+    pub prepare_next_turn: Option<PrepareNextTurnFn>,
+    pub steering_mode: Option<QueueMode>,
+    pub follow_up_mode: Option<QueueMode>,
+    pub session_id: Option<String>,
+    pub thinking_budgets: Option<crate::pi_ai_types::ThinkingBudgets>,
+    pub transport: Option<String>,
+    pub max_retry_delay_ms: Option<u64>,
+    pub tool_execution: Option<crate::pi_ai_types::ToolExecutionMode>,
 }
 
-#[allow(dead_code)]
+impl Default for AgentOptions {
+    fn default() -> Self {
+        Self {
+            initial_state: None,
+            convert_to_llm: None,
+            transform_context: None,
+            stream_fn: None,
+            get_api_key: None,
+            on_payload: None,
+            on_response: None,
+            before_tool_call: None,
+            after_tool_call: None,
+            prepare_next_turn: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            session_id: None,
+            thinking_budgets: None,
+            transport: None,
+            max_retry_delay_ms: None,
+            tool_execution: None,
+        }
+    }
+}
+
+struct ActiveRun {
+    cancel: tokio_util::sync::CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
 pub struct Agent {
-    session_id: String,
     state: Arc<RwLock<AgentState>>,
     listeners: Arc<RwLock<Vec<AgentEventListener>>>,
     active_run: Arc<Mutex<Option<ActiveRun>>>,
-    stream_fn: Arc<dyn Fn(Model, crate::pi_ai_types::Context, Option<crate::pi_ai_types::ThinkingLevel>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::pi_ai_types::AssistantMessage, Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
-    convert_to_llm: Option<Arc<dyn Fn(&[AgentMessage]) -> Vec<crate::pi_ai_types::Message> + Send + Sync>>,
-    before_tool_call: Option<Arc<dyn Fn(AgentMessage, crate::types::AgentToolCall, serde_json::Value, AgentContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<crate::agent_loop::BeforeToolCallResult>> + Send>> + Send + Sync>>,
-    after_tool_call: Option<Arc<dyn Fn(AgentMessage, crate::types::AgentToolCall, serde_json::Value, crate::types::AgentToolResult<serde_json::Value>, bool, AgentContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<crate::types::AgentToolResult<serde_json::Value>>> + Send>> + Send + Sync>>,
-    steering_queue: Arc<Mutex<Vec<AgentMessage>>>,
-    follow_up_queue: Arc<Mutex<Vec<AgentMessage>>>,
+    convert_to_llm: ConvertToLlmFn,
+    transform_context: Option<TransformContextFn>,
+    stream_fn: StreamFn,
+    get_api_key: Option<GetApiKeyFn>,
+    on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
+    before_tool_call: Option<BeforeToolCallFn>,
+    after_tool_call: Option<AfterToolCallFn>,
+    prepare_next_turn: Option<PrepareNextTurnFn>,
+    should_stop_after_turn: Option<ShouldStopAfterTurnFn>,
+    steering_queue: Arc<Mutex<PendingMessageQueue>>,
+    follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
+    session_id: Option<String>,
+    thinking_budgets: Option<crate::pi_ai_types::ThinkingBudgets>,
+    transport: String,
+    max_retry_delay_ms: Option<u64>,
+    tool_execution: crate::pi_ai_types::ToolExecutionMode,
+}
+
+fn default_convert_to_llm(messages: &[AgentMessage]) -> Vec<crate::pi_ai_types::Message> {
+    crate::harness::messages::convert_to_llm(messages)
 }
 
 impl Agent {
-    pub fn new(
-        session_id: String,
-        model: Model,
-        system_prompt: String,
-        stream_fn: Arc<dyn Fn(Model, crate::pi_ai_types::Context, Option<crate::pi_ai_types::ThinkingLevel>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::pi_ai_types::AssistantMessage, Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
-    ) -> Self {
-        let state = AgentState {
-            system_prompt,
-            model,
+    pub fn new(options: AgentOptions) -> Self {
+        let state = options.initial_state.unwrap_or_else(|| AgentState {
+            system_prompt: String::new(),
+            model: Model {
+                provider: String::new(),
+                api: String::new(),
+                id: String::new(),
+                context_window: 0,
+                max_tokens: 0,
+                cost_input: 0.0,
+                cost_output: 0.0,
+                reasoning: false,
+            },
             thinking_level: ThinkingLevel::Off,
             tools: Vec::new(),
             messages: Vec::new(),
@@ -49,27 +152,380 @@ impl Agent {
             streaming_message: None,
             pending_tool_calls: HashSet::new(),
             error_message: None,
-        };
+        });
+
+        let convert_to_llm = options
+            .convert_to_llm
+            .unwrap_or_else(|| Arc::new(default_convert_to_llm));
+
+        let stream_fn = options.stream_fn.unwrap_or_else(|| {
+            Arc::new(|_model, _ctx, _thinking, _opts| {
+                Box::pin(async {
+                    Err::<crate::pi_ai_types::StreamResponse, _>(
+                        "No stream function configured".into(),
+                    )
+                })
+            })
+        });
+
         Self {
-            session_id,
             state: Arc::new(RwLock::new(state)),
             listeners: Arc::new(RwLock::new(Vec::new())),
             active_run: Arc::new(Mutex::new(None)),
+            convert_to_llm,
+            transform_context: options.transform_context,
             stream_fn,
-            convert_to_llm: None,
-            before_tool_call: None,
-            after_tool_call: None,
-            steering_queue: Arc::new(Mutex::new(Vec::new())),
-            follow_up_queue: Arc::new(Mutex::new(Vec::new())),
+            get_api_key: options.get_api_key,
+            on_payload: options.on_payload,
+            on_response: options.on_response,
+            before_tool_call: options.before_tool_call,
+            after_tool_call: options.after_tool_call,
+            prepare_next_turn: options.prepare_next_turn,
+            should_stop_after_turn: None,
+            steering_queue: Arc::new(Mutex::new(PendingMessageQueue::new(
+                options.steering_mode.unwrap_or(QueueMode::OneAtATime),
+            ))),
+            follow_up_queue: Arc::new(Mutex::new(PendingMessageQueue::new(
+                options.follow_up_mode.unwrap_or(QueueMode::OneAtATime),
+            ))),
+            session_id: options.session_id,
+            thinking_budgets: options.thinking_budgets,
+            transport: options.transport.unwrap_or_else(|| "auto".to_string()),
+            max_retry_delay_ms: options.max_retry_delay_ms,
+            tool_execution: options
+                .tool_execution
+                .unwrap_or(crate::pi_ai_types::ToolExecutionMode::Parallel),
         }
     }
 
-    pub fn session_id(&self) -> &str {
-        &self.session_id
+    pub fn set_should_stop_after_turn(&mut self, f: ShouldStopAfterTurnFn) {
+        self.should_stop_after_turn = Some(f);
+    }
+
+    pub fn subscribe(&self, listener: AgentEventListener) -> impl std::future::Future<Output = ()> {
+        let listeners = self.listeners.clone();
+        async move {
+            listeners.write().await.push(listener);
+        }
     }
 
     pub async fn state(&self) -> AgentState {
         self.state.read().await.clone()
+    }
+
+    pub async fn set_steering_mode(&self, mode: QueueMode) {
+        self.steering_queue.lock().await.mode = mode;
+    }
+
+    pub async fn steering_mode(&self) -> QueueMode {
+        self.steering_queue.lock().await.mode
+    }
+
+    pub async fn set_follow_up_mode(&self, mode: QueueMode) {
+        self.follow_up_queue.lock().await.mode = mode;
+    }
+
+    pub async fn follow_up_mode(&self) -> QueueMode {
+        self.follow_up_queue.lock().await.mode
+    }
+
+    pub async fn steer(&self, message: AgentMessage) {
+        self.steering_queue.lock().await.enqueue(message);
+    }
+
+    pub async fn follow_up(&self, message: AgentMessage) {
+        self.follow_up_queue.lock().await.enqueue(message);
+    }
+
+    pub async fn clear_steering_queue(&self) {
+        self.steering_queue.lock().await.clear();
+    }
+
+    pub async fn clear_follow_up_queue(&self) {
+        self.follow_up_queue.lock().await.clear();
+    }
+
+    pub async fn clear_all_queues(&self) {
+        self.clear_steering_queue().await;
+        self.clear_follow_up_queue().await;
+    }
+
+    pub async fn has_queued_messages(&self) -> bool {
+        self.steering_queue.lock().await.has_items() || self.follow_up_queue.lock().await.has_items()
+    }
+
+    pub async fn abort(&self) {
+        if let Some(run) = self.active_run.lock().await.take() {
+            run.cancel.cancel();
+            run.handle.abort();
+        }
+    }
+
+    pub async fn process(
+        &self,
+        messages: Vec<AgentMessage>,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let mut state = self.state.write().await;
+            for msg in &messages {
+                state.messages.push(msg.clone());
+            }
+            state.is_streaming = true;
+        }
+
+        let result = self.run_with_lifecycle(messages).await;
+
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = false;
+            state.streaming_message = None;
+            state.pending_tool_calls.clear();
+        }
+
+        result
+    }
+
+    pub async fn continue_run(
+        &self,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let state = self.state.read().await;
+            if state.messages.is_empty() {
+                return Err("Cannot continue: no messages in context".into());
+            }
+            if state.messages.last().map(|m| m.role()) == Some("assistant") {
+                return Err("Cannot continue from message role: assistant".into());
+            }
+        }
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = true;
+        }
+
+        let result = self.run_with_lifecycle_continue().await;
+
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = false;
+            state.streaming_message = None;
+            state.pending_tool_calls.clear();
+        }
+
+        result
+    }
+
+    async fn run_with_lifecycle(
+        &self,
+        prompts: Vec<AgentMessage>,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            cancel.cancelled().await;
+            let _ = cancel_tx.send(true);
+        });
+
+        let active_run = ActiveRun {
+            cancel: cancel_clone,
+            handle,
+        };
+        *self.active_run.lock().await = Some(active_run);
+
+        let state = self.state.read().await;
+        let context = AgentContext {
+            system_prompt: state.system_prompt.clone(),
+            messages: state.messages.clone(),
+            tools: Some(state.tools.clone()),
+        };
+        let model = state.model.clone();
+        let thinking_level = state.thinking_level.clone();
+        drop(state);
+
+        let emit = self.create_event_sink();
+        let steering_queue = self.steering_queue.clone();
+        let follow_up_queue = self.follow_up_queue.clone();
+
+        let config = crate::agent_loop::AgentLoopConfig {
+            model,
+            reasoning: if thinking_level == ThinkingLevel::Off {
+                None
+            } else {
+                Some(thinking_level)
+            },
+            api_key: None,
+            session_id: self.session_id.clone(),
+            thinking_budgets: self.thinking_budgets.clone(),
+            transport: Some(self.transport.clone()),
+            max_retry_delay_ms: self.max_retry_delay_ms,
+            tool_execution: self.tool_execution,
+            convert_to_llm: self.convert_to_llm.clone(),
+            transform_context: self.transform_context.clone(),
+            get_api_key: self.get_api_key.clone(),
+            get_steering_messages: Some(Arc::new(move || {
+                let q = steering_queue.clone();
+                Box::pin(async move { q.lock().await.drain() })
+            })),
+            get_follow_up_messages: Some(Arc::new(move || {
+                let q = follow_up_queue.clone();
+                Box::pin(async move { q.lock().await.drain() })
+            })),
+            should_stop_after_turn: self.should_stop_after_turn.clone(),
+            prepare_next_turn: self.prepare_next_turn.clone(),
+            before_tool_call: self.before_tool_call.clone(),
+            after_tool_call: self.after_tool_call.clone(),
+            on_payload: self.on_payload.clone(),
+            on_response: self.on_response.clone(),
+        };
+
+        let signal = Some(cancel_rx);
+
+        let result = crate::agent_loop::run_agent_loop(
+            prompts,
+            context,
+            &config,
+            &emit,
+            &signal,
+            &self.stream_fn,
+        )
+        .await;
+
+        self.active_run.lock().await.take();
+
+        result
+    }
+
+    async fn run_with_lifecycle_continue(
+        &self,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            cancel.cancelled().await;
+            let _ = cancel_tx.send(true);
+        });
+
+        let active_run = ActiveRun {
+            cancel: cancel_clone,
+            handle,
+        };
+        *self.active_run.lock().await = Some(active_run);
+
+        let state = self.state.read().await;
+        let context = AgentContext {
+            system_prompt: state.system_prompt.clone(),
+            messages: state.messages.clone(),
+            tools: Some(state.tools.clone()),
+        };
+        let model = state.model.clone();
+        let thinking_level = state.thinking_level.clone();
+        drop(state);
+
+        let emit = self.create_event_sink();
+        let steering_queue = self.steering_queue.clone();
+        let follow_up_queue = self.follow_up_queue.clone();
+
+        let config = crate::agent_loop::AgentLoopConfig {
+            model,
+            reasoning: if thinking_level == ThinkingLevel::Off {
+                None
+            } else {
+                Some(thinking_level)
+            },
+            api_key: None,
+            session_id: self.session_id.clone(),
+            thinking_budgets: self.thinking_budgets.clone(),
+            transport: Some(self.transport.clone()),
+            max_retry_delay_ms: self.max_retry_delay_ms,
+            tool_execution: self.tool_execution,
+            convert_to_llm: self.convert_to_llm.clone(),
+            transform_context: self.transform_context.clone(),
+            get_api_key: self.get_api_key.clone(),
+            get_steering_messages: Some(Arc::new(move || {
+                let q = steering_queue.clone();
+                Box::pin(async move { q.lock().await.drain() })
+            })),
+            get_follow_up_messages: Some(Arc::new(move || {
+                let q = follow_up_queue.clone();
+                Box::pin(async move { q.lock().await.drain() })
+            })),
+            should_stop_after_turn: self.should_stop_after_turn.clone(),
+            prepare_next_turn: self.prepare_next_turn.clone(),
+            before_tool_call: self.before_tool_call.clone(),
+            after_tool_call: self.after_tool_call.clone(),
+            on_payload: self.on_payload.clone(),
+            on_response: self.on_response.clone(),
+        };
+
+        let signal = Some(cancel_rx);
+
+        let result = crate::agent_loop::run_agent_loop_continue(
+            context,
+            &config,
+            &emit,
+            &signal,
+            &self.stream_fn,
+        )
+        .await;
+
+        self.active_run.lock().await.take();
+
+        result
+    }
+
+    fn create_event_sink(&self) -> AgentEventSink {
+        let listeners = self.listeners.clone();
+        let state = self.state.clone();
+
+        Arc::new(move |event: AgentEvent| {
+            let listeners = listeners.clone();
+            let state = state.clone();
+            Box::pin(async move {
+                {
+                    let state_read = state.read().await;
+                    match &event {
+                        AgentEvent::MessageStart { message } => {
+                            if matches!(message, AgentMessage::Assistant { .. }) {
+                                drop(state_read);
+                                let mut s = state.write().await;
+                                s.streaming_message = Some(message.clone());
+                            }
+                        }
+                        AgentEvent::MessageEnd { message } => {
+                            if matches!(message, AgentMessage::Assistant { .. }) {
+                                drop(state_read);
+                                let mut s = state.write().await;
+                                s.streaming_message = None;
+                            }
+                        }
+                        AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
+                            drop(state_read);
+                            let mut s = state.write().await;
+                            s.pending_tool_calls.insert(tool_call_id.clone());
+                        }
+                        AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
+                            drop(state_read);
+                            let mut s = state.write().await;
+                            s.pending_tool_calls.remove(tool_call_id);
+                        }
+                        AgentEvent::AgentEnd { .. } => {
+                            drop(state_read);
+                            let mut s = state.write().await;
+                            s.is_streaming = false;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let listeners = listeners.read().await;
+                for listener in listeners.iter() {
+                    listener(event.clone(), None).await;
+                }
+            })
+        })
     }
 
     pub async fn set_model(&self, model: Model) {
@@ -94,237 +550,5 @@ impl Agent {
 
     pub async fn error_message(&self) -> Option<String> {
         self.state.read().await.error_message.clone()
-    }
-
-    pub async fn steer(&self, message: AgentMessage) {
-        self.steering_queue.lock().await.push(message);
-    }
-
-    pub async fn follow_up(&self, message: AgentMessage) {
-        self.follow_up_queue.lock().await.push(message);
-    }
-
-    pub async fn subscribe(
-        &self,
-        listener: AgentEventListener,
-    ) {
-        self.listeners.write().await.push(listener);
-    }
-
-    pub async fn abort(&self) {
-        if let Some(run) = self.active_run.lock().await.take() {
-            run.abort_handle.abort();
-        }
-    }
-
-    pub async fn process(&self, messages: Vec<AgentMessage>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        {
-            let mut state = self.state.write().await;
-            state.messages.extend(messages);
-        }
-        self.run_agent_loop(false).await
-    }
-
-    pub async fn continue_run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.run_agent_loop(false).await
-    }
-
-    async fn run_agent_loop(
-        &self,
-        _skip_initial_steering: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let state = self.state.read().await;
-        let context = AgentContext {
-            system_prompt: state.system_prompt.clone(),
-            messages: state.messages.clone(),
-            tools: Some(state.tools.clone()),
-        };
-        let model = state.model.clone();
-        let thinking_level = state.thinking_level.clone();
-        drop(state);
-
-        let stream_fn = self.stream_fn.clone();
-        let pi_context = crate::pi_ai_types::Context {
-            system_prompt: context.system_prompt.clone(),
-            messages: self.convert_messages(&context.messages),
-            tools: None,
-        };
-
-        self.emit_event(AgentEvent::AgentStart).await;
-
-        let result = stream_fn(model, pi_context, Some(thinking_level)).await;
-
-        match result {
-            Ok(assistant_msg) => {
-                let agent_msg = AgentMessage::Assistant {
-                    content: assistant_msg.content.clone(),
-                    api: assistant_msg.api.clone(),
-                    provider: assistant_msg.provider.clone(),
-                    model: assistant_msg.model.clone(),
-                    usage: assistant_msg.usage.clone(),
-                    stop_reason: assistant_msg.stop_reason.clone(),
-                    error_message: assistant_msg.error_message.clone(),
-                    timestamp: assistant_msg.timestamp,
-                };
-
-                self.emit_event(AgentEvent::MessageStart {
-                    message: agent_msg.clone(),
-                })
-                .await;
-                self.emit_event(AgentEvent::MessageEnd {
-                    message: agent_msg.clone(),
-                })
-                .await;
-
-                {
-                    let mut state = self.state.write().await;
-                    state.messages.push(agent_msg.clone());
-                }
-
-                let tool_results = self.process_tool_calls(&agent_msg).await;
-
-                self.emit_event(AgentEvent::TurnEnd {
-                    message: agent_msg.clone(),
-                    tool_results: tool_results.clone(),
-                })
-                .await;
-
-                self.emit_event(AgentEvent::AgentEnd {
-                    messages: vec![agent_msg],
-                })
-                .await;
-            }
-            Err(e) => {
-                let state = self.state.read().await;
-                let failure_message = AgentMessage::Assistant {
-                    content: vec![ContentBlock::Text {
-                        text: String::new(),
-                        text_signature: None,
-                    }],
-                    api: state.model.api.clone(),
-                    provider: state.model.provider.clone(),
-                    model: state.model.id.clone(),
-                    usage: EMPTY_USAGE,
-                    stop_reason: Some(StopReason::Error),
-                    error_message: Some(e.to_string()),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                };
-                drop(state);
-
-                self.emit_event(AgentEvent::MessageStart {
-                    message: failure_message.clone(),
-                })
-                .await;
-                self.emit_event(AgentEvent::MessageEnd {
-                    message: failure_message.clone(),
-                })
-                .await;
-                self.emit_event(AgentEvent::TurnEnd {
-                    message: failure_message.clone(),
-                    tool_results: Vec::new(),
-                })
-                .await;
-                self.emit_event(AgentEvent::AgentEnd {
-                    messages: vec![failure_message],
-                })
-                .await;
-            }
-        }
-
-        {
-            let mut state = self.state.write().await;
-            state.is_streaming = false;
-            state.streaming_message = None;
-            state.pending_tool_calls.clear();
-        }
-
-        Ok(())
-    }
-
-    async fn process_tool_calls(&self, assistant_msg: &AgentMessage) -> Vec<AgentMessage> {
-        let content = match assistant_msg {
-            AgentMessage::Assistant { content, .. } => content,
-            _ => return Vec::new(),
-        };
-
-        let tool_calls: Vec<_> = content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                } => Some(crate::types::AgentToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
-
-        let mut results = Vec::new();
-        for tc in tool_calls {
-            self.emit_event(AgentEvent::ToolExecutionStart {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                args: tc.arguments.clone(),
-            })
-            .await;
-
-            let result_content = vec![ContentBlock::Text {
-                text: format!("Tool {} executed (stub)", tc.name),
-                text_signature: None,
-            }];
-
-            let tool_result = AgentMessage::ToolResult {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                content: result_content,
-                details: serde_json::Value::Null,
-                is_error: false,
-                timestamp: chrono::Utc::now().timestamp_millis(),
-            };
-
-            self.emit_event(AgentEvent::ToolExecutionEnd {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                result: serde_json::Value::Null,
-                is_error: false,
-            })
-            .await;
-
-            self.emit_event(AgentEvent::MessageStart {
-                message: tool_result.clone(),
-            })
-            .await;
-            self.emit_event(AgentEvent::MessageEnd {
-                message: tool_result.clone(),
-            })
-            .await;
-
-            {
-                let mut state = self.state.write().await;
-                state.messages.push(tool_result.clone());
-            }
-
-            results.push(tool_result);
-        }
-
-        results
-    }
-
-    fn convert_messages(&self, messages: &[AgentMessage]) -> Vec<crate::pi_ai_types::Message> {
-        if let Some(convert_fn) = &self.convert_to_llm {
-            return convert_fn(messages);
-        }
-        crate::harness::messages::convert_to_llm(messages)
-    }
-
-    async fn emit_event(&self, event: AgentEvent) {
-        let listeners = self.listeners.read().await;
-        for listener in listeners.iter() {
-            listener(event.clone(), None).await;
-        }
     }
 }

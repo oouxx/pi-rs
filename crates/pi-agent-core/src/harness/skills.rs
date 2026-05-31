@@ -44,3 +44,104 @@ fn escape_xml(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_skills_visible_and_hidden() {
+        let visible_skill = Skill {
+            name: "visible".to_string(),
+            description: "Use <this> & that".to_string(),
+            content: "visible content".to_string(),
+            file_path: "/skills/visible/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let second_skill = Skill {
+            name: "second".to_string(),
+            description: "Second skill".to_string(),
+            content: "second content".to_string(),
+            file_path: "/skills/second/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let disabled_skill = Skill {
+            name: "hidden".to_string(),
+            description: "Hidden".to_string(),
+            content: "hidden content".to_string(),
+            file_path: "/skills/hidden/SKILL.md".to_string(),
+            disable_model_invocation: true,
+        };
+
+        let result = format_skills_for_system_prompt(&[visible_skill.clone(), disabled_skill, second_skill]);
+
+        assert!(result.contains("<available_skills>"));
+        assert!(result.contains("<name>visible</name>"));
+        assert!(result.contains("<description>Use &lt;this&gt; &amp; that</description>"));
+        assert!(result.contains("<location>/skills/visible/SKILL.md</location>"));
+        assert!(result.contains("<name>second</name>"));
+        assert!(result.contains("<description>Second skill</description>"));
+        assert!(result.contains("<location>/skills/second/SKILL.md</location>"));
+        assert!(!result.contains("<name>hidden</name>"));
+        assert!(result.contains("</available_skills>"));
+    }
+
+    #[test]
+    fn test_format_skills_empty_when_all_disabled() {
+        let disabled_skill = Skill {
+            name: "hidden".to_string(),
+            description: "Hidden".to_string(),
+            content: "hidden content".to_string(),
+            file_path: "/skills/hidden/SKILL.md".to_string(),
+            disable_model_invocation: true,
+        };
+        let result = format_skills_for_system_prompt(&[disabled_skill]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_skills_empty_input() {
+        let result = format_skills_for_system_prompt(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_skills_xml_escaping() {
+        let skill = Skill {
+            name: "a&b".to_string(),
+            description: "Quote \"double\" and 'single'".to_string(),
+            content: "content".to_string(),
+            file_path: "/skills/<bad>&\"quote\"/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let result = format_skills_for_system_prompt(&[skill]);
+        assert!(result.contains("<name>a&amp;b</name>"));
+        assert!(result.contains("<description>Quote &quot;double&quot; and &apos;single&apos;</description>"));
+        assert!(result.contains("<location>/skills/&lt;bad&gt;&amp;&quot;quote&quot;/SKILL.md</location>"));
+    }
+
+    #[test]
+    fn test_format_skills_header_text() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "Test skill".to_string(),
+            content: "test content".to_string(),
+            file_path: "/skills/test/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let result = format_skills_for_system_prompt(&[skill]);
+        assert!(result.contains("The following skills provide specialized instructions for specific tasks."));
+        assert!(result.contains("Read the full skill file when the task matches its description."));
+    }
+
+    #[test]
+    fn test_escape_xml() {
+        assert_eq!(escape_xml("&"), "&amp;");
+        assert_eq!(escape_xml("<"), "&lt;");
+        assert_eq!(escape_xml(">"), "&gt;");
+        assert_eq!(escape_xml("\""), "&quot;");
+        assert_eq!(escape_xml("'"), "&apos;");
+        assert_eq!(escape_xml("normal text"), "normal text");
+        assert_eq!(escape_xml("a&b<c>d"), "a&amp;b&lt;c&gt;d");
+    }
+}

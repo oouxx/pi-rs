@@ -15,8 +15,10 @@ thiserror = "2"
 async-trait = "0.1"
 futures = "0.3"
 tokio-stream = "0.1"
+tokio-util = "0.7"
 reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
 serde_yaml = "0.9"
+regex = "1"
 
 [dev-dependencies]

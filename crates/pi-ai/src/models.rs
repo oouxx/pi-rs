@@ -196,4 +196,119 @@ mod tests {
         assert!(!models_are_equal(None, a));
         assert!(!models_are_equal(a, None));
     }
+
+    // --- Supplementary tests matching TS originals ---
+
+    #[test]
+    fn test_get_supported_thinking_levels_reasoning_model_includes_all_levels() {
+        // TS: "includes xhigh for Anthropic Opus" — our model catalog uses claude-opus-4-7
+        let model = get_model("anthropic", "claude-opus-4-7").unwrap();
+        assert!(model.reasoning);
+        let levels = get_supported_thinking_levels(model);
+        // Reasoning models should include "off" and various thinking levels
+        assert!(levels.contains(&"off"));
+        assert!(levels.contains(&"low"));
+        assert!(levels.contains(&"medium"));
+        assert!(levels.contains(&"high"));
+    }
+
+    #[test]
+    fn test_get_supported_thinking_levels_non_reasoning_only_off() {
+        // TS: non-reasoning models only have "off"
+        let model = get_model("deepseek", "deepseek-chat").unwrap();
+        assert!(!model.reasoning);
+        let levels = get_supported_thinking_levels(model);
+        assert_eq!(levels, vec!["off"]);
+    }
+
+    #[test]
+    fn test_clamp_thinking_level_exact_match() {
+        let model = get_model("anthropic", "claude-sonnet-4-6").unwrap();
+        assert_eq!(clamp_thinking_level(model, "low"), "low");
+        assert_eq!(clamp_thinking_level(model, "medium"), "medium");
+        assert_eq!(clamp_thinking_level(model, "off"), "off");
+    }
+
+    #[test]
+    fn test_clamp_thinking_level_rounds_up_to_next_available() {
+        // TS: if requested level is not available, search upward first
+        let model = get_model("anthropic", "claude-sonnet-4-6").unwrap();
+        // Request a level that exists — should get it
+        assert_eq!(clamp_thinking_level(model, "high"), "high");
+    }
+
+    #[test]
+    fn test_clamp_thinking_level_invalid_input_returns_first_available() {
+        let model = get_model("anthropic", "claude-sonnet-4-6").unwrap();
+        // Request a completely invalid level
+        let result = clamp_thinking_level(model, "nonexistent");
+        let available = get_supported_thinking_levels(model);
+        assert!(available.contains(&result.as_str()));
+    }
+
+    #[test]
+    fn test_clamp_thinking_level_non_reasoning_always_off() {
+        let model = get_model("deepseek", "deepseek-chat").unwrap();
+        assert!(!model.reasoning);
+        assert_eq!(clamp_thinking_level(model, "high"), "off");
+        assert_eq!(clamp_thinking_level(model, "low"), "off");
+    }
+
+    #[test]
+    fn test_calculate_cost_includes_cache() {
+        let model = get_model("anthropic", "claude-opus-4-7").unwrap();
+        // Opus costs: input=15.0, output=75.0, cacheRead=1.5, cacheWrite=30.0 (per million)
+        let mut usage = crate::types::Usage {
+            input: 1_000_000,
+            output: 500_000,
+            cache_read: 1_000_000,
+            cache_write: 500_000,
+            total_tokens: 3_000_000,
+            cost: crate::types::UsageCost::default(),
+        };
+        calculate_cost(model, &mut usage);
+        assert!((usage.cost.input - 15.0).abs() < 0.01, "input cost should be 15.0");
+        assert!((usage.cost.output - 37.5).abs() < 0.01, "output cost should be 37.5");
+        assert!((usage.cost.cache_read - 1.5).abs() < 0.01, "cache read cost should be 1.5");
+        assert!((usage.cost.cache_write - 15.0).abs() < 0.01, "cache write cost should be 15.0");
+        let expected_total = 15.0 + 37.5 + 1.5 + 15.0;
+        assert!((usage.cost.total - expected_total).abs() < 0.01, "total cost mismatch");
+    }
+
+    #[test]
+    fn test_calculate_cost_zero_usage() {
+        let model = get_model("openai", "gpt-4o").unwrap();
+        let mut usage = crate::types::Usage::default();
+        calculate_cost(model, &mut usage);
+        assert_eq!(usage.cost.input, 0.0);
+        assert_eq!(usage.cost.output, 0.0);
+        assert_eq!(usage.cost.total, 0.0);
+    }
+
+    #[test]
+    fn test_models_are_equal_same_id_different_provider() {
+        // Same model ID on different providers should NOT be equal
+        // e.g. openai/gpt-4o vs openrouter/openai/gpt-4o
+        let a = get_model("openai", "gpt-4o");
+        let b = get_model("openrouter", "openai/gpt-4o");
+        assert!(!models_are_equal(a, b));
+    }
+
+    #[test]
+    fn test_get_models_returns_empty_for_unknown_provider() {
+        let models = get_models("nonexistent-provider");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn test_get_providers_includes_major_providers() {
+        let providers = get_providers();
+        assert!(providers.contains(&"anthropic"));
+        assert!(providers.contains(&"openai"));
+        assert!(providers.contains(&"google"));
+        assert!(providers.contains(&"deepseek"));
+        assert!(providers.contains(&"groq"));
+        assert!(providers.contains(&"xai"));
+        assert!(providers.contains(&"openrouter"));
+    }
 }

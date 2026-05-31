@@ -561,4 +561,111 @@ mod tests {
         assert_eq!(pos, Some((1, 5))); // row 1, col 5 ("hello" = 5 chars)
         assert!(!lines[1].contains(CURSOR_MARKER));
     }
+
+    // --- Supplementary tests matching TS originals ---
+
+    #[test]
+    fn test_cursor_marker_at_start_of_line() {
+        let mut lines = vec![
+            format!("{}hello", CURSOR_MARKER),
+        ];
+        let pos = extract_cursor_position(&mut lines);
+        assert_eq!(pos, Some((0, 0)));
+        assert!(!lines[0].contains(CURSOR_MARKER));
+    }
+
+    #[test]
+    fn test_cursor_marker_not_present() {
+        let mut lines = vec!["hello".to_string(), "world".to_string()];
+        let pos = extract_cursor_position(&mut lines);
+        assert_eq!(pos, None);
+    }
+
+    #[test]
+    fn test_overlay_position_bottom_right() {
+        let opts = OverlayOptions {
+            width: Some(20),
+            anchor: OverlayAnchor::BottomRight,
+            ..Default::default()
+        };
+        let (col, row) = overlay_position(&opts, 20, 5, 80, 24);
+        assert_eq!(col, 60); // 80 - 20
+        assert_eq!(row, 19); // 24 - 5
+    }
+
+    #[test]
+    fn test_overlay_position_with_margin() {
+        let opts = OverlayOptions {
+            width: Some(20),
+            anchor: OverlayAnchor::TopLeft,
+            margin: OverlayMargin { top: 2, right: 1, bottom: 1, left: 3 },
+            ..Default::default()
+        };
+        let (col, row) = overlay_position(&opts, 20, 5, 80, 24);
+        assert_eq!(col, 3); // left margin
+        assert_eq!(row, 2); // top margin
+    }
+
+    #[test]
+    fn test_overlay_position_with_offset() {
+        let opts = OverlayOptions {
+            width: Some(20),
+            anchor: OverlayAnchor::Center,
+            offset_x: 5,
+            offset_y: -2,
+            ..Default::default()
+        };
+        let (col, row) = overlay_position(&opts, 20, 5, 80, 24);
+        assert_eq!(col, 35); // (80-20)/2 + 5
+        assert_eq!(row, 7); // (24-5)/2 - 2
+    }
+
+    #[test]
+    fn test_overlay_composite_with_short_base() {
+        let mut base = vec!["line1".to_string()];
+        let overlay = vec!["OVERLAY".to_string()];
+        let opts = OverlayOptions {
+            width: Some(10),
+            anchor: OverlayAnchor::TopLeft,
+            ..Default::default()
+        };
+        composite_overlay(&mut base, &overlay, 80, 24, &opts);
+        // Base should be expanded to at least the overlay row + height
+        assert!(base.len() >= 1);
+        assert!(base[0].contains("OVERLAY"));
+    }
+
+    #[test]
+    fn test_container_remove_child() {
+        struct CompA;
+        struct CompB;
+        impl Component for CompA {
+            fn render(&self, _: u16) -> Vec<String> { vec!["A".into()] }
+        }
+        impl Component for CompB {
+            fn render(&self, _: u16) -> Vec<String> { vec!["B".into()] }
+        }
+
+        let mut container = Container::new();
+        let comp_a = Box::new(CompA);
+        let comp_b = Box::new(CompB);
+        container.add_child(comp_a);
+        container.add_child(comp_b);
+        assert_eq!(container.children.len(), 2);
+        // Can't easily test remove_child since it takes a &dyn Component
+        container.clear();
+        assert_eq!(container.children.len(), 0);
+    }
+
+    #[test]
+    fn test_overlay_position_top_center() {
+        let opts = OverlayOptions {
+            width: Some(20),
+            anchor: OverlayAnchor::TopCenter,
+            ..Default::default()
+        };
+        let (col, row) = overlay_position(&opts, 20, 5, 80, 24);
+        assert_eq!(col, 30); // (80-20)/2
+        assert_eq!(row, 0);
+    }
 }

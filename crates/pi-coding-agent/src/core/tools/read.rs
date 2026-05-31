@@ -95,7 +95,7 @@ pub fn create_read_tool(cwd: &str, options: Option<ReadToolOptions>) -> AgentToo
         parameters_schema: read_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,
-        execute: Arc::new(move |_tool_call_id: String, params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+        execute: Arc::new(move |_tool_call_id: String, params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, _on_update: Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>| {
             let cwd = cwd.clone();
             let operations = operations.clone();
             Box::pin(async move {

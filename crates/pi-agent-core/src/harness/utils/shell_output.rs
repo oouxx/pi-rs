@@ -92,6 +92,22 @@ pub async fn execute_shell_with_capture(
 
     let result = env.exec(command, exec_options).await;
 
+    // Save full output to temp file if output was truncated
+    {
+        let mut s = state.lock().await;
+        let total_bytes = s.total_bytes as u64;
+        if total_bytes > max_bytes {
+            let full_content = s.output_chunks.join("");
+            if let Ok(temp_path) = env.create_temp_file(Some(crate::harness::types::TempFileOptions {
+                prefix: Some("shell-output-".to_string()),
+                suffix: Some(".txt".to_string()),
+            })).await {
+                let _ = env.write_file(&temp_path, &full_content, None).await;
+                s.full_output_path = Some(temp_path);
+            }
+        }
+    }
+
     let s = state.lock().await;
     let full_output_path = s.full_output_path.clone();
 
@@ -113,7 +129,7 @@ pub async fn execute_shell_with_capture(
                 output,
                 exit_code: Some(exec_result.exit_code),
                 cancelled: false,
-                truncated: truncation_result.truncated,
+                truncated: truncation_result.truncated || full_output_path.is_some(),
                 full_output_path,
             })
         }

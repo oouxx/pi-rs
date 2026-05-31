@@ -9,11 +9,11 @@
 
 | Crate | TS 源仓库 | 文件数 | 代码行数 | 测试数 | 编译 | 完成度 |
 |-------|-----------|:---:|:---:|:---:|:---:|:---:|
-| pi-agent-core | `packages/agent` | 29 | 8,933 | 141/141 ✅ | ✅ | ~80% |
-| pi-coding-agent | `packages/coding-agent` | 33 | 7,582 | 88 ❌ | ❌ | ~35% |
+| pi-agent-core | `packages/agent` | 29 | 10,300 | 153/153 ✅ | ✅ | ~90% |
+| pi-coding-agent | `packages/coding-agent` | 33 | 7,600 | 90/90 ✅ | ✅ | ~35% |
 | pi-ai | `packages/ai` | 18 | 4,820 | 120/120 ✅ | ✅ | ~45% |
 | pi-tui | `packages/tui` | 12 | 3,202 | 96/96 ✅ | ✅ | ~30% |
-| **合计** | | **92** | **24,537** | **357** | | |
+| **合计** | | **92** | **25,922** | **459** | | |
 
 pi-coding-agent 编译错误：`core::skills::Skill` 缺少 `instructions` 字段（2 处）。
 
@@ -50,16 +50,16 @@ struct: 74 | enum: 26 | trait: 3 | pub fn: 133 | impl block: 30
 
 | TypeScript | Rust | 覆盖率 | 关键缺失 |
 |------------|------|--------|----------|
-| `agent-loop.ts` | `agent_loop.rs` | ~90% | — |
-| `agent.ts` | `agent.rs` | ~85% | — |
-| `proxy.ts` | `proxy.rs` | ~85% | FileSystemStart/FileSystemDelta/FileSystemEnd 事件变体 |
-| `harness/agent-harness.ts` | `harness/agent_harness.rs` | ~55% | 编排循环不完整 |
-| `harness/prompt-templates.ts` | `harness/prompt_templates.rs` | ~75% | `loadPromptTemplates()`、frontmatter 解析缺失 |
-| `harness/skills.ts` | `harness/skill_loader.rs` + `skills.rs` | ~60% | `formatSkillInvocation()`、`loadSourcedSkills()`、gitignore 支持 |
-| `harness/types.ts` | `harness/types.rs` | ~85% | `StreamOptionsPatch`、`ChainSummary`、`FileSystem` 接口 |
-| `harness/compaction/compaction.ts` | `harness/compaction/compaction.rs` | ~75% | **`generate_summary()` 是桩代码**（返回占位文本） |
-| `harness/compaction/branch-summarization.ts` | `harness/compaction/branch_summarization.rs` | ~60% | **`generate_branch_summary()` 是桩代码** |
-| `harness/utils/shell-output.ts` | `harness/utils/shell_output.rs` | ~70% | 临时文件管理不完整 |
+| `agent-loop.ts` | `agent_loop.rs` | ~95% | — |
+| `agent.ts` | `agent.rs` | ~95% | `wait_for_idle` / `reset` 已添加 |
+| `proxy.ts` | `proxy.rs` | ~90% | — |
+| `harness/agent-harness.ts` | `harness/agent_harness.rs` | ~70% | prompt() 不直接运行 agent loop（由 Agent 负责） |
+| `harness/prompt-templates.ts` | `harness/prompt_templates.rs` | ~90% | `loadPromptTemplates` / `loadSourcedPromptTemplates` 已实现 |
+| `harness/skills.ts` | `harness/skill_loader.rs` + `skills.rs` | ~85% | `formatSkillInvocation` / `loadSourcedSkills` 已实现 |
+| `harness/types.ts` | `harness/types.rs` | ~90% | ExecutionEnv 合并了 FileSystem + Shell |
+| `harness/compaction/compaction.ts` | `harness/compaction/compaction.rs` | ~90% | `generate_summary` 已接入 pi_ai LLM |
+| `harness/compaction/branch-summarization.ts` | `harness/compaction/branch_summarization.rs` | ~85% | `generate_branch_summary` 已接入 pi_ai LLM |
+| `harness/utils/shell-output.ts` | `harness/utils/shell_output.rs` | ~90% | 完整输出写入临时文件 |
 
 ### 未复刻（2 个文件）
 
@@ -91,10 +91,11 @@ struct: 74 | enum: 26 | trait: 3 | pub fn: 133 | impl block: 30
 
 ### P0 阻塞项
 
-1. **`generate_summary()`**（compaction.rs:304）— 返回占位文本，不调用 LLM
-2. **`generate_branch_summary()`**（branch_summarization.rs:117）— 返回占位文本，不调用 LLM
-3. **`loadPromptTemplates()`** — 不存在
-4. **AgentHarness 编排循环** — 不完整
+1. ~~`generate_summary()` — 返回占位文本~~ ✅ 已接入 pi_ai::stream，真实 LLM 调用
+2. ~~`generate_branch_summary()` — 返回占位文本~~ ✅ 已接入 pi_ai::stream，真实 LLM 调用
+3. ~~`loadPromptTemplates()` — 不存在~~ ✅ 已实现（frontmatter 解析 + 目录扫描）
+4. ~~AgentHarness compact() API key 空字符串~~ ✅ 已通过 env 解析 API key
+5. **AgentHarness 编排循环** — prompt() 不实际运行 agent loop（需集成 Agent）
 
 ---
 

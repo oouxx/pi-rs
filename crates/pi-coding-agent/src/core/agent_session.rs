@@ -254,7 +254,7 @@ impl AgentSession {
         self.agent.abort().await;
     }
 
-    pub fn subscribe(
+    pub async fn subscribe(
         &self,
         listener: Arc<
             dyn Fn(
@@ -264,8 +264,8 @@ impl AgentSession {
                 + Send
                 + Sync,
         >,
-    ) -> impl std::future::Future<Output = ()> {
-        self.agent.subscribe(listener)
+    ) {
+        self.agent.subscribe(listener).await
     }
 
     pub fn dispose(self) {}

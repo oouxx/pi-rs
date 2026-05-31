@@ -207,11 +207,9 @@ impl Agent {
         self.should_stop_after_turn = Some(f);
     }
 
-    pub fn subscribe(&self, listener: AgentEventListener) -> impl std::future::Future<Output = ()> {
-        let listeners = self.listeners.clone();
-        async move {
-            listeners.write().await.push(listener);
-        }
+    /// Subscribe to agent events.
+    pub async fn subscribe(&self, listener: AgentEventListener) {
+        self.listeners.write().await.push(listener);
     }
 
     pub async fn state(&self) -> AgentState {
@@ -264,6 +262,29 @@ impl Agent {
             run.cancel.cancel();
             run.handle.abort();
         }
+    }
+
+    /// Wait until the agent is no longer streaming (idle).
+    pub async fn wait_for_idle(&self) {
+        loop {
+            let is_streaming = self.state.read().await.is_streaming;
+            if !is_streaming {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Reset the agent to its initial state, clearing messages and aborting any active run.
+    pub async fn reset(&self) {
+        self.abort().await;
+        self.clear_all_queues().await;
+        let mut state = self.state.write().await;
+        state.messages.clear();
+        state.is_streaming = false;
+        state.streaming_message = None;
+        state.pending_tool_calls.clear();
+        state.error_message = None;
     }
 
     pub async fn process(

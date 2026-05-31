@@ -36,6 +36,31 @@ pub fn format_skills_for_system_prompt(skills: &[Skill]) -> String {
     lines.join("\n")
 }
 
+/// Format a skill as an XML block for in-prompt invocation.
+///
+/// Includes the skill name, file location, and full content.
+/// Optionally appends additional instructions after the skill block.
+pub fn format_skill_invocation(skill: &Skill, additional_instructions: Option<&str>) -> String {
+    let skill_dir = std::path::Path::new(&skill.file_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let skill_block = format!(
+        "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
+        escape_xml(&skill.name),
+        escape_xml(&skill.file_path),
+        skill_dir,
+        skill.content
+    );
+
+    if let Some(instructions) = additional_instructions {
+        format!("{}\n\n{}", skill_block, instructions)
+    } else {
+        skill_block
+    }
+}
+
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -143,5 +168,36 @@ mod tests {
         assert_eq!(escape_xml("'"), "&apos;");
         assert_eq!(escape_xml("normal text"), "normal text");
         assert_eq!(escape_xml("a&b<c>d"), "a&amp;b&lt;c&gt;d");
+    }
+
+    #[test]
+    fn test_format_skill_invocation() {
+        let skill = Skill {
+            name: "git-workflow".to_string(),
+            description: "Git workflow helper".to_string(),
+            content: "Use `git status` and `git diff` for context.".to_string(),
+            file_path: "/home/user/.pi/agent/skills/git-workflow/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let result = format_skill_invocation(&skill, None);
+        assert!(result.contains("<skill name=\"git-workflow\""));
+        assert!(result.contains("location=\"/home/user/.pi/agent/skills/git-workflow/SKILL.md\""));
+        assert!(result.contains("Use `git status`"));
+        assert!(result.contains("</skill>"));
+    }
+
+    #[test]
+    fn test_format_skill_invocation_with_instructions() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "Test skill".to_string(),
+            content: "Test content.".to_string(),
+            file_path: "/skills/test/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let result = format_skill_invocation(&skill, Some("Extra instructions here"));
+        assert!(result.contains("<skill name=\"test\""));
+        assert!(result.contains("Extra instructions here"));
+        assert!(result.ends_with("Extra instructions here"));
     }
 }

@@ -4,6 +4,9 @@ use crate::harness::types::{
 use crate::pi_ai_types::Message;
 use crate::types::AgentMessage;
 
+// External pi_ai crate imports (not re-exported through pi_ai_types)
+use pi_ai::stream::stream as pi_stream;
+
 pub fn estimate_tokens(message: &AgentMessage) -> u64 {
     let text = match message {
         AgentMessage::User { content, .. } => content
@@ -301,18 +304,118 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
     parts.join("\n\n")
 }
 
+const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a summarization assistant. Your task is to create a concise summary of a coding agent conversation.
+
+When summarizing:
+1. Preserve key context: what the user asked, what was done, and what remains
+2. Include specific file paths, function names, and code changes
+3. Note any errors encountered and how they were resolved
+4. Keep the summary focused and avoid unnecessary detail
+5. Use bullet points for clarity
+
+Format your summary as:
+## Original Request
+[What the user asked for]
+
+## Work Done
+- [Key actions taken and changes made]
+
+## Current State
+- [Where things stand now]
+
+## Important Context
+- [Any information needed to continue the work]"#;
+
+/// Generate a summary of the given messages using the LLM.
+///
+/// Calls pi_ai to stream a completion from the specified model, using
+/// the summarization system prompt and the serialized conversation as context.
 pub async fn generate_summary(
-    _messages: &[AgentMessage],
-    _model: &crate::pi_ai_types::Model,
+    messages: &[AgentMessage],
+    model: &crate::pi_ai_types::Model,
     _reserve_tokens: u64,
-    _api_key: &str,
-    _headers: Option<&std::collections::HashMap<String, String>>,
-    _signal: Option<tokio::sync::watch::Receiver<bool>>,
-    _custom_instructions: Option<&str>,
-    _previous_summary: Option<&str>,
-    _thinking_level: Option<crate::pi_ai_types::ThinkingLevel>,
+    api_key: &str,
+    headers: Option<&std::collections::HashMap<String, String>>,
+    signal: Option<tokio::sync::watch::Receiver<bool>>,
+    custom_instructions: Option<&str>,
+    previous_summary: Option<&str>,
+    thinking_level: Option<crate::pi_ai_types::ThinkingLevel>,
 ) -> std::result::Result<String, CompactionError> {
-    Ok("Compaction summary placeholder".to_string())
+    if messages.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Build system prompt
+    let system_prompt = if let Some(prev) = previous_summary {
+        format!(
+            "{}\n\n## Previous Summary\n{}",
+            SUMMARIZATION_SYSTEM_PROMPT, prev
+        )
+    } else if let Some(instructions) = custom_instructions {
+        format!(
+            "{}\n\n## Custom Instructions\n{}",
+            SUMMARIZATION_SYSTEM_PROMPT, instructions
+        )
+    } else {
+        SUMMARIZATION_SYSTEM_PROMPT.to_string()
+    };
+
+    // Convert AgentMessage → LLM Message and serialize
+    let llm_messages = crate::harness::messages::convert_to_llm(messages);
+    let conversation_text = serialize_conversation(&llm_messages);
+
+    // Build user message with the conversation to summarize
+    let user_content = format!(
+        "Please summarize the following conversation:\n\n<conversation>\n{}\n</conversation>\n\nProvide a concise summary following the format specified above.",
+        conversation_text
+    );
+
+    let context = crate::pi_ai_types::Context {
+        system_prompt: Some(system_prompt),
+        messages: vec![crate::pi_ai_types::Message::User {
+            content: vec![crate::pi_ai_types::ContentBlock::Text {
+                text: user_content,
+                text_signature: None,
+            }],
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }],
+        tools: None,
+    };
+
+    // Build stream options
+    let mut stream_headers = headers.cloned().unwrap_or_default();
+    let options = crate::pi_ai_types::StreamOptions {
+        api_key: Some(api_key.to_string()),
+        headers: if stream_headers.is_empty() { None } else { Some(stream_headers) },
+        signal,
+        ..Default::default()
+    };
+
+    // Call pi_ai to stream the completion
+    use futures::StreamExt;
+    let stream = pi_stream(model, &context, Some(options));
+    let result = stream.result().await.map_err(|e| {
+        CompactionError::SummarizationFailed(format!("LLM summarization failed: {}", e))
+    })?;
+
+    // Extract text from the response
+    let summary = result
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            crate::pi_ai_types::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if summary.trim().is_empty() {
+        return Err(CompactionError::SummarizationFailed(
+            "LLM returned empty summary".to_string(),
+        ));
+    }
+
+    Ok(summary)
 }
 
 pub async fn compact(

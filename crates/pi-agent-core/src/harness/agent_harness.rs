@@ -295,10 +295,14 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
 
         match preparation {
             Ok(prep) => {
+                // Resolve API key from environment
+                let api_key = pi_ai::env_api_keys::get_env_api_key(&model.provider)
+                    .unwrap_or_default();
+
                 let result = crate::harness::compaction::compaction::compact(
                     prep,
                     &model,
-                    "",
+                    &api_key,
                     None,
                     custom_instructions,
                     None,

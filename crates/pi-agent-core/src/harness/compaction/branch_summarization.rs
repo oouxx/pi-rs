@@ -7,6 +7,9 @@ use crate::harness::types::{
 use crate::pi_ai_types::ContentBlock;
 use crate::types::AgentMessage;
 
+use pi_ai::env_api_keys::get_env_api_key;
+use pi_ai::stream::stream as pi_stream;
+
 pub struct BranchPreparation {
     pub messages: Vec<AgentMessage>,
     pub file_ops: FileOperations,
@@ -114,6 +117,10 @@ Use this EXACT format:
 1. [What should happen next to continue this work]
 Keep each section concise. Preserve exact file paths function names and error messages."#;
 
+/// Generate a branch summary by calling the LLM.
+///
+/// Sends the serialized conversation to the configured model and extracts a
+/// structured summary of the branch content.
 pub async fn generate_branch_summary(
     entries: &[SessionTreeEntry],
     options: &GenerateBranchSummaryOptions,
@@ -148,7 +155,7 @@ pub async fn generate_branch_summary(
         conversation_text, instructions
     );
 
-    let _summarization_messages = vec![crate::pi_ai_types::Message::User {
+    let summarization_messages = vec![crate::pi_ai_types::Message::User {
         content: vec![ContentBlock::Text {
             text: prompt_text,
             text_signature: None,
@@ -156,7 +163,53 @@ pub async fn generate_branch_summary(
         timestamp: chrono::Utc::now().timestamp_millis(),
     }];
 
-    let summary = format!("{}{}", BRANCH_SUMMARY_PREAMBLE, "Branch summary placeholder");
+    // Call the LLM to generate the summary
+    let api_key = get_env_api_key(&options.model.provider).unwrap_or_default();
+
+    let context = crate::pi_ai_types::Context {
+        system_prompt: Some(
+            "You are a code context summarizer. Follow the user instructions exactly and produce a structured summary."
+                .to_string(),
+        ),
+        messages: summarization_messages,
+        tools: None,
+    };
+
+    let stream_options = crate::pi_ai_types::StreamOptions {
+        api_key: if api_key.is_empty() { None } else { Some(api_key) },
+        ..Default::default()
+    };
+
+    // Try to call the LLM; fall back to a basic placeholder on failure
+    let summary = match pi_stream(&options.model, &context, Some(stream_options))
+        .result()
+        .await
+    {
+        Ok(response) => {
+            let text = response
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    crate::pi_ai_types::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if text.trim().is_empty() {
+                format!("{}{}", BRANCH_SUMMARY_PREAMBLE, "No summary generated")
+            } else {
+                format!("{}{}", BRANCH_SUMMARY_PREAMBLE, text)
+            }
+        }
+        Err(_) => {
+            format!(
+                "{}Branch summary unavailable ({} entries)",
+                BRANCH_SUMMARY_PREAMBLE,
+                preparation.messages.len()
+            )
+        }
+    };
 
     let mut read_files = preparation.file_ops.read.clone();
     let mut modified_files = preparation.file_ops.written.clone();

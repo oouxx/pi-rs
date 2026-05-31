@@ -234,6 +234,57 @@ fn parse_frontmatter(content: &str) -> (serde_json::Map<String, serde_json::Valu
     (frontmatter, body)
 }
 
+/// A sourced skill input: a directory path and its source identifier.
+#[derive(Debug, Clone)]
+pub struct SourcedSkillInput<S: Clone = String> {
+    pub path: String,
+    pub source: S,
+}
+
+/// A skill with its source attached.
+#[derive(Debug, Clone)]
+pub struct SourcedSkill<S: Clone = String> {
+    pub skill: Skill,
+    pub source: S,
+}
+
+/// A diagnostic with source information.
+#[derive(Debug, Clone)]
+pub struct SourcedSkillDiagnostic<S: Clone = String> {
+    pub diagnostic: SkillDiagnostic,
+    pub source: S,
+}
+
+/// Load skills from multiple source directories, tracking origin.
+///
+/// Each input specifies a `path` to scan and a `source` identifier (e.g., "user", "project", "builtin").
+/// Returns both skill→source mappings and diagnostics→source mappings.
+pub async fn load_sourced_skills<S: Clone>(
+    env: &dyn ExecutionEnv,
+    inputs: &[SourcedSkillInput<S>],
+) -> (Vec<SourcedSkill<S>>, Vec<SourcedSkillDiagnostic<S>>) {
+    let mut skills = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for input in inputs {
+        let (mut s, mut d) = load_skills_from_directory(env, &input.path).await;
+        for skill in s.drain(..) {
+            skills.push(SourcedSkill {
+                skill,
+                source: input.source.clone(),
+            });
+        }
+        for diag in d.drain(..) {
+            diagnostics.push(SourcedSkillDiagnostic {
+                diagnostic: diag,
+                source: input.source.clone(),
+            });
+        }
+    }
+
+    (skills, diagnostics)
+}
+
 fn dirname(path: &str) -> String {
     let normalized = path.trim_end_matches('/');
     match normalized.rfind('/') {

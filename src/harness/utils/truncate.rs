@@ -1,0 +1,218 @@
+pub const DEFAULT_MAX_LINES: usize = 2000;
+pub const DEFAULT_MAX_BYTES: u64 = 500_000;
+pub const GREP_MAX_LINE_LENGTH: usize = 500;
+
+#[derive(Debug, Clone)]
+pub struct TruncationResult {
+    pub content: String,
+    pub truncated: bool,
+    pub truncated_by: Option<TruncatedBy>,
+    pub total_lines: usize,
+    pub total_bytes: usize,
+    pub output_lines: usize,
+    pub output_bytes: usize,
+    pub last_line_partial: bool,
+    pub first_line_exceeds_limit: bool,
+    pub max_lines: usize,
+    pub max_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TruncatedBy {
+    Lines,
+    Bytes,
+}
+
+fn utf8_byte_length(s: &str) -> usize {
+    s.as_bytes().len()
+}
+
+pub fn truncate_head(content: &str, options: TruncationOptions) -> TruncationResult {
+    let max_lines = options.max_lines.unwrap_or(DEFAULT_MAX_LINES);
+    let max_bytes = options.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
+    let total_bytes = utf8_byte_length(content);
+    let mut lines: Vec<&str> = content.split('\n').collect();
+    if lines.len() > 1 && lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    let total_lines = lines.len();
+
+    if total_lines <= max_lines && total_bytes as u64 <= max_bytes {
+        return TruncationResult {
+            content: content.to_string(),
+            truncated: false,
+            truncated_by: None,
+            total_lines,
+            total_bytes,
+            output_lines: total_lines,
+            output_bytes: total_bytes,
+            last_line_partial: false,
+            first_line_exceeds_limit: false,
+            max_lines,
+            max_bytes,
+        };
+    }
+
+    if total_lines > 0 && utf8_byte_length(lines[0]) as u64 > max_bytes {
+        return TruncationResult {
+            content: String::new(),
+            truncated: true,
+            truncated_by: Some(TruncatedBy::Bytes),
+            total_lines,
+            total_bytes,
+            output_lines: 0,
+            output_bytes: 0,
+            last_line_partial: false,
+            first_line_exceeds_limit: true,
+            max_lines,
+            max_bytes,
+        };
+    }
+
+    let mut output_lines_arr: Vec<&str> = Vec::new();
+    let mut output_bytes_count = 0usize;
+    let mut truncated_by = TruncatedBy::Lines;
+
+    for (i, line) in lines.iter().enumerate().take(max_lines) {
+        let line_bytes = utf8_byte_length(line) + if i > 0 { 1 } else { 0 };
+        if output_bytes_count as u64 + line_bytes as u64 > max_bytes {
+            truncated_by = TruncatedBy::Bytes;
+            break;
+        }
+        output_lines_arr.push(line);
+        output_bytes_count += line_bytes;
+    }
+
+    if output_lines_arr.len() >= max_lines && output_bytes_count as u64 <= max_bytes {
+        truncated_by = TruncatedBy::Lines;
+    }
+
+    let output_content = output_lines_arr.join("\n");
+    let final_output_bytes = utf8_byte_length(&output_content);
+
+    TruncationResult {
+        content: output_content,
+        truncated: true,
+        truncated_by: Some(truncated_by),
+        total_lines,
+        total_bytes,
+        output_lines: output_lines_arr.len(),
+        output_bytes: final_output_bytes,
+        last_line_partial: false,
+        first_line_exceeds_limit: false,
+        max_lines,
+        max_bytes,
+    }
+}
+
+pub fn truncate_tail(content: &str, options: TruncationOptions) -> TruncationResult {
+    let max_lines = options.max_lines.unwrap_or(DEFAULT_MAX_LINES);
+    let max_bytes = options.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
+    let total_bytes = utf8_byte_length(content);
+    let mut lines: Vec<&str> = content.split('\n').collect();
+    if lines.len() > 1 && lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    let total_lines = lines.len();
+
+    if total_lines <= max_lines && total_bytes as u64 <= max_bytes {
+        return TruncationResult {
+            content: content.to_string(),
+            truncated: false,
+            truncated_by: None,
+            total_lines,
+            total_bytes,
+            output_lines: total_lines,
+            output_bytes: total_bytes,
+            last_line_partial: false,
+            first_line_exceeds_limit: false,
+            max_lines,
+            max_bytes,
+        };
+    }
+
+    let mut output_lines_arr: Vec<&str> = Vec::new();
+    let mut output_bytes_count = 0usize;
+    let mut truncated_by = TruncatedBy::Lines;
+    let mut last_line_partial = false;
+
+    for i in (0..lines.len()).rev().take(max_lines) {
+        let line = lines[i];
+        let line_bytes = utf8_byte_length(line) + if !output_lines_arr.is_empty() { 1 } else { 0 };
+        if output_bytes_count as u64 + line_bytes as u64 > max_bytes {
+            truncated_by = TruncatedBy::Bytes;
+            if output_lines_arr.is_empty() {
+                let truncated_line = truncate_string_to_bytes_from_end(line, max_bytes as usize);
+                output_lines_arr.insert(0, "");
+                output_bytes_count = utf8_byte_length(&truncated_line);
+                last_line_partial = true;
+            }
+            break;
+        }
+        output_lines_arr.insert(0, line);
+        output_bytes_count += line_bytes;
+    }
+
+    if output_lines_arr.len() >= max_lines && output_bytes_count as u64 <= max_bytes {
+        truncated_by = TruncatedBy::Lines;
+    }
+
+    let output_content = output_lines_arr.join("\n");
+    let final_output_bytes = utf8_byte_length(&output_content);
+
+    TruncationResult {
+        content: output_content,
+        truncated: true,
+        truncated_by: Some(truncated_by),
+        total_lines,
+        total_bytes,
+        output_lines: output_lines_arr.len(),
+        output_bytes: final_output_bytes,
+        last_line_partial,
+        first_line_exceeds_limit: false,
+        max_lines,
+        max_bytes,
+    }
+}
+
+fn truncate_string_to_bytes_from_end(s: &str, max_bytes: usize) -> String {
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut output_bytes = 0usize;
+    let mut start = s.len();
+
+    for i in (0..s.len()).rev() {
+        let char_bytes = s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        if output_bytes + char_bytes > max_bytes {
+            break;
+        }
+        output_bytes += char_bytes;
+        start = i;
+    }
+
+    s[start..].to_string()
+}
+
+pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
+    let max = max_chars.unwrap_or(GREP_MAX_LINE_LENGTH);
+    if line.len() <= max {
+        return (line.to_string(), false);
+    }
+    (format!("{}... [truncated]", &line[..max]), true)
+}
+
+pub struct TruncationOptions {
+    pub max_lines: Option<usize>,
+    pub max_bytes: Option<u64>,
+}
+
+impl Default for TruncationOptions {
+    fn default() -> Self {
+        Self {
+            max_lines: None,
+            max_bytes: None,
+        }
+    }
+}

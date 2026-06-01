@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex, RwLock};
 
-use crate::pi_ai_types::{AssistantMessage, Model, ModelCost, ThinkingLevel};
+use crate::pi_ai_types::{AssistantMessage, ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage};
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
     BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, QueueMode,
@@ -258,10 +258,14 @@ impl Agent {
     }
 
     pub async fn abort(&self) {
-        if let Some(run) = self.active_run.lock().await.take() {
+        if let Some(run) = self.active_run.lock().await.as_ref() {
             run.cancel.cancel();
-            run.handle.abort();
         }
+    }
+
+    /// Active cancellation token for the current run, if any.
+    pub async fn cancellation_token(&self) -> Option<tokio_util::sync::CancellationToken> {
+        self.active_run.lock().await.as_ref().map(|r| r.cancel.clone())
     }
 
     /// Wait until the agent is no longer streaming (idle).
@@ -292,28 +296,34 @@ impl Agent {
         messages: Vec<AgentMessage>,
     ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
         {
-            let mut state = self.state.write().await;
-            for msg in &messages {
-                state.messages.push(msg.clone());
+            let active = self.active_run.lock().await;
+            if active.is_some() {
+                return Err("Agent is already processing a prompt. Use steer() or follow_up() to queue messages, or wait for completion.".into());
             }
-            state.is_streaming = true;
         }
-
-        let result = self.run_with_lifecycle(messages).await;
 
         {
             let mut state = self.state.write().await;
-            state.is_streaming = false;
+            state.is_streaming = true;
             state.streaming_message = None;
-            state.pending_tool_calls.clear();
+            state.error_message = None;
         }
 
+        let result = self.run_with_lifecycle(messages).await;
+        self.finish_run().await;
         result
     }
 
     pub async fn continue_run(
         &self,
     ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let active = self.active_run.lock().await;
+            if active.is_some() {
+                return Err("Agent is already processing. Wait for completion before continuing.".into());
+            }
+        }
+
         {
             let state = self.state.read().await;
             if state.messages.is_empty() {
@@ -326,18 +336,20 @@ impl Agent {
         {
             let mut state = self.state.write().await;
             state.is_streaming = true;
+            state.streaming_message = None;
+            state.error_message = None;
         }
 
         let result = self.run_with_lifecycle_continue().await;
-
-        {
-            let mut state = self.state.write().await;
-            state.is_streaming = false;
-            state.streaming_message = None;
-            state.pending_tool_calls.clear();
-        }
-
+        self.finish_run().await;
         result
+    }
+
+    async fn finish_run(&self) {
+        let mut state = self.state.write().await;
+        state.is_streaming = false;
+        state.streaming_message = None;
+        state.pending_tool_calls.clear();
     }
 
     async fn run_with_lifecycle(
@@ -374,7 +386,7 @@ impl Agent {
         let follow_up_queue = self.follow_up_queue.clone();
 
         let config = crate::agent_loop::AgentLoopConfig {
-            model,
+            model: model.clone(),
             reasoning: if thinking_level == "off".to_string() {
                 None
             } else {
@@ -407,7 +419,7 @@ impl Agent {
 
         let signal = Some(cancel_rx);
 
-        let result = crate::agent_loop::run_agent_loop(
+        let loop_result = crate::agent_loop::run_agent_loop(
             prompts,
             context,
             &config,
@@ -419,7 +431,27 @@ impl Agent {
 
         self.active_run.lock().await.take();
 
-        result
+        match loop_result {
+            Ok(messages) => Ok(messages),
+            Err(e) => {
+                let aborted = false;
+                let failure_message = AgentMessage::Assistant {
+                    content: vec![ContentBlock::Text { text: String::new(), text_signature: None }],
+                    api: model.api.clone(),
+                    provider: model.provider.clone(),
+                    model: model.id.clone(),
+                    usage: Usage::default(),
+                    stop_reason: Some(if aborted { StopReason::Aborted } else { StopReason::Error }),
+                    error_message: Some(e.to_string()),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+                emit(AgentEvent::MessageStart { message: failure_message.clone() }).await;
+                emit(AgentEvent::MessageEnd { message: failure_message.clone() }).await;
+                emit(AgentEvent::TurnEnd { message: failure_message.clone(), tool_results: Vec::new() }).await;
+                emit(AgentEvent::AgentEnd { messages: vec![failure_message.clone()] }).await;
+                Ok(vec![failure_message])
+            }
+        }
     }
 
     async fn run_with_lifecycle_continue(
@@ -520,12 +552,16 @@ impl Agent {
                                 s.streaming_message = Some(message.clone());
                             }
                         }
+                        AgentEvent::MessageUpdate { message, .. } => {
+                            drop(state_read);
+                            let mut s = state.write().await;
+                            s.streaming_message = Some(message.clone());
+                        }
                         AgentEvent::MessageEnd { message } => {
-                            if matches!(message, AgentMessage::Assistant { .. }) {
-                                drop(state_read);
-                                let mut s = state.write().await;
-                                s.streaming_message = None;
-                            }
+                            drop(state_read);
+                            let mut s = state.write().await;
+                            s.streaming_message = None;
+                            s.messages.push(message.clone());
                         }
                         AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
                             drop(state_read);
@@ -537,10 +573,18 @@ impl Agent {
                             let mut s = state.write().await;
                             s.pending_tool_calls.remove(tool_call_id);
                         }
+                        AgentEvent::TurnEnd { message, .. } => {
+                            if let AgentMessage::Assistant { error_message: Some(err), .. } = message {
+                                drop(state_read);
+                                let mut s = state.write().await;
+                                s.error_message = Some(err.clone());
+                            }
+                        }
                         AgentEvent::AgentEnd { .. } => {
                             drop(state_read);
                             let mut s = state.write().await;
                             s.is_streaming = false;
+                            s.streaming_message = None;
                         }
                         _ => {}
                     }

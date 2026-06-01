@@ -195,34 +195,86 @@ let convert_fn = Arc::new(|messages: &[AgentMessage]| -> Vec<Message> {
 });
 ```
 
-## 定义工具
+## 工具注册与调用
+
+Agent 工具是实现了 `execute` 回调的结构体，通过 `AgentOptions` 注册：
 
 ```rust
-use pi_agent_core::types::{AgentTool, AgentToolResult};
+use std::sync::Arc;
+use pi_agent_core::types::{AgentTool, AgentToolCall, AgentToolResult, BeforeToolCallResult, AfterToolCallResult};
+use pi_agent_core::pi_ai_types::{ContentBlock, ToolExecutionMode};
 
-let read_file_tool = AgentTool {
-    name: "read_file".into(),
-    description: "Read a file's contents".into(),
+// 1. 定义工具
+let read_file = AgentTool {
+    name: "read".into(),
+    description: "Read a file from the filesystem".into(),
     parameters_schema: serde_json::json!({
         "type": "object",
         "properties": {
-            "path": { "type": "string", "description": "File path" }
+            "path": { "type": "string" }
         },
         "required": ["path"]
     }),
-    execute: Arc::new(|tool_call_id, args, signal, on_update| {
+    execute: Arc::new(|_id, args, _signal, _on_update| {
         Box::pin(async move {
             let path = args["path"].as_str().unwrap_or("");
-            let content = tokio::fs::read_to_string(path).await?;
+            let content = tokio::fs::read_to_string(path).await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             Ok(AgentToolResult {
-                content: vec![ContentBlock::text(content)],
+                content: vec![ContentBlock::Text { text: content, text_signature: None }],
                 details: serde_json::json!({"path": path}),
                 terminate: None,
             })
-        })
+        }
     }),
-    ..Default::default()
+    label: "Read File".into(),
+    prepare_arguments: None,
+    execution_mode: None,
 };
+
+// 2. 注册工具到 Agent
+let agent = Agent::new(AgentOptions {
+    model: model.clone(),
+    tools: vec![Arc::new(read_file)],
+    // ...其他选项
+    ..Default::default()
+});
+
+// 3. 使用 before/after hooks 控制工具执行
+let before_hook: BeforeToolCallFn = Arc::new(|ctx, _signal| {
+    Box::pin(async move {
+        // 验证或修改参数
+        if ctx.args.get("path").and_then(|v| v.as_str())
+            .map_or(true, |p| p.contains(".."))
+        {
+            return Some(BeforeToolCallResult {
+                block: true,
+                reason: Some("Path traversal detected".into()),
+            });
+        }
+        None  // 允许执行
+    })
+});
+```
+
+### 工具执行模式
+
+| 模式 | 行为 |
+|------|------|
+| `Parallel`（默认） | 准备阶段顺序执行（validate + before hook），execute 阶段并发运行 |
+| `Sequential` | 每个工具完整执行（prepare → execute → finalize）后才开始下一个 |
+
+可在全局 `AgentOptions.tool_execution` 或单个工具的 `execution_mode` 中设置。
+
+### 工具执行事件
+
+```
+ToolExecutionStart { toolCallId, toolName, args }
+  ├─ prepare (validate args + before hook)
+  ├─ execute (concurrent if parallel mode)
+  ├─ finalize (after hook)
+ToolExecutionEnd   { toolCallId, result, isError }
+MessageStart/End   { toolResultMessage }
 ```
 
 ## 低层 API

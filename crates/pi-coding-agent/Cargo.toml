@@ -1,6 +1,6 @@
 [package]
 name = "pi-coding-agent"
-version = "0.1.0"
+version = "1.78.0"
 edition = "2021"
 description = "Coding agent CLI with read/bash/edit/write tools and session management (Rust port of @earendil-works/pi-coding-agent)"
 license = "MIT"

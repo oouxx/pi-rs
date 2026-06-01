@@ -1,6 +1,6 @@
 [package]
 name = "pi-ai"
-version = "0.1.0"
+version = "1.78.0"
 edition = "2021"
 description = "Thin wrapper around rig-core providers, implementing pi's AI package (Rust port of @earendil-works/pi-ai)"
 license = "MIT"

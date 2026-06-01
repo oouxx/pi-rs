@@ -553,7 +553,13 @@ async fn stream_assistant_response(
     let pi_context = crate::pi_ai_types::Context {
         system_prompt: if context.system_prompt.is_empty() { None } else { Some(context.system_prompt.clone()) },
         messages: llm_messages,
-        tools: None,
+        tools: context.tools.as_ref().map(|tools| {
+            tools.iter().map(|t| crate::pi_ai_types::Tool {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.parameters_schema.clone(),
+            }).collect()
+        }),
     };
 
     let stream = stream_fn(model.clone(), pi_context, thinking_level, stream_options.clone())

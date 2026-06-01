@@ -119,6 +119,9 @@ pub struct AgentToolCall {
 
 pub type DynTool = AgentTool<serde_json::Value, serde_json::Value>;
 
+pub type AgentToolUpdateCallback<T> =
+    Arc<dyn Fn(AgentToolResult<T>) + Send + Sync>;
+
 pub struct AgentTool<TParams, TDetails>
 where
     TParams: Clone + Send + Sync + 'static,
@@ -303,6 +306,9 @@ pub struct ShouldStopAfterTurnContext {
     pub context: AgentContext,
     pub new_messages: Vec<AgentMessage>,
 }
+
+/// Alias to match TS `PrepareNextTurnContext extends ShouldStopAfterTurnContext`.
+pub type PrepareNextTurnContext = ShouldStopAfterTurnContext;
 
 pub struct AgentLoopTurnUpdate {
     pub context: Option<AgentContext>,

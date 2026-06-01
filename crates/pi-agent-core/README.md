@@ -40,8 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ..Default::default()
     });
 
-    // 订阅事件
-    agent.subscribe(Arc::new(|event, _signal| {
+    // 订阅事件（返回 handle，可取消订阅）
+    let _handle = agent.subscribe(Arc::new(|event, _signal| {
         Box::pin(async move {
             match event {
                 AgentEvent::TextDelta { delta, .. } => print!("{}", delta),
@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         })
     })).await;
+    // 取消订阅：handle.unsubscribe().await;
 
     // 发送消息
     let messages = agent.process(vec![AgentMessage::User {
@@ -143,6 +144,7 @@ let agent = Agent::new(AgentOptions {
 
 | 方法 | 说明 |
 |------|------|
+| `create_agent(...)` | 便捷函数：快速构造 Agent |
 | `process(messages)` | 发送消息并运行 agent loop |
 | `continue_run()` | 从当前上下文继续（最后一条消息必须是 user 或 toolResult） |
 | `steer(message)` | 注入 steering 消息 |
@@ -150,7 +152,7 @@ let agent = Agent::new(AgentOptions {
 | `abort()` | 取消当前运行 |
 | `wait_for_idle()` | 等待 agent 空闲 |
 | `reset()` | 重置状态 |
-| `subscribe(listener)` | 订阅事件 |
+| `subscribe(listener)` | 订阅事件（返回 `UnsubscribeHandle`） |
 | `state()` | 获取当前状态 |
 | `set_model(model)` | 切换模型 |
 | `set_thinking_level(level)` | 切换 thinking level |

@@ -265,7 +265,7 @@ impl AgentSession {
                 + Sync,
         >,
     ) {
-        self.agent.subscribe(listener).await
+        let _ = self.agent.subscribe(listener).await;
     }
 
     pub fn dispose(self) {}

@@ -254,11 +254,11 @@ async fn test_tool_call_demo() {
                 println!("  🔧 Tool 'add' called: {} + {} = {}", a, b, sum);
                 Ok(AgentToolResult {
                     content: vec![ContentBlock::Text {
-                        text: format!("The sum of {} and {} is {}.", a, b, sum),
+                        text: format!("{}", sum),
                         text_signature: None,
                     }],
                     details: serde_json::json!({"a": a, "b": b, "sum": sum}),
-                    terminate: Some(true),
+                    terminate: None,
                 })
             })
         }),
@@ -266,7 +266,7 @@ async fn test_tool_call_demo() {
 
     let agent = Agent::new(AgentOptions {
         initial_state: Some(pi_agent_core::types::AgentState {
-            system_prompt:             "You are a helpful assistant with access to an 'add' tool. When the user asks you to compute something, you MUST use the add tool — do NOT compute the answer yourself. Use the tool even for simple arithmetic.".into(),
+            system_prompt:             "You are a helpful assistant with an 'add' tool. Follow these rules exactly:\n1. When the user asks for a computation, call the add tool ONCE with the numbers.\n2. After the tool returns the result, respond to the user in a natural sentence. Do NOT call the tool again.\n3. NEVER make up a result — always use the tool.\n4. If the user asks to add to a previous result, call the tool again with the new numbers.".into(),
             model: model.clone(),
             thinking_level: "off".into(),
             tools: vec![adder_tool],
@@ -281,54 +281,55 @@ async fn test_tool_call_demo() {
         ..Default::default()
     });
 
-    println!("  Sending prompt: 'Use the add tool to compute 12345 + 67890'");
-    println!();
+    async fn run_turn(
+        agent: &Agent,
+        prompt: &str,
+        turn_label: &str,
+    ) {
+        println!("  [Turn {}] Sending: '{}'", turn_label, prompt);
+        let result = agent
+            .process(vec![AgentMessage::User {
+                content: vec![ContentBlock::Text {
+                    text: prompt.into(),
+                    text_signature: None,
+                }],
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            }])
+            .await;
 
-    let result = agent
-        .process(vec![AgentMessage::User {
-            content: vec![ContentBlock::Text {
-                text: "Use the add tool to compute 12345 + 67890".into(),
-                text_signature: None,
-            }],
-            timestamp: chrono::Utc::now().timestamp_millis(),
-        }])
-        .await;
-
-    match result {
-        Ok(messages) => {
-            println!("\n  ✅ Agent completed with {} new messages", messages.len());
-            for msg in &messages {
-                match msg {
-                    AgentMessage::Assistant { content, stop_reason, usage, .. } => {
-                        let text: String = content.iter().filter_map(|b| match b {
-                            ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join(" ");
-                        println!("  🤖 Assistant (stop={:?}, tokens={}): {}",
-                            stop_reason, usage.total_tokens, text);
+        match result {
+            Ok(messages) => {
+                println!("  ✅ Turn {} completed with {} messages", turn_label, messages.len());
+                for msg in &messages {
+                    match msg {
+                        AgentMessage::Assistant { content, stop_reason, usage, .. } => {
+                            let text: String = content.iter().filter_map(|b| match b {
+                                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            }).collect::<Vec<_>>().join(" ");
+                            println!("  🤖 Assistant (stop={:?}, tokens={}): {}",
+                                stop_reason, usage.total_tokens, text);
+                        }
+                        AgentMessage::ToolResult { tool_name, content, is_error, .. } => {
+                            let text: String = content.iter().filter_map(|b| match b {
+                                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            }).collect::<Vec<_>>().join(" ");
+                            println!("  🔧 ToolResult [{}] {}: {}", if *is_error { "ERROR" } else { "OK" }, tool_name, text);
+                        }
+                        _ => {}
                     }
-                    AgentMessage::ToolResult { tool_name, content, is_error, .. } => {
-                        let text: String = content.iter().filter_map(|b| match b {
-                            ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join(" ");
-                        println!("  🔧 ToolResult [{}] {}: {}", if *is_error { "ERROR" } else { "OK" }, tool_name, text);
-                    }
-                    AgentMessage::User { content, .. } => {
-                        let text: String = content.iter().filter_map(|b| match b {
-                            ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join(" ");
-                        println!("  💬 User: {}", text);
-                    }
-                    _ => {}
                 }
+                println!("  📝 State now has {} total messages", agent.state().await.messages.len());
+            }
+            Err(e) => {
+                println!("  ❌ Agent error: {}", e);
             }
         }
-        Err(e) => {
-            println!("  ❌ Agent error: {}", e);
-        }
+        println!();
     }
 
-    println!();
+    run_turn(&agent, "Use the add tool to compute 10 + 20", "1").await;
+    run_turn(&agent, "Now add 5 to that result", "2").await;
+    run_turn(&agent, "What's 100 + 200?", "3").await;
 }

@@ -152,10 +152,13 @@ pub fn tool_result_msg(
 }
 
 /// ThinkingLevel constants (pi_ai uses type alias String).
+/// Matches TS `ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"`.
 pub const THINKING_OFF: &str = "off";
+pub const THINKING_MINIMAL: &str = "minimal";
 pub const THINKING_LOW: &str = "low";
 pub const THINKING_MEDIUM: &str = "medium";
 pub const THINKING_HIGH: &str = "high";
+pub const THINKING_XHIGH: &str = "xhigh";
 
 /// Create a Context with system_prompt: Option<String>.
 pub fn make_context(system_prompt: String, messages: Vec<Message>, tools: Option<Vec<Tool>>) -> Context {

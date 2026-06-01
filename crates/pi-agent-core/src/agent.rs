@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex, Notify, RwLock};
 
 use crate::pi_ai_types::{AssistantMessage, ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage};
 use crate::types::{
@@ -104,6 +104,38 @@ struct ActiveRun {
     handle: tokio::task::JoinHandle<()>,
 }
 
+/// Handle returned by [`Agent::subscribe`]. Call `unsubscribe()` to stop
+/// receiving events, or drop it for best-effort cleanup.
+pub struct UnsubscribeHandle {
+    listeners: Arc<RwLock<Vec<AgentEventListener>>>,
+    index: usize,
+}
+
+impl UnsubscribeHandle {
+    /// Remove the listener from the agent. After this call the listener will
+    /// no longer receive events.
+    pub async fn unsubscribe(self) {
+        let mut listeners = self.listeners.write().await;
+        if self.index < listeners.len() {
+            // Replace with a no-op so the slot stays valid and Vec indices
+            // are not disturbed.
+            listeners[self.index] = Arc::new(|_, _| Box::pin(async {}));
+        }
+    }
+}
+
+impl std::ops::Drop for UnsubscribeHandle {
+    fn drop(&mut self) {
+        // Best-effort cleanup when the handle is dropped without calling
+        // `unsubscribe()` explicitly.
+        if let Ok(mut listeners) = self.listeners.try_write() {
+            if self.index < listeners.len() {
+                listeners[self.index] = Arc::new(|_, _| Box::pin(async {}));
+            }
+        }
+    }
+}
+
 pub struct Agent {
     state: Arc<RwLock<AgentState>>,
     listeners: Arc<RwLock<Vec<AgentEventListener>>>,
@@ -125,10 +157,42 @@ pub struct Agent {
     transport: String,
     max_retry_delay_ms: Option<u64>,
     tool_execution: crate::pi_ai_types::ToolExecutionMode,
+    /// Notified when the agent becomes idle (finishes a run or streaming ends).
+    idle_notify: Arc<Notify>,
 }
 
 fn default_convert_to_llm(messages: &[AgentMessage]) -> Vec<crate::pi_ai_types::Message> {
     crate::harness::messages::convert_to_llm(messages)
+}
+
+impl Default for AgentState {
+    fn default() -> Self {
+        Self {
+            system_prompt: String::new(),
+            model: Model {
+                provider: String::new(),
+                api: String::new(),
+                id: String::new(),
+                name: String::new(),
+                base_url: String::new(),
+                context_window: 0,
+                max_tokens: 0,
+                cost: crate::pi_ai_types::ModelCost::default(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec![],
+                headers: None,
+                compat: None,
+            },
+            thinking_level: crate::pi_ai_types::THINKING_OFF.to_string(),
+            tools: Vec::new(),
+            messages: Vec::new(),
+            is_streaming: false,
+            streaming_message: None,
+            pending_tool_calls: HashSet::new(),
+            error_message: None,
+        }
+    }
 }
 
 impl Agent {
@@ -200,6 +264,7 @@ impl Agent {
             tool_execution: options
                 .tool_execution
                 .unwrap_or(crate::pi_ai_types::ToolExecutionMode::Parallel),
+            idle_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -208,8 +273,16 @@ impl Agent {
     }
 
     /// Subscribe to agent events.
-    pub async fn subscribe(&self, listener: AgentEventListener) {
-        self.listeners.write().await.push(listener);
+    ///
+    /// Returns an [`UnsubscribeHandle`] – call `handle.unsubscribe().await`
+    /// to stop receiving events, or drop it for best-effort cleanup.
+    pub async fn subscribe(&self, listener: AgentEventListener) -> UnsubscribeHandle {
+        let mut listeners = self.listeners.write().await;
+        listeners.push(listener);
+        UnsubscribeHandle {
+            listeners: self.listeners.clone(),
+            index: listeners.len() - 1,
+        }
     }
 
     pub async fn state(&self) -> AgentState {
@@ -269,13 +342,19 @@ impl Agent {
     }
 
     /// Wait until the agent is no longer streaming (idle).
+    /// Uses an event-driven `Notify` — no polling.
     pub async fn wait_for_idle(&self) {
+        let notified = self.idle_notify.notified();
+        tokio::pin!(notified);
         loop {
-            let is_streaming = self.state.read().await.is_streaming;
-            if !is_streaming {
-                break;
+            {
+                let state = self.state.read().await;
+                if !state.is_streaming {
+                    return;
+                }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            notified.as_mut().await;
+            notified.as_mut().enable();
         }
     }
 
@@ -346,10 +425,13 @@ impl Agent {
     }
 
     async fn finish_run(&self) {
-        let mut state = self.state.write().await;
-        state.is_streaming = false;
-        state.streaming_message = None;
-        state.pending_tool_calls.clear();
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = false;
+            state.streaming_message = None;
+            state.pending_tool_calls.clear();
+        }
+        self.idle_notify.notify_waiters();
     }
 
     async fn run_with_lifecycle(
@@ -537,10 +619,12 @@ impl Agent {
     fn create_event_sink(&self) -> AgentEventSink {
         let listeners = self.listeners.clone();
         let state = self.state.clone();
+        let idle_notify = self.idle_notify.clone();
 
         Arc::new(move |event: AgentEvent| {
             let listeners = listeners.clone();
             let state = state.clone();
+            let idle_notify = idle_notify.clone();
             Box::pin(async move {
                 {
                     let state_read = state.read().await;
@@ -585,6 +669,8 @@ impl Agent {
                             let mut s = state.write().await;
                             s.is_streaming = false;
                             s.streaming_message = None;
+                            drop(s);
+                            idle_notify.notify_waiters();
                         }
                         _ => {}
                     }
@@ -621,4 +707,27 @@ impl Agent {
     pub async fn error_message(&self) -> Option<String> {
         self.state.read().await.error_message.clone()
     }
+}
+
+/// Convenience builder that reduces boilerplate for common Agent setups.
+///
+/// All optional fields use the same defaults as [`AgentOptions`] / [`Agent::new`].
+pub fn create_agent(
+    model: Model,
+    system_prompt: impl Into<String>,
+    tools: Vec<Arc<crate::types::DynTool>>,
+    stream_fn: StreamFn,
+    convert_to_llm: ConvertToLlmFn,
+) -> Agent {
+    Agent::new(AgentOptions {
+        initial_state: Some(AgentState {
+            system_prompt: system_prompt.into(),
+            model,
+            tools,
+            ..Default::default()
+        }),
+        stream_fn: Some(stream_fn),
+        convert_to_llm: Some(convert_to_llm),
+        ..Default::default()
+    })
 }

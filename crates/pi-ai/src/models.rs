@@ -12,7 +12,7 @@ pub fn get_model(provider: &str, model_id: &str) -> Option<&'static Model> {
     MODEL_REGISTRY.get(provider)?.get(model_id)
 }
 
-/// List all known provider names.
+/// List all known provider names.–
 pub fn get_providers() -> Vec<&'static str> {
     MODEL_REGISTRY.keys().copied().collect()
 }

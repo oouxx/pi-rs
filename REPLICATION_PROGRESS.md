@@ -11,9 +11,9 @@
 |-------|-----------|:---:|:---:|:---:|:---:|:---:|
 | pi-agent-core | `packages/agent` | 29 | 10,300 | 185/185 ✅ | ✅ | ~95% |
 | pi-coding-agent | `packages/coding-agent` | 33 | 7,600 | 90/90 ✅ | ✅ | ~35% |
-| pi-ai | `packages/ai` | 18 | 4,820 | 120/120 ✅ | ✅ | ~45% |
+| pi-ai | `packages/ai` | 23 | 5,783 | 167/167 ✅ | ✅ | ~58% |
 | pi-tui | `packages/tui` | 12 | 3,202 | 96/96 ✅ | ✅ | ~30% |
-| **合计** | | **92** | **25,922** | **459** | | |
+| **合计** | | **97** | **26,885** | **538** | | |
 
 pi-coding-agent 编译错误：`core::skills::Skill` 缺少 `instructions` 字段（2 处）。
 
@@ -202,53 +202,63 @@ create_agent_session()
 
 ---
 
-## 三、pi-ai（16 文件 / 3,782 行 / 完成度 ~40%）
+## 三、pi-ai（23 文件 / 5,783 行 / 完成度 ~58%）
 
 对照 `https://github.com/earendil-works/pi/tree/main/packages/ai`
 
 ### 类型指标
 
-struct: 22 | enum: 9 | trait: 0 | pub fn: 35 | impl block: 8
+struct: 26 | enum: 10 | trait: 0 | pub fn: 42 | impl block: 9
 
 ### 模块状态
 
 | TypeScript | Rust | 覆盖率 | 说明 |
 |------------|------|--------|------|
 | `types.ts` | `types.rs` | ~90% | 1,041 行，35+ public types |
-| `models.ts` | `models.rs` | ~100% | 314 行，get_model / calculate_cost / thinking levels |
-| `models.generated.ts` | `models_generated.rs` | ~40% | 332 行，7 provider / 33 模型条目 |
+| `models.ts` | `models.rs` | ~100% | get_model / calculate_cost / thinking levels；RwLock 运行时注册表 |
+| `models.generated.ts` | **`build.rs`** | **~90%** | **已删除手写 models_generated.rs**。改用 build.rs 在编译期从 OpenRouter API + models.dev 自动拉取并生成模型数据（255 个 OpenRouter 模型 + 203 个 models.dev 模型，14 个 provider） |
 | `api-registry.ts` | `api_registry.rs` | ~80% | 注册/查找/注销机制完整；get_api_provider 不能真正 clone |
 | `stream.ts` | `stream.rs` | ~100% | stream / complete / streamSimple / completeSimple |
 | `env-api-keys.ts` | `env_api_keys.rs` | ~55% | 25 provider → env var 映射 |
 | `utils/event-stream.ts` | `utils/event_stream.rs` | ~60% | pull-based vs push-based 架构差异 |
 | `utils/diagnostics.ts` | `utils/diagnostics.rs` | ~30% | 数据模型与 TS 不一致 |
+| `utils/json-parse.ts` | `utils/json_parse.rs` | ~70% | JSON repair / clean_partial / parse_streaming_json（15 tests） |
+| `utils/validation.ts` | `utils/validation.rs` | ~60% | 工具调用参数验证 + JSON Schema validate（10 tests） |
+| `utils/overflow.ts` | `utils/overflow.rs` | **~100%** | 上下文溢出检测：3 种检测策略 + 20+ provider 模式 + 25 tests |
+| `utils/typebox-helpers.ts` | `utils/typebox_helpers.rs` | **~100%** | `string_enum()` JSON Schema 辅助函数 + 5 tests |
+| `session-resources.ts` | `utils/session_resources.rs` | **~100%** | 会话资源清理注册/反注册/批量清理 + 9 tests |
+| **—** | **`utils/headers.rs`** | **~100%** | HeaderMap → HashMap 转换（2 tests，Rust 独有） |
 | **`providers/anthropic.ts`** | **`providers/anthropic.rs`** | **~60%** | SSE streaming + 消息转换 + 工具转换 + stop reason + 测试（20 tests） |
 | **`providers/openai-completions.ts`** | **`providers/openai.rs`** | **~40%** | SSE streaming + 消息转换 + 工具转换 + 测试（15 tests） |
-| **`providers/register-builtins.ts`** | **`providers/register_builtins.rs`** | **~60%** | 2 API 注册 + reset_api_providers + 测试（4 tests） |
+| **`providers/register-builtins.ts`** | **`providers/register_builtins.rs`** | **~90%** | 注册 API provider + 编译期加载生成模型数据；**已移除 ~800 行硬编码模型** |
+| **—** | **`build.rs`** | **~80%** | 编译期模型生成。port 原版 generate-models.ts + generate-image-models.ts 核心逻辑：fetch OpenRouter / models.dev API → 处理 pricing 转换 → 生成 JSON 到 OUT_DIR |
 | **—** | **`utils/sse.rs`** | **~100%** | SSE 解析器（共享），23 tests，支持 Anthropic 和 OpenAI 两种 SSE 格式 |
 
-### 本轮新增（2026-05-31 第二次更新）
+### 本轮更新（2026-06-02）
 
-- **SSE 解析器**（`utils/sse.rs`, 200+ 行, 23 tests）— 完整的 SSE 协议解析，独立于具体 provider
-- **Anthropic provider**（`providers/anthropic.rs`, 670+ 行, 20 tests）— 消息/工具转换、SSE 事件处理、streamAnthropic / streamSimpleAnthropic
-- **OpenAI provider**（`providers/openai.rs`, 540+ 行, 15 tests）— 消息/工具转换、OpenAI SSE 格式解析、streamOpenAI / streamSimpleOpenAI
-- **register_builtins**（`providers/register_builtins.rs`, 80+ 行, 4 tests）— 注册 anthropic-messages 和 openai-completions
+- **build.rs 替代 models_generated.rs** — 不再手写维护模型数据。编译期自动从 OpenRouter API + models.dev 拉取，255 个工具模型 + 203 个 models.dev 模型
+- **register_builtins 瘦身** — 移除 ~800 行硬编码模型数据，改用 `include_str!(concat!(env!("OUT_DIR"), "/models_generated.json"))` 编译期加载
+- **模型注册表改为运行时** — `models.rs` 用 `RwLock<HashMap>` 替代静态 `LazyLock`，支持程序化注册（`register_model()`）
+- **types.rs 增加 Default** — `OpenAICompletionsCompat` 现在可 `#[derive(Default)]`
+- **删除的文件** — `models_generated.rs`（586 行）、`models.json`（内嵌 JSON）、`fetcher.rs`（运行时拉取）
+- **补全全部剩余 Utils** — `overflow.rs`（25 tests, 25 个正则溢出检测）、`typebox_helpers.rs`（5 tests, JSON Schema string_enum）、`session_resources.rs`（9 tests, 会话资源注册/清理）
 
-### 完全缺失（25+ 个 TS 文件）
+### 完全缺失（19+ 个 TS 文件）
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
-| Provider 实现 | ~13 | mistral / google / bedrock / azure / vertex / codex / copilot 等 |
-| Utils | 6 | json-parse / overflow / validation / typebox-helpers / headers / session-resources |
+| Provider 实现 | ~13 | mistral / google-native / bedrock / azure / vertex / codex / copilot 等 |
+| ~~Utils~~ | ~~3~~ | ~~overflow / typebox-helpers / session-resources~~ ✅ 已完成 |
 | Images 功能 | 5 | images/models / api-registry / image-models.generated + providers/images |
 | 其他 | 3 | index / cli / oauth |
 
 ### P0 阻塞项
 
 1. ~~Provider 实现全是空壳~~ ✅ Anthropic 和 OpenAI 已实现
-2. **13+ provider 未复刻** — mistral / google / bedrock / vertex / codex / copilot 等
-3. ~~register-builtins 缺失~~ ✅ 已实现（2 API）
-4. **models_generated 不完整** — 仅 7 provider，缺 15+ provider
+2. **13+ provider 未复刻** — mistral / google-native / bedrock / vertex / codex / copilot 等
+3. ~~register-builtins 缺失~~ ✅ 已实现（3 API 注册）
+4. ~~models_generated 手写维护~~ ✅ 已用 build.rs 替代，编译期自动拉取
+5. ~~Utils 模块缺失 3+~~ ✅ overflow / typebox-helpers / session-resources 已完成
 
 ---
 
@@ -327,10 +337,11 @@ pi-coding-agent compaction / 会话压缩
 ✅ 1. 实现 providers/anthropic.rs — 完整 SSE streaming
 ✅ 2. 实现 providers/openai.rs — completions
 ✅ 3. 实现 register-builtins — 自动注册
-   4. 补全 models_generated.rs — 15+ provider 模型数据
-   5. 逐个补全其他 provider（mistral/google/bedrock/vertex 等）
-   6. 补全 utils 模块（json-parse/overflow/validation/headers）
-   7. Images 功能
+✅ 4. 补全 models_generated.rs — 12 provider / 35+ 模型
+✅ 5. 补全 utils 模块（json-parse/validation/headers）
+   6. 逐个补全其他 provider（mistral/google-native/bedrock/vertex 等）
+   7. 剩余 utils（overflow/typebox-helpers/session-resources）
+   8. Images 功能
 ```
 
 ### pi-agent-core（依赖 pi-ai）

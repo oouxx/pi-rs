@@ -1,0 +1,177 @@
+//! Session-scoped resource registration and cleanup.
+//!
+//! Ported from `packages/ai/src/session-resources.ts`.
+
+use std::sync::Mutex;
+
+type CleanupFn = Box<dyn Fn(Option<&str>) + Send>;
+
+static CLEANUPS: std::sync::LazyLock<Mutex<Vec<(usize, CleanupFn)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// Register a cleanup callback that will be invoked when session resources
+/// are cleaned up. Returns an unregister function.
+///
+/// # Example
+/// ```
+/// use pi_ai::utils::session_resources::register_session_resource_cleanup;
+///
+/// let unregister = register_session_resource_cleanup(Box::new(|session_id| {
+///     if let Some(id) = session_id {
+///         println!("Cleaning up session: {}", id);
+///     }
+/// }));
+/// // Later: unregister(); // to remove without waiting for cleanup
+/// ```
+pub fn register_session_resource_cleanup(cleanup: CleanupFn) -> Box<dyn Fn() + Send> {
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut cleanups = CLEANUPS.lock().unwrap();
+        cleanups.push((id, cleanup));
+    }
+    let unregister_id = id;
+    Box::new(move || {
+        let mut cleanups = CLEANUPS.lock().unwrap();
+        cleanups.retain(|(cid, _)| *cid != unregister_id);
+    })
+}
+
+/// Invoke all registered cleanup callbacks. If any throw/return an error,
+/// an error string with all collected errors is returned.
+pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String> {
+    let cleanups = {
+        let mut c = CLEANUPS.lock().unwrap();
+        std::mem::take(&mut *c)
+    };
+
+    let mut errors: Vec<String> = Vec::new();
+    for (_, cleanup) in cleanups {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cleanup(session_id)
+        })) {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown error".to_string()
+                };
+                errors.push(msg);
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to cleanup session resources: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+/// Clear all registered cleanup callbacks without invoking them.
+pub fn clear_cleanups() {
+    let mut cleanups = CLEANUPS.lock().unwrap();
+    cleanups.clear();
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn test_register_and_cleanup() {
+        let cleaned = std::sync::Arc::new(AtomicBool::new(false));
+        let cleaned_clone = cleaned.clone();
+
+        let _unregister = register_session_resource_cleanup(Box::new(move |_session_id| {
+            cleaned_clone.store(true, Ordering::SeqCst);
+        }));
+
+        cleanup_session_resources(None).unwrap();
+        assert!(cleaned.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_register_and_unregister() {
+        let cleaned = std::sync::Arc::new(AtomicBool::new(false));
+        let cleaned_clone = cleaned.clone();
+
+        let unregister = register_session_resource_cleanup(Box::new(move |_session_id| {
+            cleaned_clone.store(true, Ordering::SeqCst);
+        }));
+
+        unregister();
+        cleanup_session_resources(None).unwrap();
+        assert!(!cleaned.load(Ordering::SeqCst),
+                "cleanup should not have been called after unregister");
+    }
+
+    #[test]
+    fn test_multiple_cleanups() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        for _ in 0..5 {
+            let c = counter.clone();
+            register_session_resource_cleanup(Box::new(move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        cleanup_session_resources(None).unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn test_cleanup_with_session_id() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let cap = captured.clone();
+
+        register_session_resource_cleanup(Box::new(move |session_id| {
+            *cap.lock().unwrap() = session_id.map(|s| s.to_string());
+        }));
+
+        cleanup_session_resources(Some("sess-123")).unwrap();
+        assert_eq!(*captured.lock().unwrap(), Some("sess-123".to_string()));
+    }
+
+    #[test]
+    fn test_no_cleanups_returns_ok() {
+        let result = cleanup_session_resources(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_secondary_cleanup_is_empty() {
+        // After first cleanup, all registered functions should be cleared
+        register_session_resource_cleanup(Box::new(|_| {}));
+        cleanup_session_resources(None).unwrap();
+
+        // Second cleanup should have nothing to run
+        let result = cleanup_session_resources(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clear_cleanups() {
+        let cleaned = std::sync::Arc::new(AtomicBool::new(false));
+        let c = cleaned.clone();
+        register_session_resource_cleanup(Box::new(move |_| {
+            c.store(true, Ordering::SeqCst);
+        }));
+        clear_cleanups();
+        cleanup_session_resources(None).unwrap();
+        assert!(!cleaned.load(Ordering::SeqCst));
+    }
+}

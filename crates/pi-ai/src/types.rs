@@ -380,7 +380,7 @@ pub enum Transport {
 // OpenAI completions compatibility
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAICompletionsCompat {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -428,7 +428,7 @@ pub struct OpenAIResponsesCompat {
     pub supports_long_cache_retention: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicMessagesCompat {
     #[serde(skip_serializing_if = "Option::is_none")]

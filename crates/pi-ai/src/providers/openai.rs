@@ -407,6 +407,7 @@ async fn stream_openai_inner(
         name: String,
         partial_args: String,
         content_index: usize,
+        tc_index: usize,
     }
 
     let mut current_text: Option<(usize, String)> = None; // (content_index, text)
@@ -541,7 +542,7 @@ async fn stream_openai_inner(
 
                 // Find or create tool call block
                 let existing = tool_call_blocks.iter().position(|b| {
-                    (!tc_id.is_empty() && b.id == tc_id) || (tc_id.is_empty() && b.content_index == index)
+                    (!tc_id.is_empty() && b.id == tc_id) || (tc_id.is_empty() && b.tc_index == index)
                 });
 
                 if let Some(pos) = existing {
@@ -603,6 +604,7 @@ async fn stream_openai_inner(
                         name,
                         partial_args: first_args,
                         content_index: ci,
+                        tc_index: index,
                     });
                 }
             }

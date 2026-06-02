@@ -73,6 +73,7 @@ pub struct AgentOptions {
     pub transport: Option<String>,
     pub max_retry_delay_ms: Option<u64>,
     pub tool_execution: Option<crate::pi_ai_types::ToolExecutionMode>,
+    pub max_consecutive_tool_calls: Option<usize>,
 }
 
 impl Default for AgentOptions {
@@ -95,6 +96,7 @@ impl Default for AgentOptions {
             transport: None,
             max_retry_delay_ms: None,
             tool_execution: None,
+            max_consecutive_tool_calls: None,
         }
     }
 }
@@ -157,6 +159,7 @@ pub struct Agent {
     transport: String,
     max_retry_delay_ms: Option<u64>,
     tool_execution: crate::pi_ai_types::ToolExecutionMode,
+    max_consecutive_tool_calls: Option<usize>,
     /// Notified when the agent becomes idle (finishes a run or streaming ends).
     idle_notify: Arc<Notify>,
 }
@@ -264,6 +267,7 @@ impl Agent {
             tool_execution: options
                 .tool_execution
                 .unwrap_or(crate::pi_ai_types::ToolExecutionMode::Parallel),
+            max_consecutive_tool_calls: options.max_consecutive_tool_calls,
             idle_notify: Arc::new(Notify::new()),
         }
     }
@@ -497,6 +501,7 @@ impl Agent {
             after_tool_call: self.after_tool_call.clone(),
             on_payload: self.on_payload.clone(),
             on_response: self.on_response.clone(),
+            max_consecutive_tool_calls: self.max_consecutive_tool_calls,
         };
 
         let signal = Some(cancel_rx);
@@ -598,6 +603,7 @@ impl Agent {
             after_tool_call: self.after_tool_call.clone(),
             on_payload: self.on_payload.clone(),
             on_response: self.on_response.clone(),
+            max_consecutive_tool_calls: self.max_consecutive_tool_calls,
         };
 
         let signal = Some(cancel_rx);

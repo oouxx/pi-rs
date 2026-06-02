@@ -34,7 +34,7 @@ Assistant:"#)),
     };
 
     let event_stream = stream(&model, &context, Some(StreamOptions {
-        max_tokens: Some(128),
+        max_tokens: Some(512),
         ..Default::default()
     }));
     event_stream.result().await.unwrap_or_else(|e| {

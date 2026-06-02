@@ -690,6 +690,7 @@ pub struct AgentLoopConfig {
     pub after_tool_call: Option<AfterToolCallFn>,
     pub on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
+    pub max_consecutive_tool_calls: Option<usize>,
 }
 
 pub async fn run_agent_loop(
@@ -779,6 +780,9 @@ async fn run_loop(
     let mut config_reasoning = initial_config.reasoning.clone();
     let mut first_turn = true;
 
+    let max_consecutive_tool_calls = initial_config.max_consecutive_tool_calls.unwrap_or(25);
+    let mut consecutive_tool_call_rounds: usize = 0;
+
     let mut pending_messages: Vec<AgentMessage> = if let Some(get_steering) = &initial_config.get_steering_messages {
         get_steering().await
     } else {
@@ -864,6 +868,21 @@ async fn run_loop(
 
             let tool_calls = extract_tool_calls(&agent_msg);
             has_more_tool_calls = !tool_calls.is_empty();
+
+            if has_more_tool_calls {
+                consecutive_tool_call_rounds += 1;
+                if consecutive_tool_call_rounds > max_consecutive_tool_calls {
+                    let err_msg = format!(
+                        "Agent terminated: exceeded {} consecutive tool call rounds without producing a text response",
+                        max_consecutive_tool_calls
+                    );
+                    eprintln!("[agent_loop] {}", err_msg);
+                    has_more_tool_calls = false;
+                    break;
+                }
+            } else {
+                consecutive_tool_call_rounds = 0;
+            }
 
             let tool_results = if !tool_calls.is_empty() {
                 let batch = execute_tool_calls(

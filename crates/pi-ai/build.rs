@@ -162,7 +162,11 @@ fn fetch_openrouter_models(client: &reqwest::blocking::Client) -> Vec<OpenRouter
 fn fetch_models_dev(client: &reqwest::blocking::Client) -> serde_json::Value {
     match client.get("https://models.dev/api.json").send() {
         Ok(resp) if resp.status().is_success() => {
-            resp.json::<serde_json::Value>().unwrap_or_default()
+            let text = resp.text().unwrap_or_default();
+            serde_json::from_str(&text).unwrap_or_else(|e| {
+                println!("cargo:warning=models.dev JSON parse error: {}", e);
+                serde_json::Value::Null
+            })
         }
         Ok(resp) => {
             println!("cargo:warning=models.dev API returned status {}", resp.status());

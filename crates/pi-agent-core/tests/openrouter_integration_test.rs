@@ -403,7 +403,7 @@ async fn test_agent_basic_prompt() {
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let e = events.clone();
-    agent
+    let _handle = agent
         .subscribe(Arc::new(move |event, _| {
             let e = e.clone();
             Box::pin(async move {

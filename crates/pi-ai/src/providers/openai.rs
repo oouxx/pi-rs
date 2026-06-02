@@ -401,17 +401,18 @@ async fn stream_openai_inner(
     let mut has_finish_reason = false;
 
     // Track current streaming blocks
-    #[derive(Debug, Clone)]
     struct ToolCallBlock {
+        content_index: usize,
         id: String,
         name: String,
         partial_args: String,
-        content_index: usize,
-        tc_index: usize,
     }
 
     let mut current_text: Option<(usize, String)> = None; // (content_index, text)
+    // Two lookup maps, both index into tool_call_blocks Vec
     let mut tool_call_blocks: Vec<ToolCallBlock> = Vec::new();
+    let mut tool_call_blocks_by_index: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut tool_call_blocks_by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for chunk in &chunks {
         // Check abort
@@ -533,22 +534,25 @@ async fn stream_openai_inner(
             }
         }
 
-        // Tool calls
+        // Tool calls — using dual-map lookup (by index, by id) aligned with TS pi
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tool_calls {
-                let index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let stream_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let tc_function = tc.get("function");
 
-                // Find or create tool call block
-                let existing = tool_call_blocks.iter().position(|b| {
-                    (!tc_id.is_empty() && b.id == tc_id) || (tc_id.is_empty() && b.tc_index == index)
-                });
+                // Find or create tool call block (TS: ensureToolCallBlock)
+                let block_idx = tool_call_blocks_by_index.get(&stream_index).copied()
+                    .or_else(|| {
+                        if tc_id.is_empty() { None }
+                        else { tool_call_blocks_by_id.get(tc_id).copied() }
+                    });
 
-                if let Some(pos) = existing {
-                    let block = &mut tool_call_blocks[pos];
+                if let Some(bi) = block_idx {
+                    let block = &mut tool_call_blocks[bi];
                     if !tc_id.is_empty() && block.id.is_empty() {
                         block.id = tc_id.to_string();
+                        tool_call_blocks_by_id.insert(block.id.clone(), bi);
                     }
                     if let Some(func) = tc_function {
                         if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
@@ -599,13 +603,17 @@ async fn stream_openai_inner(
                         partial: output.clone(),
                     });
 
+                    let bi = tool_call_blocks.len();
                     tool_call_blocks.push(ToolCallBlock {
+                        content_index: ci,
                         id: tc_id.to_string(),
                         name,
                         partial_args: first_args,
-                        content_index: ci,
-                        tc_index: index,
                     });
+                    tool_call_blocks_by_index.insert(stream_index, bi);
+                    if !tc_id.is_empty() {
+                        tool_call_blocks_by_id.insert(tc_id.to_string(), bi);
+                    }
                 }
             }
         }

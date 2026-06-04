@@ -1,17 +1,22 @@
 pub mod bash;
 pub mod edit;
+pub mod edit_diff;
+pub mod file_mutation_queue;
 pub mod find;
 pub mod grep;
 pub mod ls;
+pub mod output_accumulator;
 pub mod path_utils;
 pub mod read;
 pub mod render_utils;
+pub mod tool_definition_wrapper;
 pub mod truncate;
 pub mod write;
 
 use pi_agent_core::types::AgentTool;
 use serde::{Deserialize, Serialize};
 
+pub use output_accumulator::{OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot};
 pub use truncate::{TruncationOptions, TruncationResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

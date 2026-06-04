@@ -355,6 +355,9 @@ async fn stream_openai_inner(
     if let Some(ref t) = tools {
         body.insert("tools".to_string(), serde_json::to_value(t)?);
     }
+    if let Some(ref tc) = options.and_then(|o| o.tool_choice.as_ref()) {
+        body.insert("tool_choice".to_string(), serde_json::to_value(tc)?);
+    }
 
     // Check abort signal
     if let Some(ref rx) = signal {

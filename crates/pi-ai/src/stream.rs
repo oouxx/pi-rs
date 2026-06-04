@@ -78,6 +78,7 @@ impl Default for StreamOptions {
             signal: None,
             api_key: None,
             transport: None,
+            tool_choice: None,
             cache_retention: None,
             session_id: None,
             headers: None,

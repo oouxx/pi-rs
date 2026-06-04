@@ -568,6 +568,37 @@ pub struct Context {
 // Stream options
 // ============================================================================
 
+// ============================================================================
+// Tool choice
+// ============================================================================
+
+/// Controls tool selection behavior for the model.
+/// Matches the OpenAI `tool_choice` parameter format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// Auto, None, or Required
+    Mode(ToolChoiceMode),
+    /// A specific function call
+    Specific {
+        #[serde(rename = "type")]
+        type_field: String,
+        function: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoiceMode {
+    Auto,
+    None,
+    Required,
+}
+
+// ============================================================================
+// Stream options
+// ============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamOptions {
@@ -603,6 +634,8 @@ pub struct StreamOptions {
     pub max_retry_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

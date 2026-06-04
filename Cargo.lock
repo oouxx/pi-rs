@@ -1141,6 +1141,7 @@ dependencies = [
  "pi-ai",
  "regex",
  "reqwest 0.12.28",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",

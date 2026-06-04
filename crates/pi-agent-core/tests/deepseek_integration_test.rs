@@ -714,6 +714,82 @@ async fn test_deepseek_tool_call() {
 }
 
 // ============================================================================
+// Structured extraction test — schema-as-tool (Rig Extractor pattern)
+// ============================================================================
+
+#[derive(
+    pi_agent_core::extraction::JsonSchema,
+    serde::Deserialize,
+    Debug,
+    PartialEq,
+)]
+#[allow(dead_code)]
+struct ExtractedPerson {
+    name: String,
+    age: u8,
+    city: String,
+}
+
+#[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY and network"]
+async fn test_deepseek_structured_extraction() {
+    register_built_in_api_providers();
+    let api_key = require_api_key();
+
+    let model = pi_ai::types::Model {
+        id: "deepseek-v4-flash".to_string(),
+        name: "DeepSeek V4 Flash".to_string(),
+        api: "openai-completions".to_string(),
+        provider: "deepseek".to_string(),
+        base_url: "https://api.deepseek.com".to_string(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: vec!["text".to_string()],
+        cost: pi_ai::types::ModelCost::default(),
+        context_window: 128000,
+        max_tokens: 1024,
+        headers: None,
+        compat: None,
+    };
+
+    println!("=== Structured extraction test (schema-as-tool) ===");
+
+    use pi_agent_core::extraction::Extractor;
+
+    let extractor: Extractor<ExtractedPerson> = Extractor::new(model)
+        .with_api_key(api_key)
+        .with_tool_name("extract_person")
+        .with_system_prompt(
+            "Extract the person's information as structured data. \
+             Call the extract_person tool with the correct fields.",
+        );
+
+    let start = std::time::Instant::now();
+    let result = extractor
+        .extract("John is 30 years old and lives in New York City.")
+        .await;
+    let elapsed = start.elapsed();
+
+    match result {
+        Ok(person) => {
+            println!(
+                "  Extracted ({elapsed:.2?}): {:?}",
+                person
+            );
+            assert_eq!(person.name.to_lowercase(), "john");
+            assert_eq!(person.age, 30);
+            assert!(
+                person.city.to_lowercase().contains("new york")
+                    || person.city.to_lowercase().contains("nyc")
+            );
+            println!("  ✅ Structured extraction succeeded: name={}, age={}, city={}",
+                person.name, person.age, person.city);
+        }
+        Err(e) => panic!("Extraction test failed: {e}"),
+    }
+}
+
+// ============================================================================
 // Tool calling test — multi-turn
 // ============================================================================
 

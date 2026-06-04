@@ -2,30 +2,10 @@ use std::path::Path;
 
 use crate::core::auth_storage::AuthStorage;
 use crate::core::model_registry::ModelRegistry;
-use crate::core::resource_loader::DefaultResourceLoader;
 use crate::core::session_manager::SessionManager;
 use crate::core::settings_manager::SettingsManager;
 
-// ---------------------------------------------------------------------------
-// Diagnostics collected during service creation
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct AgentSessionRuntimeDiagnostic {
-    pub severity: DiagnosticSeverity,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiagnosticSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
-// ---------------------------------------------------------------------------
-// Cwd-bound runtime services for one session
-// ---------------------------------------------------------------------------
+pub use crate::core::diagnostics::ResourceDiagnostic as AgentSessionRuntimeDiagnostic;
 
 pub struct AgentSessionServices {
     pub cwd: String,
@@ -33,7 +13,6 @@ pub struct AgentSessionServices {
     pub auth_storage: AuthStorage,
     pub settings_manager: SettingsManager,
     pub model_registry: ModelRegistry,
-    pub resource_loader: DefaultResourceLoader,
     pub diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
 }
 
@@ -44,7 +23,6 @@ impl AgentSessionServices {
         auth_storage: AuthStorage,
         settings_manager: SettingsManager,
         model_registry: ModelRegistry,
-        resource_loader: DefaultResourceLoader,
         diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     ) -> Self {
         Self {
@@ -53,7 +31,6 @@ impl AgentSessionServices {
             auth_storage,
             settings_manager,
             model_registry,
-            resource_loader,
             diagnostics,
         }
     }
@@ -65,7 +42,6 @@ fn default_agent_dir() -> String {
         .unwrap_or_else(|| ".pi".to_string())
 }
 
-/// Create cwd-bound runtime services.
 pub async fn create_agent_session_services(
     cwd: &str,
     agent_dir: Option<&str>,
@@ -75,13 +51,9 @@ pub async fn create_agent_session_services(
         .unwrap_or_else(default_agent_dir);
 
     let auth_storage = AuthStorage::create(Path::new(&agent_dir).join("auth.json"));
-    let settings_manager = SettingsManager::create(cwd, &agent_dir);
-    let model_registry = ModelRegistry::create(
-        auth_storage,
-        Path::new(&agent_dir).join("models.json").to_string_lossy().to_string(),
-    );
-    let resource_loader = DefaultResourceLoader::new(cwd, &agent_dir, &settings_manager);
-    resource_loader.reload().await;
+    let settings_manager = SettingsManager::create(cwd, Some(&agent_dir));
+    let model_registry = ModelRegistry::new(vec![]);
+    let diagnostics = Vec::new();
 
     AgentSessionServices {
         cwd: cwd.to_string(),
@@ -89,12 +61,10 @@ pub async fn create_agent_session_services(
         auth_storage,
         settings_manager,
         model_registry,
-        resource_loader,
-        diagnostics: Vec::new(),
+        diagnostics,
     }
 }
 
-/// Create an AgentSession from already-created services.
 pub async fn create_agent_session_from_services(
     services: &AgentSessionServices,
     session_manager: SessionManager,

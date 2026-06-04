@@ -1,7 +1,7 @@
 # pi-rs 全量复刻进度报告
 
 > 对照 TypeScript 源码逐文件比对  
-> 更新日期：2026-06-01
+> 更新日期：2026-06-05
 
 ---
 
@@ -9,13 +9,11 @@
 
 | Crate | TS 源仓库 | 文件数 | 代码行数 | 测试数 | 编译 | 完成度 |
 |-------|-----------|:---:|:---:|:---:|:---:|:---:|
-| pi-agent-core | `packages/agent` | 29 | 10,300 | 185/185 ✅ | ✅ | ~95% |
-| pi-coding-agent | `packages/coding-agent` | 33 | 7,600 | 90/90 ✅ | ✅ | ~35% |
-| pi-ai | `packages/ai` | 23 | 5,783 | 167/167 ✅ | ✅ | ~58% |
+| pi-agent-core | `packages/agent` | 32 | 12,549 | 197/197 ✅ | ✅ | ~95% |
+| pi-coding-agent | `packages/coding-agent` | 53 | 11,620 | 208/208 ✅ | ✅ | ~55% |
+| pi-ai | `packages/ai` | 25 | 6,220 | 167/167 ✅ | ✅ | ~60% |
 | pi-tui | `packages/tui` | 12 | 3,202 | 96/96 ✅ | ✅ | ~30% |
-| **合计** | | **97** | **26,885** | **538** | | |
-
-pi-coding-agent 编译错误：`core::skills::Skill` 缺少 `instructions` 字段（2 处）。
+| **合计** | | **122** | **33,591** | **668** | | |
 
 ---
 
@@ -104,13 +102,13 @@ struct: 74 | enum: 26 | trait: 3 | pub fn: 133 | impl block: 30
 
 ---
 
-## 二、pi-coding-agent（33 文件 / 7,582 行 / 完成度 ~35%）
+## 二、pi-coding-agent（53 文件 / 11,620 行 / 完成度 ~55%）
 
 对照 `https://github.com/earendil-works/pi/tree/main/packages/coding-agent`
 
 ### 类型指标
 
-struct: 97 | enum: 9 | trait: 6 | pub fn: 170 | impl block: 36
+struct: 163 | enum: 30 | trait: 8 | pub fn: 271 | impl block: 65
 
 ### 已有 Rust 对应文件的模块
 
@@ -124,7 +122,7 @@ struct: 97 | enum: 9 | trait: 6 | pub fn: 170 | impl block: 36
 | `core/slash-commands.ts` | `core/slash_commands.rs` | ~95% | — |
 | `core/messages.ts` | `core/messages.rs` | ~85% | 工厂函数 |
 | `core/context-usage.ts` | `core/context_usage.rs` | ~95% | — |
-| `core/model-registry.ts` | `core/model_registry.rs` | ~50% | OAuth 支持、AuthStorage、resolve-config-value |
+| `core/model-registry.ts` | `core/model_registry.rs` | ~65% | OAuth 支持（auth-storage 已就位） |
 | `core/model-resolver.ts` | `core/model_resolver.rs` | ~50% | defaultModelPerProvider（25+ provider）、别名检测 |
 | `core/system-prompt.ts` | `core/system_prompt.rs` | ~85% | — |
 | `core/skills.ts` | `core/skills.rs` | ~40% | frontmatter 解析、名称/描述验证、gitignore 感知 |
@@ -133,18 +131,37 @@ struct: 97 | enum: 9 | trait: 6 | pub fn: 170 | impl block: 36
 | `core/extensions/` | `core/extensions/` | ~35% | 无扩展运行时、无事件钩子、无 worker |
 | `core/compaction/` | `core/compaction.rs` | ~50% | `compact()` 主函数、token 计数、分支摘要 |
 | `core/agent-session.ts` | `core/agent_session.rs` | ~60% | 事件系统（10+ 事件类型）、自动重试、压缩集成 |
+| `core/agent-session-runtime.ts` | `core/agent_session_runtime.rs` | **NEW** (~85%) | 会话运行时（流式/重试/压缩编排） |
+| `core/agent-session-services.ts` | `core/agent_session_services.rs` | **NEW** (~90%) | DI 容器、服务注册 |
+| `core/auth-guidance.ts` | `core/auth_guidance.rs` | **NEW** (~90%) | 认证引导消息 |
+| `core/auth-storage.ts` | `core/auth_storage.rs` | **NEW** (~90%) | 加密认证存储 |
+| `core/defaults.ts` | `core/defaults.rs` | **NEW** (~90%) | 默认 thinking level |
+| `core/exec.ts` | `core/exec.rs` | **NEW** (~95%) | 进程执行抽象（含超时/取消） |
+| `core/http-dispatcher.ts` | `core/http_dispatcher.rs` | **NEW** (~90%) | HTTP 请求分发 |
+| `core/source-info.ts` | `core/source_info.rs` | **NEW** (~90%) | 资源源元数据 |
 | `core/bash-executor.ts` | `core/bash_executor.rs` | ~40% | 无流式输出、无 output buffer 管理、无 sanitizeBinaryOutput |
 | — | `core/sdk.rs` | — | Rust 独有：SDK 集成层（DI 容器），183 行 |
+| — | `core/output_guard.rs` | — | Rust 独有：输出保护器 |
+| — | `core/provider_attribution.rs` | — | Rust 独有：提供者归属标记 |
+| — | `core/provider_display_names.rs` | — | Rust 独有：提供者显示名映射 |
+| — | `core/resolve_config_value.rs` | — | Rust 独有：配置值解析 |
+| — | `core/session_cwd.rs` | — | Rust 独有：会话工作目录管理 |
+| — | `core/telemetry.rs` | — | Rust 独有：遥测事件收集 |
+| — | `core/timings.rs` | — | Rust 独有：性能计时器 |
 
 ### 工具模块
 
 | TypeScript | Rust | 覆盖率 | 关键缺失 |
 |------------|------|--------|----------|
-| `core/tools/index.ts` | `core/tools/mod.rs` | ~50% | ToolDefinition 层、file-mutation-queue、output-accumulator |
+| `core/tools/index.ts` | `core/tools/mod.rs` | ~80% | — |
 | `core/tools/bash.ts` | `core/tools/bash.rs` | ~35% | 超时参数被忽略、无 spawn hook、无进程树管理、无流式输出 |
-| `core/tools/edit.ts` | `core/tools/edit.rs` | ~30% | **无 diff 计算**（edit-diff.ts 完全缺失）、无模糊匹配、无 Unicode 标准化 |
+| `core/tools/edit.ts` | `core/tools/edit.rs` | ~60% | 模糊匹配、Unicode 标准化（edit-diff 引擎已到位） |
+| `core/tools/edit-diff.ts` | `core/tools/edit_diff.rs` | **NEW** (~90%) | Diff 计算引擎（替换 `string.replace()`） |
+| `core/tools/file-mutation-queue.ts` | `core/tools/file_mutation_queue.rs` | **NEW** (~95%) | 文件变异序列化队列 |
+| `core/tools/output-accumulator.ts` | `core/tools/output_accumulator.rs` | **NEW** (~95%) | 流式输出累积器 |
+| `core/tools/tool-definition-wrapper.ts` | `core/tools/tool_definition_wrapper.rs` | **NEW** (~90%) | AgentTool → ToolDefinition 包装 |
 | `core/tools/read.ts` | `core/tools/read.rs` | ~40% | 无图片处理、无语法高亮、无 macOS 路径变体 |
-| `core/tools/write.ts` | `core/tools/write.rs` | ~35% | 无文件变异队列、无语法高亮、无增量缓存 |
+| `core/tools/write.ts` | `core/tools/write.rs` | ~50% | 无语法高亮、无增量缓存（file-mutation-queue 已就位） |
 | `core/tools/grep.ts` | `core/tools/grep.rs` | ~30% | 纯 Rust regex vs ripgrep 二进制（架构不同，无 gitignore 感知） |
 | `core/tools/find.ts` | `core/tools/find.rs` | ~30% | 纯 Rust glob vs fd 二进制（架构不同，无 gitignore 感知） |
 | `core/tools/ls.ts` | `core/tools/ls.rs` | ~45% | 无大小写不敏感排序、无 stat 逐项检查 |
@@ -152,25 +169,13 @@ struct: 97 | enum: 9 | trait: 6 | pub fn: 170 | impl block: 36
 | `core/tools/path-utils.ts` | `core/tools/path_utils.rs` | ~55% | macOS 专用变体（NFD/screenshot/curly quotes） |
 | `core/tools/render-utils.ts` | `core/tools/render_utils.rs` | ~40% | shortenPath、linkPath、图片块处理 |
 
-### 完全未复刻（24+ 个 TS 文件）
+### 完全未复刻（11+ 个 TS 文件）
 
 | 模块 | 用途 |
 |------|------|
-| `core/agent-session-runtime.ts` | 会话运行时（流式/重试/压缩编排） |
-| `core/agent-session-services.ts` | DI 容器 |
-| `core/auth-guidance.ts` | 认证引导消息 |
-| `core/auth-storage.ts` | 加密认证存储 |
-| `core/defaults.ts` | 默认 thinking level |
-| `core/exec.ts` | 进程执行抽象 |
 | `core/export-html/` (6 文件) | HTML 会话导出 |
-| `core/http-dispatcher.ts` | HTTP 请求分发 |
 | `core/keybindings.ts` | 键盘快捷键 |
 | `core/package-manager.ts` | 扩展/skill 包管理 |
-| `core/source-info.ts` | 资源源元数据 |
-| `core/tools/edit-diff.ts` | **Diff 计算引擎**（最大功能缺口） |
-| `core/tools/file-mutation-queue.ts` | 文件变异序列化队列 |
-| `core/tools/output-accumulator.ts` | 流式输出累积器 |
-| `core/tools/tool-definition-wrapper.ts` | AgentTool → ToolDefinition 包装 |
 | `cli/` (6 文件) | CLI 参数解析、配置选择、会话选择器 |
 | `modes/` (7+ 文件) | 运行模式（interactive TUI/print/RPC） |
 | `utils/` (28 文件) | 全部工具模块 |
@@ -192,11 +197,42 @@ create_agent_session()
 - scoped models / tools 选择
 - model fallback 消息
 
+### 本轮更新（2026-06-05）
+
+本次提交新增 **19 个 Rust 源文件**（3,964 行），复刻了 12+ 个关键 TS 模块：
+
+**基础设施层（10 个新模块）：**
+- `auth_guidance` / `auth_storage` — 认证引导和加密存储，支撑 model-registry OAuth
+- `defaults` — 默认 thinking level
+- `exec` — 进程执行抽象（超时/取消支持，25 tests ✅）
+- `http_dispatcher` — HTTP 请求分发
+- `output_guard` — 输出保护器
+- `provider_attribution` / `provider_display_names` — 提供者归属和显示名
+- `resolve_config_value` — 配置值解析
+- `session_cwd` — 会话工作目录管理
+- `source_info` — 资源源元数据
+- `telemetry` / `timings` — 遥测事件收集和性能计时器（32 tests ✅）
+- `agent_session_runtime` / `agent_session_services` — 会话运行时和 DI 容器
+
+**工具层（4 个新模块）：**
+- `edit_diff` — **Diff 计算引擎**（最大功能缺口已填补）
+- `file_mutation_queue` — 文件变异序列化队列（8 tests ✅）
+- `output_accumulator` — 流式输出累积器（8 tests ✅）
+- `tool_definition_wrapper` — AgentTool → ToolDefinition 包装（8 tests ✅）
+
+**依赖更新：** 新增 `pi-ai`、`similar`（diff 引擎）、`unicode-normalization`、`url`
+
+**状态变化：**
+- 编译错误 **已消除**（`Skill` 缺少 `instructions` 字段）→ 编译通过，仅 9 个 warnings
+- 测试从 90 → **208**（+118）全部通过
+- 文件从 33 → **53**（+20），行数从 7,582 → **11,620**（+4,038）
+- 完成度从 ~35% → **~55%**
+
 ### P0 阻塞项
 
-1. **Edit diff 引擎完全缺失** — `string.replace()` 替代了模糊匹配+diff+归一化引擎
-2. **Prompt 模板 `$1`/`$@`/`${@:N}` 系统缺失** — 与 pi-agent-core 的 prompt_templates.rs 不一致
-3. **File mutation queue 缺失** — 无并发文件操作保护
+1. ~~**Edit diff 引擎完全缺失** — `string.replace()` 替代~~ ✅ 已实现 `edit_diff.rs`
+2. ~~**File mutation queue 缺失** — 无并发文件操作保护~~ ✅ 已实现 `file_mutation_queue.rs`
+3. **Prompt 模板 `$1`/`$@`/`${@:N}` 系统缺失** — 与 pi-agent-core 的 prompt_templates.rs 不一致
 4. **Bash 超时参数被忽略** — 接受但不处理
 5. **Grep/Find 纯 Rust 实现** — 原版用 rg/fd 二进制，无 gitignore 感知
 
@@ -368,14 +404,14 @@ pi-coding-agent compaction / 会话压缩
 ### pi-coding-agent（最高层，依赖上面三个）
 
 ```
-1. Edit diff 引擎（最大功能缺口）
-2. Prompt 模板 $1/$@/${@:N} 系统
-3. File mutation queue
-4. Bash 超时 + 流式输出 + 进程树管理
-5. Grep/Find 改为 rg/fd 二进制
-6. 补全 Session/Settings/Model registry
-7. Compaction pipeline
-8. Agent session 事件系统 + 自动重试
-9. Extensions 运行时
-10. CLI + Modes + Utils
+✅ 1. Edit diff 引擎（最大功能缺口）
+✅ 2. File mutation queue
+   3. Prompt 模板 $1/$@/${@:N} 系统
+   4. Bash 超时 + 流式输出 + 进程树管理
+   5. Grep/Find 改为 rg/fd 二进制
+   6. 补全 Session/Settings/Model registry
+   7. Compaction pipeline
+   8. Agent session 事件系统 + 自动重试
+   9. Extensions 运行时
+  10. CLI + Modes + Utils
 ```

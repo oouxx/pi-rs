@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/pi-agent-core",
-    "crates/pi-coding-agent",
     "crates/pi-ai",
+    "crates/pi-coding-agent",
     "crates/pi-tui",
 ]
 resolver = "2"

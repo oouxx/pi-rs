@@ -877,7 +877,6 @@ async fn run_loop(
                         max_consecutive_tool_calls
                     );
                     eprintln!("[agent_loop] {}", err_msg);
-                    has_more_tool_calls = false;
                     break;
                 }
             } else {

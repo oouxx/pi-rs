@@ -5,8 +5,7 @@ use tokio::sync::RwLock;
 
 use crate::harness::types::{
     AbortResult, AgentHarnessOwnEvent, AgentHarnessResources, AgentHarnessStreamOptions,
-    CompactResult, HarnessError, NavigateTreeResult,
-    PromptTemplate, QueueMode, Session, Skill,
+    CompactResult, HarnessError, NavigateTreeResult, PromptTemplate, QueueMode, Session, Skill,
 };
 use crate::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use crate::types::{AgentEvent, AgentMessage};
@@ -25,11 +24,11 @@ pub enum AgentHarnessEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     Own(AgentHarnessOwnEvent<S, P>),
 }
 
-pub struct AgentHarness<S: Clone + Send + Sync + 'static = Skill, P: Clone + Send + Sync + 'static = PromptTemplate>
-{
+pub struct AgentHarness<
+    S: Clone + Send + Sync + 'static = Skill,
+    P: Clone + Send + Sync + 'static = PromptTemplate,
+> {
     session: Arc<RwLock<Session>>,
-    #[allow(dead_code)]
-    env: Arc<dyn crate::harness::types::ExecutionEnv + Send + Sync>,
     model: Arc<RwLock<Model>>,
     thinking_level: Arc<RwLock<ThinkingLevel>>,
     tools: Arc<RwLock<HashMap<String, String>>>,
@@ -54,7 +53,6 @@ enum HarnessPhase {
 
 impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHarness<S, P> {
     pub fn new(
-        env: Arc<dyn crate::harness::types::ExecutionEnv + Send + Sync>,
         session: Session,
         model: Model,
         options: Option<AgentHarnessOptions<S, P>>,
@@ -63,20 +61,25 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
 
         Self {
             session: Arc::new(RwLock::new(session)),
-            env,
             model: Arc::new(RwLock::new(model)),
-            thinking_level: Arc::new(RwLock::new(opts.thinking_level.unwrap_or_else(|| "off".to_string()))),
+            thinking_level: Arc::new(RwLock::new(
+                opts.thinking_level.unwrap_or_else(|| "off".to_string()),
+            )),
             tools: Arc::new(RwLock::new(HashMap::new())),
             active_tool_names: Arc::new(RwLock::new(opts.active_tool_names.unwrap_or_default())),
-            resources: Arc::new(RwLock::new(opts.resources.unwrap_or(AgentHarnessResources {
-                skills: None,
-                prompt_templates: None,
-            }))),
-            stream_options: Arc::new(RwLock::new(opts.stream_options.unwrap_or(AgentHarnessStreamOptions {
-                temperature: None,
-                top_p: None,
-                max_tokens: None,
-            }))),
+            resources: Arc::new(RwLock::new(opts.resources.unwrap_or(
+                AgentHarnessResources {
+                    skills: None,
+                    prompt_templates: None,
+                },
+            ))),
+            stream_options: Arc::new(RwLock::new(opts.stream_options.unwrap_or(
+                AgentHarnessStreamOptions {
+                    temperature: None,
+                    top_p: None,
+                    max_tokens: None,
+                },
+            ))),
             steering_mode: Arc::new(RwLock::new(opts.steering_mode.unwrap_or(QueueMode::Queue))),
             follow_up_mode: Arc::new(RwLock::new(opts.follow_up_mode.unwrap_or(QueueMode::Queue))),
             steer_queue: Arc::new(RwLock::new(Vec::new())),
@@ -96,7 +99,9 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
         let _previous = self.model.read().await.clone();
         *self.model.write().await = model.clone();
         let mut session = self.session.write().await;
-        let _ = session.append_model_change(model.provider.clone(), model.id.clone()).await;
+        let _ = session
+            .append_model_change(model.provider.clone(), model.id.clone())
+            .await;
         Ok(())
     }
 
@@ -104,13 +109,14 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
         self.thinking_level.read().await.clone()
     }
 
-    pub async fn set_thinking_level(&self, level: ThinkingLevel) -> std::result::Result<(), HarnessError> {
+    pub async fn set_thinking_level(
+        &self,
+        level: ThinkingLevel,
+    ) -> std::result::Result<(), HarnessError> {
         let _previous = self.thinking_level.read().await.clone();
         *self.thinking_level.write().await = level.clone();
         let mut session = self.session.write().await;
-        let _ = session
-            .append_thinking_level_change(level.clone())
-            .await;
+        let _ = session.append_thinking_level_change(level.clone()).await;
         Ok(())
     }
 
@@ -139,7 +145,10 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
         Ok(())
     }
 
-    async fn validate_tool_names(&self, _names: &[String]) -> std::result::Result<(), HarnessError> {
+    async fn validate_tool_names(
+        &self,
+        _names: &[String],
+    ) -> std::result::Result<(), HarnessError> {
         let _tools = self.tools.read().await;
         Ok(())
     }
@@ -296,8 +305,8 @@ impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHa
         match preparation {
             Ok(prep) => {
                 // Resolve API key from environment
-                let api_key = pi_ai::env_api_keys::get_env_api_key(&model.provider)
-                    .unwrap_or_default();
+                let api_key =
+                    pi_ai::env_api_keys::get_env_api_key(&model.provider).unwrap_or_default();
 
                 let result = crate::harness::compaction::compaction::compact(
                     prep,

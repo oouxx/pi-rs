@@ -103,7 +103,6 @@ impl Default for AgentOptions {
 
 struct ActiveRun {
     cancel: tokio_util::sync::CancellationToken,
-    handle: tokio::task::JoinHandle<()>,
 }
 
 /// Handle returned by [`Agent::subscribe`]. Call `unsubscribe()` to stop
@@ -446,14 +445,13 @@ impl Agent {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let cancel_clone = cancel.clone();
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             cancel.cancelled().await;
             let _ = cancel_tx.send(true);
         });
 
         let active_run = ActiveRun {
             cancel: cancel_clone,
-            handle,
         };
         *self.active_run.lock().await = Some(active_run);
 
@@ -548,14 +546,13 @@ impl Agent {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let cancel_clone = cancel.clone();
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             cancel.cancelled().await;
             let _ = cancel_tx.send(true);
         });
 
         let active_run = ActiveRun {
             cancel: cancel_clone,
-            handle,
         };
         *self.active_run.lock().await = Some(active_run);
 

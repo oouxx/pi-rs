@@ -5,7 +5,7 @@ use crate::pi_ai_types::Message;
 use crate::types::AgentMessage;
 
 // External pi_ai crate imports (not re-exported through pi_ai_types)
-use pi_ai::stream::stream as pi_stream;
+use pi_ai::stream::complete_simple as pi_complete;
 
 pub fn estimate_tokens(message: &AgentMessage) -> u64 {
     let text = match message {
@@ -333,7 +333,7 @@ Format your summary as:
 pub async fn generate_summary(
     messages: &[AgentMessage],
     model: &crate::pi_ai_types::Model,
-    _reserve_tokens: u64,
+    reserve_tokens: u64,
     api_key: &str,
     headers: Option<&std::collections::HashMap<String, String>>,
     signal: Option<tokio::sync::watch::Receiver<bool>>,
@@ -382,19 +382,33 @@ pub async fn generate_summary(
         tools: None,
     };
 
-    // Build stream options
-    let mut stream_headers = headers.cloned().unwrap_or_default();
-    let options = crate::pi_ai_types::StreamOptions {
-        api_key: Some(api_key.to_string()),
-        headers: if stream_headers.is_empty() { None } else { Some(stream_headers) },
-        signal,
-        ..Default::default()
+    // Match TS: maxTokens = Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Infinity)
+    let max_tokens = std::cmp::min(
+        (reserve_tokens as f64 * 0.8) as u64,
+        if model.max_tokens > 0 { model.max_tokens } else { u64::MAX },
+    );
+
+    // Match TS: model.reasoning && thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}
+    let reasoning = if model.reasoning {
+        thinking_level.filter(|tl| tl != "off")
+    } else {
+        None
     };
 
-    // Call pi_ai to stream the completion
-    use futures::StreamExt;
-    let stream = pi_stream(model, &context, Some(options));
-    let result = stream.result().await.map_err(|e| {
+    let simple_options = crate::pi_ai_types::SimpleStreamOptions {
+        base: crate::pi_ai_types::StreamOptions {
+            api_key: Some(api_key.to_string()),
+            max_tokens: Some(max_tokens),
+            headers: headers.cloned().filter(|h| !h.is_empty()),
+            signal,
+            ..Default::default()
+        },
+        reasoning,
+        thinking_budgets: None,
+    };
+
+    // Call pi_ai complete_simple (matches TS: completeSimple with reasoning support)
+    let result = pi_complete(model, &context, Some(simple_options)).await.map_err(|e| {
         CompactionError::SummarizationFailed(format!("LLM summarization failed: {}", e))
     })?;
 

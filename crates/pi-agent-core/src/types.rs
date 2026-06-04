@@ -391,6 +391,18 @@ pub type ShouldStopAfterTurnFn = Arc<
         + Sync,
 >;
 
+/// Matches TS `AgentOptions.prepareNextTurn` — receives an optional abort signal,
+/// NOT the turn context. The agent loop wraps this internally.
+pub type PrepareNextTurnOptionsFn = Arc<
+    dyn Fn(
+            Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<AgentLoopTurnUpdate>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// Matches TS `AgentLoopConfig.prepareNextTurn` — receives the full turn context.
 pub type PrepareNextTurnFn = Arc<
     dyn Fn(
             ShouldStopAfterTurnContext,

@@ -8,16 +8,16 @@
 use pi_agent_core::agent::{Agent, AgentOptions};
 use pi_agent_core::pi_ai_types::{
     AssistantMessageEvent, ContentBlock, Context, Message, Model, ModelCost, StopReason,
-    ThinkingLevel, Usage,
+    ThinkingLevel,
 };
 use pi_agent_core::types::{AgentEvent, AgentMessage, AgentState, ConvertToLlmFn, StreamFn};
 use pi_ai::providers::register_builtins::register_built_in_api_providers;
 use std::env;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn test_model_id() -> String {
-    env::var("PI_TEST_MODEL")
-        .unwrap_or_else(|_| "poolside/laguna-xs.2:free".to_string())
+    env::var("PI_TEST_MODEL").unwrap_or_else(|_| "poolside/laguna-m.1:free".to_string())
 }
 
 fn require_api_key() -> String {
@@ -125,12 +125,11 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                     ..Default::default()
                 };
 
-                let event_stream =
-                    pi_ai::stream::stream(&pi_model, &pi_context, Some(stream_opts));
+                let event_stream = pi_ai::stream::stream(&pi_model, &pi_context, Some(stream_opts));
 
                 use futures::StreamExt;
-                let converted: pi_agent_core::pi_ai_types::StreamResponse = Box::new(
-                    event_stream.map(|event| match event {
+                let converted: pi_agent_core::pi_ai_types::StreamResponse =
+                    Box::new(event_stream.map(|event| match event {
                         pi_ai::types::AssistantMessageEvent::Start { partial } => {
                             AssistantMessageEvent::Start {
                                 partial: convert_msg(partial),
@@ -255,8 +254,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 },
                             }
                         }
-                    }),
-                );
+                    }));
 
                 Ok(converted)
             })
@@ -272,12 +270,13 @@ fn convert_msg(
             .content
             .iter()
             .map(|cb| match cb {
-                pi_ai::types::ContentBlock::Text { text, text_signature } => {
-                    ContentBlock::Text {
-                        text: text.clone(),
-                        text_signature: text_signature.clone(),
-                    }
-                }
+                pi_ai::types::ContentBlock::Text {
+                    text,
+                    text_signature,
+                } => ContentBlock::Text {
+                    text: text.clone(),
+                    text_signature: text_signature.clone(),
+                },
                 pi_ai::types::ContentBlock::Thinking {
                     thinking,
                     thinking_signature,
@@ -484,7 +483,9 @@ async fn test_agent_multi_turn() {
         .await
         .expect("Turn 1 failed");
 
-    let has_a1 = r1.iter().any(|m| matches!(m, AgentMessage::Assistant { .. }));
+    let has_a1 = r1
+        .iter()
+        .any(|m| matches!(m, AgentMessage::Assistant { .. }));
     assert!(has_a1, "Turn 1 should have assistant response");
     // process() returns new messages, state.messages has user msg + r1
     assert!(!r1.is_empty(), "process should return messages");
@@ -577,5 +578,78 @@ async fn test_agent_idle_state() {
         state.model.id,
         state.messages.len(),
         state.thinking_level
+    );
+}
+
+// ============================================================================
+// Streaming delta test
+// ============================================================================
+
+#[tokio::test]
+#[ignore = "requires OPENROUTER_API_KEY and network"]
+async fn test_streaming_deltas() {
+    register_built_in_api_providers();
+    let api_key = require_api_key();
+    let model = make_model();
+
+    let agent = Agent::new(AgentOptions {
+        initial_state: Some(AgentState {
+            system_prompt: "Write a detailed paragraph about Rust programming (at least 50 words)."
+                .into(),
+            model,
+            thinking_level: "off".into(),
+            tools: vec![],
+            messages: vec![],
+            is_streaming: true,
+            streaming_message: None,
+            pending_tool_calls: Default::default(),
+            error_message: None,
+        }),
+        convert_to_llm: Some(make_convert_to_llm()),
+        stream_fn: Some(make_openrouter_stream_fn(&api_key)),
+        ..Default::default()
+    });
+
+    let text_delta_count = Arc::new(AtomicUsize::new(0));
+    let count = text_delta_count.clone();
+
+    let _handle = agent
+        .subscribe(Arc::new(move |event, _| {
+            let count = count.clone();
+            Box::pin(async move {
+                if let AgentEvent::MessageUpdate {
+                    assistant_message_event,
+                    ..
+                } = &event
+                {
+                    if matches!(
+                        assistant_message_event,
+                        AssistantMessageEvent::TextDelta { .. }
+                    ) {
+                        count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+        }))
+        .await;
+
+    let result = agent
+        .process(vec![AgentMessage::User {
+            content: vec![ContentBlock::Text {
+                text: "Tell me about Rust's ownership system in 2-3 sentences.".into(),
+                text_signature: None,
+            }],
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }])
+        .await;
+
+    assert!(result.is_ok(), "Agent process failed: {:?}", result.err());
+
+    let n = text_delta_count.load(Ordering::Relaxed);
+    println!("TextDelta events received: {}", n);
+    assert!(
+        n >= 3,
+        "Expected at least 3 TextDelta events from streaming, got {}",
+        n
     );
 }

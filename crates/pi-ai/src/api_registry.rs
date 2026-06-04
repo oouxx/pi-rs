@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::types::{AssistantMessageEvent, Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::types::{Context, Model, SimpleStreamOptions, StreamOptions};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 /// Streaming function signature (full options).

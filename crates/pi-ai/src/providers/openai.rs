@@ -59,6 +59,7 @@ struct OpenAIFunctionDef {
     parameters: Value,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct OpenAIRequest {
@@ -75,6 +76,7 @@ struct OpenAIRequest {
     stream_options: Option<StreamOptionsFlag>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct StreamOptionsFlag {
     include_usage: bool,
@@ -617,6 +619,17 @@ async fn stream_openai_inner(
                 }
             }
         }
+    }
+
+    // Match TS: check that we received a finish_reason
+    if !has_finish_reason {
+        output.stop_reason = StopReason::Error;
+        output.error_message = Some("Stream ended without finish_reason".to_string());
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: output.clone(),
+        });
+        return Ok(());
     }
 
     // Finalize all blocks

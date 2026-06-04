@@ -117,6 +117,7 @@ fn clean_partial_json(s: &str) -> String {
     let mut depth: i32 = 0;
     let mut in_str = false;
     let mut escaped = false;
+    #[allow(unused_assignments)]
     let mut string_truncated = false;
     let mut last_good_content = 0usize;
 

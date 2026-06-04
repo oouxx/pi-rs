@@ -2,10 +2,10 @@
 //!
 //! Ported from `packages/ai/src/providers/simple-options.ts`.
 
-use crate::types::{Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets, ThinkingLevel};
+use crate::types::{Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets};
 
 /// Build a full `StreamOptions` from `SimpleStreamOptions` and an API key.
-pub fn build_base_options(model: &Model, options: Option<&SimpleStreamOptions>, api_key: Option<&str>) -> StreamOptions {
+pub fn build_base_options(_model: &Model, options: Option<&SimpleStreamOptions>, api_key: Option<&str>) -> StreamOptions {
     let opts = match options {
         Some(o) => o,
         None => {

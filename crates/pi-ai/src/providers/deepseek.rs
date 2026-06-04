@@ -3,7 +3,7 @@
 //! DeepSeek uses the OpenAI Chat Completions API format. This is a thin
 //! wrapper that delegates to the OpenAI-compatible streaming logic.
 
-use crate::types::{AssistantMessageEvent, Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::types::{Context, Model, SimpleStreamOptions, StreamOptions};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 /// Stream a completion from DeepSeek (OpenAI-compatible API).

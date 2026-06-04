@@ -923,7 +923,7 @@ mod tests {
 
     #[test]
     fn test_assistant_message_event_error_roundtrip() {
-        let mut msg = AssistantMessage {
+        let msg = AssistantMessage {
             content: vec![],
             api: "anthropic-messages".into(),
             provider: "anthropic".into(),

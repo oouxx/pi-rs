@@ -23,8 +23,10 @@ use crate::utils::sse::parse_sse_body;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
+#[allow(dead_code)]
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
+#[allow(dead_code)]
 const CLAUDE_CODE_TOOLS: &[&str] = &[
     "Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion", "EnterPlanMode",
     "ExitPlanMode", "KillShell", "NotebookEdit", "Skill", "Task", "TaskOutput", "TodoWrite",
@@ -37,7 +39,7 @@ const CLAUDE_CODE_TOOLS: &[&str] = &[
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-struct AnthropicMessageParam {
+pub(crate) struct AnthropicMessageParam {
     role: String,
     content: AnthropicContent,
 }
@@ -85,12 +87,13 @@ struct AnthropicImageSource {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-struct AnthropicTool {
+pub(crate) struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct AnthropicRequest {
@@ -110,6 +113,7 @@ struct AnthropicRequest {
     metadata: Option<Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum AnthropicSystemPrompt {
@@ -165,6 +169,7 @@ struct AnthropicUsage {
     cache_creation_input_tokens: Option<u64>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum AnthropicContentBlockStart {
@@ -226,7 +231,7 @@ fn normalize_tool_call_id(id: &str) -> String {
 }
 
 /// Convert pi-ai messages to Anthropic API message params.
-pub fn convert_messages(messages: &[Message], _model: &Model) -> Vec<AnthropicMessageParam> {
+pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<AnthropicMessageParam> {
     let mut params: Vec<AnthropicMessageParam> = Vec::new();
 
     for msg in messages {
@@ -307,7 +312,7 @@ pub fn convert_messages(messages: &[Message], _model: &Model) -> Vec<AnthropicMe
                             name: name.clone(),
                             input: arguments.clone(),
                         }),
-                        ContentBlock::Thinking { thinking, .. } => {
+                        ContentBlock::Thinking { .. } => {
                             // Thinking blocks are not sent back to the API
                             None
                         }
@@ -357,7 +362,7 @@ pub fn convert_messages(messages: &[Message], _model: &Model) -> Vec<AnthropicMe
 // ============================================================================
 
 /// Convert pi-ai tools to Anthropic API tool definitions.
-pub fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
+pub(crate) fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
     tools
         .iter()
         .map(|t| AnthropicTool {
@@ -387,6 +392,7 @@ pub fn map_stop_reason(reason: &str) -> StopReason {
 // Cache control resolution
 // ============================================================================
 
+#[allow(dead_code)]
 fn resolve_cache_retention(retention: Option<&CacheRetention>) -> CacheRetention {
     match retention {
         Some(r) => r.clone(),
@@ -458,7 +464,7 @@ async fn stream_anthropic_inner(
     let temperature = options.and_then(|o| o.temperature);
     let max_tokens = options.and_then(|o| o.max_tokens).unwrap_or(model.max_tokens);
     let signal = options.and_then(|o| o.signal.clone());
-    let cache_retention = options.and_then(|o| o.cache_retention.as_ref());
+    let _cache_retention = options.and_then(|o| o.cache_retention.as_ref());
 
     let http_client = HttpClient::builder()
         .default_headers({

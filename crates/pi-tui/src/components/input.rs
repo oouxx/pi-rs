@@ -142,17 +142,23 @@ impl Component for Input {
         };
 
         // Build the line with cursor marker
+        // Convert byte offset to character index within the visible portion
+        let cursor_byte_offset = self.cursor.saturating_sub(visible_start);
+        let cursor_char_index = display_value
+            .char_indices()
+            .take_while(|(byte_pos, _)| *byte_pos < cursor_byte_offset)
+            .count();
+
         let mut line = String::new();
         line.push_str(&self.prompt);
 
-        let cursor_offset = self.cursor - visible_start;
         for (i, ch) in display_value.chars().enumerate() {
-            if i == cursor_offset {
+            if i == cursor_char_index {
                 line.push_str(CURSOR_MARKER);
             }
             line.push(ch);
         }
-        if cursor_offset >= display_value.len() {
+        if cursor_char_index >= display_value.chars().count() {
             line.push_str(CURSOR_MARKER);
         }
 

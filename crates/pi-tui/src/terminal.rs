@@ -78,6 +78,12 @@ impl Terminal {
                     event = event_stream.next() => {
                         match event {
                             Some(Ok(Event::Key(key_event))) => {
+                                // Kitty protocol reports both Press and Release events;
+                                // skip Release to avoid processing each keystroke twice.
+                                use crossterm::event::KeyEventKind;
+                                if key_event.kind == KeyEventKind::Release {
+                                    continue;
+                                }
                                 let data = crossterm_key_to_string(&key_event);
                                 if !data.is_empty() {
                                     let _ = input_tx.send(data);

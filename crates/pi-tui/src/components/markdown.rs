@@ -416,6 +416,23 @@ impl Markdown {
         }
     }
 
+    /// Check if the event sequence contains only inline content (no block-level tags).
+    /// When true, the events should be rendered as a single paragraph via `render_inline`.
+    fn has_only_inline_content(events: &[Event]) -> bool {
+        !events.iter().any(|ev| matches!(ev,
+            Event::Start(Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::CodeBlock(_)
+                | Tag::BlockQuote(_)
+                | Tag::List(_)
+                | Tag::Table(_)
+                | Tag::HtmlBlock
+                | Tag::DefinitionList
+                | Tag::DefinitionListTitle
+                | Tag::DefinitionListDefinition)
+        ))
+    }
+
     fn is_next_block(events: &[Event], pos: usize) -> bool {
         if pos >= events.len() {
             return false;
@@ -632,19 +649,24 @@ impl Markdown {
                     };
                     let bw = visible_width(&marker);
                     let item_width = content_width.saturating_sub(bw);
-                    let inner_lines = self.render_events(item_events, item_width);
+                    let inner_lines = if Self::has_only_inline_content(item_events) {
+                        let spans = render_inline(item_events, &self.theme, base_style);
+                        if spans.is_empty() {
+                            vec![]
+                        } else {
+                            vec![Line::from(spans)]
+                        }
+                    } else {
+                        self.render_events(item_events, item_width)
+                    };
                     for (j, content_line) in inner_lines.iter().enumerate() {
                         if j == 0 {
                             let mut new_line = vec![Span::styled(marker.clone(), bullet_style)];
-                            new_line.extend(content_line.spans.iter().map(|s| {
-                                Span::styled(s.content.to_string(), base_style)
-                            }));
+                            new_line.extend(content_line.spans.iter().cloned());
                             result.push(Line::from(new_line));
                         } else {
                             let mut new_line = vec![Span::raw(" ".repeat(bw))];
-                            new_line.extend(content_line.spans.iter().map(|s| {
-                                Span::styled(s.content.to_string(), base_style)
-                            }));
+                            new_line.extend(content_line.spans.iter().cloned());
                             result.push(Line::from(new_line));
                         }
                     }
@@ -670,7 +692,7 @@ impl Markdown {
         &self,
         events: &[Event],
         available_width: usize,
-        _alignments: &[Alignment],
+        alignments: &[Alignment],
         base_style: Style,
     ) -> Vec<Line<'static>> {
         let (headers, rows) = collect_table_cells(events);
@@ -715,42 +737,73 @@ impl Markdown {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        let top_border: String = {
-            let cells: Vec<String> = column_widths.iter().map(|w| "─".repeat(*w)).collect();
-            format!("┌─{}─┐", cells.join("─┬─"))
+        let apply_alignment = |mut spans: Vec<Span<'static>>, align: Alignment, width: usize| -> Vec<Span<'static>> {
+            let cw: usize = spans.iter().map(|s| visible_width(&s.content)).sum();
+            let pad = width.saturating_sub(cw);
+            if pad == 0 {
+                return spans;
+            }
+            match align {
+                Alignment::Right => {
+                    let mut result = vec![Span::raw(" ".repeat(pad))];
+                    result.extend(spans);
+                    result
+                }
+                Alignment::Center => {
+                    let left = pad / 2;
+                    let right = pad - left;
+                    let mut result = vec![Span::raw(" ".repeat(left))];
+                    result.extend(spans);
+                    result.push(Span::raw(" ".repeat(right)));
+                    result
+                }
+                _ => {
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans
+                }
+            }
         };
-        lines.push(Line::from(Span::raw(top_border)));
 
-        let header_cell_lines: Vec<Vec<String>> = headers
+        let build_frame_line = |cell_wrapped: &[Vec<Vec<Span<'static>>>], line_idx: usize, header: bool| -> Vec<Span<'static>> {
+            let mut spans = vec![Span::raw("│ ".to_string())];
+            for ci in 0..num_cols {
+                if ci > 0 {
+                    spans.push(Span::raw(" │ ".to_string()));
+                }
+                if let Some(spans_line) = cell_wrapped.get(ci).and_then(|w| w.get(line_idx)) {
+                    let align = alignments.get(ci).copied().unwrap_or(Alignment::None);
+                    let aligned = apply_alignment(spans_line.clone(), align, column_widths[ci]);
+                    if header {
+                        for mut s in aligned {
+                            s.style.add_modifier = s.style.add_modifier | Modifier::BOLD;
+                            spans.push(s);
+                        }
+                    } else {
+                        spans.extend(aligned);
+                    }
+                } else {
+                    spans.push(Span::raw(" ".repeat(column_widths[ci])));
+                }
+            }
+            spans.push(Span::raw(" │".to_string()));
+            spans
+        };
+
+        let top_cells: Vec<String> = column_widths.iter().map(|w| "─".repeat(*w)).collect();
+        lines.push(Line::from(Span::raw(format!("┌─{}─┐", top_cells.join("─┬─")))));
+
+        let header_wrapped: Vec<Vec<Vec<Span<'static>>>> = headers
             .iter()
             .enumerate()
-            .map(|(col_idx, cell_events)| {
-                let w = column_widths.get(col_idx).copied().unwrap_or(1).max(1);
-                let text = span_text(&render_inline(cell_events, &self.theme, base_style));
-                wrap_text_plain(&text, w)
+            .map(|(ci, cell_events)| {
+                let spans = render_inline(cell_events, &self.theme, base_style);
+                wrap_spans_to_lines(&spans, column_widths[ci])
             })
             .collect();
-        let header_line_count = header_cell_lines
-            .iter()
-            .map(|c| c.len())
-            .max()
-            .unwrap_or(1);
 
-        for line_idx in 0..header_line_count {
-            let row_parts: Vec<String> = header_cell_lines
-                .iter()
-                .enumerate()
-                .map(|(col_idx, cell_lines)| {
-                    let text = cell_lines
-                        .get(line_idx)
-                        .map_or_else(String::new, |s| s.to_string());
-                    let pad = column_widths[col_idx].saturating_sub(visible_width(&text));
-                    format!("{}{}", text, " ".repeat(pad))
-                })
-                .collect();
-            let bold_style = base_style.patch((self.theme.bold)());
-            let cell_text = format!("│ {} │", row_parts.join(" │ "));
-            lines.push(Line::from(Span::styled(cell_text, bold_style)));
+        let header_line_count = header_wrapped.iter().map(|c| c.len()).max().unwrap_or(1);
+        for li in 0..header_line_count {
+            lines.push(Line::from(build_frame_line(&header_wrapped, li, true)));
         }
 
         let sep_cells: Vec<String> = column_widths.iter().map(|w| "─".repeat(*w)).collect();
@@ -760,31 +813,18 @@ impl Markdown {
         ))));
 
         for row in &rows {
-            let row_cell_lines: Vec<Vec<String>> = row
+            let row_wrapped: Vec<Vec<Vec<Span<'static>>>> = row
                 .iter()
                 .enumerate()
-                .map(|(col_idx, cell_events)| {
-                    let w = column_widths.get(col_idx).copied().unwrap_or(1).max(1);
-                    let text = span_text(&render_inline(cell_events, &self.theme, base_style));
-                    wrap_text_plain(&text, w)
+                .map(|(ci, cell_events)| {
+                    let spans = render_inline(cell_events, &self.theme, base_style);
+                    wrap_spans_to_lines(&spans, column_widths[ci])
                 })
                 .collect();
-            let row_line_count = row_cell_lines.iter().map(|c| c.len()).max().unwrap_or(1);
 
-            for line_idx in 0..row_line_count {
-                let row_parts: Vec<String> = row_cell_lines
-                    .iter()
-                    .enumerate()
-                    .map(|(col_idx, cell_lines)| {
-                        let text = cell_lines
-                            .get(line_idx)
-                            .map_or_else(String::new, |s| s.to_string());
-                        let pad = column_widths[col_idx].saturating_sub(visible_width(&text));
-                        format!("{}{}", text, " ".repeat(pad))
-                    })
-                    .collect();
-                let cell_text = format!("│ {} │", row_parts.join(" │ "));
-                lines.push(Line::from(Span::raw(cell_text)));
+            let row_line_count = row_wrapped.iter().map(|c| c.len()).max().unwrap_or(1);
+            for li in 0..row_line_count {
+                lines.push(Line::from(build_frame_line(&row_wrapped, li, false)));
             }
         }
 
@@ -818,6 +858,78 @@ fn span_text(spans: &[Span<'static>]) -> String {
         s.push_str(&span.content);
     }
     s
+}
+
+fn wrap_spans_to_lines(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if max_width == 0 || spans.is_empty() {
+        return vec![vec![]];
+    }
+
+    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
+    let line_width = |l: &[Span<'static>]| -> usize { l.iter().map(|s| visible_width(&s.content)).sum() };
+
+    for span in spans {
+        let text = &span.content;
+        let style = span.style;
+        let sw = visible_width(text);
+
+        if sw == 0 {
+            continue;
+        }
+
+        let cur = line_width(lines.last().unwrap());
+
+        if cur + sw <= max_width {
+            lines.last_mut().unwrap().push(span.clone());
+        } else if sw <= max_width {
+            lines.push(vec![span.clone()]);
+        } else {
+            let mut remaining: &str = text;
+            let mut first = true;
+            while !remaining.is_empty() {
+                let avail = if first {
+                    max_width.saturating_sub(line_width(lines.last().unwrap()))
+                } else {
+                    max_width
+                };
+                first = false;
+
+                if avail == 0 {
+                    lines.push(vec![]);
+                    continue;
+                }
+
+                let mut taken = 0;
+                let mut tw = 0;
+                for ch in remaining.chars() {
+                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if tw + cw > avail {
+                        break;
+                    }
+                    tw += cw;
+                    taken += 1;
+                }
+
+                if taken == 0 {
+                    taken = 1;
+                }
+
+                let (part, rest) = remaining.split_at(taken);
+                lines.last_mut().unwrap().push(Span::styled(part.to_string(), style));
+                remaining = rest;
+
+                if !remaining.is_empty() {
+                    lines.push(vec![]);
+                }
+            }
+        }
+    }
+
+    while lines.len() > 1 && lines.last().map_or(false, |l| l.is_empty()) {
+        lines.pop();
+    }
+
+    lines
 }
 
 /// Simple text wrapping by character count (not ANSI-aware, used for tables)
@@ -1257,5 +1369,96 @@ mod tests {
         assert!(output.contains("Left"), "Header Left should be present");
         assert!(output.contains("Center"), "Header Center should be present");
         assert!(output.contains("Right"), "Header Right should be present");
+    }
+
+    #[test]
+    fn test_list_bold_item() {
+        let md = Markdown::new("- **bold item**".to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        assert!(!lines.is_empty());
+        assert!(line_content(&lines[0]).contains("bold item"));
+        let has_bold = lines[0].spans.iter().any(|s| {
+            s.content == "bold item" && s.style.add_modifier.contains(Modifier::BOLD)
+        });
+        assert!(has_bold, "'bold item' should have bold style in list");
+    }
+
+    #[test]
+    fn test_list_inline_code_item() {
+        let md = Markdown::new("- use `let x = 1` here".to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        assert!(!lines.is_empty());
+        assert!(line_content(&lines[0]).contains("let x = 1"));
+        let has_code_style = lines[0].spans.iter().any(|s| {
+            s.content == "let x = 1" && s.style.fg == Some(Color::Yellow)
+        });
+        assert!(has_code_style, "inline code should have yellow style in list");
+    }
+
+    #[test]
+    fn test_list_mixed_inline_styles() {
+        let md = Markdown::new(
+            "- normal **bold** and `code`".to_string(),
+            0, 0, default_theme(), None, None,
+        );
+        let lines = md.render(80);
+        assert!(!lines.is_empty());
+        let has_bold = lines[0].spans.iter().any(|s| {
+            s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD)
+        });
+        assert!(has_bold, "'bold' in list should have bold style");
+        let has_code = lines[0].spans.iter().any(|s| {
+            s.content == "code" && s.style.fg == Some(Color::Yellow)
+        });
+        assert!(has_code, "'code' in list should have code style");
+    }
+
+    #[test]
+    fn test_table_inline_styles() {
+        let md = Markdown::new(
+            "| Normal | Colored |\n|--------|---------|\n| **bold** | `code` |".to_string(),
+            0, 0, default_theme(), None, None,
+        );
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+        assert!(output.contains("bold"), "Table should contain bold text");
+        assert!(output.contains("code"), "Table should contain code text");
+
+        let has_bold = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        assert!(has_bold, "'bold' in table cell should have bold style");
+        let has_code = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "code" && s.style.fg == Some(Color::Yellow))
+        });
+        assert!(has_code, "'code' in table cell should have code style");
+    }
+
+    #[test]
+    fn test_table_inline_styles_header() {
+        let md = Markdown::new(
+            "| **H1** | `H2` |\n|------|------|\n| A    | B    |".to_string(),
+            0, 0, default_theme(), None, None,
+        );
+        let lines = md.render(80);
+        let has_bold = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "H1" && s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        assert!(has_bold, "'H1' in table header should have bold style due to markdown + header bold");
+        let has_code = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "H2" && s.style.fg == Some(Color::Yellow))
+        });
+        assert!(has_code, "'H2' in table header should have code style");
+    }
+
+    #[test]
+    fn test_list_italic_item() {
+        let md = Markdown::new("- *italic text*".to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        assert!(!lines.is_empty());
+        let has_italic = lines[0].spans.iter().any(|s| {
+            s.content == "italic text" && s.style.add_modifier.contains(Modifier::ITALIC)
+        });
+        assert!(has_italic, "'italic text' in list should have italic style");
     }
 }

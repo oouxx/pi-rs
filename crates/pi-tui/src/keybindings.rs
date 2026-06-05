@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::keys::{matches_key, Key, KeyEvent, KeyEventType, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 /// A keybinding definition that maps a named action to a key sequence.
 #[derive(Debug, Clone)]
@@ -58,20 +58,21 @@ impl KeybindingsManager {
         }
     }
 
-    /// Check if a raw input string matches a given action's keybinding.
-    pub fn matches(&self, data: &str, action_name: &str) -> bool {
+    /// Check if a key event matches a given action's keybinding.
+    pub fn matches(&self, event: &KeyEvent, action_name: &str) -> bool {
         let resolved = self.get_resolved_key(action_name);
-        if let Some(key_event) = resolved {
-            return matches_key(data, &key_event);
+        if let Some(expected) = resolved {
+            return event.code == expected.code
+                && event.modifiers == expected.modifiers;
         }
         false
     }
 
     /// Get the default keys for an action.
-    pub fn get_keys(&self, action_name: &str) -> Vec<Key> {
+    pub fn get_keys(&self, action_name: &str) -> Vec<KeyCode> {
         self.definitions
             .get(action_name)
-            .map(|d| vec![d.default_key.key.clone()])
+            .map(|d| vec![d.default_key.code])
             .unwrap_or_default()
     }
 
@@ -100,7 +101,7 @@ impl KeybindingsManager {
                 key: resolved
                     .iter()
                     .find(|(_, k)| format!("{:?}", k) == key_str)
-                    .map(|(_, k)| k.clone())
+                    .map(|(_, k)| *k)
                     .unwrap(),
                 actions,
             })
@@ -123,9 +124,9 @@ impl KeybindingsManager {
         let mut resolved = HashMap::new();
         for (name, def) in &self.definitions {
             if let Some(user_key) = user.get(name) {
-                resolved.insert(name.clone(), user_key.clone());
+                resolved.insert(name.clone(), *user_key);
             } else {
-                resolved.insert(name.clone(), def.default_key.clone());
+                resolved.insert(name.clone(), def.default_key);
             }
         }
         resolved
@@ -134,70 +135,66 @@ impl KeybindingsManager {
     fn get_resolved_key(&self, action_name: &str) -> Option<KeyEvent> {
         let user = self.user_bindings.read().unwrap();
         if let Some(key) = user.get(action_name) {
-            return Some(key.clone());
+            return Some(*key);
         }
         self.definitions
             .get(action_name)
-            .map(|d| d.default_key.clone())
+            .map(|d| d.default_key)
     }
 }
 
 /// Default keybindings for editor context.
 pub fn editor_keybindings() -> Vec<KeybindingDefinition> {
     vec![
-        def("cursorLeft", "Move cursor left", Key::Left, KeyModifiers::default()),
-        def("cursorRight", "Move cursor right", Key::Right, KeyModifiers::default()),
-        def("cursorUp", "Move cursor up", Key::Up, KeyModifiers::default()),
-        def("cursorDown", "Move cursor down", Key::Down, KeyModifiers::default()),
-        def("cursorLineStart", "Move to line start", Key::Home, KeyModifiers::default()),
-        def("cursorLineEnd", "Move to line end", Key::End, KeyModifiers::default()),
-        def("deleteBackward", "Delete backward", Key::Backspace, KeyModifiers::default()),
-        def("deleteForward", "Delete forward", Key::Delete, KeyModifiers::default()),
-        def("pageUp", "Page up", Key::PageUp, KeyModifiers::default()),
-        def("pageDown", "Page down", Key::PageDown, KeyModifiers::default()),
-        def("undo", "Undo", Key::Char('z'), KeyModifiers { ctrl: true, ..Default::default() }),
-        def("redo", "Redo", Key::Char('y'), KeyModifiers { ctrl: true, ..Default::default() }),
+        def("cursorLeft", "Move cursor left", KeyCode::Left, KeyModifiers::NONE),
+        def("cursorRight", "Move cursor right", KeyCode::Right, KeyModifiers::NONE),
+        def("cursorUp", "Move cursor up", KeyCode::Up, KeyModifiers::NONE),
+        def("cursorDown", "Move cursor down", KeyCode::Down, KeyModifiers::NONE),
+        def("cursorLineStart", "Move to line start", KeyCode::Home, KeyModifiers::NONE),
+        def("cursorLineEnd", "Move to line end", KeyCode::End, KeyModifiers::NONE),
+        def("deleteBackward", "Delete backward", KeyCode::Backspace, KeyModifiers::NONE),
+        def("deleteForward", "Delete forward", KeyCode::Delete, KeyModifiers::NONE),
+        def("pageUp", "Page up", KeyCode::PageUp, KeyModifiers::NONE),
+        def("pageDown", "Page down", KeyCode::PageDown, KeyModifiers::NONE),
+        def("undo", "Undo", KeyCode::Char('z'), KeyModifiers::CONTROL),
+        def("redo", "Redo", KeyCode::Char('y'), KeyModifiers::CONTROL),
     ]
 }
 
 /// Default keybindings for input context.
 pub fn input_keybindings() -> Vec<KeybindingDefinition> {
     vec![
-        def("submit", "Submit input", Key::Enter, KeyModifiers::default()),
-        def("newline", "Insert newline", Key::Enter, KeyModifiers { alt: true, ..Default::default() }),
-        def("tab", "Insert tab or autocomplete", Key::Tab, KeyModifiers::default()),
-        def("cancel", "Cancel input", Key::Escape, KeyModifiers::default()),
-        def("cursorLeft", "Move cursor left", Key::Left, KeyModifiers::default()),
-        def("cursorRight", "Move cursor right", Key::Right, KeyModifiers::default()),
-        def("cursorHome", "Move to start", Key::Home, KeyModifiers::default()),
-        def("cursorEnd", "Move to end", Key::End, KeyModifiers::default()),
-        def("deleteBackward", "Delete backward", Key::Backspace, KeyModifiers::default()),
-        def("deleteForward", "Delete forward", Key::Delete, KeyModifiers::default()),
-        def("deleteWordBackward", "Delete word backward", Key::Backspace, KeyModifiers { ctrl: true, ..Default::default() }),
+        def("submit", "Submit input", KeyCode::Enter, KeyModifiers::NONE),
+        def("newline", "Insert newline", KeyCode::Enter, KeyModifiers::ALT),
+        def("tab", "Insert tab or autocomplete", KeyCode::Tab, KeyModifiers::NONE),
+        def("cancel", "Cancel input", KeyCode::Esc, KeyModifiers::NONE),
+        def("cursorLeft", "Move cursor left", KeyCode::Left, KeyModifiers::NONE),
+        def("cursorRight", "Move cursor right", KeyCode::Right, KeyModifiers::NONE),
+        def("cursorHome", "Move to start", KeyCode::Home, KeyModifiers::NONE),
+        def("cursorEnd", "Move to end", KeyCode::End, KeyModifiers::NONE),
+        def("deleteBackward", "Delete backward", KeyCode::Backspace, KeyModifiers::NONE),
+        def("deleteForward", "Delete forward", KeyCode::Delete, KeyModifiers::NONE),
+        def("deleteWordBackward", "Delete word backward", KeyCode::Backspace, KeyModifiers::CONTROL),
     ]
 }
 
 /// Default keybindings for select list context.
 pub fn select_list_keybindings() -> Vec<KeybindingDefinition> {
     vec![
-        def("selectUp", "Move selection up", Key::Up, KeyModifiers::default()),
-        def("selectDown", "Move selection down", Key::Down, KeyModifiers::default()),
-        def("selectConfirm", "Confirm selection", Key::Enter, KeyModifiers::default()),
-        def("selectCancel", "Cancel selection", Key::Escape, KeyModifiers::default()),
-        def("selectPageUp", "Page up", Key::PageUp, KeyModifiers::default()),
-        def("selectPageDown", "Page down", Key::PageDown, KeyModifiers::default()),
+        def("selectUp", "Move selection up", KeyCode::Up, KeyModifiers::NONE),
+        def("selectDown", "Move selection down", KeyCode::Down, KeyModifiers::NONE),
+        def("selectConfirm", "Confirm selection", KeyCode::Enter, KeyModifiers::NONE),
+        def("selectCancel", "Cancel selection", KeyCode::Esc, KeyModifiers::NONE),
+        def("selectPageUp", "Page up", KeyCode::PageUp, KeyModifiers::NONE),
+        def("selectPageDown", "Page down", KeyCode::PageDown, KeyModifiers::NONE),
     ]
 }
 
-fn def(name: &str, desc: &str, key: Key, modifiers: KeyModifiers) -> KeybindingDefinition {
+fn def(name: &str, desc: &str, code: KeyCode, modifiers: KeyModifiers) -> KeybindingDefinition {
     KeybindingDefinition {
         name: name.to_string(),
         description: desc.to_string(),
-        default_key: KeyEvent {
-            key,
-            modifiers,
-            event_type: KeyEventType::Press,
-        },
+        default_key: KeyEvent::new(code, modifiers),
     }
 }
 
@@ -225,7 +222,6 @@ pub fn init_keybindings(user_bindings: Option<KeybindingsConfig>) {
 }
 
 /// Get a reference to the global keybindings manager.
-/// Auto-initializes with defaults if not yet initialized.
 pub fn get_keybindings() -> Arc<KeybindingsManager> {
     GLOBAL_KEYBINDINGS
         .get()
@@ -258,8 +254,8 @@ mod tests {
             }],
             None,
         );
-        assert!(manager.matches("\x1b[A", "cursorUp"));
-        assert!(manager.matches("\x1b[B", "cursorDown"));
+        assert!(manager.matches(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), "cursorUp"));
+        assert!(manager.matches(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), "cursorDown"));
     }
 
     #[test]
@@ -267,11 +263,7 @@ mod tests {
         let mut overrides = HashMap::new();
         overrides.insert(
             "cursorUp".to_string(),
-            KeyEvent {
-                key: Key::Char('k'),
-                modifiers: KeyModifiers::default(),
-                event_type: KeyEventType::Press,
-            },
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
         );
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
@@ -280,9 +272,8 @@ mod tests {
             }],
             Some(overrides),
         );
-        // Now cursorUp should match 'k' instead of up arrow
-        assert!(manager.matches("k", "cursorUp"));
-        assert!(!manager.matches("\x1b[A", "cursorUp"));
+        assert!(manager.matches(&KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE), "cursorUp"));
+        assert!(!manager.matches(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), "cursorUp"));
     }
 
     #[test]
@@ -291,8 +282,8 @@ mod tests {
             vec![KeybindingDefinitions {
                 context: "test".into(),
                 definitions: vec![
-                    def("action1", "First", Key::Enter, KeyModifiers::default()),
-                    def("action2", "Second", Key::Enter, KeyModifiers::default()),
+                    def("action1", "First", KeyCode::Enter, KeyModifiers::NONE),
+                    def("action2", "Second", KeyCode::Enter, KeyModifiers::NONE),
                 ],
             }],
             None,
@@ -302,19 +293,12 @@ mod tests {
         assert_eq!(conflicts[0].actions.len(), 2);
     }
 
-    // --- Supplementary tests matching TS originals ---
-
     #[test]
     fn test_rebinding_submit_does_not_evict_select_confirm() {
-        // TS: "does not evict selector confirm when input submit is rebound"
         let mut overrides = HashMap::new();
         overrides.insert(
             "submit".to_string(),
-            KeyEvent {
-                key: Key::Enter,
-                modifiers: KeyModifiers { ctrl: true, ..Default::default() },
-                event_type: KeyEventType::Press,
-            },
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
         );
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
@@ -326,23 +310,15 @@ mod tests {
             }],
             Some(overrides),
         );
-        // Input submit should now require ctrl+enter
-        assert!(manager.matches("\r", "submit") == false || true); // may still match depending on how override is applied
-        // Select confirm should still work with plain enter
-        assert!(manager.matches("\r", "selectConfirm"));
+        assert!(manager.matches(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), "selectConfirm"));
     }
 
     #[test]
     fn test_rebinding_select_up_does_not_evict_editor_cursor_up() {
-        // TS: "does not evict cursor bindings when another action reuses the same key"
         let mut overrides = HashMap::new();
         overrides.insert(
             "selectUp".to_string(),
-            KeyEvent {
-                key: Key::Up,
-                modifiers: KeyModifiers { ctrl: true, ..Default::default() },
-                event_type: KeyEventType::Press,
-            },
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
         );
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
@@ -354,29 +330,19 @@ mod tests {
             }],
             Some(overrides),
         );
-        // cursorUp should still work with plain up arrow
-        assert!(manager.matches("\x1b[A", "cursorUp"));
+        assert!(manager.matches(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), "cursorUp"));
     }
 
     #[test]
     fn test_user_conflicts_detected() {
-        // TS: "still reports direct user binding conflicts without evicting defaults"
         let mut overrides = HashMap::new();
         overrides.insert(
             "submit".to_string(),
-            KeyEvent {
-                key: Key::Char('x'),
-                modifiers: KeyModifiers { ctrl: true, ..Default::default() },
-                event_type: KeyEventType::Press,
-            },
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
         );
         overrides.insert(
             "selectConfirm".to_string(),
-            KeyEvent {
-                key: Key::Char('x'),
-                modifiers: KeyModifiers { ctrl: true, ..Default::default() },
-                event_type: KeyEventType::Press,
-            },
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
         );
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
@@ -390,7 +356,6 @@ mod tests {
         );
         let conflicts = manager.get_conflicts();
         assert!(!conflicts.is_empty());
-        // Both "submit" and "selectConfirm" should be in the conflict
         let all_actions: Vec<&String> = conflicts.iter().flat_map(|c| &c.actions).collect();
         assert!(all_actions.iter().any(|a| a.as_str() == "submit"));
         assert!(all_actions.iter().any(|a| a.as_str() == "selectConfirm"));
@@ -401,11 +366,7 @@ mod tests {
         let mut overrides = HashMap::new();
         overrides.insert(
             "cursorUp".to_string(),
-            KeyEvent {
-                key: Key::Char('k'),
-                modifiers: KeyModifiers::default(),
-                event_type: KeyEventType::Press,
-            },
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
         );
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
@@ -416,7 +377,7 @@ mod tests {
         );
         let resolved = manager.get_resolved_bindings();
         let cursor_up = resolved.get("cursorUp").unwrap();
-        assert_eq!(cursor_up.key, Key::Char('k'));
+        assert_eq!(cursor_up.code, KeyCode::Char('k'));
     }
 
     #[test]
@@ -429,6 +390,6 @@ mod tests {
             None,
         );
         let keys = manager.get_keys("submit");
-        assert!(keys.contains(&Key::Enter));
+        assert!(keys.contains(&KeyCode::Enter));
     }
 }

@@ -1,7 +1,9 @@
 use std::time::Instant;
 
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
 use crate::tui::Component;
-use crate::utils::wrap_text_with_ansi;
 
 pub const DEFAULT_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub const DEFAULT_INTERVAL_MS: u64 = 80;
@@ -26,19 +28,19 @@ pub struct Loader {
     current_frame: usize,
     last_update: Instant,
     message: String,
-    display_text: String,
+    display_text: Line<'static>,
     padding_y: u16,
     render_indicator_verbatim: bool,
-    spinner_color_fn: Box<dyn Fn(&str) -> String + Send + Sync>,
-    message_color_fn: Box<dyn Fn(&str) -> String + Send + Sync>,
+    spinner_color_fn: Box<dyn Fn(&str) -> Style + Send + Sync>,
+    message_color_fn: Box<dyn Fn(&str) -> Style + Send + Sync>,
     request_render: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Loader {
     pub fn new(
         request_render: Option<Box<dyn Fn() + Send + Sync>>,
-        spinner_color_fn: Box<dyn Fn(&str) -> String + Send + Sync>,
-        message_color_fn: Box<dyn Fn(&str) -> String + Send + Sync>,
+        spinner_color_fn: Box<dyn Fn(&str) -> Style + Send + Sync>,
+        message_color_fn: Box<dyn Fn(&str) -> Style + Send + Sync>,
         message: impl Into<String>,
         indicator: Option<LoaderIndicatorOptions>,
     ) -> Self {
@@ -48,7 +50,7 @@ impl Loader {
             current_frame: 0,
             last_update: Instant::now(),
             message: message.into(),
-            display_text: String::new(),
+            display_text: Line::from(vec![]),
             padding_y: 1,
             render_indicator_verbatim: false,
             spinner_color_fn,
@@ -106,18 +108,24 @@ impl Loader {
     }
 
     fn update_display(&mut self) {
-        let frame = self.frames.get(self.current_frame).cloned().unwrap_or_default();
-        let rendered_frame = if self.render_indicator_verbatim {
-            frame.clone()
+        let frame = self
+            .frames
+            .get(self.current_frame)
+            .cloned()
+            .unwrap_or_default();
+        let message_style = (self.message_color_fn)(&self.message);
+        let spinner_style = if self.render_indicator_verbatim {
+            Style::default()
         } else {
             (self.spinner_color_fn)(&frame)
         };
-        let indicator = if frame.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", rendered_frame)
-        };
-        self.display_text = format!("{}{}", indicator, (self.message_color_fn)(&self.message));
+
+        let mut spans = Vec::new();
+        if !frame.is_empty() {
+            spans.push(Span::styled(format!("{} ", frame), spinner_style));
+        }
+        spans.push(Span::styled(self.message.clone(), message_style));
+        self.display_text = Line::from(spans);
         if let Some(ref cb) = self.request_render {
             cb();
         }
@@ -125,13 +133,18 @@ impl Loader {
 }
 
 impl Component for Loader {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         let mut result = Vec::new();
         for _ in 0..self.padding_y {
-            result.push(" ".repeat(width as usize));
+            result.push(Line::from(Span::raw(" ".repeat(width as usize))));
         }
-        for line in wrap_text_with_ansi(&self.display_text, width as usize) {
-            result.push(line);
+        if self.frames.is_empty() {
+            result.push(Line::from(Span::styled(
+                self.message.clone(),
+                (self.message_color_fn)(&self.message),
+            )));
+        } else {
+            result.push(self.display_text.clone());
         }
         result
     }
@@ -140,13 +153,14 @@ impl Component for Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Style;
 
     #[test]
     fn test_loader_creation() {
         let loader = Loader::new(
             None,
-            Box::new(|s| format!("\x1b[36m{}\x1b[0m", s)),
-            Box::new(|s| format!("\x1b[2m{}\x1b[0m", s)),
+            Box::new(|_s| Style::default().fg(ratatui::style::Color::Cyan)),
+            Box::new(|_s| Style::default()),
             "Loading...",
             None,
         );
@@ -158,42 +172,40 @@ mod tests {
     fn test_loader_render_multi_line() {
         let loader = Loader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Loading...",
             None,
         );
         let lines = loader.render(80);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].len(), 80);
-        assert!(lines[1].contains("Loading"));
+        assert!(lines[1].to_string().contains("Loading"));
     }
 
     #[test]
     fn test_loader_set_message() {
         let mut loader = Loader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Loading...",
             None,
         );
         loader.set_message("Processing...");
         let lines = loader.render(80);
-        assert!(lines[1].contains("Processing"));
+        assert!(lines[1].to_string().contains("Processing"));
     }
 
     #[test]
     fn test_loader_advance_frame() {
         let mut loader = Loader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "test",
             None,
         );
         let frame0 = loader.current_frame;
-        // Force advance by manipulating last_update
         loader.last_update = Instant::now() - std::time::Duration::from_millis(200);
         loader.advance_frame();
         assert_ne!(loader.current_frame, frame0);
@@ -203,8 +215,8 @@ mod tests {
     fn test_loader_no_advance_before_interval() {
         let mut loader = Loader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "test",
             None,
         );
@@ -217,8 +229,8 @@ mod tests {
     fn test_loader_empty_frames() {
         let mut loader = Loader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "no spinner",
             Some(LoaderIndicatorOptions {
                 frames: Some(vec![]),
@@ -226,16 +238,16 @@ mod tests {
             }),
         );
         let lines = loader.render(80);
-        assert!(lines[1].contains("no spinner"));
-        assert!(!lines[1].contains("⠋"));
+        assert!(lines[1].to_string().contains("no spinner"));
+        assert!(!lines[1].to_string().contains("⠋"));
     }
 
     #[test]
     fn test_loader_width_zero() {
         let loader = Loader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "test",
             None,
         );

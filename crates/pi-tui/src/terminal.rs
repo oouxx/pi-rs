@@ -1,7 +1,7 @@
 use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream,
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEvent,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -9,8 +9,6 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal as RatatuiTerminal;
 use tokio::sync::mpsc;
-
-use crate::keys::set_kitty_protocol_active;
 
 /// Terminal abstraction wrapping ratatui's CrosstermBackend.
 /// Provides raw mode, kitty protocol negotiation, input events, and output.
@@ -48,10 +46,9 @@ impl Terminal {
 
     /// Enter raw mode, enable kitty keyboard protocol, start input event loop.
     /// Returns a channel receiver for input events and a shutdown sender.
-    pub fn start(&mut self) -> io::Result<(mpsc::UnboundedReceiver<String>, ShutdownGuard)> {
+    pub fn start(&mut self) -> io::Result<(mpsc::UnboundedReceiver<KeyEvent>, ShutdownGuard)> {
         crossterm::terminal::enable_raw_mode()?;
 
-        // Enable bracketed paste and kitty keyboard enhancement
         execute!(
             io::stdout(),
             EnableBracketedPaste,
@@ -63,9 +60,8 @@ impl Terminal {
         )?;
 
         self.kitty_active = true;
-        set_kitty_protocol_active(true);
 
-        let (input_tx, input_rx) = mpsc::unbounded_channel::<String>();
+        let (input_tx, input_rx) = mpsc::unbounded_channel::<KeyEvent>();
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let mut event_stream = EventStream::new();
@@ -78,20 +74,10 @@ impl Terminal {
                     event = event_stream.next() => {
                         match event {
                             Some(Ok(Event::Key(key_event))) => {
-                                // Kitty protocol reports both Press and Release events;
-                                // skip Release to avoid processing each keystroke twice.
-                                use crossterm::event::KeyEventKind;
-                                if key_event.kind == KeyEventKind::Release {
+                                if key_event.kind == crossterm::event::KeyEventKind::Release {
                                     continue;
                                 }
-                                let data = crossterm_key_to_string(&key_event);
-                                if !data.is_empty() {
-                                    let _ = input_tx.send(data);
-                                }
-                            }
-                            Some(Ok(Event::Resize(cols, _rows))) => {
-                                // Resize will be picked up on next render
-                                let _ = cols;
+                                let _ = input_tx.send(key_event);
                             }
                             Some(Ok(_)) => {}
                             Some(Err(_)) => break,
@@ -106,23 +92,19 @@ impl Terminal {
         Ok((input_rx, ShutdownGuard { sender: Some(shutdown_tx) }))
     }
 
-    /// Access the underlying ratatui terminal for rendering.
     pub fn ratatui_terminal(&mut self) -> &mut RatatuiTerminal<CrosstermBackend<Stdout>> {
         &mut self.inner
     }
 
-    /// Get a frame for rendering.
     pub fn get_frame(&mut self) -> ratatui::Frame {
         self.inner.get_frame()
     }
 
-    /// Clear the terminal and reset cursor.
     pub fn clear(&mut self) -> io::Result<()> {
         execute!(io::stdout(), crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
         Ok(())
     }
 
-    /// Update the internally tracked terminal size.
     pub fn refresh_size(&mut self) {
         if let Ok((cols, rows)) = crossterm::terminal::size() {
             self.columns = cols;
@@ -148,7 +130,6 @@ impl ShutdownGuard {
             PopKeyboardEnhancementFlags,
             crossterm::cursor::Show,
         );
-        set_kitty_protocol_active(false);
     }
 }
 
@@ -158,46 +139,5 @@ impl Drop for ShutdownGuard {
             let _ = tx.send(());
         }
         let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
-
-/// Convert a crossterm KeyEvent to its raw string representation for input parsing.
-fn crossterm_key_to_string(key: &crossterm::event::KeyEvent) -> String {
-    use crossterm::event::{KeyCode::*, KeyModifiers};
-
-    match key.code {
-        Char(c) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && c.is_ascii_alphabetic() {
-                // Ctrl+A..Z → \x01..\x1a
-                (c.to_ascii_lowercase() as u8 - b'a' + 1).to_string()
-            } else if key.modifiers.contains(KeyModifiers::ALT) {
-                format!("\x1b{}", c)
-            } else {
-                c.to_string()
-            }
-        }
-        Enter => "\r".to_string(),
-        Tab => "\t".to_string(),
-        Backspace => "\x7f".to_string(),
-        Esc => "\x1b".to_string(),
-        Delete => "\x1b[3~".to_string(),
-        Up => "\x1b[A".to_string(),
-        Down => "\x1b[B".to_string(),
-        Left => "\x1b[D".to_string(),
-        Right => "\x1b[C".to_string(),
-        Home => "\x1b[H".to_string(),
-        End => "\x1b[F".to_string(),
-        PageUp => "\x1b[5~".to_string(),
-        PageDown => "\x1b[6~".to_string(),
-        Insert => "\x1b[2~".to_string(),
-        F(n) => match n {
-            1 => "\x1bOP".to_string(),
-            2 => "\x1bOQ".to_string(),
-            3 => "\x1bOR".to_string(),
-            4 => "\x1bOS".to_string(),
-            n if n <= 12 => format!("\x1b[{}~", 10 + n),
-            _ => String::new(),
-        },
-        _ => String::new(),
     }
 }

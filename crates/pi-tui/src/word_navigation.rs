@@ -1,4 +1,3 @@
-use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum SegType { Word, Whitespace, Atomic }

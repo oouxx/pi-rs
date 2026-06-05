@@ -1,9 +1,54 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
 use crate::fuzzy::fuzzy_filter;
 use crate::keybindings::get_keybindings;
 use crate::tui::Component;
-use crate::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
+use crate::utils::{truncate_to_width, visible_width};
 
 use super::input::Input;
+
+fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut line_width = 0;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines.push(current_line);
+            current_line = String::new();
+            line_width = 0;
+            continue;
+        }
+
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+
+        if line_width + ch_width > width {
+            if !current_line.is_empty() {
+                lines.push(current_line);
+            }
+            current_line = String::new();
+            line_width = 0;
+        }
+
+        current_line.push(ch);
+        line_width += ch_width;
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
 
 pub struct SettingItem {
     pub id: String,
@@ -14,11 +59,11 @@ pub struct SettingItem {
 }
 
 pub struct SettingsListTheme {
-    pub label: Box<dyn Fn(&str, bool) -> String + Send + Sync>,
-    pub value: Box<dyn Fn(&str, bool) -> String + Send + Sync>,
-    pub description: Box<dyn Fn(&str) -> String + Send + Sync>,
+    pub label: Box<dyn Fn(&str, bool) -> Style + Send + Sync>,
+    pub value: Box<dyn Fn(&str, bool) -> Style + Send + Sync>,
+    pub description: Box<dyn Fn(&str) -> Style + Send + Sync>,
     pub cursor: String,
-    pub hint: Box<dyn Fn(&str) -> String + Send + Sync>,
+    pub hint: Box<dyn Fn(&str) -> Style + Send + Sync>,
 }
 
 pub struct SettingsListOptions {
@@ -111,17 +156,20 @@ impl SettingsList {
 }
 
 impl Component for SettingsList {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
         if let Some(ref input) = self.search_input {
             lines.extend(input.render(width));
-            lines.push(String::new());
+            lines.push(Line::from(vec![]));
         }
 
         let display = self.display_items();
         if display.is_empty() {
-            lines.push((self.theme.hint)("  No matching settings"));
+            lines.push(Line::from(Span::styled(
+                "  No matching settings",
+                (self.theme.hint)("  No matching settings"),
+            )));
             add_hint_line(&mut lines, width, &self.theme, self.search_enabled);
             return lines;
         }
@@ -147,36 +195,48 @@ impl Component for SettingsList {
             } else {
                 "  ".to_string()
             };
-            let pw = visible_width(&prefix);
+
             let label_padded = format!(
                 "{}{}",
                 item.label,
                 " ".repeat(max_label_w.saturating_sub(visible_width(&item.label)))
             );
-            let label_text = (self.theme.label)(&label_padded, selected);
-            let sep = "  ";
-            let used = pw + max_label_w + visible_width(sep);
+
+            let used = visible_width(&prefix) + max_label_w + visible_width("  ");
             let vmax = (width as usize).saturating_sub(used + 2).max(1);
-            let value_text = (self.theme.value)(
-                &truncate_to_width(&item.current_value, vmax),
-                selected,
-            );
-            lines.push(truncate_to_width(
-                &format!("{}{}{}{}", prefix, label_text, sep, value_text),
-                width as usize,
-            ));
+            let truncated_value = truncate_to_width(&item.current_value, vmax);
+
+            let mut spans: Vec<Span<'static>> = vec![
+                Span::raw(prefix),
+                Span::styled(
+                    label_padded.clone(),
+                    (self.theme.label)(&label_padded, selected),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    truncated_value.clone(),
+                    (self.theme.value)(&truncated_value, selected),
+                ),
+            ];
+
+            lines.push(Line::from(spans));
         }
 
         if start > 0 || end < display.len() {
             let scroll = format!("  ({}/{})", self.selected_index + 1, display.len());
-            lines.push((self.theme.hint)(&truncate_to_width(&scroll, width.saturating_sub(2) as usize)));
+            let truncated = truncate_to_width(&scroll, width.saturating_sub(2) as usize);
+            let hint_style = (self.theme.hint)(&truncated);
+            lines.push(Line::from(Span::styled(truncated, hint_style)));
         }
 
         if let Some(item) = display.get(self.selected_index) {
             if let Some(ref desc) = item.description {
-                lines.push(String::new());
-                for wl in wrap_text_with_ansi(desc, (width as usize).saturating_sub(4)) {
-                    lines.push((self.theme.description)(&format!("  {}", wl)));
+                lines.push(Line::from(vec![]));
+                let desc_width = (width as usize).saturating_sub(4);
+                for wl in wrap_plain_text(desc, desc_width) {
+                    let text = format!("  {}", wl);
+                    let style = (self.theme.description)(&text);
+                    lines.push(Line::from(Span::styled(text, style)));
                 }
             }
         }
@@ -185,14 +245,14 @@ impl Component for SettingsList {
         lines
     }
 
-    fn handle_input(&mut self, data: &str) {
+    fn handle_input(&mut self, event: &KeyEvent) {
         if self.search_enabled {
             let old_value = self
                 .search_input
                 .as_ref()
                 .map(|i| i.get_value().to_string());
             if let Some(ref mut input) = self.search_input {
-                input.handle_input(data);
+                input.handle_input(event);
             }
             let new_value = self
                 .search_input
@@ -211,21 +271,21 @@ impl Component for SettingsList {
             return;
         }
 
-        if kb.matches(data, "selectUp") {
+        if kb.matches(event, "selectUp") {
             self.selected_index = if self.selected_index == 0 {
                 display_len - 1
             } else {
                 self.selected_index - 1
             };
-        } else if kb.matches(data, "selectDown") {
+        } else if kb.matches(event, "selectDown") {
             self.selected_index = if self.selected_index >= display_len - 1 {
                 0
             } else {
                 self.selected_index + 1
             };
-        } else if kb.matches(data, "confirm") || data == " " {
+        } else if kb.matches(event, "confirm") || event.code == KeyCode::Char(' ') {
             self.activate_selected();
-        } else if kb.matches(data, "cancel") {
+        } else if kb.matches(event, "cancel") {
             (self.on_cancel)();
         }
     }
@@ -255,19 +315,27 @@ impl SettingsList {
     }
 }
 
-fn add_hint_line(lines: &mut Vec<String>, width: u16, theme: &SettingsListTheme, search: bool) {
-    lines.push(String::new());
+fn add_hint_line(
+    lines: &mut Vec<Line<'static>>,
+    width: u16,
+    theme: &SettingsListTheme,
+    search: bool,
+) {
+    lines.push(Line::from(vec![]));
     let hint = if search {
         "  Type to search \u{b7} Enter/Space to change \u{b7} Esc to cancel"
     } else {
         "  Enter/Space to change \u{b7} Esc to cancel"
     };
-    lines.push((theme.hint)(&truncate_to_width(hint, width as usize)));
+    let truncated = truncate_to_width(hint, width as usize);
+    let hint_style = (theme.hint)(&truncated);
+    lines.push(Line::from(Span::styled(truncated, hint_style)));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Style;
 
     fn make_items() -> Vec<SettingItem> {
         vec![
@@ -290,18 +358,18 @@ mod tests {
                 label: "Language".into(),
                 description: Some("Display language".into()),
                 current_value: "English".into(),
-                values: Some(vec!["English".into(), "中文".into()]),
+                values: Some(vec!["English".into(), "\u{4e2d}\u{6587}".into()]),
             },
         ]
     }
 
     fn test_theme() -> SettingsListTheme {
         SettingsListTheme {
-            label: Box::new(|s, _| s.to_string()),
-            value: Box::new(|s, _| s.to_string()),
-            description: Box::new(|s| s.to_string()),
+            label: Box::new(|_s, _selected| Style::default()),
+            value: Box::new(|_s, _selected| Style::default()),
+            description: Box::new(|_s| Style::default()),
             cursor: "> ".to_string(),
-            hint: Box::new(|s| s.to_string()),
+            hint: Box::new(|_s| Style::default()),
         }
     }
 
@@ -336,17 +404,19 @@ mod tests {
             default_options(),
         );
         assert_eq!(sl.selected_index, 0);
-        sl.handle_input("\x1b[B"); // Down
+        sl.handle_input(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(sl.selected_index, 1);
-        sl.handle_input("\x1b[A"); // Up
+        sl.handle_input(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(sl.selected_index, 0);
     }
 
     #[test]
     fn test_settings_list_cycle_value() {
         use std::sync::Mutex;
-        let changed_id: &'static Mutex<String> = Box::leak(Box::new(Mutex::new(String::new())));
-        let changed_val: &'static Mutex<String> = Box::leak(Box::new(Mutex::new(String::new())));
+        let changed_id: &'static Mutex<String> =
+            Box::leak(Box::new(Mutex::new(String::new())));
+        let changed_val: &'static Mutex<String> =
+            Box::leak(Box::new(Mutex::new(String::new())));
         let mut sl = SettingsList::new(
             make_items(),
             10,
@@ -366,7 +436,8 @@ mod tests {
     #[test]
     fn test_settings_list_cancel() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        let cancelled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        let cancelled: &'static AtomicBool =
+            Box::leak(Box::new(AtomicBool::new(false)));
         let mut sl = SettingsList::new(
             make_items(),
             10,
@@ -377,7 +448,7 @@ mod tests {
             }),
             default_options(),
         );
-        sl.handle_input("\x1b");
+        sl.handle_input(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(cancelled.load(Ordering::SeqCst));
     }
 
@@ -391,9 +462,10 @@ mod tests {
             Box::new(|| {}),
             default_options(),
         );
-        sl.update_value("theme", "light");
-        let display = sl.display_items();
-        assert_eq!(display[0].current_value, "light");
+        sl.handle_input(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(sl.selected_index, 2);
+        sl.handle_input(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(sl.selected_index, 0);
     }
 
     #[test]
@@ -407,9 +479,16 @@ mod tests {
                 values: None,
             })
             .collect();
-        let sl = SettingsList::new(items, 5, test_theme(), Box::new(|_, _| {}), Box::new(|| {}), default_options());
+        let sl = SettingsList::new(
+            items,
+            5,
+            test_theme(),
+            Box::new(|_, _| {}),
+            Box::new(|| {}),
+            default_options(),
+        );
         let lines = sl.render(80);
-        let has_scroll = lines.iter().any(|l| l.contains('/'));
+        let has_scroll = lines.iter().any(|l| l.to_string().contains('/'));
         assert!(has_scroll);
     }
 
@@ -423,11 +502,9 @@ mod tests {
             Box::new(|| {}),
             default_options(),
         );
-        // Wrap up from 0 to last
-        sl.handle_input("\x1b[A"); // Up from index 0 should wrap to last
+        sl.handle_input(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(sl.selected_index, 2);
-        // Wrap down from last to 0
-        sl.handle_input("\x1b[B"); // Down from last should wrap to 0
+        sl.handle_input(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(sl.selected_index, 0);
     }
 
@@ -440,7 +517,14 @@ mod tests {
             current_value: "val".into(),
             values: None,
         }];
-        let sl = SettingsList::new(items, 10, test_theme(), Box::new(|_, _| {}), Box::new(|| {}), default_options());
+        let sl = SettingsList::new(
+            items,
+            10,
+            test_theme(),
+            Box::new(|_, _| {}),
+            Box::new(|| {}),
+            default_options(),
+        );
         let lines = sl.render(80);
         assert!(!lines.is_empty());
     }

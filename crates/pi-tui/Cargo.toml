@@ -17,6 +17,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 thiserror = "2"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
 image = "0.25"
+fuzzy-matcher = "0.3.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

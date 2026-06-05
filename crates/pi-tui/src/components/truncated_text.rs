@@ -1,3 +1,5 @@
+use ratatui::text::{Line, Span};
+
 use crate::tui::Component;
 use crate::utils::{truncate_to_width, visible_width};
 
@@ -22,26 +24,28 @@ impl TruncatedText {
 }
 
 impl Component for TruncatedText {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         let mut result = Vec::new();
 
         for _ in 0..self.padding_y {
-            result.push(" ".repeat(width as usize));
+            result.push(Line::from(Span::raw(" ".repeat(width as usize))));
         }
 
-        let available = (width as usize).saturating_sub(self.padding_x as usize * 2).max(1);
+        let available = (width as usize)
+            .saturating_sub(self.padding_x as usize * 2)
+            .max(1);
         let single_line = self.text.split('\n').next().unwrap_or(&self.text);
         let display = truncate_to_width(single_line, available);
         let pad = " ".repeat(self.padding_x as usize);
-        let mut line = format!("{}{}{}", pad, display, pad);
-        let lw = visible_width(&line);
+        let mut line_text = format!("{}{}{}", pad, display, pad);
+        let lw = visible_width(&line_text);
         if lw < width as usize {
-            line.push_str(&" ".repeat(width as usize - lw));
+            line_text.push_str(&" ".repeat(width as usize - lw));
         }
-        result.push(line);
+        result.push(Line::from(Span::raw(line_text)));
 
         for _ in 0..self.padding_y {
-            result.push(" ".repeat(width as usize));
+            result.push(Line::from(Span::raw(" ".repeat(width as usize))));
         }
 
         result
@@ -57,7 +61,7 @@ mod tests {
         let tt = TruncatedText::new("hello", 0, 0);
         let lines = tt.render(80);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("hello"));
+        assert!(lines[0].to_string().contains("hello"));
     }
 
     #[test]
@@ -65,7 +69,7 @@ mod tests {
         let tt = TruncatedText::new("hello world this is long", 0, 0);
         let lines = tt.render(10);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].ends_with("..."));
+        assert!(lines[0].to_string().ends_with("..."));
     }
 
     #[test]
@@ -73,7 +77,7 @@ mod tests {
         let tt = TruncatedText::new("hi", 1, 1);
         let lines = tt.render(80);
         assert_eq!(lines.len(), 3);
-        assert!(lines[1].contains("hi"));
+        assert!(lines[1].to_string().contains("hi"));
     }
 
     #[test]
@@ -81,8 +85,8 @@ mod tests {
         let tt = TruncatedText::new("first line\nsecond line", 0, 0);
         let lines = tt.render(80);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("first line"));
-        assert!(!lines[0].contains("second line"));
+        assert!(lines[0].to_string().contains("first line"));
+        assert!(!lines[0].to_string().contains("second line"));
     }
 
     #[test]

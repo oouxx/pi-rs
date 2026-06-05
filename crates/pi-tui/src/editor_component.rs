@@ -12,7 +12,7 @@ pub trait EditorComponent: Component {
         self.get_text()
     }
     fn set_autocomplete_provider(&mut self, _provider: Box<dyn AutocompleteProvider + Send + Sync>) {}
-    fn border_color(&self) -> Option<&dyn Fn(&str) -> String> {
+    fn border_color(&self) -> Option<&dyn Fn() -> ratatui::style::Style> {
         None
     }
     fn set_padding_x(&mut self, _padding: u16) {}

@@ -1,30 +1,21 @@
-use std::fmt::Write;
-
 use image::DynamicImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
-use ratatui::style::Color;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 
 use crate::tui::Component;
 
-/// Terminal image component using ratatui-image for rendering.
-///
-/// Supports all terminal graphics protocols detected by `ratatui-image`:
-/// Kitty, iTerm2, Sixel, and Unicode Halfblocks.
 pub struct ImageComponent {
     protocol: Protocol,
     cell_size: (u16, u16),
 }
 
 impl ImageComponent {
-    /// Create a new ImageComponent from a `DynamicImage` using the given `Picker`.
-    ///
-    /// The `picker` handles terminal capability detection and font size querying.
-    /// The image will be fit to the available cell area, maintaining aspect ratio.
     pub fn from_picker(picker: &Picker, img: DynamicImage) -> Result<Self, String> {
         let font_size = picker.font_size();
         let img_w = img.width();
@@ -46,7 +37,6 @@ impl ImageComponent {
         })
     }
 
-    /// Load an image from a file path and create an ImageComponent.
     pub fn from_path(picker: &Picker, path: &str) -> Result<Self, String> {
         let img = image::ImageReader::open(path)
             .map_err(|e| format!("Cannot open image: {}", e))?
@@ -55,7 +45,6 @@ impl ImageComponent {
         Self::from_picker(picker, img)
     }
 
-    /// Create an ImageComponent from raw RGBA pixel data.
     pub fn from_rgba(
         picker: &Picker,
         data: &[u8],
@@ -69,7 +58,6 @@ impl ImageComponent {
         Self::from_picker(picker, img)
     }
 
-    /// Get the size of the rendered image in terminal cells.
     pub fn cell_size(&self) -> (u16, u16) {
         self.cell_size
     }
@@ -78,9 +66,9 @@ impl ImageComponent {
         matches!(self.protocol, Protocol::Halfblocks(_))
     }
 
-    fn render_to_lines(&self, area: Rect) -> Vec<String> {
+    fn render_to_lines(&self, area: Rect) -> Vec<Line<'static>> {
         if area.width == 0 || area.height == 0 {
-            return vec![String::new()];
+            return vec![Line::from(vec![])];
         }
 
         let mut buf = Buffer::empty(area);
@@ -95,90 +83,39 @@ impl ImageComponent {
 }
 
 impl Component for ImageComponent {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         let area = Rect::new(0, 0, self.cell_size.0.min(width), self.cell_size.1);
         self.render_to_lines(area)
     }
 }
 
-fn render_halfblocks(buf: &Buffer, area: Rect) -> Vec<String> {
+fn render_halfblocks(buf: &Buffer, area: Rect) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(area.height as usize);
     for y in 0..area.height {
-        let mut line = String::new();
+        let mut spans = Vec::with_capacity(area.width as usize);
         for x in 0..area.width {
             let cell = &buf[(x, y)];
             let ch = cell.symbol().chars().next().unwrap_or(' ');
-            let fg_ansi = color_to_ansi_fg(cell.fg);
-            let bg_ansi = color_to_ansi_bg(cell.bg);
-            let _ = write!(line, "{}{}{}\x1b[0m", fg_ansi, bg_ansi, ch);
+            let style = Style::default().fg(cell.fg).bg(cell.bg);
+            spans.push(Span::styled(ch.to_string(), style));
         }
-        lines.push(line);
+        lines.push(Line::from(spans));
     }
     lines
 }
 
-fn render_escape_protocol(buf: &Buffer, area: Rect) -> Vec<String> {
+fn render_escape_protocol(buf: &Buffer, area: Rect) -> Vec<Line<'static>> {
     let escape = buf[(0, 0)].symbol().to_string();
-    let pad_width = area.width as usize;
-
-    let mut lines = Vec::with_capacity(area.height as usize);
+    let mut lines = Vec::new();
     if !escape.is_empty() && escape != " " {
-        let mut first = escape;
-        for _ in first.len()..pad_width {
-            first.push(' ');
-        }
-        lines.push(first);
+        lines.push(Line::from(Span::raw(escape)));
     } else {
-        lines.push(" ".repeat(pad_width));
+        lines.push(Line::from(Span::raw(" ".repeat(area.width as usize))));
     }
     for _ in 1..area.height {
-        lines.push(String::new());
+        lines.push(Line::from(vec![]));
     }
     lines
-}
-
-fn color_to_ansi_fg(color: Color) -> String {
-    match color {
-        Color::Rgb(r, g, b) => format!("\x1b[38;2;{};{};{}m", r, g, b),
-        Color::Reset | Color::White => "\x1b[39m".to_string(),
-        Color::Black => "\x1b[30m".to_string(),
-        Color::Red => "\x1b[31m".to_string(),
-        Color::Green => "\x1b[32m".to_string(),
-        Color::Yellow => "\x1b[33m".to_string(),
-        Color::Blue => "\x1b[34m".to_string(),
-        Color::Magenta => "\x1b[35m".to_string(),
-        Color::Cyan => "\x1b[36m".to_string(),
-        Color::DarkGray => "\x1b[90m".to_string(),
-        Color::LightRed => "\x1b[91m".to_string(),
-        Color::LightGreen => "\x1b[92m".to_string(),
-        Color::LightYellow => "\x1b[93m".to_string(),
-        Color::LightBlue => "\x1b[94m".to_string(),
-        Color::LightMagenta => "\x1b[95m".to_string(),
-        Color::LightCyan => "\x1b[96m".to_string(),
-        _ => String::new(),
-    }
-}
-
-fn color_to_ansi_bg(color: Color) -> String {
-    match color {
-        Color::Rgb(r, g, b) => format!("\x1b[48;2;{};{};{}m", r, g, b),
-        Color::Reset | Color::White => "\x1b[49m".to_string(),
-        Color::Black => "\x1b[40m".to_string(),
-        Color::Red => "\x1b[41m".to_string(),
-        Color::Green => "\x1b[42m".to_string(),
-        Color::Yellow => "\x1b[43m".to_string(),
-        Color::Blue => "\x1b[44m".to_string(),
-        Color::Magenta => "\x1b[45m".to_string(),
-        Color::Cyan => "\x1b[46m".to_string(),
-        Color::DarkGray => "\x1b[100m".to_string(),
-        Color::LightRed => "\x1b[101m".to_string(),
-        Color::LightGreen => "\x1b[102m".to_string(),
-        Color::LightYellow => "\x1b[103m".to_string(),
-        Color::LightBlue => "\x1b[104m".to_string(),
-        Color::LightMagenta => "\x1b[105m".to_string(),
-        Color::LightCyan => "\x1b[106m".to_string(),
-        _ => String::new(),
-    }
 }
 
 #[cfg(test)]
@@ -218,7 +155,7 @@ mod tests {
         let lines = comp.render(5);
         assert!(!lines.is_empty());
         for line in &lines {
-            assert!(line.len() <= 100);
+            assert!(line.to_string().len() <= 100);
         }
     }
 
@@ -241,22 +178,9 @@ mod tests {
         let lines = comp.render(80);
         assert!(!lines.is_empty());
         for line in &lines {
-            assert!(line.contains("\x1b["));
+            let text = line.to_string();
+            assert!(!text.is_empty());
         }
-    }
-
-    #[test]
-    fn test_color_to_ansi() {
-        assert_eq!(
-            color_to_ansi_fg(Color::Rgb(10, 20, 30)),
-            "\x1b[38;2;10;20;30m"
-        );
-        assert_eq!(
-            color_to_ansi_bg(Color::Rgb(200, 100, 50)),
-            "\x1b[48;2;200;100;50m"
-        );
-        assert_eq!(color_to_ansi_fg(Color::Red), "\x1b[31m");
-        assert_eq!(color_to_ansi_bg(Color::Blue), "\x1b[44m");
     }
 
     #[test]

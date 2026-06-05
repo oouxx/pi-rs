@@ -1,12 +1,54 @@
-use crate::tui::Component;
-use crate::utils::wrap_text_with_ansi;
+use ratatui::text::{Line, Span};
 
-/// A plain text component with ANSI-aware word wrapping.
+use crate::tui::Component;
+use crate::utils::visible_width;
+
+fn wrap_text_plain(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut line_width = 0;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines.push(current_line);
+            current_line = String::new();
+            line_width = 0;
+            continue;
+        }
+
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+
+        if line_width + ch_width > width {
+            if !current_line.is_empty() {
+                lines.push(current_line);
+            }
+            current_line = String::new();
+            line_width = 0;
+        }
+
+        current_line.push(ch);
+        line_width += ch_width;
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 pub struct TextComponent {
     text: String,
     padding_x: u16,
     padding_y: u16,
-    cached_output: Option<Vec<String>>,
+    cached_output: Option<Vec<Line<'static>>>,
     cached_width: Option<u16>,
 }
 
@@ -38,8 +80,7 @@ impl TextComponent {
 }
 
 impl Component for TextComponent {
-    fn render(&self, width: u16) -> Vec<String> {
-        // Check cache
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         if let (Some(ref cached), Some(cached_w)) = (&self.cached_output, self.cached_width) {
             if cached_w == width {
                 return cached.clone();
@@ -47,22 +88,23 @@ impl Component for TextComponent {
         }
 
         let content_width = width.saturating_sub(self.padding_x * 2).max(1);
-        let mut lines = wrap_text_with_ansi(&self.text, content_width as usize);
+        let wrapped = wrap_text_plain(&self.text, content_width as usize);
+
+        let pad = " ".repeat(self.padding_x as usize);
+        let mut lines: Vec<Line<'static>> = wrapped
+            .into_iter()
+            .map(|line| {
+                let text = format!("{}{}{}", pad, line, pad);
+                Line::from(Span::raw(text))
+            })
+            .collect();
 
         if lines.is_empty() {
-            lines.push(String::new());
+            lines.push(Line::from(vec![]));
         }
 
-        // Apply horizontal padding
-        let pad = " ".repeat(self.padding_x as usize);
-        for line in &mut lines {
-            let full = format!("{}{}{}", pad, line, pad);
-            *line = full;
-        }
-
-        // Apply vertical padding
         let mut result = Vec::new();
-        let empty_line = " ".repeat(width as usize);
+        let empty_line = Line::from(Span::raw(" ".repeat(width as usize)));
         for _ in 0..self.padding_y {
             result.push(empty_line.clone());
         }
@@ -71,8 +113,6 @@ impl Component for TextComponent {
             result.push(empty_line.clone());
         }
 
-        // We can't update the cache here because we're in an immutable reference
-        // The cache just won't be used
         result
     }
 

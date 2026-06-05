@@ -1,11 +1,13 @@
+use crossterm::event::KeyEvent;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
 use crate::tui::Component;
 
-/// A container component that applies padding and optional background color
-/// around its child components.
 pub struct BoxComponent {
     padding_x: u16,
     padding_y: u16,
-    bg_color: Option<String>, // ANSI background color escape
+    bg_style: Option<Style>,
     children: Vec<Box<dyn Component>>,
 }
 
@@ -14,7 +16,7 @@ impl BoxComponent {
         Self {
             padding_x: 1,
             padding_y: 0,
-            bg_color: None,
+            bg_style: None,
             children: Vec::new(),
         }
     }
@@ -25,8 +27,8 @@ impl BoxComponent {
         self
     }
 
-    pub fn with_bg(mut self, ansi_bg: impl Into<String>) -> Self {
-        self.bg_color = Some(ansi_bg.into());
+    pub fn with_bg(mut self, style: Style) -> Self {
+        self.bg_style = Some(style);
         self
     }
 
@@ -40,41 +42,37 @@ impl BoxComponent {
 }
 
 impl Component for BoxComponent {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         let inner_width = width.saturating_sub(self.padding_x * 2).max(1);
 
-        // Render children
         let mut lines = Vec::new();
         for child in &self.children {
             lines.extend(child.render(inner_width));
         }
 
         if lines.is_empty() {
-            lines.push(String::new());
+            lines.push(Line::from(vec![]));
         }
 
-        // Apply horizontal padding
         let pad = " ".repeat(self.padding_x as usize);
         for line in &mut lines {
-            *line = format!("{}{}{}", pad, line, pad);
+            let pad_span = Span::raw(pad.clone());
+            let mut new_spans = vec![pad_span.clone()];
+            new_spans.extend(line.spans.drain(..));
+            new_spans.push(pad_span);
+            line.spans = new_spans;
         }
 
-        // Apply background
-        if let Some(ref bg) = self.bg_color {
-            let reset = "\x1b[0m";
+        if let Some(bg) = self.bg_style {
             for line in &mut lines {
-                *line = format!("{}{}{}", bg, line, reset);
+                for span in &mut line.spans {
+                    span.style = span.style.patch(bg);
+                }
             }
         }
 
-        // Vertical padding
-        let empty = if let Some(ref bg) = self.bg_color {
-            let reset = "\x1b[0m";
-            let padded = " ".repeat(width as usize);
-            format!("{}{}{}", bg, padded, reset)
-        } else {
-            " ".repeat(width as usize)
-        };
+        let empty_style = self.bg_style.unwrap_or_default();
+        let empty = Line::from(Span::styled(" ".repeat(width as usize), empty_style));
 
         let mut result = Vec::new();
         for _ in 0..self.padding_y {
@@ -88,9 +86,9 @@ impl Component for BoxComponent {
         result
     }
 
-    fn handle_input(&mut self, data: &str) {
+    fn handle_input(&mut self, event: &KeyEvent) {
         for child in &mut self.children {
-            child.handle_input(data);
+            child.handle_input(event);
         }
     }
 

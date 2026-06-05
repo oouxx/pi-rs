@@ -1,6 +1,7 @@
+use ratatui::text::Line;
+
 use crate::tui::Component;
 
-/// A spacer component that outputs empty lines.
 pub struct Spacer {
     lines: usize,
 }
@@ -16,7 +17,7 @@ impl Spacer {
 }
 
 impl Component for Spacer {
-    fn render(&self, _width: u16) -> Vec<String> {
-        vec![String::new(); self.lines]
+    fn render(&self, _width: u16) -> Vec<Line<'static>> {
+        vec![Line::from(vec![]); self.lines]
     }
 }

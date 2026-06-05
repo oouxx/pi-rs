@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 use std::sync::OnceLock;
 
@@ -6,9 +7,11 @@ use regex_lite::Regex;
 use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
 use crate::components::select_list::{SelectItem, SelectList, SelectListTheme};
 use crate::keybindings::get_keybindings;
-use crate::keys::{matches_key, Key, KeyEvent, KeyEventType, KeyModifiers};
 use crate::kill_ring::KillRing;
-use crate::tui::{Component, CURSOR_MARKER, Focusable};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
+use crate::tui::{Component, Focusable};
 use crate::undo_stack::UndoStack;
 use crate::utils::{is_whitespace_char, visible_width};
 use crate::word_navigation::{find_word_backward, find_word_forward, WordNavigationOptions};
@@ -203,7 +206,7 @@ struct LayoutLine {
 }
 
 pub struct EditorTheme {
-    pub border_color: Box<dyn Fn(&str) -> String + Send + Sync>,
+    pub border_color: Box<dyn Fn() -> Style + Send + Sync>,
     pub select_list: SelectListTheme,
 }
 
@@ -229,7 +232,6 @@ pub struct Editor {
     padding_x: usize,
     last_width: usize,
     scroll_offset: usize,
-    border_color: Box<dyn Fn(&str) -> String + Send + Sync>,
     autocomplete_provider: Option<Box<dyn AutocompleteProvider + Send + Sync>>,
     autocomplete_list: Option<SelectList>,
     autocomplete_state: Option<AutocompleteState>,
@@ -290,7 +292,6 @@ impl Editor {
             padding_x: opts.padding_x,
             last_width: 80,
             scroll_offset: 0,
-            border_color: Box::new(|s| format!("\x1b[2m{}\x1b[0m", s)),
             autocomplete_provider: None,
             autocomplete_list: None,
             autocomplete_state: None,
@@ -1246,7 +1247,7 @@ impl VisualLine {
 }
 
 impl Component for Editor {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         let width = width as usize;
         let max_padding = width.saturating_sub(1) / 2;
         let padding_x = self.padding_x.min(max_padding);
@@ -1280,73 +1281,71 @@ impl Component for Editor {
             .take(max_visible)
             .collect();
 
-        let horizontal = (self.border_color)("─");
+        let border_style = (self.theme.border_color)();
         let left_pad = " ".repeat(padding_x);
         let right_pad = left_pad.clone();
 
-        let mut result: Vec<String> = Vec::new();
+        let mut result: Vec<Line<'static>> = Vec::new();
 
         // Top border with scroll indicator
         if scroll_offset > 0 {
             let indicator = format!("─── ↑ {} more ", scroll_offset);
             let remaining = width.saturating_sub(visible_width(&indicator));
-            result.push((self.border_color)(&format!(
-                "{}{}",
-                indicator,
-                "─".repeat(remaining)
-            )));
+            let border_text = format!("{}{}", indicator, "─".repeat(remaining));
+            result.push(Line::from(Span::styled(border_text, border_style)));
         } else {
-            result.push(horizontal.repeat(width));
+            result.push(Line::from(Span::styled(
+                "─".repeat(width),
+                border_style,
+            )));
         }
 
         // Emit cursor marker only when focused
         let emit_cursor = self.focused && self.autocomplete_state.is_none();
+        let cursor_bg = Style::default().bg(ratatui::style::Color::Gray);
 
         for layout_line in &visible {
-            let mut display = layout_line.text.clone();
-            let mut line_vis = visible_width(&layout_line.text);
-            let mut cursor_in_padding = false;
+            let line_text = layout_line.text.clone();
+            let line_vis = visible_width(&line_text);
+            let mut spans: Vec<Span<'static>> = Vec::new();
 
-            if layout_line.has_cursor {
+            if layout_line.has_cursor && emit_cursor {
                 if let Some(cpos) = layout_line.cursor_pos {
-                    let before = &display[..cpos.min(display.len())];
-                    let after = &display[cpos.min(display.len())..];
+                    let cpos = cpos.min(line_text.len());
+                    let before = &line_text[..cpos];
+                    let after = &line_text[cpos..];
+
+                    spans.push(Span::raw(before.to_string()));
 
                     if !after.is_empty() {
                         let graphemes: Vec<&str> = after.graphemes(true).collect();
-                        let first = graphemes.first().map(|s| *s).unwrap_or("");
-                        let rest: String = after.chars().skip(first.chars().count()).collect();
-                        let cursor = format!(
-                            "{}{}{}\x1b[0m{}{}\x1b[0m",
-                            if emit_cursor { CURSOR_MARKER } else { "" },
-                            "\x1b[7m",
-                            first,
-                            "",
-                            rest
-                        );
-                        display = format!("{}{}", before, cursor);
+                        let first = graphemes.first().copied().unwrap_or("");
+                        let rest: String = graphemes
+                            .iter()
+                            .skip(1)
+                            .flat_map(|g| g.chars())
+                            .collect();
+                        spans.push(Span::styled(first.to_string(), cursor_bg));
+                        spans.push(Span::raw(rest));
                     } else {
-                        let cursor = format!(
-                            "{}{} \x1b[0m",
-                            if emit_cursor { CURSOR_MARKER } else { "" },
-                            "\x1b[7m"
-                        );
-                        display = format!("{}{}", before, cursor);
-                        line_vis += 1;
-                        if line_vis > content_width && padding_x > 0 {
-                            cursor_in_padding = true;
-                        }
+                        spans.push(Span::styled(" ".to_string(), cursor_bg));
                     }
+                } else {
+                    spans.push(Span::raw(line_text.clone()));
                 }
+            } else {
+                spans.push(Span::raw(line_text.clone()));
             }
 
-            let pad = " ".repeat(content_width.saturating_sub(line_vis));
-            let line_right_pad = if cursor_in_padding {
-                &right_pad[1..]
-            } else {
-                &right_pad
-            };
-            result.push(format!("{}{}{}{}", left_pad, display, pad, line_right_pad));
+            let pad_count = content_width.saturating_sub(line_vis);
+            if pad_count > 0 {
+                spans.push(Span::raw(" ".repeat(pad_count)));
+            }
+
+            let mut final_spans = vec![Span::raw(left_pad.clone())];
+            final_spans.extend(spans);
+            final_spans.push(Span::raw(right_pad.clone()));
+            result.push(Line::from(final_spans));
         }
 
         // Bottom border
@@ -1354,13 +1353,13 @@ impl Component for Editor {
         if lines_below > 0 {
             let indicator = format!("─── ↓ {} more ", lines_below);
             let remaining = width.saturating_sub(visible_width(&indicator));
-            result.push((self.border_color)(&format!(
-                "{}{}",
-                indicator,
-                "─".repeat(remaining.max(0))
-            )));
+            let border_text = format!("{}{}", indicator, "─".repeat(remaining.max(0)));
+            result.push(Line::from(Span::styled(border_text, border_style)));
         } else {
-            result.push(horizontal.repeat(width));
+            result.push(Line::from(Span::styled(
+                "─".repeat(width),
+                border_style,
+            )));
         }
 
         // Autocomplete overlay
@@ -1368,9 +1367,14 @@ impl Component for Editor {
             if let Some(ref list) = self.autocomplete_list {
                 let ac_lines = list.render(content_width as u16);
                 for ac_line in ac_lines {
-                    let lw = visible_width(&ac_line);
+                    let ac_text = ac_line.to_string();
+                    let lw = visible_width(&ac_text);
                     let lp = " ".repeat(content_width.saturating_sub(lw));
-                    result.push(format!("{}{}{}{}", left_pad, ac_line, lp, right_pad));
+                    let mut ac_spans = vec![Span::raw(left_pad.clone())];
+                    ac_spans.extend(ac_line.spans.iter().cloned());
+                    ac_spans.push(Span::raw(lp));
+                    ac_spans.push(Span::raw(right_pad.clone()));
+                    result.push(Line::from(ac_spans));
                 }
             }
         }
@@ -1378,41 +1382,82 @@ impl Component for Editor {
         result
     }
 
-    fn handle_input(&mut self, data: &str) {
+    fn cursor_position(&self) -> Option<(u16, u16)> {
+        if !self.focused || self.autocomplete_state.is_some() {
+            return None;
+        }
+
+        let width = self.last_width as usize;
+        let max_padding = width.saturating_sub(1) / 2;
+        let padding_x = self.padding_x.min(max_padding);
+        let content_width = (width.saturating_sub(padding_x * 2)).max(1);
+        let layout_width = if padding_x > 0 {
+            content_width
+        } else {
+            content_width.saturating_sub(1).max(1)
+        };
+
+        let layout_lines = self.layout_text(layout_width);
+
+        let max_visible = (self.terminal_rows as f64 * 0.3).max(5.0) as usize;
+        let cursor_line_idx = layout_lines
+            .iter()
+            .position(|l| l.has_cursor)
+            .unwrap_or(0);
+
+        let mut scroll_offset = self.scroll_offset;
+        if cursor_line_idx < scroll_offset {
+            scroll_offset = cursor_line_idx;
+        } else if cursor_line_idx >= scroll_offset + max_visible {
+            scroll_offset = cursor_line_idx + 1 - max_visible;
+        }
+        let max_scroll = layout_lines.len().saturating_sub(max_visible);
+        scroll_offset = scroll_offset.min(max_scroll);
+
+        let row = 1u16 + (cursor_line_idx.saturating_sub(scroll_offset)) as u16;
+
+        if let Some(layout_line) = layout_lines.get(cursor_line_idx) {
+            if let Some(cpos) = layout_line.cursor_pos {
+                let col = padding_x as u16 + visible_width(&layout_line.text[..cpos.min(layout_line.text.len())]) as u16;
+                return Some((row, col));
+            }
+        }
+
+        Some((row, padding_x as u16))
+    }
+
+    fn handle_input(&mut self, event: &KeyEvent) {
         let kb = get_keybindings();
 
         // Jump mode
         if let Some(jump_dir) = self.jump_mode.take() {
-            if let Some(ch) = data.chars().next() {
-                if ch as u32 >= 32 {
+            if let KeyCode::Char(ch) = event.code {
+                if (ch as u32) >= 32 {
                     self.jump_to_char(ch, jump_dir);
                     return;
                 }
             }
         }
 
-        // Jump mode triggers
-        if data == "\x1b\x1b[A" || data == "\x1b\x1b[B" {
-            // Alt+up/down already handled via navigateHistory
-        }
-
-        if kb.matches(data, "undo") {
+        if kb.matches(event, "undo") {
             self.undo();
             return;
         }
 
         if self.autocomplete_state.is_some() {
-            if kb.matches(data, "cancel") {
+            if kb.matches(event, "cancel") {
                 self.cancel_autocomplete();
                 return;
             }
-            if data == "\x1b[A" || data == "\x1b[B" {
+            if event.code == KeyCode::Up && event.modifiers.is_empty()
+                || event.code == KeyCode::Down && event.modifiers.is_empty()
+            {
                 if let Some(ref mut list) = self.autocomplete_list {
-                    list.handle_input(data);
+                    list.handle_input(event);
                 }
                 return;
             }
-            if data == "\t" || data == "\x09" {
+            if event.code == KeyCode::Tab {
                 self.push_undo_snapshot();
                 self.last_action = None;
                 let selected_item = self.autocomplete_list.as_ref().and_then(|list| list.get_selected_item().cloned());
@@ -1441,7 +1486,7 @@ impl Component for Editor {
                 return;
             }
         }
-        if data == "\r" || data == "\n" {
+        if event.code == KeyCode::Enter && event.modifiers.is_empty() {
             if self.autocomplete_state.is_some() {
                 self.push_undo_snapshot();
                 self.last_action = None;
@@ -1477,66 +1522,66 @@ impl Component for Editor {
         }
 
         // Tab - trigger completion
-        if (data == "\t" || data == "\x09") && self.autocomplete_state.is_none() {
+        if event.code == KeyCode::Tab && self.autocomplete_state.is_none() {
             self.handle_tab_completion();
             return;
         }
 
         // Delete to line end
-        if kb.matches(data, "deleteToLineEnd") || data == "\x1b[K" {
+        if kb.matches(event, "deleteToLineEnd") {
             self.delete_to_line_end();
             return;
         }
 
         // Delete actions
-        let shift_backspace = KeyEvent { key: Key::Backspace, modifiers: KeyModifiers { shift: true, ..Default::default() }, event_type: KeyEventType::Press };
-        let shift_delete = KeyEvent { key: Key::Delete, modifiers: KeyModifiers { shift: true, ..Default::default() }, event_type: KeyEventType::Press };
-        if kb.matches(data, "deleteBackward")
-            || matches_key(data, &shift_backspace)
-            || data == "\x7f"
+        let shift_backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::SHIFT);
+        let shift_delete = KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT);
+        if kb.matches(event, "deleteBackward")
+            || *event == shift_backspace
+            || event.code == KeyCode::Backspace && event.modifiers.is_empty()
         {
             self.handle_backspace();
             return;
         }
-        if kb.matches(data, "deleteForward") || matches_key(data, &shift_delete) || data == "\x1b[3~" {
+        if kb.matches(event, "deleteForward")
+            || *event == shift_delete
+            || event.code == KeyCode::Delete && event.modifiers.is_empty()
+        {
             self.handle_forward_delete();
             return;
         }
 
         // Kill ring
-        if data == "\x19" {
-            // Ctrl+Y
+        if event.code == KeyCode::Char('y') && event.modifiers == KeyModifiers::CONTROL {
             self.yank();
             return;
         }
-        if data == "\x1b\x79" {
-            // Alt+Y
+        if event.code == KeyCode::Char('y') && event.modifiers == KeyModifiers::ALT {
             self.yank_pop();
             return;
         }
 
         // Cursor movement
-        if kb.matches(data, "cursorLineStart") || data == "\x1b[H" {
+        if kb.matches(event, "cursorLineStart") || event.code == KeyCode::Home && event.modifiers.is_empty() {
             self.move_to_line_start();
             return;
         }
-        if kb.matches(data, "cursorLineEnd") || data == "\x1b[F" {
+        if kb.matches(event, "cursorLineEnd") || event.code == KeyCode::End && event.modifiers.is_empty() {
             self.move_to_line_end();
             return;
         }
-        if kb.matches(data, "cursorWordLeft") || data == "\x1bb" {
+        if kb.matches(event, "cursorWordLeft") || event.code == KeyCode::Char('b') && event.modifiers == KeyModifiers::ALT {
             self.move_word_backwards();
             return;
         }
-        if kb.matches(data, "cursorWordRight") || data == "\x1bf" {
+        if kb.matches(event, "cursorWordRight") || event.code == KeyCode::Char('f') && event.modifiers == KeyModifiers::ALT {
             self.move_word_forwards();
             return;
         }
 
         // New line (Shift+Enter, Alt+Enter, etc)
-        if data == "\r" || data == "\n" {
+        if event.code == KeyCode::Enter && event.modifiers.is_empty() {
             if !self.disable_submit {
-                // Check for backslash workaround
                 let line = &self.state.lines[self.state.cursor_line];
                 if self.state.cursor_col > 0
                     && line.chars().nth(self.state.cursor_col - 1) == Some('\\')
@@ -1553,13 +1598,12 @@ impl Component for Editor {
         }
 
         // Ctrl+C - let parent handle
-        if data == "\x03" {
+        if event.code == KeyCode::Char('c') && event.modifiers == KeyModifiers::CONTROL {
             return;
         }
 
-        // Arrow navigation with history
-        if data == "\x1b[A" {
-            // Up
+        // Arrow navigation
+        if event.code == KeyCode::Up && event.modifiers.is_empty() {
             if self.is_editor_empty() {
                 self.navigate_history(-1);
             } else if self.history_index > -1 && self.is_on_first_visual_line() {
@@ -1575,8 +1619,7 @@ impl Component for Editor {
             }
             return;
         }
-        if data == "\x1b[B" {
-            // Down
+        if event.code == KeyCode::Down && event.modifiers.is_empty() {
             if self.history_index > -1 && self.is_on_last_visual_line() {
                 self.navigate_history(1);
             } else if self.is_on_last_visual_line() {
@@ -1590,8 +1633,7 @@ impl Component for Editor {
             }
             return;
         }
-        if data == "\x1b[C" {
-            // Right
+        if event.code == KeyCode::Right && event.modifiers.is_empty() {
             let line = &self.state.lines[self.state.cursor_line];
             if self.state.cursor_col < line.len() {
                 let after = &line[self.state.cursor_col..];
@@ -1604,8 +1646,7 @@ impl Component for Editor {
             }
             return;
         }
-        if data == "\x1b[D" {
-            // Left
+        if event.code == KeyCode::Left && event.modifiers.is_empty() {
             if self.state.cursor_col > 0 {
                 let before = &self.state.lines[self.state.cursor_line][..self.state.cursor_col];
                 let graphemes: Vec<&str> = before.graphemes(true).collect();
@@ -1620,18 +1661,18 @@ impl Component for Editor {
         }
 
         // Page up/down
-        if data == "\x1b[5~" {
+        if event.code == KeyCode::PageUp && event.modifiers.is_empty() {
             self.page_scroll(-1);
             return;
         }
-        if data == "\x1b[6~" {
+        if event.code == KeyCode::PageDown && event.modifiers.is_empty() {
             self.page_scroll(1);
             return;
         }
 
         // Printable characters
-        if let Some(ch) = data.chars().next() {
-            if ch as u32 >= 32 {
+        if let KeyCode::Char(ch) = event.code {
+            if event.modifiers.is_empty() && (ch as u32) >= 32 {
                 self.insert_character(ch, false);
                 return;
             }
@@ -1662,7 +1703,7 @@ mod tests {
     fn test_editor_empty() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let editor = Editor::new(None, theme, None, 24);
@@ -1675,7 +1716,7 @@ mod tests {
     fn test_editor_set_text() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1687,7 +1728,7 @@ mod tests {
     fn test_editor_insert_character() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1702,7 +1743,7 @@ mod tests {
     fn test_editor_backspace() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1717,7 +1758,7 @@ mod tests {
     fn test_editor_newline() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1735,7 +1776,7 @@ mod tests {
     fn test_editor_undo() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1750,7 +1791,7 @@ mod tests {
     fn test_editor_history() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1764,7 +1805,7 @@ mod tests {
     fn test_editor_delete_to_line_end() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1806,7 +1847,7 @@ mod tests {
     fn test_editor_move_cursor_left_right() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let mut editor = Editor::new(None, theme, None, 24);
@@ -1816,11 +1857,11 @@ mod tests {
         editor.state.cursor_col = 5;
 
         // Move left
-        editor.handle_input("\x1b[D");
+        editor.handle_input(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(editor.state.cursor_col, 4);
 
         // Move right
-        editor.handle_input("\x1b[C");
+        editor.handle_input(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(editor.state.cursor_col, 5);
     }
 
@@ -1828,7 +1869,7 @@ mod tests {
     fn test_editor_render_empty() {
         setup_kb();
         let theme = EditorTheme {
-            border_color: Box::new(|s| s.to_string()),
+            border_color: Box::new(|| Style::default()),
             select_list: SelectListTheme::default(),
         };
         let editor = Editor::new(None, theme, None, 24);

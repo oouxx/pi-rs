@@ -1,5 +1,9 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use ratatui::style::Style;
+use ratatui::text::Line;
 
 use crate::keybindings::get_keybindings;
 use crate::tui::Component;
@@ -15,13 +19,19 @@ pub struct CancellableLoader {
 impl CancellableLoader {
     pub fn new(
         request_render: Option<Box<dyn Fn() + Send + Sync>>,
-        spinner_color_fn: Box<dyn Fn(&str) -> String + Send + Sync>,
-        message_color_fn: Box<dyn Fn(&str) -> String + Send + Sync>,
+        spinner_color_fn: Box<dyn Fn(&str) -> Style + Send + Sync>,
+        message_color_fn: Box<dyn Fn(&str) -> Style + Send + Sync>,
         message: impl Into<String>,
         indicator: Option<LoaderIndicatorOptions>,
     ) -> Self {
         Self {
-            loader: Loader::new(request_render, spinner_color_fn, message_color_fn, message, indicator),
+            loader: Loader::new(
+                request_render,
+                spinner_color_fn,
+                message_color_fn,
+                message,
+                indicator,
+            ),
             cancelled: Arc::new(AtomicBool::new(false)),
             on_abort: None,
         }
@@ -61,13 +71,13 @@ impl CancellableLoader {
 }
 
 impl Component for CancellableLoader {
-    fn render(&self, width: u16) -> Vec<String> {
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
         self.loader.render(width)
     }
 
-    fn handle_input(&mut self, data: &str) {
+    fn handle_input(&mut self, event: &KeyEvent) {
         let kb = get_keybindings();
-        if kb.matches(data, "cancel") {
+        if kb.matches(event, "cancel") {
             self.cancelled.store(true, Ordering::SeqCst);
             if let Some(ref cb) = self.on_abort {
                 cb();
@@ -84,8 +94,8 @@ mod tests {
     fn test_cancellable_loader_creation() {
         let cl = CancellableLoader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Working...",
             None,
         );
@@ -96,12 +106,12 @@ mod tests {
     fn test_cancellable_loader_abort() {
         let mut cl = CancellableLoader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Working...",
             None,
         );
-        cl.handle_input("\x1b");
+        cl.handle_input(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(cl.aborted());
     }
 
@@ -109,8 +119,8 @@ mod tests {
     fn test_cancellable_loader_signal() {
         let cl = CancellableLoader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Working...",
             None,
         );
@@ -122,8 +132,8 @@ mod tests {
     fn test_cancellable_loader_render() {
         let cl = CancellableLoader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Working...",
             None,
         );
@@ -135,13 +145,12 @@ mod tests {
     fn test_cancellable_loader_dispose() {
         let mut cl = CancellableLoader::new(
             None,
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            Box::new(|_s| Style::default()),
+            Box::new(|_s| Style::default()),
             "Working...",
             None,
         );
         cl.dispose();
-        // After dispose, render still works
         let lines = cl.render(80);
         assert!(!lines.is_empty());
     }

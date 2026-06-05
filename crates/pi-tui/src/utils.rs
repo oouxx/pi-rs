@@ -6,27 +6,50 @@ pub fn visible_width(s: &str) -> usize {
 }
 
 /// Strip ANSI escape sequences from a string.
+/// Handles CSI, OSC, APC, DCS, and simple ESC+letter sequences.
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut in_escape = false;
-    let mut chars = s.chars().peekable();
+    let mut chars = s.chars();
 
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            in_escape = true;
+        if ch != '\x1b' {
+            result.push(ch);
             continue;
         }
-        if in_escape {
-            // Check for CSI sequence: ESC [
-            // Most ANSI escapes end with a letter (A-Z, a-z)
-            if ch.is_ascii_alphabetic() || ch == '~' {
-                in_escape = false;
+        match chars.next() {
+            None => break,
+            Some('[') => {
+                // CSI: ESC [ ... (alphabetic|~)
+                for c in &mut chars {
+                    if c.is_ascii_alphabetic() || c == '~' {
+                        break;
+                    }
+                }
             }
-            continue;
+            Some(']') => {
+                // OSC: ESC ] ... (BEL \x07  | ST \x1b\\)
+                for c in &mut chars {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            Some('_') | Some('P') => {
+                // APC (ESC _) or DCS (ESC P): ... ST (\x1b\\)
+                for c in &mut chars {
+                    if c == '\x1b' {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(c) if c.is_ascii_alphabetic() => {}
+            _ => {}
         }
-        // Handle OSC (Operating System Command) sequences: ESC ]
-        // These end with BEL (\x07) or ST (\x1b\\)
-        result.push(ch);
     }
 
     result

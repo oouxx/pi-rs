@@ -96,9 +96,9 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     let mut chars = text.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        // Handle ANSI escape sequences — pass them through unchanged
         if ch == '\x1b' {
             escape_buf.push(ch);
+            current_line.push(ch);
             in_escape = true;
             continue;
         }

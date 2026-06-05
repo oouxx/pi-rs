@@ -162,6 +162,12 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// Wrap text in an OSC 8 hyperlink sequence.
+/// Creates a clickable link in terminals that support OSC 8 hyperlinks.
+pub fn hyperlink(text: &str, url: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
+}
+
 /// Apply a background color function to each character of a line.
 pub fn apply_background_to_line(line: &str, bg_fn: &dyn Fn(&str) -> String) -> String {
     bg_fn(line)
@@ -356,6 +362,12 @@ mod tests {
         // Current impl counts the whole string including the OSC sequences
         assert!(w >= 9, "At minimum the visible text should be counted");
         // TODO: fix strip_ansi to remove OSC sequences for accurate width
+    }
+
+    #[test]
+    fn test_hyperlink_format() {
+        let result = hyperlink("click me", "https://example.com");
+        assert_eq!(result, "\x1b]8;;https://example.com\x1b\\click me\x1b]8;;\x1b\\");
     }
 
     #[test]

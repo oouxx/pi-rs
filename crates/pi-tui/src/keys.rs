@@ -327,6 +327,113 @@ pub fn decode_kitty_printable(data: &str) -> Option<char> {
     None
 }
 
+/// Decode a printable character from any terminal protocol (Kitty CSI-u or modifyOtherKeys).
+pub fn decode_printable_key(data: &str) -> Option<char> {
+    decode_kitty_printable(data).or_else(|| {
+        // Try modifyOtherKeys format: ESC [ 27 ; mod ; codepoint ~
+        if data.starts_with("\x1b[27;") && data.ends_with('~') {
+            let inner = &data[5..data.len() - 1];
+            let parts: Vec<&str> = inner.split(';').collect();
+            if parts.len() >= 2 {
+                if let Ok(cp) = parts[1].parse::<u32>() {
+                    if cp >= 32 {
+                        return char::from_u32(cp);
+                    }
+                }
+            }
+        }
+        None
+    })
+}
+
+/// Parse a key identifier string (e.g., "ctrl+c", "escape", "shift+enter")
+/// into the expected `KeyEvent`.
+fn parse_key_id(key_id: &str) -> Option<KeyEvent> {
+    let key_id = key_id.to_lowercase();
+    let parts: Vec<&str> = key_id.split('+').collect();
+    let key_name = *parts.last()?;
+
+    let modifiers = KeyModifiers {
+        ctrl: parts.contains(&"ctrl"),
+        alt: parts.contains(&"alt"),
+        shift: parts.contains(&"shift"),
+        meta: parts.contains(&"super"),
+    };
+
+    let key = match key_name {
+        "escape" | "esc" => Key::Escape,
+        "enter" | "return" => Key::Enter,
+        "tab" => Key::Tab,
+        "space" => Key::Char(' '),
+        "backspace" => Key::Backspace,
+        "delete" => Key::Delete,
+        "insert" => Key::Insert,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "pageup" => Key::PageUp,
+        "pagedown" => Key::PageDown,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        s if s.starts_with('f') && s.len() > 1 => {
+            let n: u8 = s[1..].parse().ok()?;
+            if (1..=12).contains(&n) {
+                Key::F(n)
+            } else {
+                return None;
+            }
+        }
+        s if s.len() == 1 => {
+            let c = s.chars().next()?;
+            Key::Char(c)
+        }
+        _ => return None,
+    };
+
+    Some(KeyEvent {
+        key,
+        modifiers,
+        event_type: KeyEventType::Press,
+    })
+}
+
+/// Compute the legacy control character for a key (Ctrl+A..Z → \x01..\x1a).
+fn ctrl_char_for_key(key: char) -> Option<u8> {
+    let c = key.to_ascii_lowercase();
+    if ('a'..='z').contains(&c) {
+        Some((c as u8) - b'a' + 1)
+    } else {
+        None
+    }
+}
+
+/// Check if raw terminal input matches a key identifier string.
+/// Supports formats like "ctrl+c", "escape", "shift+enter", "up", etc.
+pub fn matches_key_str(data: &str, key_id: &str) -> bool {
+    let Some(expected) = parse_key_id(key_id) else {
+        return false;
+    };
+
+    // Standard KeyEvent comparison
+    if matches_key(data, &expected) {
+        return true;
+    }
+
+    // Legacy fallback: ctrl+letter → control character (e.g., Ctrl+C = \x03)
+    if expected.modifiers.ctrl && !expected.modifiers.alt && !expected.modifiers.meta {
+        if let Key::Char(c) = expected.key {
+            if let Some(ctrl_byte) = ctrl_char_for_key(c) {
+                if data.len() == 1 && data.as_bytes()[0] == ctrl_byte {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +633,105 @@ mod tests {
         assert_eq!(format!("{}", Key::Char('a')), "a");
         assert_eq!(format!("{}", Key::F(1)), "F1");
         assert_eq!(format!("{}", Key::Up), "Up");
+    }
+
+    // ============================================================================
+    // matches_key_str tests
+    // ============================================================================
+
+    #[test]
+    fn test_matches_key_str_ctrl_c() {
+        assert!(matches_key_str("\x03", "ctrl+c"));
+        assert!(!matches_key_str("c", "ctrl+c"));
+    }
+
+    #[test]
+    fn test_matches_key_str_escape() {
+        assert!(matches_key_str("\x1b", "escape"));
+        assert!(matches_key_str("\x1b", "esc"));
+        assert!(!matches_key_str("a", "escape"));
+    }
+
+    #[test]
+    fn test_matches_key_str_enter() {
+        assert!(matches_key_str("\r", "enter"));
+        assert!(matches_key_str("\r", "return"));
+    }
+
+    #[test]
+    fn test_matches_key_str_tab() {
+        assert!(matches_key_str("\t", "tab"));
+    }
+
+    #[test]
+    fn test_matches_key_str_space() {
+        assert!(matches_key_str(" ", "space"));
+    }
+
+    #[test]
+    fn test_matches_key_str_backspace() {
+        assert!(matches_key_str("\x7f", "backspace"));
+    }
+
+    #[test]
+    fn test_matches_key_str_arrows() {
+        assert!(matches_key_str("\x1b[A", "up"));
+        assert!(matches_key_str("\x1b[B", "down"));
+        assert!(matches_key_str("\x1b[C", "right"));
+        assert!(matches_key_str("\x1b[D", "left"));
+    }
+
+    #[test]
+    fn test_matches_key_str_ctrl_arrows() {
+        assert!(matches_key_str("\x1b[1;5A", "ctrl+up"));
+        assert!(matches_key_str("\x1b[1;5B", "ctrl+down"));
+        assert!(matches_key_str("\x1b[1;5C", "ctrl+right"));
+        assert!(matches_key_str("\x1b[1;5D", "ctrl+left"));
+    }
+
+    #[test]
+    fn test_matches_key_str_function_keys() {
+        assert!(matches_key_str("\x1bOP", "f1"));
+        assert!(matches_key_str("\x1bOQ", "f2"));
+        assert!(matches_key_str("\x1bOR", "f3"));
+        assert!(matches_key_str("\x1bOS", "f4"));
+    }
+
+    #[test]
+    fn test_matches_key_str_invalid_key_id() {
+        assert!(!matches_key_str("a", ""));
+        assert!(!matches_key_str("a", "invalid_key_name"));
+    }
+
+    #[test]
+    fn test_matches_key_str_case_insensitive() {
+        assert!(matches_key_str("\x03", "Ctrl+C"));
+        assert!(matches_key_str("\x1b[A", "Up"));
+    }
+
+    // ============================================================================
+    // decode_printable_key tests
+    // ============================================================================
+
+    #[test]
+    fn test_decode_printable_key_plain() {
+        assert_eq!(decode_printable_key("a"), None); // plain keys don't need decoding
+    }
+
+    #[test]
+    fn test_decode_printable_key_modify_other_keys() {
+        // ESC [ 27 ; 1 ; 97 ~ = 'a' with no modifiers
+        assert_eq!(decode_printable_key("\x1b[27;1;97~"), Some('a'));
+    }
+
+    #[test]
+    fn test_decode_printable_key_shift() {
+        assert_eq!(decode_printable_key("\x1b[27;2;65~"), Some('A'));
+    }
+
+    #[test]
+    fn test_decode_printable_key_not_printable() {
+        // Control character
+        assert_eq!(decode_printable_key("\x1b[27;1;3~"), None);
     }
 }

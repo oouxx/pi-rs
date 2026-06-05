@@ -119,12 +119,19 @@ pub enum OverlayAnchor {
 }
 
 /// Margin definition for overlay positioning.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct OverlayMargin {
     pub top: u16,
     pub right: u16,
     pub bottom: u16,
     pub left: u16,
+}
+
+/// Size value type — can be absolute (u16) or percentage (string like "50%").
+#[derive(Debug, Clone, Copy)]
+pub enum SizeValue {
+    Absolute(u16),
+    Percentage(u16),
 }
 
 /// Options for positioning and sizing an overlay.
@@ -136,6 +143,11 @@ pub struct OverlayOptions {
     pub offset_x: i16,
     pub offset_y: i16,
     pub margin: OverlayMargin,
+    /// Dynamic visibility callback. Called each render with (term_width, term_height).
+    /// Overlay is only rendered when this returns true.
+    pub visible: Option<Box<dyn Fn(u16, u16) -> bool + Send + Sync>>,
+    /// If true, this overlay does not capture keyboard focus when shown.
+    pub non_capturing: bool,
 }
 
 impl Default for OverlayOptions {
@@ -147,25 +159,33 @@ impl Default for OverlayOptions {
             anchor: OverlayAnchor::Center,
             offset_x: 0,
             offset_y: 0,
-            margin: OverlayMargin {
-                top: 0,
-                right: 0,
-                bottom: 0,
-                left: 0,
-            },
+            margin: OverlayMargin::default(),
+            visible: None,
+            non_capturing: false,
         }
     }
+}
+
+/// Options for OverlayHandle::unfocus.
+#[derive(Debug, Clone)]
+pub struct OverlayUnfocusOptions {
+    /// Index of the child component to focus after releasing this overlay.
+    pub target: Option<usize>,
 }
 
 /// Handle returned when showing an overlay, allowing control over it.
 pub struct OverlayHandle {
     hidden: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    overlay_id: u64,
+    focus_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl OverlayHandle {
     pub fn new() -> Self {
         Self {
             hidden: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            overlay_id: 0,
+            focus_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -180,20 +200,49 @@ impl OverlayHandle {
     pub fn is_hidden(&self) -> bool {
         self.hidden.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// Focus this overlay, bringing it to the front.
+    pub fn focus(&self) {
+        self.focus_id.store(self.overlay_id, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Release focus from this overlay, optionally targeting a specific component.
+    pub fn unfocus(&self, _options: Option<OverlayUnfocusOptions>) {
+        let current = self.focus_id.load(std::sync::atomic::Ordering::SeqCst);
+        if current == self.overlay_id {
+            self.focus_id.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Check if this overlay currently has focus.
+    pub fn is_focused(&self) -> bool {
+        self.focus_id.load(std::sync::atomic::Ordering::SeqCst) == self.overlay_id
+    }
 }
 
 struct OverlayEntry {
+    id: u64,
     component: Box<dyn Component>,
     options: OverlayOptions,
-    handle: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hidden: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    focus_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 // ============================================================================
 // TUI — the main application class
 // ============================================================================
 
+/// Result returned by an input listener.
+pub struct InputListenerResult {
+    pub consume: bool,
+    pub data: Option<String>,
+}
+
 /// Input listener: receives raw input before focused component.
-pub type InputListener = Box<dyn Fn(&str) -> bool + Send + Sync>;
+/// Return `InputListenerResult { consume: true, data: None }` to intercept and drop.
+/// Return `InputListenerResult { consume: false, data: Some(new_data) }` to transform.
+/// Return `InputListenerResult { consume: false, data: None }` to pass through.
+pub type InputListener = Box<dyn Fn(&str) -> InputListenerResult + Send + Sync>;
 
 /// The main TUI application. Manages components, focus, overlays, and rendering.
 pub struct Tui {
@@ -201,6 +250,8 @@ pub struct Tui {
     terminal: Option<Terminal>,
     focused: Option<usize>, // index into children
     overlays: VecDeque<OverlayEntry>,
+    overlay_focus_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    overlay_next_id: u64,
     input_listeners: Vec<InputListener>,
     previous_lines: Vec<String>,
     full_redraws: u64,
@@ -216,6 +267,8 @@ impl Tui {
             terminal: Some(terminal),
             focused: None,
             overlays: VecDeque::new(),
+            overlay_focus_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            overlay_next_id: 1,
             input_listeners: Vec::new(),
             previous_lines: Vec::new(),
             full_redraws: 0,
@@ -234,6 +287,8 @@ impl Tui {
             terminal: None,
             focused: None,
             overlays: VecDeque::new(),
+            overlay_focus_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            overlay_next_id: 1,
             input_listeners: Vec::new(),
             previous_lines: Vec::new(),
             full_redraws: 0,
@@ -281,13 +336,22 @@ impl Tui {
         component: Box<dyn Component>,
         options: OverlayOptions,
     ) -> OverlayHandle {
-        let handle = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = self.overlay_next_id;
+        self.overlay_next_id += 1;
+        let hidden = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let focus_id = self.overlay_focus_id.clone();
         self.overlays.push_back(OverlayEntry {
+            id,
             component,
             options,
-            handle: handle.clone(),
+            hidden: hidden.clone(),
+            focus_id: focus_id.clone(),
         });
-        OverlayHandle { hidden: handle }
+        OverlayHandle {
+            hidden,
+            overlay_id: id,
+            focus_id,
+        }
     }
 
     /// Hide all overlays.
@@ -303,19 +367,41 @@ impl Tui {
         self.input_listeners.push(listener);
     }
 
-    /// Handle raw input data. Routes to focused component or overlays first.
+    /// Handle raw input data. Routes to overlay with focus, or focused component.
     pub fn handle_input(&mut self, data: &str) {
         // Allow input listeners to intercept/transform
+        let mut current = data.to_string();
         for listener in &self.input_listeners {
-            if listener(data) {
+            let result = listener(&current);
+            if result.consume {
                 return;
+            }
+            if let Some(new_data) = result.data {
+                current = new_data;
+            }
+        }
+        if current.is_empty() {
+            return;
+        }
+
+        // Check if any overlay has focus (via focus_id)
+        let focused_overlay_id = self.overlay_focus_id.load(std::sync::atomic::Ordering::Relaxed);
+        if focused_overlay_id > 0 {
+            if let Some(entry) = self.overlays.iter_mut().find(|e| e.id == focused_overlay_id) {
+                if !entry.hidden.load(std::sync::atomic::Ordering::Relaxed) {
+                    entry.component.handle_input(&current);
+                    return;
+                }
             }
         }
 
-        // Route to overlay first (topmost)
+        // Route to topmost non-capturing overlay if no overlay has explicit focus
         if let Some(entry) = self.overlays.back_mut() {
-            if !entry.handle.load(std::sync::atomic::Ordering::Relaxed) {
-                entry.component.handle_input(data);
+            if !entry.hidden.load(std::sync::atomic::Ordering::Relaxed)
+                && !entry.options.non_capturing
+                && focused_overlay_id == 0
+            {
+                entry.component.handle_input(&current);
                 return;
             }
         }
@@ -323,7 +409,7 @@ impl Tui {
         // Route to focused component
         if let Some(idx) = self.focused {
             if let Some(component) = self.container.children.get_mut(idx) {
-                component.handle_input(data);
+                component.handle_input(&current);
             }
         }
     }
@@ -335,10 +421,17 @@ impl Tui {
         // 1. Render all children
         let mut lines = self.container.render(width);
 
-        // 2. Composite overlays
+        // 2. Composite overlays (only visible ones)
         for entry in &self.overlays {
-            if entry.handle.load(std::sync::atomic::Ordering::Relaxed) {
+            // Skip hidden overlays
+            if entry.hidden.load(std::sync::atomic::Ordering::Relaxed) {
                 continue;
+            }
+            // Check dynamic visibility callback
+            if let Some(ref visible_fn) = entry.options.visible {
+                if !visible_fn(width, height) {
+                    continue;
+                }
             }
             let overlay_lines = entry.component.render(width);
             composite_overlay(
@@ -358,11 +451,12 @@ impl Tui {
             line.push_str("\x1b[0m");
         }
 
-        // 5. Pad to terminal height
+        // 5. Pad to at least terminal height (fill empty terminal space),
+        //    but do NOT truncate — content beyond terminal height is preserved
+        //    for ratatui's Paragraph widget or downstream scrolling.
         while lines.len() < height as usize {
             lines.push(String::new());
         }
-        lines.truncate(height as usize);
 
         (lines, cursor_pos)
     }
@@ -667,9 +761,10 @@ mod tests {
         let refs: Vec<&str> = many.iter().map(|s| s.as_str()).collect();
         tui.add_child(Box::new(MultiLineComponent::new(&refs)));
         let (lines, _) = tui.render_to_lines(80, 5);
-        assert_eq!(lines.len(), 5);
+        // Content beyond terminal height is preserved (no longer truncated)
+        assert_eq!(lines.len(), 10);
         assert!(lines[0].starts_with("Line 0"));
-        assert!(lines[4].starts_with("Line 4"));
+        assert!(lines[9].starts_with("Line 9"));
     }
 
     #[test]
@@ -696,13 +791,14 @@ mod tests {
     }
 
     #[test]
-    fn test_tui_render_trim_to_height() {
+    fn test_tui_render_preserves_all_lines() {
         let mut tui = make_tui();
         let many: Vec<String> = (0..50).map(|i| format!("Long line {}", i)).collect();
         let refs: Vec<&str> = many.iter().map(|s| s.as_str()).collect();
         tui.add_child(Box::new(MultiLineComponent::new(&refs)));
         let (lines, _) = tui.render_to_lines(80, 10);
-        assert_eq!(lines.len(), 10);
+        // All 50 lines preserved (no truncation)
+        assert_eq!(lines.len(), 50);
     }
 
     // --- Content shrinkage tests (matching TS tui-render.test.ts "content shrinkage" describe) ---
@@ -987,7 +1083,7 @@ mod tests {
         let intercepted_clone = intercepted.clone();
         tui.add_input_listener(Box::new(move |_data| {
             intercepted_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-            true
+            InputListenerResult { consume: true, data: None }
         }));
         tui.add_child(Box::new(TextComponent::new("")));
         tui.set_focus_index(0);
@@ -1002,12 +1098,27 @@ mod tests {
         let passed_clone = passed.clone();
         tui.add_input_listener(Box::new(move |_data| {
             passed_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-            false
+            InputListenerResult { consume: false, data: None }
         }));
         tui.add_child(Box::new(TextComponent::new("")));
         tui.set_focus_index(0);
         tui.handle_input("test");
         assert!(passed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_input_listeners_transform_data() {
+        let mut tui = make_tui();
+        tui.add_input_listener(Box::new(move |data| {
+            InputListenerResult {
+                consume: false,
+                data: Some(format!("transformed:{}", data)),
+            }
+        }));
+        tui.add_child(Box::new(TextComponent::new("")));
+        tui.set_focus_index(0);
+        // Should not panic with transformed data
+        tui.handle_input("test");
     }
 
     // ============================================================================

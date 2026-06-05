@@ -1,7 +1,8 @@
 use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEvent,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyEvent, KeyCode, KeyModifiers, MouseEventKind,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -52,6 +53,7 @@ impl Terminal {
         execute!(
             io::stdout(),
             EnableBracketedPaste,
+            EnableMouseCapture,
             PushKeyboardEnhancementFlags(
                 KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                     | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
@@ -78,6 +80,17 @@ impl Terminal {
                                     continue;
                                 }
                                 let _ = input_tx.send(key_event);
+                            }
+                            Some(Ok(Event::Mouse(mouse_event))) => {
+                                match mouse_event.kind {
+                                    MouseEventKind::ScrollUp => {
+                                        let _ = input_tx.send(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        let _ = input_tx.send(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                                    }
+                                    _ => {}
+                                }
                             }
                             Some(Ok(_)) => {}
                             Some(Err(_)) => break,
@@ -127,6 +140,7 @@ impl ShutdownGuard {
         let _ = execute!(
             io::stdout(),
             DisableBracketedPaste,
+            DisableMouseCapture,
             PopKeyboardEnhancementFlags,
             crossterm::cursor::Show,
         );

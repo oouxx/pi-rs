@@ -1223,6 +1223,97 @@ mod tests {
     }
 
     #[test]
+    fn test_list_item_inline_bold_style_preserved() {
+        // BUG: inline bold styling inside list items is lost because
+        // list rendering replaces all span styles with base_style.
+        let md = Markdown::new("- **bold** item".to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        assert!(!lines.is_empty());
+        let line = &lines[0];
+        assert!(line_content(line).contains("bold"), "'bold' should be in output");
+        let has_bold = line.spans.iter().any(|s| {
+            s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD)
+        });
+        assert!(has_bold, "'bold' in list item should have BOLD style, got: {:?}",
+            line.spans.iter().map(|s| format!("{:?}", s)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_list_item_inline_code_style_preserved() {
+        // BUG: inline code inside list items loses its yellow/theme styling
+        let md = Markdown::new("- use `let x = 1` here".to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        assert!(!lines.is_empty());
+        let line = &lines[0];
+        assert!(line_content(line).contains("let x = 1"));
+        // Code span should have yellow foreground (the default code style)
+        let has_code_color = line.spans.iter().any(|s| {
+            s.content == "let x = 1" || s.content.contains("let x = 1")
+        });
+        // At minimum, the code content should not be split across spans with identical base_style
+        let all_base_style = line.spans.iter().all(|s| s.style.fg == None && !s.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!all_base_style, "Code in list item should have styled spans, not all base_style");
+    }
+
+    #[test]
+    fn test_nested_list_indentation() {
+        // BUG: nested list items lose indentation depth
+        let md = Markdown::new(
+            "- Level 1\n  - Level 2\n    - Level 3".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
+        let lines = md.render(80);
+        let output: Vec<String> = lines.iter().map(|l| line_content(l)).collect();
+        eprintln!("Nested list output: {:?}", output);
+        assert!(
+            output.iter().any(|l| l.starts_with("- Level 1") || l.starts_with("  -") || l.trim_start().starts_with("- Level 1")),
+            "Level 1 should appear: {:?}",
+            output
+        );
+        // Level 2 must be visibly indented relative to Level 1
+        let level2_indented = output.iter().any(|l| l.starts_with("  - Level 2"));
+        assert!(
+            level2_indented,
+            "Level 2 should be indented with leading spaces, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_code_block_no_extra_trailing_empty_line() {
+        // BUG: multi-line code blocks render an extra empty line before closing ```
+        // because code_text has a trailing newline and split('\n') produces ""
+        let md = Markdown::new(
+            "```rust\nfn main() {\n    let x = 1;\n}\n```".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
+        let lines = md.render(80);
+        let output: Vec<String> = lines.iter().map(|l| line_content(l)).collect();
+        eprintln!("Code block output: {:?}", output);
+        // Find the closing ``` line
+        let close_pos = output.iter().position(|l| l.trim() == "```");
+        assert!(close_pos.is_some(), "Should have closing ```");
+        let close_idx = close_pos.unwrap();
+        // The line right before closing ``` must be code content, not empty
+        if close_idx > 0 {
+            let prev = output[close_idx - 1].trim().to_string();
+            assert!(
+                !prev.is_empty() || prev == "```",
+                "Line before closing ``` should not be empty, got: {:?}",
+                output
+            );
+        }
+    }
+
+    #[test]
     fn test_cache_invalidation() {
         let mut md = Markdown::new("Hello".to_string(), 0, 0, default_theme(), None, None);
         let lines1 = md.render(80);

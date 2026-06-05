@@ -11,6 +11,9 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["sync", "macros", "rt", "io-std", "time", "signal"] }
 futures = "0.3"
 unicode-width = "0.2"
+unicode-segmentation = "1.12"
+regex-lite = "0.1"
+pulldown-cmark = { version = "0.13", default-features = false }
 thiserror = "2"
 
 [dev-dependencies]

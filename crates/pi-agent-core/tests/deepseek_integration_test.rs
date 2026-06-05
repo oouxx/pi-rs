@@ -204,10 +204,6 @@ fn make_stream_fn(api_key: &str) -> StreamFn {
                                 is_error: *is_error,
                                 timestamp: *timestamp,
                             },
-                            _ => pi_ai::types::Message::User {
-                                content: vec![],
-                                timestamp: 0,
-                            },
                         })
                         .collect(),
                     tools: context.tools.as_ref().map(|tools| {
@@ -479,7 +475,6 @@ fn make_convert_to_llm() -> ConvertToLlmFn {
 // Test helpers
 // ============================================================================
 
-#[track_caller]
 async fn timed_process(agent: &Agent, prompt: &str, label: &str) -> Vec<AgentMessage> {
     let start = std::time::Instant::now();
     let result = agent

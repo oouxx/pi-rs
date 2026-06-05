@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_no_name() {
         let content = "---\ndescription: Just a description\n---\nBody text";
-        let (name, description, body) = parse_frontmatter(content);
+        let (name, description, _body) = parse_frontmatter(content);
         assert_eq!(name, None);
         assert_eq!(description, Some("Just a description".to_string()));
     }
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_unclosed() {
         let content = "---\nname: test\nBody text without closing marker";
-        let (name, description, body) = parse_frontmatter(content);
+        let (name, _description, body) = parse_frontmatter(content);
         assert_eq!(name, None);
         assert_eq!(body, content);
     }
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_multiline_body() {
         let content = "---\nname: multi\n---\nLine 1\nLine 2\nLine 3";
-        let (name, description, body) = parse_frontmatter(content);
+        let (name, _description, body) = parse_frontmatter(content);
         assert_eq!(name, Some("multi".to_string()));
         assert!(body.contains("Line 1"));
         assert!(body.contains("Line 3"));

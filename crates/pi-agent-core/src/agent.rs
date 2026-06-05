@@ -391,7 +391,7 @@ impl Agent {
             state.error_message = None;
         }
 
-        let result = self.run_with_lifecycle(messages).await;
+        let result = self.run_with_lifecycle(messages, false).await;
         self.finish_run().await;
         result
     }
@@ -411,7 +411,37 @@ impl Agent {
             if state.messages.is_empty() {
                 return Err("Cannot continue: no messages in context".into());
             }
+
+            // TS behavior: if last message is assistant, drain steering/follow-up first
             if state.messages.last().map(|m| m.role()) == Some("assistant") {
+                drop(state);
+                {
+                    let mut state = self.state.write().await;
+                    state.is_streaming = true;
+                    state.streaming_message = None;
+                    state.error_message = None;
+                }
+
+                // Try steering first
+                let steering_msgs = self.steering_queue.lock().await.drain();
+                if !steering_msgs.is_empty() {
+                    let result = self.run_with_lifecycle(steering_msgs, true).await;
+                    self.finish_run().await;
+                    return result;
+                }
+
+                // Try follow-up next
+                let follow_up_msgs = self.follow_up_queue.lock().await.drain();
+                if !follow_up_msgs.is_empty() {
+                    let result = self.run_with_lifecycle(follow_up_msgs, false).await;
+                    self.finish_run().await;
+                    return result;
+                }
+
+                {
+                    let mut state = self.state.write().await;
+                    state.is_streaming = false;
+                }
                 return Err("Cannot continue from message role: assistant".into());
             }
         }
@@ -440,6 +470,7 @@ impl Agent {
     async fn run_with_lifecycle(
         &self,
         prompts: Vec<AgentMessage>,
+        skip_initial_steering_poll: bool,
     ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let cancel = tokio_util::sync::CancellationToken::new();
         let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -468,6 +499,7 @@ impl Agent {
         let emit = self.create_event_sink();
         let steering_queue = self.steering_queue.clone();
         let follow_up_queue = self.follow_up_queue.clone();
+        let skip_steering = Arc::new(tokio::sync::Mutex::new(skip_initial_steering_poll));
 
         let config = crate::agent_loop::AgentLoopConfig {
             model: model.clone(),
@@ -485,9 +517,22 @@ impl Agent {
             convert_to_llm: self.convert_to_llm.clone(),
             transform_context: self.transform_context.clone(),
             get_api_key: self.get_api_key.clone(),
-            get_steering_messages: Some(Arc::new(move || {
+            get_steering_messages: Some(Arc::new({
+                let skip = skip_steering.clone();
                 let q = steering_queue.clone();
-                Box::pin(async move { q.lock().await.drain() })
+                move || {
+                    let skip = skip.clone();
+                    let q = q.clone();
+                    Box::pin(async move {
+                        let mut guard = skip.lock().await;
+                        if *guard {
+                            *guard = false;
+                            return Vec::new();
+                        }
+                        drop(guard);
+                        q.lock().await.drain()
+                    })
+                }
             })),
             get_follow_up_messages: Some(Arc::new(move || {
                 let q = follow_up_queue.clone();
@@ -516,17 +561,18 @@ impl Agent {
 
         self.active_run.lock().await.take();
 
+        let was_aborted = signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false);
+
         match loop_result {
             Ok(messages) => Ok(messages),
             Err(e) => {
-                let aborted = false;
                 let failure_message = AgentMessage::Assistant {
                     content: vec![ContentBlock::Text { text: String::new(), text_signature: None }],
                     api: model.api.clone(),
                     provider: model.provider.clone(),
                     model: model.id.clone(),
                     usage: Usage::default(),
-                    stop_reason: Some(if aborted { StopReason::Aborted } else { StopReason::Error }),
+                    stop_reason: Some(if was_aborted { StopReason::Aborted } else { StopReason::Error }),
                     error_message: Some(e.to_string()),
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 };

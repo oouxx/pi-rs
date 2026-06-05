@@ -1,6 +1,12 @@
+pub mod autocomplete;
 pub mod components;
+pub mod fuzzy;
 pub mod keybindings;
 pub mod keys;
+pub mod kill_ring;
+pub mod stdin_buffer;
 pub mod terminal;
 pub mod tui;
+pub mod undo_stack;
 pub mod utils;
+pub mod word_navigation;

@@ -144,6 +144,11 @@ pub fn apply_background_to_line(line: &str, bg_fn: &dyn Fn(&str) -> String) -> S
     bg_fn(line)
 }
 
+/// Check if a character is whitespace (space, tab, newline).
+pub fn is_whitespace_char(c: char) -> bool {
+    c == ' ' || c == '\t' || c == '\n'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

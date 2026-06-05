@@ -12,6 +12,11 @@ use crate::types::{
     ShouldStopAfterTurnFn, StreamFn, StreamFnOptions, TransformContextFn,
 };
 
+/// Check whether the signal watch has received an abort (true) value.
+fn is_aborted(signal: &Option<tokio::sync::watch::Receiver<bool>>) -> bool {
+    signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false)
+}
+
 enum PreparedOrImmediate {
     Prepared {
         tool_call: AgentToolCall,
@@ -334,6 +339,10 @@ async fn execute_tool_calls_sequential(
 
         finalized_calls.push(finalized);
         messages.push(tool_result_message);
+
+        if is_aborted(signal) {
+            break;
+        }
     }
 
     ExecutedToolCallBatch {
@@ -423,6 +432,10 @@ async fn execute_tool_calls_parallel(
 
                 entries.push(FinalizedEntry::Lazy(fut));
             }
+        }
+
+        if is_aborted(signal) {
+            break;
         }
     }
 

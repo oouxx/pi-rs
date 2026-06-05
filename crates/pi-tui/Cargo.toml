@@ -6,18 +6,18 @@ description = "Terminal UI framework with ratatui-based rendering, component tre
 license = "MIT"
 
 [dependencies]
-ratatui = "0.30"
-crossterm = { version = "0.29", features = ["event-stream"] }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["sync", "macros", "rt", "io-std", "time", "signal"] }
 futures = "0.3"
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
 regex-lite = "0.1"
-pulldown-cmark = { version = "0.13", default-features = false }
 thiserror = "2"
-ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
+ratatui-image = { version = "9.0.0", default-features = false, features = ["crossterm", "image-defaults"] }
 image = "0.25"
 fuzzy-matcher = "0.3.7"
+ratkit = { version = "0.2.16", features = ["all"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -20,15 +20,15 @@ impl ImageComponent {
         let font_size = picker.font_size();
         let img_w = img.width();
         let img_h = img.height();
-        let cell_w = font_size.width as u32;
-        let cell_h = font_size.height as u32;
+        let cell_w = font_size.0 as u32;
+        let cell_h = font_size.1 as u32;
 
         let cols = (img_w + cell_w - 1).div_ceil(cell_w).max(1) as u16;
         let rows = (img_h + cell_h - 1).div_ceil(cell_h).max(1) as u16;
 
-        let size = ratatui::layout::Size::new(cols, rows);
+        let rect = Rect::new(0, 0, cols, rows);
         let protocol = picker
-            .new_protocol(img, size, Resize::Fit(None))
+            .new_protocol(img, rect, Resize::Fit(None))
             .map_err(|e| format!("Protocol creation failed: {}", e))?;
 
         Ok(Self {

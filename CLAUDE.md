@@ -6,7 +6,7 @@
 
 ## 使用rust完整复刻https://github.com/earendil-works/pi/tree/main/packages/ai
 
-## 使用rust完整复刻 实现https://github.com/earendil-works/pi/tree/main/packages/tui
+## 使用rust完整复刻 实现https://github.com/earendil-works/pi/tree/main/packages/tui 借鉴原项目的架构和设计，通过rust的ratatui库实现
 
 ## 上面四个拆分为四个crate分别是pi-agent-core, pi-coding-agent, pi-ai, pi-tui
 

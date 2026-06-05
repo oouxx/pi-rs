@@ -15,10 +15,10 @@ pub use autocomplete::{
     CombinedAutocompleteProvider, SlashCommand,
 };
 pub use components::{
-    BoxComponent, CancellableLoader, DefaultTextStyle, Editor, ImageComponent, Input,
-    Loader, LoaderIndicatorOptions, Markdown, MarkdownOptions, MarkdownTheme, SelectItem,
-    SelectList, SettingItem, SettingsList, SettingsListTheme, Spacer, TextComponent,
-    TruncatedText,
+    AIChatComponent, BoxComponent, CancellableLoader, CodeDiffComponent, DefaultTextStyle,
+    Editor, ImageComponent, Input, Loader, LoaderIndicatorOptions, Markdown, MarkdownOptions,
+    MarkdownTheme, SelectItem, SelectList, SettingItem, SettingsList, SettingsListTheme,
+    Spacer, TextComponent, TruncatedText,
 };
 pub use editor_component::EditorComponent;
 pub use fuzzy::{fuzzy_filter, fuzzy_match, FuzzyMatch};

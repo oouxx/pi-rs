@@ -1,5 +1,7 @@
+pub mod ai_chat;
 pub mod box_component;
 pub mod cancellable_loader;
+pub mod code_diff;
 pub mod editor;
 pub mod image;
 pub mod input;
@@ -11,8 +13,10 @@ pub mod spacer;
 pub mod text;
 pub mod truncated_text;
 
+pub use ai_chat::AIChatComponent;
 pub use box_component::BoxComponent;
 pub use cancellable_loader::CancellableLoader;
+pub use code_diff::CodeDiffComponent;
 pub use editor::Editor;
 pub use image::ImageComponent;
 pub use input::Input;

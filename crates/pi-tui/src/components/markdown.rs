@@ -25,6 +25,8 @@ pub struct MarkdownTheme {
     pub italic: Box<dyn Fn() -> Style + Send + Sync>,
     pub strikethrough: Box<dyn Fn() -> Style + Send + Sync>,
     pub underline: Box<dyn Fn() -> Style + Send + Sync>,
+    pub table_border: Box<dyn Fn() -> Style + Send + Sync>,
+    pub table_header: Box<dyn Fn() -> Style + Send + Sync>,
     pub highlight_code: Option<Box<dyn Fn(&str, Option<&str>) -> Vec<Line<'static>> + Send + Sync>>,
     pub code_block_indent: String,
 }
@@ -56,10 +58,16 @@ impl MarkdownTheme {
             quote_border: Box::new(|| Style::new().fg(Color::DarkGray)),
             hr: Box::new(|| Style::new().fg(Color::DarkGray)),
             list_bullet: Box::new(|| Style::new().fg(Color::Cyan)),
-            bold: Box::new(|| Style::new().add_modifier(Modifier::BOLD)),
-            italic: Box::new(|| Style::new().add_modifier(Modifier::ITALIC)),
+            bold: Box::new(|| Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            italic: Box::new(|| Style::new().fg(Color::Green).add_modifier(Modifier::ITALIC)),
             strikethrough: Box::new(|| Style::new().add_modifier(Modifier::CROSSED_OUT)),
             underline: Box::new(|| Style::new().add_modifier(Modifier::UNDERLINED)),
+            table_header: Box::new(|| {
+                Style::new()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            }),
+            table_border: Box::new(|| Style::new().fg(Color::DarkGray)),
             highlight_code: None,
             code_block_indent: "  ".to_string(),
         }
@@ -701,6 +709,9 @@ impl Markdown {
             return vec![];
         }
 
+        let border_style = base_style.patch((self.theme.table_border)());
+        let header_style = base_style.patch((self.theme.table_header)());
+
         let border_overhead = 3 * num_cols + 1;
         if available_width <= border_overhead {
             return vec![];
@@ -765,17 +776,25 @@ impl Markdown {
         };
 
         let build_frame_line = |cell_wrapped: &[Vec<Vec<Span<'static>>>], line_idx: usize, header: bool| -> Vec<Span<'static>> {
-            let mut spans = vec![Span::raw("│ ".to_string())];
+            let mut spans = vec![Span::styled("│ ", border_style)];
             for ci in 0..num_cols {
                 if ci > 0 {
-                    spans.push(Span::raw(" │ ".to_string()));
+                    spans.push(Span::styled(" │ ", border_style));
                 }
                 if let Some(spans_line) = cell_wrapped.get(ci).and_then(|w| w.get(line_idx)) {
                     let align = alignments.get(ci).copied().unwrap_or(Alignment::None);
                     let aligned = apply_alignment(spans_line.clone(), align, column_widths[ci]);
                     if header {
                         for mut s in aligned {
-                            s.style.add_modifier = s.style.add_modifier | Modifier::BOLD;
+                            // Add bold modifier to all header cells
+                            s.style.add_modifier = s.style.add_modifier | header_style.add_modifier;
+                            // Set header fg color only if cell has no explicit fg
+                            // (Style::reset() uses Some(Color::Reset), treat that same as None)
+                            let needs_header_fg = s.style.fg.is_none()
+                                || s.style.fg == Some(Color::Reset);
+                            if needs_header_fg {
+                                s.style.fg = header_style.fg;
+                            }
                             spans.push(s);
                         }
                     } else {
@@ -785,12 +804,15 @@ impl Markdown {
                     spans.push(Span::raw(" ".repeat(column_widths[ci])));
                 }
             }
-            spans.push(Span::raw(" │".to_string()));
+            spans.push(Span::styled(" │", border_style));
             spans
         };
 
         let top_cells: Vec<String> = column_widths.iter().map(|w| "─".repeat(*w)).collect();
-        lines.push(Line::from(Span::raw(format!("┌─{}─┐", top_cells.join("─┬─")))));
+        lines.push(Line::from(Span::styled(
+            format!("┌─{}─┐", top_cells.join("─┬─")),
+            border_style,
+        )));
 
         let header_wrapped: Vec<Vec<Vec<Span<'static>>>> = headers
             .iter()
@@ -807,10 +829,10 @@ impl Markdown {
         }
 
         let sep_cells: Vec<String> = column_widths.iter().map(|w| "─".repeat(*w)).collect();
-        lines.push(Line::from(Span::raw(format!(
-            "├─{}─┤",
-            sep_cells.join("─┼─")
-        ))));
+        lines.push(Line::from(Span::styled(
+            format!("├─{}─┤", sep_cells.join("─┼─")),
+            border_style,
+        )));
 
         for row in &rows {
             let row_wrapped: Vec<Vec<Vec<Span<'static>>>> = row
@@ -829,10 +851,10 @@ impl Markdown {
         }
 
         let bottom_cells: Vec<String> = column_widths.iter().map(|w| "─".repeat(*w)).collect();
-        lines.push(Line::from(Span::raw(format!(
-            "└─{}─┘",
-            bottom_cells.join("─┴─")
-        ))));
+        lines.push(Line::from(Span::styled(
+            format!("└─{}─┘", bottom_cells.join("─┴─")),
+            border_style,
+        )));
 
         lines
     }
@@ -1022,6 +1044,8 @@ impl Component for Markdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SyntaxHighlighter;
+    use ratatui::backend::TestBackend;
 
     fn default_theme() -> MarkdownTheme {
         MarkdownTheme::default_theme()
@@ -1460,5 +1484,314 @@ mod tests {
             s.content == "italic text" && s.style.add_modifier.contains(Modifier::ITALIC)
         });
         assert!(has_italic, "'italic text' in list should have italic style");
+    }
+
+    /// Visual integration test showing rich markdown with syntax highlighting.
+    /// Run with: `cargo test -p pi-tui visual_markdown -- --nocapture`
+    #[test]
+    fn visual_markdown_full() {
+        let markdown = r#"# Heading 1
+
+## Heading 2
+
+### Heading 3: with **bold** and `inline code`
+
+- Unordered item one
+- Unordered **bold** item
+- `code` and *italic* in a list
+
+1. Ordered item alpha
+2. Ordered item beta
+3. Ordered **bold italic** item
+
+| Left      | Center        | Right |
+|:----------|:-------------:|------:|
+| lorem ipsum | **bold**     | `code`|
+| *italic*    | center text  | 42    |
+
+```rust
+fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+fn main() {
+    let msg = greet("World");
+    println!("{msg}");
+}
+```
+
+```python
+def fibonacci(n: int) -> int:
+    if n <= 1:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+
+print(fibonacci(10))
+```
+"#;
+
+        let highlighter = SyntaxHighlighter::new();
+        let mut theme = default_theme();
+        theme.highlight_code = Some(highlighter.into_highlight_fn());
+
+        let md = Markdown::new(markdown.to_string(), 1, 0, theme, None, None);
+        let lines = md.render(100);
+
+        // === Section 1: Plain text overview ===
+        println!("\n═══ Markdown Output (plain text) ═══\n");
+        let mut code_block_start = vec![];
+        for (i, line) in lines.iter().enumerate() {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if text.contains("```rust") || text.contains("```python") {
+                code_block_start.push(i);
+            }
+            println!("{:3}: {}", i, text);
+        }
+
+        // === Section 2: Style details for code blocks ===
+        println!("\n═══ Syntax Highlighting: Span Styles ═══\n");
+        use std::fmt::Write;
+        for &start in &code_block_start {
+            // Find the closing ``` marker
+            let end = lines[start + 1..]
+                .iter()
+                .position(|l| {
+                    let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                    t.trim() == "```"
+                })
+                .map(|pos| start + 1 + pos)
+                .unwrap_or(lines.len());
+            let lang: String = lines[start].spans.iter().map(|s| s.content.as_ref()).collect();
+            println!("  {} — styled spans per token:", lang.trim());
+            for line_idx in start + 1..end {
+                let line = &lines[line_idx];
+                let mut detail = String::new();
+                for s in &line.spans {
+                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                    let mut mods = Vec::new();
+                    if s.style.add_modifier.contains(Modifier::BOLD) { mods.push("bold"); }
+                    if s.style.add_modifier.contains(Modifier::ITALIC) { mods.push("italic"); }
+                    if s.style.add_modifier.contains(Modifier::UNDERLINED) { mods.push("underline"); }
+                    let mod_str = if mods.is_empty() { "".into() } else { format!("+{}", mods.join("+")) };
+                    write!(detail, "[[{}]{} ", fg, mod_str).unwrap();
+                    detail.push_str(s.content.as_ref());
+                    detail.push_str("] ");
+                }
+                // Indent and print with original text as annotation
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                println!("  {:20}  ← {}", detail.trim(), text.trim());
+            }
+        }
+
+        // === Section 3: ANSI rendering via syntect (24-bit true color) ===
+        println!("\n═══ ANSI 24-bit Color Output (true terminal colors) ═══\n");
+        {
+            use syntect::highlighting::ThemeSet;
+            use syntect::util::as_24_bit_terminal_escaped;
+            let ps = syntect::parsing::SyntaxSet::load_defaults_newlines();
+            let ts = ThemeSet::load_defaults();
+            let rust_syntax = ps.find_syntax_by_extension("rs").unwrap();
+            let py_syntax = ps.find_syntax_by_extension("py").unwrap();
+
+            let code_rust = r#"fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+fn main() {
+    let msg = greet("World");
+    println!("{msg}");
+}
+"#;
+            let code_py = r#"def fibonacci(n: int) -> int:
+    if n <= 1:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+
+print(fibonacci(10))
+"#;
+
+            println!("  --- Rust ---");
+            let mut h = syntect::easy::HighlightLines::new(rust_syntax, &ts.themes["base16-ocean.dark"]);
+            for line in syntect::util::LinesWithEndings::from(code_rust) {
+                let ranges = h.highlight_line(line, &ps).unwrap();
+                let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+                print!("  {}", escaped);
+            }
+            print!("\x1b[0m");
+
+            println!("  --- Python ---");
+            let mut h = syntect::easy::HighlightLines::new(py_syntax, &ts.themes["base16-ocean.dark"]);
+            for line in syntect::util::LinesWithEndings::from(code_py) {
+                let ranges = h.highlight_line(line, &ps).unwrap();
+                let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+                print!("  {}", escaped);
+            }
+            print!("\x1b[0m");
+        }
+
+        // === Section 3.5: Full ANSI Rendered Markdown ===
+        println!("\n═══ Full ANSI Rendered Markdown (all elements with colors) ═══\n");
+        {
+            // Helper: convert ratatui Color to ANSI foreground code
+            let fg_code = |c: Color| -> Option<String> {
+                match c {
+                    Color::Black => Some("30".into()),
+                    Color::Red => Some("31".into()),
+                    Color::Green => Some("32".into()),
+                    Color::Yellow => Some("33".into()),
+                    Color::Blue => Some("34".into()),
+                    Color::Magenta => Some("35".into()),
+                    Color::Cyan => Some("36".into()),
+                    Color::White => Some("37".into()),
+                    Color::DarkGray => Some("90".into()),
+                    Color::LightRed => Some("91".into()),
+                    Color::LightGreen => Some("92".into()),
+                    Color::LightYellow => Some("93".into()),
+                    Color::LightBlue => Some("94".into()),
+                    Color::LightMagenta => Some("95".into()),
+                    Color::LightCyan => Some("96".into()),
+                    Color::Rgb(r, g, b) => Some(format!("38;2;{};{};{}", r, g, b)),
+                    _ => None,
+                }
+            };
+            for line in &lines {
+                for s in &line.spans {
+                    let mut codes: Vec<String> = Vec::new();
+                    if let Some(code) = s.style.fg.and_then(&fg_code) {
+                        codes.push(code);
+                    }
+                    let m = s.style.add_modifier;
+                    if m.contains(Modifier::BOLD) { codes.push("1".into()); }
+                    if m.contains(Modifier::ITALIC) { codes.push("3".into()); }
+                    if m.contains(Modifier::UNDERLINED) { codes.push("4".into()); }
+                    if m.contains(Modifier::CROSSED_OUT) { codes.push("9".into()); }
+                    if codes.is_empty() {
+                        print!("{}", s.content);
+                    } else {
+                        print!("\x1b[{}m{}\x1b[0m", codes.join(";"), s.content);
+                    }
+                }
+                println!();
+            }
+            print!("\x1b[0m");
+        }
+
+        // === Section 4: Element Theme Styles (table, list, headings) ===
+        println!("\n═══ Element Theme Styles ═══\n");
+        {
+            use std::fmt::Write;
+            let table_top = lines.iter().position(|l| {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                t.starts_with("┌─")
+            });
+            let table_bottom = lines.iter().position(|l| {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                t.starts_with("└─")
+            });
+            let header_line = lines.iter().position(|l| {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                t.contains("Left") && t.contains("Center") && t.contains("Right")
+            });
+
+            if let Some(h) = header_line {
+                println!("  --- Table Header Row (line {}) ---", h);
+                for s in &lines[h].spans {
+                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                    let mods = if s.style.add_modifier.contains(Modifier::BOLD) { " +bold" } else { "" };
+                    println!("    [{}{}] {:?}", fg, mods, s.content);
+                }
+            }
+            if let Some(t) = table_top {
+                println!("  --- Table Border (line {}) ---", t);
+                for s in &lines[t].spans {
+                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                    println!("    [fg={}] {:?}", fg, s.content);
+                }
+            }
+            if let Some(h1) = lines.iter().position(|l| {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                t.trim() == "# Heading 1"
+            }) {
+                println!("  --- Heading 1 (line {}) ---", h1);
+                for s in &lines[h1].spans {
+                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                    let mods = if s.style.add_modifier.contains(Modifier::BOLD) { " +bold" } else { "" };
+                    if !s.content.trim().is_empty() || fg != "default" {
+                        println!("    [{}{}] {:?}", fg, mods, s.content);
+                    }
+                }
+            }
+            for (i, line) in lines.iter().enumerate() {
+                let t: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                if t.trim_start().starts_with("- ") || t.trim_start().starts_with(|c: char| c.is_ascii_digit() && t.trim_start().contains(". ")) {
+                    let mut detail = String::new();
+                    for s in &line.spans {
+                        let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                        let mods = if s.style.add_modifier.contains(Modifier::BOLD) { " +bold" } else { "" };
+                        write!(detail, "[{}{}]{} ", fg, mods, s.content).unwrap();
+                    }
+                    println!("  --- List Line {}: {}", i, detail.trim());
+                    break;
+                }
+            }
+        }
+
+        // === Section 5: Verification ===
+        let full_text: String = lines.iter().flat_map(|l| {
+            l.spans.iter().map(|s| s.content.as_ref())
+        }).collect();
+
+        assert!(full_text.contains("Heading 1"), "Missing H1");
+        assert!(full_text.contains("Heading 2"), "Missing H2");
+        assert!(full_text.contains("Heading 3"), "Missing H3");
+        assert!(full_text.contains("Unordered item one"), "Missing list item");
+        assert!(full_text.contains("Ordered item alpha"), "Missing ordered item");
+        assert!(full_text.contains("lorem ipsum"), "Missing table cell");
+        assert!(full_text.contains("fn greet"), "Missing rust code block");
+        assert!(full_text.contains("def fibonacci"), "Missing python code block");
+
+        // Verify that syntax highlighting produces different colors for different tokens
+        let has_multi_color = lines.iter().skip(code_block_start[0] + 1).take(9).any(|l| {
+            let fgs: Vec<_> = l.spans.iter().filter_map(|s| s.style.fg).collect();
+            if fgs.len() < 2 { return false; }
+            fgs.iter().any(|c1| fgs.iter().any(|c2| c1 != c2))
+        });
+        assert!(has_multi_color, "Syntax highlighting should produce different fg colors for different token types");
+
+        // Verify table border has a styled foreground color (not default)
+        let border_has_color = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            let trimmed = t.trim();
+            (trimmed.starts_with("┌─") || trimmed.starts_with("├─") || trimmed.starts_with("└─"))
+                && l.spans.iter().any(|s| s.style.fg.is_some())
+        });
+        assert!(border_has_color, "Table border should have a foreground color");
+
+        // Verify table header has a distinct foreground color (Cyan)
+        let header_has_cyan = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("Left") && t.contains("Center") && t.contains("Right")
+                && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
+        });
+        assert!(header_has_cyan, "Table header should have Cyan foreground color");
+
+        // Verify heading has blue foreground color
+        let heading_has_blue = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.trim() == "Heading 1"
+                && l.spans.iter().any(|s| s.style.fg == Some(Color::Blue))
+                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        assert!(heading_has_blue, "Heading 1 should have Blue foreground color with Bold modifier");
+
+        // Verify list bullet has cyan foreground color
+        let bullet_has_color = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            (t.trim_start().starts_with("- ") || t.trim_start().starts_with("1. "))
+                && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
+        });
+        assert!(bullet_has_color, "List bullet should have Cyan foreground color");
+
+        println!("\n═══ Test complete — all elements verified with theme coloring ═══");
     }
 }

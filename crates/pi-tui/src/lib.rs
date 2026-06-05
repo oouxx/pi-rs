@@ -2,6 +2,7 @@ pub mod autocomplete;
 pub mod components;
 pub mod editor_component;
 pub mod fuzzy;
+pub mod highlighting;
 pub mod keybindings;
 pub mod kill_ring;
 pub mod terminal;
@@ -21,6 +22,7 @@ pub use components::{
     TruncatedText,
 };
 pub use editor_component::EditorComponent;
+pub use highlighting::SyntaxHighlighter;
 pub use fuzzy::{fuzzy_filter, fuzzy_match, FuzzyMatch};
 pub use keybindings::{
     get_keybindings, init_keybindings, input_keybindings, editor_keybindings,

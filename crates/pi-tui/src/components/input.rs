@@ -46,7 +46,8 @@ impl Input {
 
     fn cursor_left(&mut self) {
         if self.cursor > 0 {
-            self.cursor -= 1;
+            let len = self.value[..self.cursor].chars().next_back().map_or(1, |c| c.len_utf8());
+            self.cursor -= len;
             if self.cursor < self.scroll_offset {
                 self.scroll_offset = self.cursor;
             }
@@ -54,8 +55,8 @@ impl Input {
     }
 
     fn cursor_right(&mut self) {
-        if self.cursor < self.value.len() {
-            self.cursor += 1;
+        if let Some(ch) = self.value[self.cursor..].chars().next() {
+            self.cursor += ch.len_utf8();
         }
     }
 
@@ -75,19 +76,21 @@ impl Input {
             }
         }
         self.value.insert(self.cursor, ch);
-        self.cursor += 1;
+        self.cursor += ch.len_utf8();
     }
 
     fn delete_backward(&mut self) {
         if self.cursor > 0 {
-            self.cursor -= 1;
-            self.value.remove(self.cursor);
+            let len = self.value[..self.cursor].chars().next_back().map_or(1, |c| c.len_utf8());
+            self.cursor -= len;
+            self.value.drain(self.cursor..self.cursor + len);
         }
     }
 
     fn delete_forward(&mut self) {
-        if self.cursor < self.value.len() {
-            self.value.remove(self.cursor);
+        if let Some(ch) = self.value[self.cursor..].chars().next() {
+            let len = ch.len_utf8();
+            self.value.drain(self.cursor..self.cursor + len);
         }
     }
 

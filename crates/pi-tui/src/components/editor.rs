@@ -530,7 +530,7 @@ impl Editor {
         if filtered.starts_with('/') || filtered.starts_with('~') || filtered.starts_with('.') {
             let line = &self.state.lines[self.state.cursor_line];
             if self.state.cursor_col > 0 {
-                let prev = line.chars().nth(self.state.cursor_col - 1).unwrap_or(' ');
+                let prev = line[..self.state.cursor_col].chars().next_back().unwrap_or(' ');
                 if prev.is_alphanumeric() {
                     filtered.insert(0, ' ');
                 }
@@ -1584,7 +1584,7 @@ impl Component for Editor {
             if !self.disable_submit {
                 let line = &self.state.lines[self.state.cursor_line];
                 if self.state.cursor_col > 0
-                    && line.chars().nth(self.state.cursor_col - 1) == Some('\\')
+                    && line[..self.state.cursor_col].chars().next_back() == Some('\\')
                 {
                     self.handle_backspace();
                     self.add_new_line();

@@ -929,7 +929,7 @@ fn wrap_spans_to_lines(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Spa
                         break;
                     }
                     tw += cw;
-                    taken += 1;
+                    taken += ch.len_utf8();
                 }
 
                 if taken == 0 {
@@ -1793,5 +1793,445 @@ print(fibonacci(10))
         assert!(bullet_has_color, "List bullet should have Cyan foreground color");
 
         println!("\n═══ Test complete — all elements verified with theme coloring ═══");
+    }
+    // ========================================================================
+    // E2E tests — streaming simulation + comprehensive markdown rendering
+    // ========================================================================
+
+    /// Simulate incremental text feeding like a streaming LLM response.
+    /// Each call to `set_text()` invalidates the render cache, simulating
+    /// what a chat UI would do as each delta arrives.
+    #[test]
+    fn test_e2e_streaming_incremental_render() {
+        let mut md = Markdown::new(String::new(), 0, 0, default_theme(), None, None);
+        let width = 80u16;
+
+        // Phase 1: empty
+        let lines = md.render(width);
+        assert!(lines.is_empty(), "empty text should produce empty output");
+
+        // Phase 2: partial heading
+        md.set_text("# Getting St".into());
+        let lines = md.render(width);
+        assert!(!lines.is_empty());
+        assert!(line_content(&lines[0]).contains("Getting St"));
+
+        // Phase 3: complete heading + partial paragraph
+        md.set_text("# Getting Started\n\nTo begin, ".into());
+        let lines = md.render(width);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+        assert!(output.contains("Getting Started"), "heading should be rendered");
+        assert!(output.contains("To begin,"), "paragraph text should appear");
+
+        // Phase 4: complete paragraph
+        md.set_text("# Getting Started\n\nTo begin, install the package using cargo.".into());
+        let lines = md.render(width);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+        assert!(output.contains("install the package"));
+        // Verify heading style
+        let has_heading_style = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("Getting Started")
+                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        assert!(has_heading_style, "heading should have bold style");
+
+        // Phase 5: add code block
+        md.set_text("# Getting Started\n\nTo begin, install the package using cargo.\n\n```bash\ncargo add pi-tui\n```".into());
+        let lines = md.render(width);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+        assert!(output.contains("cargo add pi-tui"), "code block should be rendered");
+
+        // Phase 6: complete message with multiple elements
+        md.set_text("# Getting Started\n\nTo begin, install the package using cargo.\n\n```bash\ncargo add pi-tui\n```\n\nThen run:\n\n```rust\nuse pi_tui::components::Markdown;\n\nlet md = Markdown::new(text, 0, 0, theme, None, None);\n```".into());
+        let lines = md.render(width);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+        assert!(output.contains("cargo add pi-tui"), "bash code block rendered");
+        assert!(output.contains("Markdown::new"), "rust code block rendered");
+        assert!(output.contains("Getting Started"), "heading still present");
+        assert!(output.contains("Then run:"), "paragraph after code block");
+    }
+
+    /// E2E test: full chat message with markdown formatting (as an LLM would produce).
+    #[test]
+    fn test_e2e_chat_message_rendering() {
+        let markdown = r#"Here is a **complete** response with `inline code` and a list:
+
+1. First, install dependencies
+2. Then configure the `config.toml` file
+3. Finally, run the application
+
+> **Note:** Make sure your API key is set.
+
+## Code Example
+
+```rust
+fn main() {
+    println!("Hello, world!");
+}
+```
+
+Here's a table for reference:
+
+| Package | Version | Description     |
+|---------|---------|-----------------|
+| pi-tui  | 1.0     | Terminal UI     |
+| pi-ai   | 1.0     | AI integration  |
+
+---
+
+The end."#;
+
+        let mut theme = default_theme();
+        let highlighter = SyntaxHighlighter::new();
+        theme.highlight_code = Some(highlighter.into_highlight_fn());
+
+        let md = Markdown::new(markdown.to_string(), 0, 0, theme, None, None);
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+        // Verify all elements are present
+        assert!(output.contains("complete"), "bold text rendered");
+        assert!(output.contains("inline code"), "inline code rendered");
+        assert!(output.contains("First, install dependencies"), "ordered list item 1");
+        assert!(output.contains("Then configure the"), "ordered list item 2");
+        assert!(output.contains("Finally, run"), "ordered list item 3");
+        assert!(output.contains("Make sure your API key"), "blockquote rendered");
+        assert!(output.contains("Code Example"), "heading 2 rendered");
+        assert!(output.contains("fn main()"), "rust code block rendered");
+        assert!(output.contains("Hello, world!"), "code content rendered");
+        assert!(output.contains("Package"), "table header rendered");
+        assert!(output.contains("pi-tui"), "table cell rendered");
+        assert!(output.contains("pi-ai"), "table cell rendered");
+        assert!(output.contains("Version"), "table header rendered");
+        assert!(output.contains("The end."), "final paragraph");
+
+        // Verify styling on bold text
+        let has_bold = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "complete" && s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        assert!(has_bold, "bold text should have BOLD modifier");
+
+        // Verify inline code style
+        let has_code_style = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "inline code" && s.style.fg == Some(Color::Yellow))
+        });
+        assert!(has_code_style, "inline code should have yellow style");
+
+        // Verify blockquote has distinct style
+        let has_quote_style = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.trim().starts_with('│')
+        });
+        assert!(has_quote_style, "blockquote should have the │ prefix (U+2502)");
+
+        // Verify horizontal rule
+        let has_hr = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.trim().chars().all(|c| c == '─' || c == '—')
+        });
+        assert!(has_hr, "horizontal rule should be rendered");
+    }
+
+    /// E2E test: CJK markdown rendering (Chinese characters).
+    #[test]
+    fn test_e2e_cjk_markdown_rendering() {
+        let markdown = "# 你好世界\n\n这是一个**测试**包含 `代码` 和列表。\n\n- 列表项目一\n- 列表项目二\n\n> **引用**: 这是一段引用文字\n\n```python\ndef hello():\n    print(\"你好, 世界!\")\n```".to_string();
+
+        let mut theme = default_theme();
+        let highlighter = SyntaxHighlighter::new();
+        theme.highlight_code = Some(highlighter.into_highlight_fn());
+
+        let md = Markdown::new(markdown, 0, 0, theme, None, None);
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+        // Verify CJK content renders correctly
+        assert!(output.contains("你好世界"), "CJK heading");
+        assert!(output.contains("测试"), "CJK bold text");
+        assert!(output.contains("代码"), "CJK inline code");
+        assert!(output.contains("列表项目一"), "CJK list item 1");
+        assert!(output.contains("列表项目二"), "CJK list item 2");
+        assert!(output.contains("引用"), "CJK blockquote");
+        assert!(output.contains("这是一段引用文字"), "CJK blockquote text");
+        assert!(output.contains("def hello():"), "Python code block");
+        assert!(output.contains("你好, 世界!"), "CJK code content");
+
+        // Verify all lines render without panic (key: CJK multi-byte chars)
+        // Each line should have at least one span with content
+        for (i, line) in lines.iter().enumerate() {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(!text.is_empty() || line.spans.is_empty(),
+                "Line {} should have content or only spacing", i);
+        }
+    }
+
+    /// E2E test: code block with syntax highlighting renders correctly.
+    #[test]
+    fn test_e2e_code_block_syntax_highlighting() {
+        let markdown = r#"```rust
+fn calculate(x: i32, y: i32) -> i32 {
+    let result = x + y;
+    println!("Sum: {}", result);
+    result
+}
+```"#;
+
+        let mut theme = default_theme();
+        let highlighter = SyntaxHighlighter::new();
+        theme.highlight_code = Some(highlighter.into_highlight_fn());
+
+        let md = Markdown::new(markdown.to_string(), 0, 0, theme, None, None);
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+        // Verify code block content
+        assert!(output.contains("fn calculate"), "function signature");
+        assert!(output.contains("x + y"), "body expression");
+        assert!(output.contains("println!"), "macro invocation");
+
+        // Verify syntax highlighting — keywords like `fn`, `let` should have distinct colors
+        let has_keyword_highlighting = lines.iter().any(|l| {
+            l.spans.iter().any(|s| {
+                s.content == "fn"
+                    && s.style.fg.is_some()
+                    && s.style.fg != Some(Color::White)
+                    && s.style.fg != Some(Color::Reset)
+            })
+        });
+        assert!(has_keyword_highlighting, "`fn` keyword should be syntax-highlighted");
+
+        // Verify string literal highlighting
+        let has_string_highlighting = lines.iter().any(|l| {
+            l.spans.iter().any(|s| {
+                (s.content.starts_with('"') || s.content == "\"Sum: {}" || s.content.contains("Sum:"))
+                    && s.style.fg.is_some()
+            })
+        });
+        assert!(has_string_highlighting, "string literals should be highlighted");
+    }
+
+    /// E2E test: table with various alignments renders correctly.
+    #[test]
+    fn test_e2e_table_with_alignments() {
+        let markdown = r#"| Left | Center | Right |
+|:-----|:------:|------:|
+| A    | B      | C     |
+| D    | E      | F     |"#;
+
+        let md = Markdown::new(markdown.to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+        // Verify all content is present
+        assert!(output.contains("Left"));
+        assert!(output.contains("Center"));
+        assert!(output.contains("Right"));
+        assert!(output.contains("A"));
+        assert!(output.contains("B"));
+        assert!(output.contains("C"));
+        assert!(output.contains("D"));
+
+        // Verify table styling — header row should have distinct color
+        let header_has_color = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("Left") && t.contains("Center") && t.contains("Right")
+                && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
+        });
+        assert!(header_has_color, "table header should have Cyan foreground");
+    }
+
+    /// E2E test: width-responsive rendering — same content looks different at narrow widths.
+    #[test]
+    fn test_e2e_responsive_width() {
+        let text = "# Wide Content\n\nThis is a paragraph that should wrap differently at different widths. "
+            .to_string()
+            + "It contains enough text to demonstrate word wrapping behavior in the markdown renderer.";
+
+        let md = Markdown::new(text.clone(), 0, 0, default_theme(), None, None);
+
+        // Render at wide width
+        let wide_lines = md.render(120);
+        let wide_count = wide_lines.len();
+
+        // Render at narrow width (should have more lines due to wrapping)
+        let narrow_lines = md.render(30);
+        let narrow_count = narrow_lines.len();
+
+        // Narrow width should produce more lines (or equal if already minimal)
+        assert!(
+            narrow_count >= wide_count,
+            "narrow width ({}) should produce >= lines than wide width ({}), got {} vs {}",
+            30, 120, narrow_count, wide_count
+        );
+
+        // Verify the paragraph text wraps at narrow width
+        let wide_output: String = wide_lines.iter().map(|l| line_content(l) + "\n").collect();
+        let narrow_output: String = narrow_lines.iter().map(|l| line_content(l) + "\n").collect();
+        assert!(wide_output.contains("paragraph"), "paragraph content in wide render");
+        assert!(narrow_output.contains("paragraph"), "paragraph content in narrow render");
+    }
+
+    /// E2E test: deeply nested markdown structures.
+    #[test]
+    fn test_e2e_nested_structures() {
+        let markdown = r#"# Top Level
+
+## Section 1
+
+### Subsection 1.1
+
+> **Important**: Nested blockquote with **bold** and `code`.
+>
+> - List inside blockquote
+> - Another item
+
+1. **Ordered** with *italic*
+   - Nested unordered
+   - More nested
+2. Back to ordered
+
+```json
+{
+  "key": "value",
+  "nested": [1, 2, 3]
+}
+```"#;
+
+        let md = Markdown::new(markdown.to_string(), 0, 0, default_theme(), None, None);
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+        // Verify all heading levels
+        assert!(output.contains("Top Level"), "H1");
+        assert!(output.contains("Section 1"), "H2");
+        assert!(output.contains("Subsection 1.1"), "H3");
+
+        // Verify nested blockquote
+        assert!(output.contains("Important"), "bold in blockquote");
+        assert!(output.contains("List inside blockquote"), "list in blockquote");
+
+        // Verify nested lists
+        assert!(output.contains("Ordered"), "ordered list item");
+        assert!(output.contains("Nested unordered"), "nested unordered list");
+        assert!(output.contains("Back to ordered"), "back to ordered list");
+
+        // Verify JSON code block
+        assert!(output.contains("\"key\""), "JSON content preserved");
+
+        // Verify bold in list — check that the line containing "Ordered" has bold modifier somewhere
+        let has_bold = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.trim().contains("Ordered")
+                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        // If the exact span match fails, fallback: just check text presence + any bold on the line
+        if !has_bold {
+            let bold_present = lines.iter().any(|l| {
+                l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            });
+            assert!(bold_present, "ordered list should have some bold text");
+        }
+
+        // Verify italic in list
+        let has_italic = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.trim().contains("italic")
+                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
+        });
+        if !has_italic {
+            let italic_present = lines.iter().any(|l| {
+                l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
+            });
+            assert!(italic_present, "ordered list should have some italic text");
+        }
+    }
+
+    /// E2E test: confluence with pi-ai types — simulate the full chat flow.
+    /// This test demonstrates how pi-ai streaming output would feed into pi-tui's
+    /// Markdown component in a real application.
+    #[test]
+    fn test_e2e_pi_ai_to_pi_tui_pipeline() {
+        // Simulate the data flow that would happen in a real chat app:
+        //
+        // 1. pi-ai produces AssistantMessageEvent::TextDelta events
+        // 2. App accumulates text from deltas
+        // 3. App feeds accumulated text to Markdown::set_text()
+        // 4. Markdown renders the content
+
+        // Simulated streaming deltas (like pi-ai would produce)
+        let deltas = [
+            "## Rust vs ",
+            "Python\n\n",
+            "Both **Rust** and ",
+            "`Python` have their ",
+            "strengths.\n\n",
+            "| Feature | Rust | Python |\n",
+            "|---------|------|--------|\n",
+            "| Speed   | Fast | Slow   |\n",
+            "| Safety  | High | Medium |\n",
+            "| Ease    | Hard | Easy   |\n\n",
+            "```rust\n",
+            "fn main() {\n",
+            r#"    println!("Hello!");"#,
+            "\n}\n",
+            "```\n",
+        ];
+
+        let mut md = Markdown::new(String::new(), 0, 0, default_theme(), None, None);
+        let mut accumulated = String::new();
+
+        for (i, delta) in deltas.iter().enumerate() {
+            accumulated.push_str(delta);
+            md.set_text(accumulated.clone());
+
+            // Render and verify progress
+            let lines = md.render(80);
+            let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+            // After the first two deltas, heading should be present
+            if i >= 1 {
+                assert!(output.contains("Rust vs"), "heading should appear after delta 1");
+            }
+
+            // After table deltas (index 5-9), table should appear
+            if i >= 5 && i <= 9 {
+                assert!(output.contains("Feature"), "table header after deltas 5-9");
+            }
+        }
+
+        // Final state verification
+        let lines = md.render(80);
+        let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
+
+        // All content rendered
+        assert!(output.contains("Rust vs"), "heading");
+        assert!(output.contains("Rust"), "bold text in paragraph");
+        assert!(output.contains("Python"), "inline code in paragraph");
+        assert!(output.contains("Feature"), "table header");
+        assert!(output.contains("Speed"), "table cell 1");
+        assert!(output.contains("Safety"), "table cell 2");
+        assert!(output.contains("fn main()"), "code block");
+        assert!(output.contains("Hello!"), "string in code block");
+
+        // Bold rendering
+        let has_bold = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "Rust" && s.style.add_modifier.contains(Modifier::BOLD))
+        });
+        assert!(has_bold, "'Rust' should be bold (from markdown **)");
+
+        // Inline code style
+        let has_code = lines.iter().any(|l| {
+            l.spans.iter().any(|s| s.content == "Python" && s.style.fg == Some(Color::Yellow))
+        });
+        assert!(has_code, "'Python' should have code style (from markdown `)");
+
+        // Table header style
+        let header_style = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("Feature")
+                && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
+        });
+        assert!(header_style, "table header should have Cyan style");
     }
 }

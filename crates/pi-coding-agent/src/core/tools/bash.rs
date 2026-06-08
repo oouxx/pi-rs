@@ -27,7 +27,13 @@ pub trait BashOperations: Send + Sync {
         cwd: &str,
         env: Option<Vec<(String, String)>>,
         signal: Option<tokio::sync::watch::Receiver<bool>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BashResult, Box<dyn std::error::Error + Send + Sync>>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<BashResult, Box<dyn std::error::Error + Send + Sync>>,
+                > + Send,
+        >,
+    >;
 }
 
 #[derive(Debug, Clone)]
@@ -48,12 +54,26 @@ impl BashOperations for LocalBashOperations {
         cwd: &str,
         _env: Option<Vec<(String, String)>>,
         mut signal: Option<tokio::sync::watch::Receiver<bool>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BashResult, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<BashResult, Box<dyn std::error::Error + Send + Sync>>,
+                > + Send,
+        >,
+    > {
         let command = command.to_string();
         let cwd = cwd.to_string();
         Box::pin(async move {
-            let shell = if cfg!(target_os = "windows") { "cmd" } else { "bash" };
-            let shell_arg = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+            let shell = if cfg!(target_os = "windows") {
+                "cmd"
+            } else {
+                "bash"
+            };
+            let shell_arg = if cfg!(target_os = "windows") {
+                "/C"
+            } else {
+                "-c"
+            };
 
             let mut cmd = tokio::process::Command::new(shell);
             cmd.arg(shell_arg)
@@ -67,7 +87,9 @@ impl BashOperations for LocalBashOperations {
                 cmd.process_group(0);
             }
 
-            let mut child = cmd.spawn().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -103,7 +125,9 @@ impl BashOperations for LocalBashOperations {
                         break None;
                     }
                 }
-                match tokio::time::timeout(std::time::Duration::from_millis(100), child.wait()).await {
+                match tokio::time::timeout(std::time::Duration::from_millis(100), child.wait())
+                    .await
+                {
                     Ok(Ok(status)) => break status.code(),
                     Ok(Err(_)) => break None,
                     Err(_) => continue,
@@ -167,7 +191,10 @@ fn bash_parameters_schema() -> serde_json::Value {
     })
 }
 
-pub fn create_bash_tool(cwd: &str, options: Option<BashToolOptions>) -> AgentTool<serde_json::Value, serde_json::Value> {
+pub fn create_bash_tool(
+    cwd: &str,
+    options: Option<BashToolOptions>,
+) -> AgentTool<serde_json::Value, serde_json::Value> {
     let opts = options.unwrap_or_default();
     let cwd = cwd.to_string();
     let operations = opts.operations.clone();
@@ -180,83 +207,92 @@ pub fn create_bash_tool(cwd: &str, options: Option<BashToolOptions>) -> AgentToo
         parameters_schema: bash_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,
-        execute: Arc::new(move |_tool_call_id: String, params: serde_json::Value, signal: Option<tokio::sync::watch::Receiver<bool>>, _on_update: Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>| {
-            let cwd = cwd.clone();
-            let operations = operations.clone();
-            let command_prefix = command_prefix.clone();
-            Box::pin(async move {
-                let command = params.get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+        execute: Arc::new(
+            move |_tool_call_id: String,
+                  params: serde_json::Value,
+                  signal: Option<tokio::sync::watch::Receiver<bool>>,
+                  _on_update: Option<
+                Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>,
+            >| {
+                let cwd = cwd.clone();
+                let operations = operations.clone();
+                let command_prefix = command_prefix.clone();
+                Box::pin(async move {
+                    let command = params
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
 
-                let full_command = if let Some(ref prefix) = command_prefix {
-                    format!("{}; {}", prefix, command)
-                } else {
-                    command.clone()
-                };
+                    let full_command = if let Some(ref prefix) = command_prefix {
+                        format!("{}; {}", prefix, command)
+                    } else {
+                        command.clone()
+                    };
 
-                let result = operations.execute(&full_command, &cwd, None, signal).await;
+                    let result = operations.execute(&full_command, &cwd, None, signal).await;
 
-                match result {
-                    Ok(bash_result) => {
-                        let mut output = String::new();
-                        if !bash_result.stdout.is_empty() {
-                            output.push_str(&bash_result.stdout);
-                        }
-                        if !bash_result.stderr.is_empty() {
-                            if !output.is_empty() {
-                                output.push('\n');
+                    match result {
+                        Ok(bash_result) => {
+                            let mut output = String::new();
+                            if !bash_result.stdout.is_empty() {
+                                output.push_str(&bash_result.stdout);
                             }
-                            output.push_str(&bash_result.stderr);
-                        }
-
-                        let truncation = truncate::truncate_tail(&output, None);
-
-                        let exit_code = bash_result.exit_code;
-                        let timed_out = bash_result.timed_out;
-                        let cancelled = bash_result.cancelled;
-
-                        let is_truncated = truncation.truncated;
-                        let truncation_clone = truncation.clone();
-                        let mut output_text = truncation.content;
-                        if timed_out {
-                            output_text = format!("Command timed out\n{}", output_text);
-                        }
-                        if cancelled {
-                            output_text = format!("Command cancelled\n{}", output_text);
-                        }
-                        if let Some(code) = exit_code {
-                            if code != 0 {
-                                output_text = format!("Exit code: {}\n{}", code, output_text);
+                            if !bash_result.stderr.is_empty() {
+                                if !output.is_empty() {
+                                    output.push('\n');
+                                }
+                                output.push_str(&bash_result.stderr);
                             }
+
+                            let truncation = truncate::truncate_tail(&output, None);
+
+                            let exit_code = bash_result.exit_code;
+                            let timed_out = bash_result.timed_out;
+                            let cancelled = bash_result.cancelled;
+
+                            let is_truncated = truncation.truncated;
+                            let truncation_clone = truncation.clone();
+                            let mut output_text = truncation.content;
+                            if timed_out {
+                                output_text = format!("Command timed out\n{}", output_text);
+                            }
+                            if cancelled {
+                                output_text = format!("Command cancelled\n{}", output_text);
+                            }
+                            if let Some(code) = exit_code {
+                                if code != 0 {
+                                    output_text = format!("Exit code: {}\n{}", code, output_text);
+                                }
+                            }
+
+                            let truncation_for_details = if is_truncated {
+                                Some(truncation_clone)
+                            } else {
+                                None
+                            };
+
+                            let details = serde_json::to_value(BashToolDetails {
+                                truncation: truncation_for_details,
+                                ..Default::default()
+                            })
+                            .unwrap_or(serde_json::Value::Null);
+
+                            Ok(AgentToolResult {
+                                content: vec![ContentBlock::text(output_text)],
+                                details,
+                                terminate: None,
+                            })
                         }
-
-                        let truncation_for_details = if is_truncated {
-                            Some(truncation_clone)
-                        } else {
-                            None
-                        };
-
-                        let details = serde_json::to_value(BashToolDetails {
-                            truncation: truncation_for_details,
-                            ..Default::default()
-                        }).unwrap_or(serde_json::Value::Null);
-
-                        Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(output_text)],
-                            details,
+                        Err(e) => Ok(AgentToolResult {
+                            content: vec![ContentBlock::text(format!("Error: {}", e))],
+                            details: serde_json::to_value(BashToolDetails::default())
+                                .unwrap_or(serde_json::Value::Null),
                             terminate: None,
-                        })
+                        }),
                     }
-                    Err(e) => Ok(AgentToolResult {
-                        content: vec![ContentBlock::text(format!("Error: {}", e))],
-                        details: serde_json::to_value(BashToolDetails::default())
-                            .unwrap_or(serde_json::Value::Null),
-                        terminate: None,
-                    }),
-                }
-            })
-        }),
+                })
+            },
+        ),
     }
 }

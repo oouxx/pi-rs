@@ -85,9 +85,7 @@ fn get_default_session_dir_path(cwd: &str, agent_dir: &std::path::Path) -> PathB
 }
 
 fn encode_cwd_to_dir_name(cwd: &str) -> String {
-    let trimmed = cwd
-        .trim_start_matches('/')
-        .trim_start_matches('\\');
+    let trimmed = cwd.trim_start_matches('/').trim_start_matches('\\');
     let safe = trimmed.replace(['/', '\\', ':'], "-");
     format!("--{}--", safe)
 }

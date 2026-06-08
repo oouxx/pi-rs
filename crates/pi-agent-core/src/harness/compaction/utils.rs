@@ -30,7 +30,12 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
 }
 
 pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String>) {
-    let mut modified: Vec<String> = file_ops.edited.iter().chain(file_ops.written.iter()).cloned().collect();
+    let mut modified: Vec<String> = file_ops
+        .edited
+        .iter()
+        .chain(file_ops.written.iter())
+        .cloned()
+        .collect();
     modified.sort();
     modified.dedup();
 
@@ -143,7 +148,10 @@ mod tests {
     #[test]
     fn test_extract_file_ops_from_non_assistant_message() {
         let msg = AgentMessage::User {
-            content: vec![ContentBlock::Text { text: "Hello".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "Hello".to_string(),
+                text_signature: None,
+            }],
             timestamp: 1000,
         };
         let mut file_ops = FileOperations::new();

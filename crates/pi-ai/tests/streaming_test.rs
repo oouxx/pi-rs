@@ -57,19 +57,31 @@ fn final_msg(text: &str, stop: StopReason) -> AssistantMessage {
 #[tokio::test]
 async fn test_stream_text_delta_accumulates() {
     let events = vec![
-        AssistantMessageEvent::Start { partial: partial_msg("") },
-        AssistantMessageEvent::TextStart { content_index: 0, partial: partial_msg("") },
-        AssistantMessageEvent::TextDelta {
-            content_index: 0, delta: "Hel".into(), partial: partial_msg("Hel"),
+        AssistantMessageEvent::Start {
+            partial: partial_msg(""),
+        },
+        AssistantMessageEvent::TextStart {
+            content_index: 0,
+            partial: partial_msg(""),
         },
         AssistantMessageEvent::TextDelta {
-            content_index: 0, delta: "lo ".into(), partial: partial_msg("Hello "),
+            content_index: 0,
+            delta: "Hel".into(),
+            partial: partial_msg("Hel"),
         },
         AssistantMessageEvent::TextDelta {
-            content_index: 0, delta: "world".into(), partial: partial_msg("Hello world"),
+            content_index: 0,
+            delta: "lo ".into(),
+            partial: partial_msg("Hello "),
+        },
+        AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "world".into(),
+            partial: partial_msg("Hello world"),
         },
         AssistantMessageEvent::TextEnd {
-            content_index: 0, content: "Hello world".into(),
+            content_index: 0,
+            content: "Hello world".into(),
             partial: partial_msg("Hello world"),
         },
         AssistantMessageEvent::Done {
@@ -90,7 +102,8 @@ async fn test_stream_text_delta_accumulates() {
 
 #[tokio::test]
 async fn test_stream_preserves_final_text_content() {
-    let final_text = "# Hello\n\nThis is a **markdown** response with `code`.\n\n- list item 1\n- list item 2";
+    let final_text =
+        "# Hello\n\nThis is a **markdown** response with `code`.\n\n- list item 1\n- list item 2";
     let deltas = [
         "# Hello\n\n",
         "This is a **markdown** ",
@@ -100,8 +113,13 @@ async fn test_stream_preserves_final_text_content() {
     ];
 
     let mut events: Vec<AssistantMessageEvent> = vec![
-        AssistantMessageEvent::Start { partial: partial_msg("") },
-        AssistantMessageEvent::TextStart { content_index: 0, partial: partial_msg("") },
+        AssistantMessageEvent::Start {
+            partial: partial_msg(""),
+        },
+        AssistantMessageEvent::TextStart {
+            content_index: 0,
+            partial: partial_msg(""),
+        },
     ];
 
     let mut accumulated = String::new();
@@ -136,7 +154,10 @@ async fn test_stream_preserves_final_text_content() {
 
 #[tokio::test]
 async fn test_stream_thinking_then_text() {
-    let empty = || AssistantMessage { content: vec![], ..partial_msg("") };
+    let empty = || AssistantMessage {
+        content: vec![],
+        ..partial_msg("")
+    };
 
     let events = vec![
         AssistantMessageEvent::Start { partial: empty() },
@@ -144,35 +165,45 @@ async fn test_stream_thinking_then_text() {
             content_index: 0,
             partial: AssistantMessage {
                 content: vec![ContentBlock::Thinking {
-                    thinking: "".into(), thinking_signature: None, redacted: None,
+                    thinking: "".into(),
+                    thinking_signature: None,
+                    redacted: None,
                 }],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::ThinkingDelta {
-            content_index: 0, delta: "Let me think".into(),
+            content_index: 0,
+            delta: "Let me think".into(),
             partial: AssistantMessage {
                 content: vec![ContentBlock::Thinking {
-                    thinking: "Let me think".into(), thinking_signature: None, redacted: None,
+                    thinking: "Let me think".into(),
+                    thinking_signature: None,
+                    redacted: None,
                 }],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::ThinkingDelta {
-            content_index: 0, delta: " about this...".into(),
+            content_index: 0,
+            delta: " about this...".into(),
             partial: AssistantMessage {
                 content: vec![ContentBlock::Thinking {
-                    thinking: "Let me think about this...".into(), thinking_signature: None, redacted: None,
+                    thinking: "Let me think about this...".into(),
+                    thinking_signature: None,
+                    redacted: None,
                 }],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::ThinkingEnd {
-            content_index: 0, content: "Let me think about this...".into(),
+            content_index: 0,
+            content: "Let me think about this...".into(),
             partial: AssistantMessage {
                 content: vec![ContentBlock::Thinking {
                     thinking: "Let me think about this...".into(),
-                    thinking_signature: Some("sig123".into()), redacted: None,
+                    thinking_signature: Some("sig123".into()),
+                    redacted: None,
                 }],
                 ..partial_msg("")
             },
@@ -183,48 +214,67 @@ async fn test_stream_thinking_then_text() {
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "Let me think about this...".into(),
-                        thinking_signature: Some("sig123".into()), redacted: None,
+                        thinking_signature: Some("sig123".into()),
+                        redacted: None,
                     },
-                    ContentBlock::Text { text: "".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "".into(),
+                        text_signature: None,
+                    },
                 ],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::TextDelta {
-            content_index: 1, delta: "Here is the ".into(),
+            content_index: 1,
+            delta: "Here is the ".into(),
             partial: AssistantMessage {
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "Let me think about this...".into(),
-                        thinking_signature: Some("sig123".into()), redacted: None,
+                        thinking_signature: Some("sig123".into()),
+                        redacted: None,
                     },
-                    ContentBlock::Text { text: "Here is the ".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "Here is the ".into(),
+                        text_signature: None,
+                    },
                 ],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::TextDelta {
-            content_index: 1, delta: "answer.".into(),
+            content_index: 1,
+            delta: "answer.".into(),
             partial: AssistantMessage {
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "Let me think about this...".into(),
-                        thinking_signature: Some("sig123".into()), redacted: None,
+                        thinking_signature: Some("sig123".into()),
+                        redacted: None,
                     },
-                    ContentBlock::Text { text: "Here is the answer.".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "Here is the answer.".into(),
+                        text_signature: None,
+                    },
                 ],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::TextEnd {
-            content_index: 1, content: "Here is the answer.".into(),
+            content_index: 1,
+            content: "Here is the answer.".into(),
             partial: AssistantMessage {
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "Let me think about this...".into(),
-                        thinking_signature: Some("sig123".into()), redacted: None,
+                        thinking_signature: Some("sig123".into()),
+                        redacted: None,
                     },
-                    ContentBlock::Text { text: "Here is the answer.".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "Here is the answer.".into(),
+                        text_signature: None,
+                    },
                 ],
                 ..partial_msg("")
             },
@@ -235,9 +285,13 @@ async fn test_stream_thinking_then_text() {
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "Let me think about this...".into(),
-                        thinking_signature: Some("sig123".into()), redacted: None,
+                        thinking_signature: Some("sig123".into()),
+                        redacted: None,
                     },
-                    ContentBlock::Text { text: "Here is the answer.".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "Here is the answer.".into(),
+                        text_signature: None,
+                    },
                 ],
                 ..final_msg("", StopReason::Stop)
             },
@@ -266,25 +320,48 @@ async fn test_stream_thinking_then_text() {
 #[tokio::test]
 async fn test_stream_tool_call() {
     let events = vec![
-        AssistantMessageEvent::Start { partial: AssistantMessage { content: vec![], ..partial_msg("") } },
+        AssistantMessageEvent::Start {
+            partial: AssistantMessage {
+                content: vec![],
+                ..partial_msg("")
+            },
+        },
         AssistantMessageEvent::ToolCallStart {
-            content_index: 0, partial: AssistantMessage { content: vec![], ..partial_msg("") },
+            content_index: 0,
+            partial: AssistantMessage {
+                content: vec![],
+                ..partial_msg("")
+            },
         },
         AssistantMessageEvent::ToolCallDelta {
-            content_index: 0, delta: "{\"pa".into(),
-            partial: AssistantMessage { content: vec![], ..partial_msg("") },
+            content_index: 0,
+            delta: "{\"pa".into(),
+            partial: AssistantMessage {
+                content: vec![],
+                ..partial_msg("")
+            },
         },
         AssistantMessageEvent::ToolCallDelta {
-            content_index: 0, delta: "th\": \"/tmp/x\"}".into(),
-            partial: AssistantMessage { content: vec![], ..partial_msg("") },
+            content_index: 0,
+            delta: "th\": \"/tmp/x\"}".into(),
+            partial: AssistantMessage {
+                content: vec![],
+                ..partial_msg("")
+            },
         },
         AssistantMessageEvent::ToolCallEnd {
             content_index: 0,
-            tool_call: ToolCall::new("call_1".into(), "read_file".into(), serde_json::json!({"path": "/tmp/x"})),
+            tool_call: ToolCall::new(
+                "call_1".into(),
+                "read_file".into(),
+                serde_json::json!({"path": "/tmp/x"}),
+            ),
             partial: AssistantMessage {
                 content: vec![ContentBlock::ToolCall {
-                    id: "call_1".into(), name: "read_file".into(),
-                    arguments: serde_json::json!({"path": "/tmp/x"}), thought_signature: None,
+                    id: "call_1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "/tmp/x"}),
+                    thought_signature: None,
                 }],
                 ..partial_msg("")
             },
@@ -293,8 +370,10 @@ async fn test_stream_tool_call() {
             reason: StopReason::ToolUse,
             message: AssistantMessage {
                 content: vec![ContentBlock::ToolCall {
-                    id: "call_1".into(), name: "read_file".into(),
-                    arguments: serde_json::json!({"path": "/tmp/x"}), thought_signature: None,
+                    id: "call_1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "/tmp/x"}),
+                    thought_signature: None,
                 }],
                 stop_reason: StopReason::ToolUse,
                 ..partial_msg("")
@@ -307,7 +386,12 @@ async fn test_stream_tool_call() {
     assert_eq!(msg.stop_reason, StopReason::ToolUse);
     assert_eq!(msg.content.len(), 1);
     match &msg.content[0] {
-        ContentBlock::ToolCall { id, name, arguments, .. } => {
+        ContentBlock::ToolCall {
+            id,
+            name,
+            arguments,
+            ..
+        } => {
             assert_eq!(id, "call_1");
             assert_eq!(name, "read_file");
             assert_eq!(arguments, &serde_json::json!({"path": "/tmp/x"}));
@@ -335,8 +419,13 @@ async fn test_stream_error_returns_error_message() {
     };
 
     let events = vec![
-        AssistantMessageEvent::Start { partial: partial_msg("") },
-        AssistantMessageEvent::Error { reason: StopReason::Error, error: err_msg.clone() },
+        AssistantMessageEvent::Start {
+            partial: partial_msg(""),
+        },
+        AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: err_msg.clone(),
+        },
     ];
 
     let stream = AssistantMessageEventStream::new(stream::iter(events));
@@ -360,52 +449,73 @@ async fn test_stream_empty_returns_error() {
 #[tokio::test]
 async fn test_stream_text_then_tool_call() {
     let events = vec![
-        AssistantMessageEvent::Start { partial: partial_msg("") },
-        AssistantMessageEvent::TextStart { content_index: 0, partial: partial_msg("") },
+        AssistantMessageEvent::Start {
+            partial: partial_msg(""),
+        },
+        AssistantMessageEvent::TextStart {
+            content_index: 0,
+            partial: partial_msg(""),
+        },
         AssistantMessageEvent::TextDelta {
-            content_index: 0, delta: "Let me search for that. ".into(),
+            content_index: 0,
+            delta: "Let me search for that. ".into(),
             partial: partial_msg("Let me search for that. "),
         },
         AssistantMessageEvent::TextEnd {
-            content_index: 0, content: "Let me search for that. ".into(),
+            content_index: 0,
+            content: "Let me search for that. ".into(),
             partial: partial_msg("Let me search for that. "),
         },
         AssistantMessageEvent::ToolCallStart {
             content_index: 1,
             partial: AssistantMessage {
-                content: vec![
-                    ContentBlock::Text { text: "Let me search for that. ".into(), text_signature: None },
-                ],
+                content: vec![ContentBlock::Text {
+                    text: "Let me search for that. ".into(),
+                    text_signature: None,
+                }],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::ToolCallDelta {
-            content_index: 1, delta: "{\"que".into(),
+            content_index: 1,
+            delta: "{\"que".into(),
             partial: AssistantMessage {
-                content: vec![
-                    ContentBlock::Text { text: "Let me search for that. ".into(), text_signature: None },
-                ],
+                content: vec![ContentBlock::Text {
+                    text: "Let me search for that. ".into(),
+                    text_signature: None,
+                }],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::ToolCallDelta {
-            content_index: 1, delta: "ry\": \"rust\"}".into(),
+            content_index: 1,
+            delta: "ry\": \"rust\"}".into(),
             partial: AssistantMessage {
-                content: vec![
-                    ContentBlock::Text { text: "Let me search for that. ".into(), text_signature: None },
-                ],
+                content: vec![ContentBlock::Text {
+                    text: "Let me search for that. ".into(),
+                    text_signature: None,
+                }],
                 ..partial_msg("")
             },
         },
         AssistantMessageEvent::ToolCallEnd {
             content_index: 1,
-            tool_call: ToolCall::new("call_2".into(), "search".into(), serde_json::json!({"query": "rust"})),
+            tool_call: ToolCall::new(
+                "call_2".into(),
+                "search".into(),
+                serde_json::json!({"query": "rust"}),
+            ),
             partial: AssistantMessage {
                 content: vec![
-                    ContentBlock::Text { text: "Let me search for that. ".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "Let me search for that. ".into(),
+                        text_signature: None,
+                    },
                     ContentBlock::ToolCall {
-                        id: "call_2".into(), name: "search".into(),
-                        arguments: serde_json::json!({"query": "rust"}), thought_signature: None,
+                        id: "call_2".into(),
+                        name: "search".into(),
+                        arguments: serde_json::json!({"query": "rust"}),
+                        thought_signature: None,
                     },
                 ],
                 ..partial_msg("")
@@ -415,10 +525,15 @@ async fn test_stream_text_then_tool_call() {
             reason: StopReason::ToolUse,
             message: AssistantMessage {
                 content: vec![
-                    ContentBlock::Text { text: "Let me search for that. ".into(), text_signature: None },
+                    ContentBlock::Text {
+                        text: "Let me search for that. ".into(),
+                        text_signature: None,
+                    },
                     ContentBlock::ToolCall {
-                        id: "call_2".into(), name: "search".into(),
-                        arguments: serde_json::json!({"query": "rust"}), thought_signature: None,
+                        id: "call_2".into(),
+                        name: "search".into(),
+                        arguments: serde_json::json!({"query": "rust"}),
+                        thought_signature: None,
                     },
                 ],
                 stop_reason: StopReason::ToolUse,

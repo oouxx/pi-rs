@@ -47,14 +47,12 @@
 
 use std::marker::PhantomData;
 
-pub use schemars::JsonSchema;
 use schemars::schema_for;
+pub use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 use pi_ai::stream;
-use pi_ai::types::{
-    self, ContentBlock, Context, Message, Model, StreamOptions, Tool,
-};
+use pi_ai::types::{self, ContentBlock, Context, Message, Model, StreamOptions, Tool};
 
 // ============================================================================
 // Error type
@@ -252,8 +250,8 @@ impl<T: JsonSchema + DeserializeOwned> Extractor<T> {
     /// Build the tool definition from T's JSON Schema.
     fn build_tool(&self) -> Tool {
         let schema = schema_for!(T);
-        let schema_value = serde_json::to_value(&schema)
-            .expect("schemars schema should always serialize");
+        let schema_value =
+            serde_json::to_value(&schema).expect("schemars schema should always serialize");
 
         Tool {
             name: self.tool_name.clone(),
@@ -334,7 +332,10 @@ impl<T: JsonSchema + DeserializeOwned> Extractor<T> {
     fn parse_tool_call(&self, msg: &types::AssistantMessage) -> Result<T, ExtractError> {
         let mut matches: Vec<serde_json::Value> = Vec::new();
         for block in &msg.content {
-            if let ContentBlock::ToolCall { name, arguments, .. } = block {
+            if let ContentBlock::ToolCall {
+                name, arguments, ..
+            } = block
+            {
                 if name == &self.tool_name {
                     matches.push(arguments.clone());
                 }
@@ -350,11 +351,7 @@ impl<T: JsonSchema + DeserializeOwned> Extractor<T> {
     }
 
     /// Core extraction loop (without usage tracking).
-    async fn extract_inner(
-        &self,
-        text: &str,
-        chat_history: &[Message],
-    ) -> Result<T, ExtractError> {
+    async fn extract_inner(&self, text: &str, chat_history: &[Message]) -> Result<T, ExtractError> {
         let tool = self.build_tool();
         let max_attempts = 1 + self.retries;
 
@@ -466,15 +463,15 @@ mod tests {
 
     #[test]
     fn test_extractor_custom_tool_name() {
-        let extractor = Extractor::<TestPerson>::new(dummy_model())
-            .with_tool_name("extract_person");
+        let extractor =
+            Extractor::<TestPerson>::new(dummy_model()).with_tool_name("extract_person");
         assert_eq!(extractor.tool_name, "extract_person");
     }
 
     #[test]
     fn test_extractor_custom_system_prompt() {
-        let extractor = Extractor::<TestPerson>::new(dummy_model())
-            .with_system_prompt("Extract person info.");
+        let extractor =
+            Extractor::<TestPerson>::new(dummy_model()).with_system_prompt("Extract person info.");
         assert_eq!(extractor.system_prompt, "Extract person info.");
     }
 
@@ -486,8 +483,7 @@ mod tests {
 
     #[test]
     fn test_extractor_custom_retries() {
-        let extractor = Extractor::<TestPerson>::new(dummy_model())
-            .with_retries(3);
+        let extractor = Extractor::<TestPerson>::new(dummy_model()).with_retries(3);
         assert_eq!(extractor.retries, 3);
     }
 
@@ -522,8 +518,8 @@ mod tests {
 
     #[test]
     fn test_build_tool_has_name_and_params() {
-        let extractor = Extractor::<TestPerson>::new(dummy_model())
-            .with_tool_name("extract_person");
+        let extractor =
+            Extractor::<TestPerson>::new(dummy_model()).with_tool_name("extract_person");
         let tool = extractor.build_tool();
         assert_eq!(tool.name, "extract_person");
         assert!(!tool.description.is_empty());
@@ -550,7 +546,9 @@ mod tests {
         assert_eq!(context.messages.len(), 2);
         // First message should be the reinforce instruction
         if let Message::User { content, .. } = &context.messages[0] {
-            assert!(content.iter().any(|b| matches!(b, ContentBlock::Text { text, .. }
+            assert!(content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. }
                 if text.contains("MUST"))));
         } else {
             panic!("Expected User message");
@@ -561,23 +559,20 @@ mod tests {
     fn test_build_context_with_chat_history() {
         let extractor = Extractor::<TestPerson>::new(dummy_model());
         let tool = extractor.build_tool();
-        let history = vec![
-            Message::User {
-                content: vec![ContentBlock::Text {
-                    text: "Previous message".into(),
-                    text_signature: None,
-                }],
-                timestamp: 0,
-            },
-        ];
+        let history = vec![Message::User {
+            content: vec![ContentBlock::Text {
+                text: "Previous message".into(),
+                text_signature: None,
+            }],
+            timestamp: 0,
+        }];
         let context = extractor.build_context("Hello", &history, tool, false);
         assert_eq!(context.messages.len(), 2);
     }
 
     #[test]
     fn test_extractor_api_key_is_set() {
-        let extractor = Extractor::<TestPerson>::new(dummy_model())
-            .with_api_key("sk-test");
+        let extractor = Extractor::<TestPerson>::new(dummy_model()).with_api_key("sk-test");
         assert_eq!(extractor.api_key, Some("sk-test".to_string()));
     }
 }

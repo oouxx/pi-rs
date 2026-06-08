@@ -52,12 +52,24 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     if options.include_defaults {
         let user_skills_dir = Path::new(&resolved_agent_dir).join("skills");
         if user_skills_dir.exists() {
-            load_skills_from_dir(&user_skills_dir, SkillSource::User, &mut skill_map, &mut diagnostics);
+            load_skills_from_dir(
+                &user_skills_dir,
+                SkillSource::User,
+                &mut skill_map,
+                &mut diagnostics,
+            );
         }
 
-        let project_skills_dir = Path::new(&options.cwd).join(config::CONFIG_DIR_NAME).join("skills");
+        let project_skills_dir = Path::new(&options.cwd)
+            .join(config::CONFIG_DIR_NAME)
+            .join("skills");
         if project_skills_dir.exists() {
-            load_skills_from_dir(&project_skills_dir, SkillSource::Project, &mut skill_map, &mut diagnostics);
+            load_skills_from_dir(
+                &project_skills_dir,
+                SkillSource::Project,
+                &mut skill_map,
+                &mut diagnostics,
+            );
         }
     }
 
@@ -166,7 +178,10 @@ fn extract_tools(content: &str) -> Vec<String> {
 }
 
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
-    let visible: Vec<&Skill> = skills.iter().filter(|s| !s.disable_model_invocation).collect();
+    let visible: Vec<&Skill> = skills
+        .iter()
+        .filter(|s| !s.disable_model_invocation)
+        .collect();
     if visible.is_empty() {
         return String::new();
     }
@@ -182,8 +197,14 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     for skill in &visible {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!("    <description>{}</description>", escape_xml(&skill.description)));
-        lines.push(format!("    <location>{}</location>", escape_xml(&skill.file_path)));
+        lines.push(format!(
+            "    <description>{}</description>",
+            escape_xml(&skill.description)
+        ));
+        lines.push(format!(
+            "    <location>{}</location>",
+            escape_xml(&skill.file_path)
+        ));
         lines.push("  </skill>".to_string());
     }
 
@@ -243,6 +264,9 @@ mod tests {
 
     #[test]
     fn test_escape_xml() {
-        assert_eq!(escape_xml("a&b<c>d\"e'f"), "a&amp;b&lt;c&gt;d&quot;e&apos;f");
+        assert_eq!(
+            escape_xml("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&apos;f"
+        );
     }
 }

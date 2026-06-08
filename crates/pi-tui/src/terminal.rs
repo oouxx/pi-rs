@@ -89,7 +89,12 @@ impl Terminal {
             let _ = crossterm::terminal::disable_raw_mode();
         });
 
-        Ok((input_rx, ShutdownGuard { sender: Some(shutdown_tx) }))
+        Ok((
+            input_rx,
+            ShutdownGuard {
+                sender: Some(shutdown_tx),
+            },
+        ))
     }
 
     pub fn ratatui_terminal(&mut self) -> &mut RatatuiTerminal<CrosstermBackend<Stdout>> {
@@ -101,7 +106,10 @@ impl Terminal {
     }
 
     pub fn clear(&mut self) -> io::Result<()> {
-        execute!(io::stdout(), crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
+        execute!(
+            io::stdout(),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+        )?;
         Ok(())
     }
 

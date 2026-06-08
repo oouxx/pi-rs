@@ -18,12 +18,22 @@ pub trait WriteOperations: Send + Sync {
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    >;
 
     fn mkdir(
         &self,
         dir: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    >;
 }
 
 pub struct LocalWriteOperations;
@@ -33,7 +43,12 @@ impl WriteOperations for LocalWriteOperations {
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    > {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
@@ -46,7 +61,12 @@ impl WriteOperations for LocalWriteOperations {
     fn mkdir(
         &self,
         dir: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    > {
         let dir = dir.to_string();
         Box::pin(async move {
             tokio::fs::create_dir_all(&dir)
@@ -92,7 +112,10 @@ fn write_parameters_schema() -> serde_json::Value {
     })
 }
 
-pub fn create_write_tool(cwd: &str, options: Option<WriteToolOptions>) -> AgentTool<serde_json::Value, serde_json::Value> {
+pub fn create_write_tool(
+    cwd: &str,
+    options: Option<WriteToolOptions>,
+) -> AgentTool<serde_json::Value, serde_json::Value> {
     let opts = options.unwrap_or_default();
     let cwd = cwd.to_string();
     let operations = opts.operations.clone();

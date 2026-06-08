@@ -43,7 +43,10 @@ where
         return items.iter().collect();
     }
 
-    let tokens: Vec<&str> = trimmed.split_whitespace().filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&str> = trimmed
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
     if tokens.is_empty() {
         return items.iter().collect();
     }

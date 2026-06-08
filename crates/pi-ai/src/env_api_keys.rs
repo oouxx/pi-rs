@@ -67,10 +67,24 @@ mod tests {
     #[test]
     fn test_known_providers_have_env_var_names() {
         let providers = &[
-            "openai", "anthropic", "google", "deepseek", "xai", "groq",
-            "cerebras", "openrouter", "mistral", "huggingface", "together",
-            "fireworks", "vercel-ai-gateway", "zai", "github-copilot",
-            "amazon-bedrock", "minimax", "moonshotai",
+            "openai",
+            "anthropic",
+            "google",
+            "deepseek",
+            "xai",
+            "groq",
+            "cerebras",
+            "openrouter",
+            "mistral",
+            "huggingface",
+            "together",
+            "fireworks",
+            "vercel-ai-gateway",
+            "zai",
+            "github-copilot",
+            "amazon-bedrock",
+            "minimax",
+            "moonshotai",
         ];
         for provider in providers {
             let var_name = get_env_var_name(provider);
@@ -86,7 +100,10 @@ mod tests {
     fn test_get_env_api_key_with_var_set() {
         std::env::set_var("__PI_TEST_API_KEY__", "test-key-value");
         // Hack: test by checking var resolution logic directly
-        assert_eq!(std::env::var("__PI_TEST_API_KEY__").ok(), Some("test-key-value".into()));
+        assert_eq!(
+            std::env::var("__PI_TEST_API_KEY__").ok(),
+            Some("test-key-value".into())
+        );
         std::env::remove_var("__PI_TEST_API_KEY__");
     }
 

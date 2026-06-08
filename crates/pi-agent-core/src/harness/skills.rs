@@ -98,7 +98,8 @@ mod tests {
             disable_model_invocation: true,
         };
 
-        let result = format_skills_for_system_prompt(&[visible_skill.clone(), disabled_skill, second_skill]);
+        let result =
+            format_skills_for_system_prompt(&[visible_skill.clone(), disabled_skill, second_skill]);
 
         assert!(result.contains("<available_skills>"));
         assert!(result.contains("<name>visible</name>"));
@@ -141,8 +142,11 @@ mod tests {
         };
         let result = format_skills_for_system_prompt(&[skill]);
         assert!(result.contains("<name>a&amp;b</name>"));
-        assert!(result.contains("<description>Quote &quot;double&quot; and &apos;single&apos;</description>"));
-        assert!(result.contains("<location>/skills/&lt;bad&gt;&amp;&quot;quote&quot;/SKILL.md</location>"));
+        assert!(result.contains(
+            "<description>Quote &quot;double&quot; and &apos;single&apos;</description>"
+        ));
+        assert!(result
+            .contains("<location>/skills/&lt;bad&gt;&amp;&quot;quote&quot;/SKILL.md</location>"));
     }
 
     #[test]
@@ -155,7 +159,8 @@ mod tests {
             disable_model_invocation: false,
         };
         let result = format_skills_for_system_prompt(&[skill]);
-        assert!(result.contains("The following skills provide specialized instructions for specific tasks."));
+        assert!(result
+            .contains("The following skills provide specialized instructions for specific tasks."));
         assert!(result.contains("Read the full skill file when the task matches its description."));
     }
 

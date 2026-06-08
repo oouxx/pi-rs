@@ -12,10 +12,7 @@ pub struct ResourceCollision {
 #[serde(tag = "type")]
 pub enum ResourceDiagnostic {
     #[serde(rename = "warning")]
-    Warning {
-        message: String,
-        path: String,
-    },
+    Warning { message: String, path: String },
     #[serde(rename = "collision")]
     Collision {
         message: String,

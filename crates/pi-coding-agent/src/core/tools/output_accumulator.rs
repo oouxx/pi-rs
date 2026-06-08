@@ -68,7 +68,9 @@ impl OutputAccumulator {
         let max_lines = options.max_lines.unwrap_or(DEFAULT_MAX_LINES);
         let max_bytes = options.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
         let max_rolling_bytes = max_bytes.saturating_mul(2).max(1);
-        let temp_file_prefix = options.temp_file_prefix.unwrap_or_else(|| "pi-output".into());
+        let temp_file_prefix = options
+            .temp_file_prefix
+            .unwrap_or_else(|| "pi-output".into());
 
         Self {
             max_lines,
@@ -136,18 +138,13 @@ impl OutputAccumulator {
         let truncated =
             self.total_lines > self.max_lines || self.total_decoded_bytes > self.max_bytes;
         let truncated_by = if truncated {
-            Some(
-                tail_truncation
-                    .truncated_by
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if self.total_decoded_bytes > self.max_bytes {
-                            "bytes".to_string()
-                        } else {
-                            "lines".to_string()
-                        }
-                    }),
-            )
+            Some(tail_truncation.truncated_by.clone().unwrap_or_else(|| {
+                if self.total_decoded_bytes > self.max_bytes {
+                    "bytes".to_string()
+                } else {
+                    "lines".to_string()
+                }
+            }))
         } else {
             None
         };
@@ -174,7 +171,10 @@ impl OutputAccumulator {
         let mut snapshot = OutputSnapshot {
             content: truncation.content.clone(),
             truncation,
-            full_output_path: self.temp_file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            full_output_path: self
+                .temp_file_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
         };
 
         if persist_if_truncated && self.should_use_temp_file() && self.temp_file_path.is_none() {
@@ -187,7 +187,10 @@ impl OutputAccumulator {
             acc.pending_chunks = self.pending_chunks.clone();
             acc.total_raw_bytes = self.total_raw_bytes;
             acc.ensure_temp_file();
-            snapshot.full_output_path = acc.temp_file_path.as_ref().map(|p| p.to_string_lossy().to_string());
+            snapshot.full_output_path = acc
+                .temp_file_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
         }
 
         snapshot

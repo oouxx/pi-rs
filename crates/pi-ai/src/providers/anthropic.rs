@@ -28,9 +28,23 @@ const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
 #[allow(dead_code)]
 const CLAUDE_CODE_TOOLS: &[&str] = &[
-    "Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion", "EnterPlanMode",
-    "ExitPlanMode", "KillShell", "NotebookEdit", "Skill", "Task", "TaskOutput", "TodoWrite",
-    "WebFetch", "WebSearch",
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "KillShell",
+    "NotebookEdit",
+    "Skill",
+    "Task",
+    "TaskOutput",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
 ];
 
 // ============================================================================
@@ -57,9 +71,7 @@ enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image {
-        source: AnthropicImageSource,
-    },
+    Image { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -225,7 +237,13 @@ fn get_anthropic_compat(model: &Model) -> AnthropicMessagesCompat {
 /// Normalize a tool call ID to Anthropic's requirements (alphanumeric + _- only, max 64 chars).
 fn normalize_tool_call_id(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect()
 }
@@ -257,13 +275,15 @@ pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<Anth
                 let images: Vec<_> = content
                     .iter()
                     .filter_map(|b| match b {
-                        ContentBlock::Image { data, mime_type } => Some(AnthropicContentBlock::Image {
-                            source: AnthropicImageSource {
-                                source_type: "base64".to_string(),
-                                media_type: mime_type.clone(),
-                                data: data.clone(),
-                            },
-                        }),
+                        ContentBlock::Image { data, mime_type } => {
+                            Some(AnthropicContentBlock::Image {
+                                source: AnthropicImageSource {
+                                    source_type: "base64".to_string(),
+                                    media_type: mime_type.clone(),
+                                    data: data.clone(),
+                                },
+                            })
+                        }
                         _ => None,
                     })
                     .collect();
@@ -306,7 +326,10 @@ pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<Anth
                             Some(AnthropicContentBlock::Text { text: text.clone() })
                         }
                         ContentBlock::ToolCall {
-                            id, name, arguments, ..
+                            id,
+                            name,
+                            arguments,
+                            ..
                         } => Some(AnthropicContentBlock::ToolUse {
                             id: normalize_tool_call_id(id),
                             name: name.clone(),
@@ -427,7 +450,14 @@ pub fn stream_anthropic(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
     tokio::spawn(async move {
-        let result = stream_anthropic_inner(&model, &context, owned_options.as_ref(), api_key.as_deref(), &tx).await;
+        let result = stream_anthropic_inner(
+            &model,
+            &context,
+            owned_options.as_ref(),
+            api_key.as_deref(),
+            &tx,
+        )
+        .await;
         if let Err(e) = result {
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
@@ -462,7 +492,9 @@ async fn stream_anthropic_inner(
 
     let compat = get_anthropic_compat(model);
     let temperature = options.and_then(|o| o.temperature);
-    let max_tokens = options.and_then(|o| o.max_tokens).unwrap_or(model.max_tokens);
+    let max_tokens = options
+        .and_then(|o| o.max_tokens)
+        .unwrap_or(model.max_tokens);
     let signal = options.and_then(|o| o.signal.clone());
     let _cache_retention = options.and_then(|o| o.cache_retention.as_ref());
 
@@ -491,27 +523,27 @@ async fn stream_anthropic_inner(
     let messages = convert_messages(&context.messages, model);
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
-    body.insert(
-        "messages".to_string(),
-        serde_json::to_value(&messages)?,
-    );
+    body.insert("messages".to_string(), serde_json::to_value(&messages)?);
     body.insert("max_tokens".to_string(), Value::Number(max_tokens.into()));
     body.insert("stream".to_string(), Value::Bool(true));
 
     if let Some(ref sp) = context.system_prompt {
-        body.insert(
-            "system".to_string(),
-            Value::String(sp.clone()),
-        );
+        body.insert("system".to_string(), Value::String(sp.clone()));
     }
 
     if let Some(t) = temperature {
-        body.insert("temperature".to_string(), Value::Number(serde_json::Number::from_f64(t).unwrap()));
+        body.insert(
+            "temperature".to_string(),
+            Value::Number(serde_json::Number::from_f64(t).unwrap()),
+        );
     }
 
     if let Some(ref tools) = context.tools {
         if !tools.is_empty() {
-            body.insert("tools".to_string(), serde_json::to_value(convert_tools(tools))?);
+            body.insert(
+                "tools".to_string(),
+                serde_json::to_value(convert_tools(tools))?,
+            );
         }
     }
 
@@ -599,81 +631,96 @@ async fn stream_anthropic_inner(
                 output.usage.output = message.usage.output_tokens.unwrap_or(0);
                 output.usage.cache_read = message.usage.cache_read_input_tokens.unwrap_or(0);
                 output.usage.cache_write = message.usage.cache_creation_input_tokens.unwrap_or(0);
-                output.usage.total_tokens =
-                    output.usage.input + output.usage.output + output.usage.cache_read + output.usage.cache_write;
+                output.usage.total_tokens = output.usage.input
+                    + output.usage.output
+                    + output.usage.cache_read
+                    + output.usage.cache_write;
             }
             AnthropicSseEvent::ContentBlockStart {
                 index,
                 content_block,
-            } => {
-                match content_block {
-                    AnthropicContentBlockStart::Text { .. } => {
-                        let block = ContentBlock::text("");
-                        let content_idx = blocks.len();
-                        output.content.push(block.clone());
-                        blocks.push(BlockInfo { block, index, partial_json: String::new() });
-                        let _ = tx.send(AssistantMessageEvent::TextStart {
-                            content_index: content_idx,
-                            partial: output.clone(),
-                        });
-                    }
-                    AnthropicContentBlockStart::Thinking { .. } => {
-                        let block = ContentBlock::Thinking {
-                            thinking: String::new(),
-                            thinking_signature: None,
-                            redacted: None,
-                        };
-                        let content_idx = blocks.len();
-                        output.content.push(block.clone());
-                        blocks.push(BlockInfo { block, index, partial_json: String::new() });
-                        let _ = tx.send(AssistantMessageEvent::ThinkingStart {
-                            content_index: content_idx,
-                            partial: output.clone(),
-                        });
-                    }
-                    AnthropicContentBlockStart::RedactedThinking { data } => {
-                        let block = ContentBlock::Thinking {
-                            thinking: "[Reasoning redacted]".to_string(),
-                            thinking_signature: Some(data),
-                            redacted: Some(true),
-                        };
-                        let content_idx = blocks.len();
-                        output.content.push(block.clone());
-                        blocks.push(BlockInfo { block, index, partial_json: String::new() });
-                        let _ = tx.send(AssistantMessageEvent::ThinkingStart {
-                            content_index: content_idx,
-                            partial: output.clone(),
-                        });
-                    }
-                    AnthropicContentBlockStart::ToolUse {
-                        id, name, input, ..
-                    } => {
-                        let block = ContentBlock::ToolCall {
-                            id,
-                            name,
-                            arguments: input,
-                            thought_signature: None,
-                        };
-                        let content_idx = blocks.len();
-                        output.content.push(block.clone());
-                        blocks.push(BlockInfo {
-                            block,
-                            index,
-                            partial_json: String::new(),
-                        });
-                        let _ = tx.send(AssistantMessageEvent::ToolCallStart {
-                            content_index: content_idx,
-                            partial: output.clone(),
-                        });
-                    }
+            } => match content_block {
+                AnthropicContentBlockStart::Text { .. } => {
+                    let block = ContentBlock::text("");
+                    let content_idx = blocks.len();
+                    output.content.push(block.clone());
+                    blocks.push(BlockInfo {
+                        block,
+                        index,
+                        partial_json: String::new(),
+                    });
+                    let _ = tx.send(AssistantMessageEvent::TextStart {
+                        content_index: content_idx,
+                        partial: output.clone(),
+                    });
                 }
-            }
+                AnthropicContentBlockStart::Thinking { .. } => {
+                    let block = ContentBlock::Thinking {
+                        thinking: String::new(),
+                        thinking_signature: None,
+                        redacted: None,
+                    };
+                    let content_idx = blocks.len();
+                    output.content.push(block.clone());
+                    blocks.push(BlockInfo {
+                        block,
+                        index,
+                        partial_json: String::new(),
+                    });
+                    let _ = tx.send(AssistantMessageEvent::ThinkingStart {
+                        content_index: content_idx,
+                        partial: output.clone(),
+                    });
+                }
+                AnthropicContentBlockStart::RedactedThinking { data } => {
+                    let block = ContentBlock::Thinking {
+                        thinking: "[Reasoning redacted]".to_string(),
+                        thinking_signature: Some(data),
+                        redacted: Some(true),
+                    };
+                    let content_idx = blocks.len();
+                    output.content.push(block.clone());
+                    blocks.push(BlockInfo {
+                        block,
+                        index,
+                        partial_json: String::new(),
+                    });
+                    let _ = tx.send(AssistantMessageEvent::ThinkingStart {
+                        content_index: content_idx,
+                        partial: output.clone(),
+                    });
+                }
+                AnthropicContentBlockStart::ToolUse {
+                    id, name, input, ..
+                } => {
+                    let block = ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                        thought_signature: None,
+                    };
+                    let content_idx = blocks.len();
+                    output.content.push(block.clone());
+                    blocks.push(BlockInfo {
+                        block,
+                        index,
+                        partial_json: String::new(),
+                    });
+                    let _ = tx.send(AssistantMessageEvent::ToolCallStart {
+                        content_index: content_idx,
+                        partial: output.clone(),
+                    });
+                }
+            },
             AnthropicSseEvent::ContentBlockDelta { index, delta } => {
                 let block_info = blocks.iter_mut().find(|b| b.index == index);
                 if let Some(bi) = block_info {
                     match delta {
                         AnthropicContentDelta::TextDelta { text } => {
-                            if let ContentBlock::Text { text: ref mut t, .. } = bi.block {
+                            if let ContentBlock::Text {
+                                text: ref mut t, ..
+                            } = bi.block
+                            {
                                 t.push_str(&text);
                             }
                             output.content[bi.index] = bi.block.clone();
@@ -685,7 +732,8 @@ async fn stream_anthropic_inner(
                         }
                         AnthropicContentDelta::ThinkingDelta { thinking } => {
                             if let ContentBlock::Thinking {
-                                thinking: ref mut t, ..
+                                thinking: ref mut t,
+                                ..
                             } = bi.block
                             {
                                 t.push_str(&thinking);
@@ -703,9 +751,7 @@ async fn stream_anthropic_inner(
                                 ..
                             } = bi.block
                             {
-                                *sig = Some(
-                                    sig.as_deref().unwrap_or("").to_string() + &signature,
-                                );
+                                *sig = Some(sig.as_deref().unwrap_or("").to_string() + &signature);
                             }
                         }
                         AnthropicContentDelta::InputJsonDelta { partial_json } => {
@@ -716,7 +762,8 @@ async fn stream_anthropic_inner(
                             } = bi.block
                             {
                                 // Try to parse the partial JSON
-                                if let Ok(parsed) = serde_json::from_str::<Value>(&bi.partial_json) {
+                                if let Ok(parsed) = serde_json::from_str::<Value>(&bi.partial_json)
+                                {
                                     *args = parsed;
                                 }
                             }
@@ -749,7 +796,10 @@ async fn stream_anthropic_inner(
                             });
                         }
                         ContentBlock::ToolCall {
-                            id, name, arguments, ..
+                            id,
+                            name,
+                            arguments,
+                            ..
                         } => {
                             let tool_call = crate::types::ToolCall::new(
                                 id.clone(),
@@ -782,8 +832,10 @@ async fn stream_anthropic_inner(
                 if let Some(cache_write) = usage.cache_creation_input_tokens {
                     output.usage.cache_write = cache_write;
                 }
-                output.usage.total_tokens =
-                    output.usage.input + output.usage.output + output.usage.cache_read + output.usage.cache_write;
+                output.usage.total_tokens = output.usage.input
+                    + output.usage.output
+                    + output.usage.cache_read
+                    + output.usage.cache_write;
             }
             AnthropicSseEvent::MessageStop => {
                 // Stream ended normally

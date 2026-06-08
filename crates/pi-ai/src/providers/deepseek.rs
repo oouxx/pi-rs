@@ -33,8 +33,9 @@ mod tests {
         // Verify the module functions compile and have correct signatures.
         // Actual streaming requires a tokio runtime and valid API key,
         // so we just verify compilation here.
-        let _f1: fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream = stream_deepseek;
-        let _f2: fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream = stream_simple_deepseek;
+        let _f1: fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream =
+            stream_deepseek;
+        let _f2: fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream =
+            stream_simple_deepseek;
     }
 }
-

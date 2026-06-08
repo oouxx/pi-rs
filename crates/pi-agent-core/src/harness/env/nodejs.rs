@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::harness::types::{
-    CreateDirOptions, ExecResult, ExecutionEnv, ExecutionEnvExecOptions, ExecutionError,
-    FileError, FileInfoType, ReadTextFileOptions, RemoveOptions, TempFileOptions,
+    CreateDirOptions, ExecResult, ExecutionEnv, ExecutionEnvExecOptions, ExecutionError, FileError,
+    FileInfoType, ReadTextFileOptions, RemoveOptions, TempFileOptions,
 };
 
 pub struct NodeExecutionEnv {
@@ -140,11 +140,7 @@ impl ExecutionEnv for NodeExecutionEnv {
             .map_err(|e| to_file_error(e, path))?
         {
             let path_str = entry.path().to_str().unwrap_or("").to_string();
-            let name = entry
-                .file_name()
-                .to_str()
-                .unwrap_or("")
-                .to_string();
+            let name = entry.file_name().to_str().unwrap_or("").to_string();
             let metadata = entry
                 .metadata()
                 .await

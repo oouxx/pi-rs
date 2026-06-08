@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
-use pi_agent_core::types::{
-    AgentEvent, AgentMessage, AgentState, ConvertToLlmFn, StreamFn,
-};
+use pi_agent_core::types::{AgentEvent, AgentMessage, AgentState, ConvertToLlmFn, StreamFn};
 
 use crate::core::compaction::{self, CompactionSettings};
 use crate::core::context_usage::ContextUsage;
@@ -110,9 +108,12 @@ impl AgentSession {
 
         let agent = Agent::new(agent_options);
 
-        let initial_active_tool_names = options
-            .initial_active_tool_names
-            .unwrap_or_else(|| vec!["read", "bash", "edit", "write"].iter().map(|s| s.to_string()).collect());
+        let initial_active_tool_names = options.initial_active_tool_names.unwrap_or_else(|| {
+            vec!["read", "bash", "edit", "write"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
 
         Self {
             agent,
@@ -230,10 +231,7 @@ impl AgentSession {
 
     pub async fn add_user_message(&mut self, content: Vec<ContentBlock>) {
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let message = AgentMessage::User {
-            content,
-            timestamp,
-        };
+        let message = AgentMessage::User { content, timestamp };
         let json = serde_json::to_value(&message).unwrap_or(serde_json::Value::Null);
         self.session_manager.append_message(json);
         self.agent.process(vec![message]).await.ok();
@@ -260,7 +258,8 @@ impl AgentSession {
             dyn Fn(
                     AgentEvent,
                     Option<tokio::sync::watch::Receiver<bool>>,
-                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
                 + Send
                 + Sync,
         >,

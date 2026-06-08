@@ -697,7 +697,11 @@ mod tests {
 
     #[test]
     fn test_tool_call_new() {
-        let tc = ToolCall::new("id1".into(), "test_tool".into(), serde_json::json!({"key": "value"}));
+        let tc = ToolCall::new(
+            "id1".into(),
+            "test_tool".into(),
+            serde_json::json!({"key": "value"}),
+        );
         assert_eq!(tc.id, "id1");
         assert_eq!(tc.name, "test_tool");
         assert_eq!(tc.type_field, "toolCall");
@@ -828,7 +832,10 @@ mod tests {
         let json = serde_json::to_string(&block).unwrap();
         let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
         match parsed {
-            ContentBlock::Text { text, text_signature } => {
+            ContentBlock::Text {
+                text,
+                text_signature,
+            } => {
                 assert_eq!(text, "hello world");
                 assert_eq!(text_signature, Some("sig123".into()));
             }
@@ -847,7 +854,12 @@ mod tests {
         let json = serde_json::to_string(&block).unwrap();
         let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
         match parsed {
-            ContentBlock::ToolCall { id, name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
                 assert_eq!(id, "tc_1");
                 assert_eq!(name, "read_file");
                 assert_eq!(arguments, serde_json::json!({"path": "/tmp/test.txt"}));
@@ -866,7 +878,11 @@ mod tests {
         let json = serde_json::to_string(&block).unwrap();
         let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
         match parsed {
-            ContentBlock::Thinking { thinking, thinking_signature, redacted } => {
+            ContentBlock::Thinking {
+                thinking,
+                thinking_signature,
+                redacted,
+            } => {
                 assert_eq!(thinking, "Let me think...");
                 assert_eq!(thinking_signature, Some("think_sig".into()));
                 assert_eq!(redacted, Some(false));
@@ -896,7 +912,11 @@ mod tests {
 
     #[test]
     fn test_tool_call_serialization() {
-        let tc = ToolCall::new("call_1".into(), "my_tool".into(), serde_json::json!({"arg": 1}));
+        let tc = ToolCall::new(
+            "call_1".into(),
+            "my_tool".into(),
+            serde_json::json!({"arg": 1}),
+        );
         let json = serde_json::to_string(&tc).unwrap();
         assert!(json.contains("\"type\":\"toolCall\""));
         assert!(json.contains("\"id\":\"call_1\""));
@@ -942,7 +962,9 @@ mod tests {
             error_message: None,
             timestamp: 1234567890,
         };
-        let event = AssistantMessageEvent::Start { partial: msg.clone() };
+        let event = AssistantMessageEvent::Start {
+            partial: msg.clone(),
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"start\""));
         let parsed: AssistantMessageEvent = serde_json::from_str(&json).unwrap();
@@ -1030,7 +1052,12 @@ mod tests {
             reasoning: false,
             thinking_level_map: None,
             input: vec!["text".into(), "image".into()],
-            cost: ModelCost { input: 2.5, output: 10.0, cache_read: 1.25, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 2.5,
+                output: 10.0,
+                cache_read: 1.25,
+                cache_write: 0.0,
+            },
             context_window: 128000,
             max_tokens: 16384,
             headers: None,

@@ -133,12 +133,24 @@ pub fn load_extensions(options: &LoadExtensionsOptions) -> LoadExtensionsResult 
     if options.include_defaults {
         let user_ext_dir = Path::new(&resolved_agent_dir).join("extensions");
         if user_ext_dir.exists() {
-            load_extensions_from_dir(&user_ext_dir, ExtensionSource::User, &mut extensions, &mut errors);
+            load_extensions_from_dir(
+                &user_ext_dir,
+                ExtensionSource::User,
+                &mut extensions,
+                &mut errors,
+            );
         }
 
-        let project_ext_dir = Path::new(&options.cwd).join(config::CONFIG_DIR_NAME).join("extensions");
+        let project_ext_dir = Path::new(&options.cwd)
+            .join(config::CONFIG_DIR_NAME)
+            .join("extensions");
         if project_ext_dir.exists() {
-            load_extensions_from_dir(&project_ext_dir, ExtensionSource::Project, &mut extensions, &mut errors);
+            load_extensions_from_dir(
+                &project_ext_dir,
+                ExtensionSource::Project,
+                &mut extensions,
+                &mut errors,
+            );
         }
     }
 

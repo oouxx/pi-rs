@@ -31,9 +31,7 @@ pub fn register_built_in_api_providers() {
     register_api_provider(
         ApiProvider {
             api: "openai-completions".to_string(),
-            stream: Arc::new(move |model, context, options| {
-                stream_openai(model, context, options)
-            }),
+            stream: Arc::new(move |model, context, options| stream_openai(model, context, options)),
             stream_simple: Arc::new(move |model, context, options| {
                 stream_simple_openai(model, context, options)
             }),
@@ -45,9 +43,7 @@ pub fn register_built_in_api_providers() {
     register_api_provider(
         ApiProvider {
             api: "mistral-conversations".to_string(),
-            stream: Arc::new(move |model, context, options| {
-                stream_openai(model, context, options)
-            }),
+            stream: Arc::new(move |model, context, options| stream_openai(model, context, options)),
             stream_simple: Arc::new(move |model, context, options| {
                 stream_simple_openai(model, context, options)
             }),
@@ -119,7 +115,9 @@ mod tests {
     fn test_loads_generated_models() {
         register_built_in_api_providers();
         let providers = crate::models::get_providers();
-        assert!(!providers.is_empty(),
-            "Expected at least one provider from generated models, got none.");
+        assert!(
+            !providers.is_empty(),
+            "Expected at least one provider from generated models, got none."
+        );
     }
 }

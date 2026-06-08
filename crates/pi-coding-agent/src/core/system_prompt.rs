@@ -86,7 +86,11 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
 
     let visible_tools: Vec<&String> = tools
         .iter()
-        .filter(|name| tool_snippets.map(|sn| sn.contains_key(name.as_str())).unwrap_or(false))
+        .filter(|name| {
+            tool_snippets
+                .map(|sn| sn.contains_key(name.as_str()))
+                .unwrap_or(false)
+        })
         .collect();
 
     let tools_list = if !visible_tools.is_empty() {

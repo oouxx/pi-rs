@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::harness::types::{
-    SessionCreateOptions, SessionError, SessionMetadata, SessionRepo,
-    SessionStorage, SessionTreeEntry,
+    SessionCreateOptions, SessionError, SessionMetadata, SessionRepo, SessionStorage,
+    SessionTreeEntry,
 };
 
 pub struct JsonlSessionStorage {
@@ -20,9 +20,13 @@ pub struct JsonlSessionStorage {
 impl JsonlSessionStorage {
     pub async fn open(file_path: impl Into<PathBuf>) -> std::result::Result<Self, SessionError> {
         let file_path = file_path.into();
-        let content = tokio::fs::read_to_string(&file_path)
-            .await
-            .map_err(|e| SessionError::Storage(format!("Failed to read session {}: {}", file_path.display(), e)))?;
+        let content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
+            SessionError::Storage(format!(
+                "Failed to read session {}: {}",
+                file_path.display(),
+                e
+            ))
+        })?;
 
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         if lines.is_empty() {
@@ -46,7 +50,10 @@ impl JsonlSessionStorage {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            cwd: header.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            cwd: header
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             parent_session: header
                 .get("parentSession")
                 .and_then(|v| v.as_str())
@@ -144,7 +151,10 @@ impl JsonlSessionStorage {
 }
 
 fn update_label_cache(labels_by_id: &mut HashMap<String, String>, entry: &SessionTreeEntry) {
-    if let SessionTreeEntry::Label { target_id, label, .. } = entry {
+    if let SessionTreeEntry::Label {
+        target_id, label, ..
+    } = entry
+    {
         if let Some(l) = label {
             if l.trim().is_empty() {
                 labels_by_id.remove(target_id);
@@ -177,7 +187,10 @@ impl SessionStorage for JsonlSessionStorage {
         self.leaf_id.clone()
     }
 
-    async fn set_leaf_id(&mut self, leaf_id: Option<String>) -> std::result::Result<(), SessionError> {
+    async fn set_leaf_id(
+        &mut self,
+        leaf_id: Option<String>,
+    ) -> std::result::Result<(), SessionError> {
         if let Some(ref id) = leaf_id {
             if !self.by_id.contains_key(id) {
                 return Err(SessionError::NotFound(format!("Entry {} not found", id)));
@@ -206,7 +219,10 @@ impl SessionStorage for JsonlSessionStorage {
         generate_entry_id(&self.by_id)
     }
 
-    async fn append_entry(&mut self, entry: SessionTreeEntry) -> std::result::Result<(), SessionError> {
+    async fn append_entry(
+        &mut self,
+        entry: SessionTreeEntry,
+    ) -> std::result::Result<(), SessionError> {
         let json = serde_json::to_string(&entry)
             .map_err(|e| SessionError::Storage(format!("Failed to serialize entry: {}", e)))?;
         self.append_line(&json).await?;
@@ -320,14 +336,17 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
     async fn create(
         &mut self,
         options: SessionCreateOptions,
-    ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError> {
-        let id = options.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError>
+    {
+        let id = options
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let created_at = chrono::Utc::now().to_rfc3339().replace([':', '.'], "-");
         let session_dir = self.session_dir(&options.cwd);
 
-        tokio::fs::create_dir_all(&session_dir)
-            .await
-            .map_err(|e| SessionError::Storage(format!("Failed to create session directory: {}", e)))?;
+        tokio::fs::create_dir_all(&session_dir).await.map_err(|e| {
+            SessionError::Storage(format!("Failed to create session directory: {}", e))
+        })?;
 
         let file_name = format!("{}_{}.jsonl", created_at, id);
         let file_path = session_dir.join(&file_name);
@@ -345,10 +364,11 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
             path: file_path,
         };
 
-        let session_storage: Box<dyn SessionStorage<JsonlSessionMetadata>> = Box::new(JsonlSessionStorageAdapter {
-            storage,
-            jsonl_metadata: jsonl_metadata.clone(),
-        });
+        let session_storage: Box<dyn SessionStorage<JsonlSessionMetadata>> =
+            Box::new(JsonlSessionStorageAdapter {
+                storage,
+                jsonl_metadata: jsonl_metadata.clone(),
+            });
 
         Ok(crate::harness::types::Session::new(session_storage))
     }
@@ -356,7 +376,8 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
     async fn open(
         &self,
         metadata: &JsonlSessionMetadata,
-    ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError> {
+    ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError>
+    {
         let storage = JsonlSessionStorage::open(&metadata.path).await?;
 
         let jsonl_metadata = JsonlSessionMetadata {
@@ -364,10 +385,11 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
             path: metadata.path.clone(),
         };
 
-        let session_storage: Box<dyn SessionStorage<JsonlSessionMetadata>> = Box::new(JsonlSessionStorageAdapter {
-            storage,
-            jsonl_metadata: jsonl_metadata.clone(),
-        });
+        let session_storage: Box<dyn SessionStorage<JsonlSessionMetadata>> =
+            Box::new(JsonlSessionStorageAdapter {
+                storage,
+                jsonl_metadata: jsonl_metadata.clone(),
+            });
 
         Ok(crate::harness::types::Session::new(session_storage))
     }
@@ -433,7 +455,10 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
-                    cwd: header.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    cwd: header
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     parent_session: header
                         .get("parentSession")
                         .and_then(|v| v.as_str())
@@ -451,7 +476,10 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
         Ok(sessions)
     }
 
-    async fn delete(&mut self, metadata: &JsonlSessionMetadata) -> std::result::Result<(), SessionError> {
+    async fn delete(
+        &mut self,
+        metadata: &JsonlSessionMetadata,
+    ) -> std::result::Result<(), SessionError> {
         tokio::fs::remove_file(&metadata.path)
             .await
             .map_err(|e| SessionError::Storage(format!("Failed to delete session: {}", e)))?;
@@ -462,33 +490,37 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
         &mut self,
         source_metadata: &JsonlSessionMetadata,
         options: crate::harness::types::ForkOptions,
-    ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError> {
+    ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError>
+    {
         let source = self.open(source_metadata).await?;
         let entries = source.get_entries().await;
 
         let forked_entries = if let Some(entry_id) = &options.entry_id {
-            let target = source
-                .get_entry(entry_id)
-                .await
-                .ok_or_else(|| SessionError::InvalidForkTarget(format!("Entry {} not found", entry_id)))?;
+            let target = source.get_entry(entry_id).await.ok_or_else(|| {
+                SessionError::InvalidForkTarget(format!("Entry {} not found", entry_id))
+            })?;
 
             let effective_leaf_id = match options.position.as_deref() {
                 Some("at") => Some(target.id().to_string()),
                 _ => target.parent_id().map(|s| s.to_string()),
             };
 
-            source.get_path_to_root(effective_leaf_id.as_deref()).await?
+            source
+                .get_path_to_root(effective_leaf_id.as_deref())
+                .await?
         } else {
             entries
         };
 
-        let id = options.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = options
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let created_at = chrono::Utc::now().to_rfc3339().replace([':', '.'], "-");
         let session_dir = self.session_dir(&options.cwd);
 
-        tokio::fs::create_dir_all(&session_dir)
-            .await
-            .map_err(|e| SessionError::Storage(format!("Failed to create session directory: {}", e)))?;
+        tokio::fs::create_dir_all(&session_dir).await.map_err(|e| {
+            SessionError::Storage(format!("Failed to create session directory: {}", e))
+        })?;
 
         let file_name = format!("{}_{}.jsonl", created_at, id);
         let file_path = session_dir.join(&file_name);
@@ -497,7 +529,10 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
             &file_path,
             &options.cwd,
             &id,
-            options.parent_session_path.as_deref().or(Some(source_metadata.path.to_str().unwrap_or(""))),
+            options
+                .parent_session_path
+                .as_deref()
+                .or(Some(source_metadata.path.to_str().unwrap_or(""))),
         )
         .await?;
 
@@ -510,10 +545,11 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
             path: file_path,
         };
 
-        let session_storage: Box<dyn SessionStorage<JsonlSessionMetadata>> = Box::new(JsonlSessionStorageAdapter {
-            storage,
-            jsonl_metadata: jsonl_metadata.clone(),
-        });
+        let session_storage: Box<dyn SessionStorage<JsonlSessionMetadata>> =
+            Box::new(JsonlSessionStorageAdapter {
+                storage,
+                jsonl_metadata: jsonl_metadata.clone(),
+            });
 
         Ok(crate::harness::types::Session::new(session_storage))
     }
@@ -534,7 +570,10 @@ impl SessionStorage<JsonlSessionMetadata> for JsonlSessionStorageAdapter {
         self.storage.get_leaf_id().await
     }
 
-    async fn set_leaf_id(&mut self, leaf_id: Option<String>) -> std::result::Result<(), SessionError> {
+    async fn set_leaf_id(
+        &mut self,
+        leaf_id: Option<String>,
+    ) -> std::result::Result<(), SessionError> {
         self.storage.set_leaf_id(leaf_id).await
     }
 
@@ -542,7 +581,10 @@ impl SessionStorage<JsonlSessionMetadata> for JsonlSessionStorageAdapter {
         self.storage.create_entry_id().await
     }
 
-    async fn append_entry(&mut self, entry: SessionTreeEntry) -> std::result::Result<(), SessionError> {
+    async fn append_entry(
+        &mut self,
+        entry: SessionTreeEntry,
+    ) -> std::result::Result<(), SessionError> {
         self.storage.append_entry(entry).await
     }
 

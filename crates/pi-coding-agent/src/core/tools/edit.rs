@@ -26,13 +26,24 @@ pub trait EditOperations: Send + Sync {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<String, Box<dyn std::error::Error + Send + Sync>>,
+                > + Send,
+        >,
+    >;
 
     fn write_file(
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    >;
 }
 
 pub struct LocalEditOperations;
@@ -41,7 +52,13 @@ impl EditOperations for LocalEditOperations {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<String, Box<dyn std::error::Error + Send + Sync>>,
+                > + Send,
+        >,
+    > {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read_to_string(&path)
@@ -54,7 +71,12 @@ impl EditOperations for LocalEditOperations {
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    > {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
@@ -124,14 +146,22 @@ fn apply_edits(content: &str, edits: &[ReplaceEdit]) -> Result<String, String> {
         if count == 0 {
             return Err(format!(
                 "oldText not found in file: {}",
-                if edit.old_text.len() > 100 { format!("{}...", &edit.old_text[..100]) } else { edit.old_text.clone() }
+                if edit.old_text.len() > 100 {
+                    format!("{}...", &edit.old_text[..100])
+                } else {
+                    edit.old_text.clone()
+                }
             ));
         }
         if count > 1 {
             return Err(format!(
                 "oldText is not unique in file (found {} matches): {}",
                 count,
-                if edit.old_text.len() > 100 { format!("{}...", &edit.old_text[..100]) } else { edit.old_text.clone() }
+                if edit.old_text.len() > 100 {
+                    format!("{}...", &edit.old_text[..100])
+                } else {
+                    edit.old_text.clone()
+                }
             ));
         }
         result = result.replace(&edit.old_text, &edit.new_text);
@@ -139,7 +169,10 @@ fn apply_edits(content: &str, edits: &[ReplaceEdit]) -> Result<String, String> {
     Ok(result)
 }
 
-pub fn create_edit_tool(cwd: &str, options: Option<EditToolOptions>) -> AgentTool<serde_json::Value, serde_json::Value> {
+pub fn create_edit_tool(
+    cwd: &str,
+    options: Option<EditToolOptions>,
+) -> AgentTool<serde_json::Value, serde_json::Value> {
     let opts = options.unwrap_or_default();
     let cwd = cwd.to_string();
     let operations = opts.operations.clone();
@@ -233,7 +266,10 @@ mod tests {
     #[test]
     fn test_apply_edits_single() {
         let content = "hello world";
-        let edits = vec![ReplaceEdit { old_text: "world".to_string(), new_text: "rust".to_string() }];
+        let edits = vec![ReplaceEdit {
+            old_text: "world".to_string(),
+            new_text: "rust".to_string(),
+        }];
         assert_eq!(apply_edits(content, &edits).unwrap(), "hello rust");
     }
 
@@ -241,8 +277,14 @@ mod tests {
     fn test_apply_edits_multiple() {
         let content = "foo bar baz";
         let edits = vec![
-            ReplaceEdit { old_text: "foo".to_string(), new_text: "one".to_string() },
-            ReplaceEdit { old_text: "baz".to_string(), new_text: "three".to_string() },
+            ReplaceEdit {
+                old_text: "foo".to_string(),
+                new_text: "one".to_string(),
+            },
+            ReplaceEdit {
+                old_text: "baz".to_string(),
+                new_text: "three".to_string(),
+            },
         ];
         assert_eq!(apply_edits(content, &edits).unwrap(), "one bar three");
     }
@@ -250,14 +292,20 @@ mod tests {
     #[test]
     fn test_apply_edits_not_found() {
         let content = "hello world";
-        let edits = vec![ReplaceEdit { old_text: "notfound".to_string(), new_text: "replaced".to_string() }];
+        let edits = vec![ReplaceEdit {
+            old_text: "notfound".to_string(),
+            new_text: "replaced".to_string(),
+        }];
         assert!(apply_edits(content, &edits).is_err());
     }
 
     #[test]
     fn test_apply_edits_not_unique() {
         let content = "hello hello";
-        let edits = vec![ReplaceEdit { old_text: "hello".to_string(), new_text: "hi".to_string() }];
+        let edits = vec![ReplaceEdit {
+            old_text: "hello".to_string(),
+            new_text: "hi".to_string(),
+        }];
         assert!(apply_edits(content, &edits).is_err());
     }
 }

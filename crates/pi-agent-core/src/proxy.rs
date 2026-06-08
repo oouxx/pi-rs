@@ -98,7 +98,8 @@ pub fn process_proxy_event(
             content_signature,
         } => {
             if let Some(ContentBlock::Text {
-                text_signature: sig, ..
+                text_signature: sig,
+                ..
             }) = partial.content.get_mut(content_index)
             {
                 *sig = content_signature;
@@ -135,7 +136,9 @@ pub fn process_proxy_event(
             content_index,
             delta,
         } => {
-            if let Some(ContentBlock::Thinking { thinking, .. }) = partial.content.get_mut(content_index) {
+            if let Some(ContentBlock::Thinking { thinking, .. }) =
+                partial.content.get_mut(content_index)
+            {
                 thinking.push_str(&delta);
             }
             Some(crate::pi_ai_types::AssistantMessageEvent::ThinkingDelta {

@@ -167,7 +167,10 @@ mod tests {
             provider: "nvidia".into(),
             base_url: "https://integrate.api.nvidia.com/v1".into(),
         };
-        let extra = vec![vec![("X-BILLING-INVOKE-ORIGIN".to_string(), "Custom".to_string())]];
+        let extra = vec![vec![(
+            "X-BILLING-INVOKE-ORIGIN".to_string(),
+            "Custom".to_string(),
+        )]];
         let headers = merge_provider_attribution_headers(&model, true, None, &extra);
         assert!(headers.is_some());
         let h = headers.unwrap();

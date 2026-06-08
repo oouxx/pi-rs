@@ -23,7 +23,10 @@ pub struct OAuthCredentials {
 }
 
 pub trait OAuthLoginCallbacks: Send {
-    fn on_url(&self, url: &str) -> Box<dyn std::future::Future<Output = Result<String, String>> + Send>;
+    fn on_url(
+        &self,
+        url: &str,
+    ) -> Box<dyn std::future::Future<Output = Result<String, String>> + Send>;
 }
 
 pub fn find_env_keys(provider: &str) -> Vec<String> {
@@ -195,7 +198,9 @@ impl AuthStorage {
     }
 
     pub fn create(auth_path: PathBuf) -> Self {
-        Self::new(AuthStorageBackend::File(FileAuthStorageBackend::new(auth_path)))
+        Self::new(AuthStorageBackend::File(FileAuthStorageBackend::new(
+            auth_path,
+        )))
     }
 
     pub fn in_memory(data: AuthStorageData) -> Self {
@@ -254,7 +259,8 @@ impl AuthStorage {
                     current_data.remove(&provider);
                 }
             }
-            let next = serde_json::to_string_pretty(&current_data).unwrap_or_else(|_| "{}".to_string());
+            let next =
+                serde_json::to_string_pretty(&current_data).unwrap_or_else(|_| "{}".to_string());
             LockResult {
                 result: (),
                 next: Some(next),
@@ -410,7 +416,12 @@ mod tests {
     #[test]
     fn test_set_and_get_api_key() {
         let mut storage = AuthStorage::in_memory(AuthStorageData::new());
-        storage.set("anthropic", AuthCredential::ApiKey { key: "sk-test".into() });
+        storage.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: "sk-test".into(),
+            },
+        );
         let cred = storage.get("anthropic");
         assert!(cred.is_some());
         assert!(matches!(cred, Some(AuthCredential::ApiKey { .. })));
@@ -419,7 +430,12 @@ mod tests {
     #[test]
     fn test_remove() {
         let mut storage = AuthStorage::in_memory(AuthStorageData::new());
-        storage.set("openai", AuthCredential::ApiKey { key: "sk-test".into() });
+        storage.set(
+            "openai",
+            AuthCredential::ApiKey {
+                key: "sk-test".into(),
+            },
+        );
         assert!(storage.has("openai"));
         storage.remove("openai");
         assert!(!storage.has("openai"));
@@ -446,7 +462,12 @@ mod tests {
     #[test]
     fn test_get_auth_status() {
         let mut storage = AuthStorage::in_memory(AuthStorageData::new());
-        storage.set("anthropic", AuthCredential::ApiKey { key: "sk-abc".into() });
+        storage.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: "sk-abc".into(),
+            },
+        );
         let status = storage.get_auth_status("anthropic");
         assert!(status.configured);
         assert_eq!(status.source.unwrap(), "stored");

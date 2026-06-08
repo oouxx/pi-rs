@@ -62,8 +62,7 @@ impl KeybindingsManager {
     pub fn matches(&self, event: &KeyEvent, action_name: &str) -> bool {
         let resolved = self.get_resolved_key(action_name);
         if let Some(expected) = resolved {
-            return event.code == expected.code
-                && event.modifiers == expected.modifiers;
+            return event.code == expected.code && event.modifiers == expected.modifiers;
         }
         false
     }
@@ -137,25 +136,68 @@ impl KeybindingsManager {
         if let Some(key) = user.get(action_name) {
             return Some(*key);
         }
-        self.definitions
-            .get(action_name)
-            .map(|d| d.default_key)
+        self.definitions.get(action_name).map(|d| d.default_key)
     }
 }
 
 /// Default keybindings for editor context.
 pub fn editor_keybindings() -> Vec<KeybindingDefinition> {
     vec![
-        def("cursorLeft", "Move cursor left", KeyCode::Left, KeyModifiers::NONE),
-        def("cursorRight", "Move cursor right", KeyCode::Right, KeyModifiers::NONE),
-        def("cursorUp", "Move cursor up", KeyCode::Up, KeyModifiers::NONE),
-        def("cursorDown", "Move cursor down", KeyCode::Down, KeyModifiers::NONE),
-        def("cursorLineStart", "Move to line start", KeyCode::Home, KeyModifiers::NONE),
-        def("cursorLineEnd", "Move to line end", KeyCode::End, KeyModifiers::NONE),
-        def("deleteBackward", "Delete backward", KeyCode::Backspace, KeyModifiers::NONE),
-        def("deleteForward", "Delete forward", KeyCode::Delete, KeyModifiers::NONE),
+        def(
+            "cursorLeft",
+            "Move cursor left",
+            KeyCode::Left,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorRight",
+            "Move cursor right",
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorUp",
+            "Move cursor up",
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorDown",
+            "Move cursor down",
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorLineStart",
+            "Move to line start",
+            KeyCode::Home,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorLineEnd",
+            "Move to line end",
+            KeyCode::End,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "deleteBackward",
+            "Delete backward",
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "deleteForward",
+            "Delete forward",
+            KeyCode::Delete,
+            KeyModifiers::NONE,
+        ),
         def("pageUp", "Page up", KeyCode::PageUp, KeyModifiers::NONE),
-        def("pageDown", "Page down", KeyCode::PageDown, KeyModifiers::NONE),
+        def(
+            "pageDown",
+            "Page down",
+            KeyCode::PageDown,
+            KeyModifiers::NONE,
+        ),
         def("undo", "Undo", KeyCode::Char('z'), KeyModifiers::CONTROL),
         def("redo", "Redo", KeyCode::Char('y'), KeyModifiers::CONTROL),
     ]
@@ -165,28 +207,98 @@ pub fn editor_keybindings() -> Vec<KeybindingDefinition> {
 pub fn input_keybindings() -> Vec<KeybindingDefinition> {
     vec![
         def("submit", "Submit input", KeyCode::Enter, KeyModifiers::NONE),
-        def("newline", "Insert newline", KeyCode::Enter, KeyModifiers::ALT),
-        def("tab", "Insert tab or autocomplete", KeyCode::Tab, KeyModifiers::NONE),
+        def(
+            "newline",
+            "Insert newline",
+            KeyCode::Enter,
+            KeyModifiers::ALT,
+        ),
+        def(
+            "tab",
+            "Insert tab or autocomplete",
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+        ),
         def("cancel", "Cancel input", KeyCode::Esc, KeyModifiers::NONE),
-        def("cursorLeft", "Move cursor left", KeyCode::Left, KeyModifiers::NONE),
-        def("cursorRight", "Move cursor right", KeyCode::Right, KeyModifiers::NONE),
-        def("cursorHome", "Move to start", KeyCode::Home, KeyModifiers::NONE),
+        def(
+            "cursorLeft",
+            "Move cursor left",
+            KeyCode::Left,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorRight",
+            "Move cursor right",
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "cursorHome",
+            "Move to start",
+            KeyCode::Home,
+            KeyModifiers::NONE,
+        ),
         def("cursorEnd", "Move to end", KeyCode::End, KeyModifiers::NONE),
-        def("deleteBackward", "Delete backward", KeyCode::Backspace, KeyModifiers::NONE),
-        def("deleteForward", "Delete forward", KeyCode::Delete, KeyModifiers::NONE),
-        def("deleteWordBackward", "Delete word backward", KeyCode::Backspace, KeyModifiers::CONTROL),
+        def(
+            "deleteBackward",
+            "Delete backward",
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "deleteForward",
+            "Delete forward",
+            KeyCode::Delete,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "deleteWordBackward",
+            "Delete word backward",
+            KeyCode::Backspace,
+            KeyModifiers::CONTROL,
+        ),
     ]
 }
 
 /// Default keybindings for select list context.
 pub fn select_list_keybindings() -> Vec<KeybindingDefinition> {
     vec![
-        def("selectUp", "Move selection up", KeyCode::Up, KeyModifiers::NONE),
-        def("selectDown", "Move selection down", KeyCode::Down, KeyModifiers::NONE),
-        def("selectConfirm", "Confirm selection", KeyCode::Enter, KeyModifiers::NONE),
-        def("selectCancel", "Cancel selection", KeyCode::Esc, KeyModifiers::NONE),
-        def("selectPageUp", "Page up", KeyCode::PageUp, KeyModifiers::NONE),
-        def("selectPageDown", "Page down", KeyCode::PageDown, KeyModifiers::NONE),
+        def(
+            "selectUp",
+            "Move selection up",
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "selectDown",
+            "Move selection down",
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "selectConfirm",
+            "Confirm selection",
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "selectCancel",
+            "Cancel selection",
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "selectPageUp",
+            "Page up",
+            KeyCode::PageUp,
+            KeyModifiers::NONE,
+        ),
+        def(
+            "selectPageDown",
+            "Page down",
+            KeyCode::PageDown,
+            KeyModifiers::NONE,
+        ),
     ]
 }
 
@@ -223,13 +335,10 @@ pub fn init_keybindings(user_bindings: Option<KeybindingsConfig>) {
 
 /// Get a reference to the global keybindings manager.
 pub fn get_keybindings() -> Arc<KeybindingsManager> {
-    GLOBAL_KEYBINDINGS
-        .get()
-        .cloned()
-        .unwrap_or_else(|| {
-            init_keybindings(None);
-            GLOBAL_KEYBINDINGS.get().cloned().unwrap()
-        })
+    GLOBAL_KEYBINDINGS.get().cloned().unwrap_or_else(|| {
+        init_keybindings(None);
+        GLOBAL_KEYBINDINGS.get().cloned().unwrap()
+    })
 }
 
 /// Set user keybindings on the global manager.
@@ -255,7 +364,10 @@ mod tests {
             None,
         );
         assert!(manager.matches(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), "cursorUp"));
-        assert!(manager.matches(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), "cursorDown"));
+        assert!(manager.matches(
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            "cursorDown"
+        ));
     }
 
     #[test]
@@ -272,7 +384,10 @@ mod tests {
             }],
             Some(overrides),
         );
-        assert!(manager.matches(&KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE), "cursorUp"));
+        assert!(manager.matches(
+            &KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            "cursorUp"
+        ));
         assert!(!manager.matches(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), "cursorUp"));
     }
 
@@ -303,14 +418,17 @@ mod tests {
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
                 context: "test".into(),
-                definitions: vec![
-                    input_keybindings(),
-                    select_list_keybindings(),
-                ].into_iter().flatten().collect(),
+                definitions: vec![input_keybindings(), select_list_keybindings()]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
             }],
             Some(overrides),
         );
-        assert!(manager.matches(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), "selectConfirm"));
+        assert!(manager.matches(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            "selectConfirm"
+        ));
     }
 
     #[test]
@@ -323,10 +441,10 @@ mod tests {
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
                 context: "test".into(),
-                definitions: vec![
-                    editor_keybindings(),
-                    select_list_keybindings(),
-                ].into_iter().flatten().collect(),
+                definitions: vec![editor_keybindings(), select_list_keybindings()]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
             }],
             Some(overrides),
         );
@@ -347,10 +465,10 @@ mod tests {
         let manager = KeybindingsManager::new(
             vec![KeybindingDefinitions {
                 context: "test".into(),
-                definitions: vec![
-                    input_keybindings(),
-                    select_list_keybindings(),
-                ].into_iter().flatten().collect(),
+                definitions: vec![input_keybindings(), select_list_keybindings()]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
             }],
             Some(overrides),
         );

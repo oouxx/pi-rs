@@ -25,27 +25,90 @@ pub struct BuiltinSlashCommand {
 
 pub fn builtin_slash_commands() -> Vec<BuiltinSlashCommand> {
     vec![
-        BuiltinSlashCommand { name: "settings".into(), description: "Open settings menu".into() },
-        BuiltinSlashCommand { name: "model".into(), description: "Select model (opens selector UI)".into() },
-        BuiltinSlashCommand { name: "scoped-models".into(), description: "Enable/disable models for Ctrl+P cycling".into() },
-        BuiltinSlashCommand { name: "export".into(), description: "Export session (HTML default or specify path: .html/.jsonl)".into() },
-        BuiltinSlashCommand { name: "import".into(), description: "Import and resume a session from a JSONL file".into() },
-        BuiltinSlashCommand { name: "share".into(), description: "Share session as a secret GitHub gist".into() },
-        BuiltinSlashCommand { name: "copy".into(), description: "Copy last agent message to clipboard".into() },
-        BuiltinSlashCommand { name: "name".into(), description: "Set session display name".into() },
-        BuiltinSlashCommand { name: "session".into(), description: "Show session info and stats".into() },
-        BuiltinSlashCommand { name: "changelog".into(), description: "Show changelog entries".into() },
-        BuiltinSlashCommand { name: "hotkeys".into(), description: "Show all keyboard shortcuts".into() },
-        BuiltinSlashCommand { name: "fork".into(), description: "Create a new fork from a previous user message".into() },
-        BuiltinSlashCommand { name: "clone".into(), description: "Duplicate the current session at the current position".into() },
-        BuiltinSlashCommand { name: "tree".into(), description: "Navigate session tree (switch branches)".into() },
-        BuiltinSlashCommand { name: "login".into(), description: "Configure provider authentication".into() },
-        BuiltinSlashCommand { name: "logout".into(), description: "Remove provider authentication".into() },
-        BuiltinSlashCommand { name: "new".into(), description: "Start a new session".into() },
-        BuiltinSlashCommand { name: "compact".into(), description: "Manually compact the session context".into() },
-        BuiltinSlashCommand { name: "resume".into(), description: "Resume a different session".into() },
-        BuiltinSlashCommand { name: "reload".into(), description: "Reload keybindings, extensions, skills, prompts, and themes".into() },
-        BuiltinSlashCommand { name: "quit".into(), description: format!("Quit {}", APP_NAME) },
+        BuiltinSlashCommand {
+            name: "settings".into(),
+            description: "Open settings menu".into(),
+        },
+        BuiltinSlashCommand {
+            name: "model".into(),
+            description: "Select model (opens selector UI)".into(),
+        },
+        BuiltinSlashCommand {
+            name: "scoped-models".into(),
+            description: "Enable/disable models for Ctrl+P cycling".into(),
+        },
+        BuiltinSlashCommand {
+            name: "export".into(),
+            description: "Export session (HTML default or specify path: .html/.jsonl)".into(),
+        },
+        BuiltinSlashCommand {
+            name: "import".into(),
+            description: "Import and resume a session from a JSONL file".into(),
+        },
+        BuiltinSlashCommand {
+            name: "share".into(),
+            description: "Share session as a secret GitHub gist".into(),
+        },
+        BuiltinSlashCommand {
+            name: "copy".into(),
+            description: "Copy last agent message to clipboard".into(),
+        },
+        BuiltinSlashCommand {
+            name: "name".into(),
+            description: "Set session display name".into(),
+        },
+        BuiltinSlashCommand {
+            name: "session".into(),
+            description: "Show session info and stats".into(),
+        },
+        BuiltinSlashCommand {
+            name: "changelog".into(),
+            description: "Show changelog entries".into(),
+        },
+        BuiltinSlashCommand {
+            name: "hotkeys".into(),
+            description: "Show all keyboard shortcuts".into(),
+        },
+        BuiltinSlashCommand {
+            name: "fork".into(),
+            description: "Create a new fork from a previous user message".into(),
+        },
+        BuiltinSlashCommand {
+            name: "clone".into(),
+            description: "Duplicate the current session at the current position".into(),
+        },
+        BuiltinSlashCommand {
+            name: "tree".into(),
+            description: "Navigate session tree (switch branches)".into(),
+        },
+        BuiltinSlashCommand {
+            name: "login".into(),
+            description: "Configure provider authentication".into(),
+        },
+        BuiltinSlashCommand {
+            name: "logout".into(),
+            description: "Remove provider authentication".into(),
+        },
+        BuiltinSlashCommand {
+            name: "new".into(),
+            description: "Start a new session".into(),
+        },
+        BuiltinSlashCommand {
+            name: "compact".into(),
+            description: "Manually compact the session context".into(),
+        },
+        BuiltinSlashCommand {
+            name: "resume".into(),
+            description: "Resume a different session".into(),
+        },
+        BuiltinSlashCommand {
+            name: "reload".into(),
+            description: "Reload keybindings, extensions, skills, prompts, and themes".into(),
+        },
+        BuiltinSlashCommand {
+            name: "quit".into(),
+            description: format!("Quit {}", APP_NAME),
+        },
     ]
 }
 
@@ -89,8 +152,14 @@ mod tests {
     #[test]
     fn test_parse_slash_command() {
         assert_eq!(parse_slash_command("/model"), Some(("model", "")));
-        assert_eq!(parse_slash_command("/model gpt-4o"), Some(("model", "gpt-4o")));
-        assert_eq!(parse_slash_command("/export session.html"), Some(("export", "session.html")));
+        assert_eq!(
+            parse_slash_command("/model gpt-4o"),
+            Some(("model", "gpt-4o"))
+        );
+        assert_eq!(
+            parse_slash_command("/export session.html"),
+            Some(("export", "session.html"))
+        );
         assert_eq!(parse_slash_command("hello"), None);
     }
 }

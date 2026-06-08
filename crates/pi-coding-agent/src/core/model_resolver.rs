@@ -41,10 +41,11 @@ pub fn find_initial_model(
     if !scoped_models.is_empty() && !is_continuing {
         return InitialModelResult {
             model: Some(scoped_models[0].model.clone()),
-            thinking_level: scoped_models[0]
-                .thinking_level
-                .clone()
-                .unwrap_or_else(|| default_thinking_level.unwrap_or(DEFAULT_THINKING_LEVEL).to_string()),
+            thinking_level: scoped_models[0].thinking_level.clone().unwrap_or_else(|| {
+                default_thinking_level
+                    .unwrap_or(DEFAULT_THINKING_LEVEL)
+                    .to_string()
+            }),
             fallback_message: None,
         };
     }
@@ -129,11 +130,7 @@ pub fn restore_model_from_session(
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
             fallback_message: Some(format!(
                 "Could not restore model {}/{} ({}). Using {}/{}.",
-                saved_provider,
-                saved_model_id,
-                reason,
-                current.provider,
-                current.id
+                saved_provider, saved_model_id, reason, current.provider, current.id
             )),
         };
     }
@@ -145,11 +142,7 @@ pub fn restore_model_from_session(
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
             fallback_message: Some(format!(
                 "Could not restore model {}/{} ({}). Using {}/{}.",
-                saved_provider,
-                saved_model_id,
-                reason,
-                fallback.provider,
-                fallback.id
+                saved_provider, saved_model_id, reason, fallback.provider, fallback.id
             )),
         };
     }
@@ -195,16 +188,7 @@ mod tests {
             model,
             thinking_level: Some("high".to_string()),
         }];
-        let result = find_initial_model(
-            None,
-            None,
-            &scoped,
-            false,
-            None,
-            None,
-            None,
-            &registry,
-        );
+        let result = find_initial_model(None, None, &scoped, false, None, None, None, &registry);
         assert!(result.model.is_some());
         assert_eq!(result.model.unwrap().id, "gpt-4o");
         assert_eq!(result.thinking_level, "high");
@@ -231,12 +215,8 @@ mod tests {
     fn test_restore_model_from_session() {
         let registry = test_registry();
         let current = registry.find("openai", "gpt-4o").unwrap();
-        let result = restore_model_from_session(
-            "anthropic",
-            "claude-sonnet-4-6",
-            Some(&current),
-            &registry,
-        );
+        let result =
+            restore_model_from_session("anthropic", "claude-sonnet-4-6", Some(&current), &registry);
         assert!(result.model.is_some());
     }
 
@@ -244,12 +224,7 @@ mod tests {
     fn test_restore_model_not_found() {
         let registry = test_registry();
         let current = registry.find("openai", "gpt-4o").unwrap();
-        let result = restore_model_from_session(
-            "nonexistent",
-            "model",
-            Some(&current),
-            &registry,
-        );
+        let result = restore_model_from_session("nonexistent", "model", Some(&current), &registry);
         assert!(result.model.is_some());
         assert!(result.fallback_message.is_some());
     }

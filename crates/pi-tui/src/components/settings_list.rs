@@ -144,11 +144,7 @@ impl SettingsList {
             let filtered_refs = fuzzy_filter(&labels, query, |s| s);
             self.filtered_items = filtered_refs
                 .into_iter()
-                .filter_map(|label| {
-                    self.items
-                        .iter()
-                        .position(|item| item.label == **label)
-                })
+                .filter_map(|label| self.items.iter().position(|item| item.label == **label))
                 .collect();
         }
         self.selected_index = 0;
@@ -184,7 +180,8 @@ impl Component for SettingsList {
 
         let start = (self.selected_index as isize - self.max_visible as isize / 2)
             .max(0)
-            .min((display.len() as isize - self.max_visible as isize).max(0)) as usize;
+            .min((display.len() as isize - self.max_visible as isize).max(0))
+            as usize;
         let end = (start + self.max_visible).min(display.len());
 
         for i in start..end {
@@ -413,10 +410,8 @@ mod tests {
     #[test]
     fn test_settings_list_cycle_value() {
         use std::sync::Mutex;
-        let changed_id: &'static Mutex<String> =
-            Box::leak(Box::new(Mutex::new(String::new())));
-        let changed_val: &'static Mutex<String> =
-            Box::leak(Box::new(Mutex::new(String::new())));
+        let changed_id: &'static Mutex<String> = Box::leak(Box::new(Mutex::new(String::new())));
+        let changed_val: &'static Mutex<String> = Box::leak(Box::new(Mutex::new(String::new())));
         let mut sl = SettingsList::new(
             make_items(),
             10,
@@ -436,8 +431,7 @@ mod tests {
     #[test]
     fn test_settings_list_cancel() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        let cancelled: &'static AtomicBool =
-            Box::leak(Box::new(AtomicBool::new(false)));
+        let cancelled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
         let mut sl = SettingsList::new(
             make_items(),
             10,

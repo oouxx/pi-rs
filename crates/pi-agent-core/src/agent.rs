@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex, Notify, RwLock};
 
-use crate::pi_ai_types::{AssistantMessage, ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage};
+use crate::pi_ai_types::{
+    AssistantMessage, ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage,
+};
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
     BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, QueueMode,
@@ -50,7 +52,10 @@ impl PendingMessageQueue {
 }
 
 type AgentEventListener = Arc<
-    dyn Fn(AgentEvent, Option<watch::Receiver<bool>>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+    dyn Fn(
+            AgentEvent,
+            Option<watch::Receiver<bool>>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
         + Sync,
 >;
@@ -330,7 +335,8 @@ impl Agent {
     }
 
     pub async fn has_queued_messages(&self) -> bool {
-        self.steering_queue.lock().await.has_items() || self.follow_up_queue.lock().await.has_items()
+        self.steering_queue.lock().await.has_items()
+            || self.follow_up_queue.lock().await.has_items()
     }
 
     pub async fn abort(&self) {
@@ -341,7 +347,11 @@ impl Agent {
 
     /// Active cancellation token for the current run, if any.
     pub async fn cancellation_token(&self) -> Option<tokio_util::sync::CancellationToken> {
-        self.active_run.lock().await.as_ref().map(|r| r.cancel.clone())
+        self.active_run
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.cancel.clone())
     }
 
     /// Wait until the agent is no longer streaming (idle).
@@ -402,7 +412,9 @@ impl Agent {
         {
             let active = self.active_run.lock().await;
             if active.is_some() {
-                return Err("Agent is already processing. Wait for completion before continuing.".into());
+                return Err(
+                    "Agent is already processing. Wait for completion before continuing.".into(),
+                );
             }
         }
 
@@ -567,19 +579,39 @@ impl Agent {
             Ok(messages) => Ok(messages),
             Err(e) => {
                 let failure_message = AgentMessage::Assistant {
-                    content: vec![ContentBlock::Text { text: String::new(), text_signature: None }],
+                    content: vec![ContentBlock::Text {
+                        text: String::new(),
+                        text_signature: None,
+                    }],
                     api: model.api.clone(),
                     provider: model.provider.clone(),
                     model: model.id.clone(),
                     usage: Usage::default(),
-                    stop_reason: Some(if was_aborted { StopReason::Aborted } else { StopReason::Error }),
+                    stop_reason: Some(if was_aborted {
+                        StopReason::Aborted
+                    } else {
+                        StopReason::Error
+                    }),
                     error_message: Some(e.to_string()),
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 };
-                emit(AgentEvent::MessageStart { message: failure_message.clone() }).await;
-                emit(AgentEvent::MessageEnd { message: failure_message.clone() }).await;
-                emit(AgentEvent::TurnEnd { message: failure_message.clone(), tool_results: Vec::new() }).await;
-                emit(AgentEvent::AgentEnd { messages: vec![failure_message.clone()] }).await;
+                emit(AgentEvent::MessageStart {
+                    message: failure_message.clone(),
+                })
+                .await;
+                emit(AgentEvent::MessageEnd {
+                    message: failure_message.clone(),
+                })
+                .await;
+                emit(AgentEvent::TurnEnd {
+                    message: failure_message.clone(),
+                    tool_results: Vec::new(),
+                })
+                .await;
+                emit(AgentEvent::AgentEnd {
+                    messages: vec![failure_message.clone()],
+                })
+                .await;
                 Ok(vec![failure_message])
             }
         }
@@ -707,7 +739,11 @@ impl Agent {
                             s.pending_tool_calls.remove(tool_call_id);
                         }
                         AgentEvent::TurnEnd { message, .. } => {
-                            if let AgentMessage::Assistant { error_message: Some(err), .. } = message {
+                            if let AgentMessage::Assistant {
+                                error_message: Some(err),
+                                ..
+                            } = message
+                            {
                                 drop(state_read);
                                 let mut s = state.write().await;
                                 s.error_message = Some(err.clone());

@@ -1,8 +1,13 @@
 use async_trait::async_trait;
 
 use crate::harness::session::jsonl_storage::JsonlSessionStorage;
-use crate::harness::session::repo_utils::{create_session_id, create_timestamp, get_entries_to_fork, to_session};
-use crate::harness::types::{ForkOptions, Session, SessionCreateOptions, SessionError, SessionMetadata, SessionRepo, SessionStorage};
+use crate::harness::session::repo_utils::{
+    create_session_id, create_timestamp, get_entries_to_fork, to_session,
+};
+use crate::harness::types::{
+    ForkOptions, Session, SessionCreateOptions, SessionError, SessionMetadata, SessionRepo,
+    SessionStorage,
+};
 
 fn encode_cwd(cwd: &str) -> String {
     let trimmed = cwd
@@ -30,7 +35,11 @@ impl JsonlSessionRepo {
     }
 
     fn create_session_file_path(&self, cwd: &str, session_id: &str, timestamp: &str) -> String {
-        let file_name = format!("{}_{}.jsonl", timestamp.replace([':', '.'], "-"), session_id);
+        let file_name = format!(
+            "{}_{}.jsonl",
+            timestamp.replace([':', '.'], "-"),
+            session_id
+        );
         std::path::Path::new(&self.session_dir(cwd))
             .join(&file_name)
             .to_string_lossy()
@@ -40,14 +49,17 @@ impl JsonlSessionRepo {
 
 #[async_trait]
 impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
-    async fn create(&mut self, options: SessionCreateOptions) -> std::result::Result<Session<SessionMetadata>, SessionError> {
+    async fn create(
+        &mut self,
+        options: SessionCreateOptions,
+    ) -> std::result::Result<Session<SessionMetadata>, SessionError> {
         let id = options.id.unwrap_or_else(create_session_id);
         let created_at = create_timestamp();
         let session_dir = self.session_dir(&options.cwd);
 
-        tokio::fs::create_dir_all(&session_dir)
-            .await
-            .map_err(|e| SessionError::Storage(format!("Failed to create session directory: {}", e)))?;
+        tokio::fs::create_dir_all(&session_dir).await.map_err(|e| {
+            SessionError::Storage(format!("Failed to create session directory: {}", e))
+        })?;
 
         let file_path = self.create_session_file_path(&options.cwd, &id, &created_at);
         let storage = JsonlSessionStorage::create(
@@ -61,14 +73,19 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
         Ok(to_session(Box::new(storage)))
     }
 
-    async fn open(&self, metadata: &SessionMetadata) -> std::result::Result<Session<SessionMetadata>, SessionError> {
-        let path = metadata
-            .cwd
-            .as_ref()
-            .ok_or_else(|| SessionError::NotFound("Session path not found in metadata".to_string()))?;
+    async fn open(
+        &self,
+        metadata: &SessionMetadata,
+    ) -> std::result::Result<Session<SessionMetadata>, SessionError> {
+        let path = metadata.cwd.as_ref().ok_or_else(|| {
+            SessionError::NotFound("Session path not found in metadata".to_string())
+        })?;
 
         if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-            return Err(SessionError::NotFound(format!("Session not found: {}", path)));
+            return Err(SessionError::NotFound(format!(
+                "Session not found: {}",
+                path
+            )));
         }
 
         let storage = JsonlSessionStorage::open(path).await?;
@@ -124,7 +141,10 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
         Ok(sessions)
     }
 
-    async fn delete(&mut self, metadata: &SessionMetadata) -> std::result::Result<(), SessionError> {
+    async fn delete(
+        &mut self,
+        metadata: &SessionMetadata,
+    ) -> std::result::Result<(), SessionError> {
         let path = metadata
             .cwd
             .as_ref()
@@ -151,22 +171,18 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
         let created_at = create_timestamp();
         let session_dir = self.session_dir(&options.cwd);
 
-        tokio::fs::create_dir_all(&session_dir)
-            .await
-            .map_err(|e| SessionError::Storage(format!("Failed to create session directory: {}", e)))?;
+        tokio::fs::create_dir_all(&session_dir).await.map_err(|e| {
+            SessionError::Storage(format!("Failed to create session directory: {}", e))
+        })?;
 
         let file_path = self.create_session_file_path(&options.cwd, &id, &created_at);
         let parent_path = options
             .parent_session_path
             .or_else(|| source_metadata.cwd.clone());
 
-        let mut storage = JsonlSessionStorage::create(
-            file_path,
-            &options.cwd,
-            &id,
-            parent_path.as_deref(),
-        )
-        .await?;
+        let mut storage =
+            JsonlSessionStorage::create(file_path, &options.cwd, &id, parent_path.as_deref())
+                .await?;
 
         for entry in &forked_entries {
             SessionStorage::append_entry(&mut storage, entry.clone()).await?;

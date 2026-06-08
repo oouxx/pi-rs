@@ -294,9 +294,7 @@ pub fn build_session_context(
     let mut current = Some(leaf);
     while let Some(entry) = current {
         path.push(entry.clone());
-        current = entry
-            .parent_id()
-            .and_then(|pid| by_id.get(pid));
+        current = entry.parent_id().and_then(|pid| by_id.get(pid));
     }
     path.reverse();
 
@@ -306,7 +304,9 @@ pub fn build_session_context(
 
     for entry in &path {
         match entry {
-            SessionEntry::ThinkingLevelChange { thinking_level: tl, .. } => {
+            SessionEntry::ThinkingLevelChange {
+                thinking_level: tl, ..
+            } => {
                 thinking_level = tl.clone();
             }
             SessionEntry::ModelChange {
@@ -348,10 +348,7 @@ pub fn build_session_context(
     };
 
     if let Some(ref cid) = compaction_id {
-        let compaction_idx = path
-            .iter()
-            .position(|e| e.id() == cid)
-            .unwrap_or(0);
+        let compaction_idx = path.iter().position(|e| e.id() == cid).unwrap_or(0);
 
         let compaction_entry = &path[compaction_idx];
         if let SessionEntry::Compaction {
@@ -494,7 +491,9 @@ impl SessionManager {
 
         let timestamp = Utc::now().to_rfc3339();
         let file_timestamp = timestamp.replace([':', '.'], "-");
-        let session_file = self.session_dir.join(format!("{}_{}.jsonl", file_timestamp, id));
+        let session_file = self
+            .session_dir
+            .join(format!("{}_{}.jsonl", file_timestamp, id));
 
         let header = SessionHeader {
             entry_type: "session".to_string(),
@@ -549,11 +548,8 @@ impl SessionManager {
     }
 
     fn find_last_leaf_id(&self) -> Option<String> {
-        let child_ids: std::collections::HashSet<&str> = self
-            .by_id
-            .values()
-            .filter_map(|e| e.parent_id())
-            .collect();
+        let child_ids: std::collections::HashSet<&str> =
+            self.by_id.values().filter_map(|e| e.parent_id()).collect();
 
         let mut last = None;
         for e in self.by_id.values() {
@@ -593,13 +589,16 @@ impl SessionManager {
         let json = serde_json::to_string(&entry).unwrap_or_default();
         let id = entry.id().to_string();
         self.file_entries.push(FileEntry::Entry(entry));
-        self.by_id.insert(id.clone(), self.by_id.get(&id).cloned().unwrap_or(
-            // Re-extract from file_entries
-            match self.file_entries.last() {
-                Some(FileEntry::Entry(e)) => e.clone(),
-                _ => unreachable!(),
-            },
-        ));
+        self.by_id.insert(
+            id.clone(),
+            self.by_id.get(&id).cloned().unwrap_or(
+                // Re-extract from file_entries
+                match self.file_entries.last() {
+                    Some(FileEntry::Entry(e)) => e.clone(),
+                    _ => unreachable!(),
+                },
+            ),
+        );
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
     }
@@ -710,7 +709,11 @@ impl SessionManager {
         id
     }
 
-    pub fn append_custom_entry(&mut self, custom_type: &str, data: Option<serde_json::Value>) -> String {
+    pub fn append_custom_entry(
+        &mut self,
+        custom_type: &str,
+        data: Option<serde_json::Value>,
+    ) -> String {
         let id = generate_id(&self.by_id);
         let timestamp = Utc::now().to_rfc3339();
         let entry = SessionEntry::Custom {
@@ -805,9 +808,7 @@ impl SessionManager {
         let mut current = Some(start);
         while let Some(entry) = current {
             path.push(entry.clone());
-            current = entry
-                .parent_id()
-                .and_then(|pid| self.by_id.get(pid));
+            current = entry.parent_id().and_then(|pid| self.by_id.get(pid));
         }
         path.reverse();
         path
@@ -894,10 +895,7 @@ impl SessionManager {
             .values()
             .filter(|e| e.parent_id().is_none())
             .collect();
-        roots
-            .into_iter()
-            .map(|r| self.build_tree_node(r))
-            .collect()
+        roots.into_iter().map(|r| self.build_tree_node(r)).collect()
     }
 
     fn build_tree_node(&self, entry: &SessionEntry) -> SessionTreeNode {
@@ -1010,8 +1008,12 @@ impl SessionManager {
 
         {
             let mut f = fs::File::create(&new_session_file).map_err(|e| e.to_string())?;
-            writeln!(f, "{}", serde_json::to_string(&new_header).unwrap_or_default())
-                .map_err(|e| e.to_string())?;
+            writeln!(
+                f,
+                "{}",
+                serde_json::to_string(&new_header).unwrap_or_default()
+            )
+            .map_err(|e| e.to_string())?;
 
             for entry in &source_entries {
                 if let FileEntry::Entry(e) = entry {
@@ -1094,7 +1096,10 @@ fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
 
     for entry in &entries {
         if let FileEntry::Entry(e) = entry {
-            if let SessionEntry::Message { message, timestamp, .. } = e {
+            if let SessionEntry::Message {
+                message, timestamp, ..
+            } = e
+            {
                 message_count += 1;
                 if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp) {
                     let dt = dt.to_utc();
@@ -1115,9 +1120,7 @@ fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
                     }
                 }
             } else if let SessionEntry::SessionInfo {
-                name: n,
-                timestamp,
-                ..
+                name: n, timestamp, ..
             } = e
             {
                 if n.is_some() {
@@ -1167,13 +1170,7 @@ mod tests {
     #[test]
     fn test_session_manager_new_session() {
         let dir = tempfile::tempdir().unwrap();
-        let mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mgr = SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         assert!(!mgr.get_session_id().is_empty());
         assert_eq!(mgr.get_cwd(), "/tmp/test");
@@ -1183,13 +1180,8 @@ mod tests {
     #[test]
     fn test_append_message() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let msg = serde_json::json!({
             "role": "user",
@@ -1203,13 +1195,8 @@ mod tests {
     #[test]
     fn test_append_thinking_level_change() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let id = mgr.append_thinking_level_change("high");
         assert!(!id.is_empty());
@@ -1218,13 +1205,8 @@ mod tests {
     #[test]
     fn test_append_model_change() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let id = mgr.append_model_change("anthropic", "claude-3-opus");
         assert!(!id.is_empty());
@@ -1233,13 +1215,8 @@ mod tests {
     #[test]
     fn test_build_context() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         mgr.append_thinking_level_change("medium");
         mgr.append_message(serde_json::json!({
@@ -1259,13 +1236,8 @@ mod tests {
     #[test]
     fn test_navigate_to() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let id1 = mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1286,13 +1258,8 @@ mod tests {
     #[test]
     fn test_get_branch() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let id1 = mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1310,13 +1277,8 @@ mod tests {
     #[test]
     fn test_session_name() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         assert!(mgr.get_session_name().is_none());
 
@@ -1329,13 +1291,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session_dir = dir.path().to_str().unwrap();
 
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            session_dir,
-            None,
-            true,
-            None,
-        );
+        let mut mgr = SessionManager::new("/tmp/test", session_dir, None, true, None);
 
         mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1355,13 +1311,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session_dir = dir.path().to_str().unwrap();
 
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            session_dir,
-            None,
-            true,
-            None,
-        );
+        let mut mgr = SessionManager::new("/tmp/test", session_dir, None, true, None);
 
         mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1386,13 +1336,8 @@ mod tests {
     #[test]
     fn test_append_compaction() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let msg_id = mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1406,13 +1351,8 @@ mod tests {
     #[test]
     fn test_build_context_with_compaction() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let msg_id = mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1431,13 +1371,8 @@ mod tests {
     #[test]
     fn test_custom_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let id = mgr.append_custom_entry("my_extension", Some(serde_json::json!({"key": "value"})));
         assert!(!id.is_empty());
@@ -1446,13 +1381,8 @@ mod tests {
     #[test]
     fn test_label() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         let msg_id = mgr.append_message(serde_json::json!({
             "role": "user",
@@ -1469,13 +1399,8 @@ mod tests {
     #[test]
     fn test_get_tree() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
         mgr.append_message(serde_json::json!({
             "role": "user",

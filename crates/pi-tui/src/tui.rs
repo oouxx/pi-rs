@@ -179,7 +179,8 @@ impl OverlayHandle {
     }
 
     pub fn set_hidden(&self, hidden: bool) {
-        self.hidden.store(hidden, std::sync::atomic::Ordering::SeqCst);
+        self.hidden
+            .store(hidden, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn is_hidden(&self) -> bool {
@@ -187,7 +188,8 @@ impl OverlayHandle {
     }
 
     pub fn focus(&self) {
-        self.focus_id.store(self.overlay_id, std::sync::atomic::Ordering::SeqCst);
+        self.focus_id
+            .store(self.overlay_id, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn unfocus(&self, _options: Option<OverlayUnfocusOptions>) {
@@ -343,9 +345,15 @@ impl Tui {
             }
         }
 
-        let focused_overlay_id = self.overlay_focus_id.load(std::sync::atomic::Ordering::Relaxed);
+        let focused_overlay_id = self
+            .overlay_focus_id
+            .load(std::sync::atomic::Ordering::Relaxed);
         if focused_overlay_id > 0 {
-            if let Some(entry) = self.overlays.iter_mut().find(|e| e.id == focused_overlay_id) {
+            if let Some(entry) = self
+                .overlays
+                .iter_mut()
+                .find(|e| e.id == focused_overlay_id)
+            {
                 if !entry.hidden.load(std::sync::atomic::Ordering::Relaxed) {
                     entry.component.handle_input(&current);
                     return;
@@ -372,7 +380,11 @@ impl Tui {
 
     /// Render the full UI to lines without drawing to the terminal.
     /// Returns (rendered_lines, cursor_position).
-    pub fn render_to_lines(&self, width: u16, height: u16) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    pub fn render_to_lines(
+        &self,
+        width: u16,
+        height: u16,
+    ) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
         let mut lines = self.container.render(width);
 
         for entry in &self.overlays {
@@ -385,13 +397,7 @@ impl Tui {
                 }
             }
             let overlay_lines = entry.component.render(width);
-            composite_overlay(
-                &mut lines,
-                &overlay_lines,
-                width,
-                height,
-                &entry.options,
-            );
+            composite_overlay(&mut lines, &overlay_lines, width, height, &entry.options);
         }
 
         while lines.len() < height as usize {
@@ -399,7 +405,10 @@ impl Tui {
         }
 
         let cursor_pos = self.focused.and_then(|idx| {
-            self.container.children.get(idx).and_then(|c| c.cursor_position())
+            self.container
+                .children
+                .get(idx)
+                .and_then(|c| c.cursor_position())
         });
 
         (lines, cursor_pos)
@@ -484,7 +493,9 @@ fn overlay_position(
                 .saturating_sub(options.margin.right)
         }
         OverlayAnchor::TopRight | OverlayAnchor::CenterRight | OverlayAnchor::BottomRight => {
-            term_width.saturating_sub(width).saturating_sub(options.margin.right)
+            term_width
+                .saturating_sub(width)
+                .saturating_sub(options.margin.right)
         }
     };
 
@@ -498,7 +509,9 @@ fn overlay_position(
                 .saturating_sub(options.margin.bottom)
         }
         OverlayAnchor::BottomLeft | OverlayAnchor::BottomCenter | OverlayAnchor::BottomRight => {
-            term_height.saturating_sub(height).saturating_sub(options.margin.bottom)
+            term_height
+                .saturating_sub(height)
+                .saturating_sub(options.margin.bottom)
         }
     };
 
@@ -622,7 +635,9 @@ mod tests {
     #[test]
     fn test_tui_render_multi_line() {
         let mut tui = make_tui();
-        tui.add_child(Box::new(MultiLineComponent::new(&["Line 0", "Line 1", "Line 2"])));
+        tui.add_child(Box::new(MultiLineComponent::new(&[
+            "Line 0", "Line 1", "Line 2",
+        ])));
         let (lines, _) = tui.render_to_lines(80, 24);
         assert_eq!(lines[0].spans[0].content, "Line 0");
         assert_eq!(lines[1].spans[0].content, "Line 1");
@@ -655,7 +670,10 @@ mod tests {
             },
         );
         let (lines, _) = tui.render_to_lines(80, 24);
-        assert!(lines[0].spans.iter().any(|s| s.content == "OVERLAY" || s.content.starts_with("OVERLAY")));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "OVERLAY" || s.content.starts_with("OVERLAY")));
     }
 
     #[test]
@@ -671,7 +689,10 @@ mod tests {
         );
         handle.set_hidden(true);
         let (lines, _) = tui.render_to_lines(80, 24);
-        assert!(lines[0].spans.iter().any(|s| s.content == "base" || s.content.contains("base")));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "base" || s.content.contains("base")));
         // Since overlay is hidden, base should be visible and overlay should not
         // But since base has only 1 line and overlay is hidden, only base appears
     }
@@ -711,7 +732,9 @@ mod tests {
         let tui = make_tui();
         let (lines, cursor) = tui.render_to_lines(80, 24);
         assert_eq!(lines.len(), 24);
-        assert!(lines.iter().all(|l| l.spans.is_empty() || l.spans[0].content.is_empty()));
+        assert!(lines
+            .iter()
+            .all(|l| l.spans.is_empty() || l.spans[0].content.is_empty()));
         assert_eq!(cursor, None);
     }
 

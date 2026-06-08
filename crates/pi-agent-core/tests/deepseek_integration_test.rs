@@ -127,12 +127,13 @@ fn make_stream_fn(api_key: &str) -> StreamFn {
                                 content: content
                                     .iter()
                                     .map(|cb| match cb {
-                                        ContentBlock::Text { text, text_signature } => {
-                                            pi_ai::types::ContentBlock::Text {
-                                                text: text.clone(),
-                                                text_signature: text_signature.clone(),
-                                            }
-                                        }
+                                        ContentBlock::Text {
+                                            text,
+                                            text_signature,
+                                        } => pi_ai::types::ContentBlock::Text {
+                                            text: text.clone(),
+                                            text_signature: text_signature.clone(),
+                                        },
                                         ContentBlock::Thinking {
                                             thinking,
                                             thinking_signature,
@@ -223,12 +224,11 @@ fn make_stream_fn(api_key: &str) -> StreamFn {
                     ..Default::default()
                 };
 
-                let event_stream =
-                    pi_ai::stream::stream(&pi_model, &pi_context, Some(stream_opts));
+                let event_stream = pi_ai::stream::stream(&pi_model, &pi_context, Some(stream_opts));
 
                 use futures::StreamExt;
-                let converted: pi_agent_core::pi_ai_types::StreamResponse = Box::new(
-                    event_stream.map(|event| {
+                let converted: pi_agent_core::pi_ai_types::StreamResponse =
+                    Box::new(event_stream.map(|event| {
                         fn convert_msg(
                             msg: pi_ai::types::AssistantMessage,
                         ) -> pi_agent_core::pi_ai_types::AssistantMessage {
@@ -264,13 +264,12 @@ fn make_stream_fn(api_key: &str) -> StreamFn {
                                             arguments: arguments.clone(),
                                             thought_signature: thought_signature.clone(),
                                         },
-                                        pi_ai::types::ContentBlock::Image {
-                                            data,
-                                            mime_type,
-                                        } => ContentBlock::Image {
-                                            data: data.clone(),
-                                            mime_type: mime_type.clone(),
-                                        },
+                                        pi_ai::types::ContentBlock::Image { data, mime_type } => {
+                                            ContentBlock::Image {
+                                                data: data.clone(),
+                                                mime_type: mime_type.clone(),
+                                            }
+                                        }
                                     })
                                     .collect(),
                                 api: msg.api,
@@ -395,9 +394,7 @@ fn make_stream_fn(api_key: &str) -> StreamFn {
                                 AssistantMessageEvent::Done {
                                     reason: match reason {
                                         pi_ai::types::StopReason::Stop => StopReason::Stop,
-                                        pi_ai::types::StopReason::ToolUse => {
-                                            StopReason::ToolUse
-                                        }
+                                        pi_ai::types::StopReason::ToolUse => StopReason::ToolUse,
                                         pi_ai::types::StopReason::Aborted => StopReason::Aborted,
                                         _ => StopReason::Error,
                                     },
@@ -411,8 +408,7 @@ fn make_stream_fn(api_key: &str) -> StreamFn {
                                 }
                             }
                         }
-                    }),
-                );
+                    }));
                 Ok(converted)
             })
         },
@@ -490,11 +486,25 @@ async fn timed_process(agent: &Agent, prompt: &str, label: &str) -> Vec<AgentMes
     println!("  [{label}] completed in {elapsed:.2?}");
     match result {
         Ok(msgs) => {
-            let n_assistant = msgs.iter().filter(|m| matches!(m, AgentMessage::Assistant { .. })).count();
-            let n_tool = msgs.iter().filter(|m| matches!(m, AgentMessage::ToolResult { .. })).count();
-            println!("  [{label}] response: {} assistant + {} tool_result msgs", n_assistant, n_tool);
+            let n_assistant = msgs
+                .iter()
+                .filter(|m| matches!(m, AgentMessage::Assistant { .. }))
+                .count();
+            let n_tool = msgs
+                .iter()
+                .filter(|m| matches!(m, AgentMessage::ToolResult { .. }))
+                .count();
+            println!(
+                "  [{label}] response: {} assistant + {} tool_result msgs",
+                n_assistant, n_tool
+            );
             for m in &msgs {
-                if let AgentMessage::Assistant { content, stop_reason, .. } = m {
+                if let AgentMessage::Assistant {
+                    content,
+                    stop_reason,
+                    ..
+                } = m
+                {
                     // Print all content blocks for debugging
                     for (i, cb) in content.iter().enumerate() {
                         match cb {
@@ -502,11 +512,19 @@ async fn timed_process(agent: &Agent, prompt: &str, label: &str) -> Vec<AgentMes
                                 let preview: String = text.chars().take(80).collect();
                                 println!("  [{label}] content[{i}]: Text({preview})");
                             }
-                            ContentBlock::ToolCall { id, name, arguments, .. } => {
+                            ContentBlock::ToolCall {
+                                id,
+                                name,
+                                arguments,
+                                ..
+                            } => {
                                 println!("  [{label}] content[{i}]: ToolCall(id={id}, name={name}, args={arguments})");
                             }
                             ContentBlock::Thinking { thinking, .. } => {
-                                println!("  [{label}] content[{i}]: Thinking({} chars)", thinking.len());
+                                println!(
+                                    "  [{label}] content[{i}]: Thinking({} chars)",
+                                    thinking.len()
+                                );
                             }
                             _ => println!("  [{label}] content[{i}]: {:?}", cb),
                         }
@@ -548,7 +566,8 @@ async fn test_deepseek_multi_turn_conversation() {
 
     let agent = Agent::new(AgentOptions {
         initial_state: Some(AgentState {
-            system_prompt: "Answer questions concisely in one sentence. Do NOT use tool calls.".into(),
+            system_prompt: "Answer questions concisely in one sentence. Do NOT use tool calls."
+                .into(),
             model,
             thinking_level: "off".into(),
             tools: vec![],
@@ -565,22 +584,32 @@ async fn test_deepseek_multi_turn_conversation() {
 
     // Turn 1
     let r1 = timed_process(&agent, "What is 1+1?", "Turn 1").await;
-    assert!(r1.iter().any(|m| matches!(m, AgentMessage::Assistant { .. })));
+    assert!(r1
+        .iter()
+        .any(|m| matches!(m, AgentMessage::Assistant { .. })));
 
     // Turn 2: reference previous context
     let r2 = timed_process(&agent, "Multiply that result by 3.", "Turn 2").await;
-    assert!(r2.iter().any(|m| matches!(m, AgentMessage::Assistant { .. })));
-    let text: String = r2.iter()
+    assert!(r2
+        .iter()
+        .any(|m| matches!(m, AgentMessage::Assistant { .. })));
+    let text: String = r2
+        .iter()
         .filter_map(|m| match m {
             AgentMessage::Assistant { content, .. } => Some(
-                content.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join(""),
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
             ),
             _ => None,
         })
-        .collect::<Vec<_>>().join(" ");
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         text.to_lowercase().contains('6') || text.to_lowercase().contains("six"),
         "Expected response to mention 6: {text}"
@@ -588,17 +617,23 @@ async fn test_deepseek_multi_turn_conversation() {
 
     // Turn 3
     let r3 = timed_process(&agent, "What is the capital of France?", "Turn 3").await;
-    let text3: String = r3.iter()
+    let text3: String = r3
+        .iter()
         .filter_map(|m| match m {
             AgentMessage::Assistant { content, .. } => Some(
-                content.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join(""),
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
             ),
             _ => None,
         })
-        .collect::<Vec<_>>().join(" ");
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         text3.to_lowercase().contains("paris"),
         "Expected response to mention Paris: {text3}"
@@ -610,7 +645,11 @@ async fn test_deepseek_multi_turn_conversation() {
         total_start.elapsed(),
         state.messages.len()
     );
-    assert_eq!(state.messages.len(), 6, "Expected 3 user + 3 assistant messages");
+    assert_eq!(
+        state.messages.len(),
+        6,
+        "Expected 3 user + 3 assistant messages"
+    );
 }
 
 // ============================================================================
@@ -689,10 +728,7 @@ async fn test_deepseek_tool_call() {
 
     let calls = tool_call_count.load(std::sync::atomic::Ordering::SeqCst);
     println!("  Tool was called {calls} time(s)");
-    assert!(
-        calls >= 1,
-        "Expected at least one tool call, got {calls}"
-    );
+    assert!(calls >= 1, "Expected at least one tool call, got {calls}");
     assert!(
         calls <= 5,
         "Expected at most 5 tool calls (loop guard), got {calls}"
@@ -703,7 +739,10 @@ async fn test_deepseek_tool_call() {
         matches!(m, AgentMessage::Assistant { content, .. }
             if content.iter().any(|b| matches!(b, ContentBlock::Text { .. })))
     });
-    assert!(has_final_assistant, "Expected final assistant with text response");
+    assert!(
+        has_final_assistant,
+        "Expected final assistant with text response"
+    );
 
     println!("  Total test time: {:.2?}", total_start.elapsed());
 }
@@ -712,12 +751,7 @@ async fn test_deepseek_tool_call() {
 // Structured extraction test — schema-as-tool (Rig Extractor pattern)
 // ============================================================================
 
-#[derive(
-    pi_agent_core::extraction::JsonSchema,
-    serde::Deserialize,
-    Debug,
-    PartialEq,
-)]
+#[derive(pi_agent_core::extraction::JsonSchema, serde::Deserialize, Debug, PartialEq)]
 #[allow(dead_code)]
 struct ExtractedPerson {
     name: String,
@@ -767,18 +801,17 @@ async fn test_deepseek_structured_extraction() {
 
     match result {
         Ok(person) => {
-            println!(
-                "  Extracted ({elapsed:.2?}): {:?}",
-                person
-            );
+            println!("  Extracted ({elapsed:.2?}): {:?}", person);
             assert_eq!(person.name.to_lowercase(), "john");
             assert_eq!(person.age, 30);
             assert!(
                 person.city.to_lowercase().contains("new york")
                     || person.city.to_lowercase().contains("nyc")
             );
-            println!("  ✅ Structured extraction succeeded: name={}, age={}, city={}",
-                person.name, person.age, person.city);
+            println!(
+                "  ✅ Structured extraction succeeded: name={}, age={}, city={}",
+                person.name, person.age, person.city
+            );
         }
         Err(e) => panic!("Extraction test failed: {e}"),
     }
@@ -859,18 +892,24 @@ async fn test_deepseek_tool_call_multi_turn() {
     // Turn 1
     timed_process(&agent, "Use the add tool to compute 10 + 20.", "Turn 1").await;
     let n1 = tool_call_count.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(n1 >= 1, "Expected at least 1 tool call by end of turn 1, got {n1}");
+    assert!(
+        n1 >= 1,
+        "Expected at least 1 tool call by end of turn 1, got {n1}"
+    );
 
     // Turn 2: reference previous result
     timed_process(&agent, "Now add 5 to the result from before.", "Turn 2").await;
     let n2 = tool_call_count.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(n2 >= 2, "Expected at least 2 tool calls total after turn 2, got {n2}");
+    assert!(
+        n2 >= 2,
+        "Expected at least 2 tool calls total after turn 2, got {n2}"
+    );
 
     let state = agent.state().await;
     println!(
-      "  Total test time: {:.2?}, messages in state: {}",
-      total_start.elapsed(),
-      state.messages.len()
+        "  Total test time: {:.2?}, messages in state: {}",
+        total_start.elapsed(),
+        state.messages.len()
     );
     assert!(
         state.messages.len() >= 6,

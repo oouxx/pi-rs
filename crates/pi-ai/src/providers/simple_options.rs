@@ -5,7 +5,11 @@
 use crate::types::{Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets};
 
 /// Build a full `StreamOptions` from `SimpleStreamOptions` and an API key.
-pub fn build_base_options(_model: &Model, options: Option<&SimpleStreamOptions>, api_key: Option<&str>) -> StreamOptions {
+pub fn build_base_options(
+    _model: &Model,
+    options: Option<&SimpleStreamOptions>,
+    api_key: Option<&str>,
+) -> StreamOptions {
     let opts = match options {
         Some(o) => o,
         None => {
@@ -20,7 +24,9 @@ pub fn build_base_options(_model: &Model, options: Option<&SimpleStreamOptions>,
         temperature: opts.base.temperature,
         max_tokens: opts.base.max_tokens,
         signal: opts.base.signal.clone(),
-        api_key: api_key.map(|s| s.to_string()).or_else(|| opts.base.api_key.clone()),
+        api_key: api_key
+            .map(|s| s.to_string())
+            .or_else(|| opts.base.api_key.clone()),
         transport: opts.base.transport.clone(),
         cache_retention: opts.base.cache_retention.clone(),
         session_id: opts.base.session_id.clone(),

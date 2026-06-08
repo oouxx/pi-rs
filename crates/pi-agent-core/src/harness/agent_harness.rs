@@ -52,11 +52,7 @@ enum HarnessPhase {
 }
 
 impl<S: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> AgentHarness<S, P> {
-    pub fn new(
-        session: Session,
-        model: Model,
-        options: Option<AgentHarnessOptions<S, P>>,
-    ) -> Self {
+    pub fn new(session: Session, model: Model, options: Option<AgentHarnessOptions<S, P>>) -> Self {
         let opts = options.unwrap_or_default();
 
         Self {

@@ -64,7 +64,10 @@ impl Default for InMemorySessionStorageOptions {
 }
 
 fn update_label_cache(labels_by_id: &mut HashMap<String, String>, entry: &SessionTreeEntry) {
-    if let SessionTreeEntry::Label { target_id, label, .. } = entry {
+    if let SessionTreeEntry::Label {
+        target_id, label, ..
+    } = entry
+    {
         if let Some(l) = label {
             if l.trim().is_empty() {
                 labels_by_id.remove(target_id);
@@ -97,7 +100,10 @@ impl SessionStorage for InMemorySessionStorage {
         self.leaf_id.clone()
     }
 
-    async fn set_leaf_id(&mut self, leaf_id: Option<String>) -> std::result::Result<(), SessionError> {
+    async fn set_leaf_id(
+        &mut self,
+        leaf_id: Option<String>,
+    ) -> std::result::Result<(), SessionError> {
         if let Some(ref id) = leaf_id {
             if !self.by_id.contains_key(id) {
                 return Err(SessionError::NotFound(format!("Entry {} not found", id)));
@@ -121,7 +127,10 @@ impl SessionStorage for InMemorySessionStorage {
         generate_entry_id(&self.by_id)
     }
 
-    async fn append_entry(&mut self, entry: SessionTreeEntry) -> std::result::Result<(), SessionError> {
+    async fn append_entry(
+        &mut self,
+        entry: SessionTreeEntry,
+    ) -> std::result::Result<(), SessionError> {
         let id = entry.id().to_string();
         let new_leaf = self.leaf_id_after_entry(&entry);
         self.by_id.insert(id, self.entries.len());
@@ -165,7 +174,12 @@ impl SessionStorage for InMemorySessionStorage {
         loop {
             let idx = match self.by_id.get(&current_id) {
                 Some(&idx) => idx,
-                None => return Err(SessionError::NotFound(format!("Entry {} not found", current_id))),
+                None => {
+                    return Err(SessionError::NotFound(format!(
+                        "Entry {} not found",
+                        current_id
+                    )))
+                }
             };
             let entry = &self.entries[idx];
             let parent_id = entry.parent_id().map(|s| s.to_string());
@@ -204,7 +218,9 @@ impl SessionRepo for InMemorySessionRepo {
         &mut self,
         options: SessionCreateOptions,
     ) -> std::result::Result<crate::harness::types::Session, SessionError> {
-        let id = options.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = options
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let metadata = SessionMetadata {
             id: id.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -240,7 +256,10 @@ impl SessionRepo for InMemorySessionRepo {
         Ok(metadata_list)
     }
 
-    async fn delete(&mut self, metadata: &SessionMetadata) -> std::result::Result<(), SessionError> {
+    async fn delete(
+        &mut self,
+        metadata: &SessionMetadata,
+    ) -> std::result::Result<(), SessionError> {
         self.sessions
             .remove(&metadata.id)
             .ok_or_else(|| SessionError::NotFound(format!("Session not found: {}", metadata.id)))?;
@@ -256,22 +275,25 @@ impl SessionRepo for InMemorySessionRepo {
         let entries = source.get_entries().await;
 
         let forked_entries = if let Some(entry_id) = &options.entry_id {
-            let target = source
-                .get_entry(entry_id)
-                .await
-                .ok_or_else(|| SessionError::InvalidForkTarget(format!("Entry {} not found", entry_id)))?;
+            let target = source.get_entry(entry_id).await.ok_or_else(|| {
+                SessionError::InvalidForkTarget(format!("Entry {} not found", entry_id))
+            })?;
 
             let effective_leaf_id = match options.position.as_deref() {
                 Some("at") => Some(target.id().to_string()),
                 _ => target.parent_id().map(|s| s.to_string()),
             };
 
-            source.get_path_to_root(effective_leaf_id.as_deref()).await?
+            source
+                .get_path_to_root(effective_leaf_id.as_deref())
+                .await?
         } else {
             entries
         };
 
-        let id = options.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = options
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let metadata = SessionMetadata {
             id: id.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -287,11 +309,6 @@ impl SessionRepo for InMemorySessionRepo {
         )));
         let session = crate::harness::types::Session::new(storage);
         self.sessions.insert(id, session);
-        Ok(self
-            .sessions
-            .values()
-            .last()
-            .unwrap()
-            .clone())
+        Ok(self.sessions.values().last().unwrap().clone())
     }
 }

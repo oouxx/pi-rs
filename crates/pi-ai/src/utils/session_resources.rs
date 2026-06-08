@@ -48,9 +48,7 @@ pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String>
 
     let mut errors: Vec<String> = Vec::new();
     for (_, cleanup) in cleanups {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            cleanup(session_id)
-        })) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cleanup(session_id))) {
             Ok(()) => {}
             Err(e) => {
                 let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -114,8 +112,10 @@ mod tests {
 
         unregister();
         cleanup_session_resources(None).unwrap();
-        assert!(!cleaned.load(Ordering::SeqCst),
-                "cleanup should not have been called after unregister");
+        assert!(
+            !cleaned.load(Ordering::SeqCst),
+            "cleanup should not have been called after unregister"
+        );
     }
 
     #[test]

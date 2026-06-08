@@ -66,10 +66,7 @@ impl ModelRegistry {
 
     pub fn get_providers(&self) -> Vec<String> {
         let models = self.models.read().unwrap();
-        let mut providers: Vec<String> = models
-            .iter()
-            .map(|m| m.provider.clone())
-            .collect();
+        let mut providers: Vec<String> = models.iter().map(|m| m.provider.clone()).collect();
         providers.sort();
         providers.dedup();
         providers
@@ -97,10 +94,7 @@ impl ModelRegistry {
         false
     }
 
-    pub async fn get_api_key_and_headers(
-        &self,
-        model: &Model,
-    ) -> Result<ApiKeyResult, String> {
+    pub async fn get_api_key_and_headers(&self, model: &Model) -> Result<ApiKeyResult, String> {
         let mut api_key = get_env_api_key(&model.provider);
         let mut headers: HashMap<String, String> = HashMap::new();
 
@@ -162,7 +156,12 @@ impl ModelRegistry {
                             id: model_def.id,
                             context_window: model_def.context_window,
                             max_tokens: model_def.max_tokens,
-                            cost: pi_agent_core::pi_ai_types::ModelCost { input: model_def.cost.input, output: model_def.cost.output, cache_read: 0.0, cache_write: 0.0 },
+                            cost: pi_agent_core::pi_ai_types::ModelCost {
+                                input: model_def.cost.input,
+                                output: model_def.cost.output,
+                                cache_read: 0.0,
+                                cache_write: 0.0,
+                            },
                             name: String::new(),
                             base_url: String::new(),
                             thinking_level_map: None,
@@ -222,7 +221,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "claude-sonnet-4-6".into(),
             context_window: 200000,
             max_tokens: 8192,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 3.0, output: 15.0, cache_read: 0.0, cache_write: 0.0 }, reasoning: true, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: true,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "anthropic".into(),
@@ -230,7 +241,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "claude-opus-4-7".into(),
             context_window: 200000,
             max_tokens: 32768,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 15.0, output: 75.0, cache_read: 0.0, cache_write: 0.0 }, reasoning: true, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 15.0,
+                output: 75.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: true,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "anthropic".into(),
@@ -238,7 +261,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "claude-haiku-4-5".into(),
             context_window: 200000,
             max_tokens: 8192,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 0.8, output: 4.0, cache_read: 0.0, cache_write: 0.0 }, reasoning: false, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.8,
+                output: 4.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: false,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "openai".into(),
@@ -246,7 +281,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "gpt-4o".into(),
             context_window: 128000,
             max_tokens: 16384,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 2.5, output: 10.0, cache_read: 0.0, cache_write: 0.0 }, reasoning: false, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 2.5,
+                output: 10.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: false,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "openai".into(),
@@ -254,7 +301,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "gpt-4.1".into(),
             context_window: 1048576,
             max_tokens: 32768,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 2.0, output: 8.0, cache_read: 0.0, cache_write: 0.0 }, reasoning: false, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 2.0,
+                output: 8.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: false,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "openai".into(),
@@ -262,7 +321,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "o4-mini".into(),
             context_window: 200000,
             max_tokens: 100000,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 1.1, output: 4.4, cache_read: 0.0, cache_write: 0.0 }, reasoning: true, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 1.1,
+                output: 4.4,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: true,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "deepseek".into(),
@@ -270,7 +341,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "deepseek-chat".into(),
             context_window: 131072,
             max_tokens: 8192,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 0.27, output: 1.10, cache_read: 0.0, cache_write: 0.0 }, reasoning: false, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.27,
+                output: 1.10,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: false,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "deepseek".into(),
@@ -278,7 +361,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "deepseek-reasoner".into(),
             context_window: 131072,
             max_tokens: 32768,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 0.55, output: 2.19, cache_read: 0.0, cache_write: 0.0 }, reasoning: true, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.55,
+                output: 2.19,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: true,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "google".into(),
@@ -286,7 +381,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "gemini-2.5-flash".into(),
             context_window: 1048576,
             max_tokens: 8192,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 0.15, output: 0.6, cache_read: 0.0, cache_write: 0.0 }, reasoning: true, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.15,
+                output: 0.6,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: true,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
         Model {
             provider: "google".into(),
@@ -294,7 +401,19 @@ pub fn builtin_models() -> Vec<Model> {
             id: "gemini-2.5-pro".into(),
             context_window: 1048576,
             max_tokens: 65536,
-            cost: pi_agent_core::pi_ai_types::ModelCost { input: 1.25, output: 10.0, cache_read: 0.0, cache_write: 0.0 }, reasoning: true, name: String::new(), base_url: String::new(), thinking_level_map: None, input: vec!["text".to_string()], headers: None, compat: None,
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            reasoning: true,
+            name: String::new(),
+            base_url: String::new(),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            headers: None,
+            compat: None,
         },
     ]
 }

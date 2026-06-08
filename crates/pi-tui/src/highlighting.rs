@@ -286,10 +286,7 @@ mod tests {
     #[test]
     fn test_with_theme_unknown() {
         let hl = SyntaxHighlighter::with_theme("nonexistent_theme_xyz");
-        assert!(
-            hl.is_none(),
-            "Unknown theme should return None"
-        );
+        assert!(hl.is_none(), "Unknown theme should return None");
     }
 
     #[test]
@@ -298,7 +295,10 @@ mod tests {
         let lines = hl.highlight("{\n  \"key\": \"value\"\n}", Some("json"));
         assert_eq!(lines.len(), 3);
         for line in &lines {
-            assert!(!line.spans.is_empty(), "JSON highlighted lines should have spans");
+            assert!(
+                !line.spans.is_empty(),
+                "JSON highlighted lines should have spans"
+            );
         }
     }
 
@@ -323,8 +323,18 @@ mod tests {
     #[test]
     fn test_syntect_style_to_ratatui_foreground() {
         let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color { r: 255, g: 0, b: 0, a: 255 },
-            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 0 },
+            foreground: syntect::highlighting::Color {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            background: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
             font_style: FontStyle::empty(),
         };
         let ratatui_style = syntect_style_to_ratatui(&s);
@@ -335,8 +345,18 @@ mod tests {
     #[test]
     fn test_syntect_style_to_ratatui_background() {
         let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
-            background: syntect::highlighting::Color { r: 10, g: 20, b: 30, a: 255 },
+            foreground: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            background: syntect::highlighting::Color {
+                r: 10,
+                g: 20,
+                b: 30,
+                a: 255,
+            },
             font_style: FontStyle::empty(),
         };
         let ratatui_style = syntect_style_to_ratatui(&s);
@@ -346,8 +366,18 @@ mod tests {
     #[test]
     fn test_syntect_style_to_ratatui_bold() {
         let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
-            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 0 },
+            foreground: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            background: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
             font_style: FontStyle::BOLD,
         };
         let ratatui_style = syntect_style_to_ratatui(&s);
@@ -357,8 +387,18 @@ mod tests {
     #[test]
     fn test_syntect_style_to_ratatui_italic() {
         let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
-            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 0 },
+            foreground: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            background: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
             font_style: FontStyle::ITALIC,
         };
         let ratatui_style = syntect_style_to_ratatui(&s);
@@ -368,8 +408,18 @@ mod tests {
     #[test]
     fn test_syntect_style_to_ratatui_underline() {
         let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
-            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 0 },
+            foreground: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            background: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
             font_style: FontStyle::UNDERLINE,
         };
         let ratatui_style = syntect_style_to_ratatui(&s);
@@ -379,8 +429,18 @@ mod tests {
     #[test]
     fn test_syntect_style_to_ratatui_combined() {
         let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color { r: 255, g: 128, b: 0, a: 255 },
-            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: syntect::highlighting::Color {
+                r: 255,
+                g: 128,
+                b: 0,
+                a: 255,
+            },
+            background: syntect::highlighting::Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
             font_style: FontStyle::BOLD | FontStyle::ITALIC,
         };
         let ratatui_style = syntect_style_to_ratatui(&s);

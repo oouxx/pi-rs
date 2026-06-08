@@ -3,7 +3,11 @@ use std::sync::Mutex;
 
 pub trait EventBus: Send + Sync {
     fn emit(&self, channel: &str, data: serde_json::Value);
-    fn on(&self, channel: &str, handler: Box<dyn Fn(serde_json::Value) + Send + Sync>) -> Box<dyn Fn() + Send + Sync>;
+    fn on(
+        &self,
+        channel: &str,
+        handler: Box<dyn Fn(serde_json::Value) + Send + Sync>,
+    ) -> Box<dyn Fn() + Send + Sync>;
 }
 
 type HandlerFn = Box<dyn Fn(serde_json::Value) + Send + Sync>;

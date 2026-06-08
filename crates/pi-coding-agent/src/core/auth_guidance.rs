@@ -11,7 +11,10 @@ pub fn get_provider_login_help(docs_path: &str) -> String {
 }
 
 pub fn format_no_models_available_message(docs_path: &str) -> String {
-    format!("No models available. {}", get_provider_login_help(docs_path))
+    format!(
+        "No models available. {}",
+        get_provider_login_help(docs_path)
+    )
 }
 
 pub fn format_no_model_selected_message(docs_path: &str) -> String {

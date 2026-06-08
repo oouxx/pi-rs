@@ -11,7 +11,10 @@ pub fn wrap_tool_definition<TDetails>(
 where
     TDetails: Clone + Send + Sync + 'static,
 {
-    let params = definition.parameters.clone().unwrap_or(serde_json::Value::Null);
+    let params = definition
+        .parameters
+        .clone()
+        .unwrap_or(serde_json::Value::Null);
     let exec_mode = definition
         .execution_mode
         .clone()
@@ -57,12 +60,10 @@ pub fn create_tool_definition_from_agent_tool(
         description: tool.description.clone(),
         parameters: Some(tool.parameters_schema.clone()),
         prompt_guidelines: None,
-        execution_mode: tool
-            .execution_mode
-            .map(|m| match m {
-                pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential => "sequential".into(),
-                pi_agent_core::pi_ai_types::ToolExecutionMode::Parallel => "parallel".into(),
-            }),
+        execution_mode: tool.execution_mode.map(|m| match m {
+            pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential => "sequential".into(),
+            pi_agent_core::pi_ai_types::ToolExecutionMode::Parallel => "parallel".into(),
+        }),
     }
 }
 
@@ -126,9 +127,7 @@ mod tests {
             execution_mode: None,
             prepare_arguments: None,
             execute: Arc::new(|_id, _args, _signal, _on_update| {
-                Box::pin(async move {
-                    Err("not implemented".into())
-                })
+                Box::pin(async move { Err("not implemented".into()) })
             }),
         };
 

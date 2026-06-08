@@ -102,8 +102,10 @@ pub struct Settings {
 
 fn deep_merge_settings(base: &Settings, overlay: &Settings) -> Settings {
     let mut merged = base.clone();
-    let base_json = serde_json::to_value(base).unwrap_or(serde_json::Value::Object(Default::default()));
-    let overlay_json = serde_json::to_value(overlay).unwrap_or(serde_json::Value::Object(Default::default()));
+    let base_json =
+        serde_json::to_value(base).unwrap_or(serde_json::Value::Object(Default::default()));
+    let overlay_json =
+        serde_json::to_value(overlay).unwrap_or(serde_json::Value::Object(Default::default()));
 
     if let (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) =
         (&base_json, &overlay_json)
@@ -300,7 +302,8 @@ impl SettingsManager {
 
     pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         let json = serde_json::to_value(&self.settings).ok()?;
-        json.get(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+        json.get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     pub fn set_global(&mut self, key: &str, value: serde_json::Value) {
@@ -334,11 +337,9 @@ impl SettingsManager {
         };
 
         let content = serde_json::to_string_pretty(settings).unwrap_or_default();
-        let _ = self.storage.with_lock(
-            scope,
-            None,
-            Box::new(move |_current| Some(content)),
-        );
+        let _ = self
+            .storage
+            .with_lock(scope, None, Box::new(move |_current| Some(content)));
     }
 
     pub fn drain_errors(&mut self) -> Vec<SettingsError> {
@@ -384,7 +385,10 @@ mod tests {
         let merged = deep_merge_settings(&base, &overlay);
         assert_eq!(merged.default_provider, Some("anthropic".to_string()));
         assert_eq!(merged.thinking_level, Some("high".to_string()));
-        assert_eq!(merged.custom_system_prompt, Some("Custom prompt".to_string()));
+        assert_eq!(
+            merged.custom_system_prompt,
+            Some("Custom prompt".to_string())
+        );
     }
 
     #[test]
@@ -427,10 +431,7 @@ mod tests {
         );
 
         mgr.set_global("thinkingLevel", serde_json::json!("high"));
-        assert_eq!(
-            mgr.get_settings().thinking_level,
-            Some("high".to_string())
-        );
+        assert_eq!(mgr.get_settings().thinking_level, Some("high".to_string()));
     }
 
     #[test]
@@ -448,10 +449,7 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            mgr.get_settings().thinking_level,
-            Some("high".to_string())
-        );
+        assert_eq!(mgr.get_settings().thinking_level, Some("high".to_string()));
     }
 
     #[test]
@@ -470,10 +468,8 @@ mod tests {
         let mut mgr = SettingsManager::new(storage, Settings::default(), Settings::default());
         mgr.set_global("defaultProvider", serde_json::json!("openai"));
 
-        let mgr2 = SettingsManager::create(
-            cwd.to_str().unwrap(),
-            Some(agent_dir.to_str().unwrap()),
-        );
+        let mgr2 =
+            SettingsManager::create(cwd.to_str().unwrap(), Some(agent_dir.to_str().unwrap()));
         assert_eq!(
             mgr2.get_settings().default_provider,
             Some("openai".to_string())

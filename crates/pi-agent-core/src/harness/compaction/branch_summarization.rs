@@ -1,8 +1,10 @@
 use crate::harness::compaction::compaction::{estimate_tokens, serialize_conversation};
-use crate::harness::messages::{create_branch_summary_message, create_compaction_summary_message, create_custom_message};
+use crate::harness::messages::{
+    create_branch_summary_message, create_compaction_summary_message, create_custom_message,
+};
 use crate::harness::types::{
-    BranchSummaryError, BranchSummaryResult, FileOperations,
-    GenerateBranchSummaryOptions, SessionTreeEntry,
+    BranchSummaryError, BranchSummaryResult, FileOperations, GenerateBranchSummaryOptions,
+    SessionTreeEntry,
 };
 use crate::pi_ai_types::ContentBlock;
 use crate::types::AgentMessage;
@@ -142,13 +144,14 @@ pub async fn generate_branch_summary(
     let llm_messages = crate::harness::messages::convert_to_llm(&preparation.messages);
     let conversation_text = serialize_conversation(&llm_messages);
 
-    let instructions = if options.replace_instructions.unwrap_or(false) && options.custom_instructions.is_some() {
-        options.custom_instructions.clone().unwrap()
-    } else if let Some(custom) = &options.custom_instructions {
-        format!("{}\n\nAdditional focus: {}", BRANCH_SUMMARY_PROMPT, custom)
-    } else {
-        BRANCH_SUMMARY_PROMPT.to_string()
-    };
+    let instructions =
+        if options.replace_instructions.unwrap_or(false) && options.custom_instructions.is_some() {
+            options.custom_instructions.clone().unwrap()
+        } else if let Some(custom) = &options.custom_instructions {
+            format!("{}\n\nAdditional focus: {}", BRANCH_SUMMARY_PROMPT, custom)
+        } else {
+            BRANCH_SUMMARY_PROMPT.to_string()
+        };
 
     let prompt_text = format!(
         "<conversation>\n{}\n</conversation>\n\n{}",
@@ -176,7 +179,11 @@ pub async fn generate_branch_summary(
     };
 
     let stream_options = crate::pi_ai_types::StreamOptions {
-        api_key: if api_key.is_empty() { None } else { Some(api_key) },
+        api_key: if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key)
+        },
         ..Default::default()
     };
 
@@ -232,9 +239,7 @@ pub fn collect_entries_for_branch_summary(
 
     for entry in entries {
         if let SessionTreeEntry::BranchSummary {
-            details,
-            from_hook,
-            ..
+            details, from_hook, ..
         } = entry
         {
             if !from_hook.unwrap_or(false) {
@@ -245,7 +250,8 @@ pub fn collect_entries_for_branch_summary(
                                 file_ops.read.push(f.to_string());
                             }
                         }
-                        if let Some(modified) = obj.get("modifiedFiles").and_then(|v| v.as_array()) {
+                        if let Some(modified) = obj.get("modifiedFiles").and_then(|v| v.as_array())
+                        {
                             for f in modified.iter().filter_map(|v| v.as_str()) {
                                 file_ops.edited.push(f.to_string());
                             }
@@ -267,14 +273,20 @@ mod tests {
 
     fn create_user_message(text: &str) -> AgentMessage {
         AgentMessage::User {
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             timestamp: 1000,
         }
     }
 
     fn create_assistant_message(text: &str) -> AgentMessage {
         AgentMessage::Assistant {
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
@@ -289,7 +301,10 @@ mod tests {
         AgentMessage::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             timestamp: 1000,
@@ -386,7 +401,10 @@ mod tests {
         ];
         let prep = prepare_branch_entries(&entries, 0);
         assert_eq!(prep.messages.len(), 2);
-        assert!(matches!(prep.messages[0], AgentMessage::CompactionSummary { .. }));
+        assert!(matches!(
+            prep.messages[0],
+            AgentMessage::CompactionSummary { .. }
+        ));
     }
 
     #[test]
@@ -410,7 +428,10 @@ mod tests {
         ];
         let prep = prepare_branch_entries(&entries, 0);
         assert_eq!(prep.messages.len(), 2);
-        assert!(matches!(prep.messages[0], AgentMessage::BranchSummary { .. }));
+        assert!(matches!(
+            prep.messages[0],
+            AgentMessage::BranchSummary { .. }
+        ));
     }
 
     #[test]
@@ -450,14 +471,12 @@ mod tests {
 
     #[test]
     fn test_collect_entries_for_branch_summary_basic() {
-        let entries = vec![
-            SessionTreeEntry::Message {
-                id: "e1".to_string(),
-                parent_id: None,
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-                message: create_user_message("Hello"),
-            },
-        ];
+        let entries = vec![SessionTreeEntry::Message {
+            id: "e1".to_string(),
+            parent_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            message: create_user_message("Hello"),
+        }];
         let (result_entries, file_ops) = collect_entries_for_branch_summary(&entries);
         assert_eq!(result_entries.len(), 1);
         assert!(file_ops.read.is_empty());
@@ -467,20 +486,18 @@ mod tests {
 
     #[test]
     fn test_collect_entries_for_branch_summary_with_details() {
-        let entries = vec![
-            SessionTreeEntry::BranchSummary {
-                id: "e1".to_string(),
-                parent_id: None,
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-                from_id: "branch-id".to_string(),
-                summary: "Summary".to_string(),
-                details: Some(serde_json::json!({
-                    "readFiles": ["read1.rs", "read2.rs"],
-                    "modifiedFiles": ["mod1.rs"]
-                })),
-                from_hook: Some(false),
-            },
-        ];
+        let entries = vec![SessionTreeEntry::BranchSummary {
+            id: "e1".to_string(),
+            parent_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            from_id: "branch-id".to_string(),
+            summary: "Summary".to_string(),
+            details: Some(serde_json::json!({
+                "readFiles": ["read1.rs", "read2.rs"],
+                "modifiedFiles": ["mod1.rs"]
+            })),
+            from_hook: Some(false),
+        }];
         let (_, file_ops) = collect_entries_for_branch_summary(&entries);
         assert_eq!(file_ops.read, vec!["read1.rs", "read2.rs"]);
         assert_eq!(file_ops.edited, vec!["mod1.rs"]);
@@ -488,20 +505,18 @@ mod tests {
 
     #[test]
     fn test_collect_entries_for_branch_summary_skips_hook_entries() {
-        let entries = vec![
-            SessionTreeEntry::BranchSummary {
-                id: "e1".to_string(),
-                parent_id: None,
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-                from_id: "branch-id".to_string(),
-                summary: "Summary".to_string(),
-                details: Some(serde_json::json!({
-                    "readFiles": ["read1.rs"],
-                    "modifiedFiles": ["mod1.rs"]
-                })),
-                from_hook: Some(true),
-            },
-        ];
+        let entries = vec![SessionTreeEntry::BranchSummary {
+            id: "e1".to_string(),
+            parent_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            from_id: "branch-id".to_string(),
+            summary: "Summary".to_string(),
+            details: Some(serde_json::json!({
+                "readFiles": ["read1.rs"],
+                "modifiedFiles": ["mod1.rs"]
+            })),
+            from_hook: Some(true),
+        }];
         let (_, file_ops) = collect_entries_for_branch_summary(&entries);
         assert!(file_ops.read.is_empty());
         assert!(file_ops.edited.is_empty());
@@ -509,17 +524,15 @@ mod tests {
 
     #[test]
     fn test_collect_entries_for_branch_summary_no_details() {
-        let entries = vec![
-            SessionTreeEntry::BranchSummary {
-                id: "e1".to_string(),
-                parent_id: None,
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-                from_id: "branch-id".to_string(),
-                summary: "Summary".to_string(),
-                details: None,
-                from_hook: Some(false),
-            },
-        ];
+        let entries = vec![SessionTreeEntry::BranchSummary {
+            id: "e1".to_string(),
+            parent_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            from_id: "branch-id".to_string(),
+            summary: "Summary".to_string(),
+            details: None,
+            from_hook: Some(false),
+        }];
         let (_, file_ops) = collect_entries_for_branch_summary(&entries);
         assert!(file_ops.read.is_empty());
     }

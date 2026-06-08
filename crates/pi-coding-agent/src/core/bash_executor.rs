@@ -148,10 +148,13 @@ impl BashExecutor {
             on_chunk(&output);
         }
 
-        let truncation = truncate::truncate_tail(&output, Some(truncate::TruncationOptions {
-            max_bytes: Some(self.max_bytes),
-            ..Default::default()
-        }));
+        let truncation = truncate::truncate_tail(
+            &output,
+            Some(truncate::TruncationOptions {
+                max_bytes: Some(self.max_bytes),
+                ..Default::default()
+            }),
+        );
 
         let full_output_path = if self.save_full_output && truncation.truncated {
             let path = self.save_full_output_to_temp(&output)?;

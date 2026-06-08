@@ -1,5 +1,5 @@
-use crate::harness::types::Skill;
 use crate::harness::types::ExecutionEnv;
+use crate::harness::types::Skill;
 
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 256;

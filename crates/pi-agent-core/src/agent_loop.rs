@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use crate::pi_ai_types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Model, StopReason,
-    ThinkingLevel, ToolExecutionMode, Usage,
+    AssistantMessage, AssistantMessageEvent, ContentBlock, Model, StopReason, ThinkingLevel,
+    ToolExecutionMode, Usage,
 };
 use crate::types::{
-    AfterToolCallContext, AfterToolCallFn, AgentContext, AgentEvent,
-    AgentEventSink, AgentMessage, AgentToolCall, AgentToolResult,
-    BeforeToolCallContext, BeforeToolCallFn, ConvertToLlmFn,
+    AfterToolCallContext, AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage,
+    AgentToolCall, AgentToolResult, BeforeToolCallContext, BeforeToolCallFn, ConvertToLlmFn,
     GetFollowUpMessagesFn, GetSteeringMessagesFn, PrepareNextTurnFn, ShouldStopAfterTurnContext,
     ShouldStopAfterTurnFn, StreamFn, StreamFnOptions, TransformContextFn,
 };
@@ -46,7 +45,10 @@ struct ExecutedToolCallBatch {
 
 fn create_error_tool_result(message: &str) -> AgentToolResult<serde_json::Value> {
     AgentToolResult {
-        content: vec![ContentBlock::Text { text: message.to_string(), text_signature: None }],
+        content: vec![ContentBlock::Text {
+            text: message.to_string(),
+            text_signature: None,
+        }],
         details: serde_json::Value::Object(Default::default()),
         terminate: None,
     }
@@ -95,7 +97,8 @@ fn prepare_tool_call_arguments(
         AgentToolCall {
             id: tool_call.id.clone(),
             name: tool_call.name.clone(),
-            arguments: serde_json::to_value(&prepared).unwrap_or_else(|_| tool_call.arguments.clone()),
+            arguments: serde_json::to_value(&prepared)
+                .unwrap_or_else(|_| tool_call.arguments.clone()),
         }
     } else {
         tool_call.clone()
@@ -125,7 +128,8 @@ async fn prepare_tool_call(
     };
 
     let prepared_tool_call = prepare_tool_call_arguments(tool, tool_call);
-    let validated_args = validate_tool_arguments(&tool.parameters_schema, &prepared_tool_call.arguments);
+    let validated_args =
+        validate_tool_arguments(&tool.parameters_schema, &prepared_tool_call.arguments);
 
     if let Some(before_fn) = before_tool_call {
         let ctx = BeforeToolCallContext {
@@ -297,15 +301,17 @@ async fn execute_tool_calls_sequential(
                 result,
                 is_error,
             },
-            PreparedOrImmediate::Prepared { tool_call: tc, args } => {
+            PreparedOrImmediate::Prepared {
+                tool_call: tc,
+                args,
+            } => {
                 let tool = current_context
                     .tools
                     .as_ref()
                     .and_then(|tools| tools.iter().find(|t| t.name == tc.name))
                     .unwrap();
 
-                let executed =
-                    execute_prepared_tool_call(tool, &tc, &args, signal, emit).await;
+                let executed = execute_prepared_tool_call(tool, &tc, &args, signal, emit).await;
                 finalize_executed_tool_call(
                     current_context,
                     assistant_message,
@@ -362,9 +368,7 @@ async fn execute_tool_calls_parallel(
 ) -> ExecutedToolCallBatch {
     enum FinalizedEntry {
         Done(FinalizedToolCallOutcome),
-        Lazy(
-            std::pin::Pin<Box<dyn std::future::Future<Output = FinalizedToolCallOutcome> + Send>>,
-        ),
+        Lazy(std::pin::Pin<Box<dyn std::future::Future<Output = FinalizedToolCallOutcome> + Send>>),
     }
 
     let mut entries: Vec<FinalizedEntry> = Vec::new();
@@ -402,7 +406,10 @@ async fn execute_tool_calls_parallel(
                 .await;
                 entries.push(FinalizedEntry::Done(finalized));
             }
-            PreparedOrImmediate::Prepared { tool_call: tc, args } => {
+            PreparedOrImmediate::Prepared {
+                tool_call: tc,
+                args,
+            } => {
                 let tool = current_context
                     .tools
                     .as_ref()
@@ -418,16 +425,8 @@ async fn execute_tool_calls_parallel(
                 let fut = Box::pin(async move {
                     let executed =
                         execute_prepared_tool_call(&tool, &tc, &args, &sig, &emit_c).await;
-                    finalize_executed_tool_call(
-                        &ctx,
-                        &msg,
-                        &tc,
-                        &args,
-                        executed,
-                        &after_fn,
-                        &sig,
-                    )
-                    .await
+                    finalize_executed_tool_call(&ctx, &msg, &tc, &args, executed, &after_fn, &sig)
+                        .await
                 });
 
                 entries.push(FinalizedEntry::Lazy(fut));
@@ -564,19 +563,31 @@ async fn stream_assistant_response(
     let llm_messages = convert_to_llm(&messages);
 
     let pi_context = crate::pi_ai_types::Context {
-        system_prompt: if context.system_prompt.is_empty() { None } else { Some(context.system_prompt.clone()) },
+        system_prompt: if context.system_prompt.is_empty() {
+            None
+        } else {
+            Some(context.system_prompt.clone())
+        },
         messages: llm_messages,
         tools: context.tools.as_ref().map(|tools| {
-            tools.iter().map(|t| crate::pi_ai_types::Tool {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: t.parameters_schema.clone(),
-            }).collect()
+            tools
+                .iter()
+                .map(|t| crate::pi_ai_types::Tool {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.parameters_schema.clone(),
+                })
+                .collect()
         }),
     };
 
-    let stream = stream_fn(model.clone(), pi_context, thinking_level, stream_options.clone())
-        .await?;
+    let stream = stream_fn(
+        model.clone(),
+        pi_context,
+        thinking_level,
+        stream_options.clone(),
+    )
+    .await?;
 
     let mut partial_message: Option<AssistantMessage> = None;
     let mut added_partial = false;
@@ -656,7 +667,9 @@ async fn stream_assistant_response(
         let last_idx = context.messages.len() - 1;
         context.messages[last_idx] = agent_message_from_assistant(&final_msg);
     } else {
-        context.messages.push(agent_message_from_assistant(&final_msg));
+        context
+            .messages
+            .push(agent_message_from_assistant(&final_msg));
         emit(AgentEvent::MessageStart {
             message: agent_message_from_assistant(&final_msg),
         })
@@ -796,11 +809,12 @@ async fn run_loop(
     let max_consecutive_tool_calls = initial_config.max_consecutive_tool_calls.unwrap_or(25);
     let mut consecutive_tool_call_rounds: usize = 0;
 
-    let mut pending_messages: Vec<AgentMessage> = if let Some(get_steering) = &initial_config.get_steering_messages {
-        get_steering().await
-    } else {
-        Vec::new()
-    };
+    let mut pending_messages: Vec<AgentMessage> =
+        if let Some(get_steering) = &initial_config.get_steering_messages {
+            get_steering().await
+        } else {
+            Vec::new()
+        };
 
     loop {
         let mut has_more_tool_calls = true;
@@ -976,7 +990,8 @@ async fn run_loop(
             };
         }
 
-        let follow_up_messages = if let Some(get_follow_up) = &initial_config.get_follow_up_messages {
+        let follow_up_messages = if let Some(get_follow_up) = &initial_config.get_follow_up_messages
+        {
             get_follow_up().await
         } else {
             Vec::new()
@@ -1002,8 +1017,8 @@ mod tests {
     use super::*;
     use crate::pi_ai_types::{ContentBlock, StopReason, ToolExecutionMode, Usage};
     use crate::types::{
-        AfterToolCallFn, AfterToolCallResult, AgentTool, BeforeToolCallFn,
-        BeforeToolCallResult, DynTool,
+        AfterToolCallFn, AfterToolCallResult, AgentTool, BeforeToolCallFn, BeforeToolCallResult,
+        DynTool,
     };
     use std::sync::Arc;
 
@@ -1040,10 +1055,14 @@ mod tests {
         name: &str,
         schema: serde_json::Value,
         prepare: Option<Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>>,
-        execute_result: Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>,
+        execute_result: Result<
+            AgentToolResult<serde_json::Value>,
+            Box<dyn std::error::Error + Send + Sync>,
+        >,
     ) -> Arc<DynTool> {
-        let results: Vec<Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>> =
-            vec![execute_result];
+        let results: Vec<
+            Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>,
+        > = vec![execute_result];
         let exec_results = std::sync::Mutex::new(results);
         Arc::new(AgentTool {
             name: name.to_string(),
@@ -1139,17 +1158,15 @@ mod tests {
 
     #[test]
     fn test_should_terminate_none() {
-        let calls = vec![
-            FinalizedToolCallOutcome {
-                tool_call: dummy_tool_call("1", "t1", serde_json::json!({})),
-                result: AgentToolResult {
-                    content: vec![],
-                    details: serde_json::json!({}),
-                    terminate: None,
-                },
-                is_error: false,
+        let calls = vec![FinalizedToolCallOutcome {
+            tool_call: dummy_tool_call("1", "t1", serde_json::json!({})),
+            result: AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
             },
-        ];
+            is_error: false,
+        }];
         assert!(!should_terminate_tool_batch(&calls));
     }
 
@@ -1198,7 +1215,10 @@ mod tests {
         let schema = serde_json::json!({"properties": {"x": {}}});
         let args = serde_json::json!("string_arg");
         // When schema has properties but args is not an object, returns empty object
-        assert_eq!(validate_tool_arguments(&schema, &args), serde_json::json!({}));
+        assert_eq!(
+            validate_tool_arguments(&schema, &args),
+            serde_json::json!({})
+        );
     }
 
     #[test]
@@ -1213,11 +1233,16 @@ mod tests {
     // ============================================================
     #[test]
     fn test_prepare_arguments_no_prepare_fn() {
-        let tool = dummy_agent_tool("test", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool = dummy_agent_tool(
+            "test",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let call = dummy_tool_call("1", "test", serde_json::json!({"a": 1}));
         let result = prepare_tool_call_arguments(&tool, &call);
         assert_eq!(result.arguments, serde_json::json!({"a": 1}));
@@ -1225,19 +1250,28 @@ mod tests {
 
     #[test]
     fn test_prepare_arguments_with_transform() {
-        let prepare: Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync> = Arc::new(|args| {
-            let mut map = serde_json::Map::new();
-            map.insert("transformed".to_string(), args["input"].clone());
-            serde_json::Value::Object(map)
-        });
-        let tool = dummy_agent_tool("test", serde_json::json!({}), Some(prepare), Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let prepare: Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync> =
+            Arc::new(|args| {
+                let mut map = serde_json::Map::new();
+                map.insert("transformed".to_string(), args["input"].clone());
+                serde_json::Value::Object(map)
+            });
+        let tool = dummy_agent_tool(
+            "test",
+            serde_json::json!({}),
+            Some(prepare),
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let call = dummy_tool_call("1", "test", serde_json::json!({"input": "hello"}));
         let result = prepare_tool_call_arguments(&tool, &call);
-        assert_eq!(result.arguments, serde_json::json!({"transformed": "hello"}));
+        assert_eq!(
+            result.arguments,
+            serde_json::json!({"transformed": "hello"})
+        );
     }
 
     // ============================================================
@@ -1247,7 +1281,10 @@ mod tests {
     fn test_extract_tool_calls_from_assistant() {
         let msg = AgentMessage::Assistant {
             content: vec![
-                ContentBlock::Text { text: "thinking...".to_string(), text_signature: None },
+                ContentBlock::Text {
+                    text: "thinking...".to_string(),
+                    text_signature: None,
+                },
                 ContentBlock::ToolCall {
                     id: "tc-1".to_string(),
                     name: "read_file".to_string(),
@@ -1280,7 +1317,10 @@ mod tests {
     #[test]
     fn test_extract_tool_calls_no_calls() {
         let msg = AgentMessage::Assistant {
-            content: vec![ContentBlock::Text { text: "just text".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "just text".to_string(),
+                text_signature: None,
+            }],
             api: "test".to_string(),
             provider: "test".to_string(),
             model: "test".to_string(),
@@ -1309,7 +1349,10 @@ mod tests {
         let finalized = FinalizedToolCallOutcome {
             tool_call: dummy_tool_call("call-1", "my_tool", serde_json::json!({"x": 1})),
             result: AgentToolResult {
-                content: vec![ContentBlock::Text { text: "done".to_string(), text_signature: None }],
+                content: vec![ContentBlock::Text {
+                    text: "done".to_string(),
+                    text_signature: None,
+                }],
                 details: serde_json::json!({"ok": true}),
                 terminate: None,
             },
@@ -1317,7 +1360,14 @@ mod tests {
         };
         let msg = create_tool_result_message(&finalized);
         match msg {
-            AgentMessage::ToolResult { tool_call_id, tool_name, content, details, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                details,
+                is_error,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "call-1");
                 assert_eq!(tool_name, "my_tool");
                 assert!(!is_error);
@@ -1354,14 +1404,7 @@ mod tests {
         let ctx = dummy_context(vec![]);
         let call = dummy_tool_call("1", "nonexistent", serde_json::json!({}));
 
-        let result = prepare_tool_call(
-            &ctx,
-            &dummy_assistant_message(),
-            &call,
-            &None,
-            &None,
-        )
-        .await;
+        let result = prepare_tool_call(&ctx, &dummy_assistant_message(), &call, &None, &None).await;
 
         match result {
             PreparedOrImmediate::Immediate { is_error, .. } => assert!(is_error),
@@ -1371,11 +1414,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_tool_call_before_hook_blocks() {
-        let tool = dummy_agent_tool("my_tool", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool = dummy_agent_tool(
+            "my_tool",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![tool]);
 
         let before_fn: BeforeToolCallFn = Arc::new(|_ctx, _signal| {
@@ -1408,16 +1456,19 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_tool_call_before_hook_allows() {
         let schema = serde_json::json!({"properties": {"x": {}}});
-        let tool = dummy_agent_tool("my_tool", schema, None, Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool = dummy_agent_tool(
+            "my_tool",
+            schema,
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![tool]);
 
-        let before_fn: BeforeToolCallFn = Arc::new(|_ctx, _signal| {
-            Box::pin(async { None })
-        });
+        let before_fn: BeforeToolCallFn = Arc::new(|_ctx, _signal| Box::pin(async { None }));
 
         let call = dummy_tool_call("1", "my_tool", serde_json::json!({"x": 1}));
         let result = prepare_tool_call(
@@ -1443,7 +1494,10 @@ mod tests {
     #[tokio::test]
     async fn test_execute_prepared_success() {
         let execute_result = Ok(AgentToolResult {
-            content: vec![ContentBlock::Text { text: "output".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "output".to_string(),
+                text_signature: None,
+            }],
             details: serde_json::json!({"status": "ok"}),
             terminate: Some(false),
         });
@@ -1451,7 +1505,11 @@ mod tests {
         let call = dummy_tool_call("1", "t1", serde_json::json!({}));
 
         let outcome = execute_prepared_tool_call(
-            &tool, &call, &serde_json::json!({}), &None, &dummy_event_sink(),
+            &tool,
+            &call,
+            &serde_json::json!({}),
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1462,13 +1520,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_prepared_error() {
-        let execute_result: Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> =
-            Err("execution failed".into());
+        let execute_result: Result<
+            AgentToolResult<serde_json::Value>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > = Err("execution failed".into());
         let tool = dummy_agent_tool("t1", serde_json::json!({}), None, execute_result);
         let call = dummy_tool_call("1", "t1", serde_json::json!({}));
 
         let outcome = execute_prepared_tool_call(
-            &tool, &call, &serde_json::json!({}), &None, &dummy_event_sink(),
+            &tool,
+            &call,
+            &serde_json::json!({}),
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1497,8 +1561,13 @@ mod tests {
         let call = dummy_tool_call("1", "t1", serde_json::json!({}));
 
         let finalized = finalize_executed_tool_call(
-            &ctx, &dummy_assistant_message(), &call, &serde_json::json!({}),
-            executed, &None, &None,
+            &ctx,
+            &dummy_assistant_message(),
+            &call,
+            &serde_json::json!({}),
+            executed,
+            &None,
+            &None,
         )
         .await;
 
@@ -1520,7 +1589,10 @@ mod tests {
         let after_fn: AfterToolCallFn = Arc::new(|_ctx, _signal| {
             Box::pin(async {
                 Some(AfterToolCallResult {
-                    content: Some(vec![ContentBlock::Text { text: "modified".to_string(), text_signature: None }]),
+                    content: Some(vec![ContentBlock::Text {
+                        text: "modified".to_string(),
+                        text_signature: None,
+                    }]),
                     details: Some(serde_json::json!({"modified": true})),
                     is_error: Some(true),
                     terminate: Some(true),
@@ -1532,14 +1604,22 @@ mod tests {
         let call = dummy_tool_call("1", "t1", serde_json::json!({}));
 
         let finalized = finalize_executed_tool_call(
-            &ctx, &dummy_assistant_message(), &call, &serde_json::json!({}),
-            executed, &Some(after_fn), &None,
+            &ctx,
+            &dummy_assistant_message(),
+            &call,
+            &serde_json::json!({}),
+            executed,
+            &Some(after_fn),
+            &None,
         )
         .await;
 
         assert!(finalized.is_error);
         assert_eq!(finalized.result.terminate, Some(true));
-        assert_eq!(finalized.result.details, serde_json::json!({"modified": true}));
+        assert_eq!(
+            finalized.result.details,
+            serde_json::json!({"modified": true})
+        );
         match &finalized.result.content[0] {
             ContentBlock::Text { text, .. } => assert_eq!(text, "modified"),
             _ => panic!("expected modified text"),
@@ -1551,26 +1631,46 @@ mod tests {
     // ============================================================
     #[tokio::test]
     async fn test_sequential_basic() {
-        let tool = dummy_agent_tool("adder", serde_json::json!({"properties": {"x": {}, "y": {}}}), None, Ok(AgentToolResult {
-            content: vec![ContentBlock::Text { text: "3".to_string(), text_signature: None }],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool = dummy_agent_tool(
+            "adder",
+            serde_json::json!({"properties": {"x": {}, "y": {}}}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![ContentBlock::Text {
+                    text: "3".to_string(),
+                    text_signature: None,
+                }],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![tool]);
-        let calls = vec![
-            dummy_tool_call("1", "adder", serde_json::json!({"x": 1, "y": 2})),
-        ];
+        let calls = vec![dummy_tool_call(
+            "1",
+            "adder",
+            serde_json::json!({"x": 1, "y": 2}),
+        )];
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls_sequential(
-            &ctx, &msg, &calls, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
         assert_eq!(batch.messages.len(), 1);
         assert!(!batch.terminate);
         match &batch.messages[0] {
-            AgentMessage::ToolResult { tool_name, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_name,
+                is_error,
+                ..
+            } => {
                 assert_eq!(tool_name, "adder");
                 assert!(!is_error);
             }
@@ -1580,17 +1680,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_sequential_terminate_all() {
-        let tool = dummy_agent_tool("exit", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: Some(true),
-        }));
+        let tool = dummy_agent_tool(
+            "exit",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: Some(true),
+            }),
+        );
         let ctx = dummy_context(vec![tool]);
         let calls = vec![dummy_tool_call("1", "exit", serde_json::json!({}))];
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls_sequential(
-            &ctx, &msg, &calls, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1599,10 +1710,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_sequential_error_continues() {
-        let err_result: Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> =
-            Err("fail".into());
+        let err_result: Result<
+            AgentToolResult<serde_json::Value>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > = Err("fail".into());
         let ok_result = Ok(AgentToolResult {
-            content: vec![ContentBlock::Text { text: "ok".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "ok".to_string(),
+                text_signature: None,
+            }],
             details: serde_json::json!({}),
             terminate: None,
         });
@@ -1617,7 +1733,13 @@ mod tests {
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls_sequential(
-            &ctx, &msg, &calls, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1637,16 +1759,32 @@ mod tests {
     // ============================================================
     #[tokio::test]
     async fn test_parallel_basic() {
-        let tool_a = dummy_agent_tool("greet_a", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![ContentBlock::Text { text: "hi".to_string(), text_signature: None }],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
-        let tool_b = dummy_agent_tool("greet_b", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![ContentBlock::Text { text: "hi".to_string(), text_signature: None }],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool_a = dummy_agent_tool(
+            "greet_a",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![ContentBlock::Text {
+                    text: "hi".to_string(),
+                    text_signature: None,
+                }],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
+        let tool_b = dummy_agent_tool(
+            "greet_b",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![ContentBlock::Text {
+                    text: "hi".to_string(),
+                    text_signature: None,
+                }],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![tool_a, tool_b]);
         let calls = vec![
             dummy_tool_call("1", "greet_a", serde_json::json!({})),
@@ -1655,7 +1793,13 @@ mod tests {
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls_parallel(
-            &ctx, &msg, &calls, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1667,11 +1811,19 @@ mod tests {
     async fn test_parallel_mixed_immediate_and_lazy() {
         // First call: tool not found -> Immediate error
         // Second call: valid tool -> Lazy execution
-        let found_tool = dummy_agent_tool("found", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![ContentBlock::Text { text: "found".to_string(), text_signature: None }],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let found_tool = dummy_agent_tool(
+            "found",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![ContentBlock::Text {
+                    text: "found".to_string(),
+                    text_signature: None,
+                }],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![found_tool]);
         let calls = vec![
             dummy_tool_call("1", "missing", serde_json::json!({})),
@@ -1680,20 +1832,34 @@ mod tests {
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls_parallel(
-            &ctx, &msg, &calls, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
         assert_eq!(batch.messages.len(), 2);
         match &batch.messages[0] {
-            AgentMessage::ToolResult { tool_name, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_name,
+                is_error,
+                ..
+            } => {
                 assert_eq!(tool_name, "missing");
                 assert!(is_error);
             }
             _ => panic!("expected ToolResult"),
         }
         match &batch.messages[1] {
-            AgentMessage::ToolResult { tool_name, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_name,
+                is_error,
+                ..
+            } => {
                 assert_eq!(tool_name, "found");
                 assert!(!is_error);
             }
@@ -1706,18 +1872,29 @@ mod tests {
     // ============================================================
     #[tokio::test]
     async fn test_dispatcher_parallel_by_default() {
-        let tool = dummy_agent_tool("t1", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool = dummy_agent_tool(
+            "t1",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![tool]);
         let calls = vec![dummy_tool_call("1", "t1", serde_json::json!({}))];
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls(
-            &ctx, &msg, &calls,
-            ToolExecutionMode::Parallel, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            ToolExecutionMode::Parallel,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1726,18 +1903,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_sequential_mode() {
-        let tool = dummy_agent_tool("t1", serde_json::json!({}), None, Ok(AgentToolResult {
-            content: vec![],
-            details: serde_json::json!({}),
-            terminate: None,
-        }));
+        let tool = dummy_agent_tool(
+            "t1",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                terminate: None,
+            }),
+        );
         let ctx = dummy_context(vec![tool]);
         let calls = vec![dummy_tool_call("1", "t1", serde_json::json!({}))];
         let msg = dummy_assistant_message();
 
         let batch = execute_tool_calls(
-            &ctx, &msg, &calls,
-            ToolExecutionMode::Sequential, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            ToolExecutionMode::Sequential,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 
@@ -1770,8 +1958,14 @@ mod tests {
 
         // Even with parallel mode, the tool's own execution mode should force sequential
         let batch = execute_tool_calls(
-            &ctx, &msg, &calls,
-            ToolExecutionMode::Parallel, &None, &None, &None, &dummy_event_sink(),
+            &ctx,
+            &msg,
+            &calls,
+            ToolExecutionMode::Parallel,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
         )
         .await;
 

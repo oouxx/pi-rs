@@ -154,7 +154,9 @@ mod tests {
 
     #[test]
     fn test_openai_litellm_overflow() {
-        let msg = make_error_msg("Requested token count exceeds the model's maximum context length of 200,000 tokens");
+        let msg = make_error_msg(
+            "Requested token count exceeds the model's maximum context length of 200,000 tokens",
+        );
         assert!(is_context_overflow(&msg, None));
     }
 
@@ -166,7 +168,9 @@ mod tests {
 
     #[test]
     fn test_xai_overflow() {
-        let msg = make_error_msg("This model's maximum prompt length is 131072 but the request contains 537812 tokens");
+        let msg = make_error_msg(
+            "This model's maximum prompt length is 131072 but the request contains 537812 tokens",
+        );
         assert!(is_context_overflow(&msg, None));
     }
 
@@ -184,25 +188,32 @@ mod tests {
 
     #[test]
     fn test_openrouter_poolside_overflow() {
-        let msg = make_error_msg("Input length 150000 exceeds the maximum allowed input length of 100000 tokens.");
+        let msg = make_error_msg(
+            "Input length 150000 exceeds the maximum allowed input length of 100000 tokens.",
+        );
         assert!(is_context_overflow(&msg, None));
     }
 
     #[test]
     fn test_together_overflow() {
-        let msg = make_error_msg("The input (200000 tokens) is longer than the model's context length (128000 tokens).");
+        let msg = make_error_msg(
+            "The input (200000 tokens) is longer than the model's context length (128000 tokens).",
+        );
         assert!(is_context_overflow(&msg, None));
     }
 
     #[test]
     fn test_llamacpp_overflow() {
-        let msg = make_error_msg("the request exceeds the available context size, try increasing it");
+        let msg =
+            make_error_msg("the request exceeds the available context size, try increasing it");
         assert!(is_context_overflow(&msg, None));
     }
 
     #[test]
     fn test_lm_studio_overflow() {
-        let msg = make_error_msg("tokens to keep from the initial prompt is greater than the context length");
+        let msg = make_error_msg(
+            "tokens to keep from the initial prompt is greater than the context length",
+        );
         assert!(is_context_overflow(&msg, None));
     }
 
@@ -214,7 +225,9 @@ mod tests {
 
     #[test]
     fn test_mistral_overflow() {
-        let msg = make_error_msg("Prompt contains 200000 tokens, too large for model with 128000 maximum context length");
+        let msg = make_error_msg(
+            "Prompt contains 200000 tokens, too large for model with 128000 maximum context length",
+        );
         assert!(is_context_overflow(&msg, None));
     }
 

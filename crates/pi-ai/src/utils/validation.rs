@@ -147,10 +147,7 @@ fn coerce_and_validate(
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
-            return Err(format!(
-                "must be one of: {}",
-                valid.join(", ")
-            ));
+            return Err(format!("must be one of: {}", valid.join(", ")));
         }
     }
 
@@ -315,11 +312,7 @@ mod tests {
     }
 
     fn make_tool_call(name: &str, args: Value) -> ToolCall {
-        ToolCall::new(
-            "call_1".to_string(),
-            name.to_string(),
-            args,
-        )
+        ToolCall::new("call_1".to_string(), name.to_string(), args)
     }
 
     #[test]
@@ -333,7 +326,10 @@ mod tests {
             "required": ["path"]
         });
         let tools = vec![make_tool("write_file", schema)];
-        let tc = make_tool_call("write_file", serde_json::json!({"path": "/tmp/test.txt", "content": "hello"}));
+        let tc = make_tool_call(
+            "write_file",
+            serde_json::json!({"path": "/tmp/test.txt", "content": "hello"}),
+        );
         let result = validate_tool_call(&tools, &tc);
         assert!(result.is_ok());
     }

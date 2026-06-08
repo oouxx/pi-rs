@@ -68,9 +68,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 })
             }
             AgentMessage::Custom {
-                content,
-                timestamp,
-                ..
+                content, timestamp, ..
             } => {
                 let blocks = match content {
                     CustomContent::Text(t) => vec![ContentBlock::text(t)],
@@ -82,9 +80,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 })
             }
             AgentMessage::BranchSummary {
-                summary,
-                timestamp,
-                ..
+                summary, timestamp, ..
             } => Some(Message::User {
                 content: vec![ContentBlock::text(format!(
                     "{}{}{}",
@@ -93,9 +89,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 timestamp: *timestamp,
             }),
             AgentMessage::CompactionSummary {
-                summary,
-                timestamp,
-                ..
+                summary, timestamp, ..
             } => Some(Message::User {
                 content: vec![ContentBlock::text(format!(
                     "{}{}{}",
@@ -103,10 +97,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 ))],
                 timestamp: *timestamp,
             }),
-            AgentMessage::User {
-                content,
-                timestamp,
-            } => Some(Message::User {
+            AgentMessage::User { content, timestamp } => Some(Message::User {
                 content: content.clone(),
                 timestamp: *timestamp,
             }),
@@ -173,14 +164,7 @@ mod tests {
 
     #[test]
     fn test_bash_execution_to_text_error() {
-        let text = bash_execution_to_text(
-            "false",
-            "error output",
-            Some(1),
-            false,
-            false,
-            None,
-        );
+        let text = bash_execution_to_text("false", "error output", Some(1), false, false, None);
         assert!(text.contains("Command exited with code 1"));
     }
 

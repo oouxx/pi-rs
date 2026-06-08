@@ -1,5 +1,3 @@
-
-
 use crate::pi_ai_types::{ContentBlock, Message, StopReason};
 use crate::types::AgentMessage;
 
@@ -39,7 +37,11 @@ pub fn bash_execution_to_text(
     text
 }
 
-pub fn create_branch_summary_message(summary: String, from_id: String, timestamp: i64) -> AgentMessage {
+pub fn create_branch_summary_message(
+    summary: String,
+    from_id: String,
+    timestamp: i64,
+) -> AgentMessage {
     AgentMessage::BranchSummary {
         summary,
         from_id,
@@ -47,7 +49,11 @@ pub fn create_branch_summary_message(summary: String, from_id: String, timestamp
     }
 }
 
-pub fn create_compaction_summary_message(summary: String, tokens_before: u64, timestamp: i64) -> AgentMessage {
+pub fn create_compaction_summary_message(
+    summary: String,
+    tokens_before: u64,
+    timestamp: i64,
+) -> AgentMessage {
     AgentMessage::CompactionSummary {
         summary,
         tokens_before,
@@ -147,9 +153,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 }
             }
             AgentMessage::Custom {
-                content,
-                timestamp,
-                ..
+                content, timestamp, ..
             } => {
                 let blocks = match content {
                     crate::types::CustomContent::Text(t) => vec![ContentBlock::Text {
@@ -164,9 +168,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 })
             }
             AgentMessage::BranchSummary {
-                summary,
-                timestamp,
-                ..
+                summary, timestamp, ..
             } => Some(Message::User {
                 content: vec![ContentBlock::Text {
                     text: format!(
@@ -178,9 +180,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 timestamp: *timestamp,
             }),
             AgentMessage::CompactionSummary {
-                summary,
-                timestamp,
-                ..
+                summary, timestamp, ..
             } => Some(Message::User {
                 content: vec![ContentBlock::Text {
                     text: format!(
@@ -202,14 +202,20 @@ mod tests {
 
     fn create_user_message(text: &str) -> AgentMessage {
         AgentMessage::User {
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             timestamp: 1000,
         }
     }
 
     fn create_assistant_message(text: &str) -> AgentMessage {
         AgentMessage::Assistant {
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
@@ -310,14 +316,22 @@ mod tests {
         let messages = vec![AgentMessage::ToolResult {
             tool_call_id: "tc-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::Text { text: "file contents".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "file contents".to_string(),
+                text_signature: None,
+            }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             timestamp: 1000,
         }];
         let result = convert_to_llm(&messages);
         assert_eq!(result.len(), 1);
-        if let Message::ToolResult { tool_call_id, tool_name, .. } = &result[0] {
+        if let Message::ToolResult {
+            tool_call_id,
+            tool_name,
+            ..
+        } = &result[0]
+        {
             assert_eq!(tool_call_id, "tc-1");
             assert_eq!(tool_name, "read");
         }
@@ -418,7 +432,10 @@ mod tests {
     fn test_convert_to_llm_custom_blocks() {
         let messages = vec![AgentMessage::Custom {
             custom_type: "note".to_string(),
-            content: crate::types::CustomContent::Blocks(vec![ContentBlock::Text { text: "Block content".to_string(), text_signature: None }]),
+            content: crate::types::CustomContent::Blocks(vec![ContentBlock::Text {
+                text: "Block content".to_string(),
+                text_signature: None,
+            }]),
             display: true,
             details: None,
             timestamp: 1000,
@@ -447,7 +464,11 @@ mod tests {
     fn test_create_branch_summary_message() {
         let msg = create_branch_summary_message("Summary".to_string(), "from-id".to_string(), 1234);
         match msg {
-            AgentMessage::BranchSummary { summary, from_id, timestamp } => {
+            AgentMessage::BranchSummary {
+                summary,
+                from_id,
+                timestamp,
+            } => {
                 assert_eq!(summary, "Summary");
                 assert_eq!(from_id, "from-id");
                 assert_eq!(timestamp, 1234);
@@ -460,7 +481,11 @@ mod tests {
     fn test_create_compaction_summary_message() {
         let msg = create_compaction_summary_message("Summary".to_string(), 50000, 1234);
         match msg {
-            AgentMessage::CompactionSummary { summary, tokens_before, timestamp } => {
+            AgentMessage::CompactionSummary {
+                summary,
+                tokens_before,
+                timestamp,
+            } => {
                 assert_eq!(summary, "Summary");
                 assert_eq!(tokens_before, 50000);
                 assert_eq!(timestamp, 1234);
@@ -479,7 +504,13 @@ mod tests {
             1234,
         );
         match msg {
-            AgentMessage::Custom { custom_type, content, display, details, timestamp } => {
+            AgentMessage::Custom {
+                custom_type,
+                content,
+                display,
+                details,
+                timestamp,
+            } => {
                 assert_eq!(custom_type, "note");
                 assert!(display);
                 assert!(details.is_none());

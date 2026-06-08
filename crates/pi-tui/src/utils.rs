@@ -104,7 +104,10 @@ mod tests {
     #[test]
     fn test_hyperlink_format() {
         let result = hyperlink("click me", "https://example.com");
-        assert_eq!(result, "\x1b]8;;https://example.com\x1b\\click me\x1b]8;;\x1b\\");
+        assert_eq!(
+            result,
+            "\x1b]8;;https://example.com\x1b\\click me\x1b]8;;\x1b\\"
+        );
     }
 
     #[test]

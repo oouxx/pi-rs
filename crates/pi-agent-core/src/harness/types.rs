@@ -590,9 +590,15 @@ pub struct ExecResult {
 pub trait SessionStorage<M: Clone + Send + Sync = SessionMetadata>: Send + Sync {
     async fn get_metadata(&self) -> M;
     async fn get_leaf_id(&self) -> Option<String>;
-    async fn set_leaf_id(&mut self, leaf_id: Option<String>) -> std::result::Result<(), SessionError>;
+    async fn set_leaf_id(
+        &mut self,
+        leaf_id: Option<String>,
+    ) -> std::result::Result<(), SessionError>;
     async fn create_entry_id(&self) -> String;
-    async fn append_entry(&mut self, entry: SessionTreeEntry) -> std::result::Result<(), SessionError>;
+    async fn append_entry(
+        &mut self,
+        entry: SessionTreeEntry,
+    ) -> std::result::Result<(), SessionError>;
     async fn get_entry(&self, id: &str) -> Option<SessionTreeEntry>;
     async fn find_entries(&self, entry_type: &str) -> Vec<SessionTreeEntry>;
     async fn get_label(&self, id: &str) -> Option<String>;
@@ -605,7 +611,10 @@ pub trait SessionStorage<M: Clone + Send + Sync = SessionMetadata>: Send + Sync 
 
 #[async_trait]
 pub trait SessionRepo<M: Clone + Send + Sync = SessionMetadata>: Send + Sync {
-    async fn create(&mut self, options: SessionCreateOptions) -> std::result::Result<Session<M>, SessionError>;
+    async fn create(
+        &mut self,
+        options: SessionCreateOptions,
+    ) -> std::result::Result<Session<M>, SessionError>;
     async fn open(&self, metadata: &M) -> std::result::Result<Session<M>, SessionError>;
     async fn list(&self) -> std::result::Result<Vec<M>, SessionError>;
     async fn delete(&mut self, metadata: &M) -> std::result::Result<(), SessionError>;
@@ -655,7 +664,9 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         self.storage.read().await.get_metadata().await
     }
 
-    pub async fn get_storage(&self) -> tokio::sync::RwLockReadGuard<'_, Box<dyn SessionStorage<M>>> {
+    pub async fn get_storage(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, Box<dyn SessionStorage<M>>> {
         self.storage.read().await
     }
 
@@ -663,7 +674,10 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         self.storage.read().await.get_leaf_id().await
     }
 
-    pub async fn set_leaf_id(&mut self, leaf_id: Option<String>) -> std::result::Result<(), SessionError> {
+    pub async fn set_leaf_id(
+        &mut self,
+        leaf_id: Option<String>,
+    ) -> std::result::Result<(), SessionError> {
         self.storage.write().await.set_leaf_id(leaf_id).await
     }
 
@@ -671,7 +685,10 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         self.storage.read().await.create_entry_id().await
     }
 
-    pub async fn append_entry(&mut self, entry: SessionTreeEntry) -> std::result::Result<(), SessionError> {
+    pub async fn append_entry(
+        &mut self,
+        entry: SessionTreeEntry,
+    ) -> std::result::Result<(), SessionError> {
         self.storage.write().await.append_entry(entry).await
     }
 
@@ -698,12 +715,19 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         self.storage.read().await.get_entries().await
     }
 
-    pub async fn get_branch(&self, from_id: Option<&str>) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
+    pub async fn get_branch(
+        &self,
+        from_id: Option<&str>,
+    ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
         let leaf_id = match from_id {
             Some(id) => Some(id.to_string()),
             None => self.storage.read().await.get_leaf_id().await,
         };
-        self.storage.read().await.get_path_to_root(leaf_id.as_deref()).await
+        self.storage
+            .read()
+            .await
+            .get_path_to_root(leaf_id.as_deref())
+            .await
     }
 
     pub async fn build_context(&self) -> std::result::Result<SessionContext, SessionError> {
@@ -711,7 +735,10 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         Ok(build_session_context(&branch))
     }
 
-    pub async fn append_message(&mut self, message: AgentMessage) -> std::result::Result<String, SessionError> {
+    pub async fn append_message(
+        &mut self,
+        message: AgentMessage,
+    ) -> std::result::Result<String, SessionError> {
         let id = self.storage.read().await.create_entry_id().await;
         let leaf_id = self.storage.read().await.get_leaf_id().await;
         let entry = SessionTreeEntry::Message {
@@ -821,8 +848,18 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         target_id: String,
         label: Option<String>,
     ) -> std::result::Result<String, SessionError> {
-        if self.storage.read().await.get_entry(&target_id).await.is_none() {
-            return Err(SessionError::NotFound(format!("Entry {} not found", target_id)));
+        if self
+            .storage
+            .read()
+            .await
+            .get_entry(&target_id)
+            .await
+            .is_none()
+        {
+            return Err(SessionError::NotFound(format!(
+                "Entry {} not found",
+                target_id
+            )));
         }
         let id = self.storage.read().await.create_entry_id().await;
         let leaf_id = self.storage.read().await.get_leaf_id().await;
@@ -863,7 +900,11 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
                 return Err(SessionError::NotFound(format!("Entry {} not found", id)));
             }
         }
-        self.storage.write().await.set_leaf_id(entry_id.map(|s| s.to_string())).await?;
+        self.storage
+            .write()
+            .await
+            .set_leaf_id(entry_id.map(|s| s.to_string()))
+            .await?;
 
         if let Some(s) = summary {
             let id = self.storage.read().await.create_entry_id().await;
@@ -907,7 +948,9 @@ pub fn build_session_context(entries: &[SessionTreeEntry]) -> SessionContext {
             } => {
                 active_tool_names = names.clone();
             }
-            SessionTreeEntry::ThinkingLevelChange { thinking_level: tl, .. } => {
+            SessionTreeEntry::ThinkingLevelChange {
+                thinking_level: tl, ..
+            } => {
                 thinking_level = Some(tl.clone());
             }
             SessionTreeEntry::ModelChange {
@@ -925,7 +968,9 @@ pub fn build_session_context(entries: &[SessionTreeEntry]) -> SessionContext {
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 });
             }
-            SessionTreeEntry::BranchSummary { summary, from_id, .. } => {
+            SessionTreeEntry::BranchSummary {
+                summary, from_id, ..
+            } => {
                 messages.push(AgentMessage::BranchSummary {
                     summary: summary.clone(),
                     from_id: from_id.clone(),

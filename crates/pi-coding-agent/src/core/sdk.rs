@@ -141,10 +141,7 @@ pub fn create_agent_session(
         ],
     };
 
-    let initial_active_tool_names = options
-        .tools
-        .clone()
-        .unwrap_or(default_active_tool_names);
+    let initial_active_tool_names = options.tools.clone().unwrap_or(default_active_tool_names);
 
     let allowed_tool_names = options.tools.clone();
     let excluded_tool_names = options.exclude_tools.clone();
@@ -168,12 +165,7 @@ pub fn create_agent_session(
         excluded_tool_names,
     };
 
-    let session = AgentSession::new(
-        session_manager,
-        event_bus,
-        model_registry,
-        session_options,
-    );
+    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options);
 
     Ok((
         session,

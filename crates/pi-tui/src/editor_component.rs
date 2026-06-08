@@ -11,7 +11,11 @@ pub trait EditorComponent: Component {
     fn get_expanded_text(&self) -> &str {
         self.get_text()
     }
-    fn set_autocomplete_provider(&mut self, _provider: Box<dyn AutocompleteProvider + Send + Sync>) {}
+    fn set_autocomplete_provider(
+        &mut self,
+        _provider: Box<dyn AutocompleteProvider + Send + Sync>,
+    ) {
+    }
     fn border_color(&self) -> Option<&dyn Fn() -> ratatui::style::Style> {
         None
     }

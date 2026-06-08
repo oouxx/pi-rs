@@ -1,6 +1,9 @@
-
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum SegType { Word, Whitespace, Atomic }
+enum SegType {
+    Word,
+    Whitespace,
+    Atomic,
+}
 
 #[derive(Clone)]
 struct Segment {
@@ -14,14 +17,20 @@ pub struct WordNavigationOptions<'a> {
 }
 
 impl Default for WordNavigationOptions<'_> {
-    fn default() -> Self { Self { is_atomic_segment: None } }
+    fn default() -> Self {
+        Self {
+            is_atomic_segment: None,
+        }
+    }
 }
 
 /// Build an initial list of segments: whitespace runs and non-whitespace runs.
 /// Then merge consecutive non-whitespace runs that form an atomic segment.
 fn segment_words(text: &str, is_atomic: Option<&dyn Fn(&str) -> bool>) -> Vec<Segment> {
     let mut raw_segs: Vec<Segment> = Vec::new();
-    if text.is_empty() { return raw_segs; }
+    if text.is_empty() {
+        return raw_segs;
+    }
 
     // First pass: segment by whitespace boundaries
     let mut pos = 0;
@@ -31,16 +40,30 @@ fn segment_words(text: &str, is_atomic: Option<&dyn Fn(&str) -> bool>) -> Vec<Se
         match next_ws {
             Some(0) => {
                 // Whitespace run
-                let ws_end = rest.find(|c: char| !c.is_whitespace()).unwrap_or(rest.len());
-                raw_segs.push(Segment { start: pos, end: pos + ws_end, ty: SegType::Whitespace });
+                let ws_end = rest
+                    .find(|c: char| !c.is_whitespace())
+                    .unwrap_or(rest.len());
+                raw_segs.push(Segment {
+                    start: pos,
+                    end: pos + ws_end,
+                    ty: SegType::Whitespace,
+                });
                 pos += ws_end;
             }
             Some(n) => {
-                raw_segs.push(Segment { start: pos, end: pos + n, ty: SegType::Word });
+                raw_segs.push(Segment {
+                    start: pos,
+                    end: pos + n,
+                    ty: SegType::Word,
+                });
                 pos += n;
             }
             None => {
-                raw_segs.push(Segment { start: pos, end: text.len(), ty: SegType::Word });
+                raw_segs.push(Segment {
+                    start: pos,
+                    end: text.len(),
+                    ty: SegType::Word,
+                });
                 pos = text.len();
             }
         }
@@ -58,7 +81,11 @@ fn segment_words(text: &str, is_atomic: Option<&dyn Fn(&str) -> bool>) -> Vec<Se
     let mut i = 0;
     while i < raw_segs.len() {
         if raw_segs[i].ty != SegType::Word {
-            merged.push(Segment { start: raw_segs[i].start, end: raw_segs[i].end, ty: raw_segs[i].ty.clone() });
+            merged.push(Segment {
+                start: raw_segs[i].start,
+                end: raw_segs[i].end,
+                ty: raw_segs[i].ty.clone(),
+            });
             i += 1;
             continue;
         }
@@ -85,11 +112,11 @@ fn segment_words(text: &str, is_atomic: Option<&dyn Fn(&str) -> bool>) -> Vec<Se
             // If the current segment is Word and next is WS followed by Word, continue
             // If the current segment is WS and next is Word, continue
             // Otherwise stop
-            if raw_segs[j].ty == SegType::Whitespace && raw_segs[j+1].ty == SegType::Word {
+            if raw_segs[j].ty == SegType::Whitespace && raw_segs[j + 1].ty == SegType::Word {
                 j += 1;
                 continue;
             }
-            if raw_segs[j].ty == SegType::Word && raw_segs[j+1].ty == SegType::Whitespace {
+            if raw_segs[j].ty == SegType::Word && raw_segs[j + 1].ty == SegType::Whitespace {
                 j += 1;
                 continue;
             }
@@ -97,13 +124,21 @@ fn segment_words(text: &str, is_atomic: Option<&dyn Fn(&str) -> bool>) -> Vec<Se
         }
 
         if found_atomic {
-            merged.push(Segment { start: raw_segs[i].start, end: best_end, ty: SegType::Atomic });
+            merged.push(Segment {
+                start: raw_segs[i].start,
+                end: best_end,
+                ty: SegType::Atomic,
+            });
             // Advance past all segments consumed
             while i < raw_segs.len() && raw_segs[i].end <= best_end {
                 i += 1;
             }
         } else {
-            merged.push(Segment { start: raw_segs[i].start, end: raw_segs[i].end, ty: SegType::Word });
+            merged.push(Segment {
+                start: raw_segs[i].start,
+                end: raw_segs[i].end,
+                ty: SegType::Word,
+            });
             i += 1;
         }
     }
@@ -112,27 +147,40 @@ fn segment_words(text: &str, is_atomic: Option<&dyn Fn(&str) -> bool>) -> Vec<Se
 }
 
 pub fn find_word_backward(text: &str, cursor: usize, options: &WordNavigationOptions) -> usize {
-    if cursor == 0 { return 0; }
+    if cursor == 0 {
+        return 0;
+    }
     let text_before = &text[..cursor];
     let mut segs = segment_words(text_before, options.is_atomic_segment);
-    if segs.is_empty() { return 0; }
+    if segs.is_empty() {
+        return 0;
+    }
 
     let ia = options.is_atomic_segment;
     while let Some(s) = segs.last() {
-        let is_atom = s.ty == SegType::Atomic || ia.map_or(false, |f| f(&text_before[s.start..s.end]));
-        if is_atom || s.ty != SegType::Whitespace { break; }
+        let is_atom =
+            s.ty == SegType::Atomic || ia.map_or(false, |f| f(&text_before[s.start..s.end]));
+        if is_atom || s.ty != SegType::Whitespace {
+            break;
+        }
         segs.pop();
     }
-    if segs.is_empty() { return 0; }
+    if segs.is_empty() {
+        return 0;
+    }
 
     segs.last().unwrap().start
 }
 
 pub fn find_word_forward(text: &str, cursor: usize, options: &WordNavigationOptions) -> usize {
-    if cursor >= text.len() { return text.len(); }
+    if cursor >= text.len() {
+        return text.len();
+    }
     let text_after = &text[cursor..];
     let segs = segment_words(text_after, options.is_atomic_segment);
-    if segs.is_empty() { return text.len(); }
+    if segs.is_empty() {
+        return text.len();
+    }
 
     let ia = options.is_atomic_segment;
     let mut pos = cursor;
@@ -140,12 +188,17 @@ pub fn find_word_forward(text: &str, cursor: usize, options: &WordNavigationOpti
 
     while idx < segs.len() {
         let s = &segs[idx];
-        let is_atom = s.ty == SegType::Atomic || ia.map_or(false, |f| f(&text_after[s.start..s.end]));
-        if is_atom || s.ty != SegType::Whitespace { break; }
+        let is_atom =
+            s.ty == SegType::Atomic || ia.map_or(false, |f| f(&text_after[s.start..s.end]));
+        if is_atom || s.ty != SegType::Whitespace {
+            break;
+        }
         pos += s.end - s.start;
         idx += 1;
     }
-    if idx >= segs.len() { return pos; }
+    if idx >= segs.len() {
+        return pos;
+    }
 
     pos += segs[idx].end - segs[idx].start;
     pos
@@ -157,48 +210,78 @@ mod tests {
 
     #[test]
     fn test_empty_text() {
-        assert_eq!(find_word_backward("", 0, &WordNavigationOptions::default()), 0);
-        assert_eq!(find_word_forward("", 0, &WordNavigationOptions::default()), 0);
+        assert_eq!(
+            find_word_backward("", 0, &WordNavigationOptions::default()),
+            0
+        );
+        assert_eq!(
+            find_word_forward("", 0, &WordNavigationOptions::default()),
+            0
+        );
     }
 
     #[test]
     fn test_backward_at_start() {
-        assert_eq!(find_word_backward("hello world", 0, &WordNavigationOptions::default()), 0);
+        assert_eq!(
+            find_word_backward("hello world", 0, &WordNavigationOptions::default()),
+            0
+        );
     }
 
     #[test]
     fn test_forward_at_end() {
-        assert_eq!(find_word_forward("hello world", 11, &WordNavigationOptions::default()), 11);
+        assert_eq!(
+            find_word_forward("hello world", 11, &WordNavigationOptions::default()),
+            11
+        );
     }
 
     #[test]
     fn test_backward_simple() {
-        assert_eq!(find_word_backward("hello world", 11, &WordNavigationOptions::default()), 6);
+        assert_eq!(
+            find_word_backward("hello world", 11, &WordNavigationOptions::default()),
+            6
+        );
     }
 
     #[test]
     fn test_backward_trailing_whitespace() {
-        assert_eq!(find_word_backward("hello world  ", 13, &WordNavigationOptions::default()), 6);
+        assert_eq!(
+            find_word_backward("hello world  ", 13, &WordNavigationOptions::default()),
+            6
+        );
     }
 
     #[test]
     fn test_forward_simple() {
-        assert_eq!(find_word_forward("hello world", 0, &WordNavigationOptions::default()), 5);
+        assert_eq!(
+            find_word_forward("hello world", 0, &WordNavigationOptions::default()),
+            5
+        );
     }
 
     #[test]
     fn test_forward_skip_whitespace() {
-        assert_eq!(find_word_forward("hello   world", 5, &WordNavigationOptions::default()), 13);
+        assert_eq!(
+            find_word_forward("hello   world", 5, &WordNavigationOptions::default()),
+            13
+        );
     }
 
     #[test]
     fn test_backward_punctuation() {
-        assert_eq!(find_word_backward("hello, world", 12, &WordNavigationOptions::default()), 7);
+        assert_eq!(
+            find_word_backward("hello, world", 12, &WordNavigationOptions::default()),
+            7
+        );
     }
 
     #[test]
     fn test_forward_punctuation() {
-        assert_eq!(find_word_forward("hello,world", 0, &WordNavigationOptions::default()), 11);
+        assert_eq!(
+            find_word_forward("hello,world", 0, &WordNavigationOptions::default()),
+            11
+        );
     }
 
     #[test]
@@ -218,27 +301,45 @@ mod tests {
 
     #[test]
     fn test_words_separated_by_spaces() {
-        assert_eq!(find_word_backward("a b c", 5, &WordNavigationOptions::default()), 4);
-        assert_eq!(find_word_forward("a b c", 0, &WordNavigationOptions::default()), 1);
+        assert_eq!(
+            find_word_backward("a b c", 5, &WordNavigationOptions::default()),
+            4
+        );
+        assert_eq!(
+            find_word_forward("a b c", 0, &WordNavigationOptions::default()),
+            1
+        );
     }
 
     #[test]
     fn test_backward_single_word() {
-        assert_eq!(find_word_backward("hello", 5, &WordNavigationOptions::default()), 0);
+        assert_eq!(
+            find_word_backward("hello", 5, &WordNavigationOptions::default()),
+            0
+        );
     }
 
     #[test]
     fn test_forward_last_word() {
-        assert_eq!(find_word_forward("hello world", 6, &WordNavigationOptions::default()), 11);
+        assert_eq!(
+            find_word_forward("hello world", 6, &WordNavigationOptions::default()),
+            11
+        );
     }
 
     #[test]
     fn test_backward_mid_word() {
-        assert_eq!(find_word_backward("hello world", 8, &WordNavigationOptions::default()), 6);
+        assert_eq!(
+            find_word_backward("hello world", 8, &WordNavigationOptions::default()),
+            6
+        );
     }
 
     #[test]
     fn test_forward_mid_word() {
-        assert_eq!(find_word_forward("hello", 2, &WordNavigationOptions::default()), 5);
+        assert_eq!(
+            find_word_forward("hello", 2, &WordNavigationOptions::default()),
+            5
+        );
     }
 }

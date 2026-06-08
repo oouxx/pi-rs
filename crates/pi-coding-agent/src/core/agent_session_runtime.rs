@@ -34,8 +34,11 @@ pub struct CreateAgentSessionRuntimeResult {
 // ---------------------------------------------------------------------------
 
 pub type CreateAgentSessionRuntimeFactory = Box<
-    dyn Fn(CreateAgentSessionRuntimeParams) -> std::pin::Pin<Box<dyn std::future::Future<Output = CreateAgentSessionRuntimeResult> + Send>>
-        + Send
+    dyn Fn(
+            CreateAgentSessionRuntimeParams,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = CreateAgentSessionRuntimeResult> + Send>,
+        > + Send
         + Sync,
 >;
 

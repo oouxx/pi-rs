@@ -98,10 +98,13 @@ pub async fn execute_shell_with_capture(
         let total_bytes = s.total_bytes as u64;
         if total_bytes > max_bytes {
             let full_content = s.output_chunks.join("");
-            if let Ok(temp_path) = env.create_temp_file(Some(crate::harness::types::TempFileOptions {
-                prefix: Some("shell-output-".to_string()),
-                suffix: Some(".txt".to_string()),
-            })).await {
+            if let Ok(temp_path) = env
+                .create_temp_file(Some(crate::harness::types::TempFileOptions {
+                    prefix: Some("shell-output-".to_string()),
+                    suffix: Some(".txt".to_string()),
+                }))
+                .await
+            {
                 let _ = env.write_file(&temp_path, &full_content, None).await;
                 s.full_output_path = Some(temp_path);
             }

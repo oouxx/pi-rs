@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use unicode_segmentation::UnicodeSegmentation;
 use std::sync::OnceLock;
+use unicode_segmentation::UnicodeSegmentation;
 
 use regex_lite::Regex;
 
@@ -40,7 +40,9 @@ fn segment_with_markers<'a>(text: &'a str, valid_ids: &[u64]) -> Vec<&'a str> {
         .filter_map(|m| {
             let id_str = m.as_str();
             let id_start = "[paste #".len();
-            let id_end = id_str[id_start..].find(|c: char| !c.is_ascii_digit()).unwrap_or(id_str.len() - id_start);
+            let id_end = id_str[id_start..]
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(id_str.len() - id_start);
             let id: u64 = id_str[id_start..id_start + id_end].parse().ok()?;
             if valid_ids.contains(&id) {
                 Some((m.start(), m.end()))
@@ -98,7 +100,11 @@ pub struct TextChunk {
     pub end_index: usize,
 }
 
-pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[&str]>) -> Vec<TextChunk> {
+pub fn word_wrap_line(
+    line: &str,
+    max_width: usize,
+    pre_segmented: Option<&[&str]>,
+) -> Vec<TextChunk> {
     if line.is_empty() || max_width == 0 {
         return vec![TextChunk {
             text: String::new(),
@@ -130,7 +136,11 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[&str
         let grapheme = segments[i];
         let g_width = visible_width(grapheme);
         let char_index = grapheme.as_ptr() as usize - line.as_ptr() as usize;
-        let is_ws = !is_paste_marker(grapheme) && grapheme.chars().next().map_or(false, |c| c == ' ' || c == '\t');
+        let is_ws = !is_paste_marker(grapheme)
+            && grapheme
+                .chars()
+                .next()
+                .map_or(false, |c| c == ' ' || c == '\t');
 
         if current_width + g_width > max_width {
             if let Some((opp_idx, opp_width)) = wrap_opp_index {
@@ -176,8 +186,14 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[&str
         current_width += g_width;
 
         let next = segments.get(i + 1).copied();
-        if is_ws && next.map_or(false, |n| is_paste_marker(n) || n.chars().next().map_or(true, |c| c != ' ' && c != '\t')) {
-            let next_start = next.map(|n| n.as_ptr() as usize - line.as_ptr() as usize).unwrap_or(line.len());
+        if is_ws
+            && next.map_or(false, |n| {
+                is_paste_marker(n) || n.chars().next().map_or(true, |c| c != ' ' && c != '\t')
+            })
+        {
+            let next_start = next
+                .map(|n| n.as_ptr() as usize - line.as_ptr() as usize)
+                .unwrap_or(line.len());
             wrap_opp_index = Some((next_start, current_width));
         }
     }
@@ -321,7 +337,10 @@ impl Editor {
         }
     }
 
-    pub fn set_autocomplete_provider(&mut self, provider: Box<dyn AutocompleteProvider + Send + Sync>) {
+    pub fn set_autocomplete_provider(
+        &mut self,
+        provider: Box<dyn AutocompleteProvider + Send + Sync>,
+    ) {
         self.cancel_autocomplete();
         self.autocomplete_provider = Some(provider);
     }
@@ -530,7 +549,10 @@ impl Editor {
         if filtered.starts_with('/') || filtered.starts_with('~') || filtered.starts_with('.') {
             let line = &self.state.lines[self.state.cursor_line];
             if self.state.cursor_col > 0 {
-                let prev = line[..self.state.cursor_col].chars().next_back().unwrap_or(' ');
+                let prev = line[..self.state.cursor_col]
+                    .chars()
+                    .next_back()
+                    .unwrap_or(' ');
                 if prev.is_alphanumeric() {
                     filtered.insert(0, ' ');
                 }
@@ -640,12 +662,20 @@ impl Editor {
         if self.state.cursor_col < line.len() {
             self.push_undo_snapshot();
             let deleted = &line[self.state.cursor_col..];
-            self.kill_ring.push(deleted.to_string(), true, self.last_action == Some(LastAction::Kill));
+            self.kill_ring.push(
+                deleted.to_string(),
+                true,
+                self.last_action == Some(LastAction::Kill),
+            );
             self.last_action = Some(LastAction::Kill);
             self.state.lines[self.state.cursor_line] = line[..self.state.cursor_col].to_string();
         } else if self.state.cursor_line < self.state.lines.len() - 1 {
             self.push_undo_snapshot();
-            self.kill_ring.push("\n".to_string(), true, self.last_action == Some(LastAction::Kill));
+            self.kill_ring.push(
+                "\n".to_string(),
+                true,
+                self.last_action == Some(LastAction::Kill),
+            );
             self.last_action = Some(LastAction::Kill);
             let next = self.state.lines[self.state.cursor_line + 1].clone();
             self.state.lines[self.state.cursor_line] = line + &next;
@@ -664,7 +694,11 @@ impl Editor {
         if self.state.cursor_col > 0 {
             self.push_undo_snapshot();
             let deleted = &line[..self.state.cursor_col];
-            self.kill_ring.push(deleted.to_string(), true, self.last_action == Some(LastAction::Kill));
+            self.kill_ring.push(
+                deleted.to_string(),
+                true,
+                self.last_action == Some(LastAction::Kill),
+            );
             self.last_action = Some(LastAction::Kill);
 
             self.state.lines[self.state.cursor_line] = line[self.state.cursor_col..].to_string();
@@ -716,11 +750,13 @@ impl Editor {
 
             self.state.lines[self.state.cursor_line] = format!("{}{}", before, lines[0]);
             for i in 1..lines.len() - 1 {
-                self.state.lines
+                self.state
+                    .lines
                     .insert(self.state.cursor_line + i, lines[i].to_string());
             }
             let last_idx = self.state.cursor_line + lines.len() - 1;
-            self.state.lines
+            self.state
+                .lines
                 .insert(last_idx, format!("{}{}", lines[lines.len() - 1], after));
             self.state.cursor_line = last_idx;
             self.set_cursor_col(lines[lines.len() - 1].len());
@@ -747,7 +783,8 @@ impl Editor {
             self.set_cursor_col(before.len());
         } else {
             let start_line = self.state.cursor_line.saturating_sub(yank_lines.len() - 1);
-            let after = self.state.lines[self.state.cursor_line][self.state.cursor_col..].to_string();
+            let after =
+                self.state.lines[self.state.cursor_line][self.state.cursor_col..].to_string();
             let before = self.state.lines[start_line][..self.state.lines[start_line]
                 .len()
                 .saturating_sub(yank_lines[0].len())]
@@ -756,7 +793,8 @@ impl Editor {
             for _ in 0..yank_lines.len() {
                 self.state.lines.remove(start_line);
             }
-            self.state.lines
+            self.state
+                .lines
                 .insert(start_line, format!("{}{}", before, after));
             self.state.cursor_line = start_line;
             self.set_cursor_col(before.len());
@@ -791,9 +829,13 @@ impl Editor {
             return;
         }
 
-        let result = find_word_backward(line, self.state.cursor_col, &WordNavigationOptions {
-            is_atomic_segment: Some(&is_paste_marker),
-        });
+        let result = find_word_backward(
+            line,
+            self.state.cursor_col,
+            &WordNavigationOptions {
+                is_atomic_segment: Some(&is_paste_marker),
+            },
+        );
         self.set_cursor_col(result);
     }
 
@@ -809,9 +851,13 @@ impl Editor {
             return;
         }
 
-        let result = find_word_forward(line, self.state.cursor_col, &WordNavigationOptions {
-            is_atomic_segment: Some(&is_paste_marker),
-        });
+        let result = find_word_forward(
+            line,
+            self.state.cursor_col,
+            &WordNavigationOptions {
+                is_atomic_segment: Some(&is_paste_marker),
+            },
+        );
         self.set_cursor_col(result);
     }
 
@@ -949,8 +995,8 @@ impl Editor {
                 continue;
             }
             let offset = col.saturating_sub(vl.start_col);
-            let is_last = i == visual_lines.len() - 1
-                || visual_lines[i + 1].logical_line != vl.logical_line;
+            let is_last =
+                i == visual_lines.len() - 1 || visual_lines[i + 1].logical_line != vl.logical_line;
             if offset <= vl.length || (is_last && offset == vl.length) {
                 return i;
             }
@@ -962,7 +1008,12 @@ impl Editor {
         self.find_visual_line_at(visual_lines, self.state.cursor_line, self.state.cursor_col)
     }
 
-    fn move_to_visual_line(&mut self, visual_lines: &[VisualLine], current_vl: usize, target_vl: usize) {
+    fn move_to_visual_line(
+        &mut self,
+        visual_lines: &[VisualLine],
+        current_vl: usize,
+        target_vl: usize,
+    ) {
         let current = &visual_lines[current_vl];
         let target = &visual_lines[target_vl];
 
@@ -1114,7 +1165,8 @@ impl Editor {
                     })
                     .collect();
                 let mut list = SelectList::new(items, self.autocomplete_max_visible);
-                let best = self.get_best_autocomplete_match_index(&suggestions.items, &suggestions.prefix);
+                let best =
+                    self.get_best_autocomplete_match_index(&suggestions.items, &suggestions.prefix);
                 if best > 0 {
                     list.set_selected_index(best);
                 }
@@ -1128,11 +1180,7 @@ impl Editor {
         }
     }
 
-    fn get_best_autocomplete_match_index(
-        &self,
-        items: &[AutocompleteItem],
-        prefix: &str,
-    ) -> usize {
+    fn get_best_autocomplete_match_index(&self, items: &[AutocompleteItem], prefix: &str) -> usize {
         if prefix.is_empty() {
             return 0;
         }
@@ -1261,10 +1309,7 @@ impl Component for Editor {
         let layout_lines = self.layout_text(layout_width);
 
         let max_visible = (self.terminal_rows as f64 * 0.3).max(5.0) as usize;
-        let cursor_line_idx = layout_lines
-            .iter()
-            .position(|l| l.has_cursor)
-            .unwrap_or(0);
+        let cursor_line_idx = layout_lines.iter().position(|l| l.has_cursor).unwrap_or(0);
 
         let mut scroll_offset = self.scroll_offset;
         if cursor_line_idx < scroll_offset {
@@ -1294,10 +1339,7 @@ impl Component for Editor {
             let border_text = format!("{}{}", indicator, "─".repeat(remaining));
             result.push(Line::from(Span::styled(border_text, border_style)));
         } else {
-            result.push(Line::from(Span::styled(
-                "─".repeat(width),
-                border_style,
-            )));
+            result.push(Line::from(Span::styled("─".repeat(width), border_style)));
         }
 
         // Emit cursor marker only when focused
@@ -1320,11 +1362,8 @@ impl Component for Editor {
                     if !after.is_empty() {
                         let graphemes: Vec<&str> = after.graphemes(true).collect();
                         let first = graphemes.first().copied().unwrap_or("");
-                        let rest: String = graphemes
-                            .iter()
-                            .skip(1)
-                            .flat_map(|g| g.chars())
-                            .collect();
+                        let rest: String =
+                            graphemes.iter().skip(1).flat_map(|g| g.chars()).collect();
                         spans.push(Span::styled(first.to_string(), cursor_bg));
                         spans.push(Span::raw(rest));
                     } else {
@@ -1349,17 +1388,16 @@ impl Component for Editor {
         }
 
         // Bottom border
-        let lines_below = layout_lines.len().saturating_sub(scroll_offset + visible.len());
+        let lines_below = layout_lines
+            .len()
+            .saturating_sub(scroll_offset + visible.len());
         if lines_below > 0 {
             let indicator = format!("─── ↓ {} more ", lines_below);
             let remaining = width.saturating_sub(visible_width(&indicator));
             let border_text = format!("{}{}", indicator, "─".repeat(remaining.max(0)));
             result.push(Line::from(Span::styled(border_text, border_style)));
         } else {
-            result.push(Line::from(Span::styled(
-                "─".repeat(width),
-                border_style,
-            )));
+            result.push(Line::from(Span::styled("─".repeat(width), border_style)));
         }
 
         // Autocomplete overlay
@@ -1400,10 +1438,7 @@ impl Component for Editor {
         let layout_lines = self.layout_text(layout_width);
 
         let max_visible = (self.terminal_rows as f64 * 0.3).max(5.0) as usize;
-        let cursor_line_idx = layout_lines
-            .iter()
-            .position(|l| l.has_cursor)
-            .unwrap_or(0);
+        let cursor_line_idx = layout_lines.iter().position(|l| l.has_cursor).unwrap_or(0);
 
         let mut scroll_offset = self.scroll_offset;
         if cursor_line_idx < scroll_offset {
@@ -1418,7 +1453,8 @@ impl Component for Editor {
 
         if let Some(layout_line) = layout_lines.get(cursor_line_idx) {
             if let Some(cpos) = layout_line.cursor_pos {
-                let col = padding_x as u16 + visible_width(&layout_line.text[..cpos.min(layout_line.text.len())]) as u16;
+                let col = padding_x as u16
+                    + visible_width(&layout_line.text[..cpos.min(layout_line.text.len())]) as u16;
                 return Some((row, col));
             }
         }
@@ -1460,28 +1496,31 @@ impl Component for Editor {
             if event.code == KeyCode::Tab {
                 self.push_undo_snapshot();
                 self.last_action = None;
-                let selected_item = self.autocomplete_list.as_ref().and_then(|list| list.get_selected_item().cloned());
+                let selected_item = self
+                    .autocomplete_list
+                    .as_ref()
+                    .and_then(|list| list.get_selected_item().cloned());
                 if let Some(selected) = selected_item {
-                        if let Some(ref provider) = self.autocomplete_provider {
-                            let result = provider.apply_completion(
-                                &self.state.lines,
-                                self.state.cursor_line,
-                                self.state.cursor_col,
-                                &AutocompleteItem {
-                                    value: selected.value.clone(),
-                                    label: selected.value.clone(),
-                                    description: selected.description.clone(),
-                                },
-                                &self.autocomplete_prefix,
-                            );
-                            self.state.lines = result.lines;
-                            self.state.cursor_line = result.cursor_line;
-                            self.set_cursor_col(result.cursor_col);
-                            self.cancel_autocomplete();
-                            if let Some(ref cb) = self.on_change {
-                                cb(&self.get_text());
-                            }
+                    if let Some(ref provider) = self.autocomplete_provider {
+                        let result = provider.apply_completion(
+                            &self.state.lines,
+                            self.state.cursor_line,
+                            self.state.cursor_col,
+                            &AutocompleteItem {
+                                value: selected.value.clone(),
+                                label: selected.value.clone(),
+                                description: selected.description.clone(),
+                            },
+                            &self.autocomplete_prefix,
+                        );
+                        self.state.lines = result.lines;
+                        self.state.cursor_line = result.cursor_line;
+                        self.set_cursor_col(result.cursor_col);
+                        self.cancel_autocomplete();
+                        if let Some(ref cb) = self.on_change {
+                            cb(&self.get_text());
                         }
+                    }
                 }
                 return;
             }
@@ -1490,33 +1529,36 @@ impl Component for Editor {
             if self.autocomplete_state.is_some() {
                 self.push_undo_snapshot();
                 self.last_action = None;
-                let selected_item = self.autocomplete_list.as_ref().and_then(|list| list.get_selected_item().cloned());
+                let selected_item = self
+                    .autocomplete_list
+                    .as_ref()
+                    .and_then(|list| list.get_selected_item().cloned());
                 if let Some(selected) = selected_item {
-                        if let Some(ref provider) = self.autocomplete_provider {
-                            let result = provider.apply_completion(
-                                &self.state.lines,
-                                self.state.cursor_line,
-                                self.state.cursor_col,
-                                &AutocompleteItem {
-                                    value: selected.value.clone(),
-                                    label: selected.value.clone(),
-                                    description: selected.description.clone(),
-                                },
-                                &self.autocomplete_prefix,
-                            );
-                            self.state.lines = result.lines;
-                            self.state.cursor_line = result.cursor_line;
-                            self.set_cursor_col(result.cursor_col);
-                            if self.autocomplete_prefix.starts_with('/') {
-                                self.cancel_autocomplete();
-                            } else {
-                                self.cancel_autocomplete();
-                                if let Some(ref cb) = self.on_change {
-                                    cb(&self.get_text());
-                                }
-                                return;
+                    if let Some(ref provider) = self.autocomplete_provider {
+                        let result = provider.apply_completion(
+                            &self.state.lines,
+                            self.state.cursor_line,
+                            self.state.cursor_col,
+                            &AutocompleteItem {
+                                value: selected.value.clone(),
+                                label: selected.value.clone(),
+                                description: selected.description.clone(),
+                            },
+                            &self.autocomplete_prefix,
+                        );
+                        self.state.lines = result.lines;
+                        self.state.cursor_line = result.cursor_line;
+                        self.set_cursor_col(result.cursor_col);
+                        if self.autocomplete_prefix.starts_with('/') {
+                            self.cancel_autocomplete();
+                        } else {
+                            self.cancel_autocomplete();
+                            if let Some(ref cb) = self.on_change {
+                                cb(&self.get_text());
                             }
+                            return;
                         }
+                    }
                 }
             }
         }
@@ -1562,19 +1604,27 @@ impl Component for Editor {
         }
 
         // Cursor movement
-        if kb.matches(event, "cursorLineStart") || event.code == KeyCode::Home && event.modifiers.is_empty() {
+        if kb.matches(event, "cursorLineStart")
+            || event.code == KeyCode::Home && event.modifiers.is_empty()
+        {
             self.move_to_line_start();
             return;
         }
-        if kb.matches(event, "cursorLineEnd") || event.code == KeyCode::End && event.modifiers.is_empty() {
+        if kb.matches(event, "cursorLineEnd")
+            || event.code == KeyCode::End && event.modifiers.is_empty()
+        {
             self.move_to_line_end();
             return;
         }
-        if kb.matches(event, "cursorWordLeft") || event.code == KeyCode::Char('b') && event.modifiers == KeyModifiers::ALT {
+        if kb.matches(event, "cursorWordLeft")
+            || event.code == KeyCode::Char('b') && event.modifiers == KeyModifiers::ALT
+        {
             self.move_word_backwards();
             return;
         }
-        if kb.matches(event, "cursorWordRight") || event.code == KeyCode::Char('f') && event.modifiers == KeyModifiers::ALT {
+        if kb.matches(event, "cursorWordRight")
+            || event.code == KeyCode::Char('f') && event.modifiers == KeyModifiers::ALT
+        {
             self.move_word_forwards();
             return;
         }

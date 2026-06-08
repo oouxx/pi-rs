@@ -21,7 +21,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
             .iter()
             .map(|b| match b {
                 crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
-                crate::pi_ai_types::ContentBlock::ToolCall { name, arguments, .. } => {
+                crate::pi_ai_types::ContentBlock::ToolCall {
+                    name, arguments, ..
+                } => {
                     format!("{} {}", name, arguments)
                 }
                 _ => String::new(),
@@ -88,10 +90,7 @@ pub struct CutPoint {
     pub is_split_turn: bool,
 }
 
-pub fn find_cut_point(
-    messages: &[AgentMessage],
-    tokens_to_keep: u64,
-) -> CutPoint {
+pub fn find_cut_point(messages: &[AgentMessage], tokens_to_keep: u64) -> CutPoint {
     let mut accumulated_tokens = 0u64;
     let mut first_kept_entry_index = messages.len();
     let mut turn_start_index = messages.len();
@@ -109,7 +108,8 @@ pub fn find_cut_point(
         }
     }
 
-    let is_split_turn = first_kept_entry_index != turn_start_index && turn_start_index < messages.len();
+    let is_split_turn =
+        first_kept_entry_index != turn_start_index && turn_start_index < messages.len();
 
     CutPoint {
         first_kept_entry_index,
@@ -127,10 +127,7 @@ pub fn get_last_assistant_usage(messages: &[AgentMessage]) -> Option<crate::pi_a
     None
 }
 
-pub fn calculate_context_tokens(
-    system_prompt: &str,
-    messages: &[AgentMessage],
-) -> u64 {
+pub fn calculate_context_tokens(system_prompt: &str, messages: &[AgentMessage]) -> u64 {
     let system_tokens = (system_prompt.len() as u64 / 4).max(1);
     system_tokens + estimate_context_tokens(messages)
 }
@@ -144,13 +141,15 @@ pub fn prepare_compaction(
         .iter()
         .filter_map(|e| match e {
             SessionTreeEntry::Message { message, .. } => Some(message.clone()),
-            SessionTreeEntry::Compaction { summary, tokens_before, .. } => {
-                Some(AgentMessage::CompactionSummary {
-                    summary: summary.clone(),
-                    tokens_before: *tokens_before,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                })
-            }
+            SessionTreeEntry::Compaction {
+                summary,
+                tokens_before,
+                ..
+            } => Some(AgentMessage::CompactionSummary {
+                summary: summary.clone(),
+                tokens_before: *tokens_before,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            }),
             SessionTreeEntry::BranchSummary {
                 summary, from_id, ..
             } => Some(AgentMessage::BranchSummary {
@@ -176,7 +175,8 @@ pub fn prepare_compaction(
         .map(|e| e.id().to_string())
         .unwrap_or_default();
 
-    let messages_to_summarize: Vec<AgentMessage> = messages[..cut_point.first_kept_entry_index].to_vec();
+    let messages_to_summarize: Vec<AgentMessage> =
+        messages[..cut_point.first_kept_entry_index].to_vec();
     let turn_prefix_messages: Vec<AgentMessage> = if cut_point.is_split_turn {
         messages[cut_point.turn_start_index..cut_point.first_kept_entry_index].to_vec()
     } else {
@@ -210,7 +210,10 @@ fn extract_file_operations(messages: &[AgentMessage]) -> FileOperations {
     for msg in messages {
         if let AgentMessage::Assistant { content, .. } = msg {
             for block in content {
-                if let crate::pi_ai_types::ContentBlock::ToolCall { name, arguments, .. } = block {
+                if let crate::pi_ai_types::ContentBlock::ToolCall {
+                    name, arguments, ..
+                } = block
+                {
                     let args = arguments.as_object();
                     if let Some(args_map) = args {
                         if let Some(path) = args_map.get("path").and_then(|v| v.as_str()) {
@@ -260,7 +263,7 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                         crate::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
                             thinking_parts.push(thinking.clone());
                         }
-                        crate::pi_ai_types::ContentBlock::ToolCall { 
+                        crate::pi_ai_types::ContentBlock::ToolCall {
                             name, arguments, ..
                         } => {
                             let args_str = arguments.to_string();
@@ -271,7 +274,10 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                 }
 
                 if !thinking_parts.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking_parts.join("\n")));
+                    parts.push(format!(
+                        "[Assistant thinking]: {}",
+                        thinking_parts.join("\n")
+                    ));
                 }
                 if !text_parts.is_empty() {
                     parts.push(format!("[Assistant]: {}", text_parts.join("\n")));
@@ -385,7 +391,11 @@ pub async fn generate_summary(
     // Match TS: maxTokens = Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Infinity)
     let max_tokens = std::cmp::min(
         (reserve_tokens as f64 * 0.8) as u64,
-        if model.max_tokens > 0 { model.max_tokens } else { u64::MAX },
+        if model.max_tokens > 0 {
+            model.max_tokens
+        } else {
+            u64::MAX
+        },
     );
 
     // Match TS: model.reasoning && thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}
@@ -408,9 +418,11 @@ pub async fn generate_summary(
     };
 
     // Call pi_ai complete_simple (matches TS: completeSimple with reasoning support)
-    let result = pi_complete(model, &context, Some(simple_options)).await.map_err(|e| {
-        CompactionError::SummarizationFailed(format!("LLM summarization failed: {}", e))
-    })?;
+    let result = pi_complete(model, &context, Some(simple_options))
+        .await
+        .map_err(|e| {
+            CompactionError::SummarizationFailed(format!("LLM summarization failed: {}", e))
+        })?;
 
     // Extract text from the response
     let summary = result
@@ -470,14 +482,20 @@ mod tests {
 
     fn create_user_message(text: &str) -> AgentMessage {
         AgentMessage::User {
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             timestamp: 1000,
         }
     }
 
     fn create_assistant_message(text: &str, usage: Usage) -> AgentMessage {
         AgentMessage::Assistant {
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
@@ -492,7 +510,10 @@ mod tests {
         AgentMessage::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::Text { text: text.to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                text_signature: None,
+            }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             timestamp: 1000,
@@ -576,7 +597,10 @@ mod tests {
     fn test_estimate_tokens_custom_blocks() {
         let msg = AgentMessage::Custom {
             custom_type: "note".to_string(),
-            content: crate::types::CustomContent::Blocks(vec![ContentBlock::Text { text: "Block content".to_string(), text_signature: None }]),
+            content: crate::types::CustomContent::Blocks(vec![ContentBlock::Text {
+                text: "Block content".to_string(),
+                text_signature: None,
+            }]),
             display: true,
             details: None,
             timestamp: 1000,
@@ -710,7 +734,10 @@ mod tests {
             .flat_map(|i| {
                 vec![
                     create_user_message(&format!("User {}", i)),
-                    create_assistant_message(&format!("Assistant {}", i), create_mock_usage(0, 100)),
+                    create_assistant_message(
+                        &format!("Assistant {}", i),
+                        create_mock_usage(0, 100),
+                    ),
                 ]
             })
             .collect();
@@ -832,7 +859,10 @@ mod tests {
     #[test]
     fn test_serialize_conversation_user() {
         let messages = vec![Message::User {
-            content: vec![ContentBlock::Text { text: "Hello".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "Hello".to_string(),
+                text_signature: None,
+            }],
             timestamp: 1000,
         }];
         let result = serialize_conversation(&messages);
@@ -842,7 +872,10 @@ mod tests {
     #[test]
     fn test_serialize_conversation_assistant() {
         let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::Text { text: "Hi there".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "Hi there".to_string(),
+                text_signature: None,
+            }],
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-5".to_string(),
@@ -863,7 +896,10 @@ mod tests {
         let messages = vec![Message::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::Text { text: "File content".to_string(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: "File content".to_string(),
+                text_signature: None,
+            }],
             details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
             timestamp: 1000,
@@ -926,7 +962,10 @@ mod tests {
         let messages = vec![Message::ToolResult {
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![ContentBlock::Text { text: long_content.clone(), text_signature: None }],
+            content: vec![ContentBlock::Text {
+                text: long_content.clone(),
+                text_signature: None,
+            }],
             details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
             timestamp: 1000,
@@ -937,10 +976,7 @@ mod tests {
 
     #[test]
     fn test_prepare_compaction_no_compaction_needed() {
-        let entries = vec![create_message_entry(
-            create_user_message("Hello"),
-            None,
-        )];
+        let entries = vec![create_message_entry(create_user_message("Hello"), None)];
         let settings = CompactionSettings {
             enabled: true,
             reserve_tokens: 100000,
@@ -948,7 +984,10 @@ mod tests {
         };
         let result = prepare_compaction(&entries, 200000, &settings);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CompactionError::NoCompactionNeeded));
+        assert!(matches!(
+            result.unwrap_err(),
+            CompactionError::NoCompactionNeeded
+        ));
     }
 
     #[test]
@@ -960,7 +999,10 @@ mod tests {
                 id: format!("entry-{}-u", i),
                 parent_id: parent_id.clone(),
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
-                message: create_user_message(&format!("User message {} with some extra text to add tokens", i)),
+                message: create_user_message(&format!(
+                    "User message {} with some extra text to add tokens",
+                    i
+                )),
             };
             parent_id = Some(format!("entry-{}-u", i));
             entries.push(user_entry);
@@ -1024,7 +1066,10 @@ mod tests {
             id: "entry-a2".to_string(),
             parent_id: Some("entry-u2".to_string()),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_assistant_message("Assistant msg 2 with more text", create_mock_usage(8000, 2000)),
+            message: create_assistant_message(
+                "Assistant msg 2 with more text",
+                create_mock_usage(8000, 2000),
+            ),
         };
 
         let entries = vec![u1, a1, compaction, u2, a2];
@@ -1100,7 +1145,8 @@ mod tests {
             parent_id: None,
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             from_id: "branch-id".to_string(),
-            summary: "Branch summary with enough text to contribute tokens to the context window".to_string(),
+            summary: "Branch summary with enough text to contribute tokens to the context window"
+                .to_string(),
             details: None,
             from_hook: None,
         };
@@ -1108,25 +1154,35 @@ mod tests {
             id: "entry-u1".to_string(),
             parent_id: Some("entry-bs1".to_string()),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_user_message("User message with enough text to go over the token limit and trigger compaction"),
+            message: create_user_message(
+                "User message with enough text to go over the token limit and trigger compaction",
+            ),
         };
         let a1 = SessionTreeEntry::Message {
             id: "entry-a1".to_string(),
             parent_id: Some("entry-u1".to_string()),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_assistant_message("Assistant response with enough text to increase token count significantly", create_mock_usage(5000, 1000)),
+            message: create_assistant_message(
+                "Assistant response with enough text to increase token count significantly",
+                create_mock_usage(5000, 1000),
+            ),
         };
         let u2 = SessionTreeEntry::Message {
             id: "entry-u2".to_string(),
             parent_id: Some("entry-a1".to_string()),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_user_message("Another user message adding more tokens to the context window"),
+            message: create_user_message(
+                "Another user message adding more tokens to the context window",
+            ),
         };
         let a2 = SessionTreeEntry::Message {
             id: "entry-a2".to_string(),
             parent_id: Some("entry-u2".to_string()),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_assistant_message("Another assistant response with more text", create_mock_usage(5000, 1000)),
+            message: create_assistant_message(
+                "Another assistant response with more text",
+                create_mock_usage(5000, 1000),
+            ),
         };
 
         let entries = vec![branch, u1, a1, u2, a2];
@@ -1136,6 +1192,10 @@ mod tests {
             keep_recent_tokens: 10,
         };
         let result = prepare_compaction(&entries, 50, &settings);
-        assert!(result.is_ok(), "Expected compaction to be needed, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Expected compaction to be needed, got: {:?}",
+            result
+        );
     }
 }

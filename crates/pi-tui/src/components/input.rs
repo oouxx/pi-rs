@@ -46,7 +46,10 @@ impl Input {
 
     fn cursor_left(&mut self) {
         if self.cursor > 0 {
-            let len = self.value[..self.cursor].chars().next_back().map_or(1, |c| c.len_utf8());
+            let len = self.value[..self.cursor]
+                .chars()
+                .next_back()
+                .map_or(1, |c| c.len_utf8());
             self.cursor -= len;
             if self.cursor < self.scroll_offset {
                 self.scroll_offset = self.cursor;
@@ -81,7 +84,10 @@ impl Input {
 
     fn delete_backward(&mut self) {
         if self.cursor > 0 {
-            let len = self.value[..self.cursor].chars().next_back().map_or(1, |c| c.len_utf8());
+            let len = self.value[..self.cursor]
+                .chars()
+                .next_back()
+                .map_or(1, |c| c.len_utf8());
             self.cursor -= len;
             self.value.drain(self.cursor..self.cursor + len);
         }

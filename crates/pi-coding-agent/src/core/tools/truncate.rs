@@ -236,10 +236,13 @@ mod tests {
     #[test]
     fn test_truncate_head_no_truncation() {
         let content = "line1\nline2\nline3";
-        let result = truncate_head(content, Some(TruncationOptions {
-            max_lines: Some(10),
-            max_bytes: Some(1024),
-        }));
+        let result = truncate_head(
+            content,
+            Some(TruncationOptions {
+                max_lines: Some(10),
+                max_bytes: Some(1024),
+            }),
+        );
         assert!(!result.truncated);
         assert_eq!(result.total_lines, 3);
     }
@@ -247,10 +250,13 @@ mod tests {
     #[test]
     fn test_truncate_head_by_lines() {
         let content = "line1\nline2\nline3\nline4\nline5";
-        let result = truncate_head(content, Some(TruncationOptions {
-            max_lines: Some(3),
-            max_bytes: Some(1024),
-        }));
+        let result = truncate_head(
+            content,
+            Some(TruncationOptions {
+                max_lines: Some(3),
+                max_bytes: Some(1024),
+            }),
+        );
         assert!(result.truncated);
         assert_eq!(result.truncated_by, Some("lines".to_string()));
         assert_eq!(result.output_lines, 3);
@@ -259,10 +265,13 @@ mod tests {
     #[test]
     fn test_truncate_head_first_line_exceeds() {
         let long_line = "a".repeat(300);
-        let result = truncate_head(&long_line, Some(TruncationOptions {
-            max_lines: Some(10),
-            max_bytes: Some(100),
-        }));
+        let result = truncate_head(
+            &long_line,
+            Some(TruncationOptions {
+                max_lines: Some(10),
+                max_bytes: Some(100),
+            }),
+        );
         assert!(result.first_line_exceeds_limit);
         assert!(result.content.is_empty());
     }
@@ -270,10 +279,13 @@ mod tests {
     #[test]
     fn test_truncate_tail_no_truncation() {
         let content = "line1\nline2\nline3";
-        let result = truncate_tail(content, Some(TruncationOptions {
-            max_lines: Some(10),
-            max_bytes: Some(1024),
-        }));
+        let result = truncate_tail(
+            content,
+            Some(TruncationOptions {
+                max_lines: Some(10),
+                max_bytes: Some(1024),
+            }),
+        );
         assert!(!result.truncated);
     }
 

@@ -50,12 +50,24 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> LoadPrompt
     if options.include_defaults {
         let user_prompts_dir = Path::new(&resolved_agent_dir).join("prompts");
         if user_prompts_dir.exists() {
-            load_prompts_from_dir(&user_prompts_dir, PromptSource::User, &mut template_map, &mut diagnostics);
+            load_prompts_from_dir(
+                &user_prompts_dir,
+                PromptSource::User,
+                &mut template_map,
+                &mut diagnostics,
+            );
         }
 
-        let project_prompts_dir = Path::new(&options.cwd).join(config::CONFIG_DIR_NAME).join("prompts");
+        let project_prompts_dir = Path::new(&options.cwd)
+            .join(config::CONFIG_DIR_NAME)
+            .join("prompts");
         if project_prompts_dir.exists() {
-            load_prompts_from_dir(&project_prompts_dir, PromptSource::Project, &mut template_map, &mut diagnostics);
+            load_prompts_from_dir(
+                &project_prompts_dir,
+                PromptSource::Project,
+                &mut template_map,
+                &mut diagnostics,
+            );
         }
     }
 
@@ -70,7 +82,12 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> LoadPrompt
         }
 
         if path.is_dir() {
-            load_prompts_from_dir(&path, PromptSource::Path, &mut template_map, &mut diagnostics);
+            load_prompts_from_dir(
+                &path,
+                PromptSource::Path,
+                &mut template_map,
+                &mut diagnostics,
+            );
         } else if path.is_file() && raw_path.ends_with(".md") {
             if let Some(template) = load_prompt_from_file(&path, PromptSource::Path) {
                 template_map.insert(template.name.clone(), template);

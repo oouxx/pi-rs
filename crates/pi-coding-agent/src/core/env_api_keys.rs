@@ -31,8 +31,7 @@ fn provider_env_keys() -> HashMap<&'static str, &'static str> {
     map
 }
 
-static ENV_KEYS: LazyLock<HashMap<&'static str, &'static str>> =
-    LazyLock::new(provider_env_keys);
+static ENV_KEYS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(provider_env_keys);
 
 pub fn get_env_api_key(provider: &str) -> Option<String> {
     let var_name = ENV_KEYS.get(provider)?;

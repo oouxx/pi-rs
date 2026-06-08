@@ -131,7 +131,11 @@ pub enum EditError {
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotFound { path, edit_index, total_edits } => {
+            Self::NotFound {
+                path,
+                edit_index,
+                total_edits,
+            } => {
                 if *total_edits == 1 {
                     write!(
                         f,
@@ -146,7 +150,12 @@ impl fmt::Display for EditError {
                     )
                 }
             }
-            Self::Duplicate { path, edit_index, total_edits, occurrences } => {
+            Self::Duplicate {
+                path,
+                edit_index,
+                total_edits,
+                occurrences,
+            } => {
                 if *total_edits == 1 {
                     write!(
                         f,
@@ -161,14 +170,24 @@ impl fmt::Display for EditError {
                     )
                 }
             }
-            Self::EmptyOldText { path, edit_index, total_edits } => {
+            Self::EmptyOldText {
+                path,
+                edit_index,
+                total_edits,
+            } => {
                 if *total_edits == 1 {
                     write!(f, "oldText must not be empty in {path}.")
                 } else {
-                    write!(f, "edits[{edit_index}].oldText must not be empty in {path}.")
+                    write!(
+                        f,
+                        "edits[{edit_index}].oldText must not be empty in {path}."
+                    )
                 }
             }
-            Self::NoChange { path, total_edits: _ } => {
+            Self::NoChange {
+                path,
+                total_edits: _,
+            } => {
                 write!(
                     f,
                     "No changes made to {path}. \
@@ -177,7 +196,11 @@ impl fmt::Display for EditError {
                      or the text not existing as expected."
                 )
             }
-            Self::Overlap { path, first, second } => {
+            Self::Overlap {
+                path,
+                first,
+                second,
+            } => {
                 write!(
                     f,
                     "edits[{first}] and edits[{second}] overlap in {path}. \
@@ -264,8 +287,7 @@ pub fn normalize_for_fuzzy_match(text: &str) -> String {
 
     // Various dashes/hyphens → -
     for ch in [
-        '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}',
-        '\u{2014}', '\u{2015}', '\u{2212}',
+        '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2015}', '\u{2212}',
     ] {
         result = result.replace(ch, "-");
     }
@@ -556,7 +578,11 @@ pub fn generate_diff_string(
                     let len = old_range.len();
                     for i in 0..len {
                         let idx = old_range.start + i;
-                        let line = if idx < old_lines.len() { old_lines[idx] } else { "" };
+                        let line = if idx < old_lines.len() {
+                            old_lines[idx]
+                        } else {
+                            ""
+                        };
                         if old_line == old_start && new_line == new_start {
                             let ln = pad_number(old_line, line_num_width);
                             output.push(format!(" {} {}", ln, line));
@@ -573,7 +599,11 @@ pub fn generate_diff_string(
                 similar::DiffOp::Delete { .. } => {
                     for i in 0..old_range.len() {
                         let idx = old_range.start + i;
-                        let line = if idx < old_lines.len() { old_lines[idx] } else { "" };
+                        let line = if idx < old_lines.len() {
+                            old_lines[idx]
+                        } else {
+                            ""
+                        };
                         let ln = pad_number(old_line, line_num_width);
                         output.push(format!("-{} {}", ln, line));
                         old_line += 1;
@@ -585,7 +615,11 @@ pub fn generate_diff_string(
                     }
                     for i in 0..new_range.len() {
                         let idx = new_range.start + i;
-                        let line = if idx < new_lines.len() { new_lines[idx] } else { "" };
+                        let line = if idx < new_lines.len() {
+                            new_lines[idx]
+                        } else {
+                            ""
+                        };
                         let ln = pad_number(new_line, line_num_width);
                         output.push(format!("+{} {}", ln, line));
                         new_line += 1;
@@ -597,14 +631,22 @@ pub fn generate_diff_string(
                     }
                     for i in 0..old_range.len() {
                         let idx = old_range.start + i;
-                        let line = if idx < old_lines.len() { old_lines[idx] } else { "" };
+                        let line = if idx < old_lines.len() {
+                            old_lines[idx]
+                        } else {
+                            ""
+                        };
                         let ln = pad_number(old_line, line_num_width);
                         output.push(format!("-{} {}", ln, line));
                         old_line += 1;
                     }
                     for i in 0..new_range.len() {
                         let idx = new_range.start + i;
-                        let line = if idx < new_lines.len() { new_lines[idx] } else { "" };
+                        let line = if idx < new_lines.len() {
+                            new_lines[idx]
+                        } else {
+                            ""
+                        };
                         let ln = pad_number(new_line, line_num_width);
                         output.push(format!("+{} {}", ln, line));
                         new_line += 1;
@@ -677,10 +719,15 @@ pub async fn compute_edit_diff(
     new_text: &str,
     cwd: &str,
 ) -> Result<EditDiffResult, EditDiffError> {
-    compute_edits_diff(path, &[Edit {
-        old_text: old_text.to_string(),
-        new_text: new_text.to_string(),
-    }], cwd).await
+    compute_edits_diff(
+        path,
+        &[Edit {
+            old_text: old_text.to_string(),
+            new_text: new_text.to_string(),
+        }],
+        cwd,
+    )
+    .await
 }
 
 // ============================================================================
@@ -865,9 +912,13 @@ mod tests {
     fn test_apply_edits_single() {
         let result = apply_edits_to_normalized_content(
             "hello world",
-            &[Edit { old_text: "world".into(), new_text: "rust".into() }],
+            &[Edit {
+                old_text: "world".into(),
+                new_text: "rust".into(),
+            }],
             "test.txt",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.new_content, "hello rust");
     }
 
@@ -876,11 +927,18 @@ mod tests {
         let result = apply_edits_to_normalized_content(
             "foo bar baz",
             &[
-                Edit { old_text: "foo".into(), new_text: "one".into() },
-                Edit { old_text: "baz".into(), new_text: "three".into() },
+                Edit {
+                    old_text: "foo".into(),
+                    new_text: "one".into(),
+                },
+                Edit {
+                    old_text: "baz".into(),
+                    new_text: "three".into(),
+                },
             ],
             "test.txt",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.new_content, "one bar three");
     }
 
@@ -888,7 +946,10 @@ mod tests {
     fn test_apply_edits_not_found() {
         let result = apply_edits_to_normalized_content(
             "hello world",
-            &[Edit { old_text: "notfound".into(), new_text: "replaced".into() }],
+            &[Edit {
+                old_text: "notfound".into(),
+                new_text: "replaced".into(),
+            }],
             "test.txt",
         );
         assert!(matches!(result, Err(EditError::NotFound { .. })));
@@ -898,7 +959,10 @@ mod tests {
     fn test_apply_edits_duplicate() {
         let result = apply_edits_to_normalized_content(
             "hello hello",
-            &[Edit { old_text: "hello".into(), new_text: "hi".into() }],
+            &[Edit {
+                old_text: "hello".into(),
+                new_text: "hi".into(),
+            }],
             "test.txt",
         );
         assert!(matches!(result, Err(EditError::Duplicate { .. })));
@@ -908,7 +972,10 @@ mod tests {
     fn test_apply_edits_no_change() {
         let result = apply_edits_to_normalized_content(
             "hello world",
-            &[Edit { old_text: "hello".into(), new_text: "hello".into() }],
+            &[Edit {
+                old_text: "hello".into(),
+                new_text: "hello".into(),
+            }],
             "test.txt",
         );
         assert!(matches!(result, Err(EditError::NoChange { .. })));
@@ -918,7 +985,10 @@ mod tests {
     fn test_apply_edits_empty_old_text() {
         let result = apply_edits_to_normalized_content(
             "hello world",
-            &[Edit { old_text: "".into(), new_text: "hi".into() }],
+            &[Edit {
+                old_text: "".into(),
+                new_text: "hi".into(),
+            }],
             "test.txt",
         );
         assert!(matches!(result, Err(EditError::EmptyOldText { .. })));
@@ -929,8 +999,14 @@ mod tests {
         let result = apply_edits_to_normalized_content(
             "hello world",
             &[
-                Edit { old_text: "hello".into(), new_text: "hi".into() },
-                Edit { old_text: "hello w".into(), new_text: "hey".into() },
+                Edit {
+                    old_text: "hello".into(),
+                    new_text: "hi".into(),
+                },
+                Edit {
+                    old_text: "hello w".into(),
+                    new_text: "hey".into(),
+                },
             ],
             "test.txt",
         );
@@ -943,11 +1019,18 @@ mod tests {
         let result = apply_edits_to_normalized_content(
             "a b c",
             &[
-                Edit { old_text: "a".into(), new_text: "x".into() },
-                Edit { old_text: "c".into(), new_text: "z".into() },
+                Edit {
+                    old_text: "a".into(),
+                    new_text: "x".into(),
+                },
+                Edit {
+                    old_text: "c".into(),
+                    new_text: "z".into(),
+                },
             ],
             "test.txt",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.new_content, "x b z");
     }
 
@@ -956,9 +1039,13 @@ mod tests {
         // Content has trailing whitespace, oldText doesn't → fuzzy match
         let result = apply_edits_to_normalized_content(
             "hello world  \nnext line",
-            &[Edit { old_text: "hello world\nnext".into(), new_text: "hi world\nnext".into() }],
+            &[Edit {
+                old_text: "hello world\nnext".into(),
+                new_text: "hi world\nnext".into(),
+            }],
             "test.txt",
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result.new_content.contains("hi world"));
     }
 

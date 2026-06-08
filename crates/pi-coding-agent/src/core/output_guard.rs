@@ -19,10 +19,7 @@ impl OutputGuardState {
         }
         #[cfg(not(unix))]
         {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open("CONOUT$")
-                .ok()
+            std::fs::OpenOptions::new().write(true).open("CONOUT$").ok()
         }
     }
 }

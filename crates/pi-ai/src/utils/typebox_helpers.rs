@@ -23,8 +23,10 @@ pub fn string_enum<T: AsRef<str>>(
     description: Option<&str>,
     default_value: Option<&str>,
 ) -> serde_json::Value {
-    let enum_values: Vec<serde_json::Value> =
-        values.iter().map(|v| serde_json::Value::String(v.as_ref().to_string())).collect();
+    let enum_values: Vec<serde_json::Value> = values
+        .iter()
+        .map(|v| serde_json::Value::String(v.as_ref().to_string()))
+        .collect();
 
     let mut map = serde_json::Map::new();
     map.insert("type".into(), serde_json::Value::String("string".into()));

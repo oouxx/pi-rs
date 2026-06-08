@@ -82,9 +82,11 @@ fn is_valid_env_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    name.chars()
-        .all(|c| c.is_alphanumeric() || c == '_')
-        && name.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
+    name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && name
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_alphabetic() || c == '_')
 }
 
 fn parse_config_value_reference(config: &str) -> ConfigValueReference {
@@ -155,7 +157,10 @@ pub fn get_missing_config_value_env_var_names(config: &str) -> Vec<String> {
 }
 
 pub fn is_command_config_value(config: &str) -> bool {
-    matches!(parse_config_value_reference(config), ConfigValueReference::Command(_))
+    matches!(
+        parse_config_value_reference(config),
+        ConfigValueReference::Command(_)
+    )
 }
 
 pub fn is_config_value_configured(config: &str) -> bool {
@@ -209,7 +214,11 @@ fn execute_command_uncached(command: &str) -> Option<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() { None } else { Some(stdout) }
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
 }
 
 pub fn resolve_config_value_uncached(config: &str) -> Option<String> {
@@ -231,13 +240,11 @@ pub fn resolve_config_value_or_throw(config: &str, description: &str) -> Result<
 
     let reference = parse_config_value_reference(config);
     match reference {
-        ConfigValueReference::Command(cmd) => {
-            Err(format!(
-                "Failed to resolve {} from shell command: {}",
-                description,
-                &cmd[1..]
-            ))
-        }
+        ConfigValueReference::Command(cmd) => Err(format!(
+            "Failed to resolve {} from shell command: {}",
+            description,
+            &cmd[1..]
+        )),
         ConfigValueReference::Template(_) => {
             let missing = get_missing_config_value_env_var_names(config);
             if missing.len() == 1 {
@@ -268,7 +275,11 @@ pub fn resolve_headers(
             resolved.insert(key.clone(), resolved_value);
         }
     }
-    if resolved.is_empty() { None } else { Some(resolved) }
+    if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    }
 }
 
 pub fn resolve_headers_or_throw(
@@ -362,14 +373,24 @@ mod tests {
     #[test]
     fn test_resolve_env_var() {
         // Set a known env var for testing
-        unsafe { std::env::set_var("_PI_TEST_VAR", "test_value"); }
-        assert_eq!(resolve_config_value("$_PI_TEST_VAR"), Some("test_value".into()));
-        assert_eq!(resolve_config_value("${_PI_TEST_VAR}"), Some("test_value".into()));
+        unsafe {
+            std::env::set_var("_PI_TEST_VAR", "test_value");
+        }
+        assert_eq!(
+            resolve_config_value("$_PI_TEST_VAR"),
+            Some("test_value".into())
+        );
+        assert_eq!(
+            resolve_config_value("${_PI_TEST_VAR}"),
+            Some("test_value".into())
+        );
         assert_eq!(
             resolve_config_value("prefix_${_PI_TEST_VAR}_suffix"),
             Some("prefix_test_value_suffix".into())
         );
-        unsafe { std::env::remove_var("_PI_TEST_VAR"); }
+        unsafe {
+            std::env::remove_var("_PI_TEST_VAR");
+        }
     }
 
     #[test]
@@ -379,7 +400,9 @@ mod tests {
 
     #[test]
     fn test_resolve_headers() {
-        unsafe { std::env::set_var("_PI_TEST_KEY", "secret123"); }
+        unsafe {
+            std::env::set_var("_PI_TEST_KEY", "secret123");
+        }
 
         let mut headers = HashMap::new();
         headers.insert("Authorization".into(), "Bearer $_PI_TEST_KEY".into());
@@ -389,16 +412,22 @@ mod tests {
         assert_eq!(resolved.get("Authorization").unwrap(), "Bearer secret123");
         assert_eq!(resolved.get("Static").unwrap(), "value");
 
-        unsafe { std::env::remove_var("_PI_TEST_KEY"); }
+        unsafe {
+            std::env::remove_var("_PI_TEST_KEY");
+        }
     }
 
     #[test]
     fn test_resolve_config_value_or_throw_ok() {
-        unsafe { std::env::set_var("_PI_TEST_OK", "hello"); }
+        unsafe {
+            std::env::set_var("_PI_TEST_OK", "hello");
+        }
         let result = resolve_config_value_or_throw("$_PI_TEST_OK", "test");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "hello");
-        unsafe { std::env::remove_var("_PI_TEST_OK"); }
+        unsafe {
+            std::env::remove_var("_PI_TEST_OK");
+        }
     }
 
     #[test]

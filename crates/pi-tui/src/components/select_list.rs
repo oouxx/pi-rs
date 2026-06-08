@@ -178,10 +178,7 @@ impl Component for SelectList {
                     spans.push(Span::raw(" ".repeat(pad)));
                 }
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    truncated_desc,
-                    self.theme.description_style,
-                ));
+                spans.push(Span::styled(truncated_desc, self.theme.description_style));
             }
 
             lines.push(Line::from(spans));
@@ -305,9 +302,7 @@ mod tests {
         let lines = list.render(40);
         assert!(lines.len() >= 2);
         let has_first_desc = lines.iter().any(|l| l.to_string().contains("short desc"));
-        let has_second_desc = lines
-            .iter()
-            .any(|l| l.to_string().contains("another desc"));
+        let has_second_desc = lines.iter().any(|l| l.to_string().contains("another desc"));
         assert!(has_first_desc || has_second_desc);
     }
 

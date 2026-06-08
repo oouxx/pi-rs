@@ -29,7 +29,9 @@ fn find_git_paths(cwd: &str) -> Option<GitPaths> {
 }
 
 fn read_git_head(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn resolve_branch_from_head(head_content: &str) -> Option<String> {
@@ -83,7 +85,8 @@ impl FooterDataProvider {
     pub fn set_extension_status(&mut self, key: &str, text: Option<&str>) {
         match text {
             Some(t) => {
-                self.extension_statuses.insert(key.to_string(), t.to_string());
+                self.extension_statuses
+                    .insert(key.to_string(), t.to_string());
             }
             None => {
                 self.extension_statuses.remove(key);
@@ -100,7 +103,8 @@ impl FooterDataProvider {
     }
 
     pub fn set_available_provider_count(&self, count: usize) {
-        self.available_provider_count.store(count, Ordering::Relaxed);
+        self.available_provider_count
+            .store(count, Ordering::Relaxed);
     }
 
     pub fn dispose(&self) {
@@ -123,7 +127,10 @@ mod tests {
         let mut provider = FooterDataProvider::new("/tmp");
         provider.set_extension_status("key1", Some("value1"));
         assert_eq!(
-            provider.get_extension_statuses().get("key1").map(|s| s.as_str()),
+            provider
+                .get_extension_statuses()
+                .get("key1")
+                .map(|s| s.as_str()),
             Some("value1")
         );
         provider.set_extension_status("key1", None);
@@ -144,6 +151,9 @@ mod tests {
             resolve_branch_from_head("ref: refs/heads/main"),
             Some("main".to_string())
         );
-        assert_eq!(resolve_branch_from_head("abc123"), Some("detached".to_string()));
+        assert_eq!(
+            resolve_branch_from_head("abc123"),
+            Some("detached".to_string())
+        );
     }
 }

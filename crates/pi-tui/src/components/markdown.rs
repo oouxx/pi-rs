@@ -45,7 +45,11 @@ impl MarkdownTheme {
             heading_prefix: Box::new(move |_level| {
                 Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
             }),
-            link: Box::new(|| Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)),
+            link: Box::new(|| {
+                Style::new()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::UNDERLINED)
+            }),
             link_url: Box::new(|| Style::new().fg(Color::DarkGray)),
             code: Box::new(|| Style::new().fg(Color::Yellow)),
             code_block: Box::new(|| Style::new().fg(Color::Yellow)),
@@ -62,11 +66,7 @@ impl MarkdownTheme {
             italic: Box::new(|| Style::new().fg(Color::Green).add_modifier(Modifier::ITALIC)),
             strikethrough: Box::new(|| Style::new().add_modifier(Modifier::CROSSED_OUT)),
             underline: Box::new(|| Style::new().add_modifier(Modifier::UNDERLINED)),
-            table_header: Box::new(|| {
-                Style::new()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            }),
+            table_header: Box::new(|| Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             table_border: Box::new(|| Style::new().fg(Color::DarkGray)),
             highlight_code: None,
             code_block_indent: "  ".to_string(),
@@ -427,18 +427,23 @@ impl Markdown {
     /// Check if the event sequence contains only inline content (no block-level tags).
     /// When true, the events should be rendered as a single paragraph via `render_inline`.
     fn has_only_inline_content(events: &[Event]) -> bool {
-        !events.iter().any(|ev| matches!(ev,
-            Event::Start(Tag::Paragraph
-                | Tag::Heading { .. }
-                | Tag::CodeBlock(_)
-                | Tag::BlockQuote(_)
-                | Tag::List(_)
-                | Tag::Table(_)
-                | Tag::HtmlBlock
-                | Tag::DefinitionList
-                | Tag::DefinitionListTitle
-                | Tag::DefinitionListDefinition)
-        ))
+        !events.iter().any(|ev| {
+            matches!(
+                ev,
+                Event::Start(
+                    Tag::Paragraph
+                        | Tag::Heading { .. }
+                        | Tag::CodeBlock(_)
+                        | Tag::BlockQuote(_)
+                        | Tag::List(_)
+                        | Tag::Table(_)
+                        | Tag::HtmlBlock
+                        | Tag::DefinitionList
+                        | Tag::DefinitionListTitle
+                        | Tag::DefinitionListDefinition
+                )
+            )
+        })
     }
 
     fn is_next_block(events: &[Event], pos: usize) -> bool {
@@ -578,8 +583,7 @@ impl Markdown {
                 }
             }
             Tag::BlockQuote(_) => {
-                let inner_lines =
-                    self.render_events(inner, content_width.saturating_sub(2));
+                let inner_lines = self.render_events(inner, content_width.saturating_sub(2));
                 let quote_style = base_style.patch((self.theme.quote)());
                 let border_style = base_style.patch((self.theme.quote_border)());
                 let mut result: Vec<Line<'static>> = Vec::new();
@@ -588,22 +592,25 @@ impl Markdown {
                     let text = line_content(&line);
                     if non_empty_found || !text.trim().is_empty() {
                         non_empty_found = true;
-                        let inner_style = if line.spans.is_empty() || line.spans[0].style == Style::reset() {
-                            quote_style
-                        } else {
-                            line.spans[0].style.patch(quote_style)
-                        };
+                        let inner_style =
+                            if line.spans.is_empty() || line.spans[0].style == Style::reset() {
+                                quote_style
+                            } else {
+                                line.spans[0].style.patch(quote_style)
+                            };
                         let mut new_line = Line::from(Span::styled("│ ", border_style));
                         for span in line.spans {
-                            new_line.spans.push(Span::styled(
-                                span.content.to_string(),
-                                inner_style,
-                            ));
+                            new_line
+                                .spans
+                                .push(Span::styled(span.content.to_string(), inner_style));
                         }
                         result.push(new_line);
                     }
                 }
-                while result.last().map_or(false, |l| line_content(l).trim().is_empty()) {
+                while result
+                    .last()
+                    .map_or(false, |l| line_content(l).trim().is_empty())
+                {
                     result.pop();
                 }
                 result
@@ -612,7 +619,11 @@ impl Markdown {
                 let lang = match kind {
                     CodeBlockKind::Fenced(l) => {
                         let s = l.to_string();
-                        if s.is_empty() { None } else { Some(s) }
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s)
+                        }
                     }
                     CodeBlockKind::Indented => None,
                 };
@@ -748,34 +759,38 @@ impl Markdown {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        let apply_alignment = |mut spans: Vec<Span<'static>>, align: Alignment, width: usize| -> Vec<Span<'static>> {
-            let cw: usize = spans.iter().map(|s| visible_width(&s.content)).sum();
-            let pad = width.saturating_sub(cw);
-            if pad == 0 {
-                return spans;
-            }
-            match align {
-                Alignment::Right => {
-                    let mut result = vec![Span::raw(" ".repeat(pad))];
-                    result.extend(spans);
-                    result
+        let apply_alignment =
+            |mut spans: Vec<Span<'static>>, align: Alignment, width: usize| -> Vec<Span<'static>> {
+                let cw: usize = spans.iter().map(|s| visible_width(&s.content)).sum();
+                let pad = width.saturating_sub(cw);
+                if pad == 0 {
+                    return spans;
                 }
-                Alignment::Center => {
-                    let left = pad / 2;
-                    let right = pad - left;
-                    let mut result = vec![Span::raw(" ".repeat(left))];
-                    result.extend(spans);
-                    result.push(Span::raw(" ".repeat(right)));
-                    result
+                match align {
+                    Alignment::Right => {
+                        let mut result = vec![Span::raw(" ".repeat(pad))];
+                        result.extend(spans);
+                        result
+                    }
+                    Alignment::Center => {
+                        let left = pad / 2;
+                        let right = pad - left;
+                        let mut result = vec![Span::raw(" ".repeat(left))];
+                        result.extend(spans);
+                        result.push(Span::raw(" ".repeat(right)));
+                        result
+                    }
+                    _ => {
+                        spans.push(Span::raw(" ".repeat(pad)));
+                        spans
+                    }
                 }
-                _ => {
-                    spans.push(Span::raw(" ".repeat(pad)));
-                    spans
-                }
-            }
-        };
+            };
 
-        let build_frame_line = |cell_wrapped: &[Vec<Vec<Span<'static>>>], line_idx: usize, header: bool| -> Vec<Span<'static>> {
+        let build_frame_line = |cell_wrapped: &[Vec<Vec<Span<'static>>>],
+                                line_idx: usize,
+                                header: bool|
+         -> Vec<Span<'static>> {
             let mut spans = vec![Span::styled("│ ", border_style)];
             for ci in 0..num_cols {
                 if ci > 0 {
@@ -790,8 +805,8 @@ impl Markdown {
                             s.style.add_modifier = s.style.add_modifier | header_style.add_modifier;
                             // Set header fg color only if cell has no explicit fg
                             // (Style::reset() uses Some(Color::Reset), treat that same as None)
-                            let needs_header_fg = s.style.fg.is_none()
-                                || s.style.fg == Some(Color::Reset);
+                            let needs_header_fg =
+                                s.style.fg.is_none() || s.style.fg == Some(Color::Reset);
                             if needs_header_fg {
                                 s.style.fg = header_style.fg;
                             }
@@ -888,7 +903,8 @@ fn wrap_spans_to_lines(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Spa
     }
 
     let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
-    let line_width = |l: &[Span<'static>]| -> usize { l.iter().map(|s| visible_width(&s.content)).sum() };
+    let line_width =
+        |l: &[Span<'static>]| -> usize { l.iter().map(|s| visible_width(&s.content)).sum() };
 
     for span in spans {
         let text = &span.content;
@@ -937,7 +953,10 @@ fn wrap_spans_to_lines(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Spa
                 }
 
                 let (part, rest) = remaining.split_at(taken);
-                lines.last_mut().unwrap().push(Span::styled(part.to_string(), style));
+                lines
+                    .last_mut()
+                    .unwrap()
+                    .push(Span::styled(part.to_string(), style));
                 remaining = rest;
 
                 if !remaining.is_empty() {
@@ -1053,7 +1072,14 @@ mod tests {
 
     #[test]
     fn test_simple_paragraph() {
-        let md = Markdown::new("Hello, world!".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "Hello, world!".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("Hello, world!"));
@@ -1069,7 +1095,14 @@ mod tests {
 
     #[test]
     fn test_heading_no_marker_h2() {
-        let md = Markdown::new("## Heading 2".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "## Heading 2".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("Heading 2"));
@@ -1077,7 +1110,14 @@ mod tests {
 
     #[test]
     fn test_heading_with_marker_h3() {
-        let md = Markdown::new("### Heading 3".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "### Heading 3".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("# "));
@@ -1095,7 +1135,11 @@ mod tests {
             None,
         );
         let lines = md.render(80);
-        assert!(lines.len() >= 2, "Expected at least 2 lines, got {}", lines.len());
+        assert!(
+            lines.len() >= 2,
+            "Expected at least 2 lines, got {}",
+            lines.len()
+        );
         assert!(line_content(&lines[0]).contains("Title"));
         assert!(
             lines[1].spans.is_empty() || line_content(&lines[1]).contains("Paragraph"),
@@ -1106,21 +1150,36 @@ mod tests {
 
     #[test]
     fn test_inline_bold() {
-        let md = Markdown::new("Hello **world**!".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "Hello **world**!".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("Hello"));
         assert!(line_content(&lines[0]).contains("world"));
         // Check that 'world' has bold style
-        let has_bold = lines[0].spans.iter().any(|s| {
-            s.content == "world" && s.style.add_modifier.contains(Modifier::BOLD)
-        });
+        let has_bold = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "world" && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(has_bold, "'world' should have bold style");
     }
 
     #[test]
     fn test_inline_code() {
-        let md = Markdown::new("Use `let x = 1` here".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "Use `let x = 1` here".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("let x = 1"));
@@ -1143,7 +1202,14 @@ mod tests {
 
     #[test]
     fn test_blockquote() {
-        let md = Markdown::new("> quoted text".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "> quoted text".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("│"));
@@ -1152,7 +1218,14 @@ mod tests {
 
     #[test]
     fn test_list_unordered() {
-        let md = Markdown::new("- item 1\n- item 2".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "- item 1\n- item 2".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(lines.iter().any(|l| line_content(l).contains("item 1")));
         assert!(lines.iter().any(|l| line_content(l).contains("item 2")));
@@ -1160,7 +1233,14 @@ mod tests {
 
     #[test]
     fn test_list_ordered() {
-        let md = Markdown::new("1. first\n2. second".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "1. first\n2. second".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(lines.iter().any(|l| line_content(l).contains("first")));
         assert!(lines.iter().any(|l| line_content(l).contains("second")));
@@ -1192,17 +1272,26 @@ mod tests {
     #[test]
     fn test_default_text_style() {
         let dts = Box::new(DefaultTextStyle {
-            style: Style::new()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         });
-        let md = Markdown::new("colored text".to_string(), 0, 0, default_theme(), Some(dts), None);
+        let md = Markdown::new(
+            "colored text".to_string(),
+            0,
+            0,
+            default_theme(),
+            Some(dts),
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
-        assert!(lines[0].spans.iter().any(|s| s.style.fg == Some(Color::Red)));
-        assert!(lines[0].spans.iter().any(|s| {
-            s.style.add_modifier.contains(Modifier::BOLD)
-        }));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(Color::Red)));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| { s.style.add_modifier.contains(Modifier::BOLD) }));
     }
 
     #[test]
@@ -1218,8 +1307,16 @@ mod tests {
         let lines = md.render(80);
         assert!(!lines.is_empty());
         let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
-        assert!(output.contains("┌─"), "Table should contain top border: {:?}", output);
-        assert!(output.contains("└─"), "Table should contain bottom border: {:?}", output);
+        assert!(
+            output.contains("┌─"),
+            "Table should contain top border: {:?}",
+            output
+        );
+        assert!(
+            output.contains("└─"),
+            "Table should contain bottom border: {:?}",
+            output
+        );
         assert!(output.contains("H1"), "Table should contain H1");
         assert!(output.contains("H2"), "Table should contain H2");
         assert!(output.contains("A"), "Table should contain cell A");
@@ -1271,9 +1368,10 @@ mod tests {
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("H2 with"));
         assert!(line_content(&lines[0]).contains("bold"));
-        let has_bold = lines[0].spans.iter().any(|s| {
-            s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD)
-        });
+        let has_bold = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(has_bold, "'bold' should have bold style");
     }
 
@@ -1331,8 +1429,14 @@ mod tests {
         let lines = md.render(80);
         assert!(!lines.is_empty());
         let line = &lines[0];
-        assert!(line_content(line).contains("text"), "First text should be present");
-        assert!(line_content(line).contains("code"), "Code should be present");
+        assert!(
+            line_content(line).contains("text"),
+            "First text should be present"
+        );
+        assert!(
+            line_content(line).contains("code"),
+            "Code should be present"
+        );
     }
 
     #[test]
@@ -1378,7 +1482,8 @@ mod tests {
     #[test]
     fn test_table_with_alignment() {
         let md = Markdown::new(
-            "| Left | Center | Right |\n|:-----|:------:|------:|\n| A    | B      | C     |".to_string(),
+            "| Left | Center | Right |\n|:-----|:------:|------:|\n| A    | B      | C     |"
+                .to_string(),
             0,
             0,
             default_theme(),
@@ -1397,43 +1502,68 @@ mod tests {
 
     #[test]
     fn test_list_bold_item() {
-        let md = Markdown::new("- **bold item**".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "- **bold item**".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("bold item"));
-        let has_bold = lines[0].spans.iter().any(|s| {
-            s.content == "bold item" && s.style.add_modifier.contains(Modifier::BOLD)
-        });
+        let has_bold = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "bold item" && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(has_bold, "'bold item' should have bold style in list");
     }
 
     #[test]
     fn test_list_inline_code_item() {
-        let md = Markdown::new("- use `let x = 1` here".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "- use `let x = 1` here".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
         assert!(line_content(&lines[0]).contains("let x = 1"));
-        let has_code_style = lines[0].spans.iter().any(|s| {
-            s.content == "let x = 1" && s.style.fg == Some(Color::Yellow)
-        });
-        assert!(has_code_style, "inline code should have yellow style in list");
+        let has_code_style = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "let x = 1" && s.style.fg == Some(Color::Yellow));
+        assert!(
+            has_code_style,
+            "inline code should have yellow style in list"
+        );
     }
 
     #[test]
     fn test_list_mixed_inline_styles() {
         let md = Markdown::new(
             "- normal **bold** and `code`".to_string(),
-            0, 0, default_theme(), None, None,
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
         );
         let lines = md.render(80);
         assert!(!lines.is_empty());
-        let has_bold = lines[0].spans.iter().any(|s| {
-            s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD)
-        });
+        let has_bold = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(has_bold, "'bold' in list should have bold style");
-        let has_code = lines[0].spans.iter().any(|s| {
-            s.content == "code" && s.style.fg == Some(Color::Yellow)
-        });
+        let has_code = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "code" && s.style.fg == Some(Color::Yellow));
         assert!(has_code, "'code' in list should have code style");
     }
 
@@ -1441,7 +1571,11 @@ mod tests {
     fn test_table_inline_styles() {
         let md = Markdown::new(
             "| Normal | Colored |\n|--------|---------|\n| **bold** | `code` |".to_string(),
-            0, 0, default_theme(), None, None,
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
         );
         let lines = md.render(80);
         let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
@@ -1449,11 +1583,15 @@ mod tests {
         assert!(output.contains("code"), "Table should contain code text");
 
         let has_bold = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD))
+            l.spans
+                .iter()
+                .any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD))
         });
         assert!(has_bold, "'bold' in table cell should have bold style");
         let has_code = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "code" && s.style.fg == Some(Color::Yellow))
+            l.spans
+                .iter()
+                .any(|s| s.content == "code" && s.style.fg == Some(Color::Yellow))
         });
         assert!(has_code, "'code' in table cell should have code style");
     }
@@ -1462,27 +1600,46 @@ mod tests {
     fn test_table_inline_styles_header() {
         let md = Markdown::new(
             "| **H1** | `H2` |\n|------|------|\n| A    | B    |".to_string(),
-            0, 0, default_theme(), None, None,
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
         );
         let lines = md.render(80);
         let has_bold = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "H1" && s.style.add_modifier.contains(Modifier::BOLD))
+            l.spans
+                .iter()
+                .any(|s| s.content == "H1" && s.style.add_modifier.contains(Modifier::BOLD))
         });
-        assert!(has_bold, "'H1' in table header should have bold style due to markdown + header bold");
+        assert!(
+            has_bold,
+            "'H1' in table header should have bold style due to markdown + header bold"
+        );
         let has_code = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "H2" && s.style.fg == Some(Color::Yellow))
+            l.spans
+                .iter()
+                .any(|s| s.content == "H2" && s.style.fg == Some(Color::Yellow))
         });
         assert!(has_code, "'H2' in table header should have code style");
     }
 
     #[test]
     fn test_list_italic_item() {
-        let md = Markdown::new("- *italic text*".to_string(), 0, 0, default_theme(), None, None);
+        let md = Markdown::new(
+            "- *italic text*".to_string(),
+            0,
+            0,
+            default_theme(),
+            None,
+            None,
+        );
         let lines = md.render(80);
         assert!(!lines.is_empty());
-        let has_italic = lines[0].spans.iter().any(|s| {
-            s.content == "italic text" && s.style.add_modifier.contains(Modifier::ITALIC)
-        });
+        let has_italic = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "italic text" && s.style.add_modifier.contains(Modifier::ITALIC));
         assert!(has_italic, "'italic text' in list should have italic style");
     }
 
@@ -1561,18 +1718,36 @@ print(fibonacci(10))
                 })
                 .map(|pos| start + 1 + pos)
                 .unwrap_or(lines.len());
-            let lang: String = lines[start].spans.iter().map(|s| s.content.as_ref()).collect();
+            let lang: String = lines[start]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
             println!("  {} — styled spans per token:", lang.trim());
             for line_idx in start + 1..end {
                 let line = &lines[line_idx];
                 let mut detail = String::new();
                 for s in &line.spans {
-                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                    let fg = s
+                        .style
+                        .fg
+                        .map(|c| format!("{:?}", c))
+                        .unwrap_or_else(|| "default".into());
                     let mut mods = Vec::new();
-                    if s.style.add_modifier.contains(Modifier::BOLD) { mods.push("bold"); }
-                    if s.style.add_modifier.contains(Modifier::ITALIC) { mods.push("italic"); }
-                    if s.style.add_modifier.contains(Modifier::UNDERLINED) { mods.push("underline"); }
-                    let mod_str = if mods.is_empty() { "".into() } else { format!("+{}", mods.join("+")) };
+                    if s.style.add_modifier.contains(Modifier::BOLD) {
+                        mods.push("bold");
+                    }
+                    if s.style.add_modifier.contains(Modifier::ITALIC) {
+                        mods.push("italic");
+                    }
+                    if s.style.add_modifier.contains(Modifier::UNDERLINED) {
+                        mods.push("underline");
+                    }
+                    let mod_str = if mods.is_empty() {
+                        "".into()
+                    } else {
+                        format!("+{}", mods.join("+"))
+                    };
                     write!(detail, "[[{}]{} ", fg, mod_str).unwrap();
                     detail.push_str(s.content.as_ref());
                     detail.push_str("] ");
@@ -1611,7 +1786,8 @@ print(fibonacci(10))
 "#;
 
             println!("  --- Rust ---");
-            let mut h = syntect::easy::HighlightLines::new(rust_syntax, &ts.themes["base16-ocean.dark"]);
+            let mut h =
+                syntect::easy::HighlightLines::new(rust_syntax, &ts.themes["base16-ocean.dark"]);
             for line in syntect::util::LinesWithEndings::from(code_rust) {
                 let ranges = h.highlight_line(line, &ps).unwrap();
                 let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
@@ -1620,7 +1796,8 @@ print(fibonacci(10))
             print!("\x1b[0m");
 
             println!("  --- Python ---");
-            let mut h = syntect::easy::HighlightLines::new(py_syntax, &ts.themes["base16-ocean.dark"]);
+            let mut h =
+                syntect::easy::HighlightLines::new(py_syntax, &ts.themes["base16-ocean.dark"]);
             for line in syntect::util::LinesWithEndings::from(code_py) {
                 let ranges = h.highlight_line(line, &ps).unwrap();
                 let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
@@ -1661,10 +1838,18 @@ print(fibonacci(10))
                         codes.push(code);
                     }
                     let m = s.style.add_modifier;
-                    if m.contains(Modifier::BOLD) { codes.push("1".into()); }
-                    if m.contains(Modifier::ITALIC) { codes.push("3".into()); }
-                    if m.contains(Modifier::UNDERLINED) { codes.push("4".into()); }
-                    if m.contains(Modifier::CROSSED_OUT) { codes.push("9".into()); }
+                    if m.contains(Modifier::BOLD) {
+                        codes.push("1".into());
+                    }
+                    if m.contains(Modifier::ITALIC) {
+                        codes.push("3".into());
+                    }
+                    if m.contains(Modifier::UNDERLINED) {
+                        codes.push("4".into());
+                    }
+                    if m.contains(Modifier::CROSSED_OUT) {
+                        codes.push("9".into());
+                    }
                     if codes.is_empty() {
                         print!("{}", s.content);
                     } else {
@@ -1696,15 +1881,27 @@ print(fibonacci(10))
             if let Some(h) = header_line {
                 println!("  --- Table Header Row (line {}) ---", h);
                 for s in &lines[h].spans {
-                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
-                    let mods = if s.style.add_modifier.contains(Modifier::BOLD) { " +bold" } else { "" };
+                    let fg = s
+                        .style
+                        .fg
+                        .map(|c| format!("{:?}", c))
+                        .unwrap_or_else(|| "default".into());
+                    let mods = if s.style.add_modifier.contains(Modifier::BOLD) {
+                        " +bold"
+                    } else {
+                        ""
+                    };
                     println!("    [{}{}] {:?}", fg, mods, s.content);
                 }
             }
             if let Some(t) = table_top {
                 println!("  --- Table Border (line {}) ---", t);
                 for s in &lines[t].spans {
-                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
+                    let fg = s
+                        .style
+                        .fg
+                        .map(|c| format!("{:?}", c))
+                        .unwrap_or_else(|| "default".into());
                     println!("    [fg={}] {:?}", fg, s.content);
                 }
             }
@@ -1714,8 +1911,16 @@ print(fibonacci(10))
             }) {
                 println!("  --- Heading 1 (line {}) ---", h1);
                 for s in &lines[h1].spans {
-                    let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
-                    let mods = if s.style.add_modifier.contains(Modifier::BOLD) { " +bold" } else { "" };
+                    let fg = s
+                        .style
+                        .fg
+                        .map(|c| format!("{:?}", c))
+                        .unwrap_or_else(|| "default".into());
+                    let mods = if s.style.add_modifier.contains(Modifier::BOLD) {
+                        " +bold"
+                    } else {
+                        ""
+                    };
                     if !s.content.trim().is_empty() || fg != "default" {
                         println!("    [{}{}] {:?}", fg, mods, s.content);
                     }
@@ -1723,11 +1928,22 @@ print(fibonacci(10))
             }
             for (i, line) in lines.iter().enumerate() {
                 let t: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                if t.trim_start().starts_with("- ") || t.trim_start().starts_with(|c: char| c.is_ascii_digit() && t.trim_start().contains(". ")) {
+                if t.trim_start().starts_with("- ")
+                    || t.trim_start()
+                        .starts_with(|c: char| c.is_ascii_digit() && t.trim_start().contains(". "))
+                {
                     let mut detail = String::new();
                     for s in &line.spans {
-                        let fg = s.style.fg.map(|c| format!("{:?}", c)).unwrap_or_else(|| "default".into());
-                        let mods = if s.style.add_modifier.contains(Modifier::BOLD) { " +bold" } else { "" };
+                        let fg = s
+                            .style
+                            .fg
+                            .map(|c| format!("{:?}", c))
+                            .unwrap_or_else(|| "default".into());
+                        let mods = if s.style.add_modifier.contains(Modifier::BOLD) {
+                            " +bold"
+                        } else {
+                            ""
+                        };
                         write!(detail, "[{}{}]{} ", fg, mods, s.content).unwrap();
                     }
                     println!("  --- List Line {}: {}", i, detail.trim());
@@ -1737,26 +1953,41 @@ print(fibonacci(10))
         }
 
         // === Section 5: Verification ===
-        let full_text: String = lines.iter().flat_map(|l| {
-            l.spans.iter().map(|s| s.content.as_ref())
-        }).collect();
+        let full_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
 
         assert!(full_text.contains("Heading 1"), "Missing H1");
         assert!(full_text.contains("Heading 2"), "Missing H2");
         assert!(full_text.contains("Heading 3"), "Missing H3");
-        assert!(full_text.contains("Unordered item one"), "Missing list item");
-        assert!(full_text.contains("Ordered item alpha"), "Missing ordered item");
+        assert!(
+            full_text.contains("Unordered item one"),
+            "Missing list item"
+        );
+        assert!(
+            full_text.contains("Ordered item alpha"),
+            "Missing ordered item"
+        );
         assert!(full_text.contains("lorem ipsum"), "Missing table cell");
         assert!(full_text.contains("fn greet"), "Missing rust code block");
-        assert!(full_text.contains("def fibonacci"), "Missing python code block");
+        assert!(
+            full_text.contains("def fibonacci"),
+            "Missing python code block"
+        );
 
         // Verify that syntax highlighting produces different colors for different tokens
         let has_multi_color = lines.iter().skip(code_block_start[0] + 1).take(9).any(|l| {
             let fgs: Vec<_> = l.spans.iter().filter_map(|s| s.style.fg).collect();
-            if fgs.len() < 2 { return false; }
+            if fgs.len() < 2 {
+                return false;
+            }
             fgs.iter().any(|c1| fgs.iter().any(|c2| c1 != c2))
         });
-        assert!(has_multi_color, "Syntax highlighting should produce different fg colors for different token types");
+        assert!(
+            has_multi_color,
+            "Syntax highlighting should produce different fg colors for different token types"
+        );
 
         // Verify table border has a styled foreground color (not default)
         let border_has_color = lines.iter().any(|l| {
@@ -1765,24 +1996,37 @@ print(fibonacci(10))
             (trimmed.starts_with("┌─") || trimmed.starts_with("├─") || trimmed.starts_with("└─"))
                 && l.spans.iter().any(|s| s.style.fg.is_some())
         });
-        assert!(border_has_color, "Table border should have a foreground color");
+        assert!(
+            border_has_color,
+            "Table border should have a foreground color"
+        );
 
         // Verify table header has a distinct foreground color (Cyan)
         let header_has_cyan = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-            t.contains("Left") && t.contains("Center") && t.contains("Right")
+            t.contains("Left")
+                && t.contains("Center")
+                && t.contains("Right")
                 && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
         });
-        assert!(header_has_cyan, "Table header should have Cyan foreground color");
+        assert!(
+            header_has_cyan,
+            "Table header should have Cyan foreground color"
+        );
 
         // Verify heading has blue foreground color
         let heading_has_blue = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             t.trim() == "Heading 1"
                 && l.spans.iter().any(|s| s.style.fg == Some(Color::Blue))
-                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+                && l.spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
         });
-        assert!(heading_has_blue, "Heading 1 should have Blue foreground color with Bold modifier");
+        assert!(
+            heading_has_blue,
+            "Heading 1 should have Blue foreground color with Bold modifier"
+        );
 
         // Verify list bullet has cyan foreground color
         let bullet_has_color = lines.iter().any(|l| {
@@ -1790,7 +2034,10 @@ print(fibonacci(10))
             (t.trim_start().starts_with("- ") || t.trim_start().starts_with("1. "))
                 && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
         });
-        assert!(bullet_has_color, "List bullet should have Cyan foreground color");
+        assert!(
+            bullet_has_color,
+            "List bullet should have Cyan foreground color"
+        );
 
         println!("\n═══ Test complete — all elements verified with theme coloring ═══");
     }
@@ -1820,7 +2067,10 @@ print(fibonacci(10))
         md.set_text("# Getting Started\n\nTo begin, ".into());
         let lines = md.render(width);
         let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
-        assert!(output.contains("Getting Started"), "heading should be rendered");
+        assert!(
+            output.contains("Getting Started"),
+            "heading should be rendered"
+        );
         assert!(output.contains("To begin,"), "paragraph text should appear");
 
         // Phase 4: complete paragraph
@@ -1832,7 +2082,9 @@ print(fibonacci(10))
         let has_heading_style = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             t.contains("Getting Started")
-                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+                && l.spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
         });
         assert!(has_heading_style, "heading should have bold style");
 
@@ -1840,13 +2092,19 @@ print(fibonacci(10))
         md.set_text("# Getting Started\n\nTo begin, install the package using cargo.\n\n```bash\ncargo add pi-tui\n```".into());
         let lines = md.render(width);
         let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
-        assert!(output.contains("cargo add pi-tui"), "code block should be rendered");
+        assert!(
+            output.contains("cargo add pi-tui"),
+            "code block should be rendered"
+        );
 
         // Phase 6: complete message with multiple elements
         md.set_text("# Getting Started\n\nTo begin, install the package using cargo.\n\n```bash\ncargo add pi-tui\n```\n\nThen run:\n\n```rust\nuse pi_tui::components::Markdown;\n\nlet md = Markdown::new(text, 0, 0, theme, None, None);\n```".into());
         let lines = md.render(width);
         let output: String = lines.iter().map(|l| line_content(l) + "\n").collect();
-        assert!(output.contains("cargo add pi-tui"), "bash code block rendered");
+        assert!(
+            output.contains("cargo add pi-tui"),
+            "bash code block rendered"
+        );
         assert!(output.contains("Markdown::new"), "rust code block rendered");
         assert!(output.contains("Getting Started"), "heading still present");
         assert!(output.contains("Then run:"), "paragraph after code block");
@@ -1893,10 +2151,16 @@ The end."#;
         // Verify all elements are present
         assert!(output.contains("complete"), "bold text rendered");
         assert!(output.contains("inline code"), "inline code rendered");
-        assert!(output.contains("First, install dependencies"), "ordered list item 1");
+        assert!(
+            output.contains("First, install dependencies"),
+            "ordered list item 1"
+        );
         assert!(output.contains("Then configure the"), "ordered list item 2");
         assert!(output.contains("Finally, run"), "ordered list item 3");
-        assert!(output.contains("Make sure your API key"), "blockquote rendered");
+        assert!(
+            output.contains("Make sure your API key"),
+            "blockquote rendered"
+        );
         assert!(output.contains("Code Example"), "heading 2 rendered");
         assert!(output.contains("fn main()"), "rust code block rendered");
         assert!(output.contains("Hello, world!"), "code content rendered");
@@ -1908,13 +2172,17 @@ The end."#;
 
         // Verify styling on bold text
         let has_bold = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "complete" && s.style.add_modifier.contains(Modifier::BOLD))
+            l.spans
+                .iter()
+                .any(|s| s.content == "complete" && s.style.add_modifier.contains(Modifier::BOLD))
         });
         assert!(has_bold, "bold text should have BOLD modifier");
 
         // Verify inline code style
         let has_code_style = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "inline code" && s.style.fg == Some(Color::Yellow))
+            l.spans
+                .iter()
+                .any(|s| s.content == "inline code" && s.style.fg == Some(Color::Yellow))
         });
         assert!(has_code_style, "inline code should have yellow style");
 
@@ -1923,7 +2191,10 @@ The end."#;
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             t.trim().starts_with('│')
         });
-        assert!(has_quote_style, "blockquote should have the │ prefix (U+2502)");
+        assert!(
+            has_quote_style,
+            "blockquote should have the │ prefix (U+2502)"
+        );
 
         // Verify horizontal rule
         let has_hr = lines.iter().any(|l| {
@@ -1961,8 +2232,11 @@ The end."#;
         // Each line should have at least one span with content
         for (i, line) in lines.iter().enumerate() {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert!(!text.is_empty() || line.spans.is_empty(),
-                "Line {} should have content or only spacing", i);
+            assert!(
+                !text.is_empty() || line.spans.is_empty(),
+                "Line {} should have content or only spacing",
+                i
+            );
         }
     }
 
@@ -1999,16 +2273,24 @@ fn calculate(x: i32, y: i32) -> i32 {
                     && s.style.fg != Some(Color::Reset)
             })
         });
-        assert!(has_keyword_highlighting, "`fn` keyword should be syntax-highlighted");
+        assert!(
+            has_keyword_highlighting,
+            "`fn` keyword should be syntax-highlighted"
+        );
 
         // Verify string literal highlighting
         let has_string_highlighting = lines.iter().any(|l| {
             l.spans.iter().any(|s| {
-                (s.content.starts_with('"') || s.content == "\"Sum: {}" || s.content.contains("Sum:"))
+                (s.content.starts_with('"')
+                    || s.content == "\"Sum: {}"
+                    || s.content.contains("Sum:"))
                     && s.style.fg.is_some()
             })
         });
-        assert!(has_string_highlighting, "string literals should be highlighted");
+        assert!(
+            has_string_highlighting,
+            "string literals should be highlighted"
+        );
     }
 
     /// E2E test: table with various alignments renders correctly.
@@ -2035,7 +2317,9 @@ fn calculate(x: i32, y: i32) -> i32 {
         // Verify table styling — header row should have distinct color
         let header_has_color = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-            t.contains("Left") && t.contains("Center") && t.contains("Right")
+            t.contains("Left")
+                && t.contains("Center")
+                && t.contains("Right")
                 && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
         });
         assert!(header_has_color, "table header should have Cyan foreground");
@@ -2062,14 +2346,26 @@ fn calculate(x: i32, y: i32) -> i32 {
         assert!(
             narrow_count >= wide_count,
             "narrow width ({}) should produce >= lines than wide width ({}), got {} vs {}",
-            30, 120, narrow_count, wide_count
+            30,
+            120,
+            narrow_count,
+            wide_count
         );
 
         // Verify the paragraph text wraps at narrow width
         let wide_output: String = wide_lines.iter().map(|l| line_content(l) + "\n").collect();
-        let narrow_output: String = narrow_lines.iter().map(|l| line_content(l) + "\n").collect();
-        assert!(wide_output.contains("paragraph"), "paragraph content in wide render");
-        assert!(narrow_output.contains("paragraph"), "paragraph content in narrow render");
+        let narrow_output: String = narrow_lines
+            .iter()
+            .map(|l| line_content(l) + "\n")
+            .collect();
+        assert!(
+            wide_output.contains("paragraph"),
+            "paragraph content in wide render"
+        );
+        assert!(
+            narrow_output.contains("paragraph"),
+            "paragraph content in narrow render"
+        );
     }
 
     /// E2E test: deeply nested markdown structures.
@@ -2109,7 +2405,10 @@ fn calculate(x: i32, y: i32) -> i32 {
 
         // Verify nested blockquote
         assert!(output.contains("Important"), "bold in blockquote");
-        assert!(output.contains("List inside blockquote"), "list in blockquote");
+        assert!(
+            output.contains("List inside blockquote"),
+            "list in blockquote"
+        );
 
         // Verify nested lists
         assert!(output.contains("Ordered"), "ordered list item");
@@ -2123,12 +2422,16 @@ fn calculate(x: i32, y: i32) -> i32 {
         let has_bold = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             t.trim().contains("Ordered")
-                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+                && l.spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
         });
         // If the exact span match fails, fallback: just check text presence + any bold on the line
         if !has_bold {
             let bold_present = lines.iter().any(|l| {
-                l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+                l.spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
             });
             assert!(bold_present, "ordered list should have some bold text");
         }
@@ -2137,11 +2440,15 @@ fn calculate(x: i32, y: i32) -> i32 {
         let has_italic = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             t.trim().contains("italic")
-                && l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
+                && l.spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
         });
         if !has_italic {
             let italic_present = lines.iter().any(|l| {
-                l.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
+                l.spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
             });
             assert!(italic_present, "ordered list should have some italic text");
         }
@@ -2191,7 +2498,10 @@ fn calculate(x: i32, y: i32) -> i32 {
 
             // After the first two deltas, heading should be present
             if i >= 1 {
-                assert!(output.contains("Rust vs"), "heading should appear after delta 1");
+                assert!(
+                    output.contains("Rust vs"),
+                    "heading should appear after delta 1"
+                );
             }
 
             // After table deltas (index 5-9), table should appear
@@ -2216,21 +2526,27 @@ fn calculate(x: i32, y: i32) -> i32 {
 
         // Bold rendering
         let has_bold = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "Rust" && s.style.add_modifier.contains(Modifier::BOLD))
+            l.spans
+                .iter()
+                .any(|s| s.content == "Rust" && s.style.add_modifier.contains(Modifier::BOLD))
         });
         assert!(has_bold, "'Rust' should be bold (from markdown **)");
 
         // Inline code style
         let has_code = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content == "Python" && s.style.fg == Some(Color::Yellow))
+            l.spans
+                .iter()
+                .any(|s| s.content == "Python" && s.style.fg == Some(Color::Yellow))
         });
-        assert!(has_code, "'Python' should have code style (from markdown `)");
+        assert!(
+            has_code,
+            "'Python' should have code style (from markdown `)"
+        );
 
         // Table header style
         let header_style = lines.iter().any(|l| {
             let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-            t.contains("Feature")
-                && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
+            t.contains("Feature") && l.spans.iter().any(|s| s.style.fg == Some(Color::Cyan))
         });
         assert!(header_style, "table header should have Cyan style");
     }

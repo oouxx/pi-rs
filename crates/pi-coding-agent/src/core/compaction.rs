@@ -193,42 +193,42 @@ fn extract_file_operations(
 
     for msg in messages {
         match msg {
-            AgentMessage::ToolResult { tool_name, content, .. } => {
-                match tool_name.as_str() {
-                    "read" => {
-                        for block in content {
-                            if let ContentBlock::Text { text, .. } = block {
-                                for line in text.lines() {
-                                    if line.starts_with("File: ") {
-                                        let path = line.trim_start_matches("File: ").trim();
-                                        if seen_read.insert(path.to_string(), true).is_none() {
-                                            read_files.push(path.to_string());
-                                        }
+            AgentMessage::ToolResult {
+                tool_name, content, ..
+            } => match tool_name.as_str() {
+                "read" => {
+                    for block in content {
+                        if let ContentBlock::Text { text, .. } = block {
+                            for line in text.lines() {
+                                if line.starts_with("File: ") {
+                                    let path = line.trim_start_matches("File: ").trim();
+                                    if seen_read.insert(path.to_string(), true).is_none() {
+                                        read_files.push(path.to_string());
                                     }
                                 }
                             }
                         }
                     }
-                    "write" | "edit" => {
-                        for block in content {
-                            if let ContentBlock::Text { text, .. } = block {
-                                for line in text.lines() {
-                                    if line.starts_with("File: ") || line.starts_with("Wrote ") {
-                                        let path = line
-                                            .trim_start_matches("File: ")
-                                            .trim_start_matches("Wrote ")
-                                            .trim();
-                                        if seen_modified.insert(path.to_string(), true).is_none() {
-                                            modified_files.push(path.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                "write" | "edit" => {
+                    for block in content {
+                        if let ContentBlock::Text { text, .. } = block {
+                            for line in text.lines() {
+                                if line.starts_with("File: ") || line.starts_with("Wrote ") {
+                                    let path = line
+                                        .trim_start_matches("File: ")
+                                        .trim_start_matches("Wrote ")
+                                        .trim();
+                                    if seen_modified.insert(path.to_string(), true).is_none() {
+                                        modified_files.push(path.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -277,10 +277,7 @@ pub fn build_summarization_prompt(
     }
 
     if let Some(instructions) = custom_instructions {
-        prompt.push_str(&format!(
-            "Focus on: {}\n\n",
-            instructions
-        ));
+        prompt.push_str(&format!("Focus on: {}\n\n", instructions));
     }
 
     prompt.push_str(&format!(

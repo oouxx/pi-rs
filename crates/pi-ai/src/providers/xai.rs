@@ -30,7 +30,9 @@ mod tests {
 
     #[test]
     fn test_xai_module_functions_exist() {
-        let _f1: fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream = stream_xai;
-        let _f2: fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream = stream_simple_xai;
+        let _f1: fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream =
+            stream_xai;
+        let _f2: fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream =
+            stream_simple_xai;
     }
 }

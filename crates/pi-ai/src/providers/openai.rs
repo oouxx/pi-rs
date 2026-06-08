@@ -124,7 +124,10 @@ fn convert_messages(messages: &[Message]) -> Vec<OpenAIMessage> {
                     .iter()
                     .filter_map(|b| match b {
                         ContentBlock::ToolCall {
-                            id, name, arguments, ..
+                            id,
+                            name,
+                            arguments,
+                            ..
                         } => Some(OpenAIToolCall {
                             id: id.clone(),
                             tc_type: "function".to_string(),
@@ -247,7 +250,10 @@ fn parse_openai_sse_body(body: &[u8]) -> Vec<Value> {
 /// Parse token usage from an OpenAI chunk.
 fn parse_chunk_usage(usage: &Value) -> Usage {
     Usage {
-        input: usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        input: usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         output: usage
             .get("completion_tokens")
             .and_then(|v| v.as_u64())
@@ -258,7 +264,10 @@ fn parse_chunk_usage(usage: &Value) -> Usage {
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
         cache_write: 0,
-        total_tokens: usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        total_tokens: usage
+            .get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         cost: Default::default(),
     }
 }
@@ -284,9 +293,14 @@ pub fn stream_openai(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
     tokio::spawn(async move {
-        let result =
-            stream_openai_inner(&model, &context, owned_options.as_ref(), api_key.as_deref(), &tx)
-                .await;
+        let result = stream_openai_inner(
+            &model,
+            &context,
+            owned_options.as_ref(),
+            api_key.as_deref(),
+            &tx,
+        )
+        .await;
         if let Err(e) = result {
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
@@ -333,10 +347,7 @@ async fn stream_openai_inner(
 
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
-    body.insert(
-        "messages".to_string(),
-        serde_json::to_value(&messages)?,
-    );
+    body.insert("messages".to_string(), serde_json::to_value(&messages)?);
     body.insert("stream".to_string(), Value::Bool(true));
     body.insert(
         "stream_options".to_string(),
@@ -368,7 +379,10 @@ async fn stream_openai_inner(
 
     let request_body = Value::Object(body);
     let response = http_client
-        .post(format!("{}/chat/completions", model.base_url.trim_end_matches('/')))
+        .post(format!(
+            "{}/chat/completions",
+            model.base_url.trim_end_matches('/')
+        ))
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
@@ -414,10 +428,12 @@ async fn stream_openai_inner(
     }
 
     let mut current_text: Option<(usize, String)> = None; // (content_index, text)
-    // Two lookup maps, both index into tool_call_blocks Vec
+                                                          // Two lookup maps, both index into tool_call_blocks Vec
     let mut tool_call_blocks: Vec<ToolCallBlock> = Vec::new();
-    let mut tool_call_blocks_by_index: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-    let mut tool_call_blocks_by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut tool_call_blocks_by_index: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    let mut tool_call_blocks_by_id: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for chunk in &chunks {
         // Check abort
@@ -461,7 +477,8 @@ async fn stream_openai_inner(
             if !reason.is_empty() {
                 output.stop_reason = map_stop_reason(reason);
                 if output.stop_reason == StopReason::Error {
-                    output.error_message = Some(format!("Provider returned finish_reason: {}", reason));
+                    output.error_message =
+                        Some(format!("Provider returned finish_reason: {}", reason));
                 }
                 has_finish_reason = true;
             }
@@ -487,8 +504,9 @@ async fn stream_openai_inner(
                 }
                 if let Some((ci, ref mut text)) = current_text {
                     text.push_str(content);
-                    if let Some(ContentBlock::Text { text: ref mut t, .. }) =
-                        output.content.get_mut(ci)
+                    if let Some(ContentBlock::Text {
+                        text: ref mut t, ..
+                    }) = output.content.get_mut(ci)
                     {
                         *t = text.clone();
                     }
@@ -513,7 +531,8 @@ async fn stream_openai_inner(
                         .position(|b| matches!(b, ContentBlock::Thinking { .. }));
                     if let Some(ti) = thinking_idx {
                         if let Some(ContentBlock::Thinking {
-                            thinking: ref mut t, ..
+                            thinking: ref mut t,
+                            ..
                         }) = output.content.get_mut(ti)
                         {
                             t.push_str(reasoning);
@@ -547,10 +566,15 @@ async fn stream_openai_inner(
                 let tc_function = tc.get("function");
 
                 // Find or create tool call block (TS: ensureToolCallBlock)
-                let block_idx = tool_call_blocks_by_index.get(&stream_index).copied()
+                let block_idx = tool_call_blocks_by_index
+                    .get(&stream_index)
+                    .copied()
                     .or_else(|| {
-                        if tc_id.is_empty() { None }
-                        else { tool_call_blocks_by_id.get(tc_id).copied() }
+                        if tc_id.is_empty() {
+                            None
+                        } else {
+                            tool_call_blocks_by_id.get(tc_id).copied()
+                        }
                     });
 
                 if let Some(bi) = block_idx {
@@ -595,7 +619,8 @@ async fn stream_openai_inner(
                             first_args = a.to_string();
                         }
                     }
-                    let args_val = serde_json::from_str::<Value>(&first_args).unwrap_or(Value::Object(Default::default()));
+                    let args_val = serde_json::from_str::<Value>(&first_args)
+                        .unwrap_or(Value::Object(Default::default()));
 
                     output.content.push(ContentBlock::ToolCall {
                         id: tc_id.to_string(),
@@ -645,14 +670,14 @@ async fn stream_openai_inner(
     }
     for block in &tool_call_blocks {
         if let Some(ContentBlock::ToolCall {
-            id, name, arguments, ..
+            id,
+            name,
+            arguments,
+            ..
         }) = output.content.get(block.content_index)
         {
-            let tool_call = crate::types::ToolCall::new(
-                id.clone(),
-                name.clone(),
-                arguments.clone(),
-            );
+            let tool_call =
+                crate::types::ToolCall::new(id.clone(), name.clone(), arguments.clone());
             let _ = tx.send(AssistantMessageEvent::ToolCallEnd {
                 content_index: block.content_index,
                 tool_call,
@@ -780,14 +805,12 @@ mod tests {
     #[test]
     fn test_convert_messages_assistant_with_tool_calls() {
         let messages = vec![Message::Assistant {
-            content: vec![
-                ContentBlock::ToolCall {
-                    id: "call_1".into(),
-                    name: "get_weather".into(),
-                    arguments: serde_json::json!({"city": "NYC"}),
-                    thought_signature: None,
-                },
-            ],
+            content: vec![ContentBlock::ToolCall {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+                arguments: serde_json::json!({"city": "NYC"}),
+                thought_signature: None,
+            }],
             api: "openai-completions".into(),
             provider: "openai".into(),
             model: "gpt-4o".into(),

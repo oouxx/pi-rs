@@ -119,8 +119,7 @@ pub struct AgentToolCall {
 
 pub type DynTool = AgentTool<serde_json::Value, serde_json::Value>;
 
-pub type AgentToolUpdateCallback<T> =
-    Arc<dyn Fn(AgentToolResult<T>) + Send + Sync>;
+pub type AgentToolUpdateCallback<T> = Arc<dyn Fn(AgentToolResult<T>) + Send + Sync>;
 
 pub struct AgentTool<TParams, TDetails>
 where
@@ -142,7 +141,10 @@ where
             ) -> std::pin::Pin<
                 Box<
                     dyn std::future::Future<
-                            Output = Result<AgentToolResult<TDetails>, Box<dyn std::error::Error + Send + Sync>>,
+                            Output = Result<
+                                AgentToolResult<TDetails>,
+                                Box<dyn std::error::Error + Send + Sync>,
+                            >,
                         > + Send,
                 >,
             > + Send
@@ -231,18 +233,24 @@ impl std::fmt::Debug for AgentState {
 #[serde(tag = "type")]
 pub enum AgentEvent {
     AgentStart,
-    AgentEnd { messages: Vec<AgentMessage> },
+    AgentEnd {
+        messages: Vec<AgentMessage>,
+    },
     TurnStart,
     TurnEnd {
         message: AgentMessage,
         tool_results: Vec<AgentMessage>,
     },
-    MessageStart { message: AgentMessage },
+    MessageStart {
+        message: AgentMessage,
+    },
     MessageUpdate {
         message: AgentMessage,
         assistant_message_event: AssistantMessageEvent,
     },
-    MessageEnd { message: AgentMessage },
+    MessageEnd {
+        message: AgentMessage,
+    },
     ToolExecutionStart {
         tool_call_id: String,
         tool_name: String,
@@ -359,7 +367,9 @@ impl std::fmt::Debug for StreamFnOptions {
 }
 
 pub type AgentEventSink = Arc<
-    dyn Fn(AgentEvent) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+    dyn Fn(AgentEvent) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
 >;
 
 pub type ConvertToLlmFn = Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>;
@@ -368,25 +378,34 @@ pub type TransformContextFn = Arc<
     dyn Fn(
             Vec<AgentMessage>,
             Option<tokio::sync::watch::Receiver<bool>>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
         + Send
         + Sync,
 >;
 
 pub type GetApiKeyFn = Arc<
-    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> + Send + Sync,
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
+        + Send
+        + Sync,
 >;
 
 pub type GetSteeringMessagesFn = Arc<
-    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>> + Send + Sync,
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
+        + Send
+        + Sync,
 >;
 
 pub type GetFollowUpMessagesFn = Arc<
-    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>> + Send + Sync,
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
+        + Send
+        + Sync,
 >;
 
 pub type ShouldStopAfterTurnFn = Arc<
-    dyn Fn(ShouldStopAfterTurnContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+    dyn Fn(
+            ShouldStopAfterTurnContext,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
         + Send
         + Sync,
 >;
@@ -416,8 +435,9 @@ pub type BeforeToolCallFn = Arc<
     dyn Fn(
             BeforeToolCallContext,
             Option<tokio::sync::watch::Receiver<bool>>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<BeforeToolCallResult>> + Send>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<BeforeToolCallResult>> + Send>,
+        > + Send
         + Sync,
 >;
 

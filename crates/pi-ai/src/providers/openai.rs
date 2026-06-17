@@ -732,31 +732,6 @@ pub fn stream_simple_openai(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ModelCost;
-
-    fn make_test_model() -> Model {
-        Model {
-            id: "gpt-4o".into(),
-            name: "GPT-4o".into(),
-            api: "openai-completions".into(),
-            provider: "openai".into(),
-            base_url: "https://api.openai.com/v1".into(),
-            reasoning: false,
-            thinking_level_map: None,
-            input: vec!["text".into(), "image".into()],
-            cost: ModelCost {
-                input: 2.5,
-                output: 10.0,
-                cache_read: 1.25,
-                cache_write: 0.0,
-            },
-            context_window: 128000,
-            max_tokens: 16384,
-            headers: None,
-            compat: None,
-        }
-    }
-
     // ============================================================
     // map_stop_reason tests
     // ============================================================

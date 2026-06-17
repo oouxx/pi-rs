@@ -889,7 +889,7 @@ pub fn stream_simple_anthropic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModelCost, UsageCost};
+    use crate::types::{ModelCost};
 
     fn make_test_model() -> Model {
         Model {

@@ -11,6 +11,9 @@ use std::sync::Arc;
 use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::service::{Peer, RoleClient, RunningService};
 use rmcp::transport::child_process::TokioChildProcess;
+use rmcp::transport::streamable_http_client::{
+    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+};
 use rmcp::ServiceExt;
 use serde::{Deserialize, Serialize};
 
@@ -164,11 +167,35 @@ pub async fn load_mcp_tools_from_config(config: &McpConfig) -> Result<McpTools, 
                     tool_names,
                 });
             }
-            McpServerConfig::Http { url, headers: _ } => {
-                return Err(McpError::Config(format!(
-                    "HTTP MCP servers not yet supported: {} ({})",
-                    name, url
-                )));
+            McpServerConfig::Http { url, .. } => {
+                let transport = StreamableHttpClientTransport::from_config(
+                    StreamableHttpClientTransportConfig::with_uri(url.clone()),
+                );
+
+                let service = ()
+                    .serve(transport)
+                    .await
+                    .map_err(|e| McpError::Connection(format!("{}: {}", name, e)))?;
+
+                let peer = service.peer().clone();
+
+                let tools = peer
+                    .list_all_tools()
+                    .await
+                    .map_err(|e| McpError::Connection(format!("{}: {}", name, e)))?;
+
+                let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+
+                for tool in &tools {
+                    all_tools.push(wrap_mcp_tool(name.clone(), tool, peer.clone()));
+                }
+
+                connections.push(McpServerConnection {
+                    name: name.clone(),
+                    peer,
+                    _service: service,
+                    tool_names,
+                });
             }
         }
     }

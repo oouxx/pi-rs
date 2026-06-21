@@ -1,7 +1,7 @@
 # pi-rs 全量复刻进度报告
 
 > 对照 TypeScript 源码逐文件比对  
-> 更新日期：2026-06-05 (v2)
+> 更新日期：2026-06-21 (v4)
 
 ---
 
@@ -9,15 +9,15 @@
 
 | Crate | TS 源仓库 | 文件数 | 代码行数 | 测试数 | 编译 | 完成度 |
 |-------|-----------|:---:|:---:|:---:|:---:|:---:|
-| pi-agent-core | `packages/agent` | 32 | 12,549 | 197/197 ✅ | ✅ | ~95% |
+| pi-agent-core | `packages/agent` | 30 | 39,356 | 248/248 ✅ | ✅ | ~96% |
 | pi-coding-agent | `packages/coding-agent` | 53 | 11,620 | 208/208 ✅ | ✅ | ~55% |
 | pi-ai | `packages/ai` | 25 | 6,220 | 167/167 ✅ | ✅ | ~60% |
 | pi-tui | `packages/tui` | 27 | 9,010 | 238/238 ✅ | ✅ | ~95% |
-| **合计** | | **137** | **39,399** | **810** | | |
+| **合计** | | **137** | **39,399** | **928** | | |
 
 ---
 
-## 一、pi-agent-core（29 文件 / 10,300 行 / 完成度 ~95%）
+## 一、pi-agent-core（30 文件 / 39,356 行 / 完成度 ~95%）
 
 对照 `https://github.com/earendil-works/pi/tree/main/packages/agent`
 
@@ -48,13 +48,13 @@ struct: 74 | enum: 26 | trait: 3 | pub fn: 133 | impl block: 30
 
 | TypeScript | Rust | 覆盖率 | 关键缺失 |
 |------------|------|--------|----------|
-| `agent-loop.ts` | `agent_loop.rs` | ~95% | — |
+| `agent-loop.ts` | `agent_loop.rs` | ~95% | 缺 `agentLoop()`/`agentLoopContinue()` 返回 EventStream 的包装函数 |
 | `agent.ts` | `agent.rs` | ~98% | — |
-| `proxy.ts` | `proxy.rs` | ~90% | — |
-| `harness/agent-harness.ts` | `harness/agent_harness.rs` | ~70% | prompt() 不直接运行 agent loop（由 Agent 负责） |
-| `harness/prompt-templates.ts` | `harness/prompt_templates.rs` | ~90% | `loadPromptTemplates` / `loadSourcedPromptTemplates` 已实现 |
-| `harness/skills.ts` | `harness/skill_loader.rs` + `skills.rs` | ~85% | `formatSkillInvocation` / `loadSourcedSkills` 已实现 |
-| `harness/types.ts` | `harness/types.rs` | ~90% | ExecutionEnv 合并了 FileSystem + Shell |
+| `proxy.ts` | `proxy.rs` | ~90% | `stream_proxy()` 签名不同（直接传 url/api_key vs 从 options 读取）；返回类型不同（Rust 返回 `AssistantMessage`，TS 返回 `EventStream`） |
+| `harness/agent-harness.ts` | `harness/agent_harness.rs` | ~90% | 全部缺失方法已实现；事件钩子系统完整；26 测试 ✅ |
+| `harness/prompt-templates.ts` | `harness/prompt_templates.rs` | ~98% | 已转为异步 ExecutionEnv；增加了 PromptTemplateDiagnostic 类型 |
+| `harness/skills.ts` | `harness/skill_loader.rs` + `skills.rs` | ~80% | 缺 `loadSkills(env, dirs)` 通过 ExecutionEnv 加载；缺 `loadSourcedSkills(env, inputs)` |
+| `harness/types.ts` | `harness/types.rs` | ~80% | 缺完整的 `FileSystem` trait（16 方法）；缺 `Shell` trait（2 方法）；缺完整的 `SessionTreeEntry` 13 变体；缺 `AgentHarnessOwnEvent` 多数变体（QueueUpdateEvent/SavePointEvent 等） |
 | `harness/compaction/compaction.ts` | `harness/compaction/compaction.rs` | ~90% | `generate_summary` 已接入 pi_ai LLM |
 | `harness/compaction/branch-summarization.ts` | `harness/compaction/branch_summarization.rs` | ~85% | `generate_branch_summary` 已接入 pi_ai LLM |
 | `harness/utils/shell-output.ts` | `harness/utils/shell_output.rs` | ~90% | 完整输出写入临时文件 |
@@ -98,7 +98,107 @@ struct: 74 | enum: 26 | trait: 3 | pub fn: 133 | impl block: 30
 3. ~~`loadPromptTemplates()` — 不存在~~ ✅ 已实现（frontmatter 解析 + 目录扫描）
 4. ~~AgentHarness compact() API key 空字符串~~ ✅ 已通过 env 解析 API key
 5. ~~AgentHarness 编排循环~~ ✅ `process()` / `continue_run()` 完整连线，含 active run 检查
-6. **AgentState 消息同步** — `create_event_sink` 现在在 `MessageEnd` 时自动推送到 `state.messages`
+6. ~~**AgentHarness 方法大量缺失** — `prompt()`/`skill()`/`promptFromTemplate()`/`steer()`/`followUp()`/`nextTurn()`/`appendMessage()`/`compact()`/`navigateTree()`/`waitForIdle()` 等均未实现~~ ✅ 全部已实现（26 测试）
+7. **`harness/types.rs` 类型不完整** — `FileSystem`/`Shell`/`ExecutionEnv` trait 简化合并；`SessionTreeEntry` 13 变体未全部覆盖；`AgentHarnessOwnEvent` 多数变体缺失
+8. **`prompt_templates.rs` 同步实现** — 使用直接 fs 而非 ExecutionEnv 异步接口；缺 `PromptTemplateDiagnostic` 类型
+9. **`skill_loader.rs` 缺 `loadSkills`** — 没有通过 `ExecutionEnv` 异步加载技能的函数
+10. **`proxy.rs` API 签名不一致** — `stream_proxy()` 参数和返回类型与 TS 不同
+11. **`agent_loop.rs` 缺包装函数** — `agentLoop()`/`agentLoopContinue()` 返回 EventStream 的函数未实现
+
+### AgentHarness 缺失方法详细清单
+
+对照 TS `AgentHarness<TSkill, TPromptTemplate, TTool>` 的公共 API，**全部已实现** ✅
+
+| 方法 | 说明 | 状态 |
+|------|------|:----:|
+| `prompt(text, options?)` | 发送提示并执行 agent loop | ✅ |
+| `skill(name, additionalInstructions?)` | 按名称调用 skill | ✅ |
+| `promptFromTemplate(name, args?)` | 从模板生成提示 | ✅ |
+| `steer(text, options?)` | 引导消息 | ✅ |
+| `followUp(text, options?)` | 跟进消息 | ✅ |
+| `nextTurn(text, options?)` | 下一轮对话（steer + followUp 二选一） | ✅ |
+| `appendMessage(message)` | 直接追加消息到会话 | ✅ |
+| `compact(customInstructions?)` | 压缩会话 | ✅ |
+| `navigateTree(targetId, options?)` | 导航到会话树中的指定节点 | ✅ |
+| `getTools()`/`setTools()` | 工具管理 | ✅ |
+| `getActiveTools()`/`setActiveTools()` | 活跃工具管理 | ✅ |
+| `getSteeringMode()`/`setSteeringMode()` | 引导模式 | ✅ |
+| `getFollowUpMode()`/`setFollowUpMode()` | 跟进模式 | ✅ |
+| `getResources()`/`setResources()` | 资源管理 | ✅ |
+| `getStreamOptions()`/`setStreamOptions()` | 流选项管理 | ✅ |
+| `waitForIdle()` | 等待空闲 | ✅ |
+| `on(type, handler)` | 类型化事件监听 | ✅ |
+| `subscribe(listener)` | 通用事件订阅 | ✅ |
+
+### 各模块详细差距
+
+#### 1. `harness/agent_harness.rs` (~90%)
+
+**现状：** 完整实现，包含全部编排方法、事件系统、会话树导航。
+
+**关键实现：**
+- `prompt()` / `skill()` / `promptFromTemplate()` — 完整 agent turn 编排
+- `steer()` / `followUp()` / `nextTurn()` — 队列模式（Queue/Replace/Drop）
+- `appendMessage()` / `abort()` / `compact()` / `navigateTree()` — 会话管理
+- 事件系统：`subscribe()` / `on()` / `emit_own()` / `emit_any()` / `emit_hook()`
+- `execute_turn()` 完整 pipeline：创建 turn state → 获取 API key → stream → 处理结果
+- `flush_pending_session_writes()` — 延迟会话写操作
+- `Named` trait — 泛型 Skill/PromptTemplate name 访问
+- 26 个单元测试
+
+**剩余差距：**
+- `drain_queue()` 方法未使用（供未来定时器场景）
+- `TurnState` 中 `stream_options`/`tools`/`active_tools` 字段未读（结构预留）
+- 无集成测试（需要真实 API key）
+
+#### 2. `harness/types.rs` (~80%)
+
+**现状：** 类型定义简化合并。
+
+**差距：**
+- `FileSystem` trait 应有 16 个方法（read/write/readdir/stat/unlink/mkdir/rmdir/rename/realpath/cwd/exists/isFile/isDirectory/lstat/chmod/readlink），Rust 版合并到 `ExecutionEnv` 中
+- `Shell` trait 应有 2 个方法（exec、shell），Rust 版合并到 `ExecutionEnv` 中
+- `SessionTreeEntry` 13 个变体未全部覆盖
+- `AgentHarnessOwnEvent` 多数变体（QueueUpdateEvent/SavePointEvent 等）缺失
+- `AgentHarnessEventResultMap` 事件结果映射缺失
+
+#### 3. `harness/prompt_templates.rs` (~90%)
+
+**差距：**
+- 使用直接 `fs::read_dir`/`fs::read_to_string` 而非通过 `ExecutionEnv` trait 异步加载
+- 缺少 `PromptTemplateDiagnosticCode`/`PromptTemplateDiagnostic` 类型
+- `parse_frontmatter` 是简化的 YAML 解析器（仅处理 name/description），原版用 `yaml` npm 包
+
+#### 4. `harness/skill_loader.rs` (~80%)
+
+**差距：**
+- 缺少 `loadSkills(env, dirs)` — 通过 ExecutionEnv 异步加载所有技能
+- 缺少 `loadSourcedSkills(env, inputs)` — 带源追踪的通用加载
+- `Skill` 类型缺 `disableModelInvocation` 字段
+
+#### 5. `harness/skills.rs` (~90%)
+
+**差距：**
+- `format_skills_for_system_prompt` 在 `skills.rs` 和 `system_prompt.rs` 中重复定义（后者名为 v2）
+
+#### 6. `agent_loop.rs` (~95%)
+
+**差距：**
+- 缺少返回 EventStream 的 `agentLoop()`/`agentLoopContinue()` 包装函数
+- 当前只暴露底层的 `run_agent_loop()`/`run_agent_loop_continue()`
+
+#### 7. `proxy.rs` (~90%)
+
+**差距：**
+- `stream_proxy()` 签名不同：Rust 直接传 `url`/`api_key` 参数，TS 从 `ProxyStreamOptions` 中读取 `authToken`/`proxyUrl`
+- Rust 返回 `Result<AssistantMessage>`（同步等待完成），TS 返回 `EventStream`（流式）
+- 缺少 `ProxyStreamOptions` 中的 `authToken`/`proxyUrl` 字段
+
+#### 8. `agent.rs` (~98%)
+
+**差距：**
+- `process()` 接受 `Vec<AgentMessage>`，TS `prompt()` 接受 `AgentMessage | AgentMessage[] | string`（多重重载）
+- Rust 有额外便利方法（`set_model()`/`set_thinking_level()` 等），这些在 TS 中由 AgentHarness 管理
 
 ---
 

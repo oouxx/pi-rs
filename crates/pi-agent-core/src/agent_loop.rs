@@ -1,4 +1,8 @@
+use std::pin::Pin;
 use std::sync::Arc;
+
+use futures::Stream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::pi_ai_types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Model, StopReason, ThinkingLevel,
@@ -696,6 +700,7 @@ fn agent_message_from_assistant(msg: &AssistantMessage) -> AgentMessage {
     }
 }
 
+#[derive(Clone)]
 pub struct AgentLoopConfig {
     pub model: Model,
     pub reasoning: Option<ThinkingLevel>,
@@ -792,6 +797,83 @@ pub async fn run_agent_loop_continue(
     .await?;
 
     Ok(new_messages)
+}
+
+/// Wrapper that spawns `run_agent_loop` in the background and returns a stream of `AgentEvent`s.
+/// The stream ends with `AgentEvent::AgentEnd` which contains the final messages.
+pub fn agent_loop(
+    prompts: Vec<AgentMessage>,
+    context: AgentContext,
+    config: AgentLoopConfig,
+    signal: Option<tokio::sync::watch::Receiver<bool>>,
+    stream_fn: StreamFn,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+    tokio::spawn(async move {
+        let emit: AgentEventSink = Arc::new({
+            let tx = tx.clone();
+            move |event| {
+                let _ = tx.send(event);
+                Box::pin(async {}) as Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            }
+        });
+
+        let _ = run_agent_loop(
+            prompts,
+            context,
+            &config,
+            &emit,
+            &signal,
+            &stream_fn,
+        )
+        .await;
+    });
+
+    Box::pin(UnboundedReceiverStream::new(rx))
+}
+
+/// Wrapper that spawns `run_agent_loop_continue` in the background and returns a stream of `AgentEvent`s.
+/// The stream ends with `AgentEvent::AgentEnd` which contains the final messages.
+///
+/// # Panics
+/// Panics if `context.messages` is empty or the last message has role "assistant" —
+/// matching the TypeScript `agentLoopContinue` behavior.
+pub fn agent_loop_continue(
+    context: AgentContext,
+    config: AgentLoopConfig,
+    signal: Option<tokio::sync::watch::Receiver<bool>>,
+    stream_fn: StreamFn,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    assert!(!context.messages.is_empty(), "Cannot continue: no messages in context");
+    assert_ne!(
+        context.messages.last().map(|m| m.role()),
+        Some("assistant"),
+        "Cannot continue from message role: assistant"
+    );
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+    tokio::spawn(async move {
+        let emit: AgentEventSink = Arc::new({
+            let tx = tx.clone();
+            move |event| {
+                let _ = tx.send(event);
+                Box::pin(async {}) as Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            }
+        });
+
+        let _ = run_agent_loop_continue(
+            context,
+            &config,
+            &emit,
+            &signal,
+            &stream_fn,
+        )
+        .await;
+    });
+
+    Box::pin(UnboundedReceiverStream::new(rx))
 }
 
 async fn run_loop(
@@ -1970,5 +2052,142 @@ mod tests {
         .await;
 
         assert_eq!(batch.messages.len(), 1);
+    }
+
+    // ============================================================
+    // agent_loop / agent_loop_continue wrapper tests
+    // ============================================================
+
+    /// Create a StreamFn that returns immediately with an empty assistant message (no tool calls).
+    fn empty_stream_fn() -> StreamFn {
+        Arc::new(|_model, _context, _thinking, _opts| {
+            let stream: crate::pi_ai_types::StreamResponse = Box::new(futures::stream::empty());
+            Box::pin(async move { Ok(stream) })
+        })
+    }
+
+    fn minimal_loop_config() -> AgentLoopConfig {
+        AgentLoopConfig {
+            model: Model {
+                id: "test".into(),
+                name: "test".into(),
+                api: "test".into(),
+                provider: "test".into(),
+                base_url: "https://test.com".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec![],
+                cost: crate::pi_ai_types::ModelCost {
+                    input: 0.0,
+                    output: 0.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+                context_window: 100000,
+                max_tokens: 4096,
+                headers: None,
+                compat: None,
+            },
+            reasoning: None,
+            api_key: None,
+            session_id: None,
+            thinking_budgets: None,
+            transport: None,
+            max_retry_delay_ms: None,
+            tool_execution: ToolExecutionMode::Parallel,
+            convert_to_llm: Arc::new(|_msgs| vec![]),
+            transform_context: None,
+            get_api_key: None,
+            get_steering_messages: None,
+            get_follow_up_messages: None,
+            should_stop_after_turn: None,
+            prepare_next_turn: None,
+            before_tool_call: None,
+            after_tool_call: None,
+            on_payload: None,
+            on_response: None,
+            max_consecutive_tool_calls: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_wrapper_emits_events() {
+        use futures::StreamExt;
+
+        let context = AgentContext {
+            system_prompt: "test".into(),
+            messages: vec![],
+            tools: vec![].into(),
+        };
+
+        let prompt = AgentMessage::User {
+            content: vec![],
+            timestamp: 1000,
+        };
+
+        let stream = agent_loop(
+            vec![prompt],
+            context,
+            minimal_loop_config(),
+            None,
+            empty_stream_fn(),
+        );
+
+        let events: Vec<AgentEvent> = stream.collect().await;
+
+        // Should at minimum contain AgentStart and AgentEnd
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot continue: no messages in context")]
+    fn test_agent_loop_continue_empty_context() {
+        let context = AgentContext {
+            system_prompt: "".into(),
+            messages: vec![],
+            tools: vec![].into(),
+        };
+        let _stream = agent_loop_continue(context, minimal_loop_config(), None, empty_stream_fn());
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot continue from message role: assistant")]
+    fn test_agent_loop_continue_assistant_context() {
+        let context = AgentContext {
+            system_prompt: "".into(),
+            messages: vec![AgentMessage::Assistant {
+                content: vec![],
+                api: "t".into(),
+                provider: "t".into(),
+                model: "t".into(),
+                usage: Usage::default(),
+                stop_reason: Some(StopReason::Stop),
+                error_message: None,
+                timestamp: 0,
+            }],
+            tools: vec![].into(),
+        };
+        let _stream = agent_loop_continue(context, minimal_loop_config(), None, empty_stream_fn());
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_continue_wrapper_emits_events() {
+        use futures::StreamExt;
+
+        let context = AgentContext {
+            system_prompt: "test".into(),
+            messages: vec![AgentMessage::User {
+                content: vec![],
+                timestamp: 1000,
+            }],
+            tools: vec![].into(),
+        };
+
+        let stream = agent_loop_continue(context, minimal_loop_config(), None, empty_stream_fn());
+        let events: Vec<AgentEvent> = stream.collect().await;
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
     }
 }

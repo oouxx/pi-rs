@@ -30,7 +30,9 @@ pub use messages::{
     BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX,
 };
 pub use prompt_templates::{
-    format_prompt_template_invocation, parse_command_args, substitute_args,
+    format_prompt_template_invocation, load_prompt_templates, load_sourced_prompt_templates,
+    parse_command_args, substitute_args, PromptTemplateDiagnostic, SourcedPromptTemplateDiagnostic,
+    SourcedTemplateInput,
 };
 pub use session::jsonl_repo::JsonlSessionRepo;
 pub use session::jsonl_storage::JsonlSessionStorage;

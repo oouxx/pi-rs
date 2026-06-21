@@ -1,92 +1,161 @@
-use crate::harness::types::PromptTemplate;
-use std::fs;
-use std::path::Path;
+use crate::harness::types::{ExecutionEnv, PromptTemplate};
+
+#[derive(Debug, Clone)]
+pub struct PromptTemplateDiagnostic {
+    pub diagnostic_type: String,
+    pub code: String,
+    pub message: String,
+    pub path: String,
+}
 
 pub fn format_prompt_template_invocation(template: &PromptTemplate, args: &[String]) -> String {
     substitute_args(&template.content, args)
 }
 
-/// Load prompt templates from a directory.
+/// Load prompt templates from a directory using the provided ExecutionEnv.
 ///
 /// Scans for `.md` files, parses YAML frontmatter (delimited by `---`) for
 /// `name` and `description` fields, and uses the remaining content as the
 /// template body. Files without frontmatter are skipped.
 ///
-/// Template bodies support substitution variables: `$1`, `$2`, `$@`, `$ARGUMENTS`, `${@:N}`.
-pub fn load_prompt_templates(templates_dir: &Path) -> Vec<PromptTemplate> {
+/// Returns both loaded templates and any diagnostics (warnings/errors).
+pub async fn load_prompt_templates(
+    env: &dyn ExecutionEnv,
+    path: &str,
+) -> (Vec<PromptTemplate>, Vec<PromptTemplateDiagnostic>) {
     let mut templates = Vec::new();
+    let mut diagnostics = Vec::new();
 
-    let entries = match fs::read_dir(templates_dir) {
+    let entries = match env.list_dir(path).await {
         Ok(entries) => entries,
-        Err(_) => return templates,
+        Err(e) => {
+            diagnostics.push(PromptTemplateDiagnostic {
+                diagnostic_type: "warning".to_string(),
+                code: "list_dir_failed".to_string(),
+                message: e.message,
+                path: path.to_string(),
+            });
+            return (templates, diagnostics);
+        }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
+    for entry in entries {
+        if entry.kind != "file" {
             continue;
         }
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+        if !entry.name.ends_with(".md") {
             continue;
         }
 
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let (name, description, body) = parse_frontmatter(&content);
-
-        if let Some(name) = name {
-            templates.push(PromptTemplate {
-                name,
-                description: description.unwrap_or_default(),
-                content: body,
-            });
+        let (tmpl, mut diags) = load_prompt_template_from_file(env, &entry.path).await;
+        diagnostics.append(&mut diags);
+        if let Some(t) = tmpl {
+            templates.push(t);
         }
     }
 
-    templates
+    (templates, diagnostics)
+}
+
+async fn load_prompt_template_from_file(
+    env: &dyn ExecutionEnv,
+    file_path: &str,
+) -> (Option<PromptTemplate>, Vec<PromptTemplateDiagnostic>) {
+    let mut diagnostics = Vec::new();
+
+    let content = match env.read_text_file(file_path, None).await {
+        Ok(c) => c,
+        Err(e) => {
+            diagnostics.push(PromptTemplateDiagnostic {
+                diagnostic_type: "warning".to_string(),
+                code: "read_failed".to_string(),
+                message: e.message,
+                path: file_path.to_string(),
+            });
+            return (None, diagnostics);
+        }
+    };
+
+    let (name, description, body, has_frontmatter) = parse_frontmatter(&content);
+
+    let name = match name {
+        Some(n) => n,
+        None => {
+            if has_frontmatter {
+                diagnostics.push(PromptTemplateDiagnostic {
+                    diagnostic_type: "warning".to_string(),
+                    code: "missing_name".to_string(),
+                    message: "No name found in frontmatter, skipping".to_string(),
+                    path: file_path.to_string(),
+                });
+            }
+            return (None, diagnostics);
+        }
+    };
+
+    (
+        Some(PromptTemplate {
+            name,
+            description: description.unwrap_or_default(),
+            content: body,
+        }),
+        diagnostics,
+    )
 }
 
 /// A sourced template input: a directory path and its source identifier.
 #[derive(Debug, Clone)]
 pub struct SourcedTemplateInput<S: Clone = String> {
-    pub path: std::path::PathBuf,
+    pub path: String,
+    pub source: S,
+}
+
+/// A sourced prompt template diagnostic.
+#[derive(Debug, Clone)]
+pub struct SourcedPromptTemplateDiagnostic<S: Clone = String> {
+    pub diagnostic: PromptTemplateDiagnostic,
     pub source: S,
 }
 
 /// Load prompt templates from multiple source directories, tracking origin.
-pub fn load_sourced_prompt_templates<S: Clone>(
+pub async fn load_sourced_prompt_templates<S: Clone>(
+    env: &dyn ExecutionEnv,
     inputs: &[SourcedTemplateInput<S>],
-) -> Vec<(PromptTemplate, S)> {
+) -> (Vec<(PromptTemplate, S)>, Vec<SourcedPromptTemplateDiagnostic<S>>) {
     let mut templates = Vec::new();
+    let mut diagnostics = Vec::new();
 
     for input in inputs {
-        let loaded = load_prompt_templates(&input.path);
-        for template in loaded {
+        let (mut t, mut d) = load_prompt_templates(env, &input.path).await;
+        for template in t.drain(..) {
             templates.push((template, input.source.clone()));
+        }
+        for diag in d.drain(..) {
+            diagnostics.push(SourcedPromptTemplateDiagnostic {
+                diagnostic: diag,
+                source: input.source.clone(),
+            });
         }
     }
 
-    templates
+    (templates, diagnostics)
 }
 
 /// Parse YAML-like frontmatter from markdown text.
 ///
 /// Frontmatter is delimited by `---` at the start of the file.
 /// Returns `(name, description, body)` extracted from the frontmatter and remaining text.
-fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String) {
+fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String, bool) {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        return (None, None, content.to_string());
+        return (None, None, content.to_string(), false);
     }
 
     // Find the closing ---
     let after_first = &trimmed[3..];
     let end_marker = after_first.find("\n---");
     if end_marker.is_none() {
-        return (None, None, content.to_string());
+        return (None, None, content.to_string(), true);
     }
 
     let end_idx = end_marker.unwrap();
@@ -109,7 +178,7 @@ fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String) 
         }
     }
 
-    (name, description, body)
+    (name, description, body, true)
 }
 
 pub fn substitute_args(content: &str, args: &[String]) -> String {
@@ -187,7 +256,23 @@ pub fn parse_command_args(args_string: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::env::nodejs::NodeExecutionEnv;
     use crate::harness::types::PromptTemplate;
+    use tokio::fs;
+
+    /// Helper to create a temp dir with test template files using NodeExecutionEnv.
+    async fn setup_test_env(dir_name: &str, files: &[(&str, &str)]) -> (NodeExecutionEnv, String) {
+        let base = std::env::temp_dir().join("pi_test_prompt_templates").join(dir_name);
+        let _ = fs::remove_dir_all(&base).await;
+        fs::create_dir_all(&base).await.unwrap();
+        for (name, content) in files {
+            fs::write(base.join(name), content).await.unwrap();
+        }
+        let env = NodeExecutionEnv::new(&base);
+        (env, base.to_str().unwrap().to_string())
+    }
+
+    // --- substitute_args tests (unchanged) ---
 
     #[test]
     fn test_substitute_args_positional() {
@@ -330,13 +415,14 @@ mod tests {
     }
 
     // ============================================================
-    // Tests for frontmatter parsing and template loading
+    // Tests for frontmatter parsing
     // ============================================================
 
     #[test]
     fn test_parse_frontmatter_basic() {
         let content = "---\nname: review\ndescription: Review code\n---\nReview $1 with $ARGUMENTS";
-        let (name, description, body) = parse_frontmatter(content);
+        let (name, description, body, has_fm) = parse_frontmatter(content);
+        assert!(has_fm);
         assert_eq!(name, Some("review".to_string()));
         assert_eq!(description, Some("Review code".to_string()));
         assert_eq!(body, "Review $1 with $ARGUMENTS");
@@ -345,7 +431,8 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_no_name() {
         let content = "---\ndescription: Just a description\n---\nBody text";
-        let (name, description, _body) = parse_frontmatter(content);
+        let (name, description, _body, has_fm) = parse_frontmatter(content);
+        assert!(has_fm);
         assert_eq!(name, None);
         assert_eq!(description, Some("Just a description".to_string()));
     }
@@ -353,7 +440,8 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_no_frontmatter() {
         let content = "Just plain text without frontmatter";
-        let (name, description, body) = parse_frontmatter(content);
+        let (name, description, body, has_fm) = parse_frontmatter(content);
+        assert!(!has_fm);
         assert_eq!(name, None);
         assert_eq!(description, None);
         assert_eq!(body, "Just plain text without frontmatter");
@@ -362,7 +450,8 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_unclosed() {
         let content = "---\nname: test\nBody text without closing marker";
-        let (name, _description, body) = parse_frontmatter(content);
+        let (name, _description, body, has_fm) = parse_frontmatter(content);
+        assert!(has_fm);
         assert_eq!(name, None);
         assert_eq!(body, content);
     }
@@ -370,7 +459,8 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_with_extra_fields() {
         let content = "---\nname: template1\ndescription: A template\ntools: [bash, read]\n---\nTemplate body";
-        let (name, description, body) = parse_frontmatter(content);
+        let (name, description, body, has_fm) = parse_frontmatter(content);
+        assert!(has_fm);
         assert_eq!(name, Some("template1".to_string()));
         assert_eq!(description, Some("A template".to_string()));
         assert_eq!(body, "Template body");
@@ -379,54 +469,109 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_multiline_body() {
         let content = "---\nname: multi\n---\nLine 1\nLine 2\nLine 3";
-        let (name, _description, body) = parse_frontmatter(content);
+        let (name, _description, body, has_fm) = parse_frontmatter(content);
+        assert!(has_fm);
         assert_eq!(name, Some("multi".to_string()));
         assert!(body.contains("Line 1"));
         assert!(body.contains("Line 3"));
     }
 
-    #[test]
-    fn test_load_prompt_templates_empty_dir() {
-        let dir = std::env::temp_dir().join("pi_test_templates_empty");
-        let _ = fs::create_dir_all(&dir);
-        let templates = load_prompt_templates(&dir);
+    // ============================================================
+    // Tests for async template loading with NodeExecutionEnv
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_load_prompt_templates_empty_dir() {
+        let (env, path) = setup_test_env("empty_dir", &[]).await;
+        let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
         assert!(templates.is_empty());
-        let _ = fs::remove_dir_all(&dir);
+        assert!(diagnostics.is_empty());
+        let _ = fs::remove_dir_all(&path).await;
     }
 
-    #[test]
-    fn test_load_prompt_templates_with_file() {
-        let dir = std::env::temp_dir().join("pi_test_templates_load");
-        let _ = fs::create_dir_all(&dir);
-        let content = "---\nname: hello\ndescription: Say hello\n---\nHello $1!";
-        fs::write(dir.join("hello.md"), content).unwrap();
-        let templates = load_prompt_templates(&dir);
+    #[tokio::test]
+    async fn test_load_prompt_templates_with_file() {
+        let (env, path) = setup_test_env("with_file", &[
+            ("hello.md", "---\nname: hello\ndescription: Say hello\n---\nHello $1!"),
+        ]).await;
+        let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
+        assert!(diagnostics.is_empty());
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, "hello");
         assert_eq!(templates[0].description, "Say hello");
         assert_eq!(templates[0].content, "Hello $1!");
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&path).await;
     }
 
-    #[test]
-    fn test_load_prompt_templates_skips_no_frontmatter() {
-        let dir = std::env::temp_dir().join("pi_test_templates_skip");
-        let _ = fs::create_dir_all(&dir);
-        fs::write(dir.join("no_fm.md"), "Just text without frontmatter").unwrap();
-        fs::write(dir.join("has_fm.md"), "---\nname: ok\n---\nTemplate body").unwrap();
-        let templates = load_prompt_templates(&dir);
+    #[tokio::test]
+    async fn test_load_prompt_templates_skips_no_frontmatter() {
+        let (env, path) = setup_test_env("skip_no_fm", &[
+            ("no_fm.md", "Just text without frontmatter"),
+            ("has_fm.md", "---\nname: ok\n---\nTemplate body"),
+        ]).await;
+        let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, "ok");
-        let _ = fs::remove_dir_all(&dir);
+        // no_fm.md should not produce a diagnostic — it's silently skipped (no `---`)
+        assert!(diagnostics.is_empty());
+        let _ = fs::remove_dir_all(&path).await;
     }
 
-    #[test]
-    fn test_load_prompt_templates_skips_non_md() {
-        let dir = std::env::temp_dir().join("pi_test_templates_non_md");
-        let _ = fs::create_dir_all(&dir);
-        fs::write(dir.join("template.txt"), "---\nname: test\n---\nBody").unwrap();
-        let templates = load_prompt_templates(&dir);
+    #[tokio::test]
+    async fn test_load_prompt_templates_skips_non_md() {
+        let (env, path) = setup_test_env("skip_non_md", &[
+            ("template.txt", "---\nname: test\n---\nBody"),
+        ]).await;
+        let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
         assert!(templates.is_empty());
-        let _ = fs::remove_dir_all(&dir);
+        assert!(diagnostics.is_empty());
+        let _ = fs::remove_dir_all(&path).await;
+    }
+
+    #[tokio::test]
+    async fn test_load_prompt_templates_diagnostic_on_missing_name() {
+        let (env, path) = setup_test_env("missing_name", &[
+            ("no_name.md", "---\ndescription: no name\n---\nBody"),
+        ]).await;
+        let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
+        assert!(templates.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "missing_name");
+        let _ = fs::remove_dir_all(&path).await;
+    }
+
+    #[tokio::test]
+    async fn test_load_sourced_prompt_templates() {
+        let (env, path_a) = setup_test_env("sourced_a", &[
+            ("a.md", "---\nname: a\n---\nTemplate A"),
+        ]).await;
+        let (_, path_b) = setup_test_env("sourced_b", &[
+            ("b.md", "---\nname: b\n---\nTemplate B"),
+        ]).await;
+
+        let inputs = vec![
+            SourcedTemplateInput { path: path_a.clone(), source: "source_a".to_string() },
+            SourcedTemplateInput { path: path_b.clone(), source: "source_b".to_string() },
+        ];
+
+        let (templates, diagnostics) = load_sourced_prompt_templates(&env, &inputs).await;
+        assert!(diagnostics.is_empty());
+        assert_eq!(templates.len(), 2);
+        assert_eq!(templates[0].0.name, "a");
+        assert_eq!(templates[0].1, "source_a");
+        assert_eq!(templates[1].0.name, "b");
+        assert_eq!(templates[1].1, "source_b");
+
+        let _ = fs::remove_dir_all(&path_a).await;
+        let _ = fs::remove_dir_all(&path_b).await;
+    }
+
+    #[tokio::test]
+    async fn test_load_prompt_templates_nonexistent_dir() {
+        let env = NodeExecutionEnv::new("/nonexistent/path");
+        let (templates, diagnostics) = load_prompt_templates(&env, "/nonexistent/path").await;
+        assert!(templates.is_empty());
+        assert!(!diagnostics.is_empty());
+        assert_eq!(diagnostics[0].code, "list_dir_failed");
     }
 }

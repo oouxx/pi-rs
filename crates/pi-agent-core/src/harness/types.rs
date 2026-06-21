@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::pi_ai_types::{Model, ThinkingLevel};
-use crate::types::{AgentEvent, AgentMessage};
+use crate::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
+use crate::types::AgentMessage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Skill {
@@ -43,6 +43,13 @@ pub struct AgentHarnessStreamOptions {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub max_tokens: Option<u64>,
+    pub transport: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub max_retry_delay_ms: Option<u64>,
+    pub cache_retention: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub metadata: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -50,6 +57,36 @@ pub struct AgentHarnessStreamOptionsPatch {
     pub temperature: Option<Option<f64>>,
     pub top_p: Option<Option<f64>>,
     pub max_tokens: Option<Option<u64>>,
+    pub transport: Option<Option<String>>,
+    pub timeout_ms: Option<Option<u64>>,
+    pub max_retries: Option<Option<u32>>,
+    pub max_retry_delay_ms: Option<Option<u64>>,
+    pub cache_retention: Option<Option<String>>,
+    pub headers: Option<Option<HashMap<String, Option<String>>>>,
+    pub metadata: Option<Option<HashMap<String, Option<String>>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AgentHarnessPhase {
+    Idle,
+    Turn,
+    Compaction,
+    BranchSummary,
+}
+
+/// A deferred session write that is queued during an active turn
+/// and flushed when the turn ends.
+#[derive(Debug, Clone)]
+pub enum PendingSessionWrite {
+    Message { message: AgentMessage },
+    ModelChange { provider: String, model_id: String },
+    ThinkingLevelChange { thinking_level: String },
+    ActiveToolsChange { active_tool_names: Vec<String> },
+    Custom { custom_type: String, data: Option<serde_json::Value> },
+    CustomMessage { custom_type: String, content: serde_json::Value, display: bool, details: Option<serde_json::Value> },
+    Label { target_id: String, label: Option<String> },
+    SessionInfo { name: String },
+    Leaf { target_id: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,13 +95,18 @@ pub enum AgentHarnessOwnEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     QueueUpdate {
         steer_queue: Vec<AgentMessage>,
         follow_up_queue: Vec<AgentMessage>,
+        next_turn_queue: Vec<AgentMessage>,
     },
-    SavePoint,
+    SavePoint {
+        had_pending_mutations: bool,
+    },
     Abort {
         cleared_steer: Vec<AgentMessage>,
         cleared_follow_up: Vec<AgentMessage>,
     },
-    Settled,
+    Settled {
+        next_turn_count: usize,
+    },
     BeforeAgentStart {
         env: ExecutionEnvInfo,
         session: SessionInfo,
@@ -79,6 +121,8 @@ pub enum AgentHarnessOwnEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     BeforeProviderRequest {
         model: Model,
         thinking_level: ThinkingLevel,
+        session_id: String,
+        stream_options: AgentHarnessStreamOptions,
     },
     BeforeProviderPayload {
         payload: serde_json::Value,
@@ -86,6 +130,8 @@ pub enum AgentHarnessOwnEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     AfterProviderResponse {
         model: Model,
         thinking_level: ThinkingLevel,
+        status: u16,
+        headers: HashMap<String, String>,
     },
     ToolCall {
         tool_call_id: String,
@@ -103,20 +149,25 @@ pub enum AgentHarnessOwnEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     },
     SessionCompact {
         result: CompactResult,
+        from_hook: bool,
     },
     SessionBeforeTree {
         preparation: TreePreparation,
     },
     SessionTree {
-        summary: Option<String>,
+        new_leaf_id: Option<String>,
+        old_leaf_id: Option<String>,
+        summary_entry: Option<BranchSummaryEntry>,
+        from_hook: Option<bool>,
     },
     ModelUpdate {
         model: Model,
         previous_model: Model,
+        source: String,
     },
     ThinkingLevelUpdate {
-        thinking_level: ThinkingLevel,
-        previous_thinking_level: ThinkingLevel,
+        level: ThinkingLevel,
+        previous_level: ThinkingLevel,
     },
     ResourcesUpdate {
         resources: AgentHarnessResources<S, P>,
@@ -129,12 +180,6 @@ pub enum AgentHarnessOwnEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
         previous_active_tool_names: Vec<String>,
         source: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AgentHarnessEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
-    Agent(AgentEvent),
-    Own(AgentHarnessOwnEvent<S, P>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -378,6 +423,64 @@ pub struct BranchSummaryEntry {
     pub from_hook: Option<bool>,
 }
 
+// ============================================================
+// AgentHarnessEventResultMap — typed hook return values
+// ============================================================
+
+#[derive(Debug, Clone, Default)]
+pub struct ContextHookResult {
+    pub messages: Vec<AgentMessage>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolCallHookResult {
+    pub block: Option<bool>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolResultHookResult {
+    pub content: Option<Vec<ContentBlock>>,
+    pub details: Option<serde_json::Value>,
+    pub is_error: Option<bool>,
+    pub terminate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BeforeAgentStartHookResult {
+    pub system_prompt: Option<String>,
+    pub messages: Option<Vec<AgentMessage>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionBeforeCompactHookResult {
+    pub cancel: Option<bool>,
+    pub compaction: Option<CompactResult>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionBeforeTreeHookResult {
+    pub cancel: Option<bool>,
+    pub summary: Option<BranchSummaryHookResult>,
+    pub custom_instructions: Option<String>,
+    pub replace_instructions: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BranchSummaryHookResult {
+    pub summary: String,
+    pub details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BeforeProviderRequestHookResult {
+    pub stream_options: Option<AgentHarnessStreamOptionsPatch>,
+}
+
+// ============================================================
+// End of EventResultMap types
+// ============================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionMetadata {
     pub id: String,
@@ -446,6 +549,14 @@ pub enum HarnessError {
     Hook(String),
     #[error("agent: {0}")]
     Agent(String),
+    #[error("busy: {0}")]
+    Busy(String),
+    #[error("auth: {0}")]
+    Auth(String),
+    #[error("invalid_state: {0}")]
+    InvalidState(String),
+    #[error("branch_summary: {0}")]
+    BranchSummary(#[from] BranchSummaryError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1011,4 +1122,374 @@ pub struct BranchSummaryResult {
     pub summary: String,
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
+}
+
+// ============================================================
+// Helper functions
+// ============================================================
+
+pub fn create_user_message(text: &str, images: Option<Vec<ContentBlock>>) -> AgentMessage {
+    let mut content = vec![ContentBlock::Text {
+        text: text.to_string(),
+        text_signature: None,
+    }];
+    if let Some(imgs) = images {
+        content.extend(imgs);
+    }
+    AgentMessage::User {
+        content,
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+pub fn create_failure_message(model: &Model, error: &str, aborted: bool) -> AgentMessage {
+    AgentMessage::Assistant {
+        content: vec![ContentBlock::Text {
+            text: String::new(),
+            text_signature: None,
+        }],
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        usage: crate::pi_ai_types::Usage::default(),
+        stop_reason: Some(if aborted {
+            crate::pi_ai_types::StopReason::Aborted
+        } else {
+            crate::pi_ai_types::StopReason::Error
+        }),
+        error_message: Some(error.to_string()),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+pub fn clone_stream_options(options: &AgentHarnessStreamOptions) -> AgentHarnessStreamOptions {
+    AgentHarnessStreamOptions {
+        temperature: options.temperature,
+        top_p: options.top_p,
+        max_tokens: options.max_tokens,
+        transport: options.transport.clone(),
+        timeout_ms: options.timeout_ms,
+        max_retries: options.max_retries,
+        max_retry_delay_ms: options.max_retry_delay_ms,
+        cache_retention: options.cache_retention.clone(),
+        headers: options.headers.clone(),
+        metadata: options.metadata.clone(),
+    }
+}
+
+pub fn merge_headers(
+    headers: &[Option<HashMap<String, String>>],
+) -> Option<HashMap<String, String>> {
+    let mut merged: HashMap<String, String> = HashMap::new();
+    let mut has_headers = false;
+    for entry in headers {
+        if let Some(h) = entry {
+            for (k, v) in h {
+                merged.insert(k.clone(), v.clone());
+            }
+            has_headers = true;
+        }
+    }
+    if has_headers {
+        Some(merged)
+    } else {
+        None
+    }
+}
+
+pub fn find_duplicate_names(names: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicates = Vec::new();
+    for name in names {
+        if !seen.insert(name.clone()) {
+            duplicates.push(name.clone());
+        }
+    }
+    duplicates
+}
+
+pub fn apply_stream_options_patch(
+    base: &AgentHarnessStreamOptions,
+    patch: &AgentHarnessStreamOptionsPatch,
+) -> AgentHarnessStreamOptions {
+    let mut result = clone_stream_options(base);
+
+    if let Some(v) = &patch.temperature {
+        result.temperature = *v;
+    }
+    if let Some(v) = &patch.top_p {
+        result.top_p = *v;
+    }
+    if let Some(v) = &patch.max_tokens {
+        result.max_tokens = *v;
+    }
+    if let Some(v) = &patch.transport {
+        result.transport = v.clone();
+    }
+    if let Some(v) = &patch.timeout_ms {
+        result.timeout_ms = *v;
+    }
+    if let Some(v) = &patch.max_retries {
+        result.max_retries = *v;
+    }
+    if let Some(v) = &patch.max_retry_delay_ms {
+        result.max_retry_delay_ms = *v;
+    }
+    if let Some(v) = &patch.cache_retention {
+        result.cache_retention = v.clone();
+    }
+    if let Some(patch_headers) = &patch.headers {
+        match patch_headers {
+            None => result.headers = None,
+            Some(changes) => {
+                let mut headers = result.headers.clone().unwrap_or_default();
+                for (key, value) in changes {
+                    match value {
+                        None => {
+                            headers.remove(key);
+                        }
+                        Some(v) => {
+                            headers.insert(key.clone(), v.clone());
+                        }
+                    }
+                }
+                result.headers = if headers.is_empty() { None } else { Some(headers) };
+            }
+        }
+    }
+    if let Some(patch_meta) = &patch.metadata {
+        match patch_meta {
+            None => result.metadata = None,
+            Some(changes) => {
+                let mut metadata = result.metadata.clone().unwrap_or_default();
+                for (key, value) in changes {
+                    match value {
+                        None => {
+                            metadata.remove(key);
+                        }
+                        Some(v) => {
+                            metadata.insert(key.clone(), v.clone());
+                        }
+                    }
+                }
+                result.metadata = if metadata.is_empty() { None } else { Some(metadata) };
+            }
+        }
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn test_create_user_message_basic() {
+        let msg = create_user_message("hello", None);
+        assert!(matches!(msg, AgentMessage::User { .. }));
+        if let AgentMessage::User { content, .. } = &msg {
+            assert_eq!(content.len(), 1);
+            assert!(matches!(content[0], ContentBlock::Text { .. }));
+        }
+    }
+
+    #[test]
+    fn test_create_user_message_with_images() {
+        let img = ContentBlock::Image {
+            data: "base64data".into(),
+            mime_type: "image/png".into(),
+        };
+        let msg = create_user_message("hello", Some(vec![img]));
+        if let AgentMessage::User { content, .. } = &msg {
+            assert_eq!(content.len(), 2);
+            assert!(matches!(content[1], ContentBlock::Image { .. }));
+        }
+    }
+
+    #[test]
+    fn test_create_failure_message_aborted() {
+        let model = Model {
+            provider: "test".into(),
+            api: "test-api".into(),
+            id: "test-model".into(),
+            name: "Test Model".into(),
+            base_url: "https://test.com".into(),
+            context_window: 0,
+            max_tokens: 0,
+            cost: crate::pi_ai_types::ModelCost::default(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            headers: None,
+            compat: None,
+        };
+        let msg = create_failure_message(&model, "cancelled", true);
+        if let AgentMessage::Assistant { error_message, stop_reason, .. } = &msg {
+            assert_eq!(error_message.as_deref(), Some("cancelled"));
+            assert_eq!(*stop_reason, Some(crate::pi_ai_types::StopReason::Aborted));
+        } else {
+            panic!("Expected Assistant message");
+        }
+    }
+
+    #[test]
+    fn test_clone_stream_options() {
+        let opts = AgentHarnessStreamOptions {
+            temperature: Some(0.7),
+            top_p: None,
+            max_tokens: Some(4096),
+            transport: Some("websocket".into()),
+            timeout_ms: None,
+            max_retries: Some(3),
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: Some(HashMap::from([("X-Key".into(), "val".into())])),
+            metadata: None,
+        };
+        let cloned = clone_stream_options(&opts);
+        assert_eq!(cloned.temperature, Some(0.7));
+        assert_eq!(cloned.max_tokens, Some(4096));
+        assert_eq!(cloned.transport, Some("websocket".into()));
+        assert_eq!(cloned.headers.as_ref().unwrap().get("X-Key"), Some(&"val".into()));
+    }
+
+    #[test]
+    fn test_merge_headers_empty() {
+        let result = merge_headers(&[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_merge_headers_single() {
+        let h1 = Some(HashMap::from([("A".into(), "1".into())]));
+        let result = merge_headers(&[h1]);
+        assert_eq!(result.unwrap().get("A"), Some(&"1".into()));
+    }
+
+    #[test]
+    fn test_merge_headers_multiple() {
+        let h1 = Some(HashMap::from([("A".into(), "1".into())]));
+        let h2 = Some(HashMap::from([("B".into(), "2".into())]));
+        let result = merge_headers(&[h1, h2]);
+        let map = result.unwrap();
+        assert_eq!(map.get("A"), Some(&"1".into()));
+        assert_eq!(map.get("B"), Some(&"2".into()));
+    }
+
+    #[test]
+    fn test_find_duplicate_names() {
+        let names = vec!["a".into(), "b".into(), "a".into(), "c".into(), "b".into()];
+        let dups = find_duplicate_names(&names);
+        assert!(dups.contains(&"a".into()));
+        assert!(dups.contains(&"b".into()));
+        assert_eq!(dups.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicate_names_no_duplicates() {
+        let names = vec!["a".into(), "b".into(), "c".into()];
+        let dups = find_duplicate_names(&names);
+        assert!(dups.is_empty());
+    }
+
+    #[test]
+    fn test_apply_stream_options_patch() {
+        let base = AgentHarnessStreamOptions {
+            temperature: Some(0.5),
+            top_p: None,
+            max_tokens: Some(2048),
+            transport: None,
+            timeout_ms: None,
+            max_retries: None,
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: None,
+            metadata: None,
+        };
+        let patch = AgentHarnessStreamOptionsPatch {
+            temperature: Some(Some(0.7)),
+            top_p: Some(None),
+            max_tokens: Some(Some(4096)),
+            transport: Some(Some("sse".into())),
+            timeout_ms: Some(Some(30000)),
+            max_retries: None,
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: None,
+            metadata: None,
+        };
+        let result = apply_stream_options_patch(&base, &patch);
+        assert_eq!(result.temperature, Some(0.7));
+        assert_eq!(result.top_p, None);
+        assert_eq!(result.max_tokens, Some(4096));
+        assert_eq!(result.transport, Some("sse".into()));
+        assert_eq!(result.timeout_ms, Some(30000));
+    }
+
+    #[test]
+    fn test_apply_stream_options_patch_clear_value() {
+        let base = AgentHarnessStreamOptions {
+            temperature: Some(0.5),
+            top_p: Some(0.9),
+            max_tokens: None,
+            transport: None,
+            timeout_ms: None,
+            max_retries: None,
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: None,
+            metadata: None,
+        };
+        let patch = AgentHarnessStreamOptionsPatch {
+            temperature: Some(None),
+            top_p: None,
+            max_tokens: None,
+            transport: None,
+            timeout_ms: None,
+            max_retries: None,
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: None,
+            metadata: None,
+        };
+        let result = apply_stream_options_patch(&base, &patch);
+        assert_eq!(result.temperature, None);
+        assert_eq!(result.top_p, Some(0.9));
+    }
+
+    #[test]
+    fn test_apply_stream_options_patch_headers() {
+        let base = AgentHarnessStreamOptions {
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            transport: None,
+            timeout_ms: None,
+            max_retries: None,
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: Some(HashMap::from([("X-Keep".into(), "val".into())])),
+            metadata: None,
+        };
+        let patch = AgentHarnessStreamOptionsPatch {
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            transport: None,
+            timeout_ms: None,
+            max_retries: None,
+            max_retry_delay_ms: None,
+            cache_retention: None,
+            headers: Some(Some(HashMap::from([
+                ("X-Add".into(), Some("new".into())),
+                ("X-Keep".into(), None),
+            ]))),
+            metadata: None,
+        };
+        let result = apply_stream_options_patch(&base, &patch);
+        let headers = result.headers.unwrap();
+        assert_eq!(headers.get("X-Add"), Some(&"new".into()));
+        assert!(headers.get("X-Keep").is_none());
+    }
 }

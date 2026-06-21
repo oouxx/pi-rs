@@ -633,6 +633,40 @@ pub trait ExecutionEnv: Send + Sync {
         path: &str,
         options: Option<ReadTextFileOptions>,
     ) -> std::result::Result<String, FileError>;
+    async fn read_binary_file(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Vec<u8>, FileError> {
+        // Default: read as text and convert. Override for proper binary reading.
+        let content = self.read_text_file(path, None).await?;
+        Ok(content.into_bytes())
+    }
+    async fn read_text_lines(
+        &self,
+        path: &str,
+        options: Option<ReadTextFileOptions>,
+    ) -> std::result::Result<Vec<String>, FileError> {
+        let content = self.read_text_file(path, options).await?;
+        Ok(content.lines().map(|l| l.to_string()).collect())
+    }
+    async fn join_path(&self, parts: &[&str]) -> std::result::Result<String, FileError> {
+        let mut path = std::path::PathBuf::new();
+        for part in parts {
+            path.push(part);
+        }
+        Ok(path.to_string_lossy().to_string())
+    }
+    async fn absolute_path(&self, path: &str) -> std::result::Result<String, FileError> {
+        // Default: prepend cwd if path is relative, then canonicalize
+        let p = std::path::Path::new(path);
+        if p.is_relative() {
+            let mut abs = std::path::PathBuf::from(self.cwd());
+            abs.push(path);
+            Ok(abs.to_string_lossy().to_string())
+        } else {
+            Ok(path.to_string())
+        }
+    }
     async fn write_file(
         &self,
         path: &str,

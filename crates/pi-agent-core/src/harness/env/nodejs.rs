@@ -66,6 +66,52 @@ impl ExecutionEnv for NodeExecutionEnv {
         Ok(content)
     }
 
+    async fn read_binary_file(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Vec<u8>, FileError> {
+        let resolved = self.resolve_path(path);
+        fs::read(&resolved)
+            .await
+            .map_err(|e| to_file_error(e, path))
+    }
+
+    async fn read_text_lines(
+        &self,
+        path: &str,
+        options: Option<ReadTextFileOptions>,
+    ) -> std::result::Result<Vec<String>, FileError> {
+        let resolved = self.resolve_path(path);
+        let content = fs::read_to_string(&resolved)
+            .await
+            .map_err(|e| to_file_error(e, path))?;
+        let lines: Vec<&str> = match &options {
+            Some(opts) if opts.max_lines.is_some() => {
+                content.lines().take(opts.max_lines.unwrap()).collect()
+            }
+            _ => content.lines().collect(),
+        };
+        Ok(lines.iter().map(|l| l.to_string()).collect())
+    }
+
+    async fn join_path(&self, parts: &[&str]) -> std::result::Result<String, FileError> {
+        let mut path = self.cwd.clone();
+        for part in parts {
+            path.push(part);
+        }
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    async fn absolute_path(&self, path: &str) -> std::result::Result<String, FileError> {
+        let resolved = self.resolve_path(path);
+        // Like path.resolve() in TS: resolve relative paths against cwd,
+        // but don't follow symlinks (unlike canonical_path which uses realpath).
+        // Remove any ".." and "." components via normalization.
+        let components: Vec<_> = resolved.components().collect();
+        let normalized = components.iter().collect::<std::path::PathBuf>();
+        Ok(normalized.to_string_lossy().to_string())
+    }
+
     async fn write_file(
         &self,
         path: &str,

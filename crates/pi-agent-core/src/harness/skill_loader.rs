@@ -2,7 +2,7 @@ use crate::harness::types::ExecutionEnv;
 use crate::harness::types::Skill;
 
 const MAX_NAME_LENGTH: usize = 64;
-const MAX_DESCRIPTION_LENGTH: usize = 256;
+const MAX_DESCRIPTION_LENGTH: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub struct SkillDiagnostic {
@@ -61,13 +61,21 @@ async fn load_skills_from_directory(
     for entry in entries {
         if entry.kind == "directory" {
             let skill_file = format!("{}/SKILL.md", entry.path);
-            let result = load_skill_from_file(env, &skill_file).await;
+            let result = load_skill_from_file(env, &skill_file, None).await;
             diagnostics.extend(result.diagnostics);
             if let Some(skill) = result.skill {
                 skills.push(skill);
             }
         } else if entry.name == "SKILL.md" {
-            let result = load_skill_from_file(env, &entry.path).await;
+            let result = load_skill_from_file(env, &entry.path, None).await;
+            diagnostics.extend(result.diagnostics);
+            if let Some(skill) = result.skill {
+                skills.push(skill);
+            }
+        } else if entry.name.ends_with(".md") {
+            // Root-level .md file treated as a skill
+            let default_name = entry.name.strip_suffix(".md").unwrap_or(&entry.name).to_string();
+            let result = load_skill_from_file(env, &entry.path, Some(&default_name)).await;
             diagnostics.extend(result.diagnostics);
             if let Some(skill) = result.skill {
                 skills.push(skill);
@@ -83,7 +91,11 @@ struct SkillLoadResult {
     diagnostics: Vec<SkillDiagnostic>,
 }
 
-async fn load_skill_from_file(env: &dyn ExecutionEnv, file_path: &str) -> SkillLoadResult {
+async fn load_skill_from_file(
+    env: &dyn ExecutionEnv,
+    file_path: &str,
+    default_name: Option<&str>,
+) -> SkillLoadResult {
     let mut diagnostics = Vec::new();
 
     let raw_content = match env.read_text_file(file_path, None).await {
@@ -126,7 +138,11 @@ async fn load_skill_from_file(env: &dyn ExecutionEnv, file_path: &str) -> SkillL
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let name = frontmatter_name.unwrap_or_else(|| parent_dir_name.clone());
+    let name = frontmatter_name.unwrap_or_else(|| {
+        default_name
+            .map(|s| s.to_string())
+            .unwrap_or(parent_dir_name.clone())
+    });
 
     for error in validate_name(&name, &parent_dir_name) {
         diagnostics.push(SkillDiagnostic {

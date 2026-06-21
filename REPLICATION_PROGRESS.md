@@ -9,7 +9,7 @@
 
 | Crate | TS 源仓库 | 文件数 | 代码行数 | 测试数 | 编译 | 完成度 |
 |-------|-----------|:---:|:---:|:---:|:---:|:---:|
-| pi-agent-core | `packages/agent` | 30 | 39,356 | 248/248 ✅ | ✅ | ~96% |
+| pi-agent-core | `packages/agent` | 30 | 39,356 | 248/248 ✅ | ✅ | ~97% |
 | pi-coding-agent | `packages/coding-agent` | 53 | 11,620 | 208/208 ✅ | ✅ | ~55% |
 | pi-ai | `packages/ai` | 25 | 6,220 | 167/167 ✅ | ✅ | ~60% |
 | pi-tui | `packages/tui` | 27 | 9,010 | 238/238 ✅ | ✅ | ~95% |
@@ -48,13 +48,13 @@ struct: 74 | enum: 26 | trait: 3 | pub fn: 133 | impl block: 30
 
 | TypeScript | Rust | 覆盖率 | 关键缺失 |
 |------------|------|--------|----------|
-| `agent-loop.ts` | `agent_loop.rs` | ~95% | 缺 `agentLoop()`/`agentLoopContinue()` 返回 EventStream 的包装函数 |
+| `agent-loop.ts` | `agent_loop.rs` | ~98% | 已添加 agentLoop/agentLoopContinue 包装函数 |
 | `agent.ts` | `agent.rs` | ~98% | — |
-| `proxy.ts` | `proxy.rs` | ~90% | `stream_proxy()` 签名不同（直接传 url/api_key vs 从 options 读取）；返回类型不同（Rust 返回 `AssistantMessage`，TS 返回 `EventStream`） |
-| `harness/agent-harness.ts` | `harness/agent_harness.rs` | ~90% | 全部缺失方法已实现；事件钩子系统完整；26 测试 ✅ |
+| `proxy.ts` | `proxy.rs` | ~95% | stream_proxy 签名已匹配 TS；ProxyStreamOptions 已补齐 temperature/maxTokens/reasoning 等字段 |
+| `harness/agent-harness.ts` | `harness/agent_harness.rs` | ~95% | 全部缺失方法已实现；事件钩子系统完整；26 测试 ✅ |
 | `harness/prompt-templates.ts` | `harness/prompt_templates.rs` | ~98% | 已转为异步 ExecutionEnv；增加了 PromptTemplateDiagnostic 类型 |
-| `harness/skills.ts` | `harness/skill_loader.rs` + `skills.rs` | ~80% | 缺 `loadSkills(env, dirs)` 通过 ExecutionEnv 加载；缺 `loadSourcedSkills(env, inputs)` |
-| `harness/types.ts` | `harness/types.rs` | ~80% | 缺完整的 `FileSystem` trait（16 方法）；缺 `Shell` trait（2 方法）；缺完整的 `SessionTreeEntry` 13 变体；缺 `AgentHarnessOwnEvent` 多数变体（QueueUpdateEvent/SavePointEvent 等） |
+| `harness/skills.ts` | `harness/skill_loader.rs` + `skills.rs` | ~90% | 已通过 ExecutionEnv 异步加载；增加根目录 .md 支持；MAX_DESCRIPTION_LENGTH=1024 |
+| `harness/types.ts` | `harness/types.rs` | ~90% | ExecutionEnv 合并了 FileSystem + Shell；已补齐 joinPath/readBinaryFile/readTextLines/absolutePath |
 | `harness/compaction/compaction.ts` | `harness/compaction/compaction.rs` | ~90% | `generate_summary` 已接入 pi_ai LLM |
 | `harness/compaction/branch-summarization.ts` | `harness/compaction/branch_summarization.rs` | ~85% | `generate_branch_summary` 已接入 pi_ai LLM |
 | `harness/utils/shell-output.ts` | `harness/utils/shell_output.rs` | ~90% | 完整输出写入临时文件 |

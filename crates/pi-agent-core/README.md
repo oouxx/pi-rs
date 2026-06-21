@@ -474,6 +474,33 @@ let more_messages = run_agent_loop_continue(
 ).await?;
 ```
 
+`agent_loop` 和 `agent_loop_continue` 是流式包装函数，将 loop 放入后台执行并返回事件流：
+
+```rust
+use pi_agent_core::agent_loop::agent_loop;
+
+let mut stream = agent_loop(
+    prompts,
+    context,
+    config,
+    signal,              // Option<watch::Receiver<bool>>
+    stream_fn,
+);
+
+use futures::StreamExt;
+while let Some(event) = stream.next().await {
+    match event {
+        AgentEvent::MessageEnd { message } => { /* ... */ }
+        AgentEvent::TurnEnd { .. } => { /* ... */ }
+        AgentEvent::AgentEnd { messages } => {
+            // 消息收集完毕
+            break;
+        }
+        _ => {}
+    }
+}
+```
+
 ## pi_ai_types 模块
 
 Re-export `pi-ai` 的所有核心类型，外加 pi-agent-core 特有的类型和辅助函数。
@@ -561,15 +588,18 @@ use pi_agent_core::proxy::{
 
 // 代理流式请求
 let response = stream_proxy(
-    "https://api.example.com/chat",
-    "sk-xxx",
-    &model,
-    context,
-    Some(ProxyStreamOptions {
+    model,                  // pi_ai::types::Model
+    context,                // pi_ai::types::Context
+    ProxyStreamOptions {
+        proxy_url: "https://api.example.com".into(),
+        auth_token: "sk-xxx".into(),
         signal: Some(cancel_rx),
         headers: Some(HashMap::from([("X-Custom".into(), "value".into())])),
-    }),
-).await?;
+        temperature: Some(0.7),
+        max_tokens: Some(4096),
+        ..Default::default()
+    },
+);
 
 // 处理代理事件
 let mut partial = AssistantMessage::default();
@@ -633,7 +663,7 @@ harness.abort().await.unwrap();
 harness.compact(None).await.unwrap();
 
 // 订阅事件
-harness.subscribe(Arc::new(|event| {
+let handle = harness.subscribe(Arc::new(|event, _signal| {
     Box::pin(async move {
         match event {
             AgentHarnessEvent::Agent(agent_event) => { /* Agent 事件 */ }
@@ -646,6 +676,17 @@ harness.subscribe(Arc::new(|event| {
                 }
             }
         }
+    })
+})).await;
+
+// 注册类型化钩子（JSON 类型擦除方式）
+harness.on("before_provider_request", Arc::new(|payload| {
+    Box::pin(async move {
+        // payload: serde_json::Value
+        // 返回修改后的 stream_options
+        Ok(serde_json::json!({
+            "stream_options": { "temperature": 0.5 }
+        }))
     })
 })).await;
 
@@ -751,9 +792,21 @@ repo.delete(&metadata).await.unwrap();
 pub trait ExecutionEnv: Send + Sync {
     fn cwd(&self) -> &str;
     async fn read_text_file(&self, path: &str, options: Option<ReadTextFileOptions>) -> Result<String, FileError>;
+    async fn read_binary_file(&self, path: &str) -> Result<Vec<u8>, FileError>;
+    async fn read_text_lines(&self, path: &str, options: Option<ReadTextFileOptions>) -> Result<Vec<String>, FileError>;
     async fn write_file(&self, path: &str, content: &str, abort_signal: Option<watch::Receiver<bool>>) -> Result<(), FileError>;
+    async fn append_file(&self, path: &str, content: &str) -> Result<(), FileError>;
+    async fn file_info(&self, path: &str) -> Result<FileInfoType, FileError>;
+    async fn list_dir(&self, path: &str) -> Result<Vec<FileInfoType>, FileError>;
+    async fn canonical_path(&self, path: &str) -> Result<String, FileError>;
+    async fn exists(&self, path: &str) -> Result<bool, FileError>;
+    async fn join_path(&self, parts: &[&str]) -> Result<String, FileError>;
+    async fn absolute_path(&self, path: &str) -> Result<String, FileError>;
+    async fn create_dir(&self, path: &str, options: Option<CreateDirOptions>) -> Result<(), FileError>;
+    async fn remove(&self, path: &str, options: Option<RemoveOptions>) -> Result<(), FileError>;
+    async fn create_temp_dir(&self, prefix: &str) -> Result<String, FileError>;
+    async fn create_temp_file(&self, options: Option<TempFileOptions>) -> Result<String, FileError>;
     async fn exec(&self, command: &str, options: ExecutionEnvExecOptions) -> Result<ExecResult, ExecutionError>;
-    // ... 其他文件系统操作
     async fn cleanup(&self);
 }
 ```
@@ -906,11 +959,16 @@ use pi_agent_core::harness::prompt_templates::{
     format_prompt_template_invocation,
     substitute_args,
     parse_command_args,
+    PromptTemplateDiagnostic,
 };
+use pi_agent_core::harness::env::nodejs::NodeExecutionEnv;
 
-let templates = load_prompt_templates(&PathBuf::from("templates"));
-let template = &templates[0];
-let result = format_prompt_template_invocation(template, &["arg1".into(), "arg2".into()]);
+let env = NodeExecutionEnv::new(".");
+let (templates, diagnostics) = load_prompt_templates(&env, "templates").await;
+for d in &diagnostics {
+    eprintln!("[{}] {}: {}", d.diagnostic_type, d.code, d.message);
+}
+let result = format_prompt_template_invocation(&templates[0], &["arg1".into(), "arg2".into()]);
 ```
 
 ## 消息转换辅助函数

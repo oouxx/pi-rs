@@ -66,8 +66,26 @@ pub struct ProxyStreamOptions {
     pub auth_token: String,
     /// Local abort signal for the proxy request
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Sampling temperature
+    pub temperature: Option<f64>,
+    /// Maximum tokens to generate
+    pub max_tokens: Option<u64>,
+    /// Reasoning/thinking level
+    pub reasoning: Option<crate::pi_ai_types::ThinkingLevel>,
+    /// Cache retention policy
+    pub cache_retention: Option<String>,
+    /// Session identifier for continuing conversations
+    pub session_id: Option<String>,
     /// Extra headers to include in the proxy request
     pub headers: Option<HashMap<String, String>>,
+    /// Extra metadata to include
+    pub metadata: Option<HashMap<String, String>>,
+    /// Transport protocol to use
+    pub transport: Option<String>,
+    /// Thinking budgets per thinking level
+    pub thinking_budgets: Option<HashMap<String, u64>>,
+    /// Maximum retry delay in milliseconds
+    pub max_retry_delay_ms: Option<u64>,
 }
 
 pub type StreamResponse = Box<dyn Stream<Item = AssistantMessageEvent> + Send + Unpin>;
@@ -114,8 +132,16 @@ pub fn stream_proxy(
             "model": model,
             "context": context,
             "options": {
-                "transport": serde_json::Value::Null,
+                "transport": options.transport,
                 "headers": options.headers,
+                "temperature": options.temperature,
+                "maxTokens": options.max_tokens,
+                "reasoning": options.reasoning,
+                "cacheRetention": options.cache_retention,
+                "sessionId": options.session_id,
+                "metadata": options.metadata,
+                "thinkingBudgets": options.thinking_budgets,
+                "maxRetryDelayMs": options.max_retry_delay_ms,
             },
         });
 

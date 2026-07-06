@@ -40,6 +40,12 @@ impl ModelRegistry {
     }
 
     pub fn builtin_models_list() -> Vec<Model> {
+        // Try to load from pi-ai generated models first (they have correct base_url, etc.)
+        let pi_models = get_pi_ai_models();
+        if !pi_models.is_empty() {
+            return pi_models;
+        }
+        // Fall back to hardcoded models
         builtin_models()
     }
 
@@ -213,6 +219,38 @@ struct ModelCostDef {
     output: f64,
 }
 
+/// Load models from the pi-ai generated model registry.
+/// These models have correct base_url, names, etc. from the build-time generated data.
+fn get_pi_ai_models() -> Vec<Model> {
+    let providers = pi_ai::models::get_providers();
+    let mut models = Vec::new();
+    for provider in &providers {
+        for m in pi_ai::models::get_models(provider) {
+            models.push(Model {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                api: m.api.clone(),
+                provider: m.provider.clone(),
+                base_url: m.base_url.clone(),
+                reasoning: m.reasoning,
+                thinking_level_map: m.thinking_level_map.clone(),
+                input: m.input.clone(),
+                cost: pi_agent_core::pi_ai_types::ModelCost {
+                    input: m.cost.input,
+                    output: m.cost.output,
+                    cache_read: m.cost.cache_read,
+                    cache_write: m.cost.cache_write,
+                },
+                context_window: m.context_window,
+                max_tokens: m.max_tokens,
+                headers: m.headers.clone(),
+                compat: None,
+            });
+        }
+    }
+    models
+}
+
 pub fn builtin_models() -> Vec<Model> {
     vec![
         Model {
@@ -268,8 +306,8 @@ pub fn builtin_models() -> Vec<Model> {
                 cache_write: 0.0,
             },
             reasoning: false,
-            name: String::new(),
-            base_url: String::new(),
+            name: "Claude Haiku 4.5".into(),
+            base_url: "https://api.anthropic.com".into(),
             thinking_level_map: None,
             input: vec!["text".to_string()],
             headers: None,
@@ -348,8 +386,8 @@ pub fn builtin_models() -> Vec<Model> {
                 cache_write: 0.0,
             },
             reasoning: false,
-            name: String::new(),
-            base_url: String::new(),
+            name: "DeepSeek Chat".into(),
+            base_url: "https://api.deepseek.com".into(),
             thinking_level_map: None,
             input: vec!["text".to_string()],
             headers: None,
@@ -368,8 +406,8 @@ pub fn builtin_models() -> Vec<Model> {
                 cache_write: 0.0,
             },
             reasoning: true,
-            name: String::new(),
-            base_url: String::new(),
+            name: "DeepSeek Reasoner".into(),
+            base_url: "https://api.deepseek.com".into(),
             thinking_level_map: None,
             input: vec!["text".to_string()],
             headers: None,

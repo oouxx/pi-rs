@@ -3,7 +3,7 @@ use std::path::PathBuf;
 pub const PACKAGE_NAME: &str = "pi-coding-agent";
 pub const APP_NAME: &str = "pi";
 pub const APP_TITLE: &str = "π";
-pub const CONFIG_DIR_NAME: &str = ".pi";
+pub const CONFIG_DIR_NAME: &str = ".pi-rs";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const ENV_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(APP_NAME, "pi");
-        assert_eq!(CONFIG_DIR_NAME, ".pi");
+        assert_eq!(CONFIG_DIR_NAME, ".pi-rs");
         assert_eq!(CURRENT_SESSION_VERSION, 3);
     }
 }

@@ -1,14 +1,46 @@
 use pi_agent_core::pi_ai_types::{Model, ThinkingLevel};
 use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 
+use std::sync::Arc;
+
 use crate::core::agent_session::{AgentSession, AgentSessionOptions};
 use crate::core::event_bus::EventBusController;
+use crate::core::extensions::{ExtensionsRpcClient, ToolInfo};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
 use crate::core::session_manager::SessionManager;
 use crate::core::settings_manager::SettingsManager;
-use crate::core::system_prompt::{self, ContextFile, SkillInfo};
+use crate::core::system_prompt::{ContextFile, SkillInfo};
+
+/// Create the default StreamFn that bridges to the pi-ai provider system.
+/// Public for testing.
+pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
+    use pi_agent_core::pi_ai_types::StreamResponse;
+
+    std::sync::Arc::new(
+        |model: pi_agent_core::pi_ai_types::Model,
+         context: pi_agent_core::pi_ai_types::Context,
+         _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+         options: pi_agent_core::types::StreamFnOptions| {
+            Box::pin(async move {
+                let mut stream_opts = pi_ai::types::StreamOptions::default();
+                stream_opts.signal = options.signal;
+                stream_opts.api_key = options.api_key;
+                stream_opts.headers = options.headers;
+                stream_opts.session_id = options.session_id;
+
+                let event_stream =
+                    pi_ai::stream::stream(&model, &context, Some(stream_opts));
+
+                let boxed: StreamResponse =
+                    Box::new(event_stream);
+
+                Ok(boxed)
+            })
+        },
+    )
+}
 
 #[derive(Clone)]
 pub struct CreateAgentSessionOptions {
@@ -25,6 +57,13 @@ pub struct CreateAgentSessionOptions {
     pub session_name: Option<String>,
     pub stream_fn: Option<StreamFn>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
+    /// Additional paths to extension files/directories.
+    /// Extensions will also be auto-discovered from:
+    ///   - {cwd}/.pi/extensions/
+    ///   - {agentDir}/extensions/
+    pub extension_paths: Vec<String>,
+    /// If false, skip the extension RPC sidecar entirely.
+    pub enable_extensions: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,9 +77,12 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
 }
 
-pub fn create_agent_session(
+pub async fn create_agent_session(
     options: CreateAgentSessionOptions,
 ) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
+    // Ensure API providers are registered before any LLM calls
+    pi_ai::providers::register_builtins::register_built_in_api_providers();
+
     let cwd = options.cwd.clone();
     let agent_dir = options
         .agent_dir
@@ -146,6 +188,40 @@ pub fn create_agent_session(
     let allowed_tool_names = options.tools.clone();
     let excluded_tool_names = options.exclude_tools.clone();
 
+    // ── Extension RPC sidecar ──────────────────────────────────────────
+    let mut extension_tools: Vec<ToolInfo> = Vec::new();
+    let mut rpc_client: Option<Arc<ExtensionsRpcClient>> = None;
+
+    if options.enable_extensions && ExtensionsRpcClient::is_available() {
+        let client = Arc::new(ExtensionsRpcClient::new());
+        match client.start().await {
+            Ok(()) => {
+                match client
+                    .load_extensions(&cwd, &agent_dir, &options.extension_paths)
+                    .await
+                {
+                    Ok(result) => {
+                        extension_tools = result.tools;
+                        if !result.errors.is_empty() {
+                            for err in &result.errors {
+                                eprintln!("[pi] Extension load warning: {} — {}", err.path, err.error);
+                            }
+                        }
+                        rpc_client = Some(client);
+                    }
+                    Err(e) => {
+                        eprintln!("[pi] Extension RPC error: {e}");
+                        let _ = client.stop().await;
+                    }
+                }
+            }
+            Err(e) => {
+                // Sidecar not available (bun not installed or path issue) — skip silently
+                let _ = e;
+            }
+        }
+    }
+
     let session_options = AgentSessionOptions {
         cwd: cwd.clone(),
         model,
@@ -158,11 +234,13 @@ pub fn create_agent_session(
         context_files,
         skills,
         session_name: options.session_name,
-        stream_fn: options.stream_fn,
+        stream_fn: options.stream_fn.or_else(|| Some(create_default_stream_fn())),
         convert_to_llm: options.convert_to_llm,
         initial_active_tool_names: Some(initial_active_tool_names),
         allowed_tool_names,
         excluded_tool_names,
+        extension_tools,
+        rpc_client,
     };
 
     let session = AgentSession::new(session_manager, event_bus, model_registry, session_options);

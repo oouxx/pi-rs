@@ -4,13 +4,15 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{AgentEvent, AgentMessage, AgentState, ConvertToLlmFn, StreamFn};
 
-use crate::core::compaction::{self, CompactionSettings};
+use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
 use crate::core::event_bus::EventBusController;
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
+use crate::core::extensions::rpc::ToolInfo;
+use crate::core::extensions::ExtensionsRpcClient;
 use crate::core::tools;
 
 #[derive(Clone)]
@@ -31,6 +33,13 @@ pub struct AgentSessionOptions {
     pub initial_active_tool_names: Option<Vec<String>>,
     pub allowed_tool_names: Option<Vec<String>>,
     pub excluded_tool_names: Option<Vec<String>>,
+    /// Extension tools loaded via RPC sidecar. If the sidecar could not
+    /// be started (e.g. bun not available), this is empty.
+    pub extension_tools: Vec<ToolInfo>,
+    /// RPC client for calling extension tool handlers. When None,
+    /// extension tools will be present in metadata but calls will fail.
+    #[allow(dead_code)]
+    pub rpc_client: Option<std::sync::Arc<ExtensionsRpcClient>>,
 }
 
 pub struct AgentSession {
@@ -44,6 +53,8 @@ pub struct AgentSession {
     initial_active_tool_names: Vec<String>,
     allowed_tool_names: Option<Vec<String>>,
     excluded_tool_names: Option<Vec<String>>,
+    /// Subscription handles kept alive so listeners are not dropped.
+    _subscriptions: Vec<pi_agent_core::agent::UnsubscribeHandle>,
 }
 
 impl AgentSession {
@@ -65,7 +76,19 @@ impl AgentSession {
         });
 
         let tools_options = tools::ToolsOptions::default();
-        let tool_list = tools::create_coding_tools(&options.cwd, Some(&tools_options));
+        let mut tool_list = tools::create_coding_tools(&options.cwd, Some(&tools_options));
+
+        // Merge extension tools if RPC client is available
+        if !options.extension_tools.is_empty() {
+            if let Some(ref rpc_client) = options.rpc_client {
+                let ext_tools = crate::core::extensions::create_extension_agent_tools(
+                    &options.extension_tools,
+                    std::sync::Arc::clone(rpc_client),
+                    options.cwd.clone(),
+                );
+                tool_list.extend(ext_tools);
+            }
+        }
 
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
             .into_iter()
@@ -126,6 +149,7 @@ impl AgentSession {
             initial_active_tool_names,
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
+            _subscriptions: Vec::new(),
         }
     }
 
@@ -133,20 +157,20 @@ impl AgentSession {
         &self.agent
     }
 
-    pub fn get_messages(&self) -> &[AgentMessage] {
-        unimplemented!("Use get_agent().state() instead")
+    pub async fn get_messages(&self) -> Vec<AgentMessage> {
+        self.agent.state().await.messages
     }
 
-    pub fn get_system_prompt(&self) -> &str {
-        unimplemented!("Use get_agent().state() instead")
+    pub async fn get_system_prompt(&self) -> String {
+        self.agent.state().await.system_prompt
     }
 
-    pub fn get_model(&self) -> &Model {
-        unimplemented!("Use get_agent().state() instead")
+    pub async fn get_model(&self) -> Model {
+        self.agent.state().await.model
     }
 
-    pub fn get_thinking_level(&self) -> &ThinkingLevel {
-        unimplemented!("Use get_agent().state() instead")
+    pub async fn get_thinking_level(&self) -> ThinkingLevel {
+        self.agent.state().await.thinking_level
     }
 
     pub fn get_cwd(&self) -> &str {
@@ -165,8 +189,8 @@ impl AgentSession {
         self.session_manager.append_session_info(name);
     }
 
-    pub fn is_streaming(&self) -> bool {
-        false
+    pub async fn is_streaming(&self) -> bool {
+        self.agent.state().await.is_streaming
     }
 
     pub fn get_error_message(&self) -> Option<&str> {
@@ -252,8 +276,13 @@ impl AgentSession {
         self.agent.abort().await;
     }
 
+    /// Wait for the agent to finish processing (idle).
+    pub async fn wait_for_idle(&self) {
+        self.agent.wait_for_idle().await;
+    }
+
     pub async fn subscribe(
-        &self,
+        &mut self,
         listener: Arc<
             dyn Fn(
                     AgentEvent,
@@ -264,7 +293,8 @@ impl AgentSession {
                 + Sync,
         >,
     ) {
-        let _ = self.agent.subscribe(listener).await;
+        let handle = self.agent.subscribe(listener).await;
+        self._subscriptions.push(handle);
     }
 
     pub fn dispose(self) {}

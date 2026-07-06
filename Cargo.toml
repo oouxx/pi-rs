@@ -2,5 +2,6 @@
 members = [
     "crates/pi-agent-core",
     "crates/pi-ai",
+    "crates/pi-coding-agent",
 ]
 resolver = "2"

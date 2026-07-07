@@ -1,6 +1,4 @@
 //! Elm architecture core — Model, Msg, update, view, Cmd.
-//!
-//! Aligned with crates/pi-tui/plans.md design (except markdown/highlight).
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -20,30 +18,17 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 
 #[derive(Clone)]
 pub struct Theme {
-    pub accent: Color,
-    pub user: Color,
-    pub assistant: Color,
-    pub tool_running: Color,
-    pub tool_done: Color,
-    pub tool_failed: Color,
-    pub tool_pending: Color,
-    pub muted: Color,
-    pub highlight_bg: Color,
-    pub status_bg: Color,
+    pub accent: Color, pub user: Color, pub assistant: Color,
+    pub tool_running: Color, pub tool_done: Color, pub tool_failed: Color, pub tool_pending: Color,
+    pub muted: Color, pub highlight_bg: Color, pub status_bg: Color,
 }
 
 impl Theme {
     pub fn default() -> Self {
         Self {
-            accent: Color::Cyan,
-            user: Color::Green,
-            assistant: Color::Cyan,
-            tool_running: Color::Yellow,
-            tool_done: Color::Green,
-            tool_failed: Color::Red,
-            tool_pending: Color::DarkGray,
-            muted: Color::DarkGray,
-            highlight_bg: Color::Cyan,
+            accent: Color::Cyan, user: Color::Green, assistant: Color::Cyan,
+            tool_running: Color::Yellow, tool_done: Color::Green, tool_failed: Color::Red,
+            tool_pending: Color::DarkGray, muted: Color::DarkGray, highlight_bg: Color::Cyan,
             status_bg: Color::Rgb(0x1a, 0x1b, 0x26),
         }
     }
@@ -61,76 +46,47 @@ pub enum Cmd { Quit }
 
 #[derive(Debug, Clone)]
 pub struct ToolCall {
-    pub name: String,
-    pub state: ToolCallState,
-    /// Tool output text for collapsed display.
-    pub output: String,
-    /// Whether expanded beyond preview.
-    pub expanded: bool,
-    /// Inline approval state (None = no approval needed).
+    pub name: String, pub state: ToolCallState,
+    pub output: String, pub expanded: bool,
     pub approval: Option<ToolApproval>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ToolCallState { Pending, Running, Done, Failed }
 
-/// Inline approval state for a tool call.
 #[derive(Debug, Clone)]
-pub enum ToolApproval {
-    Pending,
-    Approved,
-    Denied,
-}
+pub enum ToolApproval { Pending, Approved, Denied }
 
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Editor, title: String } }
 pub struct Message { pub role: String, pub text: String }
 
 pub struct Dialog { pub title: String, pub message: String, pub buttons: Vec<DialogButton>, pub selected: usize }
 pub struct DialogButton { pub label: &'static str, pub action: DialogAction }
-pub enum DialogAction {
-    /// Approve once.
-    Confirm,
-    /// Approve for this session.
-    ConfirmAlways,
-    /// Reject.
-    Cancel,
-    Custom(&'static str),
-}
+pub enum DialogAction { Confirm, ConfirmAlways, Cancel, Custom(&'static str) }
 
 // ============================================================================
 // Model
 // ============================================================================
 
 pub struct Model {
-    pub theme: Theme,
-    pub width: u16, pub height: u16, pub mode: AppMode,
+    pub theme: Theme, pub width: u16, pub height: u16, pub mode: AppMode,
     pub messages: Vec<Message>, pub is_streaming: bool,
     pub input: Input, pub model_name: String, pub tick: u64,
     pub active_tools: Vec<ToolCall>, pub dialog: Option<Dialog>,
-    pub completer: Completer,
-    pub scroll_offset: usize, pub auto_scroll: bool,
-    /// Cwd shown in status bar.
-    pub cwd: String,
-    /// Git branch shown in status bar.
-    pub git_branch: Option<String>,
-    /// Context usage percentage (0–100) for status bar.
-    pub context_usage_pct: u8,
-    /// Elapsed seconds since session start.
-    pub elapsed_secs: u64,
-    /// Track 'g' key press for 'gg' jump-to-top.
+    pub completer: Completer, pub scroll_offset: usize, pub auto_scroll: bool,
+    pub cwd: String, pub git_branch: Option<String>,
+    pub context_usage_pct: u8, pub elapsed_secs: u64,
     pub g_pressed: bool,
 }
 
 impl Model {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
-            theme: Theme::default(),
-            width, height, mode: AppMode::Chat, messages: Vec::new(),
+            theme: Theme::default(), width, height, mode: AppMode::Chat, messages: Vec::new(),
             is_streaming: false, input: Input::new(), model_name: String::new(),
             tick: 0, active_tools: Vec::new(), dialog: None,
             completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
-            cwd: String::new(), git_branch: None,
-            context_usage_pct: 0, elapsed_secs: 0,
+            cwd: String::new(), git_branch: None, context_usage_pct: 0, elapsed_secs: 0,
             g_pressed: false,
         }
     }
@@ -140,21 +96,15 @@ impl Model {
     }
 
     pub fn update_tool_call(&mut self, name: &str, state: ToolCallState) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
-            tool.state = state;
-        }
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) { tool.state = state; }
     }
 
     pub fn append_tool_output(&mut self, name: &str, text: &str) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
-            tool.output.push_str(text);
-        }
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) { tool.output.push_str(text); }
     }
 
     pub fn toggle_tool_expand(&mut self, name: &str) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
-            tool.expanded = !tool.expanded;
-        }
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) { tool.expanded = !tool.expanded; }
     }
 }
 
@@ -170,16 +120,10 @@ pub enum Msg {
     Tick,
     ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
     ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
-    SetGitBranch(Option<String>),
-    SetContextUsage(u8),
-    SetElapsed(u64),
-    AppendToolOutput(String, String),
-    ToggleToolExpand(String),
-    ToolApprove(String),
-    ToolDeny(String),
-    ClearScreen,
-    InputNewline,
-    Cancel,
+    SetGitBranch(Option<String>), SetContextUsage(u8), SetElapsed(u64),
+    AppendToolOutput(String, String), ToggleToolExpand(String),
+    ToolApprove(String), ToolDeny(String),
+    ClearScreen, InputNewline, Cancel,
 }
 
 // ============================================================================
@@ -197,44 +141,23 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Editor::new(&text), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
         Msg::ToolStart(name) => { model.add_tool_call(&name); vec![] }
-        Msg::ToolEnd(name, is_error) => {
-            model.update_tool_call(&name, if is_error { ToolCallState::Failed } else { ToolCallState::Done });
-            vec![]
-        }
-        Msg::Tick => {
-            model.tick += 1;
-            if model.auto_scroll { model.scroll_offset = 0; }
-            vec![]
-        }
+        Msg::ToolEnd(name, is_error) => { model.update_tool_call(&name, if is_error { ToolCallState::Failed } else { ToolCallState::Done }); vec![] }
+        Msg::Tick => { model.tick += 1; if model.auto_scroll { model.scroll_offset = 0; } vec![] }
         Msg::ScrollUp(amount) => { model.auto_scroll = false; model.scroll_offset = model.scroll_offset.saturating_add(amount as usize); vec![] }
-        Msg::ScrollDown(amount) => {
-            model.scroll_offset = model.scroll_offset.saturating_sub(amount as usize);
-            if model.scroll_offset == 0 { model.auto_scroll = true; }
-            vec![]
-        }
+        Msg::ScrollDown(amount) => { model.scroll_offset = model.scroll_offset.saturating_sub(amount as usize); if model.scroll_offset == 0 { model.auto_scroll = true; } vec![] }
         Msg::ScrollToBottom => { model.scroll_offset = 0; model.auto_scroll = true; vec![] }
-        Msg::ShowDialog(dialog) => { model.dialog = Some(dialog); vec![] }
+        Msg::ShowDialog(d) => { model.dialog = Some(d); vec![] }
         Msg::DismissDialog => { model.dialog = None; vec![] }
         Msg::DialogNext => { if let Some(ref mut d) = model.dialog { if d.selected + 1 < d.buttons.len() { d.selected += 1; } } vec![] }
         Msg::DialogPrev => { if let Some(ref mut d) = model.dialog { if d.selected > 0 { d.selected -= 1; } } vec![] }
         Msg::DialogConfirm => { model.dialog.take(); vec![] }
-        Msg::SetGitBranch(branch) => { model.git_branch = branch; vec![] }
-        Msg::SetContextUsage(pct) => { model.context_usage_pct = pct; vec![] }
-        Msg::SetElapsed(secs) => { model.elapsed_secs = secs; vec![] }
-        Msg::AppendToolOutput(name, text) => { model.append_tool_output(&name, &text); vec![] }
-        Msg::ToggleToolExpand(name) => { model.toggle_tool_expand(&name); vec![] }
-        Msg::ToolApprove(name) => {
-            if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == name) {
-                t.approval = Some(ToolApproval::Approved);
-            }
-            vec![]
-        }
-        Msg::ToolDeny(name) => {
-            if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == name) {
-                t.approval = Some(ToolApproval::Denied);
-            }
-            vec![]
-        }
+        Msg::SetGitBranch(b) => { model.git_branch = b; vec![] }
+        Msg::SetContextUsage(p) => { model.context_usage_pct = p; vec![] }
+        Msg::SetElapsed(s) => { model.elapsed_secs = s; vec![] }
+        Msg::AppendToolOutput(n, t) => { model.append_tool_output(&n, &t); vec![] }
+        Msg::ToggleToolExpand(n) => { model.toggle_tool_expand(&n); vec![] }
+        Msg::ToolApprove(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Approved); } vec![] }
+        Msg::ToolDeny(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Denied); } vec![] }
         Msg::ClearScreen => { model.messages.clear(); model.active_tools.clear(); model.scroll_offset = 0; vec![] }
         Msg::InputNewline => { model.input.insert_char('\n'); vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
@@ -259,8 +182,7 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                     let current = model.input.value().to_string();
                     if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
                         let prefix = &current[..=pos];
-                        model.input.clear();
-                        model.input.insert_str(&format!("{prefix}{text} "));
+                        model.input.clear(); model.input.insert_str(&format!("{prefix}{text} "));
                     }
                 }
                 model.completer.deactivate();
@@ -270,61 +192,43 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
         return vec![];
     }
+    if key.code != KeyCode::Char('g') { model.g_pressed = false; }
     match &mut model.mode {
-        AppMode::Chat => {
-            // Reset gg tracker on any key other than 'g'
-            if key.code != crossterm::event::KeyCode::Char('g') { model.g_pressed = false; }
-
-            match key.code {
-                KeyCode::Char(c) => {
-                    // gg jump-to-top (only when input is empty)
-                    if c == 'g' && model.g_pressed && model.input.value().is_empty() {
-                        model.g_pressed = false;
-                        model.scroll_offset = usize::MAX; model.auto_scroll = false;
-                        return vec![];
-                    }
-                    if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
-
-                    // G scroll-to-bottom
-                    if c == 'G' && model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; return vec![]; }
-
-                    if let Some(trigger) = Completer::should_activate(c) {
-                        model.completer.activate(trigger, "");
-                    } else if model.completer.trigger.is_some() && !c.is_whitespace() {
-                        let mut q = model.completer.query.clone(); q.push(c);
-                        model.completer.activate(model.completer.trigger.unwrap(), &q);
-                    } else { model.completer.deactivate(); }
-                    model.input.insert_char(c);
-                }
-                KeyCode::Backspace => {
-                    model.input.backspace();
-                    if model.completer.trigger.is_some() {
-                        let current = model.input.value();
-                        if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
-                            model.completer.activate(model.completer.trigger.unwrap(), &current[pos + 1..]);
-                        } else { model.completer.deactivate(); }
-                    }
-                }
-                KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
-                KeyCode::Enter => {
-                    if key.modifiers == crossterm::event::KeyModifiers::SHIFT
-                        || key.modifiers == crossterm::event::KeyModifiers::ALT {
-                        model.input.insert_char('\n');
-                    } else {
-                        model.input.clear(); model.completer.deactivate();
-                    }
-                }
-                KeyCode::Delete => model.input.delete(),
-                KeyCode::Left => model.input.move_left(),
-                KeyCode::Right => model.input.move_right(),
-                KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); model.auto_scroll = false; } else { model.input.move_left(); } }
-                KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); if model.scroll_offset == 0 { model.auto_scroll = true; } } else { model.input.move_right(); } }
-                KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; model.auto_scroll = false; } model.input.move_home(); }
-                KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; } model.input.move_end(); }
-                KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); model.auto_scroll = false; }
-                KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); if model.scroll_offset == 0 { model.auto_scroll = true; } }
-                _ => {}
+        AppMode::Chat => match key.code {
+            KeyCode::Char(c) => {
+                if c == 'g' && model.g_pressed && model.input.value().is_empty() { model.g_pressed = false; model.scroll_offset = usize::MAX; model.auto_scroll = false; return vec![]; }
+                if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
+                if c == 'G' && model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; return vec![]; }
+                if let Some(t) = Completer::should_activate(c) { model.completer.activate(t, ""); }
+                else if model.completer.trigger.is_some() && !c.is_whitespace() { let mut q = model.completer.query.clone(); q.push(c); model.completer.activate(model.completer.trigger.unwrap(), &q); }
+                else { model.completer.deactivate(); }
+                model.input.insert_char(c);
             }
+            KeyCode::Backspace => {
+                model.input.backspace();
+                if model.completer.trigger.is_some() {
+                    let current = model.input.value();
+                    if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                        model.completer.activate(model.completer.trigger.unwrap(), &current[pos + 1..]);
+                    } else { model.completer.deactivate(); }
+                }
+            }
+            KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
+            KeyCode::Enter => {
+                if key.modifiers == crossterm::event::KeyModifiers::SHIFT || key.modifiers == crossterm::event::KeyModifiers::ALT {
+                    model.input.insert_char('\n');
+                } else { model.input.clear(); model.completer.deactivate(); }
+            }
+            KeyCode::Delete => model.input.delete(),
+            KeyCode::Left => model.input.move_left(),
+            KeyCode::Right => model.input.move_right(),
+            KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); model.auto_scroll = false; } else { model.input.move_left(); } }
+            KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); if model.scroll_offset == 0 { model.auto_scroll = true; } } else { model.input.move_right(); } }
+            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; model.auto_scroll = false; } model.input.move_home(); }
+            KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; } model.input.move_end(); }
+            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); model.auto_scroll = false; }
+            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); if model.scroll_offset == 0 { model.auto_scroll = true; } }
+            _ => {}
         },
         AppMode::Select { list } => { list.handle_key(&key); }
         AppMode::Editor { editor, .. } => { editor.handle_key(&key); }
@@ -333,43 +237,28 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
 }
 
 // ============================================================================
-// View — four-section layout: header / body / input / status
+// View — four-section layout
 // ============================================================================
 
 pub fn view(model: &Model, frame: &mut Frame) {
-    let area = frame.size();
-    let t = &model.theme;
-
+    let area = frame.size(); let t = &model.theme;
     if let AppMode::Editor { editor, title, .. } = &model.mode {
-        render_editor(frame, area, editor, title, t);
-        return;
+        render_editor(frame, area, editor, title, t); return;
     }
-
     let input_h = input_height(model);
-    let chunks = Layout::new(Direction::Vertical, [
-        Constraint::Length(1),          // header
-        Constraint::Min(1),             // body
-        Constraint::Length(input_h),    // input (dynamic)
-        Constraint::Length(1),          // status bar
-    ]).split(area);
-
+    let chunks = Layout::new(Direction::Vertical, [Constraint::Length(1), Constraint::Min(1), Constraint::Length(input_h), Constraint::Length(1)]).split(area);
     render_header(model, frame, chunks[0], t);
     render_body(model, frame, chunks[1], t);
     render_input(model, frame, chunks[2], t);
     render_status(model, frame, chunks[3], t);
-
     if model.dialog.is_some() { render_dialog(model, frame, area, t); return; }
     if let AppMode::Select { list, .. } = &model.mode {
         let oa = Rect::new(area.width / 4, area.height / 4, area.width / 2, area.height / 2);
-        frame.render_widget(Clear, oa);
-        list.render_to_frame(frame, oa);
+        frame.render_widget(Clear, oa); list.render_to_frame(frame, oa);
     }
 }
 
-fn input_height(model: &Model) -> u16 {
-    let lines = model.input.value().lines().count();
-    (lines as u16).clamp(1, 5) // prompt + input lines (first line shares prompt row)
-}
+fn input_height(model: &Model) -> u16 { (model.input.value().lines().count() as u16).clamp(1, 5) }
 
 // ============================================================================
 // Header
@@ -377,247 +266,177 @@ fn input_height(model: &Model) -> u16 {
 
 fn render_header(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let label = if model.model_name.is_empty() { " pi-rs ".into() } else { format!(" {} ", model.model_name) };
-    let sp = if model.is_streaming || !model.active_tools.is_empty() {
-        Some(SPINNER[(model.tick / 3) as usize % SPINNER.len()])
-    } else { None };
+    let sp = if model.is_streaming || !model.active_tools.is_empty() { Some(SPINNER[(model.tick / 3) as usize % SPINNER.len()]) } else { None };
     let status = match (sp, model.is_streaming) {
         (Some(ch), true) => Span::styled(format!(" {ch} streaming "), Style::new().fg(Color::Green)),
         (Some(ch), false) => Span::styled(format!(" {ch} working "), Style::new().fg(Color::Yellow)),
         _ => Span::raw(""),
     };
     let hint = Span::styled(" Ctrl+C:abort x2:quit ", Style::new().fg(t.muted));
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(label, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
-            status, Span::raw(" "), hint,
-        ])).style(Style::new().bg(t.status_bg)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Line::from(vec![Span::styled(label, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), status, Span::raw(" "), hint])).style(Style::new().bg(t.status_bg)), area);
 }
 
 // ============================================================================
-// Body
+// Body — fixed-position layout (no overlap)
 // ============================================================================
 
 fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let wrap_w = (area.width as usize).saturating_sub(3).max(10);
-    let body_h = area.height as usize;
 
-    struct Item { role: String, lines: Vec<String> }
+    // Build items with fixed heights
+    struct Item { role: String, height: u16, lines: Vec<String>, tool_name: String, tool_state: Option<ToolCallState>, tool_approval: Option<ToolApproval>, tool_output: String, tool_expanded: bool }
     let mut items: Vec<Item> = Vec::new();
-    for tool in &model.active_tools { items.push(Item { role: "tool".into(), lines: vec![tool.name.clone()] }); }
-    for msg in &model.messages { items.push(Item { role: msg.role.clone(), lines: simple_wrap(&msg.text, wrap_w) }); }
 
-    let total_lines: usize = items.iter().map(|it| 1 + it.lines.len()).sum();
+    for tool in &model.active_tools {
+        let output_lines = if tool.output.is_empty() { 0 } else {
+            let max = if tool.expanded { 1000usize } else { 8 };
+            let count = tool.output.lines().count().min(max);
+            count + if count < tool.output.lines().count() { 1 } else { 0 }
+        };
+        let appr = if tool.approval.is_some() { 1 } else { 0 };
+        items.push(Item { role: "tool".into(), height: 1 + output_lines as u16 + appr, lines: vec![], tool_name: tool.name.clone(), tool_state: Some(tool.state.clone()), tool_approval: tool.approval.clone(), tool_output: tool.output.clone(), tool_expanded: tool.expanded });
+    }
+
+    for msg in &model.messages {
+        let wrapped = simple_wrap(&msg.text, wrap_w);
+        items.push(Item { role: msg.role.clone(), height: 1 + wrapped.len() as u16, lines: wrapped, tool_name: String::new(), tool_state: None, tool_approval: None, tool_output: String::new(), tool_expanded: false });
+    }
+
+    let total_h: u16 = items.iter().map(|it| it.height).sum();
     let mut skip = model.scroll_offset;
     let mut y = area.bottom() as i32 - 1;
 
     for item in items.iter().rev() {
-        if skip >= 1 + item.lines.len() { skip -= 1 + item.lines.len(); continue; }
-        let remaining = (1 + item.lines.len()).saturating_sub(skip);
-        if remaining == 0 || y - remaining as i32 + 1 <= area.top() as i32 - body_h as i32 { break; }
-        y = y - remaining as i32 + 1;
-        if y + remaining as i32 <= area.top() as i32 { break; }
-        let sy = y.max(area.top() as i32) as u16;
-        y = sy as i32;
+        let h = item.height as i32;
+        if skip >= h as usize { skip -= h as usize; continue; }
+        let item_top = y - h + 1;
+        if item_top + h <= area.top() as i32 { break; }
 
-        match item.role.as_str() {
-            "tool" => {
-                if let Some(tool) = model.active_tools.iter().find(|t| t.name == item.lines[0]) {
-                    let sp = SPINNER[(model.tick / 3) as usize % SPINNER.len()];
-                    let (icon, col) = match tool.state {
-                        ToolCallState::Running => (format!(" {sp} "), t.tool_running),
-                        ToolCallState::Done => (" \u{2713} ".into(), t.tool_done),
-                        ToolCallState::Failed => (" \u{2717} ".into(), t.tool_failed),
-                        ToolCallState::Pending => (" \u{25CB} ".into(), t.tool_pending),
-                    };
-                    if sy < area.bottom() { frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{}{}", icon, tool.name), Style::new().fg(col)))), Rect::new(area.x + 1, sy, area.width.saturating_sub(2), 1)); }
-                    y += 1;
+        let sy = item_top.max(area.top() as i32) as u16;
+        let mut ly = sy as i32;
 
-                    // Inline approval buttons (before output, when pending)
-                    if let Some(ref approval) = tool.approval {
-                        if matches!(approval, ToolApproval::Pending) {
-                            let btn_line = format!(" [a] Approve   [d] Deny ");
-                            if y >= area.top() as i32 && y < area.bottom() as i32 {
-                                frame.render_widget(Paragraph::new(Line::from(Span::styled(btn_line, Style::new().fg(t.tool_running)))), Rect::new(area.x + 2, y as u16, area.width.saturating_sub(3), 1));
-                            }
-                            y += 1;
-                        } else if matches!(approval, ToolApproval::Approved) {
-                            let ok_line = " \u{2713} Approved ";
-                            if y >= area.top() as i32 && y < area.bottom() as i32 {
-                                frame.render_widget(Paragraph::new(Line::from(Span::styled(ok_line, Style::new().fg(t.tool_done)))), Rect::new(area.x + 2, y as u16, area.width.saturating_sub(3), 1));
-                            }
-                            y += 1;
-                        } else if matches!(approval, ToolApproval::Denied) {
-                            let no_line = " \u{2717} Denied ";
-                            if y >= area.top() as i32 && y < area.bottom() as i32 {
-                                frame.render_widget(Paragraph::new(Line::from(Span::styled(no_line, Style::new().fg(t.tool_failed)))), Rect::new(area.x + 2, y as u16, area.width.saturating_sub(3), 1));
-                            }
-                            y += 1;
-                        }
+        // Role label
+        let rstyle = if item.role == "user" { Style::new().fg(t.user).add_modifier(Modifier::BOLD) }
+            else if item.role == "assistant" { Style::new().fg(t.assistant).add_modifier(Modifier::BOLD) }
+            else if item.role == "tool" { Style::new().fg(t.tool_running) }
+            else { Style::default() };
+        if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+            frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", item.role), rstyle))), Rect::new(area.x, ly as u16, area.width, 1));
+        }
+        ly += 1;
+
+        // Tool-specific content
+        if item.role == "tool" {
+            if let Some(ref ap) = item.tool_approval {
+                let txt = match ap {
+                    ToolApproval::Pending => " [a] Approve   [d] Deny ",
+                    ToolApproval::Approved => " \u{2713} Approved ",
+                    ToolApproval::Denied => " \u{2717} Denied ",
+                };
+                if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                    frame.render_widget(Paragraph::new(Line::from(Span::styled(txt, Style::new().fg(t.tool_running)))), Rect::new(area.x + 2, ly as u16, area.width.saturating_sub(3), 1));
+                }
+                ly += 1;
+            }
+            if !item.tool_output.is_empty() {
+                let max = if item.tool_expanded { 1000 } else { 8 };
+                let total = item.tool_output.lines().count();
+                for (i, line) in item.tool_output.lines().enumerate().take(max) {
+                    if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                        let trimmed = line.trim_start();
+                        let (st, pf) = if trimmed.starts_with('+') && !trimmed.starts_with("+++") { (Style::default().fg(Color::Green), "+") }
+                            else if trimmed.starts_with('-') && !trimmed.starts_with("---") { (Style::default().fg(Color::Red), "-") }
+                            else { (Style::default().fg(t.muted), " ") };
+                        frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{pf}{line}"), st))), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
                     }
-
-                    // Tool output preview with diff highlighting
-                    if !tool.output.is_empty() {
-                        let max_lines = if tool.expanded { 1000 } else { 8 };
-                        let total_lines = tool.output.lines().count();
-                        let show_lines = max_lines.min(total_lines);
-                        for line in tool.output.lines().take(show_lines) {
-                            let ly = y;
-                            if ly >= area.top() as i32 && ly < area.bottom() as i32 {
-                                let trimmed = line.trim_start();
-                                let (style, prefix) = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-                                    (Style::default().fg(Color::Green), "+")
-                                } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
-                                    (Style::default().fg(Color::Red), "-")
-                                } else {
-                                    (Style::default().fg(t.muted), " ")
-                                };
-                                frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{prefix}{line}", prefix=prefix), style))), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
-                            }
-                            y += 1;
-                        }
-                        if total_lines > max_lines && !tool.expanded {
-                            if y >= area.top() as i32 && y < area.bottom() as i32 {
-                                frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines ", total_lines - max_lines), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 3, y as u16, area.width.saturating_sub(4), 1));
-                            }
-                            y += 1;
-                        }
+                    ly += 1;
+                }
+                if total > max && !item.tool_expanded {
+                    if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                        frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines ", total - max), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
                     }
-                } else {
-                    y += 1;
+                    ly += 1;
                 }
             }
-            _ => {
-                let rc = match item.role.as_str() { "user" => t.user, "assistant" => t.assistant, _ => Color::White };
-                if sy < area.bottom() { frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", item.role), Style::new().fg(rc).add_modifier(Modifier::BOLD)))), Rect::new(area.x, sy, area.width, 1)); }
-                y += 1;
-                for line in &item.lines {
-                    if y >= area.top() as i32 && y < area.bottom() as i32 {
-                        let st = if item.role == "tool" { Style::default().fg(t.muted).add_modifier(Modifier::ITALIC) } else { Style::default() };
-                        frame.render_widget(Paragraph::new(Line::from(Span::raw(line.clone()))).style(st), Rect::new(area.x + 1, y as u16, area.width.saturating_sub(2), 1));
-                    }
-                    y += 1;
+        } else {
+            // Chat message text lines
+            for line in &item.lines {
+                if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                    frame.render_widget(Paragraph::new(Line::from(Span::raw(line.clone()))), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
                 }
+                ly += 1;
             }
         }
+
+        y -= h; // Move past this item (fixed step)
         skip = 0;
     }
 
-    if total_lines == 0 {
+    if total_h == 0 {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1));
     }
     if model.scroll_offset > 0 {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" \u{2191} {} ", model.scroll_offset), Style::new().fg(t.muted)))), Rect::new(area.x + area.width.saturating_sub(12), area.y, 12, 1));
     }
-    if !model.auto_scroll && model.scroll_offset == 0 {
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(" \u{2191} paused ", Style::new().fg(t.muted)))), Rect::new(area.x + area.width.saturating_sub(12), area.y, 12, 1));
-    }
 }
 
 // ============================================================================
-// Input (multi-line aware)
+// Input
 // ============================================================================
 
 fn render_input(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let prompt = if model.is_streaming { "\u{23F3} " } else { "> " };
     let prompt_style = if model.is_streaming { Style::new().fg(Color::Green) } else { Style::new().fg(t.accent) };
     let input_style = if model.is_streaming { Style::default().fg(t.muted) } else { Style::default() };
-
     let text = model.input.value();
     let cursor_display = model.input.cursor_display_col();
-    let prompt_width = 2u16; // "> " or "⏳ " are both 2 display cols
+    let pw = 2u16;
 
-    // Render first line: prompt + text together
-    // (subsequent lines of multi-line input are rendered below)
     let mut ly = area.y;
     for (i, line) in text.lines().enumerate() {
         if ly >= area.y + area.height { break; }
         if i == 0 {
-            // First line: prompt + text
-            let spans = vec![
-                Span::styled(prompt, prompt_style),
-                Span::styled(line.to_string(), input_style),
-            ];
-            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, ly, area.width, 1));
+            frame.render_widget(Paragraph::new(Line::from(vec![Span::styled(prompt, prompt_style), Span::styled(line.to_string(), input_style)])), Rect::new(area.x, ly, area.width, 1));
         } else {
-            // Subsequent lines: just text (indented to align)
-            frame.render_widget(Paragraph::new(Text::styled(line.to_string(), input_style)),
-                Rect::new(area.x + prompt_width, ly, area.width.saturating_sub(prompt_width), 1));
+            frame.render_widget(Paragraph::new(Text::styled(line.to_string(), input_style)), Rect::new(area.x + pw, ly, area.width.saturating_sub(pw), 1));
         }
         ly += 1;
     }
-
-    // If no text yet, render just the prompt
     if text.is_empty() {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(prompt, prompt_style))), Rect::new(area.x, area.y, area.width, 1));
     }
-
-    // Completer popup
-    if model.completer.visible {
-        model.completer.render(frame, area.x + prompt_width + cursor_display, area.y);
-    }
-
-    // Cursor: on the last line of input, right after prompt + cursor_display
+    if model.completer.visible { model.completer.render(frame, area.x + pw + cursor_display, area.y); }
     if !model.is_streaming {
-        let cursor_line = text.lines().count().saturating_sub(1);
-        let cx = (area.x + prompt_width + cursor_display).min(area.x + area.width.saturating_sub(1));
-        let cy = area.y + cursor_line as u16;
+        let cx = (area.x + pw + cursor_display).min(area.x + area.width.saturating_sub(1));
+        let cy = area.y + text.lines().count().saturating_sub(1) as u16;
         frame.set_cursor_position((cx, cy));
     }
 }
 
 // ============================================================================
-// Status bar — model | cwd | git | context
+// Status bar
 // ============================================================================
 
 fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    let model_label = if model.model_name.is_empty() { "no model" } else { &model.model_name };
-
-    let cwd_short: String = if model.cwd.is_empty() { "~".to_string() } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let ml = if model.model_name.is_empty() { "no model" } else { &model.model_name };
+    let cwd: String = if model.cwd.is_empty() { "~".into() } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         model.cwd.replace(&home, "~")
     };
-
-    let git = match &model.git_branch {
-        Some(b) => format!(" \u{2395} {b} "),
-        None => String::new(),
-    };
-
-    // Context usage bar
-    let ctx_bar = if model.context_usage_pct > 0 {
+    let git = match &model.git_branch { Some(b) => format!(" \u{2395} {b} "), None => String::new() };
+    let ctx = if model.context_usage_pct > 0 {
         let pct = model.context_usage_pct.min(100);
-        let bar_color = if pct > 90 { Color::Red } else if pct > 70 { Color::Yellow } else { Color::Green };
-        let bar_width = 10usize;
-        let filled = (pct as usize * bar_width / 100).max(1);
-        let bar: String = format!(
-            " \u{25A0}\u{25A0} {}% ",
-            pct,
-        );
-        Span::styled(bar, Style::new().fg(bar_color))
-    } else {
-        Span::raw("")
-    };
-
-    // Elapsed time
-    let elapsed = if model.elapsed_secs > 0 {
-        let m = model.elapsed_secs / 60;
-        let s = model.elapsed_secs % 60;
-        format!(" \u{23F1} {m}:{s:02} ")
-    } else {
-        String::new()
-    };
-
-    let line = Line::from(vec![
-        Span::styled(format!(" {model_label} "), Style::new().fg(t.accent)),
+        let col = if pct > 90 { Color::Red } else if pct > 70 { Color::Yellow } else { Color::Green };
+        Span::styled(format!(" \u{25A0}\u{25A0} {}% ", pct), Style::new().fg(col))
+    } else { Span::raw("") };
+    let elapsed = if model.elapsed_secs > 0 { format!(" \u{23F1} {}:{:02} ", model.elapsed_secs / 60, model.elapsed_secs % 60) } else { String::new() };
+    frame.render_widget(Paragraph::new(Line::from(vec![
+        Span::styled(format!(" {ml} "), Style::new().fg(t.accent)),
         Span::styled(" | ", Style::new().fg(t.muted)),
-        Span::styled(cwd_short, Style::new().fg(Color::White)),
+        Span::styled(cwd, Style::new().fg(Color::White)),
         Span::styled(git, Style::new().fg(t.muted)),
-        ctx_bar,
-        Span::styled(elapsed, Style::new().fg(t.muted)),
-    ]);
-
-    frame.render_widget(Paragraph::new(line).style(Style::new().bg(t.status_bg)), area);
+        ctx, Span::styled(elapsed, Style::new().fg(t.muted)),
+    ])).style(Style::new().bg(t.status_bg)), area);
 }
 
 // ============================================================================
@@ -632,25 +451,24 @@ fn render_editor(frame: &mut Frame, area: Rect, editor: &Editor, title: &str, _t
 }
 
 fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    let dialog = match &model.dialog { Some(d) => d, None => return };
+    let d = match &model.dialog { Some(d) => d, None => return };
     frame.render_widget(Clear, area);
     let dw = (area.width / 3 * 2).max(40).min(area.width.saturating_sub(4));
-    let dh = 5u16 + dialog.message.lines().count() as u16;
+    let dh = 5u16 + d.message.lines().count() as u16;
     let da = Rect::new((area.width - dw) / 2, (area.height - dh) / 2, dw, dh);
     frame.render_widget(Clear, da);
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", dialog.title), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))), Rect::new(da.x, da.y, da.width, 1));
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", d.title), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))), Rect::new(da.x, da.y, da.width, 1));
     let inner = Rect::new(da.x, da.y + 1, da.width, da.height.saturating_sub(2));
     let mut y = inner.y;
-    for line in dialog.message.lines() { if y < inner.y + inner.height { frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))), Rect::new(inner.x, y, inner.width, 1)); y += 1; } }
+    for line in d.message.lines() { if y < inner.y + inner.height { frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))), Rect::new(inner.x, y, inner.width, 1)); y += 1; } }
     let ba = Rect::new(inner.x, da.y + dh - 2, inner.width, 1);
-    let total_w: usize = dialog.buttons.iter().map(|b| b.label.len() + 2 + if matches!(b.action, DialogAction::ConfirmAlways) { 2 } else { 0 }).sum();
-    let spacing = (inner.width as usize).saturating_sub(total_w) / (dialog.buttons.len() + 1).max(1);
-    let mut spans = vec![Span::raw(" ".repeat(spacing))];
-    for (i, btn) in dialog.buttons.iter().enumerate() {
-        let is_always = matches!(btn.action, DialogAction::ConfirmAlways);
-        let s = if i == dialog.selected { Style::new().fg(Color::Black).bg(t.highlight_bg) } else { Style::new().fg(Color::White).bg(t.muted) };
-        let label = if is_always { format!(" {} [A] ", btn.label) } else { format!(" {} ", btn.label) };
-        spans.push(Span::styled(label, s)); spans.push(Span::raw(" ".repeat(spacing)));
+    let tw: usize = d.buttons.iter().map(|b| b.label.len() + 2 + if matches!(b.action, DialogAction::ConfirmAlways) { 2 } else { 0 }).sum();
+    let sp = (inner.width as usize).saturating_sub(tw) / (d.buttons.len() + 1).max(1);
+    let mut spans = vec![Span::raw(" ".repeat(sp))];
+    for (i, btn) in d.buttons.iter().enumerate() {
+        let s = if i == d.selected { Style::new().fg(Color::Black).bg(t.highlight_bg) } else { Style::new().fg(Color::White).bg(t.muted) };
+        let lbl = if matches!(btn.action, DialogAction::ConfirmAlways) { format!(" {} [A] ", btn.label) } else { format!(" {} ", btn.label) };
+        spans.push(Span::styled(lbl, s)); spans.push(Span::raw(" ".repeat(sp)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), ba);
 }
@@ -678,10 +496,7 @@ fn simple_wrap(text: &str, width: usize) -> Vec<String> {
 // Main loop
 // ============================================================================
 
-pub async fn run(
-    mut model: Model, mut terminal: crate::terminal::Terminal,
-    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<KeyEvent>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(mut model: Model, mut terminal: crate::terminal::Terminal, mut input_rx: tokio::sync::mpsc::UnboundedReceiver<KeyEvent>) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::time::{sleep, Duration};
     loop {
         terminal.ratatui_terminal().draw(|frame| view(&model, frame))?;

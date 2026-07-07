@@ -119,6 +119,7 @@ async fn test_sdk_full_flow() {
         custom_prompt: None, append_system_prompt: None,
         session_name: None, stream_fn: None, convert_to_llm: None,
         extension_paths: vec![], enable_extensions: false,
+        cli_provider: None, cli_model: None,
     };
 
     let (mut session, _result) = pi_coding_agent::core::sdk::create_agent_session(options)

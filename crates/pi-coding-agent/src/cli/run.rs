@@ -96,6 +96,8 @@ pub async fn run(args: &CliArgs) -> i32 {
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
         enable_extensions: !args.no_extensions,
+        cli_provider: args.provider.clone(),
+        cli_model: args.model.clone(),
     };
 
     let (session, result) = match create_agent_session(sdk_options).await {
@@ -204,6 +206,8 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
         enable_extensions: !args.no_extensions,
+        cli_provider: args.provider.clone(),
+        cli_model: args.model.clone(),
     };
 
     let (session, _result) = match create_agent_session(sdk_options).await {

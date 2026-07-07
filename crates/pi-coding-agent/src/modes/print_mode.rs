@@ -47,14 +47,9 @@ async fn run_text_mode(mut session: AgentSession, message: &str, verbose: bool) 
                             std::io::Write::flush(&mut std::io::stdout()).ok();
                         }
                     }
-                    AgentEvent::MessageEnd { message: msg } => {
-                        if let AgentMessage::Assistant { content, .. } = &msg {
-                            for block in content {
-                                if let ContentBlock::Text { text, .. } = block {
-                                    print!("{text}");
-                                }
-                            }
-                        }
+                    AgentEvent::MessageEnd { .. } => {
+                        // Final text is already streamed via TextDelta
+                        // Just add a trailing newline for clean exit
                         println!();
                         std::io::Write::flush(&mut std::io::stdout()).ok();
                     }

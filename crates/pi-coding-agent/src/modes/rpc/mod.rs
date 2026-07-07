@@ -44,6 +44,8 @@ pub async fn run_rpc_mode() -> i32 {
         convert_to_llm: None,
         extension_paths: Vec::new(),
         enable_extensions: false,
+        cli_provider: None,
+        cli_model: None,
     };
 
     let (mut session, _result) = match create_agent_session(sdk_options).await {

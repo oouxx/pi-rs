@@ -64,6 +64,10 @@ pub struct CreateAgentSessionOptions {
     pub extension_paths: Vec<String>,
     /// If false, skip the extension RPC sidecar entirely.
     pub enable_extensions: bool,
+    /// CLI provider override (from --provider / -P).
+    pub cli_provider: Option<String>,
+    /// CLI model override (from --model / -m).
+    pub cli_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +115,8 @@ pub async fn create_agent_session(
         .unwrap_or_default();
 
     let initial_model = model_resolver::find_initial_model(
-        None,
-        None,
+        options.cli_provider.as_deref(),
+        options.cli_model.as_deref(),
         &scoped,
         false,
         default_provider.as_deref(),

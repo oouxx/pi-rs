@@ -368,7 +368,7 @@ pub fn view(model: &Model, frame: &mut Frame) {
 
 fn input_height(model: &Model) -> u16 {
     let lines = model.input.value().lines().count();
-    1u16.saturating_add((lines as u16).clamp(1, 5)) // separator + input lines
+    (lines as u16).clamp(1, 5) // prompt + input lines (first line shares prompt row)
 }
 
 // ============================================================================
@@ -520,28 +520,49 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
 // ============================================================================
 
 fn render_input(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    let sep = if model.is_streaming { "\u{23F3} " } else { "> " };
-    let sep_style = if model.is_streaming { Style::new().fg(Color::Green) } else { Style::new().fg(t.accent) };
-
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(sep, sep_style))), Rect::new(area.x, area.y, area.width, 1));
+    let prompt = if model.is_streaming { "\u{23F3} " } else { "> " };
+    let prompt_style = if model.is_streaming { Style::new().fg(Color::Green) } else { Style::new().fg(t.accent) };
+    let input_style = if model.is_streaming { Style::default().fg(t.muted) } else { Style::default() };
 
     let text = model.input.value();
     let cursor_display = model.input.cursor_display_col();
-    let input_style = if model.is_streaming { Style::default().fg(t.muted) } else { Style::default() };
+    let prompt_width = 2u16; // "> " or "⏳ " are both 2 display cols
 
-    // Multi-line: split on newlines, render each line
-    let input_area_y = area.y + 1;
+    // Render first line: prompt + text together
+    // (subsequent lines of multi-line input are rendered below)
+    let mut ly = area.y;
     for (i, line) in text.lines().enumerate() {
-        let ly = input_area_y + i as u16;
         if ly >= area.y + area.height { break; }
-        frame.render_widget(Paragraph::new(Text::styled(line.to_string(), input_style)), Rect::new(area.x + 2, ly, area.width.saturating_sub(2), 1));
+        if i == 0 {
+            // First line: prompt + text
+            let spans = vec![
+                Span::styled(prompt, prompt_style),
+                Span::styled(line.to_string(), input_style),
+            ];
+            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, ly, area.width, 1));
+        } else {
+            // Subsequent lines: just text (indented to align)
+            frame.render_widget(Paragraph::new(Text::styled(line.to_string(), input_style)),
+                Rect::new(area.x + prompt_width, ly, area.width.saturating_sub(prompt_width), 1));
+        }
+        ly += 1;
     }
 
-    if model.completer.visible { model.completer.render(frame, area.x + cursor_display + 2, area.y); }
+    // If no text yet, render just the prompt
+    if text.is_empty() {
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(prompt, prompt_style))), Rect::new(area.x, area.y, area.width, 1));
+    }
 
+    // Completer popup
+    if model.completer.visible {
+        model.completer.render(frame, area.x + prompt_width + cursor_display, area.y);
+    }
+
+    // Cursor: on the last line of input, right after prompt + cursor_display
     if !model.is_streaming {
-        let cx = (area.x + 2 + cursor_display).min(area.x + area.width.saturating_sub(1));
-        let cy = input_area_y + text.lines().count().saturating_sub(1) as u16;
+        let cursor_line = text.lines().count().saturating_sub(1);
+        let cx = (area.x + prompt_width + cursor_display).min(area.x + area.width.saturating_sub(1));
+        let cy = area.y + cursor_line as u16;
         frame.set_cursor_position((cx, cy));
     }
 }

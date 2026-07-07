@@ -207,6 +207,16 @@ fn generate_id(existing: &HashMap<String, SessionEntry>) -> String {
     id
 }
 
+pub fn derive_short_session_id() -> String {
+    let uuid = Uuid::new_v4();
+    let hex = uuid.to_string();
+    // Take the last segment of the UUID (after last '-') as short ID
+    hex.rsplit('-')
+        .next()
+        .unwrap_or(&hex[..8])
+        .to_string()
+}
+
 fn assert_valid_session_id(id: &str) {
     if id.is_empty() {
         panic!("Session ID must not be empty");
@@ -1474,6 +1484,13 @@ mod tests {
         mgr.set_run_prompt("second prompt");
         let prompt = mgr.take_run_prompt();
         assert_eq!(prompt, Some("second prompt".to_string()));
+    }
+
+    #[test]
+    fn test_derive_short_session_id() {
+        let id = derive_short_session_id();
+        assert!(!id.is_empty());
+        assert!(id.len() <= 12); // short enough
     }
 
     #[tokio::test]

@@ -1,26 +1,35 @@
 //! Interactive TUI mode — connects AgentSession to the pi-tui Elm architecture.
 //!
-//! Uses two concurrent event loops:
-//! - TUI events (keyboard input) → `pi_tui::Msg::Key`
-//! - Agent events (streaming response) → `pi_tui::Msg::StreamText`
+//! Key bindings:
+//! - Ctrl+C (while streaming) → abort current agent turn
+//! - Ctrl+C twice quickly → exit
+//! - Ctrl+D → exit
+//! - Esc → exit
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use pi_agent_core::pi_ai_types::AssistantMessageEvent;
 use pi_agent_core::types::AgentEvent;
 
 use crate::core::agent_session::AgentSession;
 
+/// Time window (ms) for double-press Ctrl+C to exit.
+const DOUBLE_CTRL_C_WINDOW_MS: u64 = 500;
+
 /// Run the interactive TUI mode.
-///
-/// Creates an agent session and a TUI, then runs both event loops
-/// concurrently, bridging user input to the agent and agent responses
-/// to the TUI display.
 pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
+    // ── Enter alternate screen ──────────────────────────────────────────
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::EnterAlternateScreen,
+    );
+
     // ── Setup TUI ──────────────────────────────────────────────────────
     let mut terminal = match pi_tui::Terminal::new() {
         Ok(t) => t,
         Err(e) => {
+            restore_terminal();
             eprintln!("Failed to initialize terminal: {e}");
             return 1;
         }
@@ -32,6 +41,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     let (mut input_rx, shutdown_guard) = match terminal.start() {
         Ok(r) => r,
         Err(e) => {
+            restore_terminal();
             eprintln!("Failed to start terminal input: {e}");
             return 1;
         }
@@ -85,6 +95,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // ── Main event loop ────────────────────────────────────────────────
     let mut pending_message = String::new();
     let mut exit_code: i32 = 0;
+    let mut last_ctrl_c = Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100);
 
     loop {
         // Render current TUI state
@@ -102,19 +113,34 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         tokio::select! {
             // TUI keyboard events
             Some(key) = input_rx.recv() => {
-                use crossterm::event::{KeyCode, KeyEventKind};
+                use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
 
-                // Handle quit (Ctrl+C, Ctrl+D, Esc)
                 match key.code {
-                    KeyCode::Char('c') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
-                        exit_code = 0;
-                        break;
+                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                        let now = Instant::now();
+                        let since_last = now.duration_since(last_ctrl_c).as_millis() as u64;
+
+                        if since_last < DOUBLE_CTRL_C_WINDOW_MS {
+                            // Double Ctrl+C → exit
+                            exit_code = 0;
+                            break;
+                        }
+                        last_ctrl_c = now;
+
+                        if tui_model.is_streaming {
+                            // First Ctrl+C during streaming → abort the agent
+                            session.abort().await;
+                            tui_model.is_streaming = false;
+                            // Don't exit, just abort the current turn
+                        } else {
+                            // Idle Ctrl+C → mark as pending exit if pressed again
+                        }
                     }
-                    KeyCode::Char('d') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                    KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
                         exit_code = 0;
                         break;
                     }
@@ -125,7 +151,6 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     KeyCode::Enter => {
                         let text = tui_model.input.value().to_string();
                         if !text.is_empty() {
-                            // Send to agent
                             tui_model.input.clear();
                             tui_model.messages.push(pi_tui::app::Message {
                                 role: "user".into(),
@@ -145,7 +170,6 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             Some(output) = agent_rx.recv() => {
                 match output {
                     AgentOutput::TextDelta(delta) => {
-                        // Append to last assistant message
                         if tui_model.messages.last().map(|m| m.role.as_str()) == Some("assistant") {
                             if let Some(m) = tui_model.messages.last_mut() {
                                 m.text.push_str(&delta);
@@ -173,7 +197,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     AgentOutput::ToolStart(tool_name) => {
                         tui_model.messages.push(pi_tui::app::Message {
                             role: "tool".into(),
-                            text: format!("Running {tool_name}..."),
+                            text: format!("⚡ {tool_name}..."),
                         });
                     }
                     AgentOutput::ToolEnd(tool_name, is_error) => {
@@ -187,9 +211,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                 }
             }
 
-            // Periodic refresh
+            // Periodic refresh — also sends pending messages
             _ = tokio::time::sleep(tokio::time::Duration::from_millis(16)) => {
-                // Send pending message to agent if any
                 if !pending_message.is_empty() {
                     let msg = std::mem::take(&mut pending_message);
                     session.add_user_text(&msg).await;
@@ -200,6 +223,16 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     // ── Cleanup ────────────────────────────────────────────────────────
     shutdown_guard.shutdown();
-    let _ = terminal.clear_screen();
+    restore_terminal();
     exit_code
+}
+
+/// Restore terminal to normal mode and leave alternate screen.
+fn restore_terminal() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show,
+    );
+    let _ = crossterm::terminal::disable_raw_mode();
 }

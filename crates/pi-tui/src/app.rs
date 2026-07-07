@@ -60,7 +60,15 @@ pub enum Cmd { Quit }
 // ============================================================================
 
 #[derive(Debug, Clone)]
-pub struct ToolCall { pub name: String, pub state: ToolCallState }
+pub struct ToolCall {
+    pub name: String,
+    pub state: ToolCallState,
+    /// Tool output text for collapsed display.
+    pub output: String,
+    /// Whether expanded beyond preview.
+    pub expanded: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum ToolCallState { Pending, Running, Done, Failed }
 
@@ -87,6 +95,10 @@ pub struct Model {
     pub cwd: String,
     /// Git branch shown in status bar.
     pub git_branch: Option<String>,
+    /// Context usage percentage (0–100) for status bar.
+    pub context_usage_pct: u8,
+    /// Elapsed seconds since session start.
+    pub elapsed_secs: u64,
 }
 
 impl Model {
@@ -98,16 +110,29 @@ impl Model {
             tick: 0, active_tools: Vec::new(), dialog: None,
             completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
             cwd: String::new(), git_branch: None,
+            context_usage_pct: 0, elapsed_secs: 0,
         }
     }
 
     pub fn add_tool_call(&mut self, name: &str) {
-        self.active_tools.push(ToolCall { name: name.to_string(), state: ToolCallState::Running });
+        self.active_tools.push(ToolCall { name: name.to_string(), state: ToolCallState::Running, output: String::new(), expanded: false });
     }
 
     pub fn update_tool_call(&mut self, name: &str, state: ToolCallState) {
         if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
             tool.state = state;
+        }
+    }
+
+    pub fn append_tool_output(&mut self, name: &str, text: &str) {
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
+            tool.output.push_str(text);
+        }
+    }
+
+    pub fn toggle_tool_expand(&mut self, name: &str) {
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
+            tool.expanded = !tool.expanded;
         }
     }
 }
@@ -125,6 +150,10 @@ pub enum Msg {
     ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
     ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
     SetGitBranch(Option<String>),
+    SetContextUsage(u8),
+    SetElapsed(u64),
+    AppendToolOutput(String, String),
+    ToggleToolExpand(String),
     Cancel,
 }
 
@@ -165,6 +194,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::DialogPrev => { if let Some(ref mut d) = model.dialog { if d.selected > 0 { d.selected -= 1; } } vec![] }
         Msg::DialogConfirm => { model.dialog.take(); vec![] }
         Msg::SetGitBranch(branch) => { model.git_branch = branch; vec![] }
+        Msg::SetContextUsage(pct) => { model.context_usage_pct = pct; vec![] }
+        Msg::SetElapsed(secs) => { model.elapsed_secs = secs; vec![] }
+        Msg::AppendToolOutput(name, text) => { model.append_tool_output(&name, &text); vec![] }
+        Msg::ToggleToolExpand(name) => { model.toggle_tool_expand(&name); vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
     }
 }
@@ -220,7 +253,9 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 }
             }
             KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
-            KeyCode::Enter => { model.input.clear(); model.completer.deactivate(); }
+            KeyCode::Enter => {
+                model.input.clear(); model.completer.deactivate();
+            }
             KeyCode::Delete => model.input.delete(),
             KeyCode::Left => model.input.move_left(),
             KeyCode::Right => model.input.move_right(),
@@ -338,8 +373,30 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
                         ToolCallState::Pending => (" \u{25CB} ".into(), t.tool_pending),
                     };
                     if sy < area.bottom() { frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{}{}", icon, tool.name), Style::new().fg(col)))), Rect::new(area.x + 1, sy, area.width.saturating_sub(2), 1)); }
+                    y += 1;
+
+                    // Tool output preview (collapsed if too long)
+                    if !tool.output.is_empty() {
+                        let max_lines = if tool.expanded { 1000 } else { 8 };
+                        let total_lines = tool.output.lines().count();
+                        let show_lines = max_lines.min(total_lines);
+                        for (i, line) in tool.output.lines().take(show_lines).enumerate() {
+                            let ly = y;
+                            if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                                frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))).style(Style::default().fg(t.muted)), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
+                            }
+                            y += 1;
+                        }
+                        if total_lines > max_lines && !tool.expanded {
+                            if y >= area.top() as i32 && y < area.bottom() as i32 {
+                                frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines, press Enter to expand ", total_lines - max_lines), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 3, y as u16, area.width.saturating_sub(4), 1));
+                            }
+                            y += 1;
+                        }
+                    }
+                } else {
+                    y += 1;
                 }
-                y += 1;
             }
             _ => {
                 let rc = match item.role.as_str() { "user" => t.user, "assistant" => t.assistant, _ => Color::White };
@@ -416,12 +473,37 @@ fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         None => String::new(),
     };
 
+    // Context usage bar
+    let ctx_bar = if model.context_usage_pct > 0 {
+        let pct = model.context_usage_pct.min(100);
+        let bar_color = if pct > 90 { Color::Red } else if pct > 70 { Color::Yellow } else { Color::Green };
+        let bar_width = 10usize;
+        let filled = (pct as usize * bar_width / 100).max(1);
+        let bar: String = format!(
+            " \u{25A0}\u{25A0} {}% ",
+            pct,
+        );
+        Span::styled(bar, Style::new().fg(bar_color))
+    } else {
+        Span::raw("")
+    };
+
+    // Elapsed time
+    let elapsed = if model.elapsed_secs > 0 {
+        let m = model.elapsed_secs / 60;
+        let s = model.elapsed_secs % 60;
+        format!(" \u{23F1} {m}:{s:02} ")
+    } else {
+        String::new()
+    };
+
     let line = Line::from(vec![
         Span::styled(format!(" {model_label} "), Style::new().fg(t.accent)),
         Span::styled(" | ", Style::new().fg(t.muted)),
         Span::styled(cwd_short, Style::new().fg(Color::White)),
         Span::styled(git, Style::new().fg(t.muted)),
-        Span::raw(" "),
+        ctx_bar,
+        Span::styled(elapsed, Style::new().fg(t.muted)),
     ]);
 
     frame.render_widget(Paragraph::new(line).style(Style::new().bg(t.status_bg)), area);

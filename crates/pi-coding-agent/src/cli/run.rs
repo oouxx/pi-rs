@@ -28,7 +28,13 @@ pub async fn run(args: &CliArgs) -> i32 {
     }
 
     if args.list_models {
-        return list_available_models().await;
+        let search = args.messages.join(" ");
+        let search_opt = if search.is_empty() {
+            None
+        } else {
+            Some(search.as_str())
+        };
+        return list_available_models(search_opt).await;
     }
 
     let agent_dir = crate::config::get_agent_dir();
@@ -350,38 +356,11 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
     }
 }
 
-/// List available models.
-async fn list_available_models() -> i32 {
-    let agent_dir = crate::config::get_agent_dir();
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "/tmp".to_string());
-
-    let settings_manager = crate::core::settings_manager::SettingsManager::create(
-        &cwd,
-        Some(&agent_dir.to_string_lossy()),
+/// List available models, delegating to the `list_models` module.
+async fn list_available_models(search: Option<&str>) -> i32 {
+    let model_registry = crate::core::model_registry::ModelRegistry::new(
+        crate::core::model_registry::ModelRegistry::builtin_models_list(),
     );
 
-    let model_registry =
-        crate::core::model_registry::ModelRegistry::new(
-            crate::core::model_registry::ModelRegistry::builtin_models_list(),
-        );
-
-    let available = model_registry.get_available();
-    if available.is_empty() {
-        eprintln!("No models available. Configure an API key first.");
-        return EXIT_FAILURE;
-    }
-
-    println!("Available models:");
-    for model in &available {
-        let default_mark = if settings_manager.get_settings().default_model.as_deref() == Some(&model.id) {
-            " (default)"
-        } else {
-            ""
-        };
-        println!("  {} [{:?}]{default_mark}", model.id, model.provider);
-    }
-
-    EXIT_SUCCESS
+    crate::cli::list_models::list_models(&model_registry, search).await
 }

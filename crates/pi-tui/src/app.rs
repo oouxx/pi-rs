@@ -1,4 +1,6 @@
 //! Elm architecture core — Model, Msg, update, view, Cmd.
+//!
+//! Aligned with crates/pi-tui/plans.md design (except markdown/highlight).
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -10,8 +12,42 @@ use ratatui::Frame;
 
 use crate::components::{Completer, Editor, Input, SelectList};
 
-/// Spinner frames for tool execution animation.
-const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// ============================================================================
+// Theme
+// ============================================================================
+
+#[derive(Clone)]
+pub struct Theme {
+    pub accent: Color,
+    pub user: Color,
+    pub assistant: Color,
+    pub tool_running: Color,
+    pub tool_done: Color,
+    pub tool_failed: Color,
+    pub tool_pending: Color,
+    pub muted: Color,
+    pub highlight_bg: Color,
+    pub status_bg: Color,
+}
+
+impl Theme {
+    pub fn default() -> Self {
+        Self {
+            accent: Color::Cyan,
+            user: Color::Green,
+            assistant: Color::Cyan,
+            tool_running: Color::Yellow,
+            tool_done: Color::Green,
+            tool_failed: Color::Red,
+            tool_pending: Color::DarkGray,
+            muted: Color::DarkGray,
+            highlight_bg: Color::Cyan,
+            status_bg: Color::Rgb(0x1a, 0x1b, 0x26),
+        }
+    }
+}
 
 // ============================================================================
 // Cmd
@@ -20,28 +56,13 @@ const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦
 pub enum Cmd { Quit }
 
 // ============================================================================
-// ToolCall state machine
+// State types
 // ============================================================================
 
 #[derive(Debug, Clone)]
 pub struct ToolCall { pub name: String, pub state: ToolCallState }
-
 #[derive(Debug, Clone)]
 pub enum ToolCallState { Pending, Running, Done, Failed }
-
-// ============================================================================
-// Model
-// ============================================================================
-
-pub struct Model {
-    pub width: u16, pub height: u16, pub mode: AppMode,
-    pub messages: Vec<Message>, pub is_streaming: bool,
-    pub input: Input, pub model_name: String, pub tick: u64,
-    pub active_tools: Vec<ToolCall>, pub dialog: Option<Dialog>,
-    pub completer: Completer,
-    pub scroll_offset: usize,
-    pub total_body_lines: usize,
-}
 
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Editor, title: String } }
 pub struct Message { pub role: String, pub text: String }
@@ -50,13 +71,33 @@ pub struct Dialog { pub title: String, pub message: String, pub buttons: Vec<Dia
 pub struct DialogButton { pub label: &'static str, pub action: DialogAction }
 pub enum DialogAction { Confirm, Cancel, Custom(&'static str) }
 
+// ============================================================================
+// Model
+// ============================================================================
+
+pub struct Model {
+    pub theme: Theme,
+    pub width: u16, pub height: u16, pub mode: AppMode,
+    pub messages: Vec<Message>, pub is_streaming: bool,
+    pub input: Input, pub model_name: String, pub tick: u64,
+    pub active_tools: Vec<ToolCall>, pub dialog: Option<Dialog>,
+    pub completer: Completer,
+    pub scroll_offset: usize, pub auto_scroll: bool,
+    /// Cwd shown in status bar.
+    pub cwd: String,
+    /// Git branch shown in status bar.
+    pub git_branch: Option<String>,
+}
+
 impl Model {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
+            theme: Theme::default(),
             width, height, mode: AppMode::Chat, messages: Vec::new(),
             is_streaming: false, input: Input::new(), model_name: String::new(),
             tick: 0, active_tools: Vec::new(), dialog: None,
-            completer: Completer::new(), scroll_offset: 0, total_body_lines: 0,
+            completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
+            cwd: String::new(), git_branch: None,
         }
     }
 
@@ -83,6 +124,7 @@ pub enum Msg {
     Tick,
     ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
     ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
+    SetGitBranch(Option<String>),
     Cancel,
 }
 
@@ -95,7 +137,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::Key(key) => handle_key(model, key),
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
         Msg::Paste(text) => { model.input.insert_str(&text); vec![] }
-        Msg::NewMessage(role, text) => { model.messages.push(Message { role, text }); vec![] }
+        Msg::NewMessage(role, text) => { model.messages.push(Message { role, text }); model.auto_scroll = true; vec![] }
         Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); } vec![] }
         Msg::StreamEnd => { model.is_streaming = false; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Editor::new(&text), title }; vec![] }
@@ -107,23 +149,22 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::Tick => {
             model.tick += 1;
-            if model.is_streaming { model.scroll_offset = 0; }
+            if model.auto_scroll { model.scroll_offset = 0; }
             vec![]
         }
-        Msg::ScrollUp(amount) => {
-            model.scroll_offset = (model.scroll_offset + amount as usize).min(model.total_body_lines);
-            vec![]
-        }
+        Msg::ScrollUp(amount) => { model.auto_scroll = false; model.scroll_offset = model.scroll_offset.saturating_add(amount as usize); vec![] }
         Msg::ScrollDown(amount) => {
             model.scroll_offset = model.scroll_offset.saturating_sub(amount as usize);
+            if model.scroll_offset == 0 { model.auto_scroll = true; }
             vec![]
         }
-        Msg::ScrollToBottom => { model.scroll_offset = 0; vec![] }
+        Msg::ScrollToBottom => { model.scroll_offset = 0; model.auto_scroll = true; vec![] }
         Msg::ShowDialog(dialog) => { model.dialog = Some(dialog); vec![] }
         Msg::DismissDialog => { model.dialog = None; vec![] }
         Msg::DialogNext => { if let Some(ref mut d) = model.dialog { if d.selected + 1 < d.buttons.len() { d.selected += 1; } } vec![] }
         Msg::DialogPrev => { if let Some(ref mut d) = model.dialog { if d.selected > 0 { d.selected -= 1; } } vec![] }
         Msg::DialogConfirm => { model.dialog.take(); vec![] }
+        Msg::SetGitBranch(branch) => { model.git_branch = branch; vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
     }
 }
@@ -160,16 +201,13 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     match &mut model.mode {
         AppMode::Chat => match key.code {
             KeyCode::Char(c) => {
-                // Check if this character should trigger completion
                 if let Some(trigger) = Completer::should_activate(c) {
                     model.completer.activate(trigger, "");
                 } else if model.completer.trigger.is_some() && !c.is_whitespace() {
                     let mut q = model.completer.query.clone();
                     q.push(c);
                     model.completer.activate(model.completer.trigger.unwrap(), &q);
-                } else {
-                    model.completer.deactivate();
-                }
+                } else { model.completer.deactivate(); }
                 model.input.insert_char(c);
             }
             KeyCode::Backspace => {
@@ -177,24 +215,21 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 if model.completer.trigger.is_some() {
                     let current = model.input.value();
                     if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
-                        let q = &current[pos + 1..];
-                        model.completer.activate(model.completer.trigger.unwrap(), q);
-                    } else {
-                        model.completer.deactivate();
-                    }
+                        model.completer.activate(model.completer.trigger.unwrap(), &current[pos + 1..]);
+                    } else { model.completer.deactivate(); }
                 }
             }
-            KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } else { model.completer.next(); } }
+            KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
             KeyCode::Enter => { model.input.clear(); model.completer.deactivate(); }
             KeyCode::Delete => model.input.delete(),
             KeyCode::Left => model.input.move_left(),
             KeyCode::Right => model.input.move_right(),
-            KeyCode::Up => { model.input.move_left(); }
-            KeyCode::Down => { model.input.move_right(); }
-            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; } model.input.move_home(); }
-            KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; } model.input.move_end(); }
-            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); }
-            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); }
+            KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); model.auto_scroll = false; } else { model.input.move_left(); } }
+            KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); if model.scroll_offset == 0 { model.auto_scroll = true; } } else { model.input.move_right(); } }
+            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; model.auto_scroll = false; } model.input.move_home(); }
+            KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; } model.input.move_end(); }
+            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); model.auto_scroll = false; }
+            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); if model.scroll_offset == 0 { model.auto_scroll = true; } }
             _ => {}
         },
         AppMode::Select { list } => { list.handle_key(&key); }
@@ -204,25 +239,32 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
 }
 
 // ============================================================================
-// View — three-section layout: header / body / input
+// View — four-section layout: header / body / input / status
 // ============================================================================
 
 pub fn view(model: &Model, frame: &mut Frame) {
     let area = frame.size();
+    let t = &model.theme;
+
     if let AppMode::Editor { editor, title, .. } = &model.mode {
-        render_editor(frame, area, editor, title);
+        render_editor(frame, area, editor, title, t);
         return;
     }
 
+    let input_h = input_height(model);
     let chunks = Layout::new(Direction::Vertical, [
-        Constraint::Length(1), Constraint::Min(1), Constraint::Length(2),
+        Constraint::Length(1),          // header
+        Constraint::Min(1),             // body
+        Constraint::Length(input_h),    // input (dynamic)
+        Constraint::Length(1),          // status bar
     ]).split(area);
 
-    render_header(model, frame, chunks[0]);
-    render_body(model, frame, chunks[1]);
-    render_input(model, frame, chunks[2]);
+    render_header(model, frame, chunks[0], t);
+    render_body(model, frame, chunks[1], t);
+    render_input(model, frame, chunks[2], t);
+    render_status(model, frame, chunks[3], t);
 
-    if model.dialog.is_some() { render_dialog(model, frame, area); return; }
+    if model.dialog.is_some() { render_dialog(model, frame, area, t); return; }
     if let AppMode::Select { list, .. } = &model.mode {
         let oa = Rect::new(area.width / 4, area.height / 4, area.width / 2, area.height / 2);
         frame.render_widget(Clear, oa);
@@ -230,126 +272,83 @@ pub fn view(model: &Model, frame: &mut Frame) {
     }
 }
 
+fn input_height(model: &Model) -> u16 {
+    let lines = model.input.value().lines().count();
+    1u16.saturating_add((lines as u16).clamp(1, 5)) // separator + input lines
+}
+
 // ============================================================================
 // Header
 // ============================================================================
 
-fn render_header(model: &Model, frame: &mut Frame, area: Rect) {
+fn render_header(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let label = if model.model_name.is_empty() { " pi-rs ".into() } else { format!(" {} ", model.model_name) };
-    let spinner = if model.is_streaming || !model.active_tools.is_empty() {
-        Some(SPINNER_FRAMES[(model.tick / 3) as usize % SPINNER_FRAMES.len()])
+    let sp = if model.is_streaming || !model.active_tools.is_empty() {
+        Some(SPINNER[(model.tick / 3) as usize % SPINNER.len()])
     } else { None };
-    let status = match (spinner, model.is_streaming) {
+    let status = match (sp, model.is_streaming) {
         (Some(ch), true) => Span::styled(format!(" {ch} streaming "), Style::new().fg(Color::Green)),
         (Some(ch), false) => Span::styled(format!(" {ch} working "), Style::new().fg(Color::Yellow)),
         _ => Span::raw(""),
     };
-    let hint = Span::styled(" Ctrl+C:abort x2:quit ", Style::new().fg(Color::DarkGray));
-    let line = Line::from(vec![
-        Span::styled(label, Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        status, Span::raw(" "), hint,
-    ]);
-    frame.render_widget(Paragraph::new(line).style(Style::new().bg(Color::Black)), area);
+    let hint = Span::styled(" Ctrl+C:abort x2:quit ", Style::new().fg(t.muted));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(label, Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+            status, Span::raw(" "), hint,
+        ])).style(Style::new().bg(t.status_bg)),
+        area,
+    );
 }
 
 // ============================================================================
-// Body — virtual scrolling
+// Body
 // ============================================================================
 
-fn render_body(model: &Model, frame: &mut Frame, area: Rect) {
-    // Borderless body — just use the area directly
-    let inner = area;
-    let body_h = inner.height as usize;
+fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
+    let wrap_w = (area.width as usize).saturating_sub(3).max(10);
+    let body_h = area.height as usize;
 
-    // Wrap width
-    let wrap_w = (inner.width as usize).saturating_sub(3).max(10);
-
-    // Compute item heights. Each item: role label (1) + wrapped text lines.
     struct Item { role: String, lines: Vec<String> }
     let mut items: Vec<Item> = Vec::new();
+    for tool in &model.active_tools { items.push(Item { role: "tool".into(), lines: vec![tool.name.clone()] }); }
+    for msg in &model.messages { items.push(Item { role: msg.role.clone(), lines: simple_wrap(&msg.text, wrap_w) }); }
 
-    // Tool call cards (1 line each, use "tool" as role)
-    for tool in &model.active_tools {
-        items.push(Item { role: "tool".to_string(), lines: vec![tool.name.clone()] });
-    }
-
-    // Messages
-    for msg in &model.messages {
-        let wrapped = simple_wrap(&msg.text, wrap_w);
-        items.push(Item { role: msg.role.clone(), lines: wrapped });
-    }
-
-    // Compute total lines (stored via interior mutability)
     let total_lines: usize = items.iter().map(|it| 1 + it.lines.len()).sum();
-    // Not stored to model here (view has immutable ref) — scroll bounds are approximate.
-    // The update function can correct over-scroll.
-
-    // Visible range: skip `scroll_offset` lines from the bottom
-    // Walk items from end, skip offset lines, then render
     let mut skip = model.scroll_offset;
-    let mut y = inner.bottom() as i32 - 1;
-    let top_line = inner.top() as i32;
+    let mut y = area.bottom() as i32 - 1;
 
     for item in items.iter().rev() {
-        if skip >= 1 + item.lines.len() {
-            skip -= 1 + item.lines.len();
-            continue;
-        }
-
+        if skip >= 1 + item.lines.len() { skip -= 1 + item.lines.len(); continue; }
         let remaining = (1 + item.lines.len()).saturating_sub(skip);
-        let render_this = remaining > 0 && y - remaining as i32 + 1 > top_line - body_h as i32;
-        if !render_this { break; }
-
-        y = y - remaining as i32 + 1; // align to top of visible portion
-        if y + remaining as i32 <= top_line { break; }
-        let sy = y.max(top_line) as u16;
-        y = sy as i32; // reset y to actual top
+        if remaining == 0 || y - remaining as i32 + 1 <= area.top() as i32 - body_h as i32 { break; }
+        y = y - remaining as i32 + 1;
+        if y + remaining as i32 <= area.top() as i32 { break; }
+        let sy = y.max(area.top() as i32) as u16;
+        y = sy as i32;
 
         match item.role.as_str() {
             "tool" => {
-                let tool = model.active_tools.iter().find(|t| t.name == item.lines[0]);
-                if let Some(t) = tool {
-                    let sp = SPINNER_FRAMES[(model.tick / 3) as usize % SPINNER_FRAMES.len()];
-                    let (icon, st) = match t.state {
-                        ToolCallState::Running => (format!(" {sp} "), Color::Yellow),
-                        ToolCallState::Done => (" ✓ ".into(), Color::Green),
-                        ToolCallState::Failed => (" ✗ ".into(), Color::Red),
-                        ToolCallState::Pending => (" ○ ".into(), Color::DarkGray),
+                if let Some(tool) = model.active_tools.iter().find(|t| t.name == item.lines[0]) {
+                    let sp = SPINNER[(model.tick / 3) as usize % SPINNER.len()];
+                    let (icon, col) = match tool.state {
+                        ToolCallState::Running => (format!(" {sp} "), t.tool_running),
+                        ToolCallState::Done => (" \u{2713} ".into(), t.tool_done),
+                        ToolCallState::Failed => (" \u{2717} ".into(), t.tool_failed),
+                        ToolCallState::Pending => (" \u{25CB} ".into(), t.tool_pending),
                     };
-                    if sy >= inner.top() && sy < inner.bottom() {
-                        frame.render_widget(
-                            Paragraph::new(Line::from(Span::styled(format!("{}{}", icon, t.name), Style::new().fg(st)))),
-                            Rect::new(inner.x + 1, sy, inner.width.saturating_sub(2), 1),
-                        );
-                    }
+                    if sy < area.bottom() { frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{}{}", icon, tool.name), Style::new().fg(col)))), Rect::new(area.x + 1, sy, area.width.saturating_sub(2), 1)); }
                 }
                 y += 1;
             }
             _ => {
-                // Role label
-                let rc = match item.role.as_str() {
-                    "user" => Color::Green, "assistant" => Color::Cyan, _ => Color::White,
-                };
-                if sy >= inner.top() && sy < inner.bottom() {
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(format!(" {} ", item.role),
-                            Style::new().fg(rc).add_modifier(Modifier::BOLD)))),
-                        Rect::new(inner.x, sy, inner.width, 1),
-                    );
-                }
+                let rc = match item.role.as_str() { "user" => t.user, "assistant" => t.assistant, _ => Color::White };
+                if sy < area.bottom() { frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", item.role), Style::new().fg(rc).add_modifier(Modifier::BOLD)))), Rect::new(area.x, sy, area.width, 1)); }
                 y += 1;
-
-                // Text lines
                 for line in &item.lines {
-                    if y >= inner.top() as i32 && y < inner.bottom() as i32 {
-                        let text_style = match item.role.as_str() {
-                            "tool" => Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-                            _ => Style::default().fg(Color::White),
-                        };
-                        frame.render_widget(
-                            Paragraph::new(Line::from(Span::raw(line.clone()))).style(text_style),
-                            Rect::new(inner.x + 1, y as u16, inner.width.saturating_sub(2), 1),
-                        );
+                    if y >= area.top() as i32 && y < area.bottom() as i32 {
+                        let st = if item.role == "tool" { Style::default().fg(t.muted).add_modifier(Modifier::ITALIC) } else { Style::default() };
+                        frame.render_widget(Paragraph::new(Line::from(Span::raw(line.clone()))).style(st), Rect::new(area.x + 1, y as u16, area.width.saturating_sub(2), 1));
                     }
                     y += 1;
                 }
@@ -359,129 +358,104 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect) {
     }
 
     if total_lines == 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " No messages yet. Type and press Enter.",
-                Style::new().fg(Color::DarkGray),
-            ))),
-            Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
-        );
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1));
     }
-
-    // Scroll indicator
     if model.scroll_offset > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!(" ↑ {} lines ", model.scroll_offset),
-                Style::new().fg(Color::DarkGray).bg(Color::Black),
-            ))),
-            Rect::new(inner.x + inner.width.saturating_sub(12), inner.y, 12, 1),
-        );
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" \u{2191} {} ", model.scroll_offset), Style::new().fg(t.muted)))), Rect::new(area.x + area.width.saturating_sub(12), area.y, 12, 1));
+    }
+    if !model.auto_scroll && model.scroll_offset == 0 {
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(" \u{2191} paused ", Style::new().fg(t.muted)))), Rect::new(area.x + area.width.saturating_sub(12), area.y, 12, 1));
     }
 }
 
 // ============================================================================
-// Input
+// Input (multi-line aware)
 // ============================================================================
 
-fn render_input(model: &Model, frame: &mut Frame, area: Rect) {
-    let style = if model.is_streaming { Style::default().fg(Color::DarkGray) } else { Style::default() };
+fn render_input(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
+    let sep = if model.is_streaming { "\u{23F3} " } else { "> " };
+    let sep_style = if model.is_streaming { Style::new().fg(Color::Green) } else { Style::new().fg(t.accent) };
 
-    // Thin separator line above prompt
-    let sep_y = area.y;
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {} ", if model.is_streaming { "⏳" } else { ">" }),
-            if model.is_streaming { Style::new().fg(Color::Green) } else { Style::new().fg(Color::Cyan) },
-        ))),
-        Rect::new(area.x, sep_y, area.width, 1),
-    );
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(sep, sep_style))), Rect::new(area.x, area.y, area.width, 1));
 
-    let inner_y = area.y + 1;
     let text = model.input.value();
     let cursor_display = model.input.cursor_display_col();
-    let scroll_off = (cursor_display as usize).saturating_sub(area.width as usize);
-    let visible = if scroll_off > 0 {
-        // Find byte offset for the display column offset
-        let mut display_cols = 0usize;
-        let mut byte_off = 0usize;
-        for ch in text.chars() {
-            let w = unicode_width::UnicodeWidthStr::width(ch.to_string().as_str());
-            if display_cols + w > scroll_off { break; }
-            display_cols += w;
-            byte_off += ch.len_utf8();
-        }
-        &text[byte_off..]
-    } else {
-        text
-    };
+    let input_style = if model.is_streaming { Style::default().fg(t.muted) } else { Style::default() };
 
-    frame.render_widget(Paragraph::new(Text::styled(visible.to_string(), style)),
-        Rect::new(area.x, inner_y, area.width, 1));
-
-    if model.completer.visible {
-        let cx = area.x + cursor_display.saturating_sub(scroll_off as u16);
-        model.completer.render(frame, cx, area.y);
+    // Multi-line: split on newlines, render each line
+    let input_area_y = area.y + 1;
+    for (i, line) in text.lines().enumerate() {
+        let ly = input_area_y + i as u16;
+        if ly >= area.y + area.height { break; }
+        frame.render_widget(Paragraph::new(Text::styled(line.to_string(), input_style)), Rect::new(area.x + 2, ly, area.width.saturating_sub(2), 1));
     }
+
+    if model.completer.visible { model.completer.render(frame, area.x + cursor_display + 2, area.y); }
 
     if !model.is_streaming {
-        let cx = area.x + cursor_display.saturating_sub(scroll_off as u16);
-        frame.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), inner_y));
+        let cx = (area.x + 2 + cursor_display).min(area.x + area.width.saturating_sub(1));
+        let cy = input_area_y + text.lines().count().saturating_sub(1) as u16;
+        frame.set_cursor_position((cx, cy));
     }
+}
+
+// ============================================================================
+// Status bar — model | cwd | git | context
+// ============================================================================
+
+fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
+    let model_label = if model.model_name.is_empty() { "no model" } else { &model.model_name };
+
+    let cwd_short: String = if model.cwd.is_empty() { "~".to_string() } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        model.cwd.replace(&home, "~")
+    };
+
+    let git = match &model.git_branch {
+        Some(b) => format!(" \u{2395} {b} "),
+        None => String::new(),
+    };
+
+    let line = Line::from(vec![
+        Span::styled(format!(" {model_label} "), Style::new().fg(t.accent)),
+        Span::styled(" | ", Style::new().fg(t.muted)),
+        Span::styled(cwd_short, Style::new().fg(Color::White)),
+        Span::styled(git, Style::new().fg(t.muted)),
+        Span::raw(" "),
+    ]);
+
+    frame.render_widget(Paragraph::new(line).style(Style::new().bg(t.status_bg)), area);
 }
 
 // ============================================================================
 // Editor / Dialog
 // ============================================================================
 
-fn render_editor(frame: &mut Frame, area: Rect, editor: &Editor, title: &str) {
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
-        .title(format!(" {title} "));
+fn render_editor(frame: &mut Frame, area: Rect, editor: &Editor, title: &str, _t: &Theme) {
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(format!(" {title} "));
     let inner = block.inner(area);
-    let p = Paragraph::new(Text::raw(editor.text())).block(block);
-    frame.render_widget(p, area);
+    frame.render_widget(Paragraph::new(Text::raw(editor.text())).block(block), area);
     frame.set_cursor_position((inner.x + editor.cursor_col(), inner.y + editor.cursor_row()));
 }
 
-fn render_dialog(model: &Model, frame: &mut Frame, area: Rect) {
+fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let dialog = match &model.dialog { Some(d) => d, None => return };
     frame.render_widget(Clear, area);
-
     let dw = (area.width / 3 * 2).max(40).min(area.width.saturating_sub(4));
     let dh = 5u16 + dialog.message.lines().count() as u16;
     let da = Rect::new((area.width - dw) / 2, (area.height - dh) / 2, dw, dh);
-
     frame.render_widget(Clear, da);
-
-    // Title
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {} ", dialog.title),
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ))),
-        Rect::new(da.x, da.y, da.width, 1),
-    );
-
-    // Dimmed backdrop for message area
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", dialog.title), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))), Rect::new(da.x, da.y, da.width, 1));
     let inner = Rect::new(da.x, da.y + 1, da.width, da.height.saturating_sub(2));
-
     let mut y = inner.y;
-    for line in dialog.message.lines() {
-        if y < inner.y + inner.height {
-            frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))), Rect::new(inner.x, y, inner.width, 1));
-            y += 1;
-        }
-    }
-
+    for line in dialog.message.lines() { if y < inner.y + inner.height { frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))), Rect::new(inner.x, y, inner.width, 1)); y += 1; } }
     let ba = Rect::new(inner.x, da.y + dh - 2, inner.width, 1);
     let total_w: usize = dialog.buttons.iter().map(|b| b.label.len() + 2).sum();
     let spacing = (inner.width as usize).saturating_sub(total_w) / (dialog.buttons.len() + 1).max(1);
-
     let mut spans = vec![Span::raw(" ".repeat(spacing))];
     for (i, btn) in dialog.buttons.iter().enumerate() {
-        let s = if i == dialog.selected { Style::new().fg(Color::Black).bg(Color::Cyan) } else { Style::new().fg(Color::White).bg(Color::DarkGray) };
-        spans.push(Span::styled(format!(" {} ", btn.label), s));
-        spans.push(Span::raw(" ".repeat(spacing)));
+        let s = if i == dialog.selected { Style::new().fg(Color::Black).bg(t.highlight_bg) } else { Style::new().fg(Color::White).bg(t.muted) };
+        spans.push(Span::styled(format!(" {} ", btn.label), s)); spans.push(Span::raw(" ".repeat(spacing)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), ba);
 }
@@ -494,45 +468,30 @@ fn simple_wrap(text: &str, width: usize) -> Vec<String> {
     if width < 2 { return vec![text.to_string()]; }
     let mut lines = Vec::new();
     for line in text.lines() {
-        let owned = line.to_string();
-        let bytes = owned.as_bytes();
-        let mut start = 0;
+        let owned = line.to_string(); let bytes = owned.as_bytes(); let mut start = 0;
         while start < owned.len() {
             let end = (start + width).min(owned.len());
-            let brk = if end < owned.len() {
-                let mut p = end;
-                while p > start && bytes[p] != b' ' { p -= 1; }
-                if p > start { p } else { end }
-            } else { end };
+            let brk = if end < owned.len() { let mut p = end; while p > start && bytes[p] != b' ' { p -= 1; } if p > start { p } else { end } } else { end };
             lines.push(owned[start..brk].to_string());
             start = if brk < owned.len() && bytes[brk] == b' ' { brk + 1 } else { brk };
         }
     }
-    if lines.is_empty() { lines.push(String::new()); }
-    lines
-}
-
-fn wrap_text(text: &str, width: usize) -> Vec<Line<'static>> {
-    simple_wrap(text, width).into_iter().map(|s| Line::from(Span::raw(s))).collect()
+    if lines.is_empty() { lines.push(String::new()); } lines
 }
 
 // ============================================================================
-// Main loop (standalone)
+// Main loop
 // ============================================================================
 
 pub async fn run(
-    mut model: Model,
-    mut terminal: crate::terminal::Terminal,
+    mut model: Model, mut terminal: crate::terminal::Terminal,
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<KeyEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::time::{sleep, Duration};
     loop {
         terminal.ratatui_terminal().draw(|frame| view(&model, frame))?;
         tokio::select! {
-            Some(key) = input_rx.recv() => {
-                let cmds = update(&mut model, Msg::Key(key));
-                for cmd in cmds { if let Cmd::Quit = cmd { return Ok(()); } }
-            }
+            Some(key) = input_rx.recv() => { let cmds = update(&mut model, Msg::Key(key)); for cmd in cmds { if let Cmd::Quit = cmd { return Ok(()); } } }
             _ = sleep(Duration::from_millis(50)) => {}
         }
     }

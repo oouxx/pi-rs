@@ -1,6 +1,26 @@
 use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason};
 use pi_agent_core::types::{AgentMessage, CustomContent};
 
+/// Normalize message content at ingestion boundaries.
+/// Ensures empty/null content is consistently represented.
+pub fn normalize_ingested_message(message: &mut Message) {
+    match message {
+        Message::User { content, .. } => {
+            if content.is_empty() {
+                *content = vec![ContentBlock::Text {
+                    text: String::new(),
+                    text_signature: None,
+                }];
+            }
+        }
+        Message::Assistant { content, .. } => {
+            // Assistant messages with empty content are valid (tool-use only responses)
+            // No normalization needed
+        }
+        _ => {}
+    }
+}
+
 pub const COMPACTION_SUMMARY_PREFIX: &str =
     "The conversation history before this point was compacted into the following summary:\n<summary>\n";
 pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
@@ -38,7 +58,7 @@ pub fn bash_execution_to_text(
 }
 
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
-    messages
+    let mut result: Vec<Message> = messages
         .iter()
         .filter_map(|m| match m {
             AgentMessage::BashExecution {
@@ -139,7 +159,11 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 timestamp: *timestamp,
             }),
         })
-        .collect()
+        .collect();
+    for msg in result.iter_mut() {
+        normalize_ingested_message(msg);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -248,5 +272,140 @@ mod tests {
         }];
         let result = convert_to_llm(&messages);
         assert_eq!(result.len(), 1);
+    }
+
+    // --- normalize_ingested_message tests ---
+
+    #[test]
+    fn test_normalize_user_message_empty_content() {
+        let mut msg = Message::User {
+            content: vec![],
+            timestamp: 0,
+        };
+        normalize_ingested_message(&mut msg);
+        match &msg {
+            Message::User { content, .. } => {
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ContentBlock::Text { text, .. } => {
+                        assert_eq!(text, "");
+                    }
+                    _ => panic!("Expected Text content block"),
+                }
+            }
+            _ => panic!("Should still be User"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_user_message_non_empty_unchanged() {
+        let mut msg = Message::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 0,
+        };
+        normalize_ingested_message(&mut msg);
+        match &msg {
+            Message::User { content, .. } => {
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ContentBlock::Text { text, .. } => {
+                        assert_eq!(text, "hello");
+                    }
+                    _ => panic!("Expected Text content block"),
+                }
+            }
+            _ => panic!("Should still be User"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_assistant_message_unchanged() {
+        let mut msg = Message::Assistant {
+            content: vec![],
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        };
+        normalize_ingested_message(&mut msg);
+        match &msg {
+            Message::Assistant { content, .. } => {
+                // Assistant messages with empty content should remain empty
+                // (tool-use only responses are valid with no text content)
+                assert_eq!(content.len(), 0);
+            }
+            _ => panic!("Should still be Assistant"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_tool_result_unchanged() {
+        let mut msg = Message::ToolResult {
+            tool_call_id: "tc1".into(),
+            tool_name: "test".into(),
+            content: vec![],
+            details: None,
+            is_error: false,
+            timestamp: 0,
+        };
+        normalize_ingested_message(&mut msg);
+        match &msg {
+            Message::ToolResult { content, .. } => {
+                // ToolResult messages should not be normalized
+                assert_eq!(content.len(), 0);
+            }
+            _ => panic!("Should still be ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_convert_to_llm_normalizes_empty_user_content() {
+        let messages = vec![AgentMessage::User {
+            content: vec![],
+            timestamp: 1000,
+        }];
+        let result = convert_to_llm(&messages);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Message::User { content, .. } => {
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ContentBlock::Text { text, .. } => {
+                        assert_eq!(text, "");
+                    }
+                    _ => panic!("Expected Text content block"),
+                }
+            }
+            _ => panic!("Expected User message"),
+        }
+    }
+
+    #[test]
+    fn test_convert_to_llm_keeps_assistant_empty_content() {
+        let messages = vec![AgentMessage::Assistant {
+            content: vec![],
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            usage: Usage::default(),
+            stop_reason: Some(StopReason::ToolUse),
+            error_message: None,
+            timestamp: 1000,
+        }];
+        let result = convert_to_llm(&messages);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Message::Assistant { content, .. } => {
+                // Assistant messages with empty content should remain empty
+                assert_eq!(content.len(), 0);
+            }
+            _ => panic!("Expected Assistant message"),
+        }
     }
 }

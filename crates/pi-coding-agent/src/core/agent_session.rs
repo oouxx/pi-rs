@@ -253,7 +253,14 @@ impl AgentSession {
         self.excluded_tool_names.as_deref()
     }
 
-    pub async fn add_user_message(&mut self, content: Vec<ContentBlock>) {
+    pub async fn add_user_message(&mut self, mut content: Vec<ContentBlock>) {
+        // Normalize empty content at ingestion boundary
+        if content.is_empty() {
+            content = vec![ContentBlock::Text {
+                text: String::new(),
+                text_signature: None,
+            }];
+        }
         let timestamp = chrono::Utc::now().timestamp_millis();
         let message = AgentMessage::User { content, timestamp };
         let json = serde_json::to_value(&message).unwrap_or(serde_json::Value::Null);

@@ -43,7 +43,7 @@ pub async fn run_rpc_mode() -> i32 {
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: Vec::new(),
-        enable_extensions: false,
+        enable_extensions: false, persist_session: false, session_file: None,
         cli_provider: None,
         cli_model: None,
     };

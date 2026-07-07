@@ -118,7 +118,7 @@ async fn test_sdk_full_flow() {
         no_tools: None, tools: None, exclude_tools: None,
         custom_prompt: None, append_system_prompt: None,
         session_name: None, stream_fn: None, convert_to_llm: None,
-        extension_paths: vec![], enable_extensions: false,
+        extension_paths: vec![], enable_extensions: false, persist_session: false, session_file: None,
         cli_provider: None, cli_model: None,
     };
 

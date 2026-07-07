@@ -68,6 +68,12 @@ pub struct CreateAgentSessionOptions {
     pub cli_provider: Option<String>,
     /// CLI model override (from --model / -m).
     pub cli_model: Option<String>,
+    /// Whether to persist session messages to a JSONL file on disk.
+    /// Defaults to false (in-memory only).
+    pub persist_session: bool,
+    /// Optional session file path for JSONL persistence.
+    /// If set, `persist_session` is implied true.
+    pub session_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +178,9 @@ pub async fn create_agent_session(
         .collect();
 
     let session_dir = SessionManager::default_session_dir(&cwd, &agent_dir);
-    let session_manager = SessionManager::new(&cwd, &session_dir, None, false, None);
+    let persist = options.persist_session || options.session_file.is_some();
+    let session_file = options.session_file.as_deref();
+    let session_manager = SessionManager::new(&cwd, &session_dir, session_file, persist, None);
 
     let event_bus = EventBusController::new();
 

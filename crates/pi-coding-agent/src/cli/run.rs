@@ -100,7 +100,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
-        enable_extensions: !args.no_extensions,
+        enable_extensions: !args.no_extensions, persist_session: false, session_file: None,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
     };
@@ -149,7 +149,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
-        enable_extensions: !args.no_extensions,
+        enable_extensions: !args.no_extensions, persist_session: false, session_file: None,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
     };

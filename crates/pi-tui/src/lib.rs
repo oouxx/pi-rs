@@ -1,37 +1,25 @@
-pub mod autocomplete;
-pub mod components;
-pub mod editor_component;
-pub mod fuzzy;
-pub mod highlighting;
-pub mod keybindings;
-pub mod kill_ring;
-pub mod terminal;
-pub mod tui;
-pub mod undo_stack;
-pub mod utils;
-pub mod word_navigation;
+//! pi-tui — Terminal UI framework with Elm architecture.
+//!
+//! Built on ratatui 0.29 + crossterm 0.28 with Elm-inspired
+//! Model / Msg / update / view pattern.
 
-pub use autocomplete::{
-    AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider,
-    SlashCommand,
-};
+pub mod app;
+pub mod components;
+pub mod terminal;
+
+// Re-export key types
+pub use app::{Cmd, Model, Msg};
 pub use components::{
-    BoxComponent, CancellableLoader, DefaultTextStyle, Editor, ImageComponent, Input, Loader,
-    LoaderIndicatorOptions, Markdown, MarkdownOptions, MarkdownTheme, SelectItem, SelectList,
-    SettingItem, SettingsList, SettingsListTheme, Spacer, TextComponent, TruncatedText,
+    Editor, EditorMode, Input, Markdown, MarkdownTheme, SelectList, TextComponent,
 };
-pub use editor_component::EditorComponent;
-pub use fuzzy::{fuzzy_filter, fuzzy_match, FuzzyMatch};
-pub use highlighting::SyntaxHighlighter;
-pub use keybindings::{
-    editor_keybindings, get_keybindings, init_keybindings, input_keybindings,
-    select_list_keybindings, set_keybindings_config, Keybinding, KeybindingConflict,
-    KeybindingDefinition, KeybindingDefinitions, KeybindingsConfig, KeybindingsManager,
-};
-pub use terminal::Terminal;
-pub use tui::{
-    is_focusable, Component, Container, Focusable, InputListener, InputListenerResult,
-    OverlayAnchor, OverlayHandle, OverlayMargin, OverlayOptions, OverlayUnfocusOptions, SizeValue,
-    Tui,
-};
-pub use utils::{hyperlink, truncate_to_width, visible_width};
+pub use terminal::{ShutdownGuard, Terminal};
+
+/// Utility: render markdown text to styled lines using ratatui-markdown.
+pub fn render_markdown(text: &str) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui_markdown::markdown::MarkdownRenderer;
+    use ratatui_markdown::theme::DefaultTheme;
+    let mut renderer = MarkdownRenderer::new(80);
+    let blocks = renderer.parse(text);
+    let theme = DefaultTheme;
+    renderer.render(&blocks, &theme)
+}

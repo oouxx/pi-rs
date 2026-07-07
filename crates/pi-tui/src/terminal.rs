@@ -1,3 +1,7 @@
+//! Terminal setup with ratatui and crossterm.
+//!
+//! Handles raw mode, kitty keyboard protocol, and input event streaming.
+
 use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
@@ -7,13 +11,11 @@ use crossterm::event::{
 use crossterm::execute;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal as RatatuiTerminal;
 use tokio::sync::mpsc;
 
 /// Terminal abstraction wrapping ratatui's CrosstermBackend.
-/// Provides raw mode, kitty protocol negotiation, input events, and output.
 pub struct Terminal {
-    inner: RatatuiTerminal<CrosstermBackend<Stdout>>,
+    inner: ratatui::Terminal<CrosstermBackend<Stdout>>,
     columns: u16,
     rows: u16,
     kitty_active: bool,
@@ -22,30 +24,17 @@ pub struct Terminal {
 impl Terminal {
     pub fn new() -> io::Result<Self> {
         let backend = CrosstermBackend::new(stdout());
-        let inner = RatatuiTerminal::new(backend)?;
+        let inner = ratatui::Terminal::new(backend)?;
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        Ok(Self {
-            inner,
-            columns: cols,
-            rows,
-            kitty_active: false,
-        })
+        Ok(Self { inner, columns: cols, rows, kitty_active: false })
     }
 
-    pub fn columns(&self) -> u16 {
-        self.columns
-    }
-
-    pub fn rows(&self) -> u16 {
-        self.rows
-    }
-
-    pub fn kitty_protocol_active(&self) -> bool {
-        self.kitty_active
-    }
+    pub fn columns(&self) -> u16 { self.columns }
+    pub fn rows(&self) -> u16 { self.rows }
+    pub fn kitty_protocol_active(&self) -> bool { self.kitty_active }
 
     /// Enter raw mode, enable kitty keyboard protocol, start input event loop.
-    /// Returns a channel receiver for input events and a shutdown sender.
+    /// Returns (input_rx, shutdown_guard).
     pub fn start(&mut self) -> io::Result<(mpsc::UnboundedReceiver<KeyEvent>, ShutdownGuard)> {
         crossterm::terminal::enable_raw_mode()?;
 
@@ -61,16 +50,14 @@ impl Terminal {
 
         self.kitty_active = true;
 
-        let (input_tx, input_rx) = mpsc::unbounded_channel::<KeyEvent>();
+        let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let mut event_stream = EventStream::new();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        break;
-                    }
+                    _ = &mut shutdown_rx => break,
                     event = event_stream.next() => {
                         match event {
                             Some(Ok(Event::Key(key_event))) => {
@@ -89,23 +76,14 @@ impl Terminal {
             let _ = crossterm::terminal::disable_raw_mode();
         });
 
-        Ok((
-            input_rx,
-            ShutdownGuard {
-                sender: Some(shutdown_tx),
-            },
-        ))
+        Ok((input_rx, ShutdownGuard { sender: Some(shutdown_tx) }))
     }
 
-    pub fn ratatui_terminal(&mut self) -> &mut RatatuiTerminal<CrosstermBackend<Stdout>> {
+    pub fn ratatui_terminal(&mut self) -> &mut ratatui::Terminal<CrosstermBackend<Stdout>> {
         &mut self.inner
     }
 
-    pub fn get_frame(&mut self) -> ratatui::Frame {
-        self.inner.get_frame()
-    }
-
-    pub fn clear(&mut self) -> io::Result<()> {
+    pub fn clear_screen(&mut self) -> io::Result<()> {
         execute!(
             io::stdout(),
             crossterm::terminal::Clear(crossterm::terminal::ClearType::All)

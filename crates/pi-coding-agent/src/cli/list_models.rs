@@ -96,6 +96,11 @@ pub async fn list_models(
     model_registry: &ModelRegistry,
     search_pattern: Option<&str>,
 ) -> i32 {
+    // NOTE: Unlike the TypeScript original (which filters to show only models
+    // with configured auth via get_available()), this shows ALL known models
+    // via get_models() to aid discovery. get_available() would respect env
+    // vars and registered providers, but --list-models is meant for browsing
+    // what the agent supports, not checking what's configured.
     let all_models = model_registry.get_models();
 
     // Filter by search pattern if provided

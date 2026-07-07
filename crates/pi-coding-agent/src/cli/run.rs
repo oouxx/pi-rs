@@ -5,7 +5,6 @@
 use colored::*;
 
 use crate::cli::args::{print_help, CliArgs, OutputMode};
-use crate::core::package_manager::{DefaultPackageManager, PackageManager};
 use crate::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use crate::core::trust_manager::ProjectTrustStore;
@@ -133,67 +132,6 @@ pub async fn run(args: &CliArgs) -> i32 {
     crate::modes::print_mode::run_print_mode(print_opts).await
 }
 
-/// After installing a package, link it to the agent's extensions directory
-/// so the RPC sidecar can discover it automatically.
-fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: bool) -> Result<(), String> {
-    // Find the installed package path
-    let pkg_name = source.trim_start_matches("npm:").trim_start_matches("https://");
-    let pkg_dir = if global {
-        // Find global npm root
-        let global_root = std::process::Command::new("npm")
-            .args(["root", "-g"])
-            .output()
-            .map_err(|e| format!("npm root -g failed: {e}"))?;
-        let root = String::from_utf8_lossy(&global_root.stdout).trim().to_string();
-        std::path::Path::new(&root).join(pkg_name)
-    } else {
-        std::path::Path::new(cwd).join("node_modules").join(pkg_name)
-    };
-
-    if !pkg_dir.join("package.json").exists() {
-        return Err(format!("Package not found at {}", pkg_dir.display()));
-    }
-
-    // Check if it has a pi manifest with extensions
-    let pkg_json = std::fs::read_to_string(pkg_dir.join("package.json"))
-        .map_err(|e| format!("Failed to read package.json: {e}"))?;
-    let pkg: serde_json::Value = serde_json::from_str(&pkg_json)
-        .map_err(|e| format!("Failed to parse package.json: {e}"))?;
-
-    let has_pi_extensions = pkg.get("pi")
-        .and_then(|pi| pi.get("extensions"))
-        .is_some();
-
-    if !has_pi_extensions {
-        return Ok(()); // Not a pi extension, nothing to link
-    }
-
-    // Create agent extensions directory and symlink
-    let ext_dir = std::path::Path::new(agent_dir).join("extensions");
-    std::fs::create_dir_all(&ext_dir)
-        .map_err(|e| format!("Failed to create {ext_dir:?}: {e}"))?;
-
-    let pkg_name_short = pkg_name.split('/').last().unwrap_or(pkg_name);
-    let link_path = ext_dir.join(format!("{pkg_name_short}.pkg"));
-
-    // Remove old link if exists
-    let _ = std::fs::remove_file(&link_path);
-
-    // Create symlink
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&pkg_dir, &link_path)
-            .map_err(|e| format!("Failed to link {pkg_name} to {ext_dir:?}: {e}"))?;
-        println!("  {} Linked to {ext_dir:?}", "🔗".to_string());
-    }
-    #[cfg(not(unix))]
-    {
-        eprintln!("  {} Symlinking not supported on this platform", "!".yellow());
-    }
-
-    Ok(())
-}
-
 /// Run interactive TUI mode with a session.
 async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &CliArgs) -> i32 {
     let sdk_options = CreateAgentSessionOptions {
@@ -228,127 +166,38 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
 }
 
 /// Handle subcommands (install, remove, list).
+/// Delegates to `handle_package_command` from the shared module
+/// to avoid duplicating the package management logic.
 async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
+    let agent_dir = crate::config::get_agent_dir();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/tmp".to_string());
+
+    // Reconstruct full args so the shared module can re-parse them
+    let mut full_args = vec![cmd.to_string()];
+    full_args.extend(args.iter().cloned());
+
+    let code = crate::cli::package_manager_cli::handle_package_command(
+        &full_args,
+        &cwd,
+        &agent_dir.to_string_lossy(),
+    )
+    .await;
+
+    // handle_package_command returns -1 when the command is not a package
+    // command (e.g. "config" or something unknown). Return the exit code
+    // directly for known commands.
+    if code >= 0 {
+        return code;
+    }
+
+    // Not handled by the package manager module
     match cmd {
-        "install" => {
-            if args.is_empty() {
-                eprintln!("{} Usage: pi install <source>", "Error:".red().bold());
-                return EXIT_FAILURE;
-            }
-            let source = &args[0];
-            // Default to local install (project node_modules), --global (-g) for global
-            let global = args.contains(&"-g".to_string()) || args.contains(&"--global".to_string());
-
-            // Check npm availability
-            if !crate::core::package_manager::is_npm_available() {
-                eprintln!("{} npm is not available. Install Node.js first.", "Error:".red().bold());
-                return EXIT_FAILURE;
-            }
-
-            let agent_dir = crate::config::get_agent_dir();
-            let cwd = std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "/tmp".to_string());
-
-            let pm = DefaultPackageManager::new(
-                &cwd,
-                &agent_dir.to_string_lossy(),
-            );
-
-            println!("Installing {source}...");
-            match pm.install(source, !global) {
-                Ok(()) => {
-                    println!("{} Installed {source}", "✓".green());
-                    // Symlink to agent's extensions directory for discovery
-                    if let Err(e) = link_extension_to_agent(source, &agent_dir.to_string_lossy(), &cwd, global) {
-                        eprintln!("  {} Warning: could not link extension: {e}", "!".yellow());
-                    }
-                    EXIT_SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("{} Failed to install {source}: {e}", "Error:".red().bold());
-                    EXIT_FAILURE
-                }
-            }
-        }
-
-        "remove" => {
-            if args.is_empty() {
-                eprintln!("{} Usage: pi remove <source>", "Error:".red().bold());
-                return EXIT_FAILURE;
-            }
-            let source = &args[0];
-            let global = args.contains(&"-g".to_string()) || args.contains(&"--global".to_string());
-            let agent_dir = crate::config::get_agent_dir();
-            let cwd = std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "/tmp".to_string());
-            let pm = DefaultPackageManager::new(
-                &cwd,
-                &agent_dir.to_string_lossy(),
-            );
-            match pm.remove(source, !global) {
-                Ok(()) => {
-                    println!("{} Removed {source}", "✓".green());
-                    EXIT_SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("{} Failed to remove {source}: {e}", "Error:".red().bold());
-                    EXIT_FAILURE
-                }
-            }
-        }
-
-        "list" => {
-            let agent_dir = crate::config::get_agent_dir();
-            let cwd = std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "/tmp".to_string());
-
-            // List npm packages
-            let pm = DefaultPackageManager::new(&cwd, &agent_dir.to_string_lossy());
-            let packages = pm.list_configured_packages();
-
-            // List agent extensions (symlinked)
-            let ext_dir = std::path::Path::new(&agent_dir).join("extensions");
-            let ext_links: Vec<String> = if ext_dir.is_dir() {
-                std::fs::read_dir(&ext_dir).ok()
-                    .map(|e| e.flatten()
-                        .map(|f| f.file_name().to_string_lossy().to_string())
-                        .collect())
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
-
-            if packages.is_empty() && ext_links.is_empty() {
-                println!("No extensions installed.");
-                println!("\nUSAGE: pi install <source>");
-                println!("  <source> can be:");
-                println!("    npm:<package>   — Install from npm registry");
-            } else {
-                if !packages.is_empty() {
-                    println!("npm packages:");
-                    for pkg in &packages {
-                        let path = pkg.installed_path.as_deref().unwrap_or("-");
-                        println!("  {} [{}]: {path}", pkg.source, pkg.scope);
-                    }
-                }
-                if !ext_links.is_empty() {
-                    println!("\nagent extensions:");
-                    for link in &ext_links {
-                        println!("  {link}");
-                    }
-                }
-            }
-            EXIT_SUCCESS
-        }
-
         "config" => {
             eprintln!("Config subcommand not yet implemented in Rust port");
             EXIT_FAILURE
         }
-
         _ => {
             eprintln!("{} Unknown subcommand: {cmd}", "Error:".red().bold());
             EXIT_FAILURE

@@ -261,10 +261,25 @@ impl AgentSession {
                 text_signature: None,
             }];
         }
+
+        // Used by the interaction loop to preserve prompt through session refresh
+        let text: String = content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text { text, .. } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<&str>>()
+            .join("\n");
+
         let timestamp = chrono::Utc::now().timestamp_millis();
         let message = AgentMessage::User { content, timestamp };
         let json = serde_json::to_value(&message).unwrap_or(serde_json::Value::Null);
         self.session_manager.append_message(json);
+        self.session_manager.set_run_prompt(&text);
         self.agent.process(vec![message]).await.ok();
     }
 
@@ -276,6 +291,10 @@ impl AgentSession {
         };
         let json = serde_json::to_value(&message).unwrap_or(serde_json::Value::Null);
         self.session_manager.append_message(json);
+
+        // Used by the interaction loop to preserve prompt through session refresh
+        self.session_manager.set_run_prompt(text);
+
         self.agent.process(vec![message]).await.ok();
     }
 

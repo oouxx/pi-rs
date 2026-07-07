@@ -13,6 +13,7 @@ pub enum OutputMode {
     Text,
     Json,
     Rpc,
+    Interactive,
 }
 
 /// Parsed CLI arguments.
@@ -112,7 +113,8 @@ pub fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("    -p, --print           Print mode (single-shot, output to stdout)");
-    println!("    --mode <MODE>         Output mode: text (default) or json");
+    println!("    -i, --interactive     Interactive TUI mode");
+    println!("    --mode <MODE>         Output mode: text (default), json, rpc, or interactive/tui");
     println!("    -m, --model <MODEL>   Model to use (e.g. claude-sonnet-4-6)");
     println!("    -P, --provider <P>    Provider to use");
     println!("    -k, --api-key <KEY>   API key");
@@ -159,6 +161,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         match arg.as_str() {
             "--help" | "-h" => result.help = true,
             "--version" | "-v" => result.version = true,
+            "--interactive" | "-i" => result.mode = OutputMode::Interactive,
             "--print" | "-p" => result.print = true,
             "--verbose" => result.verbose = true,
             "--list-models" => result.list_models = true,
@@ -176,6 +179,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     match args[i].as_str() {
                         "json" => result.mode = OutputMode::Json,
                         "rpc" => result.mode = OutputMode::Rpc,
+                        "interactive" | "tui" => result.mode = OutputMode::Interactive,
                         _ => result.mode = OutputMode::Text,
                     }
                 }

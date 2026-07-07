@@ -58,6 +58,11 @@ pub async fn run(args: &CliArgs) -> i32 {
         return handle_subcommand(cmd, &args.subcommand_args).await;
     }
 
+    // Interactive TUI mode creates its own session
+    if args.mode == OutputMode::Interactive {
+        return run_interactive_mode_with_session(&cwd, &agent_dir.to_string_lossy(), args).await;
+    }
+
     // RPC mode creates its own session internally
     if args.mode == OutputMode::Rpc {
         return crate::modes::rpc::run_rpc_mode().await;
@@ -179,6 +184,37 @@ fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: boo
     }
 
     Ok(())
+}
+
+/// Run interactive TUI mode with a session.
+async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &CliArgs) -> i32 {
+    let sdk_options = CreateAgentSessionOptions {
+        cwd: cwd.to_string(),
+        agent_dir: Some(agent_dir.to_string()),
+        model: None,
+        thinking_level: None,
+        scoped_models: None,
+        no_tools: None,
+        tools: if args.tools.is_empty() { None } else { Some(args.tools.clone()) },
+        exclude_tools: if args.exclude_tools.is_empty() { None } else { Some(args.exclude_tools.clone()) },
+        custom_prompt: args.system_prompt.clone(),
+        append_system_prompt: if args.append_system_prompt.is_empty() { None } else { Some(args.append_system_prompt.join("\n")) },
+        session_name: args.name.clone(),
+        stream_fn: None,
+        convert_to_llm: None,
+        extension_paths: args.extensions.clone(),
+        enable_extensions: !args.no_extensions,
+    };
+
+    let (session, _result) = match create_agent_session(sdk_options).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{} Failed to create session: {e}", "Error:".red().bold());
+            return EXIT_FAILURE;
+        }
+    };
+
+    crate::modes::interactive::run_interactive_mode(session).await
 }
 
 /// Handle subcommands (install, remove, list).

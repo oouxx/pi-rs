@@ -6,11 +6,8 @@
 //! - Ctrl+D → exit
 //! - Esc → exit
 
-use std::sync::Arc;
 use std::time::Instant;
 
-use pi_agent_core::pi_ai_types::AssistantMessageEvent;
-use pi_agent_core::types::AgentEvent;
 use pi_tui::app;
 
 use crate::core::agent_session::AgentSession;
@@ -49,44 +46,28 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         }
     };
 
-    // ── Channel for agent events → TUI messages ────────────────────────
+    // ── Agent bridge: typed events → TUI messages ───────────────────────
+    let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::unbounded_channel::<crate::modes::agent_bridge::AgentEvent>();
+    crate::modes::agent_bridge::subscribe_agent(&mut session, bridge_tx).await;
+
+    // Convert bridge events → pi_tui::Msg (in a background task)
     let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
-
-    let agent_tx_clone = agent_tx.clone();
-    let listener: Arc<dyn Fn(AgentEvent, Option<tokio::sync::watch::Receiver<bool>>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> =
-        Arc::new(move |event, _signal| {
-            let tx = agent_tx_clone.clone();
-            Box::pin(async move {
-                match &event {
-                    AgentEvent::MessageUpdate { assistant_message_event, .. } => {
-                        if let AssistantMessageEvent::TextDelta { delta, .. } = assistant_message_event {
-                            let _ = tx.send(pi_tui::Msg::StreamText(delta.clone()));
-                        }
-                    }
-                    AgentEvent::MessageEnd { message: msg } => {
-                        if let pi_agent_core::types::AgentMessage::Assistant { content, .. } = msg {
-                            let text: String = content.iter()
-                                .filter_map(|b| if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = b { Some(text.clone()) } else { None })
-                                .collect();
-                            if !text.is_empty() {
-                                // Create a new message via NewMessage
-                                let _ = tx.send(pi_tui::Msg::NewMessage("assistant".into(), text));
-                            }
-                            let _ = tx.send(pi_tui::Msg::StreamEnd);
-                        }
-                    }
-                    AgentEvent::ToolExecutionStart { tool_name, .. } => {
-                        let _ = tx.send(pi_tui::Msg::ToolStart(tool_name.clone()));
-                    }
-                    AgentEvent::ToolExecutionEnd { tool_name, is_error, .. } => {
-                        let _ = tx.send(pi_tui::Msg::ToolEnd(tool_name.clone(), *is_error));
-                    }
-                    _ => {}
+    let atx = agent_tx.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = bridge_rx.recv().await {
+            let msg = match ev {
+                crate::modes::agent_bridge::AgentEvent::TextDelta(d) => Some(pi_tui::Msg::StreamText(d)),
+                crate::modes::agent_bridge::AgentEvent::MessageEnd(t) => {
+                    let _ = atx.send(pi_tui::Msg::NewMessage("assistant".into(), t));
+                    Some(pi_tui::Msg::StreamEnd)
                 }
-            })
-        });
-
-    session.subscribe(listener).await;
+                crate::modes::agent_bridge::AgentEvent::ToolStart(n) => Some(pi_tui::Msg::ToolStart(n)),
+                crate::modes::agent_bridge::AgentEvent::ToolEnd(n, e) => Some(pi_tui::Msg::ToolEnd(n, e)),
+                crate::modes::agent_bridge::AgentEvent::ToolOutput(n, o) => Some(pi_tui::Msg::AppendToolOutput(n, o)),
+            };
+            if let Some(m) = msg { if atx.send(m).is_err() { break; } }
+        }
+    });
 
     // ── Main event loop ────────────────────────────────────────────────
     let mut pending_message = String::new();

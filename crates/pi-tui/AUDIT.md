@@ -88,15 +88,17 @@
 | 颜色区分状态 | ✅ | Theme: tool_running/done/failed/pending |
 | 长输出折叠 (前 8 行 + "... N more") | ✅ | `render_body()` "tool" role — output preview |
 | 展开/折叠 | 🟡 | `expanded` 字段存在，按键绑定未接 |
+| inline 审批按钮 | ✅ | `ToolApproval` 状态 + 按钮渲染 |
+| diff 着色输出 | ✅ | `+`/`-` 行自动着色 (跳过 +++/--- 文件头) |
 
 ## Section 4.4 — Diff 预览
 
 | 特性 | 状态 | 实现 |
 |---|---|---|
 | `similar` crate 计算 diff | ✅ | `components/diff.rs` |
-| 逐行着色 (+绿色/-红色) | ✅ | `compute_diff()` |
-| diff 摘要 (+12 -3) | ❌ | 独立 DiffView component，未集成到 tool_card |
-| 超过 30 行折叠 | ❌ | 同上 |
+| 逐行着色 (+绿色/-红色) | ✅ | `compute_diff()` + tool_card 内联着色 |
+| diff 摘要 (+12 -3) | ❌ | 未实现独立 diff 摘要行 |
+| 超过 30 行折叠 | ✅ | tool_card 输出折叠 (8 行预览) |
 
 ## Section 4.5 — 审批对话框
 
@@ -107,7 +109,8 @@
 | "本次会话始终批准" | ✅ | `DialogAction::ConfirmAlways` (" [A] ") |
 | "拒绝" 按钮 | ✅ | `DialogAction::Cancel` |
 | 弹层不抢输入焦点 | ✅ | dialog → `return` 阻断下层 |
-| inline 展开审批 (非 modal) | ❌ | 当前是居中 modal，非 inline |
+| inline 展开审批 (非 modal) | ✅ | `ToolApproval` + 工具卡片内联按钮 + 状态显示 |
+| 模态弹层与 inline 并存 | ✅ | 弹层仍可用于非工具类审批 |
 
 ## Section 4.6 — 状态栏
 
@@ -152,7 +155,7 @@
 | `Esc` 中断/退出 | ✅ | interactive mode |
 | `Ctrl+C` 打断/退出 | ✅ | double-press logic |
 | `Tab/↑↓/Enter` 补全菜单 | ✅ | `Completer` |
-| `a` / `A` / `d` 审批 | 🟡 | Keymap 已定义, 弹层未接 keymap lookup |
+| `a` / `A` / `d` 审批 | ✅ | `ToolApprove`/`ToolDeny` + inline 按钮 |
 | `Ctrl+L` 清屏 | ✅ | `Msg::ClearScreen` → clear messages + tools |
 | Shift+Enter 换行 | ✅ | `KeyModifiers::SHIFT || ALT` → `insert_char('\n')` |
 | `gg` / `G` 跳转 | ✅ | `g_pressed` 双键序列跟踪 |
@@ -218,8 +221,9 @@
 
 | 优先级 | 条目 | 说明 |
 |---|---|---|
-| 🟡 | inline 审批 (Section 11) | 工具卡片展开审批按钮 vs 居中弹层 |
-| 🟡 | Shift+Enter 换行 | 多行输入时需要 |
-| 🟡 | diff 集成到 tool_card | 当前是独立 component |
-| 🟢 | Ctrl+L 清屏 | 简单，~5 行 |
-| 🟢 | `gg`/`G` 滚动跳转 | 简单 |
+| 🟡 | tui-textarea 集成 | 自研简化版，缺撤销/重做/选区 |
+| 🟡 | `--theme` CLI flag | 主题切换未接 CLI |
+| 🟡 | 缓存换行计算 (Section 6) | `simple_wrap()` 每次重建 |
+| 🟡 | diff 摘要行 (+12 -3) | 未实现独立摘要 |
+| ❌ | 多 session 面板 (Phase 4) | 可选扩展 |
+| ❌ | Token 成本统计面板 (Phase 4) | 可选扩展 |

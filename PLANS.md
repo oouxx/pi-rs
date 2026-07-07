@@ -15,131 +15,159 @@
 
 ```
 pi-rs/
-├── Cargo.toml              # Cargo workspace（Rust crates）
-├── package.json            # NPM workspace（TypeScript 项目）
+├── Cargo.toml              # Cargo workspace（4 个 Rust crates）
+├── package.json            # NPM workspace（rpc-host）
 ├── crates/
 │   ├── pi-agent-core/      # Rust — 核心 Agent 框架
 │   ├── pi-ai/              # Rust — AI provider 抽象层
-│   └── pi-coding-agent/    # Rust — CLI + SDK + 扩展系统
+│   ├── pi-coding-agent/    # Rust — CLI + SDK + 扩展系统
+│   └── pi-tui/             # Rust — TUI 组件库 (Elm 架构)
 └── rpc-host/               # TypeScript — Bun 扩展执行引擎
-    └── package.json        # NPM workspace member
 ```
 
-- **Cargo workspace** (`crates/*`) 管理所有 Rust crate
-- **NPM workspace** (`rpc-host`) 管理 TS 扩展执行引擎
-- 两个 workspace 由根目录的 `Cargo.toml` + `package.json` 统一管理
+## 原版 pi-coding-agent 最近变更 (2026-07-06 ~ 07-07)
+
+| 变更 | 影响 |
+|---|---|
+| `before_provider_headers` 扩展钩子 | 扩展系统新增 hook |
+| `InlineExtension` 类型 | 内联扩展工厂 |
+| 清理 label 时间戳缓存 | session-manager |
+| 规范化 null 消息内容 | agent-session |
+| Project-local pi config 改进 | settings-manager / package-manager |
 
 ## pi-coding-agent 复刻进度
 
-### 已实现的核心模块
+### 核心模块 (core/)
 
 | Rust 文件 | 对应原版 TS | 状态 | 说明 |
 |---|---|---|---|
-| `config.rs` | `config.ts` | ✅ | 配置路径、获取 agent 目录等 |
-| `core/agent_session.rs` + runtime + services | `core/agent-session.ts` + -runtime + -services | ✅ | Agent 会话管理 |
-| `core/auth_guidance.rs` | `core/auth-guidance.ts` | ✅ | API Key 引导 |
-| `core/auth_storage.rs` | `core/auth-storage.ts` | ✅ | 认证信息持久化 |
-| `core/bash_executor.rs` | `core/bash-executor.ts` | ✅ | Bash 执行器 |
-| `core/compaction.rs` | `core/compaction/` (目录) | ✅ | 会话压缩 |
-| `core/context_usage.rs` | (原版无直接对应) | ✅ | Token 用量跟踪 |
-| `core/defaults.rs` | `core/defaults.ts` | ✅ | 系统文件默认内容 |
-| `core/diagnostics.rs` | `core/diagnostics.ts` | ✅ | 诊断信息 |
-| `core/env_api_keys.rs` | (原版无直接对应) | ✅ | 环境变量 API Key |
-| `core/event_bus.rs` | `core/event-bus.ts` | ✅ | 事件总线 |
-| `core/exec.rs` | `core/exec.ts` | ✅ | 命令执行 |
-| `core/extensions/types.rs` | `core/extensions/types.ts` | ✅ | 扩展类型定义 |
-| `core/extensions/rpc.rs` | `worker.ts` + `loader.ts` | ✅ | Bun 子进程 JSON-RPC 桥接 |
-| `rpc-host/` (另建) | - | ✅ | Bun 侧扩展执行代理 |
-| `core/footer_data_provider.rs` | `core/footer-data-provider.ts` | ✅ | 底部状态栏数据 |
-| `core/http_dispatcher.rs` | `core/http-dispatcher.ts` | ✅ | HTTP 分发器 |
-| `core/messages.rs` | `core/messages.ts` | ✅ | 消息格式转换 |
-| `core/model_registry.rs` | `core/model-registry.ts` | ✅ | 模型注册表 |
-| `core/model_resolver.rs` | `core/model-resolver.ts` | ✅ | 模型解析器 |
-| `core/output_guard.rs` | `core/output-guard.ts` | ✅ | 输出保护 |
-| `core/prompt_templates.rs` | `core/prompt-templates.ts` | ✅ | 提示模板加载 |
-| `core/provider_attribution.rs` | `core/provider-attribution.ts` | ✅ | Provider 归属 |
-| `core/provider_display_names.rs` | `core/provider-display-names.ts` | ✅ | Provider 展示名 |
-| `core/resolve_config_value.rs` | `core/resolve-config-value.ts` | ✅ | 配置值解析 |
-| `core/resource_loader.rs` | `core/resource-loader.ts` | ✅ | 资源加载器 |
-| `core/sdk.rs` | `core/sdk.ts` | ✅ | SDK 入口 |
-| `core/session_cwd.rs` | `core/session-cwd.ts` | ✅ | 会话工作目录 |
-| `core/session_manager.rs` | `core/session-manager.ts` | ✅ | 会话持久化管理 |
-| `core/settings_manager.rs` | `core/settings-manager.ts` | ✅ | 设置管理 |
-| `core/skills.rs` | `core/skills.ts` | ✅ | Skill 加载 |
-| `core/slash_commands.rs` | `core/slash-commands.ts` | ✅ | 斜杠命令定义 |
-| `core/source_info.rs` | `core/source-info.ts` | ✅ | 来源信息 |
-| `core/system_prompt.rs` | `core/system-prompt.ts` | ✅ | 系统提示构建 |
-| `core/telemetry.rs` | `core/telemetry.ts` | ✅ | 遥测收集 |
-| `core/timings.rs` | `core/timings.ts` | ✅ | 性能计时 |
-| `core/tools/` | `core/tools/` | ✅ | 工具系统完整 |
-| `lib.rs` | `index.ts` | ✅ | crate 入口 |
+| `config.rs` | `config.ts` | ✅ | 配置路径、.pi-rs 目录 |
+| `agent_session.rs` + runtime + services | `agent-session.ts` + -runtime + -services | ✅ | Agent 会话管理 |
+| `auth_guidance.rs` | `auth-guidance.ts` | ✅ | API Key 引导 |
+| `auth_storage.rs` | `auth-storage.ts` | ✅ | 认证持久化 (auth.json) |
+| `bash_executor.rs` | `bash-executor.ts` | ✅ | Bash 执行 |
+| `compaction.rs` | `compaction/` | ✅ | 会话压缩 |
+| `context_usage.rs` | (原版无) | ✅ | Token 用量跟踪 |
+| `defaults.rs` | `defaults.ts` | ✅ | 系统文件默认 |
+| `diagnostics.rs` | `diagnostics.ts` | ✅ | 诊断信息 |
+| `env_api_keys.rs` | (原版无) | ✅ | 环境变量 API Key |
+| `event_bus.rs` | `event-bus.ts` | ✅ | 事件总线 |
+| `exec.rs` | `exec.ts` | ✅ | 命令执行 |
+| `extensions/types.rs` | `extensions/types.ts` | ✅ | 扩展类型定义 |
+| `extensions/rpc.rs` | — | ✅ | Bun RPC 桥接 (替代 JS loader) |
+| `experimental.rs` | `experimental.ts` | ✅ | 特性开关 |
+| `footer_data_provider.rs` | `footer-data-provider.ts` | ✅ | 底部状态栏数据 |
+| `http_dispatcher.rs` | `http-dispatcher.ts` | ✅ | HTTP 分发 |
+| `messages.rs` | `messages.ts` | ✅ | 消息转换 |
+| `model_registry.rs` | `model-registry.ts` | ✅ | 模型注册 |
+| `model_resolver.rs` | `model-resolver.ts` | ✅ | 模型解析 |
+| `output_guard.rs` | `output-guard.ts` | ✅ | 输出保护 |
+| `package_manager.rs` | `package-manager.ts` | ✅ | npm 包管理 |
+| `prompt_templates.rs` | `prompt-templates.ts` | ✅ | 提示模板 |
+| `project_trust.rs` | `project-trust.ts` | ✅ | 项目信任 |
+| `provider_attribution.rs` | `provider-attribution.ts` | ✅ | Provider 归属 |
+| `provider_display_names.rs` | `provider-display-names.ts` | ✅ | Provider 展示名 |
+| `resolve_config_value.rs` | `resolve-config-value.ts` | ✅ | 配置值解析 |
+| `resource_loader.rs` | `resource-loader.ts` | ✅ | 资源加载 |
+| `sdk.rs` | `sdk.ts` | ✅ | SDK 入口 |
+| `session_cwd.rs` | `session-cwd.ts` | ✅ | 会话目录 |
+| `session_manager.rs` | `session-manager.ts` | ✅ | 会话管理 |
+| `settings_manager.rs` | `settings-manager.ts` | ✅ | 设置管理 |
+| `skills.rs` | `skills.ts` | ✅ | Skill 加载 |
+| `slash_commands.rs` | `slash-commands.ts` | ✅ | 斜杠命令 |
+| `source_info.rs` | `source-info.ts` | ✅ | 来源信息 |
+| `system_prompt.rs` | `system-prompt.ts` | ✅ | 系统提示 |
+| `telemetry.rs` | `telemetry.ts` | ✅ | 遥测 |
+| `timings.rs` | `timings.ts` | ✅ | 计时 |
+| `tools/` | `tools/` | ✅ | 工具系统完整 |
+| `trust_manager.rs` | `trust-manager.ts` | ✅ | 信任管理 |
 
-### 尚未实现的模块
+### CLI 入口
 
-| 原版 TS 文件 | 状态 | 说明 |
-|---|---|---|
-| `core/experimental.rs` | `core/experimental.ts` | ✅ | 实验性功能开关 |
-| `core/export-html/` | ❌ | HTML 导出 (低优先级) |
-| `core/keybindings.ts` | ❌ | 快捷键管理 (TUI 相关) |
-| `core/package_manager.rs` | `core/package-manager.ts` | ✅ | 包管理器（npm 子进程） |
-| `core/project_trust.rs` | `core/project-trust.ts` | ✅ | 项目信任解析 |
-| `core/trust_manager.rs` | `core/trust-manager.ts` | ✅ | 信任决策持久化 |
-| `core/extensions/loader.ts` | 🚧 | 扩展加载器（需 Bun 子进程 RPC） |
-| `core/extensions/runner.ts` | 🚧 | 扩展运行时（需 Bun 子进程 RPC） |
-| `core/extensions/types.ts` | 🚧 | 扩展类型（部分迁移到 Rust） |
-| `core/extensions/wrapper.ts` | 🚧 | 工具包装器（需 RPC 桥接） |
-| `cli/args.rs` + `cli/run.rs` | `cli/args.ts` + `cli.ts` + `main.ts` | ✅ | CLI 参数解析 + 执行流程 |
-| `main.rs` (binary) | `cli.ts` | ✅ | 二进制入口 |
-| `cli/file_processor.rs` | `cli/file-processor.ts` | ✅ | `@file` 语法支持（文本 + 图片） |
-| `bun/` | ❌ | Bun 特有入口 |
-| `modes/rpc/` | `modes/rpc/rpc-types.ts` + `rpc-mode.ts` + `jsonl.ts` | ✅ | RPC 协议类型 + 命令处理器 + JSONL 读写 |
-| `modes/print_mode.rs` | `modes/print-mode.ts` | ✅ | 打印模式（从 cli/run.rs 提取独立） |
+| Rust 文件 | 对应原版 TS | 状态 | 说明 |
+|---|---|---|---|
+| `main.rs` (binary) | `cli.ts` + `main.ts` | ✅ | 二进制入口 |
+| `cli/args.rs` | `cli/args.ts` | ✅ | 参数解析 (20+ flags) |
+| `cli/run.rs` | `main.ts` → print/json/rpc | ✅ | 执行流程 + 信任/SDK |
+| `cli/file_processor.rs` | `cli/file-processor.ts` | ✅ | @file 语法 |
 | `cli/initial_message.rs` | `cli/initial-message.ts` | ✅ | 初始消息构建 |
-| `migrations.rs` | `migrations.ts` | ✅ | 数据迁移（oauth/auth/settings） |
-| `utils/paths.rs` | `utils/paths.ts` | ✅ | 路径解析、规范化、tilde 展开 |
-| `utils/child_process.rs` | `utils/child-process.ts` | ✅ | 子进程创建和等待 |
-| `utils/git.rs` | `utils/git.ts` | ✅ | Git URL 解析 |
-| `utils/shell.rs` | `utils/shell.ts` | ✅ | Shell 配置、输出清理、进程跟踪 |
-| `utils/frontmatter.rs` | `utils/frontmatter.ts` | ✅ | YAML Frontmatter 解析 |
-| `utils/sleep.rs` | `utils/sleep.ts` | ✅ | 可中断 sleep |
-| `utils/json.rs` | `utils/json.ts` | ✅ | JSON 注释剥离 |
-| `utils/ansi.rs` | `utils/ansi.ts` | ✅ | ANSI 码检测/剥离/截断 |
-| `utils/deprecation.rs` | `utils/deprecation.ts` | ✅ | 去重弃用警告 |
-| `utils/pi_user_agent.rs` | `utils/pi-user-agent.ts` | ✅ | User-Agent 字符串生成 |
-| `utils/version_check.rs` | `utils/version-check.ts` | ✅ | 版本比较和远端版本查询 |
-| `utils/html.rs` | `utils/html.ts` | ✅ | HTML 实体编解码 |
-| `utils/fs_watch.rs` | `utils/fs-watch.ts` | ✅ | 文件系统轮询监听 |
-| `utils/mime.rs` | `utils/mime.ts` | ✅ | 图像 MIME 类型检测 |
+| `migrations.rs` | `migrations.ts` | ✅ | 数据迁移 |
 
-### 扩展系统执行层（已实现 ✅）
+### 模式 (modes/)
 
-通过 Bun 子进程 + JSON-RPC 桥接原版 TS 扩展生态。
+| Rust 文件 | 对应原版 TS | 状态 | 说明 |
+|---|---|---|---|
+| `modes/print_mode.rs` | `modes/print-mode.ts` | ✅ | 一次性文本/JSON 输出 |
+| `modes/rpc/` | `modes/rpc/` | ✅ | JSON-RPC 协议 (15+ 命令) |
+| `modes/interactive.rs` | `modes/interactive/` | ✅ | 交互 TUI 模式 |
+| `modes/agent_bridge.rs` | — | ✅ | AgentSession → TUI 事件桥 |
 
-**架构：**
+### 工具函数 (utils/)
 
-```
-Rust pi-coding-agent
-       │
-       │ spawn bun run rpc-host/src/index.ts
-       │ line-delimited JSON-RPC 2.0 over stdin/stdout
-       ▼
-Bun sidecar process
-       │
-       │ 使用 jiti 动态 import() TypeScript 扩展
-       │ 注册 tools / commands / lifecycle hooks
-       │ 响应 Rust 端的 call_tool 请求
-       ▼
-TypeScript 扩展文件 (.ts / .js)
-  - ~/.pi/extensions/ 或
-  - {project}/.pi/extensions/
-```
+| Rust 文件 | 状态 | 说明 |
+|---|---|---|
+| `paths.rs` | ✅ | 路径解析 |
+| `child_process.rs` | ✅ | 子进程 |
+| `git.rs` | ✅ | Git URL 解析 |
+| `shell.rs` | ✅ | Shell 配置 |
+| `frontmatter.rs` | ✅ | Frontmatter 解析 |
+| `sleep.rs` | ✅ | Sleep |
+| `json.rs` | ✅ | JSON 注释剥离 |
+| `ansi.rs` | ✅ | ANSI 码处理 |
+| `deprecation.rs` | ✅ | 弃用警告 |
+| `pi_user_agent.rs` | ✅ | User-Agent |
+| `version_check.rs` | ✅ | 版本检查 |
+| `html.rs` | ✅ | HTML 实体解码 |
+| `fs_watch.rs` | ✅ | 文件监听 |
+| `mime.rs` | ✅ | MIME 检测 |
 
-**支持的 RPC 方法：**
-- `load` — 加载扩展，返回 tools/commands 元数据
-- `call_tool` — 执行扩展的 tool handler
-- `reload` — 清缓存重载所有扩展
-- `shutdown` — 优雅退出
-- `ping` — 健康检查
+### TUI 组件库 (pi-tui)
+
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| `terminal.rs` | ✅ | 终端初始化和事件流 |
+| `app.rs` | ✅ | Elm 架构 (Model/Msg/update/view) |
+| `keymap.rs` | ✅ | 可配置键位映射 |
+| `components/input.rs` | ✅ | 单行输入 (支持 CJK) |
+| `components/editor.rs` | ✅ | 多行编辑器 |
+| `components/markdown.rs` | ✅ | Markdown 渲染 (ratatui-markdown) |
+| `components/select_list.rs` | ✅ | 可选列表 |
+| `components/diff.rs` | ✅ | Diff 显示 (similar) |
+| `components/completer.rs` | ✅ | / 命令 + @ 文件补全 |
+| `components/text.rs` | ✅ | 静态文本 |
+
+### 扩展执行引擎 (rpc-host)
+
+| 功能 | 状态 | 说明 |
+|---|---|---|
+| jiti 动态加载 TS 扩展 | ✅ | 与 pi 原版兼容 |
+| AgentEvent 转换 | ✅ | TextDelta/ToolStart/End/Output |
+| ExtensionAPI 桥接 | ✅ | registerTool/Command/Shortcut/Flag |
+| ctx.exec() | ✅ | 子进程命令执行 |
+| 自动发现 | ✅ | ~/.pi-rs + {cwd}/.pi-rs |
+| package.json pi.extensions | ✅ | 清单扫描 |
+
+### 原版已有但 Rust 版未实现
+
+| 原版 TS | 说明 | 优先级 |
+|---|---|---|
+| `core/extensions/` hooks | `before_provider_headers` 等 | 🟡 扩展钩子系统 |
+| `core/keybindings.ts` | 快捷键 (TUI 相关) | 🟢 已在 pi-tui 实现 keymap |
+| `core/export-html/` | HTML 导出 | 🔴 低 |
+| `cli/config-selector.ts` | TUI 配置选择 | 🔴 等 GUI |
+| `cli/session-picker.ts` | TUI 会话选择 | 🔴 等 GUI |
+| `cli/startup-ui.ts` | 启动 UI | 🔴 等 GUI |
+| `modes/interactive/` (完整版) | 交互模式原版细节 | ✅ 已实现 |
+| `utils/` 剩余 (clipboard, image 等) | 剪贴板/图片处理 | 🔴 依赖 TUI |
+
+### 原版最新变更追踪
+
+| 原版 commit | 功能 | 需复刻 |
+|---|---|---|
+| `244f1dea` | `before_provider_headers` 扩展钩子 | 🟡 扩展钩子桥接 |
+| `b3dff19a` | `InlineExtension` 内联扩展工厂 | 🟡 RPC 协议扩展 |
+| `8c0ccd14` | 规范化 null 消息内容 | ✅ pi-ai 侧已处理 |
+| `6efc09b7` | 清理 label 时间戳缓存 | ✅ session_manager 已完成 |
 
 ## 实施状态
 
@@ -152,7 +180,10 @@ TypeScript 扩展文件 (.ts / .js)
 - [x] 复刻 experimental / trust-manager / project-trust 模块
 - [x] 实现 CLI 入口 (main.rs + cli/args.rs + cli/run.rs)
 - [x] 实现 RPC 模式 (modes/rpc/)
-- [x] 实现 package-manager
-- [x] 实现 utils/ 工具函数目录 (15 个模块)
 - [x] 实现 package-manager / file-processor / initial-message / migrations
 - [x] 提取 print-mode 为独立模块
+- [x] 实现 utils/ 工具函数目录 (15 个模块)
+- [x] 对接 pi-tui 交互模式
+- [x] 精简重构 pi-tui 为 Elm 架构
+- [x] 对齐 plans.md TUI 设计
+- [x] 恢复 pi-tui crate

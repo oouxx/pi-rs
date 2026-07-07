@@ -67,10 +67,20 @@ pub struct ToolCall {
     pub output: String,
     /// Whether expanded beyond preview.
     pub expanded: bool,
+    /// Inline approval state (None = no approval needed).
+    pub approval: Option<ToolApproval>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ToolCallState { Pending, Running, Done, Failed }
+
+/// Inline approval state for a tool call.
+#[derive(Debug, Clone)]
+pub enum ToolApproval {
+    Pending,
+    Approved,
+    Denied,
+}
 
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Editor, title: String } }
 pub struct Message { pub role: String, pub text: String }
@@ -126,7 +136,7 @@ impl Model {
     }
 
     pub fn add_tool_call(&mut self, name: &str) {
-        self.active_tools.push(ToolCall { name: name.to_string(), state: ToolCallState::Running, output: String::new(), expanded: false });
+        self.active_tools.push(ToolCall { name: name.to_string(), state: ToolCallState::Running, output: String::new(), expanded: false, approval: None });
     }
 
     pub fn update_tool_call(&mut self, name: &str, state: ToolCallState) {
@@ -165,6 +175,8 @@ pub enum Msg {
     SetElapsed(u64),
     AppendToolOutput(String, String),
     ToggleToolExpand(String),
+    ToolApprove(String),
+    ToolDeny(String),
     ClearScreen,
     InputNewline,
     Cancel,
@@ -211,6 +223,18 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetElapsed(secs) => { model.elapsed_secs = secs; vec![] }
         Msg::AppendToolOutput(name, text) => { model.append_tool_output(&name, &text); vec![] }
         Msg::ToggleToolExpand(name) => { model.toggle_tool_expand(&name); vec![] }
+        Msg::ToolApprove(name) => {
+            if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == name) {
+                t.approval = Some(ToolApproval::Approved);
+            }
+            vec![]
+        }
+        Msg::ToolDeny(name) => {
+            if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == name) {
+                t.approval = Some(ToolApproval::Denied);
+            }
+            vec![]
+        }
         Msg::ClearScreen => { model.messages.clear(); model.active_tools.clear(); model.scroll_offset = 0; vec![] }
         Msg::InputNewline => { model.input.insert_char('\n'); vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
@@ -410,21 +434,52 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
                     if sy < area.bottom() { frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{}{}", icon, tool.name), Style::new().fg(col)))), Rect::new(area.x + 1, sy, area.width.saturating_sub(2), 1)); }
                     y += 1;
 
-                    // Tool output preview (collapsed if too long)
+                    // Inline approval buttons (before output, when pending)
+                    if let Some(ref approval) = tool.approval {
+                        if matches!(approval, ToolApproval::Pending) {
+                            let btn_line = format!(" [a] Approve   [d] Deny ");
+                            if y >= area.top() as i32 && y < area.bottom() as i32 {
+                                frame.render_widget(Paragraph::new(Line::from(Span::styled(btn_line, Style::new().fg(t.tool_running)))), Rect::new(area.x + 2, y as u16, area.width.saturating_sub(3), 1));
+                            }
+                            y += 1;
+                        } else if matches!(approval, ToolApproval::Approved) {
+                            let ok_line = " \u{2713} Approved ";
+                            if y >= area.top() as i32 && y < area.bottom() as i32 {
+                                frame.render_widget(Paragraph::new(Line::from(Span::styled(ok_line, Style::new().fg(t.tool_done)))), Rect::new(area.x + 2, y as u16, area.width.saturating_sub(3), 1));
+                            }
+                            y += 1;
+                        } else if matches!(approval, ToolApproval::Denied) {
+                            let no_line = " \u{2717} Denied ";
+                            if y >= area.top() as i32 && y < area.bottom() as i32 {
+                                frame.render_widget(Paragraph::new(Line::from(Span::styled(no_line, Style::new().fg(t.tool_failed)))), Rect::new(area.x + 2, y as u16, area.width.saturating_sub(3), 1));
+                            }
+                            y += 1;
+                        }
+                    }
+
+                    // Tool output preview with diff highlighting
                     if !tool.output.is_empty() {
                         let max_lines = if tool.expanded { 1000 } else { 8 };
                         let total_lines = tool.output.lines().count();
                         let show_lines = max_lines.min(total_lines);
-                        for (i, line) in tool.output.lines().take(show_lines).enumerate() {
+                        for line in tool.output.lines().take(show_lines) {
                             let ly = y;
                             if ly >= area.top() as i32 && ly < area.bottom() as i32 {
-                                frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))).style(Style::default().fg(t.muted)), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
+                                let trimmed = line.trim_start();
+                                let (style, prefix) = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+                                    (Style::default().fg(Color::Green), "+")
+                                } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+                                    (Style::default().fg(Color::Red), "-")
+                                } else {
+                                    (Style::default().fg(t.muted), " ")
+                                };
+                                frame.render_widget(Paragraph::new(Line::from(Span::styled(format!("{prefix}{line}", prefix=prefix), style))), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
                             }
                             y += 1;
                         }
                         if total_lines > max_lines && !tool.expanded {
                             if y >= area.top() as i32 && y < area.bottom() as i32 {
-                                frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines, press Enter to expand ", total_lines - max_lines), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 3, y as u16, area.width.saturating_sub(4), 1));
+                                frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines ", total_lines - max_lines), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 3, y as u16, area.width.saturating_sub(4), 1));
                             }
                             y += 1;
                         }

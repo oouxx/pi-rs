@@ -403,6 +403,7 @@ pub struct SessionManager {
     labels_by_id: HashMap<String, String>,
     label_timestamps_by_id: HashMap<String, String>,
     leaf_id: Option<String>,
+    last_run_prompt: Option<String>,
 }
 
 impl SessionManager {
@@ -437,6 +438,7 @@ impl SessionManager {
             labels_by_id: HashMap::new(),
             label_timestamps_by_id: HashMap::new(),
             leaf_id: None,
+            last_run_prompt: None,
         };
 
         if let Some(sf) = session_file {
@@ -1047,6 +1049,20 @@ impl SessionManager {
         };
         list_sessions_from_dir(&sessions_dir)
     }
+
+    /// Set the run prompt for this session. The run prompt is the user's
+    /// active input text. It is preserved through tool/session refresh
+    /// operations and can be retrieved via [take_run_prompt].
+    pub fn set_run_prompt(&mut self, prompt: &str) {
+        self.last_run_prompt = Some(prompt.to_string());
+    }
+
+    /// Take the run prompt, consuming it. Returns `None` if no run prompt
+    /// was set or it was already taken. This is a one-shot get — the second
+    /// call returns `None`.
+    pub fn take_run_prompt(&mut self) -> Option<String> {
+        self.last_run_prompt.take()
+    }
 }
 
 impl FileEntry {
@@ -1413,5 +1429,40 @@ mod tests {
 
         let tree = mgr.get_tree();
         assert!(!tree.is_empty());
+    }
+
+    #[test]
+    fn test_run_prompt_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+
+        mgr.set_run_prompt("write a test");
+        let prompt = mgr.take_run_prompt();
+        assert_eq!(prompt, Some("write a test".to_string()));
+
+        // Second take should return None
+        assert!(mgr.take_run_prompt().is_none());
+    }
+
+    #[test]
+    fn test_run_prompt_not_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+
+        assert!(mgr.take_run_prompt().is_none());
+    }
+
+    #[test]
+    fn test_run_prompt_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+
+        mgr.set_run_prompt("first prompt");
+        mgr.set_run_prompt("second prompt");
+        let prompt = mgr.take_run_prompt();
+        assert_eq!(prompt, Some("second prompt".to_string()));
     }
 }

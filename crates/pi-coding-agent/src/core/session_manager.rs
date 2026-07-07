@@ -1063,6 +1063,16 @@ impl SessionManager {
     pub fn take_run_prompt(&mut self) -> Option<String> {
         self.last_run_prompt.take()
     }
+
+    /// Refresh session configuration by re-reading settings from disk.
+    ///
+    /// This method is called before starting a new agent interaction turn
+    /// to ensure any configuration changes on disk are picked up.
+    /// Currently a placeholder — will be wired to the settings manager
+    /// in a future integration.
+    pub async fn refresh_config(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl FileEntry {
@@ -1464,5 +1474,15 @@ mod tests {
         mgr.set_run_prompt("second prompt");
         let prompt = mgr.take_run_prompt();
         assert_eq!(prompt, Some("second prompt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_config_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+        let result = mgr.refresh_config().await;
+        // Should not fail even with non-existent config file
+        assert!(result.is_ok());
     }
 }

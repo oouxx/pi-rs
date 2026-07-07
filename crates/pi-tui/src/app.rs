@@ -9,11 +9,32 @@ use ratatui::Frame;
 
 use crate::components::{Editor, Input, SelectList};
 
+/// Spinner frames for tool execution animation.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 // ============================================================================
 // Cmd
 // ============================================================================
 
 pub enum Cmd { Quit }
+
+// ============================================================================
+// ToolCall state machine
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub name: String,
+    pub state: ToolCallState,
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolCallState {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
 
 // ============================================================================
 // Model
@@ -30,6 +51,10 @@ pub struct Model {
     pub input: Input,
     /// Model name shown in header.
     pub model_name: String,
+    /// Animation tick counter (for spinner).
+    pub tick: u64,
+    /// Active tool calls (state machine).
+    pub active_tools: Vec<ToolCall>,
 }
 
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Editor, title: String } }
@@ -45,6 +70,21 @@ impl Model {
             is_streaming: false,
             input: Input::new(),
             model_name: String::new(),
+            tick: 0,
+            active_tools: Vec::new(),
+        }
+    }
+
+    pub fn add_tool_call(&mut self, name: &str) {
+        self.active_tools.push(ToolCall {
+            name: name.to_string(),
+            state: ToolCallState::Running,
+        });
+    }
+
+    pub fn update_tool_call(&mut self, name: &str, state: ToolCallState) {
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) {
+            tool.state = state;
         }
     }
 }
@@ -62,6 +102,9 @@ pub enum Msg {
     StreamEnd,
     OpenEditor(String, String),
     EditorDone(String),
+    ToolStart(String),
+    ToolEnd(String, bool),
+    Tick,
     Cancel,
 }
 
@@ -79,6 +122,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::StreamEnd => { model.is_streaming = false; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Editor::new(&text), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
+        Msg::ToolStart(name) => { model.add_tool_call(&name); vec![] }
+        Msg::ToolEnd(name, is_error) => {
+            model.update_tool_call(&name, if is_error { ToolCallState::Failed } else { ToolCallState::Done });
+            vec![]
+        }
+        Msg::Tick => { model.tick += 1; vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
     }
 }
@@ -145,10 +194,17 @@ fn render_header(model: &Model, frame: &mut Frame, area: Rect) {
         format!(" {} ", model.model_name)
     };
 
-    let status = if model.is_streaming {
-        Span::styled(" ● streaming ", Style::new().fg(Color::Green))
+    let spinner_char = if model.is_streaming || !model.active_tools.is_empty() {
+        let idx = (model.tick / 3) as usize % SPINNER_FRAMES.len();
+        Some(SPINNER_FRAMES[idx])
     } else {
-        Span::raw("")
+        None
+    };
+
+    let status = match (spinner_char, model.is_streaming) {
+        (Some(ch), true) => Span::styled(format!(" {ch} streaming "), Style::new().fg(Color::Green)),
+        (Some(ch), false) => Span::styled(format!(" {ch} working "), Style::new().fg(Color::Yellow)),
+        _ => Span::raw(""),
     };
 
     let hint = Span::styled(
@@ -175,9 +231,48 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Render from bottom up, wrapping text
+    // Render active tool calls as cards
     let mut y = inner.bottom() as i32 - 1;
 
+    // Tool call cards (above messages)
+    for tool in model.active_tools.iter().rev() {
+        let spinner = {
+            let idx = (model.tick / 3) as usize % SPINNER_FRAMES.len();
+            SPINNER_FRAMES[idx]
+        };
+        let (icon, status_style) = match tool.state {
+            ToolCallState::Running => (
+                format!(" {spinner} "),
+                Style::new().fg(Color::Yellow),
+            ),
+            ToolCallState::Done => (
+                " ✓ ".to_string(),
+                Style::new().fg(Color::Green),
+            ),
+            ToolCallState::Failed => (
+                " ✗ ".to_string(),
+                Style::new().fg(Color::Red),
+            ),
+            ToolCallState::Pending => (
+                " ○ ".to_string(),
+                Style::new().fg(Color::DarkGray),
+            ),
+        };
+
+        let card_line = format!("{}{}", icon, tool.name);
+        let total = 1usize;
+        y -= total as i32;
+        if y + total as i32 <= inner.top() as i32 { break; }
+        let sy = y.max(inner.top() as i32) as u16;
+        if sy >= inner.top() && sy < inner.bottom() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(card_line, status_style))),
+                Rect::new(inner.x + 1, sy, inner.width.saturating_sub(2), 1),
+            );
+        }
+    }
+
+    // Chat messages
     for msg in model.messages.iter().rev() {
         // Wrap message text to inner width
         let raw_lines = wrap_text(&msg.text, (inner.width as usize).saturating_sub(2));

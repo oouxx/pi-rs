@@ -153,9 +153,9 @@
 | `Ctrl+C` 打断/退出 | ✅ | double-press logic |
 | `Tab/↑↓/Enter` 补全菜单 | ✅ | `Completer` |
 | `a` / `A` / `d` 审批 | 🟡 | Keymap 已定义, 弹层未接 keymap lookup |
-| `Ctrl+L` 清屏 | ❌ | 未实现 |
-| Shift+Enter 换行 | ❌ | 未实现 |
-| `gg` / `G` 跳转 | ❌ | 未实现 |
+| `Ctrl+L` 清屏 | ✅ | `Msg::ClearScreen` → clear messages + tools |
+| Shift+Enter 换行 | ✅ | `KeyModifiers::SHIFT || ALT` → `insert_char('\n')` |
+| `gg` / `G` 跳转 | ✅ | `g_pressed` 双键序列跟踪 |
 
 ## Section 8 — 主题系统
 

@@ -138,8 +138,8 @@ mod tests {
     #[test]
     fn test_default_bindings() {
         let km = Keymap::default();
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(km.action_for(&enter), Some(Action::SubmitMessage));
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(km.action_for(&ctrl_c), Some(Action::AbortStream));
     }
 
     #[test]

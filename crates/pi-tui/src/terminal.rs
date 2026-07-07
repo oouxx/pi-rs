@@ -62,9 +62,23 @@ impl Terminal {
                         match event {
                             Some(Ok(Event::Key(key_event))) => {
                                 if key_event.kind == crossterm::event::KeyEventKind::Release {
+                                    // IME composition may emit characters as release events
+                                    if key_event.code != crossterm::event::KeyCode::Char('\0') {
+                                        let _ = input_tx.send(key_event);
+                                    }
                                     continue;
                                 }
                                 let _ = input_tx.send(key_event);
+                            }
+                            Some(Ok(Event::Paste(text))) => {
+                                // Forward pasted text (IME composition, clipboard) as char-by-char key events
+                                for ch in text.chars() {
+                                    let ev = KeyEvent::new(
+                                        crossterm::event::KeyCode::Char(ch),
+                                        crossterm::event::KeyModifiers::NONE,
+                                    );
+                                    let _ = input_tx.send(ev);
+                                }
                             }
                             Some(Ok(_)) => {}
                             Some(Err(_)) => break,

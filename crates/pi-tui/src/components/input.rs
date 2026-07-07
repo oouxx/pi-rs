@@ -18,9 +18,16 @@ impl Input {
     pub fn value(&self) -> &str { &self.buffer }
     pub fn cursor_pos(&self) -> usize { self.cursor }
 
+    /// Cursor position in display columns (CJK = 2, ASCII = 1).
+    pub fn cursor_display_col(&self) -> u16 {
+        let prefix = &self.buffer[..self.cursor];
+        let width = unicode_width::UnicodeWidthStr::width(prefix);
+        width as u16
+    }
+
     pub fn insert_char(&mut self, c: char) {
         self.buffer.insert(self.cursor, c);
-        self.cursor += 1;
+        self.cursor += c.len_utf8(); // advance by UTF-8 byte length
     }
 
     pub fn insert_str(&mut self, s: &str) {

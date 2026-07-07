@@ -134,7 +134,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
 
 fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     use crossterm::event::KeyCode;
-    if key.kind != crossterm::event::KeyEventKind::Press { return vec![]; }
+    if key.kind != crossterm::event::KeyEventKind::Press
+        && key.kind != crossterm::event::KeyEventKind::Release
+    { return vec![]; }
     if model.completer.visible {
         match key.code {
             KeyCode::Tab | KeyCode::Down => { model.completer.next(); }
@@ -355,19 +357,33 @@ fn render_input(model: &Model, frame: &mut Frame, area: Rect) {
 
     let inner_y = area.y + 1;
     let text = model.input.value();
-    let scroll_off = model.input.cursor_pos().saturating_sub(area.width as usize);
-    let visible = if scroll_off > 0 && text.len() > scroll_off { &text[scroll_off..] } else { text };
+    let cursor_display = model.input.cursor_display_col();
+    let scroll_off = (cursor_display as usize).saturating_sub(area.width as usize);
+    let visible = if scroll_off > 0 {
+        // Find byte offset for the display column offset
+        let mut display_cols = 0usize;
+        let mut byte_off = 0usize;
+        for ch in text.chars() {
+            let w = unicode_width::UnicodeWidthStr::width(ch.to_string().as_str());
+            if display_cols + w > scroll_off { break; }
+            display_cols += w;
+            byte_off += ch.len_utf8();
+        }
+        &text[byte_off..]
+    } else {
+        text
+    };
 
     frame.render_widget(Paragraph::new(Text::styled(visible.to_string(), style)),
         Rect::new(area.x, inner_y, area.width, 1));
 
     if model.completer.visible {
-        let cx = area.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_off as u16);
+        let cx = area.x + cursor_display.saturating_sub(scroll_off as u16);
         model.completer.render(frame, cx, area.y);
     }
 
     if !model.is_streaming {
-        let cx = area.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_off as u16);
+        let cx = area.x + cursor_display.saturating_sub(scroll_off as u16);
         frame.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), inner_y));
     }
 }

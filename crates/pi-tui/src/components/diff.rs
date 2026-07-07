@@ -23,7 +23,6 @@ impl DiffView {
         let style_added = Style::new().fg(Color::Green).bg(Color::Rgb(0x00, 0x2A, 0x00));
         let style_removed = Style::new().fg(Color::Red).bg(Color::Rgb(0x2A, 0x00, 0x00));
         let style_context = Style::default();
-        let style_header = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
         let diff = TextDiff::from_lines(old, new);
         self.lines.clear();

@@ -3,8 +3,9 @@
 use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::text::Text;
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::components::{Completer, Editor, Input, SelectList};
@@ -170,7 +171,7 @@ pub fn view(model: &Model, frame: &mut Frame) {
     }
 
     let chunks = Layout::new(Direction::Vertical, [
-        Constraint::Length(1), Constraint::Min(1), Constraint::Length(3),
+        Constraint::Length(1), Constraint::Min(1), Constraint::Length(2),
     ]).split(area);
 
     render_header(model, frame, chunks[0]);
@@ -212,10 +213,9 @@ fn render_header(model: &Model, frame: &mut Frame, area: Rect) {
 // ============================================================================
 
 fn render_body(model: &Model, frame: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded);
-    let inner = block.inner(area);
+    // Borderless body — just use the area directly
+    let inner = area;
     let body_h = inner.height as usize;
-    frame.render_widget(block, area);
 
     // Wrap width
     let wrap_w = (inner.width as usize).saturating_sub(3).max(10);
@@ -341,28 +341,34 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect) {
 // ============================================================================
 
 fn render_input(model: &Model, frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
-        .title(if model.is_streaming { " ⏳ Waiting " } else { " >>> " });
     let style = if model.is_streaming { Style::default().fg(Color::DarkGray) } else { Style::default() };
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
+    // Thin separator line above prompt
+    let sep_y = area.y;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {} ", if model.is_streaming { "⏳" } else { ">" }),
+            if model.is_streaming { Style::new().fg(Color::Green) } else { Style::new().fg(Color::Cyan) },
+        ))),
+        Rect::new(area.x, sep_y, area.width, 1),
+    );
+
+    let inner_y = area.y + 1;
     let text = model.input.value();
-    let scroll_off = model.input.cursor_pos().saturating_sub(inner.width as usize);
+    let scroll_off = model.input.cursor_pos().saturating_sub(area.width as usize);
     let visible = if scroll_off > 0 && text.len() > scroll_off { &text[scroll_off..] } else { text };
 
     frame.render_widget(Paragraph::new(Text::styled(visible.to_string(), style)),
-        Rect::new(inner.x, inner.y, inner.width, inner.height));
+        Rect::new(area.x, inner_y, area.width, 1));
 
     if model.completer.visible {
-        let cx = inner.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_off as u16);
+        let cx = area.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_off as u16);
         model.completer.render(frame, cx, area.y);
     }
 
     if !model.is_streaming {
-        let cx = inner.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_off as u16);
-        frame.set_cursor_position((cx.min(inner.x + inner.width.saturating_sub(1)), inner.y));
+        let cx = area.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_off as u16);
+        frame.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), inner_y));
     }
 }
 
@@ -387,13 +393,19 @@ fn render_dialog(model: &Model, frame: &mut Frame, area: Rect) {
     let dh = 5u16 + dialog.message.lines().count() as u16;
     let da = Rect::new((area.width - dw) / 2, (area.height - dh) / 2, dw, dh);
 
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Thick)
-        .border_style(Style::new().fg(Color::Cyan))
-        .title(format!(" {} ", dialog.title))
-        .style(Style::new().bg(Color::Black).fg(Color::White));
+    frame.render_widget(Clear, da);
 
-    let inner = block.inner(da);
-    frame.render_widget(block, da);
+    // Title
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {} ", dialog.title),
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))),
+        Rect::new(da.x, da.y, da.width, 1),
+    );
+
+    // Dimmed backdrop for message area
+    let inner = Rect::new(da.x, da.y + 1, da.width, da.height.saturating_sub(2));
 
     let mut y = inner.y;
     for line in dialog.message.lines() {

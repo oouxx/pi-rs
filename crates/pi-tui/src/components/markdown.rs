@@ -8,7 +8,7 @@ use std::sync::Arc;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui_markdown::highlight::{HighlightHooks, TreeSitterHighlighter};
-use ratatui_markdown::markdown::{MarkdownRenderer, RenderHooks};
+use ratatui_markdown::markdown::MarkdownRenderer;
 use ratatui_markdown::theme::DefaultTheme;
 
 /// Theme configuration for markdown rendering.

@@ -124,6 +124,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                             tui_model.is_streaming = false;
                         }
                     }
+                    KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                        app::update(&mut tui_model, pi_tui::Msg::ClearScreen);
+                    }
                     KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
                         exit_code = 0;
                         break;

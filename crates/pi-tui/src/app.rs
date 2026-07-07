@@ -107,6 +107,8 @@ pub struct Model {
     pub context_usage_pct: u8,
     /// Elapsed seconds since session start.
     pub elapsed_secs: u64,
+    /// Track 'g' key press for 'gg' jump-to-top.
+    pub g_pressed: bool,
 }
 
 impl Model {
@@ -119,6 +121,7 @@ impl Model {
             completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
             cwd: String::new(), git_branch: None,
             context_usage_pct: 0, elapsed_secs: 0,
+            g_pressed: false,
         }
     }
 
@@ -162,6 +165,8 @@ pub enum Msg {
     SetElapsed(u64),
     AppendToolOutput(String, String),
     ToggleToolExpand(String),
+    ClearScreen,
+    InputNewline,
     Cancel,
 }
 
@@ -206,6 +211,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetElapsed(secs) => { model.elapsed_secs = secs; vec![] }
         Msg::AppendToolOutput(name, text) => { model.append_tool_output(&name, &text); vec![] }
         Msg::ToggleToolExpand(name) => { model.toggle_tool_expand(&name); vec![] }
+        Msg::ClearScreen => { model.messages.clear(); model.active_tools.clear(); model.scroll_offset = 0; vec![] }
+        Msg::InputNewline => { model.input.insert_char('\n'); vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
     }
 }
@@ -240,40 +247,60 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         return vec![];
     }
     match &mut model.mode {
-        AppMode::Chat => match key.code {
-            KeyCode::Char(c) => {
-                if let Some(trigger) = Completer::should_activate(c) {
-                    model.completer.activate(trigger, "");
-                } else if model.completer.trigger.is_some() && !c.is_whitespace() {
-                    let mut q = model.completer.query.clone();
-                    q.push(c);
-                    model.completer.activate(model.completer.trigger.unwrap(), &q);
-                } else { model.completer.deactivate(); }
-                model.input.insert_char(c);
-            }
-            KeyCode::Backspace => {
-                model.input.backspace();
-                if model.completer.trigger.is_some() {
-                    let current = model.input.value();
-                    if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
-                        model.completer.activate(model.completer.trigger.unwrap(), &current[pos + 1..]);
+        AppMode::Chat => {
+            // Reset gg tracker on any key other than 'g'
+            if key.code != crossterm::event::KeyCode::Char('g') { model.g_pressed = false; }
+
+            match key.code {
+                KeyCode::Char(c) => {
+                    // gg jump-to-top (only when input is empty)
+                    if c == 'g' && model.g_pressed && model.input.value().is_empty() {
+                        model.g_pressed = false;
+                        model.scroll_offset = usize::MAX; model.auto_scroll = false;
+                        return vec![];
+                    }
+                    if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
+
+                    // G scroll-to-bottom
+                    if c == 'G' && model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; return vec![]; }
+
+                    if let Some(trigger) = Completer::should_activate(c) {
+                        model.completer.activate(trigger, "");
+                    } else if model.completer.trigger.is_some() && !c.is_whitespace() {
+                        let mut q = model.completer.query.clone(); q.push(c);
+                        model.completer.activate(model.completer.trigger.unwrap(), &q);
                     } else { model.completer.deactivate(); }
+                    model.input.insert_char(c);
                 }
+                KeyCode::Backspace => {
+                    model.input.backspace();
+                    if model.completer.trigger.is_some() {
+                        let current = model.input.value();
+                        if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                            model.completer.activate(model.completer.trigger.unwrap(), &current[pos + 1..]);
+                        } else { model.completer.deactivate(); }
+                    }
+                }
+                KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
+                KeyCode::Enter => {
+                    if key.modifiers == crossterm::event::KeyModifiers::SHIFT
+                        || key.modifiers == crossterm::event::KeyModifiers::ALT {
+                        model.input.insert_char('\n');
+                    } else {
+                        model.input.clear(); model.completer.deactivate();
+                    }
+                }
+                KeyCode::Delete => model.input.delete(),
+                KeyCode::Left => model.input.move_left(),
+                KeyCode::Right => model.input.move_right(),
+                KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); model.auto_scroll = false; } else { model.input.move_left(); } }
+                KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); if model.scroll_offset == 0 { model.auto_scroll = true; } } else { model.input.move_right(); } }
+                KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; model.auto_scroll = false; } model.input.move_home(); }
+                KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; } model.input.move_end(); }
+                KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); model.auto_scroll = false; }
+                KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); if model.scroll_offset == 0 { model.auto_scroll = true; } }
+                _ => {}
             }
-            KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
-            KeyCode::Enter => {
-                model.input.clear(); model.completer.deactivate();
-            }
-            KeyCode::Delete => model.input.delete(),
-            KeyCode::Left => model.input.move_left(),
-            KeyCode::Right => model.input.move_right(),
-            KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); model.auto_scroll = false; } else { model.input.move_left(); } }
-            KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); if model.scroll_offset == 0 { model.auto_scroll = true; } } else { model.input.move_right(); } }
-            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; model.auto_scroll = false; } model.input.move_home(); }
-            KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; } model.input.move_end(); }
-            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); model.auto_scroll = false; }
-            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); if model.scroll_offset == 0 { model.auto_scroll = true; } }
-            _ => {}
         },
         AppMode::Select { list } => { list.handle_key(&key); }
         AppMode::Editor { editor, .. } => { editor.handle_key(&key); }

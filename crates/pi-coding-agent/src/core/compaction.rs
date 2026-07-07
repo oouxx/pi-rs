@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use pi_agent_core::pi_ai_types::{ContentBlock, Message};
 use pi_agent_core::types::AgentMessage;
+use serde::Serialize;
 
 use crate::core::messages;
 
@@ -66,13 +67,13 @@ pub struct CompactionPreparation {
     pub settings: CompactionSettings,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct FileOperations {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CompactionResult {
     pub summary: String,
     pub first_kept_entry_id: String,
@@ -80,7 +81,7 @@ pub struct CompactionResult {
     pub details: CompactionDetails,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CompactionDetails {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
@@ -332,6 +333,24 @@ fn serialize_conversation(messages: &[Message]) -> String {
     text
 }
 
+pub fn serialize_compaction_summary(summary: &CompactionResult) -> Result<String, String> {
+    serde_json::to_string(summary).map_err(|e| format!("Failed to serialize compaction summary: {}", e))
+}
+
+pub fn save_compaction_summary(summary: &CompactionResult, file_path: &str) -> Result<(), String> {
+    let json_line = serialize_compaction_summary(summary)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file_path)
+        .map_err(|e| format!("Failed to open file {}: {}", file_path, e))
+        .and_then(|mut file| {
+            use std::io::Write;
+            writeln!(file, "{}", json_line)
+                .map_err(|e| format!("Failed to write to file {}: {}", file_path, e))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +439,37 @@ mod tests {
         }];
         let prompt = build_summarization_prompt(&messages, Some("previous summary"), None);
         assert!(prompt.contains("previous summary"));
+    }
+
+    #[test]
+    fn test_serialize_compaction_summary() {
+        let result = CompactionResult {
+            summary: "test summary".into(),
+            first_kept_entry_id: "entry-5".into(),
+            tokens_before: 10000,
+            details: CompactionDetails {
+                read_files: vec!["/a.rs".into()],
+                modified_files: vec!["/b.rs".into()],
+            },
+        };
+        let json = serialize_compaction_summary(&result).unwrap();
+        assert!(json.contains("test summary"));
+        assert!(json.contains("entry-5"));
+    }
+
+    #[test]
+    fn test_save_compaction_summary() {
+        let result = CompactionResult {
+            summary: "test".into(),
+            first_kept_entry_id: "entry-1".into(),
+            tokens_before: 5000,
+            details: CompactionDetails::default(),
+        };
+        let path = "/tmp/test_compaction_summary.jsonl";
+        let _ = std::fs::remove_file(path);
+        save_compaction_summary(&result, path).unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("test"));
+        std::fs::remove_file(path).ok();
     }
 }

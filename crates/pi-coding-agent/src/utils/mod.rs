@@ -1,4 +1,5 @@
 pub mod ansi;
+pub mod changelog;
 pub mod child_process;
 pub mod deprecation;
 pub mod frontmatter;

@@ -161,6 +161,30 @@ impl AgentSession {
         self.agent.state().await.messages
     }
 
+    /// Load messages from the session manager's file entries into
+    /// the agent's in-memory state. Called after restoring from a JSONL file.
+    pub async fn load_messages_from_session(&self) -> usize {
+        let mgr = &self.session_manager;
+        if mgr.get_session_file().is_none() {
+            return 0;
+        }
+        use crate::core::session_manager::SessionEntry;
+        let agent_messages: Vec<AgentMessage> = mgr.get_entries().iter()
+            .filter_map(|entry| {
+                if let SessionEntry::Message { message, .. } = entry {
+                    serde_json::from_value(message.clone()).ok()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let count = agent_messages.len();
+        if count > 0 {
+            self.agent.set_initial_messages(agent_messages).await;
+        }
+        count
+    }
+
     pub async fn get_system_prompt(&self) -> String {
         self.agent.state().await.system_prompt
     }

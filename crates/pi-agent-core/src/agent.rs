@@ -773,6 +773,12 @@ impl Agent {
         self.state.write().await.model = model;
     }
 
+    /// Set initial messages (e.g., loaded from a session file) before
+    /// any processing begins. Replaces whatever is in the state.
+    pub async fn set_initial_messages(&self, messages: Vec<AgentMessage>) {
+        self.state.write().await.messages = messages;
+    }
+
     pub async fn set_thinking_level(&self, level: ThinkingLevel) {
         self.state.write().await.thinking_level = level;
     }

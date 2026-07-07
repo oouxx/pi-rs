@@ -260,8 +260,9 @@ fn load_entries_from_file(file_path: &Path) -> Vec<FileEntry> {
                 }
             }
             if let Ok(value2) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Ok(entry) = serde_json::from_value::<SessionEntry>(value2) {
-                    entries.push(FileEntry::Entry(entry));
+                match serde_json::from_value::<SessionEntry>(value2) {
+                    Ok(entry) => entries.push(FileEntry::Entry(entry)),
+                    Err(e) => eprintln!("[session_manager] deserialize entry error: {e}"),
                 }
             }
         }
@@ -796,6 +797,10 @@ impl SessionManager {
 
     pub fn get_entry(&self, id: &str) -> Option<&SessionEntry> {
         self.by_id.get(id)
+    }
+
+    pub fn get_by_id(&self) -> &HashMap<String, SessionEntry> {
+        &self.by_id
     }
 
     pub fn get_children(&self, parent_id: &str) -> Vec<&SessionEntry> {

@@ -1393,6 +1393,7 @@ dependencies = [
  "ratatui",
  "ratatui-markdown",
  "serde",
+ "similar",
  "thiserror 2.0.18",
  "tokio",
  "unicode-width 0.2.0",

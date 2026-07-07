@@ -55,6 +55,27 @@ pub struct Model {
     pub tick: u64,
     /// Active tool calls (state machine).
     pub active_tools: Vec<ToolCall>,
+    /// Active modal dialog (None = no dialog).
+    pub dialog: Option<Dialog>,
+}
+
+/// A modal dialog box with callback on confirm.
+pub struct Dialog {
+    pub title: String,
+    pub message: String,
+    pub buttons: Vec<DialogButton>,
+    pub selected: usize,
+}
+
+pub struct DialogButton {
+    pub label: &'static str,
+    pub action: DialogAction,
+}
+
+pub enum DialogAction {
+    Confirm,
+    Cancel,
+    Custom(&'static str),
 }
 
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Editor, title: String } }
@@ -72,6 +93,7 @@ impl Model {
             model_name: String::new(),
             tick: 0,
             active_tools: Vec::new(),
+            dialog: None,
         }
     }
 
@@ -105,6 +127,15 @@ pub enum Msg {
     ToolStart(String),
     ToolEnd(String, bool),
     Tick,
+    /// Show a modal dialog.
+    ShowDialog(Dialog),
+    /// Dismiss the current dialog.
+    DismissDialog,
+    /// Select next/previous button in dialog.
+    DialogNext,
+    DialogPrev,
+    /// Activate the currently selected dialog button.
+    DialogConfirm,
     Cancel,
 }
 
@@ -128,6 +159,27 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             vec![]
         }
         Msg::Tick => { model.tick += 1; vec![] }
+        Msg::ShowDialog(dialog) => { model.dialog = Some(dialog); vec![] }
+        Msg::DismissDialog => { model.dialog = None; vec![] }
+        Msg::DialogNext => {
+            if let Some(ref mut d) = model.dialog {
+                if d.selected + 1 < d.buttons.len() { d.selected += 1; }
+            }
+            vec![]
+        }
+        Msg::DialogPrev => {
+            if let Some(ref mut d) = model.dialog {
+                if d.selected > 0 { d.selected -= 1; }
+            }
+            vec![]
+        }
+        Msg::DialogConfirm => {
+            if let Some(d) = model.dialog.take() {
+                // Dialog action handled by the interactive mode
+                // (returns Cancel so caller can check dialog state)
+            }
+            vec![]
+        }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
     }
 }
@@ -177,6 +229,12 @@ pub fn view(model: &Model, frame: &mut Frame) {
     render_header(model, frame, chunks[0]);
     render_body(model, frame, chunks[1]);
     render_input(model, frame, chunks[2]);
+
+    // Modal dialog overlay
+    if model.dialog.is_some() {
+        render_dialog(model, frame, area);
+        return; // Dialog blocks everything else
+    }
 
     // Select overlay
     if let AppMode::Select { list, .. } = &model.mode {
@@ -364,6 +422,74 @@ fn render_editor(frame: &mut Frame, area: Rect, editor: &Editor, title: &str) {
     let p = Paragraph::new(Text::raw(editor.text())).block(block);
     frame.render_widget(p, area);
     frame.set_cursor_position((inner.x + editor.cursor_col(), inner.y + editor.cursor_row()));
+}
+
+// ============================================================================
+// Dialog — centered modal popup
+// ============================================================================
+
+/// Render a centered modal dialog that dims the background.
+fn render_dialog(model: &Model, frame: &mut Frame, area: Rect) {
+    let dialog = match &model.dialog {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Dim the full screen behind the dialog
+    frame.render_widget(Clear, area);
+
+    // Calculate centered dialog area
+    let dlg_w = (area.width / 3 * 2).max(40).min(area.width.saturating_sub(4));
+    let dlg_h = 5u16 + dialog.message.lines().count() as u16;
+    let dlg_x = (area.width - dlg_w) / 2;
+    let dlg_y = (area.height - dlg_h) / 2;
+
+    let dlg_area = Rect::new(dlg_x, dlg_y, dlg_w, dlg_h);
+
+    // Dialog border
+    let style = Style::new().bg(Color::Black).fg(Color::White);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(format!(" {} ", dialog.title))
+        .style(style);
+
+    // Message + buttons inside
+    let inner = block.inner(dlg_area);
+    frame.render_widget(block, dlg_area);
+
+    // Message lines
+    let mut y = inner.y;
+    for line in dialog.message.lines() {
+        if y < inner.y + inner.height {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::raw(line.to_string()))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
+    }
+
+    // Buttons row (centered at bottom)
+    let btn_area = Rect::new(inner.x, dlg_area.y + dlg_h - 2, inner.width, 1);
+    let mut btn_spans = Vec::new();
+    let total_btn_width: usize = dialog.buttons.iter().map(|b| b.label.len() + 2).sum();
+    let spacing = (inner.width as usize).saturating_sub(total_btn_width) / (dialog.buttons.len() + 1).max(1);
+
+    btn_spans.push(Span::raw(" ".repeat(spacing)));
+    for (i, button) in dialog.buttons.iter().enumerate() {
+        let is_focused = i == dialog.selected;
+        let btn_style = if is_focused {
+            Style::new().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::new().fg(Color::White).bg(Color::DarkGray)
+        };
+        btn_spans.push(Span::styled(format!(" {} ", button.label), btn_style));
+        btn_spans.push(Span::raw(" ".repeat(spacing)));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(btn_spans)), btn_area);
 }
 
 // ============================================================================

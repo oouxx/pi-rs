@@ -13,4 +13,5 @@ pub mod pi_user_agent;
 pub mod shell;
 pub mod sleep;
 pub mod open_browser;
+pub mod tools_manager;
 pub mod version_check;

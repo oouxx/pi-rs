@@ -77,7 +77,15 @@ pub struct Message { pub role: String, pub text: String }
 
 pub struct Dialog { pub title: String, pub message: String, pub buttons: Vec<DialogButton>, pub selected: usize }
 pub struct DialogButton { pub label: &'static str, pub action: DialogAction }
-pub enum DialogAction { Confirm, Cancel, Custom(&'static str) }
+pub enum DialogAction {
+    /// Approve once.
+    Confirm,
+    /// Approve for this session.
+    ConfirmAlways,
+    /// Reject.
+    Cancel,
+    Custom(&'static str),
+}
 
 // ============================================================================
 // Model
@@ -532,12 +540,14 @@ fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let mut y = inner.y;
     for line in dialog.message.lines() { if y < inner.y + inner.height { frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))), Rect::new(inner.x, y, inner.width, 1)); y += 1; } }
     let ba = Rect::new(inner.x, da.y + dh - 2, inner.width, 1);
-    let total_w: usize = dialog.buttons.iter().map(|b| b.label.len() + 2).sum();
+    let total_w: usize = dialog.buttons.iter().map(|b| b.label.len() + 2 + if matches!(b.action, DialogAction::ConfirmAlways) { 2 } else { 0 }).sum();
     let spacing = (inner.width as usize).saturating_sub(total_w) / (dialog.buttons.len() + 1).max(1);
     let mut spans = vec![Span::raw(" ".repeat(spacing))];
     for (i, btn) in dialog.buttons.iter().enumerate() {
+        let is_always = matches!(btn.action, DialogAction::ConfirmAlways);
         let s = if i == dialog.selected { Style::new().fg(Color::Black).bg(t.highlight_bg) } else { Style::new().fg(Color::White).bg(t.muted) };
-        spans.push(Span::styled(format!(" {} ", btn.label), s)); spans.push(Span::raw(" ".repeat(spacing)));
+        let label = if is_always { format!(" {} [A] ", btn.label) } else { format!(" {} ", btn.label) };
+        spans.push(Span::styled(label, s)); spans.push(Span::raw(" ".repeat(spacing)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), ba);
 }

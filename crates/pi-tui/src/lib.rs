@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod components;
+pub mod keymap;
 pub mod terminal;
 
 // Re-export key types
@@ -13,6 +14,7 @@ pub use components::{
     Completer, CompletionItem, CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown,
     MarkdownTheme, SelectList, TextComponent,
 };
+pub use keymap::{Action, KeyBind, Keymap};
 pub use terminal::{ShutdownGuard, Terminal};
 
 /// Utility: render markdown text to styled lines using ratatui-markdown.

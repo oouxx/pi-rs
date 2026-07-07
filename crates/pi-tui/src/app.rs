@@ -157,7 +157,49 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
         return vec![];
     }
-    let _ = model;
+    match &mut model.mode {
+        AppMode::Chat => match key.code {
+            KeyCode::Char(c) => {
+                // Check if this character should trigger completion
+                if let Some(trigger) = Completer::should_activate(c) {
+                    model.completer.activate(trigger, "");
+                } else if model.completer.trigger.is_some() && !c.is_whitespace() {
+                    let mut q = model.completer.query.clone();
+                    q.push(c);
+                    model.completer.activate(model.completer.trigger.unwrap(), &q);
+                } else {
+                    model.completer.deactivate();
+                }
+                model.input.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                model.input.backspace();
+                if model.completer.trigger.is_some() {
+                    let current = model.input.value();
+                    if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                        let q = &current[pos + 1..];
+                        model.completer.activate(model.completer.trigger.unwrap(), q);
+                    } else {
+                        model.completer.deactivate();
+                    }
+                }
+            }
+            KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } else { model.completer.next(); } }
+            KeyCode::Enter => { model.input.clear(); model.completer.deactivate(); }
+            KeyCode::Delete => model.input.delete(),
+            KeyCode::Left => model.input.move_left(),
+            KeyCode::Right => model.input.move_right(),
+            KeyCode::Up => { model.input.move_left(); }
+            KeyCode::Down => { model.input.move_right(); }
+            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; } model.input.move_home(); }
+            KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; } model.input.move_end(); }
+            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); }
+            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); }
+            _ => {}
+        },
+        AppMode::Select { list } => { list.handle_key(&key); }
+        AppMode::Editor { editor, .. } => { editor.handle_key(&key); }
+    }
     vec![]
 }
 

@@ -2,13 +2,13 @@
 
 ## 使用rust完整复刻https://github.com/earendil-works/pi/tree/main/packages/agent
 
-## 使用rust完整复刻https://github.com/earendil-works/pi/tree/main/packages/coding-agent
+
 
 ## 使用rust完整复刻https://github.com/earendil-works/pi/tree/main/packages/ai
 
-## 使用rust完整复刻 实现https://github.com/earendil-works/pi/tree/main/packages/tui
 
-## 上面四个拆分为四个crate分别是pi-agent-core, pi-coding-agent, pi-ai, pi-tui
+
+## 上面四个拆分为四个crate分别是pi-agent-core,pi-ai
 
 ## 代码复刻规范
 

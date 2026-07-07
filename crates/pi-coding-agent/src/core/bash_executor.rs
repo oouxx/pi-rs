@@ -34,6 +34,21 @@ impl Default for BashExecutorOptions {
     }
 }
 
+pub const MAX_BASH_TIMEOUT_SECONDS: u64 = 3600;
+
+pub fn validate_bash_timeout(timeout_seconds: u64) -> Result<(), String> {
+    if timeout_seconds == 0 {
+        return Err("timeout must be positive".to_string());
+    }
+    if timeout_seconds > MAX_BASH_TIMEOUT_SECONDS {
+        return Err(format!(
+            "timeout must not exceed {} seconds (1 hour max)",
+            MAX_BASH_TIMEOUT_SECONDS
+        ));
+    }
+    Ok(())
+}
+
 pub struct BashExecutor {
     cwd: String,
     max_bytes: usize,
@@ -187,6 +202,22 @@ impl BashExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_timeout_zero() {
+        assert!(validate_bash_timeout(0).is_err());
+    }
+
+    #[test]
+    fn test_validate_timeout_positive() {
+        assert!(validate_bash_timeout(30).is_ok());
+        assert!(validate_bash_timeout(3600).is_ok());
+    }
+
+    #[test]
+    fn test_validate_timeout_oversized() {
+        assert!(validate_bash_timeout(3601).is_err());
+    }
 
     #[tokio::test]
     async fn test_bash_executor_echo() {

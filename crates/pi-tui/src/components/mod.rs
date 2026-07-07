@@ -1,3 +1,4 @@
+pub mod completer;
 pub mod diff;
 pub mod editor;
 pub mod input;
@@ -5,6 +6,7 @@ pub mod markdown;
 pub mod select_list;
 pub mod text;
 
+pub use completer::{Completer, CompletionItem, CompletionTrigger};
 pub use diff::DiffView;
 pub use editor::{Editor, EditorMode};
 pub use input::Input;

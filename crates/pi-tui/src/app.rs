@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::components::{Editor, Input, SelectList};
+use crate::components::{Completer, Editor, Input, SelectList};
 
 /// Spinner frames for tool execution animation.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -57,6 +57,8 @@ pub struct Model {
     pub active_tools: Vec<ToolCall>,
     /// Active modal dialog (None = no dialog).
     pub dialog: Option<Dialog>,
+    /// Autocomplete engine.
+    pub completer: Completer,
 }
 
 /// A modal dialog box with callback on confirm.
@@ -94,6 +96,7 @@ impl Model {
             tick: 0,
             active_tools: Vec::new(),
             dialog: None,
+            completer: Completer::new(),
         }
     }
 
@@ -187,17 +190,72 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
 fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     use crossterm::event::KeyCode;
     if key.kind != crossterm::event::KeyEventKind::Press { return vec![]; }
+
+    // If completer popup is visible, route keys to it
+    if model.completer.visible {
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => { model.completer.next(); }
+            KeyCode::Up => { model.completer.prev(); }
+            KeyCode::Enter | KeyCode::Right => {
+                let insert = model.completer.selected_insert();
+                if let Some(text) = insert {
+                    let current = model.input.value().to_string();
+                    if let Some(trigger_pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                        let prefix = &current[..=trigger_pos];
+                        model.input.clear();
+                        model.input.insert_str(&format!("{prefix}{text} "));
+                    }
+                }
+                model.completer.deactivate();
+            }
+            KeyCode::Esc => { model.completer.deactivate(); }
+            _ => {} // Ignore typing while popup is shown
+        }
+        return vec![];
+    }
+
     match &mut model.mode {
         AppMode::Chat => match key.code {
-            KeyCode::Enter => { model.input.clear(); }
-            KeyCode::Char(c) => model.input.insert_char(c),
-            KeyCode::Backspace => model.input.backspace(),
+            KeyCode::Char(c) => {
+                // Check if this character should trigger completion
+                if let Some(trigger) = Completer::should_activate(c) {
+                    model.completer.activate(trigger, "");
+                } else if model.completer.trigger.is_some() && !c.is_whitespace() {
+                    // Continue updating query for active completion
+                    let mut q = model.completer.query.clone();
+                    q.push(c);
+                    model.completer.activate(model.completer.trigger.unwrap(), &q);
+                } else {
+                    model.completer.deactivate();
+                }
+                model.input.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                model.input.backspace();
+                // Update completion query if active
+                if model.completer.trigger.is_some() {
+                    let current = model.input.value();
+                    if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                        let q = &current[pos + 1..];
+                        model.completer.activate(model.completer.trigger.unwrap(), q);
+                    } else {
+                        model.completer.deactivate();
+                    }
+                }
+            }
+            KeyCode::Tab => {
+                if !model.completer.visible {
+                    for _ in 0..4 { model.input.insert_char(' '); }
+                } else {
+                    model.completer.next();
+                }
+            }
+            KeyCode::Enter => { model.input.clear(); model.completer.deactivate(); }
             KeyCode::Delete => model.input.delete(),
             KeyCode::Left => model.input.move_left(),
             KeyCode::Right => model.input.move_right(),
             KeyCode::Home => model.input.move_home(),
             KeyCode::End => model.input.move_end(),
-            KeyCode::Tab => { for _ in 0..4 { model.input.insert_char(' '); } }
             _ => {}
         },
         AppMode::Select { list } => { list.handle_key(&key); }
@@ -405,6 +463,12 @@ fn render_input(model: &Model, frame: &mut Frame, area: Rect) {
 
     let p = Paragraph::new(Text::styled(visible.to_string(), style));
     frame.render_widget(p, Rect::new(inner.x, inner.y, inner.width, inner.height));
+
+    // Completion popup (anchored above the input line)
+    if model.completer.visible {
+        let cursor_x = inner.x + (model.input.cursor_pos() as u16).saturating_sub(scroll_offset as u16);
+        model.completer.render(frame, cursor_x, area.y);
+    }
 
     // Cursor
     if !model.is_streaming {

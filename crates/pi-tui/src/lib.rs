@@ -10,7 +10,8 @@ pub mod terminal;
 // Re-export key types
 pub use app::{Cmd, Model, Msg};
 pub use components::{
-    DiffView, Editor, EditorMode, Input, Markdown, MarkdownTheme, SelectList, TextComponent,
+    Completer, CompletionItem, CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown,
+    MarkdownTheme, SelectList, TextComponent,
 };
 pub use terminal::{ShutdownGuard, Terminal};
 

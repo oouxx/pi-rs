@@ -5,9 +5,13 @@ use pi_agent_core::types::{AgentTool, AgentToolResult};
 use serde::{Deserialize, Serialize};
 
 use super::path_utils;
-use super::truncate::{self, TruncationResult};
+use super::truncate::{self, TruncationResult, GREP_MAX_LINE_LENGTH};
 
 const DEFAULT_LIMIT: usize = 100;
+
+// ============================================================================
+// Types
+// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepToolInput {
@@ -27,14 +31,106 @@ pub struct GrepToolDetails {
     pub lines_truncated: Option<bool>,
 }
 
-#[derive(Debug, Clone)]
-pub struct GrepToolOptions {}
+// ============================================================================
+// GrepOperations trait
+// ============================================================================
+
+/// Pluggable operations for the grep tool.
+/// Override these to delegate search to remote systems (for example SSH).
+pub trait GrepOperations: Send + Sync {
+    /// Check if path is a directory. Throws if path does not exist.
+    fn is_directory(
+        &self,
+        path: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    >;
+
+    /// Read file contents.
+    fn read_file(
+        &self,
+        path: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<String, Box<dyn std::error::Error + Send + Sync>>,
+                > + Send,
+        >,
+    >;
+}
+
+// ============================================================================
+// LocalGrepOperations
+// ============================================================================
+
+pub struct LocalGrepOperations;
+
+impl GrepOperations for LocalGrepOperations {
+    fn is_directory(
+        &self,
+        path: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    > {
+        let path = path.to_string();
+        Box::pin(async move {
+            let meta = tokio::fs::metadata(&path).await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(meta.is_dir())
+        })
+    }
+
+    fn read_file(
+        &self,
+        path: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<String, Box<dyn std::error::Error + Send + Sync>>,
+                > + Send,
+        >,
+    > {
+        let path = path.to_string();
+        Box::pin(async move {
+            tokio::fs::read_to_string(&path)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })
+    }
+}
+
+// ============================================================================
+// GrepToolOptions
+// ============================================================================
+
+#[derive(Clone)]
+pub struct GrepToolOptions {
+    pub operations: Arc<dyn GrepOperations>,
+}
+
+impl std::fmt::Debug for GrepToolOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrepToolOptions").finish()
+    }
+}
 
 impl Default for GrepToolOptions {
     fn default() -> Self {
-        Self {}
+        Self {
+            operations: Arc::new(LocalGrepOperations),
+        }
     }
 }
+
+// ============================================================================
+// Parameters schema
+// ============================================================================
 
 fn grep_parameters_schema() -> serde_json::Value {
     serde_json::json!({
@@ -52,15 +148,26 @@ fn grep_parameters_schema() -> serde_json::Value {
     })
 }
 
+// ============================================================================
+// create_grep_tool
+// ============================================================================
+
 pub fn create_grep_tool(
     cwd: &str,
-    _options: Option<GrepToolOptions>,
+    options: Option<GrepToolOptions>,
 ) -> AgentTool<serde_json::Value, serde_json::Value> {
+    let opts = options.unwrap_or_default();
     let cwd = cwd.to_string();
+    let operations = opts.operations.clone();
 
     AgentTool {
         name: "grep".to_string(),
-        description: "Search for patterns in files using regex or literal matching.".to_string(),
+        description: format!(
+            "Search for patterns in files using regex or literal matching. \
+             Output is truncated to {} matches or 256KB (whichever is hit first). \
+             Long lines are truncated to {} chars.",
+            DEFAULT_LIMIT, GREP_MAX_LINE_LENGTH
+        ),
         label: "Grep".to_string(),
         parameters_schema: grep_parameters_schema(),
         execution_mode: None,
@@ -68,11 +175,12 @@ pub fn create_grep_tool(
         execute: Arc::new(
             move |_tool_call_id: String,
                   params: serde_json::Value,
-                  _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                  signal: Option<tokio::sync::watch::Receiver<bool>>,
                   _on_update: Option<
                 Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>,
             >| {
                 let cwd = cwd.clone();
+                let operations = operations.clone();
                 Box::pin(async move {
                     let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
                     let search_path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -99,6 +207,17 @@ pub fn create_grep_tool(
                     let absolute_path = path_utils::resolve_to_cwd(search_path, &cwd);
                     let absolute_path_str = absolute_path.to_string_lossy().to_string();
 
+                    // Check for abort
+                    if let Some(ref rx) = signal {
+                        if *rx.borrow() {
+                            return Ok(AgentToolResult {
+                                content: vec![ContentBlock::text("Operation aborted")],
+                                details: serde_json::Value::Null,
+                                terminate: None,
+                            });
+                        }
+                    }
+
                     let regex_pattern = if literal {
                         regex::escape(pattern)
                     } else {
@@ -124,6 +243,7 @@ pub fn create_grep_tool(
                     let mut output_lines: Vec<String> = Vec::new();
                     let mut match_count = 0;
                     let mut match_limit_reached = None;
+                    let mut lines_truncated = false;
 
                     if absolute_path.is_file() {
                         if let Err(e) = grep_file(
@@ -134,6 +254,7 @@ pub fn create_grep_tool(
                             &mut match_count,
                             limit,
                             &mut match_limit_reached,
+                            &mut lines_truncated,
                         ) {
                             return Ok(AgentToolResult {
                                 content: vec![ContentBlock::text(format!(
@@ -155,6 +276,7 @@ pub fn create_grep_tool(
                             &mut match_count,
                             limit,
                             &mut match_limit_reached,
+                            &mut lines_truncated,
                         ) {
                             return Ok(AgentToolResult {
                                 content: vec![ContentBlock::text(format!(
@@ -193,13 +315,40 @@ pub fn create_grep_tool(
                     if let Some(reached) = match_limit_reached {
                         details.match_limit_reached = Some(reached);
                     }
+                    if lines_truncated {
+                        details.lines_truncated = Some(true);
+                    }
+
+                    let mut result_text = if truncation.truncated {
+                        truncation.content.clone()
+                    } else {
+                        output
+                    };
+
+                    // Build notices
+                    let mut notices: Vec<String> = Vec::new();
+                    if let Some(reached) = match_limit_reached {
+                        notices.push(format!(
+                            "{} matches limit reached. Use limit={} for more, or refine pattern",
+                            reached,
+                            reached * 2
+                        ));
+                    }
+                    if truncation.truncated {
+                        notices.push("256KB limit reached".to_string());
+                    }
+                    if lines_truncated {
+                        notices.push(format!(
+                            "Some lines truncated to {} chars. Use read tool to see full lines",
+                            GREP_MAX_LINE_LENGTH
+                        ));
+                    }
+                    if !notices.is_empty() {
+                        result_text.push_str(&format!("\n\n[{}]", notices.join(". ")));
+                    }
 
                     Ok(AgentToolResult {
-                        content: vec![ContentBlock::text(if truncation.truncated {
-                            truncation.content
-                        } else {
-                            output
-                        })],
+                        content: vec![ContentBlock::text(result_text)],
                         details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
                         terminate: None,
                     })
@@ -209,6 +358,10 @@ pub fn create_grep_tool(
     }
 }
 
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
 fn grep_file(
     file_path: &str,
     re: &regex::Regex,
@@ -217,6 +370,7 @@ fn grep_file(
     match_count: &mut usize,
     limit: usize,
     match_limit_reached: &mut Option<usize>,
+    lines_truncated: &mut bool,
 ) -> Result<(), String> {
     let content =
         std::fs::read_to_string(file_path).map_err(|e| format!("{}: {}", file_path, e))?;
@@ -238,13 +392,19 @@ fn grep_file(
                 let end = std::cmp::min(i + context_lines + 1, lines.len());
                 for j in start..end {
                     let prefix = if j == i { ">" } else { " " };
-                    let (truncated_line, _) = truncate::truncate_line(lines[j], Some(500));
+                    let (truncated_line, was_truncated) = truncate::truncate_line(lines[j], Some(GREP_MAX_LINE_LENGTH));
+                    if was_truncated {
+                        *lines_truncated = true;
+                    }
                     output_lines.push(format!("{}{}:{}", prefix, file_path, j + 1));
                     output_lines.push(format!("  {}", truncated_line));
                 }
                 output_lines.push("--".to_string());
             } else {
-                let (truncated_line, _) = truncate::truncate_line(line, Some(500));
+                let (truncated_line, was_truncated) = truncate::truncate_line(line, Some(GREP_MAX_LINE_LENGTH));
+                if was_truncated {
+                    *lines_truncated = true;
+                }
                 output_lines.push(format!("{}:{}:{}", file_path, i + 1, truncated_line));
             }
         }
@@ -261,6 +421,7 @@ fn search_directory(
     match_count: &mut usize,
     limit: usize,
     match_limit_reached: &mut Option<usize>,
+    lines_truncated: &mut bool,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
     for entry in entries {
@@ -280,6 +441,7 @@ fn search_directory(
                 match_count,
                 limit,
                 match_limit_reached,
+                lines_truncated,
             )?;
             if match_limit_reached.is_some() {
                 return Ok(());
@@ -300,6 +462,7 @@ fn search_directory(
                 match_count,
                 limit,
                 match_limit_reached,
+                lines_truncated,
             )?;
             if match_limit_reached.is_some() {
                 return Ok(());

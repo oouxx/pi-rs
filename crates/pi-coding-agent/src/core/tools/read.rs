@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use super::path_utils;
 use super::truncate::{self, format_size, TruncationResult, DEFAULT_MAX_BYTES};
 
+// ============================================================================
+// Types
+// ============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadToolInput {
     pub path: String,
@@ -20,6 +24,12 @@ pub struct ReadToolDetails {
     pub truncation: Option<TruncationResult>,
 }
 
+// ============================================================================
+// ReadOperations trait
+// ============================================================================
+
+/// Pluggable operations for the read tool.
+/// Override these to delegate file reading to remote systems (for example SSH).
 pub trait ReadOperations: Send + Sync {
     fn read_file(
         &self,
@@ -31,7 +41,22 @@ pub trait ReadOperations: Send + Sync {
                 > + Send,
         >,
     >;
+
+    /// Check if file is readable (throw if not).
+    fn access(
+        &self,
+        path: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    >;
 }
+
+// ============================================================================
+// LocalReadOperations
+// ============================================================================
 
 pub struct LocalReadOperations;
 
@@ -53,7 +78,29 @@ impl ReadOperations for LocalReadOperations {
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         })
     }
+
+    fn access(
+        &self,
+        path: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    > {
+        let path = path.to_string();
+        Box::pin(async move {
+            tokio::fs::metadata(&path)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(())
+        })
+    }
 }
+
+// ============================================================================
+// ReadToolOptions
+// ============================================================================
 
 #[derive(Clone)]
 pub struct ReadToolOptions {
@@ -74,6 +121,10 @@ impl Default for ReadToolOptions {
     }
 }
 
+// ============================================================================
+// Parameters schema
+// ============================================================================
+
 fn read_parameters_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -84,7 +135,7 @@ fn read_parameters_schema() -> serde_json::Value {
             },
             "offset": {
                 "type": "number",
-                "description": "Line offset to start reading from (1-indexed)"
+                "description": "Line number to start reading from (1-indexed)"
             },
             "limit": {
                 "type": "number",
@@ -94,6 +145,10 @@ fn read_parameters_schema() -> serde_json::Value {
         "required": ["path"]
     })
 }
+
+// ============================================================================
+// create_read_tool
+// ============================================================================
 
 pub fn create_read_tool(
     cwd: &str,
@@ -105,8 +160,13 @@ pub fn create_read_tool(
 
     AgentTool {
         name: "read".to_string(),
-        description: "Read the contents of a file. Returns the file content with line numbers."
-            .to_string(),
+        description: format!(
+            "Read the contents of a file. Returns the file content with line numbers. \
+             Output is truncated to {} lines or {}KB (whichever is hit first). \
+             Use offset/limit for large files.",
+            truncate::DEFAULT_MAX_LINES,
+            DEFAULT_MAX_BYTES / 1024
+        ),
         label: "Read".to_string(),
         parameters_schema: read_parameters_schema(),
         execution_mode: None,
@@ -114,7 +174,7 @@ pub fn create_read_tool(
         execute: Arc::new(
             move |_tool_call_id: String,
                   params: serde_json::Value,
-                  _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                  signal: Option<tokio::sync::watch::Receiver<bool>>,
                   _on_update: Option<
                 Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>,
             >| {
@@ -133,6 +193,31 @@ pub fn create_read_tool(
 
                     let absolute_path = path_utils::resolve_read_path(file_path, &cwd);
                     let absolute_path_str = absolute_path.to_string_lossy().to_string();
+
+                    // Check if file exists and is readable
+                    if let Err(e) = operations.access(&absolute_path_str).await {
+                        return Ok(AgentToolResult {
+                            content: vec![ContentBlock::text(format!(
+                                "Error reading file: {}",
+                                e
+                            ))],
+                            details: serde_json::to_value(ReadToolDetails::default())
+                                .unwrap_or(serde_json::Value::Null),
+                            terminate: None,
+                        });
+                    }
+
+                    // Check for abort
+                    if let Some(ref rx) = signal {
+                        if *rx.borrow() {
+                            return Ok(AgentToolResult {
+                                content: vec![ContentBlock::text("Operation aborted")],
+                                details: serde_json::to_value(ReadToolDetails::default())
+                                    .unwrap_or(serde_json::Value::Null),
+                                terminate: None,
+                            });
+                        }
+                    }
 
                     let bytes = match operations.read_file(&absolute_path_str).await {
                         Ok(b) => b,
@@ -202,10 +287,10 @@ pub fn create_read_tool(
                     if truncation.first_line_exceeds_limit {
                         let first_line_size = format_size(all_lines[start_line].len());
                         output_text = format!(
-                        "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
-                        start_line + 1, first_line_size, format_size(DEFAULT_MAX_BYTES),
-                        start_line + 1, file_path, DEFAULT_MAX_BYTES
-                    );
+                            "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
+                            start_line + 1, first_line_size, format_size(DEFAULT_MAX_BYTES),
+                            start_line + 1, file_path, DEFAULT_MAX_BYTES
+                        );
                         details.truncation = Some(truncation);
                     } else if truncation.truncated {
                         let end_line_display = start_line + truncation.output_lines;
@@ -222,10 +307,10 @@ pub fn create_read_tool(
                             )
                         } else {
                             format!(
-                            "{}\n\n[Showing lines {}-{} of {} ({} limit). Use offset={} to continue.]",
-                            truncation.content, start_line + 1, end_line_display, total_file_lines,
-                            format_size(DEFAULT_MAX_BYTES), next_offset
-                        )
+                                "{}\n\n[Showing lines {}-{} of {} ({} limit). Use offset={} to continue.]",
+                                truncation.content, start_line + 1, end_line_display, total_file_lines,
+                                format_size(DEFAULT_MAX_BYTES), next_offset
+                            )
                         };
                         details.truncation = Some(truncation);
                     } else if let Some(ull) = user_limited_lines {

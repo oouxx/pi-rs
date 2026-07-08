@@ -135,6 +135,7 @@ pub async fn run(args: &CliArgs) -> i32 {
     let print_opts = crate::modes::print_mode::PrintModeOptions {
         mode: mode_str,
         message: &message,
+        messages: &[],
         session,
         verbose: args.verbose,
     };

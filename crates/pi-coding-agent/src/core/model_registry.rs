@@ -100,6 +100,20 @@ impl ModelRegistry {
         false
     }
 
+    /// Check if the model uses OAuth authentication, matching the original isUsingOAuth().
+    pub fn is_using_oauth(&self, model: &Model) -> bool {
+        // OAuth providers typically don't use API keys
+        let has_key = get_env_api_key(&model.provider).is_some()
+            || self
+                .registered_providers
+                .read()
+                .unwrap()
+                .get(&model.provider)
+                .and_then(|c| c.api_key.as_ref())
+                .is_some();
+        !has_key
+    }
+
     pub async fn get_api_key_and_headers(&self, model: &Model) -> Result<ApiKeyResult, String> {
         let mut api_key = get_env_api_key(&model.provider);
         let mut headers: HashMap<String, String> = HashMap::new();

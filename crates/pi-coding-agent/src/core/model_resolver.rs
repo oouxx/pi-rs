@@ -1,9 +1,54 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use pi_agent_core::pi_ai_types::Model;
 
 use super::model_registry::ModelRegistry;
 use super::system_prompt::DEFAULT_THINKING_LEVEL;
 
 pub type ThinkingLevel = String;
+
+/// Default model IDs for each known provider, matching the original TypeScript.
+pub static DEFAULT_MODEL_PER_PROVIDER: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| {
+        let mut m = HashMap::new();
+        m.insert("amazon-bedrock", "us.anthropic.claude-opus-4-6-v1");
+        m.insert("ant-ling", "Ring-2.6-1T");
+        m.insert("anthropic", "claude-opus-4-8");
+        m.insert("openai", "gpt-5.5");
+        m.insert("azure-openai-responses", "gpt-5.4");
+        m.insert("openai-codex", "gpt-5.5");
+        m.insert("nvidia", "nvidia/nemotron-3-super-120b-a12b");
+        m.insert("deepseek", "deepseek-v4-pro");
+        m.insert("google", "gemini-3.1-pro-preview");
+        m.insert("google-vertex", "gemini-3.1-pro-preview");
+        m.insert("github-copilot", "gpt-5.4");
+        m.insert("openrouter", "moonshotai/kimi-k2.6");
+        m.insert("vercel-ai-gateway", "zai/glm-5.1");
+        m.insert("xai", "grok-4.20-0309-reasoning");
+        m.insert("groq", "openai/gpt-oss-120b");
+        m.insert("cerebras", "zai-glm-4.7");
+        m.insert("zai", "glm-5.1");
+        m.insert("zai-coding-cn", "glm-5.1");
+        m.insert("mistral", "devstral-medium-latest");
+        m.insert("minimax", "MiniMax-M2.7");
+        m.insert("minimax-cn", "MiniMax-M2.7");
+        m.insert("moonshotai", "kimi-k2.6");
+        m.insert("moonshotai-cn", "kimi-k2.6");
+        m.insert("huggingface", "moonshotai/Kimi-K2.6");
+        m.insert("fireworks", "accounts/fireworks/models/kimi-k2p6");
+        m.insert("together", "moonshotai/Kimi-K2.6");
+        m.insert("opencode", "kimi-k2.6");
+        m.insert("opencode-go", "kimi-k2.6");
+        m.insert("kimi-coding", "kimi-for-coding");
+        m.insert("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6");
+        m.insert("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
+        m.insert("xiaomi", "mimo-v2.5-pro");
+        m.insert("xiaomi-token-plan-cn", "mimo-v2.5-pro");
+        m.insert("xiaomi-token-plan-ams", "mimo-v2.5-pro");
+        m.insert("xiaomi-token-plan-sgp", "mimo-v2.5-pro");
+        m
+    });
 
 #[derive(Debug, Clone)]
 pub struct ScopedModel {

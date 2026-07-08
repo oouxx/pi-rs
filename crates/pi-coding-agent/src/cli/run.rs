@@ -7,6 +7,7 @@ use colored::*;
 use crate::cli::args::{print_help, CliArgs, OutputMode};
 use crate::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
+use crate::core::session_manager::SessionManager;
 use crate::core::trust_manager::ProjectTrustStore;
 
 /// Exit code for successful runs.
@@ -84,6 +85,10 @@ pub async fn run(args: &CliArgs) -> i32 {
         return EXIT_FAILURE;
     }
 
+    // ── Resolve session options from CLI args ────────────────────────────
+    let (persist_session, session_file, fork_from, session_dir) =
+        resolve_session_opts(args, &cwd).await;
+
     // Build SDK options
     let sdk_options = CreateAgentSessionOptions {
         cwd: cwd.clone(),
@@ -100,7 +105,11 @@ pub async fn run(args: &CliArgs) -> i32 {
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
-        enable_extensions: !args.no_extensions, persist_session: false, session_file: None,
+        enable_extensions: !args.no_extensions,
+        persist_session,
+        session_file,
+        fork_from,
+        session_dir,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
     };
@@ -134,6 +143,9 @@ pub async fn run(args: &CliArgs) -> i32 {
 
 /// Run interactive TUI mode with a session.
 async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &CliArgs) -> i32 {
+    let (persist_session, session_file, fork_from, session_dir) =
+        resolve_session_opts(args, cwd).await;
+
     let sdk_options = CreateAgentSessionOptions {
         cwd: cwd.to_string(),
         agent_dir: Some(agent_dir.to_string()),
@@ -149,7 +161,11 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
-        enable_extensions: !args.no_extensions, persist_session: false, session_file: None,
+        enable_extensions: !args.no_extensions,
+        persist_session,
+        session_file,
+        fork_from,
+        session_dir,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
     };
@@ -163,6 +179,49 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
     };
 
     crate::modes::interactive::run_interactive_mode(session).await
+}
+
+/// Resolve session persistence options from CLI arguments.
+///
+/// Returns `(persist_session, session_file, fork_from, session_dir)`.
+async fn resolve_session_opts(
+    args: &CliArgs,
+    cwd: &str,
+) -> (bool, Option<String>, Option<String>, Option<String>) {
+    let persist_session = if args.no_session {
+        false
+    } else if args.session.is_some() || args.fork.is_some() {
+        true
+    } else if args.continue_session || args.resume_session {
+        true
+    } else {
+        // Persistent by default in interactive mode
+        args.mode == OutputMode::Interactive
+    };
+
+    // --continue / --resume: find the most recent session for this cwd
+    let session_file = if args.session.is_some() {
+        args.session.clone()
+    } else if (args.continue_session || args.resume_session) && !args.no_session {
+        let sessions = SessionManager::list(cwd, args.session_dir.as_deref()).await;
+        sessions.first().map(|s| s.path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    let fork_from = if args.no_session {
+        None
+    } else {
+        args.fork.clone()
+    };
+
+    let session_dir = if args.no_session {
+        None
+    } else {
+        args.session_dir.clone()
+    };
+
+    (persist_session, session_file, fork_from, session_dir)
 }
 
 /// Handle subcommands (install, remove, list).

@@ -572,12 +572,12 @@ impl SessionManager {
         last
     }
 
-    fn persist_entry_str(&self, json: &str) {
+    fn persist_entry_str(&mut self, json: &str) {
         if !self.persist {
             return;
         }
 
-        if let Some(ref session_file) = self.session_file {
+        if let Some(ref session_file) = self.session_file.clone() {
             if !self.flushed {
                 if let Ok(mut f) = fs::OpenOptions::new().append(true).open(session_file) {
                     let _ = writeln!(f, "{}", json);
@@ -592,7 +592,7 @@ impl SessionManager {
                         let _ = writeln!(f, "{}", line);
                     }
                 }
-                // Note: flushed would need to be reset but we can't here due to borrowing
+                self.flushed = false;
             }
         }
     }
@@ -1071,6 +1071,12 @@ impl SessionManager {
         self.last_run_prompt = Some(prompt.to_string());
     }
 
+    /// Mark the session as flushed, so the next persist rewrites the entire
+    /// file from the in-memory tree rather than appending.
+    pub fn set_flushed(&mut self) {
+        self.flushed = true;
+    }
+
     /// Take the run prompt, consuming it. Returns `None` if no run prompt
     /// was set or it was already taken. This is a one-shot get — the second
     /// call returns `None`.
@@ -1078,13 +1084,30 @@ impl SessionManager {
         self.last_run_prompt.take()
     }
 
-    /// Refresh session configuration by re-reading settings from disk.
+    /// Refresh session configuration by re-reading the session file from disk.
     ///
-    /// This method is called before starting a new agent interaction turn
-    /// to ensure any configuration changes on disk are picked up.
-    /// Currently a placeholder — will be wired to the settings manager
-    /// in a future integration.
+    /// Called before starting a new agent interaction turn to pick up any
+    /// external changes to the session file (e.g. entries appended by another
+    /// process or after a compaction/rewrite).
     pub async fn refresh_config(&mut self) -> Result<(), String> {
+        if self.flushed {
+            // The file was rewritten from the in-memory tree, so disk is
+            // already in sync — no need to re-read.
+            self.flushed = false;
+            return Ok(());
+        }
+
+        if let Some(ref session_file) = self.session_file.clone() {
+            if session_file.exists() {
+                let new_entries = load_entries_from_file(session_file);
+                if !new_entries.is_empty() {
+                    self.file_entries = new_entries;
+                    self.rebuild_index();
+                    self.leaf_id = self.find_last_leaf_id();
+                }
+            }
+        }
+
         Ok(())
     }
 }

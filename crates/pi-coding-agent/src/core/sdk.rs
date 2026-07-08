@@ -74,6 +74,11 @@ pub struct CreateAgentSessionOptions {
     /// Optional session file path for JSONL persistence.
     /// If set, `persist_session` is implied true.
     pub session_file: Option<String>,
+    /// Path to an existing session file to fork from.
+    /// Creates a new session that copies all entries from the source.
+    pub fork_from: Option<String>,
+    /// Custom session directory (from --session-dir).
+    pub session_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,10 +182,31 @@ pub async fn create_agent_session(
         })
         .collect();
 
-    let session_dir = SessionManager::default_session_dir(&cwd, &agent_dir);
-    let persist = options.persist_session || options.session_file.is_some();
-    let session_file = options.session_file.as_deref();
-    let session_manager = SessionManager::new(&cwd, &session_dir, session_file, persist, None);
+    // Resolve session directory: --session-dir overrides default
+    let session_dir = options
+        .session_dir
+        .clone()
+        .unwrap_or_else(|| SessionManager::default_session_dir(&cwd, &agent_dir));
+
+    // Create or restore session manager
+    let session_manager = if let Some(ref fork_path) = options.fork_from {
+        SessionManager::fork_from(
+            fork_path,
+            &cwd,
+            Some(&session_dir),
+            None,
+        )
+        .map_err(|e| format!("Failed to fork session: {e}"))?
+    } else {
+        let persist = options.persist_session || options.session_file.is_some();
+        SessionManager::new(
+            &cwd,
+            &session_dir,
+            options.session_file.as_deref(),
+            persist,
+            None,
+        )
+    };
 
     let event_bus = EventBusController::new();
 
@@ -255,7 +281,15 @@ pub async fn create_agent_session(
         rpc_client,
     };
 
-    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options);
+    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
+
+    // Load persisted messages into agent state if restoring from a session file
+    if session.get_session_manager().get_session_file().is_some() {
+        let count = session.load_messages_from_session().await;
+        if count > 0 {
+            eprintln!("[pi] Restored {count} messages from session file");
+        }
+    }
 
     Ok((
         session,

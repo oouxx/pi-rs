@@ -44,7 +44,7 @@ pub struct AgentSessionOptions {
 
 pub struct AgentSession {
     agent: Agent,
-    session_manager: SessionManager,
+    session_manager: Arc<std::sync::Mutex<SessionManager>>,
     event_bus: EventBusController,
     model_registry: ModelRegistry,
     compaction_settings: CompactionSettings,
@@ -58,7 +58,7 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    pub fn new(
+    pub async fn new(
         session_manager: SessionManager,
         event_bus: EventBusController,
         model_registry: ModelRegistry,
@@ -130,6 +130,7 @@ impl AgentSession {
         };
 
         let agent = Agent::new(agent_options);
+        let session_manager = Arc::new(std::sync::Mutex::new(session_manager));
 
         let initial_active_tool_names = options.initial_active_tool_names.unwrap_or_else(|| {
             vec!["read", "bash", "edit", "write"]
@@ -138,9 +139,9 @@ impl AgentSession {
                 .collect()
         });
 
-        Self {
+        let mut session = Self {
             agent,
-            session_manager,
+            session_manager: session_manager.clone(),
             event_bus,
             model_registry,
             compaction_settings: CompactionSettings::default(),
@@ -150,7 +151,41 @@ impl AgentSession {
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
             _subscriptions: Vec::new(),
-        }
+        };
+
+        // Register event-driven persistence subscriber, matching the original
+        // TS behavior: persist user / assistant / toolResult messages on each
+        // message_end event.
+        let persist_sm = session_manager.clone();
+        let persist_listener: Arc<
+            dyn Fn(
+                    AgentEvent,
+                    Option<tokio::sync::watch::Receiver<bool>>,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move |event: AgentEvent, _signal| {
+            let sm = persist_sm.clone();
+            Box::pin(async move {
+                if let AgentEvent::MessageEnd { ref message } = event {
+                    match message {
+                        AgentMessage::User { .. }
+                        | AgentMessage::Assistant { .. }
+                        | AgentMessage::ToolResult { .. } => {
+                            let json =
+                                serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
+                            sm.lock().unwrap().append_message(json);
+                        }
+                        _ => {}
+                    }
+                }
+            })
+        });
+        let handle = session.agent.subscribe(persist_listener).await;
+        session._subscriptions.push(handle);
+
+        session
     }
 
     pub fn get_agent(&self) -> &Agent {
@@ -164,20 +199,24 @@ impl AgentSession {
     /// Load messages from the session manager's file entries into
     /// the agent's in-memory state. Called after restoring from a JSONL file.
     pub async fn load_messages_from_session(&self) -> usize {
-        let mgr = &self.session_manager;
-        if mgr.get_session_file().is_none() {
-            return 0;
-        }
         use crate::core::session_manager::SessionEntry;
-        let agent_messages: Vec<AgentMessage> = mgr.get_entries().iter()
-            .filter_map(|entry| {
-                if let SessionEntry::Message { message, .. } = entry {
-                    serde_json::from_value(message.clone()).ok()
-                } else {
-                    None
-                }
-            })
-            .collect();
+
+        let agent_messages = {
+            let mgr = self.session_manager.lock().unwrap();
+            if mgr.get_session_file().is_none() {
+                return 0;
+            }
+            mgr.get_entries()
+                .iter()
+                .filter_map(|entry| {
+                    if let SessionEntry::Message { message, .. } = entry {
+                        serde_json::from_value(message.clone()).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<AgentMessage>>()
+        };
         let count = agent_messages.len();
         if count > 0 {
             self.agent.set_initial_messages(agent_messages).await;
@@ -202,15 +241,15 @@ impl AgentSession {
     }
 
     pub fn get_session_id(&self) -> String {
-        self.session_manager.get_session_id().to_string()
+        self.session_manager.lock().unwrap().get_session_id().to_string()
     }
 
     pub fn get_session_name(&self) -> Option<String> {
-        self.session_manager.get_session_name()
+        self.session_manager.lock().unwrap().get_session_name()
     }
 
     pub fn set_session_name(&mut self, name: &str) {
-        self.session_manager.append_session_info(name);
+        self.session_manager.lock().unwrap().append_session_info(name);
     }
 
     pub async fn is_streaming(&self) -> bool {
@@ -241,12 +280,8 @@ impl AgentSession {
         self.scoped_models = models;
     }
 
-    pub fn get_session_manager(&self) -> &SessionManager {
-        &self.session_manager
-    }
-
-    pub fn get_session_manager_mut(&mut self) -> &mut SessionManager {
-        &mut self.session_manager
+    pub fn get_session_manager(&self) -> std::sync::MutexGuard<'_, SessionManager> {
+        self.session_manager.lock().unwrap()
     }
 
     pub fn get_event_bus(&self) -> &EventBusController {
@@ -301,9 +336,8 @@ impl AgentSession {
 
         let timestamp = chrono::Utc::now().timestamp_millis();
         let message = AgentMessage::User { content, timestamp };
-        let json = serde_json::to_value(&message).unwrap_or(serde_json::Value::Null);
-        self.session_manager.append_message(json);
-        self.session_manager.set_run_prompt(&text);
+        // User message is persisted by the event subscriber on MessageEnd
+        self.session_manager.lock().unwrap().set_run_prompt(&text);
         self.agent.process(vec![message]).await.ok();
     }
 
@@ -313,12 +347,8 @@ impl AgentSession {
             content: vec![ContentBlock::text(text)],
             timestamp,
         };
-        let json = serde_json::to_value(&message).unwrap_or(serde_json::Value::Null);
-        self.session_manager.append_message(json);
-
-        // Used by the interaction loop to preserve prompt through session refresh
-        self.session_manager.set_run_prompt(text);
-
+        // User message is persisted by the event subscriber on MessageEnd
+        self.session_manager.lock().unwrap().set_run_prompt(text);
         self.agent.process(vec![message]).await.ok();
     }
 

@@ -134,7 +134,9 @@ struct ActiveRun {
 }
 
 /// Handle returned by [`Agent::subscribe`]. Call `unsubscribe()` to stop
-/// receiving events, or drop it for best-effort cleanup.
+/// receiving events. Dropping the handle does NOT unsubscribe — the listener
+/// remains registered, matching the original TypeScript behavior where dropping
+/// the unsubscribe function does not remove the listener.
 pub struct UnsubscribeHandle {
     listeners: Arc<RwLock<Vec<AgentEventListener>>>,
     index: usize,
@@ -149,18 +151,6 @@ impl UnsubscribeHandle {
             // Replace with a no-op so the slot stays valid and Vec indices
             // are not disturbed.
             listeners[self.index] = Arc::new(|_, _| Box::pin(async {}));
-        }
-    }
-}
-
-impl std::ops::Drop for UnsubscribeHandle {
-    fn drop(&mut self) {
-        // Best-effort cleanup when the handle is dropped without calling
-        // `unsubscribe()` explicitly.
-        if let Ok(mut listeners) = self.listeners.try_write() {
-            if self.index < listeners.len() {
-                listeners[self.index] = Arc::new(|_, _| Box::pin(async {}));
-            }
         }
     }
 }
@@ -856,17 +846,19 @@ impl Agent {
                         AgentEvent::AgentEnd { .. } => {
                             s.is_streaming = false;
                             s.streaming_message = None;
-                            drop(s);
-                            idle_notify.notify_waiters();
-                            return;
                         }
                         _ => {}
                     }
                 }
 
+                // Notify idle waiters on AgentEnd (after state update, before listeners)
+                if matches!(&event, AgentEvent::AgentEnd { .. }) {
+                    idle_notify.notify_waiters();
+                }
+
                 // Await all listeners (matches TS listener loop)
-                let listeners = listeners.read().await;
-                for listener in listeners.iter() {
+                let listeners_guard = listeners.read().await;
+                for listener in listeners_guard.iter() {
                     listener(event.clone(), None).await;
                 }
             })

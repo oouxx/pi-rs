@@ -197,7 +197,8 @@ mod tests {
     use crate::core::model_registry::{builtin_models, ModelRegistry};
 
     fn sample_models() -> Vec<Model> {
-        builtin_models()
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        ModelRegistry::builtin_models_list()
     }
 
     #[test]

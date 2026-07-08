@@ -305,7 +305,8 @@ mod tests {
 
     #[test]
     fn test_model_registry_find() {
-        let registry = ModelRegistry::new(builtin_models());
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
         let model = registry.find("anthropic", "claude-sonnet-4-6");
         assert!(model.is_some());
         let m = model.unwrap();
@@ -322,7 +323,9 @@ mod tests {
 
     #[test]
     fn test_model_registry_providers() {
-        let registry = ModelRegistry::new(builtin_models());
+        // Register built-in providers so pi-ai models are available
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
         let providers = registry.get_providers();
         assert!(providers.contains(&"anthropic".to_string()));
         assert!(providers.contains(&"openai".to_string()));
@@ -331,7 +334,8 @@ mod tests {
 
     #[test]
     fn test_model_registry_models_for_provider() {
-        let registry = ModelRegistry::new(builtin_models());
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
         let models = registry.get_models_for_provider("openai");
         assert!(!models.is_empty());
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
@@ -340,7 +344,8 @@ mod tests {
 
     #[test]
     fn test_builtin_models_count() {
-        let models = builtin_models();
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        let models = ModelRegistry::builtin_models_list();
         assert!(models.len() >= 10);
     }
 }

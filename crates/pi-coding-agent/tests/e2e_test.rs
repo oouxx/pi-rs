@@ -109,7 +109,7 @@ fn test_rpc_get_state() {
     use std::io::Write;
     writeln!(stdin, r#"{{"type":"get_state"}}"#).unwrap();
     writeln!(stdin, r#"{{"type":"shutdown"}}"#).unwrap();
-    drop(stdin);
+    let _ = stdin;
 
     let output = child.wait_with_output().expect("failed to read RPC output");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -178,7 +178,7 @@ fn test_extension_loading_via_rpc() {
     ).unwrap();
     writeln!(stdin, r#"{{"type":"get_available_models"}}"#).unwrap();
     writeln!(stdin, r#"{{"type":"shutdown"}}"#).unwrap();
-    drop(stdin);
+    let _ = stdin;
 
     let output = child.wait_with_output().expect("failed to read RPC output");
     let stdout = String::from_utf8_lossy(&output.stdout);

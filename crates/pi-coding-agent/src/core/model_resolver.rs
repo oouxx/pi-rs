@@ -684,15 +684,21 @@ pub fn restore_model_from_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model_registry::builtin_models;
+    use crate::core::model_registry::ModelRegistry;
 
     fn test_registry() -> ModelRegistry {
-        ModelRegistry::new(builtin_models())
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        ModelRegistry::new(ModelRegistry::builtin_models_list())
+    }
+
+    fn test_models() -> Vec<Model> {
+        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        ModelRegistry::builtin_models_list()
     }
 
     #[test]
     fn test_find_exact_model_reference_match_canonical() {
-        let models = builtin_models();
+        let models = test_models();
         let result = find_exact_model_reference_match("anthropic/claude-sonnet-4-6", &models);
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "claude-sonnet-4-6");
@@ -700,20 +706,20 @@ mod tests {
 
     #[test]
     fn test_find_exact_model_reference_match_bare_id() {
-        let models = builtin_models();
+        let models = test_models();
         let result = find_exact_model_reference_match("gpt-4o", &models);
         assert!(result.is_some());
     }
 
     #[test]
     fn test_find_exact_model_reference_match_empty() {
-        let models = builtin_models();
+        let models = test_models();
         assert!(find_exact_model_reference_match("", &models).is_none());
     }
 
     #[test]
     fn test_parse_model_pattern_exact() {
-        let models = builtin_models();
+        let models = test_models();
         let result = parse_model_pattern("claude-sonnet-4-6", &models, true);
         assert!(result.model.is_some());
         assert_eq!(result.model.unwrap().id, "claude-sonnet-4-6");
@@ -721,7 +727,7 @@ mod tests {
 
     #[test]
     fn test_parse_model_pattern_with_thinking_level() {
-        let models = builtin_models();
+        let models = test_models();
         let result = parse_model_pattern("claude-sonnet-4-6:high", &models, true);
         assert!(result.model.is_some());
         assert_eq!(result.thinking_level, Some("high".to_string()));
@@ -729,14 +735,14 @@ mod tests {
 
     #[test]
     fn test_parse_model_pattern_no_match() {
-        let models = builtin_models();
+        let models = test_models();
         let result = parse_model_pattern("nonexistent-model", &models, true);
         assert!(result.model.is_none());
     }
 
     #[test]
     fn test_resolve_model_scope_empty() {
-        let models = builtin_models();
+        let models = test_models();
         let result = resolve_model_scope_with_diagnostics(&[], &models);
         assert!(result.scoped_models.is_empty());
         assert!(result.diagnostics.is_empty());

@@ -556,6 +556,191 @@ impl AgentSession {
     }
 
     // =========================================================================
+    // Streaming Queue Management
+    // =========================================================================
+
+    /// Queue a steering message (interrupts current stream), matching original steer().
+    pub async fn steer(&self, text: &str) {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = AgentMessage::User {
+            content: vec![ContentBlock::text(text)],
+            timestamp,
+        };
+        self.agent.steer(message).await;
+    }
+
+    /// Queue a follow-up message (waits for current stream), matching original followUp().
+    pub async fn follow_up(&self, text: &str) {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = AgentMessage::User {
+            content: vec![ContentBlock::text(text)],
+            timestamp,
+        };
+        self.agent.follow_up(message).await;
+    }
+
+    /// Check if there are queued messages, matching original hasQueuedMessages().
+    pub async fn has_queued_messages(&self) -> bool {
+        self.agent.has_queued_messages().await
+    }
+
+    /// Clear all queued messages, matching original clearAllQueues().
+    pub async fn clear_all_queues(&self) {
+        self.agent.clear_all_queues().await;
+    }
+
+    // =========================================================================
+    // Session Lifecycle (switch / new / fork / import)
+    // =========================================================================
+
+    /// Switch to a different session file, matching original switchSession().
+    pub async fn switch_session(
+        &mut self,
+        session_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<(), String> {
+        use crate::core::session_manager::SessionManager as SM;
+
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap()
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let effective_cwd = cwd_override.unwrap_or(&self.cwd);
+        let fallback_cwd = self.cwd.clone();
+        let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
+
+        // Check if session cwd exists
+        let session_cwd = new_mgr.get_cwd();
+        let session_file_opt = new_mgr.get_session_file().map(|p| p.to_string_lossy().to_string());
+        if let Some(ref sf) = session_file_opt {
+            if !session_cwd.is_empty() && !std::path::Path::new(session_cwd).exists() {
+                return Err(format!(
+                    "Stored session working directory does not exist: {}\nSession file: {}\nCurrent working directory: {}",
+                    session_cwd, sf, fallback_cwd
+                ));
+            }
+        }
+
+        // Replace the session manager
+        *self.session_manager.lock().unwrap() = new_mgr;
+
+        // Reload messages from the new session
+        self.load_messages_from_session().await;
+
+        Ok(())
+    }
+
+    /// Create a new session, matching original newSession().
+    pub async fn new_session(&mut self, parent_session: Option<&str>) {
+        use crate::core::session_manager::SessionManager as SM;
+
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap()
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let new_session_opts = parent_session.map(|p| {
+            crate::core::session_manager::NewSessionOptions {
+                id: None,
+                parent_session: Some(p.to_string()),
+            }
+        });
+
+        let new_mgr = SM::new(&self.cwd, &session_dir, None, true, new_session_opts);
+        *self.session_manager.lock().unwrap() = new_mgr;
+    }
+
+    /// Fork the session at a specific entry, matching original fork().
+    /// Returns the forked session path on success.
+    pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
+        use crate::core::session_manager::SessionManager as SM;
+
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap()
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let session_file = self
+            .session_manager
+            .lock()
+            .unwrap()
+            .get_session_file()
+            .map(|p| p.to_string_lossy().to_string())
+            .ok_or_else(|| "Session is not persisted".to_string())?;
+
+        // Open the current session file
+        let mut mgr = SM::new(&self.cwd, &session_dir, Some(&session_file), true, None);
+
+        // Create a new session file for the branch
+        let branch_path = format!("{}.branch.jsonl", session_file);
+        mgr.set_session_file(&branch_path);
+
+        *self.session_manager.lock().unwrap() = mgr;
+        Ok(branch_path)
+    }
+
+    /// Import a session from a JSONL file, matching original importFromJsonl().
+    pub async fn import_from_jsonl(
+        &mut self,
+        input_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<(), String> {
+        use crate::core::session_manager::SessionManager as SM;
+
+        let path = std::path::Path::new(input_path);
+        if !path.exists() {
+            return Err(format!("File not found: {}", input_path));
+        }
+
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap()
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let effective_cwd = cwd_override.unwrap_or(&self.cwd);
+        let new_mgr = SM::new(effective_cwd, &session_dir, Some(input_path), true, None);
+
+        let fallback_cwd = self.cwd.clone();
+        let session_cwd = new_mgr.get_cwd();
+        let session_file_opt = new_mgr.get_session_file().map(|p| p.to_string_lossy().to_string());
+        if let Some(ref sf) = session_file_opt {
+            if !session_cwd.is_empty() && !std::path::Path::new(session_cwd).exists() {
+                return Err(format!(
+                    "Stored session working directory does not exist: {}\nSession file: {}\nCurrent working directory: {}",
+                    session_cwd, sf, fallback_cwd
+                ));
+            }
+        }
+
+        *self.session_manager.lock().unwrap() = new_mgr;
+        self.load_messages_from_session().await;
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Extension Message Handling
+    // =========================================================================
+
+    /// Send a user message (for extensions), matching original sendUserMessage().
+    pub async fn send_user_message(&mut self, content: &str) {
+        self.add_user_text(content).await;
+    }
+
+    // =========================================================================
     // Lifecycle
     // =========================================================================
 

@@ -9,14 +9,20 @@ use crate::core::context_usage::ContextUsage;
 use crate::core::event_bus::EventBusController;
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
+use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
 use crate::core::extensions::rpc::ToolInfo;
 use crate::core::extensions::ExtensionsRpcClient;
 use crate::core::tools;
 
-#[derive(Clone)]
-pub struct AgentSessionOptions {
+// ============================================================================
+// Types
+// ============================================================================
+
+/// Configuration for creating an AgentSession.
+/// Matches the original TypeScript AgentSessionConfig interface.
+pub struct AgentSessionConfig {
     pub cwd: String,
     pub model: Model,
     pub thinking_level: ThinkingLevel,
@@ -33,14 +39,48 @@ pub struct AgentSessionOptions {
     pub initial_active_tool_names: Option<Vec<String>>,
     pub allowed_tool_names: Option<Vec<String>>,
     pub excluded_tool_names: Option<Vec<String>>,
-    /// Extension tools loaded via RPC sidecar. If the sidecar could not
-    /// be started (e.g. bun not available), this is empty.
+    /// Extension tools loaded via RPC sidecar.
     pub extension_tools: Vec<ToolInfo>,
-    /// RPC client for calling extension tool handlers. When None,
-    /// extension tools will be present in metadata but calls will fail.
-    #[allow(dead_code)]
+    /// RPC client for calling extension tool handlers.
     pub rpc_client: Option<std::sync::Arc<ExtensionsRpcClient>>,
+    /// Loaded resources (skills, extensions, prompt templates).
+    pub resources: Option<LoadedResources>,
 }
+
+/// Options for AgentSession.prompt().
+/// Matches the original TypeScript PromptOptions interface.
+pub struct PromptOptions {
+    pub images: Option<Vec<ContentBlock>>,
+}
+
+/// Session statistics for /session command.
+/// Matches the original TypeScript SessionStats interface.
+#[derive(Debug, Clone, Default)]
+pub struct SessionStats {
+    pub session_file: Option<String>,
+    pub session_id: String,
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    pub tool_calls: usize,
+    pub tool_results: usize,
+    pub total_messages: usize,
+    pub tokens: TokenUsage,
+    pub cost: f64,
+    pub context_usage: Option<ContextUsage>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub total: u64,
+}
+
+// ============================================================================
+// AgentSession
+// ============================================================================
 
 pub struct AgentSession {
     agent: Agent,
@@ -62,7 +102,7 @@ impl AgentSession {
         session_manager: SessionManager,
         event_bus: EventBusController,
         model_registry: ModelRegistry,
-        options: AgentSessionOptions,
+        options: AgentSessionConfig,
     ) -> Self {
         let system_prompt = system_prompt::build_system_prompt(&BuildSystemPromptOptions {
             cwd: options.cwd.clone(),
@@ -188,6 +228,10 @@ impl AgentSession {
         session
     }
 
+    // =========================================================================
+    // Accessors
+    // =========================================================================
+
     pub fn get_agent(&self) -> &Agent {
         &self.agent
     }
@@ -312,6 +356,71 @@ impl AgentSession {
         self.excluded_tool_names.as_deref()
     }
 
+    // =========================================================================
+    // Session Statistics
+    // =========================================================================
+
+    /// Get session statistics, matching the original getSessionStats().
+    pub fn get_session_stats(&self) -> SessionStats {
+        let mgr = self.session_manager.lock().unwrap();
+        let entries = mgr.get_entries();
+
+        let mut user_messages = 0;
+        let mut assistant_messages = 0;
+        let mut tool_calls = 0;
+        let mut tool_results = 0;
+
+        for entry in entries {
+            match entry {
+                crate::core::session_manager::SessionEntry::Message { message, .. } => {
+                    if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
+                        match role {
+                            "user" => user_messages += 1,
+                            "assistant" => {
+                                assistant_messages += 1;
+                                // Count tool calls within assistant messages
+                                if let Some(content) = message.get("content") {
+                                    if let Some(blocks) = content.as_array() {
+                                        for block in blocks {
+                                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                                                tool_calls += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "tool_result" => tool_results += 1,
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let total_messages = user_messages + assistant_messages + tool_calls + tool_results;
+
+        SessionStats {
+            session_file: mgr.get_session_file().map(|p| p.to_string_lossy().to_string()),
+            session_id: mgr.get_session_id().to_string(),
+            user_messages,
+            assistant_messages,
+            tool_calls,
+            tool_results,
+            total_messages,
+            ..Default::default()
+        }
+    }
+
+    // =========================================================================
+    // Message Handling
+    // =========================================================================
+
+    /// Send a user message to the agent, matching the original prompt() method.
+    pub async fn prompt(&mut self, text: &str, _options: Option<PromptOptions>) {
+        self.add_user_text(text).await;
+    }
+
     pub async fn add_user_message(&mut self, mut content: Vec<ContentBlock>) {
         // Normalize empty content at ingestion boundary
         if content.is_empty() {
@@ -351,6 +460,10 @@ impl AgentSession {
         self.session_manager.lock().unwrap().set_run_prompt(text);
         self.agent.process(vec![message]).await.ok();
     }
+
+    // =========================================================================
+    // Lifecycle
+    // =========================================================================
 
     pub async fn abort(&self) {
         self.agent.abort().await;

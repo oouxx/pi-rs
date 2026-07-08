@@ -3,7 +3,7 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 
 use std::sync::Arc;
 
-use crate::core::agent_session::{AgentSession, AgentSessionOptions};
+use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::event_bus::EventBusController;
 use crate::core::extensions::{ExtensionsRpcClient, ToolInfo};
 use crate::core::model_registry::ModelRegistry;
@@ -260,7 +260,7 @@ pub async fn create_agent_session(
         }
     }
 
-    let session_options = AgentSessionOptions {
+    let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
         model,
         thinking_level,
@@ -279,6 +279,7 @@ pub async fn create_agent_session(
         excluded_tool_names,
         extension_tools,
         rpc_client,
+        resources: None,
     };
 
     let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;

@@ -23,6 +23,17 @@ pub struct ProviderConfig {
     pub auth_header: Option<bool>,
 }
 
+/// Input for registering a provider, matching the original ProviderConfigInput interface.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderConfigInput {
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub api: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub auth_header: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelRegistryEntry {
     pub model: Model,

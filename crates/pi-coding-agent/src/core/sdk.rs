@@ -177,8 +177,8 @@ pub async fn create_agent_session(
         .map(|s| SkillInfo {
             name: s.name,
             description: s.description,
-            instructions: s.instructions,
-            tools: s.tools,
+            file_path: s.file_path,
+            base_dir: s.base_dir,
         })
         .collect();
 

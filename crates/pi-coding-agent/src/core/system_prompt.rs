@@ -14,8 +14,8 @@ pub struct ContextFile {
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
-    pub instructions: String,
-    pub tools: Vec<String>,
+    pub file_path: String,
+    pub base_dir: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -211,12 +211,6 @@ fn format_skills_for_prompt(skills: &[SkillInfo]) -> String {
         if !skill.description.is_empty() {
             result.push_str(&format!("{}\n", skill.description));
         }
-        if !skill.instructions.is_empty() {
-            result.push_str(&format!("\nInstructions:\n{}\n", skill.instructions));
-        }
-        if !skill.tools.is_empty() {
-            result.push_str(&format!("\nTools: {}\n", skill.tools.join(", ")));
-        }
         result.push('\n');
     }
     result.push_str("</skills>\n");
@@ -314,8 +308,8 @@ mod tests {
             skills: Some(vec![SkillInfo {
                 name: "git-workflow".to_string(),
                 description: "Git workflow helper".to_string(),
-                instructions: "Always create feature branches".to_string(),
-                tools: vec!["bash".to_string()],
+                file_path: "/home/user/.pi/agent/skills/git-workflow/SKILL.md".to_string(),
+                base_dir: "/home/user/.pi/agent/skills/git-workflow".to_string(),
             }]),
             ..Default::default()
         };

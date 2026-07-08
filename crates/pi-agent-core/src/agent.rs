@@ -579,7 +579,7 @@ impl Agent {
 
     /// Create the agent loop config from current state.
     /// Matches TS `createLoopConfig()`.
-    fn create_loop_config(
+    async fn create_loop_config(
         &self,
         cancel_rx: watch::Receiver<bool>,
         skip_initial_steering_poll: bool,
@@ -588,10 +588,11 @@ impl Agent {
         let follow_up_queue = self.follow_up_queue.clone();
         let skip_steering = Arc::new(tokio::sync::Mutex::new(skip_initial_steering_poll));
 
+        let state = self.state.read().await;
         let config = crate::agent_loop::AgentLoopConfig {
-            model: self.state.blocking_read().model.clone(),
+            model: state.model.clone(),
             reasoning: {
-                let tl = self.state.blocking_read().thinking_level.clone();
+                let tl = state.thinking_level.clone();
                 if tl == "off" { None } else { Some(tl) }
             },
             api_key: None,
@@ -698,7 +699,7 @@ impl Agent {
         drop(state);
 
         let emit = self.create_event_sink();
-        let (config, signal) = self.create_loop_config(cancel_rx, skip_initial_steering_poll);
+        let (config, signal) = self.create_loop_config(cancel_rx, skip_initial_steering_poll).await;
 
         let loop_result = crate::agent_loop::run_agent_loop(
             prompts,
@@ -750,7 +751,7 @@ impl Agent {
         drop(state);
 
         let emit = self.create_event_sink();
-        let (config, signal) = self.create_loop_config(cancel_rx, false);
+        let (config, signal) = self.create_loop_config(cancel_rx, false).await;
 
         let result = crate::agent_loop::run_agent_loop_continue(
             context,

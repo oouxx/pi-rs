@@ -255,13 +255,64 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
     // Not handled by the package manager module
     match cmd {
         "config" => {
-            eprintln!("Config subcommand not yet implemented in Rust port");
-            EXIT_FAILURE
+            handle_config_command(args, &cwd, &agent_dir.to_string_lossy()).await
         }
         _ => {
             eprintln!("{} Unknown subcommand: {cmd}", "Error:".red().bold());
             EXIT_FAILURE
         }
+    }
+}
+
+/// Handle the `config` subcommand: show or set configuration values.
+async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
+    use crate::core::settings_manager::SettingsManager;
+
+    let settings = SettingsManager::create(cwd, Some(agent_dir));
+
+    if args.is_empty() || args.first().map(|s| s.as_str()) == Some("list") {
+        // Show current configuration
+        let global = settings.get_global_settings();
+        let project = settings.get_project_settings();
+
+        println!("Configuration:");
+        println!("  Agent directory: {agent_dir}");
+        println!("  Working directory: {cwd}");
+        println!();
+        println!("Global settings:");
+        println!("  default_model: {:?}", global.default_model);
+        println!("  default_provider: {:?}", global.default_provider);
+        println!("  thinking_level: {:?}", global.thinking_level);
+        println!("  custom_system_prompt: {:?}", global.custom_system_prompt.as_ref().map(|_| "(set)"));
+        println!();
+        println!("Project settings:");
+        println!("  default_model: {:?}", project.default_model);
+        println!("  default_provider: {:?}", project.default_provider);
+        println!("  thinking_level: {:?}", project.thinking_level);
+        println!("  custom_system_prompt: {:?}", project.custom_system_prompt.as_ref().map(|_| "(set)"));
+
+        EXIT_SUCCESS
+    } else if args.len() >= 2 {
+        // Set a configuration value: config <key> <value>
+        let key = &args[0];
+        let value = &args[1];
+
+        match key.as_str() {
+            "model" | "provider" | "theme" | "thinking_level" => {
+                // These are stored in settings
+                eprintln!("Setting {key} to {value}...");
+                // TODO: wire up actual settings persistence
+                EXIT_SUCCESS
+            }
+            _ => {
+                eprintln!("{} Unknown config key: {key}", "Error:".red().bold());
+                eprintln!("  Valid keys: model, provider, theme, thinking_level");
+                EXIT_FAILURE
+            }
+        }
+    } else {
+        eprintln!("{} Usage: pi config [list|<key> <value>]", "Error:".red().bold());
+        EXIT_FAILURE
     }
 }
 

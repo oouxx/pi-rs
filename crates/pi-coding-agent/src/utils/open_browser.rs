@@ -23,9 +23,6 @@ pub fn open_browser(target: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_open_browser_does_not_panic() {
-        // open_browser 会静默错误，所以测试主要是确认不 panic
-        open_browser("https://example.com");
-    }
+    // No tests — open_browser is a best-effort function that spawns
+    // a system process; testing it would open actual browser windows.
 }

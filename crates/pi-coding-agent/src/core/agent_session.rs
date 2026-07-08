@@ -55,7 +55,7 @@ pub struct PromptOptions {
 
 /// Session statistics for /session command.
 /// Matches the original TypeScript SessionStats interface.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SessionStats {
     pub session_file: Option<String>,
     pub session_id: String,
@@ -66,10 +66,11 @@ pub struct SessionStats {
     pub total_messages: usize,
     pub tokens: TokenUsage,
     pub cost: f64,
+    #[serde(skip)]
     pub context_usage: Option<ContextUsage>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,

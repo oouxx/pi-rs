@@ -25,6 +25,24 @@ pub enum RpcCommand {
         streaming_behavior: Option<String>,
     },
 
+    /// Queue a steering message (interrupts current stream)
+    Steer {
+        #[serde(default)]
+        id: Option<String>,
+        message: String,
+        #[serde(default)]
+        images: Option<Vec<ImageRef>>,
+    },
+
+    /// Queue a follow-up message (waits for current stream)
+    FollowUp {
+        #[serde(default)]
+        id: Option<String>,
+        message: String,
+        #[serde(default)]
+        images: Option<Vec<ImageRef>>,
+    },
+
     /// Abort current agent operation
     Abort {
         #[serde(default)]
@@ -88,6 +106,26 @@ pub enum RpcCommand {
         level: String,
     },
 
+    /// Cycle thinking level
+    CycleThinkingLevel {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
+    /// Set steering queue mode
+    SetSteeringMode {
+        #[serde(default)]
+        id: Option<String>,
+        mode: String,
+    },
+
+    /// Set follow-up queue mode
+    SetFollowUpMode {
+        #[serde(default)]
+        id: Option<String>,
+        mode: String,
+    },
+
     /// Get all messages
     GetMessages {
         #[serde(default)]
@@ -128,6 +166,63 @@ pub enum RpcCommand {
         id: Option<String>,
         #[serde(default)]
         custom_instructions: Option<String>,
+    },
+
+    /// Set auto retry
+    SetAutoRetry {
+        #[serde(default)]
+        id: Option<String>,
+        enabled: bool,
+    },
+
+    /// Abort retry
+    AbortRetry {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
+    /// Get session statistics
+    GetSessionStats {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
+    /// Switch to another session file
+    SwitchSession {
+        #[serde(default)]
+        id: Option<String>,
+        session_path: String,
+    },
+
+    /// Fork the session at an entry
+    Fork {
+        #[serde(default)]
+        id: Option<String>,
+        entry_id: String,
+    },
+
+    /// Clone the session (fork at current leaf)
+    Clone {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
+    /// Get messages for forking
+    GetForkMessages {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
+    /// Get last assistant text
+    GetLastAssistantText {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
+    /// Get available commands (slash commands, skills, prompt templates)
+    GetCommands {
+        #[serde(default)]
+        id: Option<String>,
     },
 
     /// Graceful shutdown

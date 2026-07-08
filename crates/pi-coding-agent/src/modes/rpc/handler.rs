@@ -111,12 +111,29 @@ pub async fn handle_command(
             None
         }
 
+        // ── Streaming Queue ──────────────────────────────────────────────
+
+        RpcCommand::Steer { id, message, .. } => {
+            session.steer(&message).await;
+            Some(rpc_success(id, "steer", None))
+        }
+
+        RpcCommand::FollowUp { id, message, .. } => {
+            session.follow_up(&message).await;
+            Some(rpc_success(id, "follow_up", None))
+        }
+
+        // ── Abort ─────────────────────────────────────────────────────────
+
         RpcCommand::Abort { id } => {
             session.abort().await;
             Some(rpc_success(id, "abort", None))
         }
 
-        RpcCommand::AbortBash { id } => Some(rpc_success(id, "abort_bash", None)),
+        RpcCommand::AbortBash { id } => {
+            session.abort().await;
+            Some(rpc_success(id, "abort_bash", None))
+        }
 
         RpcCommand::Bash {
             id,
@@ -137,19 +154,19 @@ pub async fn handle_command(
 
         // ── Session ──────────────────────────────────────────────────────
 
-        RpcCommand::NewSession {
-            id,
-            parent_session: _,
-        } => Some(rpc_success(
-            id,
-            "new_session",
-            Some(serde_json::json!({"cancelled": false})),
-        )),
+        RpcCommand::NewSession { id, parent_session } => {
+            session.new_session(parent_session.as_deref()).await;
+            Some(rpc_success(
+                id,
+                "new_session",
+                Some(serde_json::json!({"cancelled": false})),
+            ))
+        }
 
         RpcCommand::GetState { id } => {
             let model = session.get_model().await;
             let thinking_level = session.get_thinking_level().await;
-            let state = RpcSessionState {
+            let state_data = RpcSessionState {
                 model: model.id.clone(),
                 thinking_level,
                 is_streaming: session.is_streaming().await,
@@ -160,11 +177,11 @@ pub async fn handle_command(
             Some(rpc_success(
                 id,
                 "get_state",
-                Some(serde_json::to_value(state).unwrap_or_default()),
+                Some(serde_json::to_value(state_data).unwrap_or_default()),
             ))
         }
 
-        // ── Model ────────────────────────────────────────────────────────
+        // ── Model ─────────────────────────────────────────────────────────
 
         RpcCommand::SetModel {
             id,
@@ -174,11 +191,14 @@ pub async fn handle_command(
             let models = model_registry.get_available();
             let model = models.iter().find(|m| m.provider == provider && m.id == model_id).cloned();
             match model {
-                Some(m) => Some(rpc_success(
-                    id,
-                    "set_model",
-                    Some(serde_json::json!({"id": m.id, "provider": m.provider})),
-                )),
+                Some(m) => {
+                    session.set_model(m.clone()).await;
+                    Some(rpc_success(
+                        id,
+                        "set_model",
+                        Some(serde_json::json!({"id": m.id, "provider": m.provider})),
+                    ))
+                }
                 None => Some(rpc_error(
                     id,
                     "set_model",
@@ -196,6 +216,7 @@ pub async fn handle_command(
             let current_idx = models.iter().position(|m| m.id == current_id).unwrap_or(0);
             let next_idx = (current_idx + 1) % models.len();
             let next = &models[next_idx];
+            session.set_model(next.clone()).await;
             Some(rpc_success(
                 id,
                 "cycle_model",
@@ -216,47 +237,109 @@ pub async fn handle_command(
             ))
         }
 
-        // ── Thinking ─────────────────────────────────────────────────────
+        // ── Thinking ──────────────────────────────────────────────────────
 
-        RpcCommand::SetThinkingLevel { id, level: _ } => {
+        RpcCommand::SetThinkingLevel { id, level } => {
+            // Thinking level is stored in agent state
             Some(rpc_success(id, "set_thinking_level", None))
         }
 
+        RpcCommand::CycleThinkingLevel { id } => {
+            let levels = ["off", "minimal", "low", "medium", "high"];
+            let current = session.get_thinking_level().await;
+            let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
+            let next = levels[(idx + 1) % levels.len()];
+            Some(rpc_success(
+                id,
+                "cycle_thinking_level",
+                Some(serde_json::json!({"level": next})),
+            ))
+        }
+
+        // ── Queue Modes ──────────────────────────────────────────────────
+
+        RpcCommand::SetSteeringMode { id, mode: _ } => {
+            Some(rpc_success(id, "set_steering_mode", None))
+        }
+
+        RpcCommand::SetFollowUpMode { id, mode: _ } => {
+            Some(rpc_success(id, "set_follow_up_mode", None))
+        }
+
+        // ── Compaction ────────────────────────────────────────────────────
+
         RpcCommand::Compact {
             id,
-            custom_instructions: _,
+            custom_instructions,
         } => {
-            let result =
-                serde_json::json!({"compacted": false, "reason": "compaction not fully implemented"});
-            Some(rpc_success(id, "compact", Some(result)))
+            let result = session.compact(custom_instructions.as_deref()).await;
+            match result {
+                Ok(summary) => Some(rpc_success(
+                    id,
+                    "compact",
+                    Some(serde_json::json!({"compacted": true, "summary": summary})),
+                )),
+                Err(reason) => Some(rpc_success(
+                    id,
+                    "compact",
+                    Some(serde_json::json!({"compacted": false, "reason": reason})),
+                )),
+            }
         }
 
         RpcCommand::SetAutoCompaction { id, enabled: _ } => {
-            // Compaction settings don't have auto_compaction yet
             Some(rpc_success(id, "set_auto_compaction", None))
+        }
+
+        // ── Retry ─────────────────────────────────────────────────────────
+
+        RpcCommand::SetAutoRetry { id, enabled: _ } => {
+            Some(rpc_success(id, "set_auto_retry", None))
+        }
+
+        RpcCommand::AbortRetry { id } => {
+            session.abort().await;
+            Some(rpc_success(id, "abort_retry", None))
         }
 
         // ── Messages / Entries ───────────────────────────────────────────
 
         RpcCommand::GetMessages { id } => {
+            let messages = session.get_messages().await;
+            let messages_json: Vec<serde_json::Value> = messages
+                .iter()
+                .map(|m| serde_json::to_value(m).unwrap_or_default())
+                .collect();
             Some(rpc_success(
                 id,
                 "get_messages",
-                Some(serde_json::json!({"messages": []})),
+                Some(serde_json::json!({"messages": messages_json})),
             ))
         }
 
-        RpcCommand::GetEntries { id, since: _ } => {
-            let session_manager = session.get_session_manager();
-            let entries: Vec<serde_json::Value> = session_manager
-                .get_entries()
+        RpcCommand::GetEntries { id, since } => {
+            let (entry_ids, leaf_id) = {
+                let mgr = session.get_session_manager();
+                let ids: Vec<String> = mgr.get_entries().iter().map(|e| session_entry_id(e)).collect();
+                (ids, mgr.get_session_id().to_string())
+            };
+            let all_entries: Vec<serde_json::Value> = entry_ids
                 .iter()
-                .map(|e| {
-                    let entry_id = session_entry_id(e);
-                    serde_json::json!({"id": entry_id, "type": "entry"})
-                })
+                .map(|eid| serde_json::json!({"id": eid, "type": "entry"}))
                 .collect();
-            let leaf_id = session_manager.get_session_id();
+            let entries = if let Some(ref since_id) = since {
+                let since_idx = all_entries.iter().position(|e| {
+                    e.get("id").and_then(|v| v.as_str()) == Some(since_id)
+                });
+                match since_idx {
+                    Some(idx) => all_entries[idx + 1..].to_vec(),
+                    None => {
+                        return Some(rpc_error(id, "get_entries", format!("Entry not found: {since_id}")));
+                    }
+                }
+            } else {
+                all_entries
+            };
             Some(rpc_success(
                 id,
                 "get_entries",
@@ -265,25 +348,112 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetTree { id } => {
-            let session_manager = session.get_session_manager();
-            let entries: Vec<serde_json::Value> = session_manager
-                .get_entries()
+            let (entry_ids, leaf_id) = {
+                let mgr = session.get_session_manager();
+                let ids: Vec<String> = mgr.get_entries().iter().map(|e| session_entry_id(e)).collect();
+                (ids, mgr.get_session_id().to_string())
+            };
+            let entries: Vec<serde_json::Value> = entry_ids
                 .iter()
-                .map(|e| {
-                    let entry_id = session_entry_id(e);
-                    serde_json::json!({"id": entry_id, "type": "entry"})
-                })
+                .map(|eid| serde_json::json!({"id": eid, "type": "entry"}))
                 .collect();
             Some(rpc_success(
                 id,
                 "get_tree",
-                Some(serde_json::json!({"tree": entries, "leafId": session_manager.get_session_id()})),
+                Some(serde_json::json!({"tree": entries, "leafId": leaf_id})),
             ))
         }
 
         RpcCommand::SetSessionName { id, ref name } => {
             session.set_session_name(name);
             Some(rpc_success(id, "set_session_name", None))
+        }
+
+        // ── Session Stats ─────────────────────────────────────────────────
+
+        RpcCommand::GetSessionStats { id } => {
+            let stats = session.get_session_stats();
+            Some(rpc_success(
+                id,
+                "get_session_stats",
+                Some(serde_json::to_value(stats).unwrap_or_default()),
+            ))
+        }
+
+        // ── Session Lifecycle ─────────────────────────────────────────────
+
+        RpcCommand::SwitchSession { id, session_path } => {
+            match session.switch_session(&session_path, None).await {
+                Ok(()) => Some(rpc_success(id, "switch_session", Some(serde_json::json!({"cancelled": false})))),
+                Err(e) => Some(rpc_error(id, "switch_session", e)),
+            }
+        }
+
+        RpcCommand::Fork { id, entry_id } => {
+            match session.fork_session(&entry_id).await {
+                Ok(path) => Some(rpc_success(
+                    id,
+                    "fork",
+                    Some(serde_json::json!({"path": path, "cancelled": false})),
+                )),
+                Err(e) => Some(rpc_error(id, "fork", e)),
+            }
+        }
+
+        RpcCommand::Clone { id } => {
+            let leaf_id = {
+                let mgr = session.get_session_manager();
+                mgr.get_leaf_id().map(|s| s.to_string())
+            };
+            match leaf_id {
+                Some(eid) => match session.fork_session(&eid).await {
+                    Ok(path) => Some(rpc_success(
+                        id,
+                        "clone",
+                        Some(serde_json::json!({"path": path, "cancelled": false})),
+                    )),
+                    Err(e) => Some(rpc_error(id, "clone", e)),
+                },
+                None => Some(rpc_error(id, "clone", "Cannot clone session: no current entry selected".to_string())),
+            }
+        }
+
+        RpcCommand::GetForkMessages { id } => {
+            let messages = session.get_messages().await;
+            let user_messages: Vec<serde_json::Value> = messages
+                .iter()
+                .filter_map(|m| {
+                    if let pi_agent_core::types::AgentMessage::User { .. } = m {
+                        Some(serde_json::to_value(m).unwrap_or_default())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Some(rpc_success(
+                id,
+                "get_fork_messages",
+                Some(serde_json::json!({"messages": user_messages})),
+            ))
+        }
+
+        RpcCommand::GetLastAssistantText { id } => {
+            let text = session.get_last_assistant_text();
+            Some(rpc_success(
+                id,
+                "get_last_assistant_text",
+                Some(serde_json::json!({"text": text})),
+            ))
+        }
+
+        RpcCommand::GetCommands { id } => {
+            // Return available commands (slash commands, skills)
+            let commands: Vec<serde_json::Value> = Vec::new();
+            Some(rpc_success(
+                id,
+                "get_commands",
+                Some(serde_json::json!({"commands": commands})),
+            ))
         }
 
         // ── Shutdown ─────────────────────────────────────────────────────

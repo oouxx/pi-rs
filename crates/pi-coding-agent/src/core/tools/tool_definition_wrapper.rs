@@ -17,8 +17,8 @@ where
         .unwrap_or(serde_json::Value::Null);
     let exec_mode = definition
         .execution_mode
-        .clone()
-        .and_then(|m| match m.as_str() {
+        .as_deref()
+        .and_then(|m| match m {
             "sequential" => Some(pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential),
             _ => None,
         });
@@ -26,7 +26,7 @@ where
     AgentTool {
         name: definition.name,
         description: definition.description,
-        label: String::new(),
+        label: definition.label.unwrap_or_default(),
         parameters_schema: params,
         execution_mode: exec_mode,
         prepare_arguments: None,
@@ -57,9 +57,12 @@ pub fn create_tool_definition_from_agent_tool(
 ) -> ToolDefinition {
     ToolDefinition {
         name: tool.name.clone(),
+        label: Some(tool.label.clone()),
         description: tool.description.clone(),
-        parameters: Some(tool.parameters_schema.clone()),
+        prompt_snippet: None,
         prompt_guidelines: None,
+        parameters: Some(tool.parameters_schema.clone()),
+        render_shell: None,
         execution_mode: tool.execution_mode.map(|m| match m {
             pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential => "sequential".into(),
             pi_agent_core::pi_ai_types::ToolExecutionMode::Parallel => "parallel".into(),
@@ -75,20 +78,24 @@ mod tests {
     fn test_wrap_tool_definition() {
         let def = ToolDefinition {
             name: "test_tool".into(),
+            label: Some("Test Tool".into()),
             description: "A test tool".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
                     "input": {"type": "string"}
                 }
             })),
-            prompt_guidelines: None,
+            render_shell: None,
             execution_mode: None,
         };
 
         let tool = wrap_tool_definition::<()>(def);
         assert_eq!(tool.name, "test_tool");
         assert_eq!(tool.description, "A test tool");
+        assert_eq!(tool.label, "Test Tool");
     }
 
     #[test]
@@ -96,16 +103,22 @@ mod tests {
         let defs = vec![
             ToolDefinition {
                 name: "tool1".into(),
+                label: None,
                 description: "First tool".into(),
-                parameters: None,
+                prompt_snippet: None,
                 prompt_guidelines: None,
+                parameters: None,
+                render_shell: None,
                 execution_mode: None,
             },
             ToolDefinition {
                 name: "tool2".into(),
+                label: None,
                 description: "Second tool".into(),
-                parameters: None,
+                prompt_snippet: None,
                 prompt_guidelines: None,
+                parameters: None,
+                render_shell: None,
                 execution_mode: None,
             },
         ];
@@ -122,7 +135,7 @@ mod tests {
         let tool = AgentTool {
             name: "my_tool".into(),
             description: "My custom tool".into(),
-            label: String::new(),
+            label: "My Tool".into(),
             parameters_schema: serde_json::json!({"type": "object"}),
             execution_mode: None,
             prepare_arguments: None,
@@ -134,6 +147,7 @@ mod tests {
         let def = create_tool_definition_from_agent_tool(&tool);
         assert_eq!(def.name, "my_tool");
         assert_eq!(def.description, "My custom tool");
+        assert_eq!(def.label, Some("My Tool".into()));
         assert!(def.parameters.is_some());
     }
 
@@ -141,9 +155,12 @@ mod tests {
     fn test_wrap_definition_without_params() {
         let def = ToolDefinition {
             name: "simple_tool".into(),
+            label: None,
             description: "A tool with no params".into(),
-            parameters: None,
+            prompt_snippet: None,
             prompt_guidelines: None,
+            parameters: None,
+            render_shell: None,
             execution_mode: None,
         };
 

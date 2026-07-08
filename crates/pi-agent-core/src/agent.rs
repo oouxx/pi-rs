@@ -8,9 +8,28 @@ use crate::pi_ai_types::{
 };
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
-    BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, QueueMode,
-    ShouldStopAfterTurnFn, StreamFn, TransformContextFn,
+    BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, PrepareNextTurnOptionsFn,
+    QueueMode, ShouldStopAfterTurnFn, StreamFn, TransformContextFn,
 };
+
+/// Input to `Agent::prompt()`. Matches TS `Agent.prompt()` overloads.
+pub enum PromptInput<'a> {
+    /// A batch of messages.
+    Messages(Vec<AgentMessage>),
+    /// A single text string.
+    Text(&'a str),
+    /// A text string with images.
+    TextWithImages {
+        text: &'a str,
+        images: Vec<ImageContentRef<'a>>,
+    },
+}
+
+/// Reference to image content for prompt input.
+pub struct ImageContentRef<'a> {
+    pub data: &'a str,
+    pub mime_type: &'a str,
+}
 
 struct PendingMessageQueue {
     messages: Vec<AgentMessage>,
@@ -70,7 +89,10 @@ pub struct AgentOptions {
     pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
-    pub prepare_next_turn: Option<PrepareNextTurnFn>,
+    /// Takes an optional abort signal (no turn context). Matches TS `AgentOptions.prepareNextTurn`.
+    pub prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
+    /// Takes the full turn context. Matches TS `AgentOptions.prepareNextTurnWithContext`.
+    pub prepare_next_turn_with_context: Option<PrepareNextTurnFn>,
     pub steering_mode: Option<QueueMode>,
     pub follow_up_mode: Option<QueueMode>,
     pub session_id: Option<String>,
@@ -94,6 +116,7 @@ impl Default for AgentOptions {
             before_tool_call: None,
             after_tool_call: None,
             prepare_next_turn: None,
+            prepare_next_turn_with_context: None,
             steering_mode: None,
             follow_up_mode: None,
             session_id: None,
@@ -154,7 +177,8 @@ pub struct Agent {
     on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
     before_tool_call: Option<BeforeToolCallFn>,
     after_tool_call: Option<AfterToolCallFn>,
-    prepare_next_turn: Option<PrepareNextTurnFn>,
+    prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
+    prepare_next_turn_with_context: Option<PrepareNextTurnFn>,
     should_stop_after_turn: Option<ShouldStopAfterTurnFn>,
     steering_queue: Arc<Mutex<PendingMessageQueue>>,
     follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
@@ -257,6 +281,7 @@ impl Agent {
             before_tool_call: options.before_tool_call,
             after_tool_call: options.after_tool_call,
             prepare_next_turn: options.prepare_next_turn,
+            prepare_next_turn_with_context: options.prepare_next_turn_with_context,
             should_stop_after_turn: None,
             steering_queue: Arc::new(Mutex::new(PendingMessageQueue::new(
                 options.steering_mode.unwrap_or(QueueMode::OneAtATime),
@@ -354,6 +379,15 @@ impl Agent {
             .map(|r| r.cancel.clone())
     }
 
+    /// Active abort signal for the current run, if any.
+    /// Matches TS `get signal(): AbortSignal | undefined`.
+    pub fn signal(&self) -> Option<tokio_util::sync::CancellationToken> {
+        self.active_run
+            .try_lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|r| r.cancel.clone()))
+    }
+
     /// Wait until the agent is no longer streaming (idle).
     /// Uses an event-driven `Notify` — no polling.
     pub async fn wait_for_idle(&self) {
@@ -383,9 +417,20 @@ impl Agent {
         state.error_message = None;
     }
 
+    /// Process messages through the agent loop.
+    /// Deprecated: use `prompt()` instead.
     pub async fn process(
         &self,
         messages: Vec<AgentMessage>,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        self.prompt(PromptInput::Messages(messages)).await
+    }
+
+    /// Start a new prompt from text, a single message, or a batch of messages.
+    /// Matches TS `Agent.prompt()` with overloads.
+    pub async fn prompt(
+        &self,
+        input: PromptInput<'_>,
     ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
         {
             let active = self.active_run.lock().await;
@@ -394,18 +439,12 @@ impl Agent {
             }
         }
 
-        {
-            let mut state = self.state.write().await;
-            state.is_streaming = true;
-            state.streaming_message = None;
-            state.error_message = None;
-        }
-
-        let result = self.run_with_lifecycle(messages, false).await;
-        self.finish_run().await;
-        result
+        let messages = self.normalize_prompt_input(input);
+        self.run_prompt_messages(messages, false).await
     }
 
+    /// Continue from the current transcript. The last message must be a user or tool-result message.
+    /// Matches TS `Agent.continue()`.
     pub async fn continue_run(
         &self,
     ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
@@ -437,7 +476,7 @@ impl Agent {
                 // Try steering first
                 let steering_msgs = self.steering_queue.lock().await.drain();
                 if !steering_msgs.is_empty() {
-                    let result = self.run_with_lifecycle(steering_msgs, true).await;
+                    let result = self.run_prompt_messages(steering_msgs, true).await;
                     self.finish_run().await;
                     return result;
                 }
@@ -445,7 +484,7 @@ impl Agent {
                 // Try follow-up next
                 let follow_up_msgs = self.follow_up_queue.lock().await.drain();
                 if !follow_up_msgs.is_empty() {
-                    let result = self.run_with_lifecycle(follow_up_msgs, false).await;
+                    let result = self.run_prompt_messages(follow_up_msgs, false).await;
                     self.finish_run().await;
                     return result;
                 }
@@ -464,9 +503,160 @@ impl Agent {
             state.error_message = None;
         }
 
+        let result = self.run_continuation().await;
+        self.finish_run().await;
+        result
+    }
+
+    /// Normalize prompt input to a Vec<AgentMessage>.
+    /// Matches TS `normalizePromptInput()`.
+    fn normalize_prompt_input(&self, input: PromptInput<'_>) -> Vec<AgentMessage> {
+        match input {
+            PromptInput::Messages(msgs) => msgs,
+            PromptInput::Text(text) => {
+                vec![AgentMessage::User {
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                        text_signature: None,
+                    }],
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                }]
+            }
+            PromptInput::TextWithImages { text, images } => {
+                let mut content: Vec<ContentBlock> = vec![ContentBlock::Text {
+                    text: text.to_string(),
+                    text_signature: None,
+                }];
+                for img in images {
+                    content.push(ContentBlock::Image {
+                        data: img.data.to_string(),
+                        mime_type: img.mime_type.to_string(),
+                    });
+                }
+                vec![AgentMessage::User {
+                    content,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                }]
+            }
+        }
+    }
+
+    /// Run prompt messages through the agent loop.
+    /// Matches TS `runPromptMessages()`.
+    async fn run_prompt_messages(
+        &self,
+        messages: Vec<AgentMessage>,
+        skip_initial_steering_poll: bool,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = true;
+            state.streaming_message = None;
+            state.error_message = None;
+        }
+
+        let result = self.run_with_lifecycle(messages, skip_initial_steering_poll).await;
+        self.finish_run().await;
+        result
+    }
+
+    /// Run a continuation (retry) from the current context.
+    /// Matches TS `runContinuation()`.
+    async fn run_continuation(
+        &self,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = true;
+            state.streaming_message = None;
+            state.error_message = None;
+        }
+
         let result = self.run_with_lifecycle_continue().await;
         self.finish_run().await;
         result
+    }
+
+    /// Create the agent loop config from current state.
+    /// Matches TS `createLoopConfig()`.
+    fn create_loop_config(
+        &self,
+        cancel_rx: watch::Receiver<bool>,
+        skip_initial_steering_poll: bool,
+    ) -> (crate::agent_loop::AgentLoopConfig, Option<watch::Receiver<bool>>) {
+        let steering_queue = self.steering_queue.clone();
+        let follow_up_queue = self.follow_up_queue.clone();
+        let skip_steering = Arc::new(tokio::sync::Mutex::new(skip_initial_steering_poll));
+
+        let config = crate::agent_loop::AgentLoopConfig {
+            model: self.state.blocking_read().model.clone(),
+            reasoning: {
+                let tl = self.state.blocking_read().thinking_level.clone();
+                if tl == "off" { None } else { Some(tl) }
+            },
+            api_key: None,
+            session_id: self.session_id.clone(),
+            thinking_budgets: self.thinking_budgets.clone(),
+            transport: Some(self.transport.clone()),
+            max_retry_delay_ms: self.max_retry_delay_ms,
+            tool_execution: self.tool_execution,
+            convert_to_llm: self.convert_to_llm.clone(),
+            transform_context: self.transform_context.clone(),
+            get_api_key: self.get_api_key.clone(),
+            get_steering_messages: Some(Arc::new({
+                let skip = skip_steering.clone();
+                let q = steering_queue.clone();
+                move || {
+                    let skip = skip.clone();
+                    let q = q.clone();
+                    Box::pin(async move {
+                        let mut guard = skip.lock().await;
+                        if *guard {
+                            *guard = false;
+                            return Vec::new();
+                        }
+                        drop(guard);
+                        q.lock().await.drain()
+                    })
+                }
+            })),
+            get_follow_up_messages: Some(Arc::new(move || {
+                let q = follow_up_queue.clone();
+                Box::pin(async move { q.lock().await.drain() })
+            })),
+            should_stop_after_turn: self.should_stop_after_turn.clone(),
+            prepare_next_turn: {
+                let pnt = self.prepare_next_turn.clone();
+                let pntwc = self.prepare_next_turn_with_context.clone();
+                let cancel_rx_clone = cancel_rx.clone();
+                if pntwc.is_some() || pnt.is_some() {
+                    Some(Arc::new(move |ctx: crate::types::ShouldStopAfterTurnContext, sig: Option<tokio::sync::watch::Receiver<bool>>| {
+                        let pnt = pnt.clone();
+                        let pntwc = pntwc.clone();
+                        let sig = sig.or_else(|| Some(cancel_rx_clone.clone()));
+                        Box::pin(async move {
+                            if let Some(f) = pntwc {
+                                f(ctx, sig).await
+                            } else if let Some(f) = pnt {
+                                f(sig).await
+                            } else {
+                                None
+                            }
+                        })
+                    }))
+                } else {
+                    None
+                }
+            },
+            before_tool_call: self.before_tool_call.clone(),
+            after_tool_call: self.after_tool_call.clone(),
+            on_payload: self.on_payload.clone(),
+            on_response: self.on_response.clone(),
+            max_consecutive_tool_calls: self.max_consecutive_tool_calls,
+        };
+
+        let signal = Some(cancel_rx);
+        (config, signal)
     }
 
     async fn finish_run(&self) {
@@ -505,61 +695,10 @@ impl Agent {
             tools: Some(state.tools.clone()),
         };
         let model = state.model.clone();
-        let thinking_level = state.thinking_level.clone();
         drop(state);
 
         let emit = self.create_event_sink();
-        let steering_queue = self.steering_queue.clone();
-        let follow_up_queue = self.follow_up_queue.clone();
-        let skip_steering = Arc::new(tokio::sync::Mutex::new(skip_initial_steering_poll));
-
-        let config = crate::agent_loop::AgentLoopConfig {
-            model: model.clone(),
-            reasoning: if thinking_level == "off".to_string() {
-                None
-            } else {
-                Some(thinking_level)
-            },
-            api_key: None,
-            session_id: self.session_id.clone(),
-            thinking_budgets: self.thinking_budgets.clone(),
-            transport: Some(self.transport.clone()),
-            max_retry_delay_ms: self.max_retry_delay_ms,
-            tool_execution: self.tool_execution,
-            convert_to_llm: self.convert_to_llm.clone(),
-            transform_context: self.transform_context.clone(),
-            get_api_key: self.get_api_key.clone(),
-            get_steering_messages: Some(Arc::new({
-                let skip = skip_steering.clone();
-                let q = steering_queue.clone();
-                move || {
-                    let skip = skip.clone();
-                    let q = q.clone();
-                    Box::pin(async move {
-                        let mut guard = skip.lock().await;
-                        if *guard {
-                            *guard = false;
-                            return Vec::new();
-                        }
-                        drop(guard);
-                        q.lock().await.drain()
-                    })
-                }
-            })),
-            get_follow_up_messages: Some(Arc::new(move || {
-                let q = follow_up_queue.clone();
-                Box::pin(async move { q.lock().await.drain() })
-            })),
-            should_stop_after_turn: self.should_stop_after_turn.clone(),
-            prepare_next_turn: self.prepare_next_turn.clone(),
-            before_tool_call: self.before_tool_call.clone(),
-            after_tool_call: self.after_tool_call.clone(),
-            on_payload: self.on_payload.clone(),
-            on_response: self.on_response.clone(),
-            max_consecutive_tool_calls: self.max_consecutive_tool_calls,
-        };
-
-        let signal = Some(cancel_rx);
+        let (config, signal) = self.create_loop_config(cancel_rx, skip_initial_steering_poll);
 
         let loop_result = crate::agent_loop::run_agent_loop(
             prompts,
@@ -578,41 +717,8 @@ impl Agent {
         match loop_result {
             Ok(messages) => Ok(messages),
             Err(e) => {
-                let failure_message = AgentMessage::Assistant {
-                    content: vec![ContentBlock::Text {
-                        text: String::new(),
-                        text_signature: None,
-                    }],
-                    api: model.api.clone(),
-                    provider: model.provider.clone(),
-                    model: model.id.clone(),
-                    usage: Usage::default(),
-                    stop_reason: Some(if was_aborted {
-                        StopReason::Aborted
-                    } else {
-                        StopReason::Error
-                    }),
-                    error_message: Some(e.to_string()),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                };
-                emit(AgentEvent::MessageStart {
-                    message: failure_message.clone(),
-                })
-                .await;
-                emit(AgentEvent::MessageEnd {
-                    message: failure_message.clone(),
-                })
-                .await;
-                emit(AgentEvent::TurnEnd {
-                    message: failure_message.clone(),
-                    tool_results: Vec::new(),
-                })
-                .await;
-                emit(AgentEvent::AgentEnd {
-                    messages: vec![failure_message.clone()],
-                })
-                .await;
-                Ok(vec![failure_message])
+                self.handle_run_failure(e, was_aborted, &model, &emit).await;
+                Ok(vec![]) // handle_run_failure emits the failure message
             }
         }
     }
@@ -640,48 +746,11 @@ impl Agent {
             messages: state.messages.clone(),
             tools: Some(state.tools.clone()),
         };
-        let model = state.model.clone();
-        let thinking_level = state.thinking_level.clone();
+        let _model = state.model.clone();
         drop(state);
 
         let emit = self.create_event_sink();
-        let steering_queue = self.steering_queue.clone();
-        let follow_up_queue = self.follow_up_queue.clone();
-
-        let config = crate::agent_loop::AgentLoopConfig {
-            model,
-            reasoning: if thinking_level == "off".to_string() {
-                None
-            } else {
-                Some(thinking_level)
-            },
-            api_key: None,
-            session_id: self.session_id.clone(),
-            thinking_budgets: self.thinking_budgets.clone(),
-            transport: Some(self.transport.clone()),
-            max_retry_delay_ms: self.max_retry_delay_ms,
-            tool_execution: self.tool_execution,
-            convert_to_llm: self.convert_to_llm.clone(),
-            transform_context: self.transform_context.clone(),
-            get_api_key: self.get_api_key.clone(),
-            get_steering_messages: Some(Arc::new(move || {
-                let q = steering_queue.clone();
-                Box::pin(async move { q.lock().await.drain() })
-            })),
-            get_follow_up_messages: Some(Arc::new(move || {
-                let q = follow_up_queue.clone();
-                Box::pin(async move { q.lock().await.drain() })
-            })),
-            should_stop_after_turn: self.should_stop_after_turn.clone(),
-            prepare_next_turn: self.prepare_next_turn.clone(),
-            before_tool_call: self.before_tool_call.clone(),
-            after_tool_call: self.after_tool_call.clone(),
-            on_payload: self.on_payload.clone(),
-            on_response: self.on_response.clone(),
-            max_consecutive_tool_calls: self.max_consecutive_tool_calls,
-        };
-
-        let signal = Some(cancel_rx);
+        let (config, signal) = self.create_loop_config(cancel_rx, false);
 
         let result = crate::agent_loop::run_agent_loop_continue(
             context,
@@ -697,6 +766,51 @@ impl Agent {
         result
     }
 
+    /// Handle a run failure by synthesizing a failure message and emitting lifecycle events.
+    /// Matches TS `handleRunFailure()`.
+    async fn handle_run_failure(
+        &self,
+        error: Box<dyn std::error::Error + Send + Sync>,
+        aborted: bool,
+        model: &Model,
+        emit: &AgentEventSink,
+    ) {
+        let failure_message = AgentMessage::Assistant {
+            content: vec![ContentBlock::Text {
+                text: String::new(),
+                text_signature: None,
+            }],
+            api: model.api.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            usage: Usage::default(),
+            stop_reason: Some(if aborted {
+                StopReason::Aborted
+            } else {
+                StopReason::Error
+            }),
+            error_message: Some(error.to_string()),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        };
+        emit(AgentEvent::MessageStart {
+            message: failure_message.clone(),
+        })
+        .await;
+        emit(AgentEvent::MessageEnd {
+            message: failure_message.clone(),
+        })
+        .await;
+        emit(AgentEvent::TurnEnd {
+            message: failure_message.clone(),
+            tool_results: Vec::new(),
+        })
+        .await;
+        emit(AgentEvent::AgentEnd {
+            messages: vec![failure_message],
+        })
+        .await;
+    }
+
     fn create_event_sink(&self) -> AgentEventSink {
         let listeners = self.listeners.clone();
         let state = self.state.clone();
@@ -707,35 +821,26 @@ impl Agent {
             let state = state.clone();
             let idle_notify = idle_notify.clone();
             Box::pin(async move {
+                // Reduce internal state (matches TS processEvents)
                 {
-                    let state_read = state.read().await;
+                    let mut s = state.write().await;
                     match &event {
                         AgentEvent::MessageStart { message } => {
                             if matches!(message, AgentMessage::Assistant { .. }) {
-                                drop(state_read);
-                                let mut s = state.write().await;
                                 s.streaming_message = Some(message.clone());
                             }
                         }
                         AgentEvent::MessageUpdate { message, .. } => {
-                            drop(state_read);
-                            let mut s = state.write().await;
                             s.streaming_message = Some(message.clone());
                         }
                         AgentEvent::MessageEnd { message } => {
-                            drop(state_read);
-                            let mut s = state.write().await;
                             s.streaming_message = None;
                             s.messages.push(message.clone());
                         }
                         AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
-                            drop(state_read);
-                            let mut s = state.write().await;
                             s.pending_tool_calls.insert(tool_call_id.clone());
                         }
                         AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
-                            drop(state_read);
-                            let mut s = state.write().await;
                             s.pending_tool_calls.remove(tool_call_id);
                         }
                         AgentEvent::TurnEnd { message, .. } => {
@@ -744,23 +849,21 @@ impl Agent {
                                 ..
                             } = message
                             {
-                                drop(state_read);
-                                let mut s = state.write().await;
                                 s.error_message = Some(err.clone());
                             }
                         }
                         AgentEvent::AgentEnd { .. } => {
-                            drop(state_read);
-                            let mut s = state.write().await;
                             s.is_streaming = false;
                             s.streaming_message = None;
                             drop(s);
                             idle_notify.notify_waiters();
+                            return;
                         }
                         _ => {}
                     }
                 }
 
+                // Await all listeners (matches TS listener loop)
                 let listeners = listeners.read().await;
                 for listener in listeners.iter() {
                     listener(event.clone(), None).await;

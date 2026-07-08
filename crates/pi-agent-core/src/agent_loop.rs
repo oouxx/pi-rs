@@ -233,22 +233,19 @@ async fn finalize_executed_tool_call(
             is_error,
             context: current_context.clone(),
         };
-        match after_fn(ctx, signal.clone()).await {
-            Some(after_result) => {
-                if let Some(content) = after_result.content {
-                    result.content = content;
-                }
-                if let Some(details) = after_result.details {
-                    result.details = details;
-                }
-                if let Some(err) = after_result.is_error {
-                    is_error = err;
-                }
-                if let Some(terminate) = after_result.terminate {
-                    result.terminate = Some(terminate);
-                }
+        if let Some(after_result) = after_fn(ctx, signal.clone()).await {
+            if let Some(content) = after_result.content {
+                result.content = content;
             }
-            None => {}
+            if let Some(details) = after_result.details {
+                result.details = details;
+            }
+            if let Some(err) = after_result.is_error {
+                is_error = err;
+            }
+            if let Some(terminate) = after_result.terminate {
+                result.terminate = Some(terminate);
+            }
         }
     }
 
@@ -260,10 +257,18 @@ async fn finalize_executed_tool_call(
 }
 
 fn create_tool_result_message(finalized: &FinalizedToolCallOutcome) -> AgentMessage {
+    // Normalize null content to empty array, matching TS behavior:
+    // "Untyped tools (JS extensions) can return results without content; normalize
+    //  so the null never enters session history or provider payloads."
+    let content = if finalized.result.content.is_empty() {
+        Vec::new()
+    } else {
+        finalized.result.content.clone()
+    };
     AgentMessage::ToolResult {
         tool_call_id: finalized.tool_call.id.clone(),
         tool_name: finalized.tool_call.name.clone(),
-        content: finalized.result.content.clone(),
+        content,
         details: finalized.result.details.clone(),
         is_error: finalized.is_error,
         timestamp: chrono::Utc::now().timestamp_millis(),
@@ -479,6 +484,56 @@ async fn execute_tool_calls_parallel(
     ExecutedToolCallBatch {
         messages,
         terminate: should_terminate_tool_batch(&ordered_finalized),
+    }
+}
+
+/// Fail all tool calls from an assistant message that was truncated by the
+/// output token limit. Streamed tool-call arguments are finalized with a
+/// best-effort JSON salvage parser, so a truncated message can yield tool calls
+/// whose arguments parse and validate but are silently incomplete. None of them
+/// are safe to execute; report each as an error so the model can re-issue them.
+/// Matches TS `failToolCallsFromTruncatedMessage()`.
+async fn fail_tool_calls_from_truncated_message(
+    tool_calls: &[AgentToolCall],
+    emit: &AgentEventSink,
+) -> ExecutedToolCallBatch {
+    let mut messages: Vec<AgentMessage> = Vec::new();
+    for tool_call in tool_calls {
+        emit(AgentEvent::ToolExecutionStart {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            args: tool_call.arguments.clone(),
+        })
+        .await;
+        let finalized = FinalizedToolCallOutcome {
+            tool_call: tool_call.clone(),
+            result: create_error_tool_result(&format!(
+                "Tool call \"{}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.",
+                tool_call.name
+            )),
+            is_error: true,
+        };
+        emit(AgentEvent::ToolExecutionEnd {
+            tool_call_id: finalized.tool_call.id.clone(),
+            tool_name: finalized.tool_call.name.clone(),
+            result: serde_json::to_value(&finalized.result).unwrap_or_default(),
+            is_error: finalized.is_error,
+        })
+        .await;
+        let tool_result_message = create_tool_result_message(&finalized);
+        emit(AgentEvent::MessageStart {
+            message: tool_result_message.clone(),
+        })
+        .await;
+        emit(AgentEvent::MessageEnd {
+            message: tool_result_message.clone(),
+        })
+        .await;
+        messages.push(tool_result_message);
+    }
+    ExecutedToolCallBatch {
+        messages,
+        terminate: false,
     }
 }
 
@@ -992,18 +1047,25 @@ async fn run_loop(
                 consecutive_tool_call_rounds = 0;
             }
 
+            // When stopReason is "length", the output was cut off by the token limit.
+            // Every tool call in the message may carry truncated arguments — fail them
+            // all instead of executing potentially borked calls.
             let tool_results = if !tool_calls.is_empty() {
-                let batch = execute_tool_calls(
-                    current_context,
-                    &agent_msg,
-                    &tool_calls,
-                    initial_config.tool_execution,
-                    &initial_config.before_tool_call,
-                    &initial_config.after_tool_call,
-                    signal,
-                    emit,
-                )
-                .await;
+                let batch = if stop_reason == StopReason::Length {
+                    fail_tool_calls_from_truncated_message(&tool_calls, emit).await
+                } else {
+                    execute_tool_calls(
+                        current_context,
+                        &agent_msg,
+                        &tool_calls,
+                        initial_config.tool_execution,
+                        &initial_config.before_tool_call,
+                        &initial_config.after_tool_call,
+                        signal,
+                        emit,
+                    )
+                    .await
+                };
 
                 for msg in &batch.messages {
                     current_context.messages.push(msg.clone());
@@ -1042,7 +1104,7 @@ async fn run_loop(
             };
 
             if let Some(prepare_next_turn) = &initial_config.prepare_next_turn {
-                if let Some(update) = prepare_next_turn(next_turn_context.clone()).await {
+                if let Some(update) = prepare_next_turn(next_turn_context.clone(), signal.clone()).await {
                     if let Some(ctx) = update.context {
                         *current_context = ctx;
                     }

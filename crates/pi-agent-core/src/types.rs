@@ -421,10 +421,12 @@ pub type PrepareNextTurnOptionsFn = Arc<
         + Sync,
 >;
 
-/// Matches TS `AgentLoopConfig.prepareNextTurn` — receives the full turn context.
+/// Matches TS `AgentLoopConfig.prepareNextTurn` — receives the full turn context
+/// and an optional abort signal.
 pub type PrepareNextTurnFn = Arc<
     dyn Fn(
             ShouldStopAfterTurnContext,
+            Option<tokio::sync::watch::Receiver<bool>>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Option<AgentLoopTurnUpdate>> + Send>,
         > + Send

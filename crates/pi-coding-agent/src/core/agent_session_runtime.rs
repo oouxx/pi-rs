@@ -1,10 +1,11 @@
 use crate::core::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
 use crate::core::session_manager::SessionManager;
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Errors
-// ---------------------------------------------------------------------------
+// ============================================================================
 
+/// Thrown when /import references a JSONL file path that does not exist.
 #[derive(Debug)]
 pub struct SessionImportFileNotFoundError {
     pub file_path: String,
@@ -18,10 +19,14 @@ impl std::fmt::Display for SessionImportFileNotFoundError {
 
 impl std::error::Error for SessionImportFileNotFoundError {}
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Return type for runtime creation
-// ---------------------------------------------------------------------------
+// ============================================================================
 
+/// Result returned by runtime creation.
+///
+/// The caller gets the created session, its cwd-bound services, and all
+/// diagnostics collected during setup.
 pub struct CreateAgentSessionRuntimeResult {
     pub session: String,
     pub services: AgentSessionServices,
@@ -29,9 +34,15 @@ pub struct CreateAgentSessionRuntimeResult {
     pub model_fallback_message: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Runtime factory type
-// ---------------------------------------------------------------------------
+// ============================================================================
+
+pub struct CreateAgentSessionRuntimeParams {
+    pub cwd: String,
+    pub agent_dir: String,
+    pub session_manager: SessionManager,
+}
 
 pub type CreateAgentSessionRuntimeFactory = Box<
     dyn Fn(
@@ -42,16 +53,15 @@ pub type CreateAgentSessionRuntimeFactory = Box<
         + Sync,
 >;
 
-pub struct CreateAgentSessionRuntimeParams {
-    pub cwd: String,
-    pub agent_dir: String,
-    pub session_manager: SessionManager,
-}
-
-// ---------------------------------------------------------------------------
+// ============================================================================
 // AgentSessionRuntime
-// ---------------------------------------------------------------------------
+// ============================================================================
 
+/// Owns the current AgentSession plus its cwd-bound services.
+///
+/// Session replacement methods tear down the current runtime first, then create
+/// and apply the next runtime. If creation fails, the error is propagated to the
+/// caller. The caller is responsible for user-facing error handling.
 pub struct AgentSessionRuntime {
     session: String,
     services: AgentSessionServices,

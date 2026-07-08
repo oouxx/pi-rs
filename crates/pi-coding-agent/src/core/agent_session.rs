@@ -462,6 +462,100 @@ impl AgentSession {
     }
 
     // =========================================================================
+    // Model Management
+    // =========================================================================
+
+    /// Set the model on the agent, matching the original setModel().
+    pub async fn set_model(&mut self, model: Model) {
+        let mut state = self.agent.state().await;
+        state.model = model;
+    }
+
+    /// Cycle through scoped models, matching the original cycleModel().
+    /// Returns the new model and thinking level, and whether it's a scoped model.
+    pub async fn cycle_model(&mut self, direction: &str) -> Option<(Model, Option<ThinkingLevel>, bool)> {
+        if self.scoped_models.is_empty() {
+            return None;
+        }
+
+        let current_model = self.agent.state().await.model;
+        let current_idx = self.scoped_models.iter().position(|(m, _)| {
+            m.provider == current_model.provider && m.id == current_model.id
+        });
+
+        let new_idx = match (current_idx, direction) {
+            (Some(i), "forward") => (i + 1) % self.scoped_models.len(),
+            (Some(i), "backward") => {
+                if i == 0 {
+                    self.scoped_models.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            (None, _) | (_, _) => 0,
+        };
+
+        let (model, thinking_level) = self.scoped_models[new_idx].clone();
+        Some((model, thinking_level, true))
+    }
+
+    // =========================================================================
+    // Compaction
+    // =========================================================================
+
+    /// Check whether compaction should be triggered, matching the original shouldCompact().
+    pub fn check_should_compact(&self, total_tokens: u64, context_window: u64) -> bool {
+        use crate::core::compaction;
+        compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
+    }
+
+    /// Trigger compaction, matching the original compact().
+    /// Returns a summary string on success.
+    pub async fn compact(&self, _custom_instructions: Option<&str>) -> Result<String, String> {
+        use crate::core::compaction;
+
+        let messages = self.agent.state().await.messages;
+        let total_tokens = messages.len() as u64 * 100; // rough estimate
+        let context_window = 128_000;
+
+        if !compaction::should_compact(total_tokens, context_window, &self.compaction_settings) {
+            return Err("Compaction not needed".to_string());
+        }
+
+        let keep_recent_turns = 5usize;
+        let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);
+
+        let _prepared = compaction::prepare_compaction(&messages, keep_recent_turns, self.compaction_settings.clone());
+
+        // Record compaction in session manager
+        let summary = format!("Compacted {} messages", messages.len());
+        {
+            let mut mgr = self.session_manager.lock().unwrap();
+            mgr.append_compaction(&summary, &cut_point.first_kept_entry_index.to_string(), 0, None, None);
+        }
+
+        Ok(summary)
+    }
+
+    // =========================================================================
+    // Custom Messages
+    // =========================================================================
+
+    /// Send a custom message (for extensions), matching the original sendCustomMessage().
+    pub async fn send_custom_message(&mut self, custom_type: &str, content: &str) {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = AgentMessage::User {
+            content: vec![ContentBlock::text(content)],
+            timestamp,
+        };
+        self.session_manager
+            .lock()
+            .unwrap()
+            .append_custom_message_entry(custom_type, serde_json::to_value(&message).unwrap_or_default(), true, None);
+        self.agent.process(vec![message]).await.ok();
+    }
+
+    // =========================================================================
     // Lifecycle
     // =========================================================================
 

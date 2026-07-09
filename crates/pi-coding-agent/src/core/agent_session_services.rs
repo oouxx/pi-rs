@@ -74,8 +74,8 @@ pub struct CreateAgentSessionFromServicesOptions {
 
 fn default_agent_dir() -> String {
     dirs::home_dir()
-        .map(|h| h.join(".pi").to_string_lossy().to_string())
-        .unwrap_or_else(|| ".pi".to_string())
+        .map(|h| h.join(crate::config::CONFIG_DIR_NAME).to_string_lossy().to_string())
+        .unwrap_or_else(|| crate::config::CONFIG_DIR_NAME.to_string())
 }
 
 /// Create cwd-bound runtime services.

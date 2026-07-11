@@ -663,9 +663,16 @@ pub fn create_bash_tool(
                         let on_data_last_update = on_data_last_update.clone();
 
                         Arc::new(move |data: &[u8]| {
-                            // Append to accumulator
-                            let mut acc = on_data_output.lock().unwrap();
-                            acc.append(data);
+                            // Append to accumulator. Scope the guard so it is
+                            // released before the throttled snapshot re-locks
+                            // below — std::sync::Mutex is not reentrant, so
+                            // holding it across the second lock() would
+                            // deadlock the stdout/stderr reader tasks and hang
+                            // the bash tool forever.
+                            {
+                                let mut acc = on_data_output.lock().unwrap();
+                                acc.append(data);
+                            }
 
                             // Schedule throttled update
                             if on_data_cb.is_some() {

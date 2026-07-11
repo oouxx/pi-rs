@@ -6,7 +6,6 @@ description = "Thin wrapper around rig-core providers, implementing pi's AI pack
 license = "MIT"
 
 [dependencies]
-rig-core = { version = "0.7", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }

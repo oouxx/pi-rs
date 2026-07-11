@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::event_bus::EventBusController;
-use crate::core::extensions::{ExtensionsRpcClient, ToolInfo};
+use crate::core::extensions::{ExtensionRuntime, ToolInfoSerde};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
@@ -226,39 +226,58 @@ pub async fn create_agent_session(
     let allowed_tool_names = options.tools.clone();
     let excluded_tool_names = options.exclude_tools.clone();
 
-    // ── Extension RPC sidecar ──────────────────────────────────────────
-    let mut extension_tools: Vec<ToolInfo> = Vec::new();
-    let mut rpc_client: Option<Arc<ExtensionsRpcClient>> = None;
+    // ── Extension embedded runtime ────────────────────────────────────
+    let mut extension_tools: Vec<ToolInfoSerde> = Vec::new();
+    let mut extension_runtime: Option<Arc<ExtensionRuntime>> = None;
 
-    if options.enable_extensions && ExtensionsRpcClient::is_available() {
-        let client = Arc::new(ExtensionsRpcClient::new());
-        match client.start().await {
-            Ok(()) => {
-                match client
-                    .load_extensions(&cwd, &agent_dir, &options.extension_paths)
-                    .await
-                {
-                    Ok(result) => {
-                        extension_tools = result.tools;
-                        if !result.errors.is_empty() {
-                            for err in &result.errors {
-                                eprintln!("[pi] Extension load warning: {} — {}", err.path, err.error);
+    if options.enable_extensions {
+        // Discover first; only spawn the V8 thread if there's something to load,
+        // so the common no-extensions case pays nothing (no isolate, no thread).
+        let discovered =
+            crate::core::extensions::loader::discover_extensions(&cwd, Some(&agent_dir), &options.extension_paths);
+        if !discovered.is_empty() {
+            match ExtensionRuntime::new() {
+                Ok(rt) => {
+                    match rt
+                        .load(&cwd, Some(&agent_dir), &options.extension_paths)
+                        .await
+                    {
+                        Ok(result) => {
+                            extension_tools = result.tools;
+                            if !result.errors.is_empty() {
+                                for err in &result.errors {
+                                    eprintln!("[pi] Extension load warning: {} — {}", err.path, err.error);
+                                }
                             }
+                            extension_runtime = Some(Arc::new(rt));
                         }
-                        rpc_client = Some(client);
-                    }
-                    Err(e) => {
-                        eprintln!("[pi] Extension RPC error: {e}");
-                        let _ = client.stop().await;
+                        Err(e) => {
+                            eprintln!("[pi] Extension runtime error: {e}");
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                // Sidecar not available (bun not installed or path issue) — skip silently
-                let _ = e;
+                Err(e) => {
+                    // Thread/isolate could not be created — degrade to no-extensions
+                    // mode rather than crashing the CLI.
+                    eprintln!("[pi] Extension runtime unavailable: {e}");
+                }
             }
         }
     }
+
+    // Aggregate prompt guidelines from loaded extension tools into the system
+    // prompt (each tool may declare promptGuidelines per the original TS API).
+    let mut extension_prompt_guidelines: Vec<String> = Vec::new();
+    for t in &extension_tools {
+        if let Some(gl) = &t.prompt_guidelines {
+            extension_prompt_guidelines.extend(gl.iter().cloned());
+        }
+    }
+    let prompt_guidelines = if extension_prompt_guidelines.is_empty() {
+        None
+    } else {
+        Some(extension_prompt_guidelines)
+    };
 
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
@@ -268,7 +287,7 @@ pub async fn create_agent_session(
         append_system_prompt: options.append_system_prompt,
         selected_tools: options.tools,
         tool_snippets: None,
-        prompt_guidelines: None,
+        prompt_guidelines,
         context_files,
         skills,
         session_name: options.session_name,
@@ -278,7 +297,7 @@ pub async fn create_agent_session(
         allowed_tool_names,
         excluded_tool_names,
         extension_tools,
-        rpc_client,
+        extension_runtime,
         resources: None,
     };
 

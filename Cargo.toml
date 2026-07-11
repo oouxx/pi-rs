@@ -1,8 +1,13 @@
 [workspace]
+# NOTE: pi-tui is temporarily excluded from the workspace members because its
+# ratatui 0.29 dependency hard-pins unicode-width =0.2.0, which conflicts with
+# deno_ast's swc_common (needs >=0.2.1) pulled in by pi-coding-agent's embedded
+# extension runtime. pi-tui remains a path dependency of pi-coding-agent behind
+# the `interactive` feature (off by default). Re-add "crates/pi-tui" to members
+# once pi-tui upgrades to ratatui 0.30.
 members = [
     "crates/pi-agent-core",
     "crates/pi-ai",
     "crates/pi-coding-agent",
-    "crates/pi-tui",
 ]
 resolver = "2"

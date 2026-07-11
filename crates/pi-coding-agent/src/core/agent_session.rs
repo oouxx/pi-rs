@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
-use pi_agent_core::types::{AgentEvent, AgentMessage, AgentState, ConvertToLlmFn, StreamFn};
+use pi_agent_core::types::{
+    AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
+    StreamFn,
+};
 
 use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
@@ -12,8 +15,7 @@ use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
-use crate::core::extensions::rpc::ToolInfo;
-use crate::core::extensions::ExtensionsRpcClient;
+use crate::core::extensions::{ExtensionRuntime, ToolInfoSerde};
 use crate::core::tools;
 
 // ============================================================================
@@ -39,10 +41,10 @@ pub struct AgentSessionConfig {
     pub initial_active_tool_names: Option<Vec<String>>,
     pub allowed_tool_names: Option<Vec<String>>,
     pub excluded_tool_names: Option<Vec<String>>,
-    /// Extension tools loaded via RPC sidecar.
-    pub extension_tools: Vec<ToolInfo>,
-    /// RPC client for calling extension tool handlers.
-    pub rpc_client: Option<std::sync::Arc<ExtensionsRpcClient>>,
+    /// Extension tools loaded via the embedded runtime.
+    pub extension_tools: Vec<ToolInfoSerde>,
+    /// Embedded extension runtime for calling extension tool handlers.
+    pub extension_runtime: Option<std::sync::Arc<ExtensionRuntime>>,
     /// Loaded resources (skills, extensions, prompt templates).
     pub resources: Option<LoadedResources>,
 }
@@ -96,6 +98,9 @@ pub struct AgentSession {
     excluded_tool_names: Option<Vec<String>>,
     /// Subscription handles kept alive so listeners are not dropped.
     _subscriptions: Vec<pi_agent_core::agent::UnsubscribeHandle>,
+    /// Embedded extension runtime handle, retained so dispose() can stop the
+    /// V8 thread gracefully. Tool closures hold their own Arc clones too.
+    extension_runtime: Option<Arc<ExtensionRuntime>>,
 }
 
 impl AgentSession {
@@ -119,12 +124,12 @@ impl AgentSession {
         let tools_options = tools::ToolsOptions::default();
         let mut tool_list = tools::create_coding_tools(&options.cwd, Some(&tools_options));
 
-        // Merge extension tools if RPC client is available
+        // Merge extension tools if extension runtime is available
         if !options.extension_tools.is_empty() {
-            if let Some(ref rpc_client) = options.rpc_client {
+            if let Some(ref rt) = options.extension_runtime {
                 let ext_tools = crate::core::extensions::create_extension_agent_tools(
                     &options.extension_tools,
-                    std::sync::Arc::clone(rpc_client),
+                    std::sync::Arc::clone(rt),
                     options.cwd.clone(),
                 );
                 tool_list.extend(ext_tools);
@@ -162,11 +167,38 @@ impl AgentSession {
             })
         });
 
+        // Wire extension before/after_tool_call hooks into the agent's tool
+        // execution loop. When an extension runtime is present, each tool call
+        // is dispatched to JS handlers that may block it (before) or transform
+        // its result (after); absent a runtime, the hooks are None (no overhead).
+        let (before_tool_call, after_tool_call) = match &options.extension_runtime {
+            Some(rt) => {
+                let before_rt = Arc::clone(rt);
+                let after_rt = Arc::clone(rt);
+                let before: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
+                    let rt = Arc::clone(&before_rt);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_tool_call(&rt, &ctx).await
+                    })
+                });
+                let after: AfterToolCallFn = Arc::new(move |ctx, _signal| {
+                    let rt = Arc::clone(&after_rt);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_tool_result(&rt, &ctx).await
+                    })
+                });
+                (Some(before), Some(after))
+            }
+            None => (None, None),
+        };
+
         let agent_options = pi_agent_core::agent::AgentOptions {
             initial_state: Some(initial_state),
             convert_to_llm: Some(convert_to_llm),
             stream_fn: Some(stream_fn),
             session_id: Some(session_manager.get_session_id().to_string()),
+            before_tool_call,
+            after_tool_call,
             ..Default::default()
         };
 
@@ -192,6 +224,7 @@ impl AgentSession {
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
             _subscriptions: Vec::new(),
+            extension_runtime: options.extension_runtime,
         };
 
         // Register event-driven persistence subscriber, matching the original
@@ -225,6 +258,45 @@ impl AgentSession {
         });
         let handle = session.agent.subscribe(persist_listener).await;
         session._subscriptions.push(handle);
+
+        // Fire-and-forget agent-event dispatch to extensions. Each AgentEvent
+        // is mapped to an extension event name + payload; the dispatch is
+        // spawned detached so a slow extension handler never blocks the agent
+        // event loop (the listener future returns immediately after spawning).
+        if let Some(ref rt) = session.extension_runtime {
+            let ff_rt = Arc::clone(rt);
+            // Capture the session cwd so fire-and-forget handlers see the right
+            // ctx.cwd (the dispatcher payloads don't carry it by default, which
+            // would leave ctx.cwd = "/" inside __piDispatch).
+            let session_cwd = session.cwd.clone();
+            let ff_listener: Arc<
+                dyn Fn(
+                        AgentEvent,
+                        Option<tokio::sync::watch::Receiver<bool>>,
+                    )
+                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            > = Arc::new(move |event, _signal| {
+                let rt = Arc::clone(&ff_rt);
+                let cwd = session_cwd.clone();
+                Box::pin(async move {
+                    if let Some((event_type, mut payload)) =
+                        crate::core::extensions::dispatcher::fire_and_forget_from_agent_event(&event)
+                    {
+                        // Inject cwd so __piDispatch builds makeContext(session_cwd).
+                        if let Some(obj) = payload.as_object_mut() {
+                            obj.insert("cwd".to_string(), serde_json::Value::String(cwd));
+                        }
+                        tokio::spawn(async move {
+                            let _ = rt.dispatch_fire_and_forget(event_type, payload).await;
+                        });
+                    }
+                })
+            });
+            let handle = session.agent.subscribe(ff_listener).await;
+            session._subscriptions.push(handle);
+        }
 
         session
     }
@@ -770,5 +842,11 @@ impl AgentSession {
         self._subscriptions.push(handle);
     }
 
-    pub fn dispose(self) {}
+    pub fn dispose(self) {
+        // Gracefully stop the embedded extension runtime so the V8 thread and
+        // its isolate are torn down rather than lingering until process exit.
+        if let Some(rt) = self.extension_runtime {
+            let _ = rt.stop();
+        }
+    }
 }

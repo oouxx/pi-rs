@@ -1,5 +1,11 @@
-pub mod rpc;
+pub mod dispatcher;
+pub mod loader;
+pub mod ops;
+pub mod runtime;
 pub mod types;
 
-pub use rpc::{create_extension_agent_tools, ExtensionsRpcClient, ToolInfo};
+pub use runtime::{
+    create_extension_agent_tools, CommandInfoSerde, ExtensionError, ExtensionRuntime, LoadResult,
+    ToolInfoSerde,
+};
 pub use types::*;

@@ -398,8 +398,11 @@ pub fn create_edit_tool(
                             throw_if_aborted()?;
 
                             // Restore line endings and BOM
-                            let final_content = bom_result.bom.clone()
-                                + &restore_line_endings(&applied.new_content, original_ending);
+                            let final_content = format!(
+                                "{}{}",
+                                bom_result.bom,
+                                restore_line_endings(&applied.new_content, original_ending)
+                            );
 
                             // Write the file
                             ops.write_file(&abs_path, &final_content).await?;

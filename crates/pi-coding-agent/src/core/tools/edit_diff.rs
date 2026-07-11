@@ -385,7 +385,13 @@ pub fn count_occurrences(content: &str, old_text: &str) -> usize {
     let mut start = 0;
     while let Some(pos) = fuzzy_content[start..].find(&fuzzy_old_text) {
         count += 1;
-        start += pos + 1;
+        // Advance past the match to avoid infinite loop on empty match.
+        // Use max(1, match_len) to handle multi-byte characters safely.
+        let advance = std::cmp::max(1, fuzzy_old_text.len());
+        start += pos + advance;
+        if start > fuzzy_content.len() {
+            break;
+        }
     }
     count
 }

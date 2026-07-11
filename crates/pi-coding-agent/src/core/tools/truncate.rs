@@ -35,7 +35,12 @@ impl Default for TruncationOptions {
 }
 
 fn split_lines_for_counting(content: &str) -> Vec<&str> {
-    content.split('\n').collect()
+    let raw: Vec<&str> = content.split('\n').collect();
+    if content.ends_with('\n') && raw.len() > 1 {
+        raw[..raw.len() - 1].to_vec()
+    } else {
+        raw
+    }
 }
 
 fn byte_len(s: &str) -> usize {
@@ -137,8 +142,21 @@ pub fn truncate_tail(content: &str, options: Option<TruncationOptions>) -> Trunc
     let max_lines = opts.max_lines.unwrap_or(DEFAULT_MAX_LINES);
     let max_bytes = opts.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
     let total_bytes = byte_len(content);
-    let lines: Vec<String> = content.split('\n').map(|s| s.to_string()).collect();
-    let total_lines = lines.len();
+
+    // Split on newlines. A trailing newline produces an empty final segment
+    // that should NOT be counted as a line.
+    let raw_lines: Vec<&str> = content.split('\n').collect();
+    let has_trailing_newline = content.ends_with('\n');
+    let total_lines = if has_trailing_newline {
+        raw_lines.len() - 1
+    } else {
+        raw_lines.len()
+    };
+    let lines: Vec<String> = raw_lines
+        .iter()
+        .take(if has_trailing_newline { raw_lines.len() - 1 } else { raw_lines.len() })
+        .map(|s| s.to_string())
+        .collect();
 
     if total_lines <= max_lines && total_bytes <= max_bytes {
         return TruncationResult {

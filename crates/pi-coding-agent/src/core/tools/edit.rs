@@ -18,6 +18,7 @@ use super::path_utils;
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReplaceEdit {
     pub old_text: String,
     pub new_text: String,
@@ -289,28 +290,25 @@ pub fn create_edit_tool(
                         Some(edits_val) => match serde_json::from_value::<Vec<ReplaceEdit>>(edits_val.clone()) {
                             Ok(e) => e,
                             Err(err) => {
-                                return Ok(AgentToolResult {
-                                    content: vec![ContentBlock::text(format!("Invalid edits: {}", err))],
-                                    details: serde_json::Value::Null,
-                                    terminate: None,
-                                });
+                                return Err(Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    format!("Invalid edits: {}", err),
+                                )) as Box<dyn std::error::Error + Send + Sync>);
                             }
                         },
                         None => {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text("No edits provided")],
-                                details: serde_json::Value::Null,
-                                terminate: None,
-                            });
+                            return Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "No edits provided",
+                            )) as Box<dyn std::error::Error + Send + Sync>);
                         }
                     };
 
                     if edits.is_empty() {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text("No edits provided")],
-                            details: serde_json::Value::Null,
-                            terminate: None,
-                        });
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "edits must contain at least one replacement",
+                        )) as Box<dyn std::error::Error + Send + Sync>);
                     }
 
                     let absolute_path = path_utils::resolve_to_cwd(file_path, &cwd);
@@ -347,14 +345,18 @@ pub fn create_edit_tool(
 
                             // Check if file exists and is accessible
                             ops.access(&abs_path).await.map_err(|e| {
-                                let err_msg = if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                                    format!("Error code: {}", io_err.kind())
+                                let err_code: String = if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                                    match io_err.kind() {
+                                        std::io::ErrorKind::NotFound => "ENOENT".to_string(),
+                                        std::io::ErrorKind::PermissionDenied => "EACCES".to_string(),
+                                        _ => format!("{}", io_err.kind()),
+                                    }
                                 } else {
                                     e.to_string()
                                 };
                                 Box::new(std::io::Error::new(
                                     std::io::ErrorKind::Other,
-                                    format!("Could not edit file: {}. {}.", fp, err_msg),
+                                    format!("Could not edit file: {}. Error code: {}.", fp, err_code),
                                 )) as Box<dyn std::error::Error + Send + Sync>
                             })?;
 
@@ -427,12 +429,7 @@ pub fn create_edit_tool(
 
                     match result {
                         Ok(r) => Ok(r),
-                        Err(e) => Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!("Edit error: {}", e))],
-                            details: serde_json::to_value(EditToolDetails::default())
-                                .unwrap_or(serde_json::Value::Null),
-                            terminate: None,
-                        }),
+                        Err(e) => Err(e),
                     }
                 })
             },

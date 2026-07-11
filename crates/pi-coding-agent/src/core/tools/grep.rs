@@ -375,6 +375,10 @@ fn grep_file(
     let content =
         std::fs::read_to_string(file_path).map_err(|e| format!("{}: {}", file_path, e))?;
     let lines: Vec<&str> = content.lines().collect();
+    let file_name = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file_path);
 
     for (i, line) in lines.iter().enumerate() {
         if *match_count >= limit {
@@ -391,13 +395,15 @@ fn grep_file(
                 };
                 let end = std::cmp::min(i + context_lines + 1, lines.len());
                 for j in start..end {
-                    let prefix = if j == i { ">" } else { " " };
                     let (truncated_line, was_truncated) = truncate::truncate_line(lines[j], Some(GREP_MAX_LINE_LENGTH));
                     if was_truncated {
                         *lines_truncated = true;
                     }
-                    output_lines.push(format!("{}{}:{}", prefix, file_path, j + 1));
-                    output_lines.push(format!("  {}", truncated_line));
+                    if j == i {
+                        output_lines.push(format!("{}:{}: {}", file_name, j + 1, truncated_line));
+                    } else {
+                        output_lines.push(format!("{}-{}- {}", file_name, j + 1, truncated_line));
+                    }
                 }
                 output_lines.push("--".to_string());
             } else {
@@ -405,7 +411,7 @@ fn grep_file(
                 if was_truncated {
                     *lines_truncated = true;
                 }
-                output_lines.push(format!("{}:{}:{}", file_path, i + 1, truncated_line));
+                output_lines.push(format!("{}:{}: {}", file_name, i + 1, truncated_line));
             }
         }
     }

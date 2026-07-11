@@ -61,6 +61,8 @@ pub struct OutputAccumulator {
     temp_file_path: Option<PathBuf>,
     /// Raw bytes held in memory before temp file is opened
     pending_chunks: Vec<u8>,
+    /// Buffer for incomplete UTF-8 sequences across chunks
+    pending_utf8_bytes: Vec<u8>,
 }
 
 impl OutputAccumulator {
@@ -89,6 +91,7 @@ impl OutputAccumulator {
             finished: false,
             temp_file_path: None,
             pending_chunks: Vec::new(),
+            pending_utf8_bytes: Vec::new(),
         }
     }
 
@@ -98,7 +101,21 @@ impl OutputAccumulator {
         }
 
         self.total_raw_bytes += data.len();
-        self.append_decoded_text(&String::from_utf8_lossy(data));
+
+        // Handle UTF-8 sequences split across chunks
+        let mut combined = Vec::new();
+        if !self.pending_utf8_bytes.is_empty() {
+            combined.extend_from_slice(&self.pending_utf8_bytes);
+            self.pending_utf8_bytes.clear();
+        }
+        combined.extend_from_slice(data);
+
+        // Try to decode as UTF-8, handling incomplete sequences at the end
+        let (decoded_text, incomplete) = decode_utf8_with_pending(&combined);
+        if let Some(pending) = incomplete {
+            self.pending_utf8_bytes = pending;
+        }
+        self.append_decoded_text(&decoded_text);
 
         if self.temp_file_path.is_some() || self.should_use_temp_file() {
             self.ensure_temp_file();
@@ -297,6 +314,61 @@ impl OutputAccumulator {
         }
         self.pending_chunks.clear();
         self.temp_file_path = Some(path);
+    }
+}
+
+/// Decode UTF-8 bytes, returning the valid text and any incomplete trailing bytes.
+fn decode_utf8_with_pending(data: &[u8]) -> (String, Option<Vec<u8>>) {
+    if data.is_empty() {
+        return (String::new(), None);
+    }
+
+    // Find how many bytes at the end form an incomplete UTF-8 sequence
+    let mut incomplete_len = 0;
+    let len = data.len();
+
+    // Check the last byte for continuation bytes (10xxxxxx)
+    if len > 0 && data[len - 1] & 0xc0 == 0x80 {
+        // Last byte is a continuation byte, walk backwards to find the start
+        let mut i = len - 1;
+        while i > 0 && data[i] & 0xc0 == 0x80 {
+            i -= 1;
+        }
+        // Now i points to the start byte of the multi-byte sequence (or beginning)
+        let start_byte = data[i];
+        let expected_len = if start_byte & 0xe0 == 0xc0 {
+            2
+        } else if start_byte & 0xf0 == 0xe0 {
+            3
+        } else if start_byte & 0xf8 == 0xf0 {
+            4
+        } else {
+            // Not a valid start byte, no incomplete sequence
+            0
+        };
+
+        if expected_len > 0 && len - i < expected_len {
+            // We have an incomplete sequence
+            incomplete_len = len - i;
+        }
+    } else if len > 0 && data[len - 1] & 0xe0 == 0xc0 {
+        // Single leading byte for 2-byte sequence at end, needs 1 more byte
+        incomplete_len = 1;
+    } else if len > 0 && data[len - 1] & 0xf0 == 0xe0 {
+        // Leading byte for 3-byte sequence at end, needs 2 more bytes
+        incomplete_len = 1;
+    } else if len > 0 && data[len - 1] & 0xf8 == 0xf0 {
+        // Leading byte for 4-byte sequence at end, needs 3 more bytes
+        incomplete_len = 1;
+    }
+
+    if incomplete_len > 0 {
+        let valid_end = len - incomplete_len;
+        let valid = &data[..valid_end];
+        let pending = data[valid_end..].to_vec();
+        (String::from_utf8_lossy(valid).to_string(), Some(pending))
+    } else {
+        (String::from_utf8_lossy(data).to_string(), None)
     }
 }
 

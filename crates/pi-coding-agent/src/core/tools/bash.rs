@@ -761,12 +761,10 @@ pub fn create_bash_tool(
                                             terminate: None,
                                         });
                                     }
-                                    return Ok(AgentToolResult {
-                                        content: vec![ContentBlock::text(final_text)],
-                                        details: serde_json::to_value(details)
-                                            .unwrap_or(serde_json::Value::Null),
-                                        terminate: None,
-                                    });
+                                    return Err(Box::new(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Command failed with exit code {}", code),
+                                    )) as Box<dyn std::error::Error + Send + Sync>);
                                 }
                             }
 
@@ -804,12 +802,10 @@ pub fn create_bash_tool(
                                 });
                             }
 
-                            Ok(AgentToolResult {
-                                content: vec![ContentBlock::text(final_text)],
-                                details: serde_json::to_value(BashToolDetails::default())
-                                    .unwrap_or(serde_json::Value::Null),
-                                terminate: None,
-                            })
+                            Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                final_text,
+                            )) as Box<dyn std::error::Error + Send + Sync>)
                         }
                     }
                 })

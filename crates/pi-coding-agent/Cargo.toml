@@ -1,9 +1,10 @@
 [package]
 name = "pi-coding-agent"
-version = "1.78.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Coding agent CLI with read/bash/edit/write tools and session management (Rust port of @earendil-works/pi-coding-agent)"
-license = "MIT"
+
 
 [dependencies]
 pi-agent-core = { workspace = true }

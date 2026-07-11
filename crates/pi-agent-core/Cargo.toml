@@ -1,9 +1,9 @@
 [package]
 name = "pi-agent-core"
-version = "1.78.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "General-purpose agent with transport abstraction, state management, and attachment support (Rust port of @earendil-works/pi-agent-core)"
-license = "MIT"
 
 [dependencies]
 pi-ai = { workspace = true }

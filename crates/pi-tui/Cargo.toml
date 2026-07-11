@@ -1,9 +1,9 @@
 [package]
 name = "pi-tui"
-version = "1.78.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Terminal UI framework — Elm architecture on ratatui (Rust port of @earendil-works/pi-tui)"
-license = "MIT"
 
 [dependencies]
 ratatui = "0.29"

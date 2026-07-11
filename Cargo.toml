@@ -1,4 +1,5 @@
 [workspace]
+
 # NOTE: pi-tui is temporarily excluded from the workspace members because its
 # ratatui 0.29 dependency hard-pins unicode-width =0.2.0, which conflicts with
 # deno_ast's swc_common (needs >=0.2.1) pulled in by pi-coding-agent's embedded
@@ -10,12 +11,19 @@ members = [
     "crates/pi-ai",
     "crates/pi-coding-agent",
 ]
-resolver = "2"
 
+
+resolver = "2"
 # Centralized dependency declarations. Member crates inherit via
 # `dep = { workspace = true }` (optionally adding crate-specific features), so
 # versions are managed in one place. Deps that differ meaningfully across
 # crates (e.g. reqwest's feature/default-flags matrix) stay per-crate.
+
+[workspace.package]
+version = "1.79.3"
+edition = "2021"
+license = "MIT"
+authors = ["oouxx"]
 [workspace.dependencies]
 # Internal crates
 pi-ai = { path = "crates/pi-ai" }

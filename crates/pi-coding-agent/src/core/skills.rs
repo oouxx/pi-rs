@@ -13,6 +13,7 @@ use crate::core::source_info::{create_source_info, SourceInfo, SourceOrigin, Sou
 
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
+const IGNORE_FILE_NAMES: &[&str] = &[".gitignore", ".ignore", ".fdignore"];
 
 // ============================================================================
 // Types
@@ -277,12 +278,92 @@ fn load_skill_from_file(
     (Some(skill), diagnostics)
 }
 
+/// A simple ignore matcher for gitignore-style patterns.
+#[derive(Debug, Clone, Default)]
+struct IgnoreMatcher {
+    patterns: Vec<String>,
+}
+
+impl IgnoreMatcher {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn add_patterns(&mut self, patterns: &[String]) {
+        self.patterns.extend(patterns.iter().cloned());
+    }
+
+    fn ignores(&self, path: &str) -> bool {
+        if self.patterns.is_empty() {
+            return false;
+        }
+        for pattern in &self.patterns {
+            if self.match_pattern(path, pattern) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn match_pattern(&self, path: &str, pattern: &str) -> bool {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return false;
+        }
+        let pat = trimmed.strip_prefix('/').unwrap_or(trimmed);
+        if pat.contains('*') {
+            let suffix = pat.trim_start_matches('*');
+            if pat.starts_with('*') && pat.ends_with('*') {
+                return path.contains(suffix);
+            } else if pat.ends_with('*') {
+                return path.starts_with(pat.trim_end_matches('*'));
+            } else if pat.starts_with('*') {
+                return path.ends_with(suffix);
+            }
+        }
+        path == pat || path.ends_with(&format!("/{}", pat))
+    }
+}
+
+/// Load ignore rules from .gitignore/.ignore/.fdignore files in a directory.
+fn load_ignore_rules(dir: &Path) -> IgnoreMatcher {
+    let mut matcher = IgnoreMatcher::new();
+    for filename in IGNORE_FILE_NAMES {
+        let ignore_path = dir.join(filename);
+        if !ignore_path.exists() || !ignore_path.is_file() {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&ignore_path) {
+            let patterns: Vec<String> = content
+                .lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || (trimmed.starts_with('#') && !trimmed.starts_with("\\#")) {
+                        return None;
+                    }
+                    let pattern = if trimmed.starts_with('!') || trimmed.starts_with("\\!") {
+                        trimmed.to_string()
+                    } else {
+                        trimmed.to_string()
+                    };
+                    Some(pattern)
+                })
+                .collect();
+            if !patterns.is_empty() {
+                matcher.add_patterns(&patterns);
+            }
+        }
+    }
+    matcher
+}
+
 /// Load skills from a directory, with recursive discovery.
 ///
 /// Discovery rules:
 /// - if a directory contains SKILL.md, treat it as a skill root and do not recurse further
 /// - otherwise, load direct .md children in the root
 /// - recurse into subdirectories to find SKILL.md
+/// - honors .gitignore/.ignore/.fdignore files
 fn load_skills_from_dir(
     dir: &Path,
     source: &str,
@@ -306,6 +387,8 @@ fn load_skills_from_dir(
         }
     };
 
+    let ignore_matcher = load_ignore_rules(dir);
+
     let entries: Vec<_> = entries
         .filter_map(|e| e.ok())
         .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
@@ -319,7 +402,13 @@ fn load_skills_from_dir(
         }
 
         let full_path = entry.path();
-        if !full_path.is_file() {
+        if !full_path.is_file() && !full_path.is_symlink() {
+            continue;
+        }
+
+        // Check ignore rules
+        let rel_path = full_path.strip_prefix(dir).unwrap_or(&full_path);
+        if ignore_matcher.ignores(&rel_path.to_string_lossy()) {
             continue;
         }
 
@@ -336,11 +425,22 @@ fn load_skills_from_dir(
     for entry in entries {
         let full_path = entry.path();
 
-        if full_path.is_dir() {
+        // Check ignore rules
+        let rel_path = full_path.strip_prefix(dir).unwrap_or(&full_path);
+        let rel_str = rel_path.to_string_lossy();
+
+        if full_path.is_dir() || full_path.is_symlink() {
+            // For directories, check with trailing slash
+            if ignore_matcher.ignores(&format!("{}/", rel_str)) {
+                continue;
+            }
             let (sub_skills, sub_diags) = load_skills_from_dir(&full_path, source, false);
             skills.extend(sub_skills);
             diagnostics.extend(sub_diags);
-        } else if include_root_files && full_path.is_file() {
+        } else if include_root_files && (full_path.is_file() || full_path.is_symlink()) {
+            if ignore_matcher.ignores(&rel_str) {
+                continue;
+            }
             if full_path.extension().map(|e| e == "md").unwrap_or(false) {
                 let path_str = full_path.to_string_lossy().to_string();
                 let (skill, diags) = load_skill_from_file(&path_str, source);

@@ -185,6 +185,8 @@ pub fn discover_extensions(
     };
 
     // 1. Project-local: {cwd}/.pi-rs/extensions/ (reloadable)
+    // NOTE: Uses `.pi-rs` (not `.pi`) to avoid conflicting with the original
+    // TypeScript pi's extension directory. This is an intentional deviation.
     let project_ext_dir = Path::new(cwd).join(".pi-rs").join("extensions");
     for ext in discover_in_dir(&project_ext_dir) {
         add(ext, true, &mut out, &mut seen);

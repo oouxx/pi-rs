@@ -108,7 +108,7 @@ function makePi() {
       }
       Deno.core.ops.op_pi_register_flag(name, options);
     },
-    getFlag: (name) => Deno.core.ops.op_pi_get_flag(name),
+    getFlag: (name) => flagValues.has(name) ? flagValues.get(name) : undefined,
     getCommands: () => Deno.core.ops.op_pi_get_commands(),
     on: (eventType, handler) => {
       let list = handlers.get(eventType);
@@ -158,6 +158,7 @@ globalThis.__piRegisterFlag = (name, opts) => {
   }
 };
 globalThis.__piSetFlagValue = (name, value) => { flagValues.set(name, value); };
+globalThis.__piGetFlags = () => Object.fromEntries(flagValues);
 
 // Load a single extension: dynamic-import its module, call its default factory.
 globalThis.__piLoadExtension = async (specifier) => {

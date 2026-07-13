@@ -213,43 +213,91 @@ pub fn op_pi_get_commands(state: &mut OpState) -> Result<Vec<CommandInfoSerde>, 
 #[op2]
 #[serde]
 pub fn op_pi_send_message(
-    _state: &mut OpState,
-    #[string] _custom_type: String,
-    #[string] _content: String,
+    state: &mut OpState,
+    #[string] custom_type: String,
+    #[string] content: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.sendMessage is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (_reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "send_message".into(),
+            args: serde_json::json!({ "customType": custom_type, "content": content }),
+            reply: _reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 #[op2]
 #[serde]
 pub fn op_pi_send_user_message(
-    _state: &mut OpState,
-    #[string] _content: String,
+    state: &mut OpState,
+    #[string] content: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.sendUserMessage is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (_reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "send_user_message".into(),
+            args: serde_json::json!({ "content": content }),
+            reply: _reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 #[op2]
 #[serde]
 pub fn op_pi_append_entry(
-    _state: &mut OpState,
-    #[string] _custom_type: String,
-    #[serde] _data: Option<serde_json::Value>,
+    state: &mut OpState,
+    #[string] custom_type: String,
+    #[serde] data: Option<serde_json::Value>,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.appendEntry is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (_reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "append_entry".into(),
+            args: serde_json::json!({ "customType": custom_type, "data": data }),
+            reply: _reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
-// Session metadata ops (stubs)
+// Session metadata ops — push HostCommand for main-thread processing
 // ============================================================================
 
 #[op2]
 #[serde]
 pub fn op_pi_set_session_name(
-    _state: &mut OpState,
-    #[string] _name: String,
+    state: &mut OpState,
+    #[string] name: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.setSessionName is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "set_session_name".into(),
+            args: serde_json::json!({ "name": name }),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 #[op2(fast)]
@@ -259,56 +307,116 @@ pub fn op_pi_get_session_name(_state: &mut OpState) -> Result<(), JsErrorBox> {
 
 #[op2(fast)]
 pub fn op_pi_set_label(
-    _state: &mut OpState,
-    #[string] _entry_id: String,
-    #[string] _label: String,
+    state: &mut OpState,
+    #[string] entry_id: String,
+    #[string] label: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.setLabel is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "set_label".into(),
+            args: serde_json::json!({ "entryId": entry_id, "label": label }),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
-// Model/thinking ops (stubs)
+// Model/thinking ops — push HostCommand for main-thread processing
 // ============================================================================
 
 #[op2]
 #[serde]
 pub fn op_pi_set_model(
-    _state: &mut OpState,
-    #[string] _model: String,
+    state: &mut OpState,
+    #[string] model: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.setModel is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "set_model".into(),
+            args: serde_json::json!({ "model": model }),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 #[op2]
 #[serde]
 pub fn op_pi_set_thinking_level(
-    _state: &mut OpState,
-    #[string] _level: String,
+    state: &mut OpState,
+    #[string] level: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.setThinkingLevel is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "set_thinking_level".into(),
+            args: serde_json::json!({ "level": level }),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
-// Provider registration ops (stubs)
+// Provider registration ops — push HostCommand for main-thread processing
 // ============================================================================
 
 #[op2]
 #[serde]
 pub fn op_pi_register_provider(
-    _state: &mut OpState,
-    #[string] _name: String,
-    #[serde] _config: serde_json::Value,
+    state: &mut OpState,
+    #[string] name: String,
+    #[serde] config: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.registerProvider is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "register_provider".into(),
+            args: serde_json::json!({ "name": name, "config": config }),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 #[op2]
 #[serde]
 pub fn op_pi_unregister_provider(
-    _state: &mut OpState,
-    #[string] _name: String,
+    state: &mut OpState,
+    #[string] name: String,
 ) -> Result<(), JsErrorBox> {
-    Err(JsErrorBox::generic("pi.unregisterProvider is not yet supported by the embedded runtime"))
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "unregister_provider".into(),
+            args: serde_json::json!({ "name": name }),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================

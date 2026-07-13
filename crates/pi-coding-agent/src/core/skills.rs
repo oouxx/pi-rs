@@ -183,7 +183,7 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
 // Source info creation
 // ============================================================================
 
-fn create_skill_source_info(file_path: &str, base_dir: &str, source: &str) -> SourceInfo {
+pub fn create_skill_source_info(file_path: &str, base_dir: &str, source: &str) -> SourceInfo {
     let scope = match source {
         "user" => SourceScope::User,
         "project" => SourceScope::Project,

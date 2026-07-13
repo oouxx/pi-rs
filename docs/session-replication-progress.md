@@ -272,7 +272,7 @@
 | **Messages** | **100%** | 完全复刻，Rust 版有增强 |
 | **Compaction** | **~85%** | 类型定义 + 核心逻辑 + 令牌估算 + 分支摘要 + 文件操作工具 |
 | **AgentSession** | **~85%** | 核心生命周期 + 压缩集成 + 树导航 + 会话切换 + 导出 HTML + 重试 |
-| **测试覆盖** | **~40%** | SessionManager 35 个 + Compaction 18 个 |
+| **测试覆盖** | **~50%** | SessionManager 35 个 + Compaction 18 个 + 扩展 10 个 + 技能 25 个 |
 
 ### 待完成清单（按优先级排序）
 
@@ -289,4 +289,4 @@
 | 🟢 P2 | 会话切换 | `agent_session.rs` | 中 | ✅ 已完成 |
 | 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ✅ 已完成 |
 | 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ✅ 已完成 |
-| 🟢 P2 | 测试补充 | `tests/` | 大 | ⏳ 待完成 |
+| 🟢 P2 | 测试补充 | `tests/` | 大 | ✅ 已完成 |

@@ -26,6 +26,9 @@ function execWithDefaultCwd(command, args, options, defaultCwd) {
 
 function makeContext(cwd) {
   const ctxCwd = cwd ?? sessionCwd ?? "/";
+  const notSupported = (name) => () => {
+    throw new Error(`ctx.${name} is not yet supported by the embedded runtime`);
+  };
   return {
     cwd: ctxCwd,
     mode: "rpc",
@@ -48,6 +51,14 @@ function makeContext(cwd) {
     hasPendingMessages: () => false,
     shutdown: () => {},
     getSystemPrompt: () => "",
+    // ExtensionCommandContext methods (Phase 4.3) -- stubs for now.
+    waitForIdle: notSupported("waitForIdle"),
+    newSession: notSupported("newSession"),
+    fork: notSupported("fork"),
+    navigateTree: notSupported("navigateTree"),
+    switchSession: notSupported("switchSession"),
+    reload: notSupported("reload"),
+    getSystemPromptOptions: notSupported("getSystemPromptOptions"),
   };
 }
 

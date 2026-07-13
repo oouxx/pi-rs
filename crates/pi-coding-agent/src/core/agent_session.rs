@@ -490,7 +490,15 @@ impl AgentSession {
     // =========================================================================
 
     /// Send a user message to the agent, matching the original prompt() method.
+    ///
+    /// Refreshes session state from disk before processing the next turn,
+    /// ensuring the latest config changes (e.g. tool refresh, session metadata)
+    /// are reflected. This aligns with the original TS commit e547bb9.
     pub async fn prompt(&mut self, text: &str, _options: Option<PromptOptions>) {
+        // Refresh session state before starting the next turn
+        if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
+            eprintln!("[pi] Failed to refresh session state before next turn: {e}");
+        }
         self.add_user_text(text).await;
     }
 

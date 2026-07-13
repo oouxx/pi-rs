@@ -230,17 +230,19 @@ fn prepare_edit_arguments(params: &serde_json::Value) -> serde_json::Value {
     }
 
     // Handle legacy format: oldText/newText at top level
-    let has_legacy_old = args.contains_key("oldText") && args.get("oldText").and_then(|v| v.as_str()).is_some();
-    let has_legacy_new = args.contains_key("newText") && args.get("newText").and_then(|v| v.as_str()).is_some();
+    // Use pattern matching instead of is_some() + unwrap() (redundant guard)
+    if let (Some(old_val), Some(new_val)) = (
+        args.get("oldText").and_then(|v| v.as_str()),
+        args.get("newText").and_then(|v| v.as_str()),
+    ) {
+        let old_text = old_val.to_string();
+        let new_text = new_val.to_string();
 
-    if has_legacy_old && has_legacy_new {
-        let old_text = args.get("oldText").unwrap().as_str().unwrap().to_string();
-        let new_text = args.get("newText").unwrap().as_str().unwrap().to_string();
-
-        let mut edits = match args.get("edits") {
-            Some(edits_val) if edits_val.is_array() => edits_val.as_array().unwrap().clone(),
-            _ => Vec::new(),
-        };
+        let mut edits = args
+            .get("edits")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         edits.push(serde_json::json!({
             "oldText": old_text,

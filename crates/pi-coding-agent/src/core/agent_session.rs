@@ -4,7 +4,7 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
-    StreamFn, TransformContextFn,
+    StreamFn, StreamFnOptions, TransformContextFn,
 };
 
 use crate::core::compaction::CompactionSettings;
@@ -881,20 +881,32 @@ impl AgentSession {
         compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
     }
 
+    /// Check whether compaction should be triggered, using token estimation.
+    /// Returns true if the context is above the threshold.
+    pub async fn check_auto_compact(&self) -> bool {
+        use crate::core::compaction;
+
+        let messages = self.agent.state().await.messages;
+        let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
+        let context_window = 128_000;
+
+        compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
+    }
+
     /// Trigger compaction, matching the original compact().
     /// Returns a summary string on success.
-    pub async fn compact(&self, _custom_instructions: Option<&str>) -> Result<String, String> {
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<String, String> {
         use crate::core::compaction;
 
         // Dispatch session_before_compact to extensions.
         if let Some(ref rt) = self.extension_runtime {
             crate::core::extensions::dispatcher::dispatch_session_before_compact(
-                rt, "auto",
+                rt, if custom_instructions.is_some() { "manual" } else { "auto" },
             ).await;
         }
 
         let messages = self.agent.state().await.messages;
-        let total_tokens = messages.len() as u64 * 100; // rough estimate
+        let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
         let context_window = 128_000;
 
         if !compaction::should_compact(total_tokens, context_window, &self.compaction_settings) {
@@ -904,13 +916,72 @@ impl AgentSession {
         let keep_recent_turns = 5usize;
         let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);
 
-        let _prepared = compaction::prepare_compaction(&messages, keep_recent_turns, self.compaction_settings.clone());
+        let prepared = compaction::prepare_compaction(&messages, keep_recent_turns, self.compaction_settings.clone());
+
+        // Build the summarization prompt
+        let summarization_prompt = compaction::build_summarization_prompt(
+            &prepared.messages_to_summarize,
+            prepared.previous_summary.as_deref(),
+            custom_instructions,
+        );
+
+        // Generate summary using the LLM if a stream_fn is available
+        let summary = if let Some(stream_fn) = self.agent.get_stream_fn() {
+            let model = self.agent.state().await.model;
+            let llm_context = pi_agent_core::pi_ai_types::Context {
+                system_prompt: Some(compaction::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
+                messages: vec![pi_agent_core::pi_ai_types::Message::User {
+                    content: vec![pi_agent_core::pi_ai_types::ContentBlock::text(&summarization_prompt)],
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                }],
+                tools: None,
+            };
+            match stream_fn(
+                model,
+                llm_context,
+                None,
+                pi_agent_core::types::StreamFnOptions::default(),
+            ).await {
+                Ok(mut stream) => {
+                    use futures::StreamExt;
+                    let mut full_text = String::new();
+                    while let Some(event) = stream.next().await {
+                        match &event {
+                            pi_agent_core::pi_ai_types::AssistantMessageEvent::TextDelta { delta, .. } => {
+                                full_text.push_str(delta);
+                            }
+                            pi_agent_core::pi_ai_types::AssistantMessageEvent::Done { message, .. } => {
+                                // Use the final message content if we have no deltas
+                                if full_text.is_empty() {
+                                    for block in &message.content {
+                                        if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
+                                            full_text.push_str(text);
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if full_text.is_empty() {
+                        format!("Compacted {} messages (summary generation unavailable)", messages.len())
+                    } else {
+                        full_text
+                    }
+                }
+                Err(_) => {
+                    format!("Compacted {} messages (LLM unavailable)", messages.len())
+                }
+            }
+        } else {
+            format!("Compacted {} messages", messages.len())
+        };
 
         // Record compaction in session manager
-        let summary = format!("Compacted {} messages", messages.len());
         {
             let mut mgr = self.session_manager.lock().unwrap();
-            mgr.append_compaction(&summary, &cut_point.first_kept_entry_index.to_string(), 0, None, None);
+            mgr.append_compaction(&summary, &cut_point.first_kept_entry_index.to_string(), total_tokens, None, None);
         }
 
         // Dispatch session_compact to extensions after compaction.
@@ -921,6 +992,37 @@ impl AgentSession {
         }
 
         Ok(summary)
+    }
+
+    // =========================================================================
+    // Tree Navigation
+    // =========================================================================
+
+    /// Navigate the session tree, matching the original navigateTree().
+    /// `direction` can be "up", "down", "root", or an entry ID.
+    pub fn navigate_tree(&mut self, direction: &str) -> bool {
+        let mut mgr = self.session_manager.lock().unwrap();
+        match direction {
+            "up" | "parent" => mgr.navigate_to_parent(),
+            "root" => {
+                // Navigate to the first entry (root)
+                let first_id = mgr.get_entries().first().map(|e| e.id().to_string());
+                if let Some(id) = first_id {
+                    mgr.navigate_to(&id)
+                } else {
+                    false
+                }
+            }
+            _ => {
+                // Treat as an entry ID
+                mgr.navigate_to(direction)
+            }
+        }
+    }
+
+    /// Get the session tree, matching the original getTree().
+    pub fn get_tree(&self) -> Vec<crate::core::session_manager::SessionTreeNode> {
+        self.session_manager.lock().unwrap().get_tree()
     }
 
     // =========================================================================
@@ -987,6 +1089,21 @@ impl AgentSession {
     ) -> Result<(), String> {
         use crate::core::session_manager::SessionManager as SM;
 
+        let path = std::path::Path::new(session_path);
+        if !path.exists() {
+            return Err(format!("Session file not found: {}", session_path));
+        }
+        if !crate::core::session_manager::is_valid_session_file(path) {
+            return Err(format!("Invalid session file: {}", session_path));
+        }
+
+        // Dispatch session_before_switch to extensions
+        if let Some(ref rt) = self.extension_runtime {
+            crate::core::extensions::dispatcher::dispatch_session_before_switch(
+                rt, session_path,
+            ).await;
+        }
+
         let session_dir = self
             .session_manager
             .lock()
@@ -1046,32 +1163,19 @@ impl AgentSession {
     /// Fork the session at a specific entry, matching original fork().
     /// Returns the forked session path on success.
     pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
-        use crate::core::session_manager::SessionManager as SM;
+        // Dispatch session_before_fork to extensions
+        if let Some(ref rt) = self.extension_runtime {
+            crate::core::extensions::dispatcher::dispatch_session_before_fork(
+                rt, entry_id,
+            ).await;
+        }
 
-        let session_dir = self
-            .session_manager
-            .lock()
-            .unwrap()
-            .get_session_dir()
-            .to_string_lossy()
-            .to_string();
+        // Use create_branched_session to create the fork
+        let branch_path = self.session_manager.lock().unwrap()
+            .create_branched_session(entry_id, None)?;
 
-        let session_file = self
-            .session_manager
-            .lock()
-            .unwrap()
-            .get_session_file()
-            .map(|p| p.to_string_lossy().to_string())
-            .ok_or_else(|| "Session is not persisted".to_string())?;
-
-        // Open the current session file
-        let mut mgr = SM::new(&self.cwd, &session_dir, Some(&session_file), true, None);
-
-        // Create a new session file for the branch
-        let branch_path = format!("{}.branch.jsonl", session_file);
-        mgr.set_session_file(&branch_path);
-
-        *self.session_manager.lock().unwrap() = mgr;
+        // Switch to the new session
+        self.switch_session(&branch_path, None).await?;
         Ok(branch_path)
     }
 

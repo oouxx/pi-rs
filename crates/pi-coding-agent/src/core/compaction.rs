@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::core::messages;
 
-const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a summarization assistant. Your job is to create concise summaries of coding agent conversations.
+pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a summarization assistant. Your job is to create concise summaries of coding agent conversations.
 
 When summarizing:
 1. Preserve key context: what the user asked, what was done, and what remains
@@ -351,6 +351,225 @@ pub fn save_compaction_summary(summary: &CompactionResult, file_path: &str) -> R
         })
 }
 
+// ============================================================================
+// Token estimation utilities
+// ============================================================================
+
+/// Roughly estimate the number of tokens in a text string.
+/// Uses a simple heuristic: ~4 characters per token for English text.
+pub fn estimate_text_tokens(text: &str) -> u64 {
+    if text.is_empty() {
+        return 0;
+    }
+    // Rough estimate: 4 chars per token for English, 1.5 for CJK
+    let mut char_count = 0u64;
+    let mut cjk_count = 0u64;
+    for ch in text.chars() {
+        char_count += 1;
+        if ch as u32 >= 0x4E00 && ch as u32 <= 0x9FFF {
+            cjk_count += 1;
+        }
+    }
+    // CJK characters are roughly 1.5 tokens each, others ~0.25 tokens each
+    let non_cjk = char_count.saturating_sub(cjk_count);
+    (cjk_count * 3 / 2) + (non_cjk / 4)
+}
+
+/// Estimate the number of tokens in a conversation message.
+pub fn estimate_message_tokens(msg: &pi_agent_core::pi_ai_types::Message) -> u64 {
+    let mut total = 0u64;
+    match msg {
+        pi_agent_core::pi_ai_types::Message::User { content, .. } => {
+            for block in content {
+                total += estimate_content_block_tokens(block);
+            }
+        }
+        pi_agent_core::pi_ai_types::Message::Assistant { content, .. } => {
+            for block in content {
+                total += estimate_content_block_tokens(block);
+            }
+        }
+        pi_agent_core::pi_ai_types::Message::ToolResult { content, .. } => {
+            for block in content {
+                total += estimate_content_block_tokens(block);
+            }
+        }
+    }
+    total
+}
+
+fn estimate_content_block_tokens(block: &pi_agent_core::pi_ai_types::ContentBlock) -> u64 {
+    match block {
+        pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+            estimate_text_tokens(text)
+        }
+        pi_agent_core::pi_ai_types::ContentBlock::ToolCall { name, arguments, .. } => {
+            estimate_text_tokens(name) + estimate_text_tokens(&arguments.to_string())
+        }
+        pi_agent_core::pi_ai_types::ContentBlock::Image { .. } => 100, // rough estimate per image
+        pi_agent_core::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
+            estimate_text_tokens(thinking)
+        }
+    }
+}
+
+/// Calculate the total token count for a list of messages.
+pub fn calculate_context_tokens(messages: &[pi_agent_core::pi_ai_types::Message]) -> u64 {
+    messages.iter().map(|m| estimate_message_tokens(m)).sum()
+}
+
+/// Estimate tokens for AgentMessages (converts to LLM messages first).
+pub fn estimate_agent_messages_tokens(messages: &[pi_agent_core::types::AgentMessage]) -> u64 {
+    let llm_messages = crate::core::messages::convert_to_llm(messages);
+    calculate_context_tokens(&llm_messages)
+}
+
+// ============================================================================
+// Message extraction from session entries
+// ============================================================================
+
+/// Extract an AgentMessage from a session entry, if the entry is a message type.
+pub fn get_message_from_entry(entry: &crate::core::session_manager::SessionEntry) -> Option<pi_agent_core::types::AgentMessage> {
+    match entry {
+        crate::core::session_manager::SessionEntry::Message { message, .. } => {
+            serde_json::from_value(message.clone()).ok()
+        }
+        _ => None,
+    }
+}
+
+// ============================================================================
+// Branch summarization
+// ============================================================================
+
+/// Collect entries for branch summary generation.
+/// Returns the messages that should be summarized for a branch.
+pub fn collect_entries_for_branch_summary(
+    entries: &[crate::core::session_manager::SessionEntry],
+    from_id: &str,
+) -> Vec<crate::core::session_manager::SessionEntry> {
+    let mut collected = Vec::new();
+    let mut found_from = false;
+
+    for entry in entries {
+        if entry.id() == from_id {
+            found_from = true;
+        }
+        if found_from {
+            collected.push(entry.clone());
+        }
+    }
+
+    collected
+}
+
+/// Build a summarization prompt for branch summary generation.
+pub fn build_branch_summary_prompt(
+    entries: &[crate::core::session_manager::SessionEntry],
+    from_id: &str,
+) -> String {
+    let collected = collect_entries_for_branch_summary(entries, from_id);
+    let messages: Vec<pi_agent_core::types::AgentMessage> = collected
+        .iter()
+        .filter_map(|e| get_message_from_entry(e))
+        .collect();
+
+    let llm_messages = crate::core::messages::convert_to_llm(&messages);
+    let conversation_text = serialize_conversation(&llm_messages);
+
+    format!(
+        r#"Summarize the following conversation branch, focusing on:
+1. What was the original request?
+2. What work was done?
+3. What files were changed?
+4. What is the current state?
+
+<conversation>
+{}
+</conversation>
+
+Provide a concise branch summary."#,
+        conversation_text
+    )
+}
+
+// ============================================================================
+// File operation utilities
+// ============================================================================
+
+/// Compute file lists from a set of messages, separating read and modified files.
+pub fn compute_file_lists(
+    messages: &[pi_agent_core::types::AgentMessage],
+) -> (Vec<String>, Vec<String>) {
+    let mut read_files: Vec<String> = Vec::new();
+    let mut modified_files: Vec<String> = Vec::new();
+    let mut seen_read: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut seen_modified: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+
+    for msg in messages {
+        if let pi_agent_core::types::AgentMessage::ToolResult {
+            tool_name, content, ..
+        } = msg
+        {
+            match tool_name.as_str() {
+                "read" => {
+                    for block in content {
+                        if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
+                            for line in text.lines() {
+                                if line.starts_with("File: ") {
+                                    let path = line.trim_start_matches("File: ").trim();
+                                    if seen_read.insert(path.to_string(), true).is_none() {
+                                        read_files.push(path.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "write" | "edit" => {
+                    for block in content {
+                        if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
+                            for line in text.lines() {
+                                if line.starts_with("File: ") || line.starts_with("Wrote ") {
+                                    let path = line
+                                        .trim_start_matches("File: ")
+                                        .trim_start_matches("Wrote ")
+                                        .trim();
+                                    if seen_modified.insert(path.to_string(), true).is_none() {
+                                        modified_files.push(path.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (read_files, modified_files)
+}
+
+/// Create file operations from a list of read and modified files.
+pub fn create_file_ops(read_files: &[String], modified_files: &[String]) -> FileOperations {
+    FileOperations {
+        read_files: read_files.to_vec(),
+        modified_files: modified_files.to_vec(),
+    }
+}
+
+/// Extract file operations from a single message.
+pub fn extract_file_ops_from_message(
+    msg: &pi_agent_core::types::AgentMessage,
+) -> FileOperations {
+    let (read_files, modified_files) = compute_file_lists(&[msg.clone()]);
+    FileOperations {
+        read_files,
+        modified_files,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +690,134 @@ mod tests {
         let content = std::fs::read_to_string(path).unwrap();
         assert!(content.contains("test"));
         std::fs::remove_file(path).ok();
+    }
+
+    // ============================================================
+    // Token estimation
+    // ============================================================
+
+    #[test]
+    fn test_estimate_text_tokens_empty() {
+        assert_eq!(estimate_text_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_estimate_text_tokens_english() {
+        // ~4 chars per token for English
+        let tokens = estimate_text_tokens("Hello world, this is a test message with about twenty words in it for token estimation");
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_estimate_text_tokens_cjk() {
+        // CJK characters are ~1.5 tokens each
+        let tokens = estimate_text_tokens("你好世界这是一条测试消息");
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_calculate_context_tokens() {
+        use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason, Usage};
+        let messages = vec![
+            Message::User {
+                content: vec![ContentBlock::text("hello")],
+                timestamp: 1000,
+            },
+            Message::Assistant {
+                content: vec![ContentBlock::text("world")],
+                api: "test".into(),
+                provider: "test".into(),
+                model: "test".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 1000,
+            },
+        ];
+        let tokens = calculate_context_tokens(&messages);
+        assert!(tokens > 0);
+    }
+
+    // ============================================================
+    // File operations
+    // ============================================================
+
+    #[test]
+    fn test_compute_file_lists_empty() {
+        let (read, modified) = compute_file_lists(&[]);
+        assert!(read.is_empty());
+        assert!(modified.is_empty());
+    }
+
+    #[test]
+    fn test_create_file_ops() {
+        let ops = create_file_ops(&["/a.rs".into()], &["/b.rs".into()]);
+        assert_eq!(ops.read_files.len(), 1);
+        assert_eq!(ops.modified_files.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_file_ops_from_message_no_tool() {
+        let msg = pi_agent_core::types::AgentMessage::User {
+            content: vec![],
+            timestamp: 1000,
+        };
+        let ops = extract_file_ops_from_message(&msg);
+        assert!(ops.read_files.is_empty());
+        assert!(ops.modified_files.is_empty());
+    }
+
+    // ============================================================
+    // Branch summarization
+    // ============================================================
+
+    #[test]
+    fn test_collect_entries_for_branch_summary() {
+        use crate::core::session_manager::SessionEntry;
+        let entries = vec![
+            SessionEntry::Message {
+                id: "1".into(),
+                parent_id: None,
+                timestamp: "t1".into(),
+                message: serde_json::json!({"role": "user", "content": "hello"}),
+            },
+            SessionEntry::Message {
+                id: "2".into(),
+                parent_id: Some("1".into()),
+                timestamp: "t2".into(),
+                message: serde_json::json!({"role": "assistant", "content": "world"}),
+            },
+        ];
+        let collected = collect_entries_for_branch_summary(&entries, "1");
+        assert_eq!(collected.len(), 2);
+    }
+
+    #[test]
+    fn test_get_message_from_entry() {
+        use crate::core::session_manager::SessionEntry;
+        let entry = SessionEntry::Message {
+            id: "1".into(),
+            parent_id: None,
+            timestamp: "t1".into(),
+            message: serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hello"}], "timestamp": 1000}),
+        };
+        let msg = get_message_from_entry(&entry);
+        assert!(msg.is_some());
+    }
+
+    #[test]
+    fn test_get_message_from_entry_non_message() {
+        use crate::core::session_manager::SessionEntry;
+        let entry = SessionEntry::ThinkingLevelChange {
+            id: "1".into(),
+            parent_id: None,
+            timestamp: "t1".into(),
+            thinking_level: "medium".into(),
+        };
+        let msg = get_message_from_entry(&entry);
+        assert!(msg.is_none());
     }
 }

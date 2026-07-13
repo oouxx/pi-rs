@@ -371,6 +371,10 @@ impl Agent {
 
     /// Active abort signal for the current run, if any.
     /// Matches TS `get signal(): AbortSignal | undefined`.
+    pub fn get_stream_fn(&self) -> Option<StreamFn> {
+        Some(self.stream_fn.clone())
+    }
+
     pub fn signal(&self) -> Option<tokio_util::sync::CancellationToken> {
         self.active_run
             .try_lock()

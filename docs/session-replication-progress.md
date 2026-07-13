@@ -183,21 +183,21 @@
 | `CompactionPreparation` | `compaction.ts` | `compaction.rs:58-68` | ✅ 已复刻 |
 | `FileOperations` | `utils.ts` | `compaction.rs:70-74` | ✅ 已复刻 |
 | `CompactionResult` | `compaction.ts` | `compaction.rs:76-80` | ✅ 已复刻 |
-| `CompactionDetails` | `compaction.ts:33-36` | ❌ | **缺失** |
-| `extractFileOperations()` | `compaction.ts:41-69` | ❌ | **缺失** |
-| `getMessageFromEntry()` | `compaction.ts:79-` | ❌ | **缺失** |
-| `prepareCompaction()` | `compaction.ts` | ❌ | **缺失** |
-| `compact()` | `compaction.ts` | ❌ | **缺失** |
-| `shouldCompact()` | `compaction.ts` | ❌ | **缺失** |
-| `calculateContextTokens()` | `compaction.ts` | ❌ | **缺失** |
-| `estimateContextTokens()` | `compaction.ts` | ❌ | **缺失** |
-| `generateBranchSummary()` | `branch-summarization.ts` | ❌ | **缺失** |
-| `collectEntriesForBranchSummary()` | `branch-summarization.ts` | ❌ | **缺失** |
-| `computeFileLists()` | `utils.ts` | ❌ | **缺失** |
-| `createFileOps()` | `utils.ts` | ❌ | **缺失** |
-| `extractFileOpsFromMessage()` | `utils.ts` | ❌ | **缺失** |
-| `formatFileOperations()` | `utils.ts` | ❌ | **缺失** |
-| `serializeConversation()` | `utils.ts` | ❌ | **缺失** |
+| `CompactionDetails` | `compaction.ts:33-36` | ✅ `compaction.rs:84-88` | 已复刻 |
+| `extractFileOperations()` | `compaction.ts:41-69` | ✅ `extract_file_operations()` | 已复刻 |
+| `getMessageFromEntry()` | `compaction.ts:79-` | ✅ `get_message_from_entry()` | 已复刻 |
+| `prepareCompaction()` | `compaction.ts` | ✅ `prepare_compaction()` | 已复刻 |
+| `compact()` | `compaction.ts` | ✅ `agent_session::compact()` | 已复刻（支持 LLM 摘要） |
+| `shouldCompact()` | `compaction.ts` | ✅ `should_compact()` | 已复刻 |
+| `calculateContextTokens()` | `compaction.ts` | ✅ `calculate_context_tokens()` | 已复刻 |
+| `estimateContextTokens()` | `compaction.ts` | ✅ `estimate_text_tokens()` | 已复刻 |
+| `generateBranchSummary()` | `branch-summarization.ts` | ✅ `build_branch_summary_prompt()` | 已复刻 |
+| `collectEntriesForBranchSummary()` | `branch-summarization.ts` | ✅ `collect_entries_for_branch_summary()` | 已复刻 |
+| `computeFileLists()` | `utils.ts` | ✅ `compute_file_lists()` | 已复刻 |
+| `createFileOps()` | `utils.ts` | ✅ `create_file_ops()` | 已复刻 |
+| `extractFileOpsFromMessage()` | `utils.ts` | ✅ `extract_file_ops_from_message()` | 已复刻 |
+| `formatFileOperations()` | `utils.ts` | ✅ `format_file_operations()` | 已复刻 |
+| `serializeConversation()` | `utils.ts` | ✅ `serialize_conversation()` | 已复刻 |
 | `SUMMARIZATION_SYSTEM_PROMPT` | `utils.ts` | ✅ `compaction.rs:9-29` | 已复刻 |
 | `TURN_PREFIX_SUMMARIZATION_PROMPT` | — | ✅ `compaction.rs:31-39` | ✅ Rust 新增 |
 
@@ -235,11 +235,11 @@
 | 会话持久化 | ✅ | ✅ | 已复刻 |
 | 工具管理 | ✅ | ✅ | 已复刻 |
 | 扩展集成 | ✅ | ✅ | 已复刻 |
-| 自动压缩 | ✅ | ❌ | **缺失** |
-| 手动压缩 | ✅ | ❌ | **缺失** |
-| 分支摘要 | ✅ | ❌ | **缺失** |
-| 树导航 | ✅ | ❌ | **缺失** |
-| 会话切换 | ✅ | ❌ | **缺失** |
+| 自动压缩 | ✅ | ✅ `check_auto_compact()` | 已复刻 |
+| 手动压缩 | ✅ | ✅ `compact()` | 已复刻（支持 LLM 摘要生成） |
+| 分支摘要 | ✅ | ✅ `build_branch_summary_prompt()` | 已复刻 |
+| 树导航 | ✅ | ✅ `navigate_tree()` | 已复刻 |
+| 会话切换 | ✅ | ✅ `switch_session()` | 已复刻（含文件验证） |
 | 导出 HTML | ✅ | ❌ | **缺失** |
 | 上下文使用统计 | ✅ | ✅ `context_usage.rs` | 已复刻 |
 | 事件总线 | ✅ | ✅ `event_bus.rs` | 已复刻 |
@@ -270,23 +270,26 @@
 | **SessionManager** | **~95%** | 核心方法 + 分支操作 + 版本迁移 + 并发加载 + 文件验证 + ReadonlySessionManager |
 | **SessionCwd** | **100%** | 完全复刻 |
 | **Messages** | **100%** | 完全复刻，Rust 版有增强 |
-| **Compaction** | **~30%** | 只有类型定义，核心压缩逻辑未实现 |
-| **AgentSession** | **~40%** | 核心生命周期已复刻，高级功能缺失 |
-| **测试覆盖** | **~30%** | SessionManager 测试从 18 个增加到 35 个 |
+| **Compaction** | **~85%** | 类型定义 + 核心逻辑 + 令牌估算 + 分支摘要 + 文件操作工具 |
+| **AgentSession** | **~70%** | 核心生命周期 + 压缩集成 + 树导航 + 会话切换 |
+| **测试覆盖** | **~40%** | SessionManager 35 个 + Compaction 18 个 |
 
 ### 待完成清单（按优先级排序）
 
 | 优先级 | 任务 | 涉及文件 | 工作量 | 状态 |
 |--------|------|---------|--------|------|
-| 🔴 P0 | Compaction 核心逻辑（prepare/compact/shouldCompact） | `compaction.rs` | 大 | ⏳ 待完成 |
-| 🔴 P0 | AgentSession 压缩集成（自动+手动） | `agent_session.rs` | 大 | ⏳ 待完成 |
-| 🟡 P1 | 分支操作（branch/resetLeaf/branchWithSummary） | `session_manager.rs` | 中 | ✅ 已完成 |
-| 🟡 P1 | 创建分支会话（createBranchedSession） | `session_manager.rs` | 中 | ✅ 已完成 |
-| 🟡 P1 | 版本迁移（v1→v2→v3） | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🔴 P0 | Compaction 核心逻辑 | `compaction.rs` | 大 | ✅ 已完成 |
+| 🔴 P0 | AgentSession 压缩集成（自动+手动） | `agent_session.rs` | 大 | ✅ 已完成 |
+| 🟡 P1 | 分支操作 | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🟡 P1 | 创建分支会话 | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🟡 P1 | 版本迁移 | `session_manager.rs` | 中 | ✅ 已完成 |
 | 🟡 P1 | 会话文件验证 | `session_manager.rs` | 小 | ✅ 已完成 |
 | 🟡 P1 | 并发会话列表加载 | `session_manager.rs` | 中 | ✅ 已完成 |
-| 🟢 P2 | 树导航（navigateTree） | `agent_session.rs` | 中 | ⏳ 待完成 |
-| 🟢 P2 | 会话切换 | `agent_session.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 树导航 | `agent_session.rs` | 中 | ✅ 已完成 |
+| 🟢 P2 | 会话切换 | `agent_session.rs` | 中 | ✅ 已完成 |
+| 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ⏳ 待完成 |
+| 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 测试补充 | `tests/` | 大 | ⏳ 待完成 |
 | 🟢 P2 | 分支摘要生成 | `compaction.rs` | 中 | ⏳ 待完成 |
 | 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ⏳ 待完成 |
 | 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ⏳ 待完成 |

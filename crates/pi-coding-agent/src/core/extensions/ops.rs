@@ -483,6 +483,100 @@ pub fn op_pi_ui_set_title(
 }
 
 // ============================================================================
+// ExtensionCommandContext ops — push HostCommand for main-thread processing
+// ============================================================================
+
+#[op2]
+#[serde]
+pub fn op_pi_new_session(
+    state: &mut OpState,
+    #[serde] _options: serde_json::Value,
+) -> Result<(), JsErrorBox> {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "new_session".into(),
+            args: serde_json::json!({}),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_fork(
+    state: &mut OpState,
+    #[string] _entry_id: String,
+    #[serde] _options: serde_json::Value,
+) -> Result<(), JsErrorBox> {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "fork".into(),
+            args: serde_json::json!({}),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_switch_session(
+    state: &mut OpState,
+    #[string] _session_path: String,
+    #[serde] _options: serde_json::Value,
+) -> Result<(), JsErrorBox> {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "switch_session".into(),
+            args: serde_json::json!({}),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_reload(
+    state: &mut OpState,
+) -> Result<(), JsErrorBox> {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: "reload".into(),
+            args: serde_json::json!({}),
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+        }
+    }
+    Ok(())
+}
+
+#[op2(fast)]
+pub fn op_pi_wait_for_idle(_state: &mut OpState) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+// ============================================================================
 // exec / notify / log
 // ============================================================================
 
@@ -561,6 +655,11 @@ deno_core::extension!(
         op_pi_ui_set_status,
         op_pi_ui_set_working_message,
         op_pi_ui_set_title,
+        op_pi_new_session,
+        op_pi_fork,
+        op_pi_switch_session,
+        op_pi_reload,
+        op_pi_wait_for_idle,
         op_pi_exec,
         op_pi_notify,
         op_pi_log,

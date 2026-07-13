@@ -542,7 +542,8 @@ impl AgentSession {
                 match function {
                     "set_model" | "send_message" | "send_user_message" | "set_session_name"
                     | "set_label" | "set_thinking_level" | "register_provider"
-                    | "unregister_provider" => Ok(serde_json::json!({})),
+                    | "unregister_provider" | "new_session" | "fork" | "switch_session"
+                    | "reload" => Ok(serde_json::json!({})),
                     _ => Err(format!("unknown host function: {}", function)),
                 }
             });

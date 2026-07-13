@@ -63,13 +63,13 @@ function makeContext(cwd) {
     hasPendingMessages: () => { try { return Deno.core.ops.op_pi_ctx_has_pending_messages(); } catch { return false; } },
     shutdown: () => { try { Deno.core.ops.op_pi_ctx_shutdown(); } catch {} },
     getSystemPrompt: () => { try { Deno.core.ops.op_pi_ctx_get_system_prompt(); } catch { return ""; } },
-    // ExtensionCommandContext methods (Phase 4.3) -- stubs for now.
-    waitForIdle: notSupported("waitForIdle"),
-    newSession: notSupported("newSession"),
-    fork: notSupported("fork"),
+    // ExtensionCommandContext methods -- call through to Rust ops.
+    waitForIdle: () => { try { Deno.core.ops.op_pi_wait_for_idle(); } catch {} },
+    newSession: (options) => { try { Deno.core.ops.op_pi_new_session(options ?? {}); } catch {} },
+    fork: (entryId, options) => { try { Deno.core.ops.op_pi_fork(entryId, options ?? {}); } catch {} },
     navigateTree: notSupported("navigateTree"),
-    switchSession: notSupported("switchSession"),
-    reload: notSupported("reload"),
+    switchSession: (sessionPath, options) => { try { Deno.core.ops.op_pi_switch_session(sessionPath, options ?? {}); } catch {} },
+    reload: () => { try { Deno.core.ops.op_pi_reload(); } catch {} },
     getSystemPromptOptions: notSupported("getSystemPromptOptions"),
   };
 }

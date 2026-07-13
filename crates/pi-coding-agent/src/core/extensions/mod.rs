@@ -8,4 +8,5 @@ pub use runtime::{
     create_extension_agent_tools, CommandInfoSerde, ExtensionError, ExtensionRuntime, LoadResult,
     ToolInfoSerde,
 };
+pub use ops::{FlagOptionsSerde, ShortcutInfoSerde};
 pub use types::*;

@@ -47,6 +47,13 @@ pub struct FlagOptionsSerde {
     pub default: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ShortcutInfoSerde {
+    pub key: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ExecOptionsSerde {
     #[serde(default)]
@@ -94,12 +101,16 @@ impl From<ExecResult> for ExecResultSerde {
 /// registries live in JS (V8 owns the JS function references).
 pub struct PiOpState {
     pub pending_notifications: Rc<RefCell<Vec<String>>>,
+    pub shortcuts: Rc<RefCell<Vec<ShortcutInfoSerde>>>,
+    pub flags: Rc<RefCell<Vec<FlagOptionsSerde>>>,
 }
 
 impl PiOpState {
     pub fn new() -> Self {
         Self {
             pending_notifications: Rc::new(RefCell::new(Vec::new())),
+            shortcuts: Rc::new(RefCell::new(Vec::new())),
+            flags: Rc::new(RefCell::new(Vec::new())),
         }
     }
 }
@@ -140,11 +151,19 @@ pub fn op_pi_register_command(
 pub fn op_pi_register_shortcut(
     state: &mut OpState,
     #[string] key: String,
-    #[serde] _options: serde_json::Value,
+    #[serde] options: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
-    let _ = state;
-    let _ = key;
+    let pi_state = state.borrow_mut::<PiOpState>();
+    let description = options.get("description").and_then(|v| v.as_str()).map(String::from);
+    pi_state.shortcuts.borrow_mut().push(ShortcutInfoSerde { key, description });
     Ok(())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_get_shortcuts(state: &mut OpState) -> Result<Vec<ShortcutInfoSerde>, JsErrorBox> {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    Ok(pi_state.shortcuts.borrow().clone())
 }
 
 #[op2]
@@ -153,20 +172,17 @@ pub fn op_pi_register_flag(
     #[string] name: String,
     #[serde] options: FlagOptionsSerde,
 ) -> Result<(), JsErrorBox> {
-    let _ = (state, name, options);
+    let pi_state = state.borrow_mut::<PiOpState>();
+    pi_state.flags.borrow_mut().push(options);
+    let _ = name;
     Ok(())
 }
 
 #[op2]
 #[serde]
-pub fn op_pi_get_flag(
-    state: &mut OpState,
-    #[string] name: String,
-) -> Result<Option<serde_json::Value>, JsErrorBox> {
-    // Flag values are owned by JS; this op is a stub that returns None for now.
-    // (JS `pi.getFlag` reads from the JS flagValues map directly in runtime.js.)
-    let _ = (state, name);
-    Ok(None)
+pub fn op_pi_get_flags(state: &mut OpState) -> Result<Vec<FlagOptionsSerde>, JsErrorBox> {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    Ok(pi_state.flags.borrow().clone())
 }
 
 #[op2]
@@ -234,8 +250,9 @@ deno_core::extension!(
         op_pi_register_tool,
         op_pi_register_command,
         op_pi_register_shortcut,
+        op_pi_get_shortcuts,
         op_pi_register_flag,
-        op_pi_get_flag,
+        op_pi_get_flags,
         op_pi_get_commands,
         op_pi_exec,
         op_pi_notify,

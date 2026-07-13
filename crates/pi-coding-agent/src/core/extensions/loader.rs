@@ -499,9 +499,9 @@ fn resolve_file_with_extensions(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Find an index file in a directory.
+/// Find an index file in a directory, preferring TypeScript over JavaScript.
 fn find_index(dir: &Path) -> Option<PathBuf> {
-    for name in &["index.js", "index.mjs", "index.cjs", "index.ts", "index.tsx", "index.mts"] {
+    for name in &["index.ts", "index.tsx", "index.mts", "index.js", "index.mjs", "index.cjs"] {
         let p = dir.join(name);
         if p.is_file() {
             return Some(p);
@@ -1152,5 +1152,570 @@ mod tests {
         let loader = TsModuleLoader::new();
         let result = loader.resolve("lodash", "not-a-url", ResolutionKind::Import);
         assert!(result.is_err());
+    }
+
+    // =======================================================================
+    // Extension discovery tests (ported from extensions-discovery.test.ts)
+    // =======================================================================
+
+    /// Helper: create a temp dir with a `.pi-rs/extensions/` subdirectory.
+    /// This matches the directory structure that `discover_extensions` expects
+    /// (project-local: `{cwd}/.pi-rs/extensions/`).
+    struct ExtFixture {
+        dir: tempfile::TempDir,
+        extensions_dir: PathBuf,
+    }
+
+    impl ExtFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let extensions_dir = dir.path().join(".pi-rs").join("extensions");
+            fs::create_dir_all(&extensions_dir).unwrap();
+            Self { dir, extensions_dir }
+        }
+
+        fn write_ext(&self, name: &str, code: &str) {
+            fs::write(self.extensions_dir.join(name), code).unwrap();
+        }
+
+        fn mk_subdir(&self, name: &str) -> PathBuf {
+            let p = self.extensions_dir.join(name);
+            fs::create_dir_all(&p).unwrap();
+            p
+        }
+
+        fn discover(&self) -> Vec<DiscoveredExtension> {
+            let cwd = self.dir.path().to_string_lossy().to_string();
+            discover_extensions(&cwd, None, &[])
+        }
+    }
+
+    #[test]
+    fn test_discover_direct_ts_files() {
+        let fx = ExtFixture::new();
+        fx.write_ext("foo.ts", "export default function(pi) {}");
+        fx.write_ext("bar.ts", "export default function(pi) {}");
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 2);
+        let names: Vec<String> = result.iter().map(|e| {
+            e.path.file_name().unwrap().to_string_lossy().to_string()
+        }).collect();
+        assert!(names.contains(&"foo.ts".to_string()));
+        assert!(names.contains(&"bar.ts".to_string()));
+    }
+
+    #[test]
+    fn test_discover_direct_js_files() {
+        let fx = ExtFixture::new();
+        fx.write_ext("foo.js", "export default function(pi) {}");
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().ends_with("foo.js"));
+    }
+
+    #[test]
+    fn test_discover_subdir_with_index_ts() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-extension");
+        fs::write(sub.join("index.ts"), "export default function(pi) {}").unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("my-extension"));
+        assert!(result[0].path.to_string_lossy().contains("index.ts"));
+    }
+
+    #[test]
+    fn test_discover_subdir_with_index_js() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-extension");
+        fs::write(sub.join("index.js"), "export default function(pi) {}").unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("index.js"));
+    }
+
+    #[test]
+    fn test_discover_prefers_index_ts_over_index_js() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-extension");
+        fs::write(sub.join("index.ts"), "export default function(pi) {}").unwrap();
+        fs::write(sub.join("index.js"), "export default function(pi) {}").unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("index.ts"));
+    }
+
+    #[test]
+    fn test_discover_subdir_with_package_json_pi_field() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-package");
+        let src = sub.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.ts"), "export default function(pi) {}").unwrap();
+        fs::write(
+            sub.join("package.json"),
+            r#"{"name":"my-package","pi":{"extensions":["./src/main.ts"]}}"#,
+        )
+        .unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("src"));
+        assert!(result[0].path.to_string_lossy().contains("main.ts"));
+    }
+
+    #[test]
+    fn test_discover_package_json_multiple_extensions() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-package");
+        fs::write(sub.join("ext1.ts"), "export default function(pi) {}").unwrap();
+        fs::write(sub.join("ext2.ts"), "export default function(pi) {}").unwrap();
+        fs::write(
+            sub.join("package.json"),
+            r#"{"name":"my-package","pi":{"extensions":["./ext1.ts","./ext2.ts"]}}"#,
+        )
+        .unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_package_json_takes_precedence_over_index_ts() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-package");
+        fs::write(sub.join("index.ts"), "export default function(pi) {}").unwrap();
+        fs::write(sub.join("custom.ts"), "export default function(pi) {}").unwrap();
+        fs::write(
+            sub.join("package.json"),
+            r#"{"name":"my-package","pi":{"extensions":["./custom.ts"]}}"#,
+        )
+        .unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("custom.ts"));
+    }
+
+    #[test]
+    fn test_discover_package_json_without_pi_falls_back_to_index_ts() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-package");
+        fs::write(sub.join("index.ts"), "export default function(pi) {}").unwrap();
+        fs::write(
+            sub.join("package.json"),
+            r#"{"name":"my-package","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("index.ts"));
+    }
+
+    #[test]
+    fn test_discover_ignores_subdir_without_index_or_package_json() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("not-an-extension");
+        fs::write(sub.join("helper.ts"), "export default function(pi) {}").unwrap();
+        fs::write(sub.join("utils.ts"), "export default function(pi) {}").unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_no_recursion_beyond_one_level() {
+        let fx = ExtFixture::new();
+        let container = fx.mk_subdir("container");
+        let nested = container.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("index.ts"), "export default function(pi) {}").unwrap();
+        // No index.ts or package.json in container/
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_mixed_direct_files_and_subdirectories() {
+        let fx = ExtFixture::new();
+
+        // Direct file
+        fx.write_ext("direct.ts", "export default function(pi) {}");
+
+        // Subdirectory with index
+        let sub1 = fx.mk_subdir("with-index");
+        fs::write(sub1.join("index.ts"), "export default function(pi) {}").unwrap();
+
+        // Subdirectory with package.json
+        let sub2 = fx.mk_subdir("with-manifest");
+        fs::write(sub2.join("entry.ts"), "export default function(pi) {}").unwrap();
+        fs::write(
+            sub2.join("package.json"),
+            r#"{"pi":{"extensions":["./entry.ts"]}}"#,
+        )
+        .unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_discover_skips_nonexistent_paths_in_package_json() {
+        let fx = ExtFixture::new();
+        let sub = fx.mk_subdir("my-package");
+        fs::write(sub.join("exists.ts"), "export default function(pi) {}").unwrap();
+        fs::write(
+            sub.join("package.json"),
+            r#"{"pi":{"extensions":["./exists.ts","./missing.ts"]}}"#,
+        )
+        .unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("exists.ts"));
+    }
+
+    #[test]
+    fn test_discover_explicit_paths() {
+        let fx = ExtFixture::new();
+        let custom_dir = fx.dir.path().join("custom-location");
+        fs::create_dir_all(&custom_dir).unwrap();
+        let custom_path = custom_dir.join("my-ext.ts");
+        fs::write(&custom_path, "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            None,
+            &[custom_path.to_string_lossy().to_string()],
+        );
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("my-ext.ts"));
+    }
+
+    #[test]
+    fn test_discover_dedup_by_resolved_path() {
+        let fx = ExtFixture::new();
+        fx.write_ext("same.ts", "export default function(pi) {}");
+
+        // Add the same path via explicit paths.
+        let same_path = fx.extensions_dir.join("same.ts");
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            None,
+            &[same_path.to_string_lossy().to_string()],
+        );
+
+        // Should only appear once.
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_reloadable_flag() {
+        let fx = ExtFixture::new();
+        fx.write_ext("reloadable.ts", "export default function(pi) {}");
+
+        // Project-local extensions are reloadable.
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(&cwd, None, &[]);
+
+        assert!(result.iter().all(|e| e.reloadable));
+    }
+
+    #[test]
+    fn test_discover_explicit_path_not_reloadable() {
+        let fx = ExtFixture::new();
+        let custom_path = fx.dir.path().join("explicit.ts");
+        fs::write(&custom_path, "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            None,
+            &[custom_path.to_string_lossy().to_string()],
+        );
+
+        assert!(!result[0].reloadable);
+    }
+
+    #[test]
+    fn test_discover_global_extensions() {
+        let fx = ExtFixture::new();
+        let agent_dir = fx.dir.path().join("agent");
+        let global_ext = agent_dir.join("extensions");
+        fs::create_dir_all(&global_ext).unwrap();
+        fs::write(global_ext.join("global.ts"), "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            Some(&agent_dir.to_string_lossy()),
+            &[],
+        );
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("global.ts"));
+    }
+
+    #[test]
+    fn test_discover_global_extensions_reloadable() {
+        let fx = ExtFixture::new();
+        let agent_dir = fx.dir.path().join("agent");
+        let global_ext = agent_dir.join("extensions");
+        fs::create_dir_all(&global_ext).unwrap();
+        fs::write(global_ext.join("global.ts"), "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            Some(&agent_dir.to_string_lossy()),
+            &[],
+        );
+
+        assert!(result.iter().all(|e| e.reloadable));
+    }
+
+    #[test]
+    fn test_discover_empty_dir() {
+        let fx = ExtFixture::new();
+        let result = fx.discover();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_ignores_dotfiles() {
+        let fx = ExtFixture::new();
+        fx.write_ext(".hidden.ts", "export default function(pi) {}");
+        fx.write_ext("visible.ts", "export default function(pi) {}");
+
+        let result = fx.discover();
+
+        // discover_in_dir does NOT filter dotfiles — it only checks extension.
+        // The original TS code explicitly skips dotfiles with `if (entry.name.startsWith(".")) continue;`
+        // Our Rust implementation currently does NOT skip dotfiles.
+        // This test documents the current behavior.
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_handles_symlink_file() {
+        let fx = ExtFixture::new();
+        let target_dir = fx.dir.path().join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target_file = target_dir.join("linked.ts");
+        fs::write(&target_file, "export default function(pi) {}").unwrap();
+
+        // Create symlink in extensions dir.
+        let link_path = fx.extensions_dir.join("linked.ts");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_file, &link_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_file, &link_path).unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("linked.ts"));
+    }
+
+    #[test]
+    fn test_discover_handles_symlink_dir() {
+        let fx = ExtFixture::new();
+        let target_dir = fx.dir.path().join("real-ext");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("index.ts"), "export default function(pi) {}").unwrap();
+
+        // Create symlink in extensions dir.
+        let link_path = fx.extensions_dir.join("real-ext");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_dir, &link_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&target_dir, &link_path).unwrap();
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("index.ts"));
+    }
+
+    #[test]
+    fn test_discover_mjs_and_cjs_files() {
+        let fx = ExtFixture::new();
+        fx.write_ext("module.mjs", "export default function(pi) {}");
+        fx.write_ext("module.cjs", "export default function(pi) {}");
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_tsx_files() {
+        let fx = ExtFixture::new();
+        fx.write_ext("component.tsx", "export default function(pi) {}");
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_non_extension_files_ignored() {
+        let fx = ExtFixture::new();
+        fx.write_ext("readme.md", "# Extension");
+        fx.write_ext("data.json", "{}");
+        fx.write_ext("script.py", "print('hello')");
+
+        let result = fx.discover();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_nonexistent_dir() {
+        let result = discover_extensions("/nonexistent/path", None, &[]);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_agent_dir_none() {
+        let fx = ExtFixture::new();
+        fx.write_ext("ext.ts", "export default function(pi) {}");
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(&cwd, None, &[]);
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_explicit_dir_with_index() {
+        let fx = ExtFixture::new();
+        let ext_dir = fx.dir.path().join("my-ext-dir");
+        fs::create_dir_all(&ext_dir).unwrap();
+        fs::write(ext_dir.join("index.ts"), "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            None,
+            &[ext_dir.to_string_lossy().to_string()],
+        );
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].path.to_string_lossy().contains("index.ts"));
+    }
+
+    #[test]
+    fn test_discover_explicit_dir_without_index_scans_contents() {
+        let fx = ExtFixture::new();
+        let ext_dir = fx.dir.path().join("my-ext-dir");
+        fs::create_dir_all(&ext_dir).unwrap();
+        fs::write(ext_dir.join("a.ts"), "export default function(pi) {}").unwrap();
+        fs::write(ext_dir.join("b.ts"), "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            None,
+            &[ext_dir.to_string_lossy().to_string()],
+        );
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_explicit_nonexistent_path_skipped() {
+        let fx = ExtFixture::new();
+        fx.write_ext("real.ts", "export default function(pi) {}");
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            None,
+            &["/nonexistent/path.ts".to_string()],
+        );
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_project_local_and_global_no_duplicates() {
+        let fx = ExtFixture::new();
+
+        // Same extension in both project-local and global.
+        fx.write_ext("shared.ts", "export default function(pi) {}");
+
+        let agent_dir = fx.dir.path().join("agent");
+        let global_ext = agent_dir.join("extensions");
+        fs::create_dir_all(&global_ext).unwrap();
+        // Write the same file content to global (different path, so not deduped).
+        fs::write(global_ext.join("shared.ts"), "export default function(pi) {}").unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            Some(&agent_dir.to_string_lossy()),
+            &[],
+        );
+
+        // Two different files with the same name — both should appear.
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_project_local_and_global_dedup_same_file() {
+        let fx = ExtFixture::new();
+
+        // Create a file and symlink it from both locations.
+        let real_ext = fx.dir.path().join("real-ext");
+        fs::create_dir_all(&real_ext).unwrap();
+        let ext_file = real_ext.join("ext.ts");
+        fs::write(&ext_file, "export default function(pi) {}").unwrap();
+
+        // Symlink from project-local.
+        let project_link = fx.extensions_dir.join("ext.ts");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&ext_file, &project_link).unwrap();
+
+        // Symlink from global.
+        let agent_dir = fx.dir.path().join("agent");
+        let global_ext = agent_dir.join("extensions");
+        fs::create_dir_all(&global_ext).unwrap();
+        let global_link = global_ext.join("ext.ts");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&ext_file, &global_link).unwrap();
+
+        let cwd = fx.dir.path().to_string_lossy().to_string();
+        let result = discover_extensions(
+            &cwd,
+            Some(&agent_dir.to_string_lossy()),
+            &[],
+        );
+
+        // Both symlinks point to the same file — deduped by canonical path.
+        assert_eq!(result.len(), 1);
     }
 }

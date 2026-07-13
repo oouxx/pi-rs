@@ -636,3 +636,468 @@ pub fn fire_and_forget_from_agent_event(
 ) -> Option<(&'static str, serde_json::Value)> {
     event_from_agent_event(event).map(|(name, payload, _)| (name, payload))
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pi_agent_core::types::{
+        AgentEvent, AgentMessage, AgentToolCall, AgentToolResult, BeforeToolCallContext,
+    };
+    use pi_ai::types::Usage;
+
+    // -----------------------------------------------------------------------
+    // tool_call_payload tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tool_call_payload_structure() {
+        let ctx = BeforeToolCallContext {
+            assistant_message: AgentMessage::User {
+                content: vec![],
+                timestamp: 0,
+            },
+            tool_call: AgentToolCall {
+                id: "call_123".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "/tmp/test.txt"}),
+            },
+            args: serde_json::json!({"path": "/tmp/test.txt"}),
+            context: pi_agent_core::types::AgentContext {
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: None,
+            },
+        };
+
+        let payload = tool_call_payload(&ctx);
+
+        assert_eq!(payload["type"], "tool_call");
+        assert_eq!(payload["toolCallId"], "call_123");
+        assert_eq!(payload["toolName"], "read");
+        assert_eq!(payload["input"]["path"], "/tmp/test.txt");
+    }
+
+    #[test]
+    fn test_tool_call_payload_empty_args() {
+        let ctx = BeforeToolCallContext {
+            assistant_message: AgentMessage::User {
+                content: vec![],
+                timestamp: 0,
+            },
+            tool_call: AgentToolCall {
+                id: "call_456".into(),
+                name: "bash".into(),
+                arguments: serde_json::Value::Null,
+            },
+            args: serde_json::Value::Null,
+            context: pi_agent_core::types::AgentContext {
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: None,
+            },
+        };
+
+        let payload = tool_call_payload(&ctx);
+
+        assert_eq!(payload["type"], "tool_call");
+        assert_eq!(payload["toolCallId"], "call_456");
+        assert_eq!(payload["toolName"], "bash");
+        assert_eq!(payload["input"], serde_json::Value::Null);
+    }
+
+    // -----------------------------------------------------------------------
+    // tool_result_payload tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tool_result_payload_structure() {
+        let ctx = AfterToolCallContext {
+            assistant_message: AgentMessage::User {
+                content: vec![],
+                timestamp: 0,
+            },
+            tool_call: AgentToolCall {
+                id: "call_789".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path": "/tmp/test.txt", "content": "hello"}),
+            },
+            args: serde_json::json!({"path": "/tmp/test.txt", "content": "hello"}),
+            result: AgentToolResult {
+                content: vec![
+                    pi_agent_core::pi_ai_types::ContentBlock::Text {
+                        text: "written".into(),
+                        text_signature: None,
+                    },
+                ],
+                details: serde_json::json!({"lines": 1}),
+                terminate: None,
+            },
+            is_error: false,
+            context: pi_agent_core::types::AgentContext {
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: None,
+            },
+        };
+
+        let payload = tool_result_payload(&ctx);
+
+        assert_eq!(payload["type"], "tool_result");
+        assert_eq!(payload["toolCallId"], "call_789");
+        assert_eq!(payload["toolName"], "write");
+        assert_eq!(payload["isError"], false);
+        assert_eq!(payload["details"]["lines"], 1);
+        assert!(payload["content"].is_array());
+    }
+
+    #[test]
+    fn test_tool_result_payload_error() {
+        let ctx = AfterToolCallContext {
+            assistant_message: AgentMessage::User {
+                content: vec![],
+                timestamp: 0,
+            },
+            tool_call: AgentToolCall {
+                id: "call_err".into(),
+                name: "read".into(),
+                arguments: serde_json::Value::Null,
+            },
+            args: serde_json::Value::Null,
+            result: AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({"error": "not found"}),
+                terminate: None,
+            },
+            is_error: true,
+            context: pi_agent_core::types::AgentContext {
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: None,
+            },
+        };
+
+        let payload = tool_result_payload(&ctx);
+
+        assert_eq!(payload["isError"], true);
+        assert_eq!(payload["details"]["error"], "not found");
+    }
+
+    // -----------------------------------------------------------------------
+    // event_from_agent_event tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_event_from_agent_start() {
+        let event = AgentEvent::AgentStart;
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, _, is_result) = result.unwrap();
+        assert_eq!(name, "agent_start");
+        assert!(!is_result);
+    }
+
+    #[test]
+    fn test_event_from_agent_end() {
+        let event = AgentEvent::AgentEnd {
+            messages: vec![],
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, payload, is_result) = result.unwrap();
+        assert_eq!(name, "agent_end");
+        assert!(!is_result);
+        assert!(payload.get("messages").is_some());
+    }
+
+    #[test]
+    fn test_event_from_turn_start() {
+        let event = AgentEvent::TurnStart;
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, _, is_result) = result.unwrap();
+        assert_eq!(name, "turn_start");
+        assert!(!is_result);
+    }
+
+    #[test]
+    fn test_event_from_turn_end() {
+        let event = AgentEvent::TurnEnd {
+            message: AgentMessage::User {
+                content: vec![],
+                timestamp: 0,
+            },
+            tool_results: vec![],
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, payload, is_result) = result.unwrap();
+        assert_eq!(name, "turn_end");
+        assert!(!is_result);
+        assert!(payload.get("message").is_some());
+        assert!(payload.get("toolResults").is_some());
+    }
+
+    #[test]
+    fn test_event_from_message_start() {
+        let event = AgentEvent::MessageStart {
+            message: AgentMessage::User {
+                content: vec![],
+                timestamp: 0,
+            },
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, payload, is_result) = result.unwrap();
+        assert_eq!(name, "message_start");
+        assert!(!is_result);
+        assert_eq!(payload["message"]["role"], "user");
+    }
+
+    #[test]
+    fn test_event_from_message_update() {
+        let event = AgentEvent::MessageUpdate {
+            message: AgentMessage::Assistant {
+                content: vec![pi_agent_core::pi_ai_types::ContentBlock::Text {
+                    text: "thinking...".into(),
+                    text_signature: None,
+                }],
+                api: "anthropic".into(),
+                provider: "anthropic".into(),
+                model: "claude".into(),
+                usage: Usage {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                    ..Default::default()
+                },
+                stop_reason: None,
+                error_message: None,
+                timestamp: 0,
+            },
+            assistant_message_event: pi_agent_core::pi_ai_types::AssistantMessageEvent::Start {
+                partial: pi_agent_core::pi_ai_types::AssistantMessage {
+                    content: vec![],
+                    model: String::new(),
+                    stop_reason: pi_agent_core::pi_ai_types::StopReason::Stop,
+                    usage: pi_agent_core::pi_ai_types::Usage::default(),
+                    api: String::new(),
+                    provider: String::new(),
+                    response_model: None,
+                    response_id: None,
+                    diagnostics: None,
+                    error_message: None,
+                    timestamp: 0,
+                },
+            },
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, payload, is_result) = result.unwrap();
+        assert_eq!(name, "message_update");
+        assert!(!is_result);
+        assert_eq!(payload["message"]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_event_from_message_end() {
+        let event = AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant {
+                content: vec![],
+                api: "anthropic".into(),
+                provider: "anthropic".into(),
+                model: "claude".into(),
+                usage: Usage {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                    ..Default::default()
+                },
+                stop_reason: None,
+                error_message: None,
+                timestamp: 0,
+            },
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, _, is_result) = result.unwrap();
+        assert_eq!(name, "message_end");
+        // message_end is result-returning
+        assert!(is_result);
+    }
+
+    #[test]
+    fn test_event_from_tool_execution_start() {
+        let event = AgentEvent::ToolExecutionStart {
+            tool_call_id: "call_1".into(),
+            tool_name: "read".into(),
+            args: serde_json::json!({"path": "/tmp/x"}),
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, payload, is_result) = result.unwrap();
+        assert_eq!(name, "tool_execution_start");
+        assert!(!is_result);
+        assert_eq!(payload["toolCallId"], "call_1");
+        assert_eq!(payload["toolName"], "read");
+    }
+
+    #[test]
+    fn test_event_from_tool_execution_update_skipped() {
+        let event = AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call_1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::Value::Null,
+            partial_result: serde_json::json!({"output": "output"}),
+        };
+        let result = event_from_agent_event(&event);
+
+        // High-frequency event — skipped
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_event_from_tool_execution_end() {
+        let event = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call_2".into(),
+            tool_name: "edit".into(),
+            result: serde_json::json!({"success": true}),
+            is_error: false,
+        };
+        let result = event_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, payload, is_result) = result.unwrap();
+        assert_eq!(name, "tool_execution_end");
+        assert!(!is_result);
+        assert_eq!(payload["toolCallId"], "call_2");
+        assert_eq!(payload["isError"], false);
+    }
+
+    // -----------------------------------------------------------------------
+    // fire_and_forget_from_agent_event tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fire_and_forget_wrapper_drops_result_flag() {
+        let event = AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant {
+                content: vec![],
+                api: "anthropic".into(),
+                provider: "anthropic".into(),
+                model: "claude".into(),
+                usage: Usage {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                    ..Default::default()
+                },
+                stop_reason: None,
+                error_message: None,
+                timestamp: 0,
+            },
+        };
+        let result = fire_and_forget_from_agent_event(&event);
+
+        assert!(result.is_some());
+        let (name, _) = result.unwrap();
+        assert_eq!(name, "message_end");
+    }
+
+    #[test]
+    fn test_fire_and_forget_skips_high_frequency() {
+        let event = AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call_1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::Value::Null,
+            partial_result: serde_json::json!({"output": "more output"}),
+        };
+        let result = fire_and_forget_from_agent_event(&event);
+
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ResourcesDiscoverResult tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resources_discover_result_default() {
+        let result = ResourcesDiscoverResult::default();
+        assert!(result.skill_paths.is_empty());
+        assert!(result.prompt_paths.is_empty());
+        assert!(result.theme_paths.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // InputEventResult tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_input_event_result_continue() {
+        let result = InputEventResult::Continue {
+            text: "hello".into(),
+            images: vec![],
+        };
+        match result {
+            InputEventResult::Continue { text, .. } => assert_eq!(text, "hello"),
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn test_input_event_result_handled() {
+        let result = InputEventResult::Handled;
+        match result {
+            InputEventResult::Handled => {} // ok
+            _ => panic!("expected Handled"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ProjectTrustResult tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_project_trust_result_yes() {
+        let result = ProjectTrustResult {
+            trusted: Some(true),
+            remember: true,
+        };
+        assert_eq!(result.trusted, Some(true));
+        assert!(result.remember);
+    }
+
+    #[test]
+    fn test_project_trust_result_no() {
+        let result = ProjectTrustResult {
+            trusted: Some(false),
+            remember: false,
+        };
+        assert_eq!(result.trusted, Some(false));
+        assert!(!result.remember);
+    }
+
+    #[test]
+    fn test_project_trust_result_undecided() {
+        let result = ProjectTrustResult {
+            trusted: None,
+            remember: false,
+        };
+        assert!(result.trusted.is_none());
+    }
+}

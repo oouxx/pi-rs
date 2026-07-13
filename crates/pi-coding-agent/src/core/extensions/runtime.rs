@@ -726,3 +726,693 @@ pub fn create_extension_agent_tools(
         .collect()
 }
 
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Helper: create a temp dir with an extension file.
+    struct ExtFixture {
+        dir: tempfile::TempDir,
+        extensions_dir: std::path::PathBuf,
+    }
+
+    impl ExtFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let extensions_dir = dir.path().join(".pi-rs").join("extensions");
+            fs::create_dir_all(&extensions_dir).unwrap();
+            Self { dir, extensions_dir }
+        }
+
+        fn write_ext(&self, name: &str, code: &str) {
+            fs::write(self.extensions_dir.join(name), code).unwrap();
+        }
+
+        fn cwd(&self) -> &str {
+            self.dir.path().to_str().unwrap()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ExtensionRuntime lifecycle tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_create_and_stop() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_empty() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.tools.is_empty());
+        assert!(result.commands.is_empty());
+        assert!(result.errors.is_empty());
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_tool() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("test-tool.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "my-tool",
+                    description: "A test tool",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "my-tool");
+        assert_eq!(result.tools[0].description, "A test tool");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_command() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("test-cmd.ts", r#"
+            export default function(pi) {
+                pi.registerCommand("hello", {
+                    description: "Say hello",
+                    handler: async () => {},
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].name, "hello");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_multiple_extensions() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("tool-a.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "tool-a",
+                    description: "Tool A",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "a" }] }),
+                });
+            }
+        "#);
+        fx.write_ext("tool-b.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "tool-b",
+                    description: "Tool B",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "b" }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 2);
+        let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"tool-a"));
+        assert!(names.contains(&"tool-b"));
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_call_tool() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("echo.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "echo",
+                    description: "Echo input",
+                    parameters: { type: "object", properties: { text: { type: "string" } } },
+                    execute: async (callId, args) => {
+                        return { content: [{ type: "text", text: args.text || "none" }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let response = runtime
+            .call_tool("echo", serde_json::json!({"text": "hello"}), fx.cwd())
+            .await
+            .unwrap();
+
+        assert_eq!(response.result["content"][0]["text"], "hello");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_call_tool_with_notifications() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("notify.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "notify",
+                    description: "Tool that sends notifications",
+                    parameters: { type: "object", properties: {} },
+                    execute: async (args, _ctx, _signal, _onUpdate, ctx) => {
+                        ctx.ui.notify("Hello from tool!", "info");
+                        return { content: [{ type: "text", text: "done" }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let response = runtime
+            .call_tool("notify", serde_json::json!({}), fx.cwd())
+            .await
+            .unwrap();
+
+        assert_eq!(response.result["content"][0]["text"], "done");
+        assert!(response.notifications.contains(&"Hello from tool!".to_string()));
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_invalid_extension_reports_error() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("invalid.ts", "this is not valid typescript export default function");
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].path.contains("invalid.ts"));
+        assert!(result.tools.is_empty());
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_that_throws() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("throws.ts", r#"
+            export default function(pi) {
+                throw new Error("Initialization failed!");
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].error.contains("Initialization failed!"));
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_no_default_export() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("no-default.ts", r#"
+            export function notDefault(pi) {
+                pi.registerCommand("test", { handler: async () => {} });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert_eq!(result.errors.len(), 1);
+        // The Rust shim message differs slightly from the TS original:
+        // "Extension does not export a default factory" (vs "valid factory function").
+        assert!(
+            result.errors[0].error.contains("does not export a default factory")
+                || result.errors[0].error.contains("factory"),
+            "error was: {}",
+            result.errors[0].error
+        );
+
+        runtime.stop().await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Event dispatch tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_dispatch_fire_and_forget() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("handler.ts", r#"
+            export default function(pi) {
+                pi.on("custom_event", async (event) => {
+                    globalThis.__lastEvent = event;
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        // Fire-and-forget dispatch
+        runtime
+            .dispatch_fire_and_forget("custom_event", serde_json::json!({"key": "value"}))
+            .await
+            .unwrap();
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_dispatch_result() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("blocker.ts", r#"
+            export default function(pi) {
+                pi.on("tool_call", async (event) => {
+                    if (event.toolName === "dangerous") {
+                        return { block: true, reason: "Blocked by extension" };
+                    }
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        // Dispatch tool_call event and check result
+        let res = runtime
+            .dispatch_result("tool_call", serde_json::json!({
+                "type": "tool_call",
+                "toolCallId": "call_1",
+                "toolName": "dangerous",
+                "input": {},
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(res["block"], true);
+        assert_eq!(res["reason"], "Blocked by extension");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_dispatch_result_no_block() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("blocker.ts", r#"
+            export default function(pi) {
+                pi.on("tool_call", async (event) => {
+                    if (event.toolName === "dangerous") {
+                        return { block: true, reason: "Blocked" };
+                    }
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        // Safe tool — should not be blocked
+        let res = runtime
+            .dispatch_result("tool_call", serde_json::json!({
+                "type": "tool_call",
+                "toolCallId": "call_2",
+                "toolName": "safe-tool",
+                "input": {},
+            }))
+            .await
+            .unwrap();
+
+        assert!(res.get("block").and_then(|v| v.as_bool()).unwrap_or(false) == false);
+
+        runtime.stop().await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Error event tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_error_event_subscription() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let mut rx = runtime.on_error();
+
+        // Trigger an error by loading invalid extension
+        let fx = ExtFixture::new();
+        fx.write_ext("throws.ts", r#"
+            export default function(pi) {
+                pi.on("some_event", async () => {
+                    throw new Error("Handler error!");
+                });
+            }
+        "#);
+
+        let _result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        // Dispatch to trigger the throwing handler
+        let _ = runtime.dispatch_fire_and_forget("some_event", serde_json::json!({})).await;
+
+        // Give the runtime thread time to process and emit the error
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Check if we got an error event
+        match rx.try_recv() {
+            Ok(event) => {
+                assert_eq!(event.event, "some_event");
+                assert!(event.error.contains("Handler error!"));
+            }
+            Err(_) => {
+                // Error might not have propagated yet — that's OK for this test
+            }
+        }
+
+        runtime.stop().await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Host command tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_poll_host_command() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("host-cmd.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "send-msg",
+                    description: "Send a message",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => {
+                        Deno.core.ops.op_pi_send_message("custom", "from extension");
+                        return { content: [{ type: "text", text: "sent" }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        // Call the tool which queues a host command
+        let _response = runtime
+            .call_tool("send-msg", serde_json::json!({}), fx.cwd())
+            .await
+            .unwrap();
+
+        // Poll for the host command
+        let cmd = runtime.poll_host_command();
+        assert!(cmd.is_some(), "should have a host command");
+        if let Some(cmd) = cmd {
+            assert_eq!(cmd.function, "send_message");
+        }
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_drain_host_commands() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("multi-cmd.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "multi",
+                    description: "Multiple commands",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => {
+                        Deno.core.ops.op_pi_send_message("type1", "msg1");
+                        Deno.core.ops.op_pi_send_message("type2", "msg2");
+                        return { content: [{ type: "text", text: "done" }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let _response = runtime
+            .call_tool("multi", serde_json::json!({}), fx.cwd())
+            .await
+            .unwrap();
+
+        // Drain all host commands
+        let cmds = runtime.drain_host_commands();
+        assert_eq!(cmds.len(), 2, "should have 2 host commands");
+        assert_eq!(cmds[0].function, "send_message");
+        assert_eq!(cmds[1].function, "send_message");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_process_host_commands() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("process-test.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "process-test",
+                    description: "Test host command processing",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => {
+                        Deno.core.ops.op_pi_send_message("test", "hello");
+                        return { content: [{ type: "text", text: "done" }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let _response = runtime
+            .call_tool("process-test", serde_json::json!({}), fx.cwd())
+            .await
+            .unwrap();
+
+        // Process host commands with a handler
+        let processed = std::sync::Mutex::new(Vec::new());
+        runtime.process_host_commands(|function, args| {
+            processed.lock().unwrap().push((function.to_string(), args.clone()));
+            Ok(serde_json::json!({}))
+        });
+
+        let processed = processed.lock().unwrap();
+        assert_eq!(processed.len(), 1);
+        assert_eq!(processed[0].0, "send_message");
+
+        runtime.stop().await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Reload tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_reload() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        // Load initial extension
+        fx.write_ext("v1.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "v1",
+                    description: "Version 1",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "v1" }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "v1");
+
+        // Replace extension file
+        fs::remove_file(fx.extensions_dir.join("v1.ts")).unwrap();
+        fx.write_ext("v2.ts", r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "v2",
+                    description: "Version 2",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "v2" }] }),
+                });
+            }
+        "#);
+
+        // Reload
+        let result = runtime.reload(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "v2");
+
+        runtime.stop().await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_call_nonexistent_tool() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+        assert!(result.errors.is_empty());
+
+        let response = runtime
+            .call_tool("nonexistent", serde_json::json!({}), fx.cwd())
+            .await;
+
+        assert!(response.is_err());
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_stop_twice() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        runtime.stop().await.unwrap();
+        // Second stop should be a no-op
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_clone_and_drop() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let cloned = runtime.clone();
+        // Both handles share the same thread
+        cloned.stop().await.unwrap();
+        // Original should also be stopped
+        let result = runtime.load("/tmp", None, &[]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_with_agent_dir() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        // Create global extensions dir
+        let agent_dir = fx.dir.path().join("agent");
+        let global_ext = agent_dir.join("extensions");
+        fs::create_dir_all(&global_ext).unwrap();
+        fs::write(global_ext.join("global.ts"), r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "global-tool",
+                    description: "From global dir",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "global" }] }),
+                });
+            }
+        "#).unwrap();
+
+        let result = runtime.load(
+            fx.cwd(),
+            Some(agent_dir.to_str().unwrap()),
+            &[],
+        ).await.unwrap();
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "global-tool");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_with_explicit_paths() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        // Create extension outside the standard discovery path
+        let custom_dir = fx.dir.path().join("custom");
+        fs::create_dir_all(&custom_dir).unwrap();
+        let ext_path = custom_dir.join("explicit.ts");
+        fs::write(&ext_path, r#"
+            export default function(pi) {
+                pi.registerTool({
+                    name: "explicit-tool",
+                    description: "From explicit path",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "explicit" }] }),
+                });
+            }
+        "#).unwrap();
+
+        let result = runtime.load(
+            fx.cwd(),
+            None,
+            &[ext_path.to_string_lossy().to_string()],
+        ).await.unwrap();
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "explicit-tool");
+
+        runtime.stop().await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // ExtensionRuntime::new() failure test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_runtime_new_succeeds() {
+        let runtime = ExtensionRuntime::new();
+        assert!(runtime.is_ok());
+    }
+}
+

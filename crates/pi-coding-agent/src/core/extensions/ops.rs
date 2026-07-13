@@ -748,3 +748,952 @@ deno_core::extension!(
     esm_entry_point = "ext:pi_extension/runtime.js",
     esm = [dir "src/core/extensions", "runtime.js"],
 );
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::broadcast;
+
+    /// Helper: create a JsRuntime with pi_extension ops and PiOpState.
+    fn test_runtime() -> deno_core::JsRuntime {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(host_commands);
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+        js
+    }
+
+    /// Helper: evaluate JS and return the result as a serde_json::Value.
+    fn eval(js: &mut deno_core::JsRuntime, code: &str) -> serde_json::Value {
+        let global = js
+            .execute_script("<test>", code.to_string())
+            .unwrap();
+        deno_core::scope!(scope, js);
+        let local = deno_core::v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8(scope, local).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_register_tool tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_register_tool() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_tool({
+                name: "my-tool",
+                description: "A test tool",
+                parameters: { type: "object", properties: {} },
+            });
+        "#);
+        assert_eq!(result["name"], "my-tool");
+        assert_eq!(result["description"], "A test tool");
+    }
+
+    #[test]
+    fn test_op_register_tool_with_prompt_guidelines() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_tool({
+                name: "guided-tool",
+                description: "Tool with guidelines",
+                prompt_guidelines: ["be careful", "check permissions"],
+                execution_mode: "sequential",
+            });
+        "#);
+        assert_eq!(result["name"], "guided-tool");
+        assert!(result["prompt_guidelines"].is_array());
+        assert_eq!(result["execution_mode"], "sequential");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_register_command tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_register_command() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_command("test-cmd", {
+                description: "A test command",
+            });
+        "#);
+        assert_eq!(result["name"], "test-cmd");
+        assert_eq!(result["description"], "A test command");
+    }
+
+    #[test]
+    fn test_op_register_command_no_description() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_command("bare-cmd", {});
+        "#);
+        assert_eq!(result["name"], "bare-cmd");
+        assert!(result["description"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_register_shortcut / op_pi_get_shortcuts tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_register_and_get_shortcuts() {
+        let mut js = test_runtime();
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_shortcut("ctrl+k", {
+                description: "Clear screen",
+            });
+            Deno.core.ops.op_pi_register_shortcut("ctrl+shift+x", {
+                description: "Custom action",
+            });
+        "#);
+
+        let op_state = js.op_state();
+        let mut guard = op_state.borrow_mut();
+        let pi_state = guard.borrow_mut::<PiOpState>();
+        let shortcuts = pi_state.shortcuts.borrow().clone();
+        assert_eq!(shortcuts.len(), 2);
+        assert_eq!(shortcuts[0].key, "ctrl+k");
+        assert_eq!(shortcuts[0].description.as_deref(), Some("Clear screen"));
+        assert_eq!(shortcuts[1].key, "ctrl+shift+x");
+    }
+
+    #[test]
+    fn test_op_get_shortcuts() {
+        let mut js = test_runtime();
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_shortcut("ctrl+a", { description: "Select all" });
+        "#);
+
+        let result = eval(&mut js, "Deno.core.ops.op_pi_get_shortcuts();");
+        assert!(result.is_array());
+        assert_eq!(result[0]["key"], "ctrl+a");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_register_flag / op_pi_get_flags tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_register_and_get_flags() {
+        let mut js = test_runtime();
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_flag("--verbose", {
+                description: "Enable verbose output",
+                type: "boolean",
+                default: false,
+            });
+            Deno.core.ops.op_pi_register_flag("--theme", {
+                description: "Select theme",
+                type: "string",
+                default: "dark",
+            });
+        "#);
+
+        let op_state = js.op_state();
+        let mut guard = op_state.borrow_mut();
+        let pi_state = guard.borrow_mut::<PiOpState>();
+        let flags = pi_state.flags.borrow().clone();
+        assert_eq!(flags.len(), 2);
+        assert_eq!(flags[0].description.as_deref(), Some("Enable verbose output"));
+        assert_eq!(flags[0].flag_type, "boolean");
+        assert_eq!(flags[1].flag_type, "string");
+    }
+
+    #[test]
+    fn test_op_get_flags() {
+        let mut js = test_runtime();
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_flag("--test-flag", {
+                description: "Test flag",
+                type: "boolean",
+            });
+        "#);
+
+        let result = eval(&mut js, "Deno.core.ops.op_pi_get_flags();");
+        assert!(result.is_array());
+        assert_eq!(result[0]["description"], "Test flag");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_get_commands tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_get_commands_empty() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_get_commands();");
+        assert!(result.is_array());
+        assert_eq!(result.as_array().unwrap().len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_send_message tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_send_message_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_send_message("custom_type", "hello world");
+        "#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "send_message");
+        assert_eq!(cmds[0].args["customType"], "custom_type");
+        assert_eq!(cmds[0].args["content"], "hello world");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_send_user_message tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_send_user_message_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_send_user_message("user said something");
+        "#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "send_user_message");
+        assert_eq!(cmds[0].args["content"], "user said something");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_append_entry tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_append_entry_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_append_entry("log", { message: "test log" });
+        "#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "append_entry");
+        assert_eq!(cmds[0].args["customType"], "log");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_set_session_name / op_pi_get_session_name tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_set_session_name_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_set_session_name("my-session");"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "set_session_name");
+        assert_eq!(cmds[0].args["name"], "my-session");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_notify tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_notify_appends_to_pending() {
+        let mut js = test_runtime();
+        eval(&mut js, r#"Deno.core.ops.op_pi_notify("Hello!", "info");"#);
+
+        let op_state = js.op_state();
+        let mut guard = op_state.borrow_mut();
+        let pi_state = guard.borrow_mut::<PiOpState>();
+        let notifications = pi_state.pending_notifications.borrow().clone();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0], "Hello!");
+    }
+
+    #[test]
+    fn test_op_notify_multiple() {
+        let mut js = test_runtime();
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_notify("First", "info");
+            Deno.core.ops.op_pi_notify("Second", "error");
+        "#);
+
+        let op_state = js.op_state();
+        let mut guard = op_state.borrow_mut();
+        let pi_state = guard.borrow_mut::<PiOpState>();
+        let notifications = pi_state.pending_notifications.borrow().clone();
+        assert_eq!(notifications.len(), 2);
+        assert_eq!(notifications[0], "First");
+        assert_eq!(notifications[1], "Second");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_log tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_log_does_not_crash() {
+        let mut js = test_runtime();
+        // op_pi_log just prints to stderr; verify it doesn't throw.
+        eval(&mut js, r#"Deno.core.ops.op_pi_log("test log message");"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_emit_error tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_emit_error_sends_to_broadcast() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, mut error_rx) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(host_commands);
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_emit_error("/path/to/ext.ts", "tool_call", "Something went wrong");
+        "#);
+
+        let err = error_rx.try_recv().unwrap();
+        assert_eq!(err.extension_path, "/path/to/ext.ts");
+        assert_eq!(err.event, "tool_call");
+        assert_eq!(err.error, "Something went wrong");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_set_model tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_set_model_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_set_model("gpt-4o");"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "set_model");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_set_thinking_level / op_pi_get_thinking_level tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_set_thinking_level_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_set_thinking_level("high");"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "set_thinking_level");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_ctx_* tests (stubs that return defaults)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_ctx_is_idle_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_ctx_is_idle();");
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn test_op_ctx_is_project_trusted_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_ctx_is_project_trusted();");
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn test_op_ctx_has_pending_messages_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_ctx_has_pending_messages();");
+        assert_eq!(result, false);
+    }
+
+    #[test]
+    fn test_op_ctx_get_system_prompt_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_ctx_get_system_prompt();");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_op_ctx_get_model_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_ctx_get_model();");
+        assert_eq!(result, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_ui_set_status tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_ui_set_status_does_not_crash() {
+        let mut js = test_runtime();
+        // op_pi_ui_set_status is a stub that just returns Ok(()) without
+        // queuing a host command. Verify it doesn't throw.
+        eval(&mut js, r#"Deno.core.ops.op_pi_ui_set_status("status-key", "Running...");"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_new_session / op_pi_fork / op_pi_switch_session tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_new_session_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_new_session({ mode: "rpc" });"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "new_session");
+    }
+
+    #[test]
+    fn test_op_fork_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_fork("entry-1", { position: "at" });"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "fork");
+    }
+
+    #[test]
+    fn test_op_switch_session_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_switch_session("/path/to/session", {});"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "switch_session");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_reload / op_pi_wait_for_idle / op_pi_navigate_tree tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_reload_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, "Deno.core.ops.op_pi_reload();");
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "reload");
+    }
+
+    #[test]
+    fn test_op_wait_for_idle_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, "Deno.core.ops.op_pi_wait_for_idle();");
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "wait_for_idle");
+    }
+
+    #[test]
+    fn test_op_navigate_tree_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_navigate_tree("parent");"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "navigate_tree");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_set_label tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_set_label_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_set_label("entry-1", "my-label");"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "set_label");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_get_active_tools / op_pi_get_all_tools / op_pi_set_active_tools tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_get_active_tools_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_get_active_tools();");
+        assert!(result.is_array());
+        assert_eq!(result.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_op_get_all_tools_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_get_all_tools();");
+        assert!(result.is_array());
+        assert_eq!(result.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_op_set_active_tools_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_set_active_tools(["read", "write"]);"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "set_active_tools");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_register_provider / op_pi_unregister_provider tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_register_provider_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"
+            Deno.core.ops.op_pi_register_provider("test-provider", {
+                baseUrl: "https://test.api/v1",
+                apiKey: "test-key",
+            });
+        "#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "register_provider");
+    }
+
+    #[test]
+    fn test_op_unregister_provider_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, r#"Deno.core.ops.op_pi_unregister_provider("test-provider");"#);
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "unregister_provider");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_ctx_abort / op_pi_ctx_shutdown / op_pi_ctx_compact tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_ctx_abort_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, "Deno.core.ops.op_pi_ctx_abort();");
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "ctx_abort");
+    }
+
+    #[test]
+    fn test_op_ctx_shutdown_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, "Deno.core.ops.op_pi_ctx_shutdown();");
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "ctx_shutdown");
+    }
+
+    #[test]
+    fn test_op_ctx_compact_queues_host_command() {
+        let host_commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (error_tx, _) = broadcast::channel::<super::super::runtime::ExtensionErrorEvent>(64);
+
+        let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![pi_extension::init()],
+            ..Default::default()
+        });
+        let mut pi_state = PiOpState::new();
+        pi_state.host_commands = Some(Arc::clone(&host_commands));
+        pi_state.error_tx = Some(error_tx);
+        js.op_state().borrow_mut().put(pi_state);
+
+        eval(&mut js, "Deno.core.ops.op_pi_ctx_compact();");
+
+        let cmds = host_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].function, "ctx_compact");
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_ctx_get_context_usage tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_ctx_get_context_usage_default() {
+        let mut js = test_runtime();
+        let result = eval(&mut js, "Deno.core.ops.op_pi_ctx_get_context_usage();");
+        assert_eq!(result["tokensUsed"], 0);
+        assert_eq!(result["tokensTotal"], 0);
+        assert_eq!(result["percentUsed"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // op_pi_ui_set_working_message / op_pi_ui_set_title tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_op_ui_set_working_message_does_not_crash() {
+        let mut js = test_runtime();
+        // op_pi_ui_set_working_message is a stub that just returns Ok(()).
+        eval(&mut js, r#"Deno.core.ops.op_pi_ui_set_working_message("Processing...");"#);
+    }
+
+    #[test]
+    fn test_op_ui_set_title_does_not_crash() {
+        let mut js = test_runtime();
+        // op_pi_ui_set_title is a stub that just returns Ok(()).
+        eval(&mut js, r#"Deno.core.ops.op_pi_ui_set_title("New Title");"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // PiOpState tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pi_op_state_new() {
+        let state = PiOpState::new();
+        assert!(state.pending_notifications.borrow().is_empty());
+        assert!(state.shortcuts.borrow().is_empty());
+        assert!(state.flags.borrow().is_empty());
+        assert!(state.host_commands.is_none());
+        assert!(state.error_tx.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ToolInfoSerde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tool_info_serde_roundtrip() {
+        let info = ToolInfoSerde {
+            name: "test".into(),
+            description: "A test tool".into(),
+            parameters: Some(serde_json::json!({"type": "object"})),
+            prompt_guidelines: Some(vec!["guideline 1".into()]),
+            execution_mode: Some("sequential".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: ToolInfoSerde = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "test");
+        assert_eq!(parsed.execution_mode.as_deref(), Some("sequential"));
+    }
+
+    // -----------------------------------------------------------------------
+    // CommandInfoSerde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_command_info_serde_roundtrip() {
+        let info = CommandInfoSerde {
+            name: "my-cmd".into(),
+            description: Some("My command".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: CommandInfoSerde = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "my-cmd");
+        assert_eq!(parsed.description.as_deref(), Some("My command"));
+    }
+
+    // -----------------------------------------------------------------------
+    // FlagOptionsSerde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_flag_options_serde_roundtrip() {
+        let info = FlagOptionsSerde {
+            description: Some("A flag".into()),
+            flag_type: "boolean".into(),
+            default: Some(serde_json::json!(true)),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: FlagOptionsSerde = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.flag_type, "boolean");
+        assert_eq!(parsed.default.as_ref().and_then(|v| v.as_bool()), Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // ShortcutInfoSerde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_shortcut_info_serde_roundtrip() {
+        let info = ShortcutInfoSerde {
+            key: "ctrl+k".into(),
+            description: Some("Clear screen".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: ShortcutInfoSerde = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.key, "ctrl+k");
+        assert_eq!(parsed.description.as_deref(), Some("Clear screen"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ExecOptionsSerde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_exec_options_serde_default() {
+        let opts = ExecOptionsSerde::default();
+        assert!(opts.cwd.is_none());
+        assert!(opts.timeout.is_none());
+    }
+
+    #[test]
+    fn test_exec_options_serde_to_exec_options() {
+        let opts = ExecOptionsSerde {
+            cwd: Some("/tmp".into()),
+            timeout: Some(30),
+        };
+        let exec: ExecOptions = opts.into();
+        assert_eq!(exec.cwd, Some("/tmp".into()));
+        assert!(exec.timeout.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // ExecResultSerde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_exec_result_serde_from_exec_result() {
+        let result = crate::core::exec::ExecResult {
+            stdout: "hello".into(),
+            stderr: "".into(),
+            code: 0,
+            killed: false,
+        };
+        let serde: ExecResultSerde = result.into();
+        assert_eq!(serde.stdout, "hello");
+        assert_eq!(serde.exit_code, 0);
+        assert!(!serde.killed);
+    }
+}

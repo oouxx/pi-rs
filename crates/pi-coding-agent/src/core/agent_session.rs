@@ -567,13 +567,26 @@ impl AgentSession {
     }
 
     pub async fn add_user_text(&mut self, text: &str) {
+        // Dispatch input event to extensions before processing.
+        // If an extension handles the input, skip processing entirely.
+        // If an extension transforms the text, use the transformed text.
+        let effective_text = if let Some(ref rt) = self.extension_runtime {
+            match crate::core::extensions::dispatcher::dispatch_input(rt, text, "interactive").await
+            {
+                crate::core::extensions::dispatcher::InputEventResult::Handled => return,
+                crate::core::extensions::dispatcher::InputEventResult::Continue { text: t } => t,
+            }
+        } else {
+            text.to_string()
+        };
+
         let timestamp = chrono::Utc::now().timestamp_millis();
         let message = AgentMessage::User {
-            content: vec![ContentBlock::text(text)],
+            content: vec![ContentBlock::text(&effective_text)],
             timestamp,
         };
         // User message is persisted by the event subscriber on MessageEnd
-        self.session_manager.lock().unwrap().set_run_prompt(text);
+        self.session_manager.lock().unwrap().set_run_prompt(&effective_text);
         self.agent.process(vec![message]).await.ok();
     }
 

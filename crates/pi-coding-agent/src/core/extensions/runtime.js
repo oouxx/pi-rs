@@ -294,6 +294,25 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
     return null;
   }
 
+  if (eventType === "input") {
+    let curText = payload.text;
+    let curImages = payload.images;
+    for (const h of list) {
+      try {
+        const r = await h({ type: "input", text: curText, images: curImages, source: payload.source }, ctx);
+        if (!r) continue;
+        if (r.action === "handled") return { action: "handled" };
+        if (r.action === "transform") {
+          if (r.text !== undefined) curText = r.text;
+          if (r.images !== undefined) curImages = r.images;
+        }
+      } catch (e) {
+        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+      }
+    }
+    return { action: "continue", text: curText, images: curImages };
+  }
+
   // Default: fire-and-forget semantics.
   for (const h of list) {
     try { await h(payload, ctx); } catch (e) {

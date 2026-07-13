@@ -402,6 +402,55 @@ pub async fn dispatch_thinking_level_select(
 }
 
 // ============================================================================
+// input — intercept/transform user input before processing
+// ============================================================================
+
+/// Result from the `input` event.
+#[derive(Debug)]
+pub enum InputEventResult {
+    /// Continue with the (potentially transformed) text.
+    Continue { text: String },
+    /// Extension handled the input; discard it.
+    Handled,
+}
+
+/// Dispatch the `input` event to extensions, allowing them to intercept or
+/// transform user input before it is processed.
+///
+/// The JS side chains handlers serially: each handler sees text/images modified
+/// by the previous handler. `action: "handled"` short-circuits immediately.
+/// `action: "transform"` modifies text and continues. `action: "continue"`
+/// or undefined continues to the next handler. If all handlers return continue,
+/// the final (potentially transformed) text is returned.
+pub async fn dispatch_input(
+    runtime: &ExtensionRuntime,
+    text: &str,
+    source: &str,
+) -> InputEventResult {
+    let payload = serde_json::json!({
+        "type": "input",
+        "text": text,
+        "source": source,
+    });
+    let res = runtime.dispatch_result("input", payload).await;
+    let res = match res {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[pi] input dispatch failed (fail-open): {e}");
+            return InputEventResult::Continue {
+                text: text.to_string(),
+            };
+        }
+    };
+    match res.get("action").and_then(|v| v.as_str()) {
+        Some("handled") => InputEventResult::Handled,
+        _ => InputEventResult::Continue {
+            text: res.get("text").and_then(|v| v.as_str()).unwrap_or(text).to_string(),
+        },
+    }
+}
+
+// ============================================================================
 // fire-and-forget event name mapping from AgentEvent
 // ============================================================================
 

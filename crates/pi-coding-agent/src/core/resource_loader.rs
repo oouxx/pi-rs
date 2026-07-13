@@ -2,7 +2,6 @@ use std::path::Path;
 
 use crate::config;
 use crate::core::diagnostics::ResourceDiagnostic;
-use crate::core::extensions::{self, LoadExtensionsOptions, LoadedExtension};
 use crate::core::prompt_templates::{self, LoadPromptTemplatesOptions, PromptTemplate};
 use crate::core::skills::{self, LoadSkillsOptions, Skill};
 
@@ -20,7 +19,6 @@ pub struct ResourceLoaderOptions {
 pub struct LoadedResources {
     pub skills: Vec<Skill>,
     pub prompt_templates: Vec<PromptTemplate>,
-    pub extensions: Vec<LoadedExtension>,
     pub context_files: Vec<ContextFile>,
     pub diagnostics: Vec<ResourceDiagnostic>,
 }
@@ -50,20 +48,11 @@ pub fn load_all_resources(options: &ResourceLoaderOptions) -> LoadedResources {
     });
     all_diagnostics.extend(prompts_result.diagnostics);
 
-    let ext_result = extensions::load_extensions(&LoadExtensionsOptions {
-        cwd: options.cwd.clone(),
-        agent_dir: options.agent_dir.clone(),
-        extension_paths: options.extension_paths.clone(),
-        include_defaults: options.include_defaults,
-    });
-    all_diagnostics.extend(ext_result.diagnostics);
-
     let context_files = load_context_files(&options.cwd);
 
     LoadedResources {
         skills: skills_result.skills,
         prompt_templates: prompts_result.templates,
-        extensions: ext_result.extensions,
         context_files,
         diagnostics: all_diagnostics,
     }
@@ -114,7 +103,6 @@ mod tests {
         };
         let result = load_all_resources(&opts);
         assert!(result.skills.is_empty());
-        assert!(result.extensions.is_empty());
         assert!(result.context_files.is_empty());
     }
 }

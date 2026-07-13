@@ -408,8 +408,11 @@ pub async fn dispatch_thinking_level_select(
 /// Result from the `input` event.
 #[derive(Debug)]
 pub enum InputEventResult {
-    /// Continue with the (potentially transformed) text.
-    Continue { text: String },
+    /// Continue with the (potentially transformed) text and images.
+    Continue {
+        text: String,
+        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
+    },
     /// Extension handled the input; discard it.
     Handled,
 }
@@ -421,16 +424,18 @@ pub enum InputEventResult {
 /// by the previous handler. `action: "handled"` short-circuits immediately.
 /// `action: "transform"` modifies text and continues. `action: "continue"`
 /// or undefined continues to the next handler. If all handlers return continue,
-/// the final (potentially transformed) text is returned.
+/// the final (potentially transformed) text and images are returned.
 pub async fn dispatch_input(
     runtime: &ExtensionRuntime,
     text: &str,
     source: &str,
+    images: Option<&[pi_agent_core::pi_ai_types::ContentBlock]>,
 ) -> InputEventResult {
     let payload = serde_json::json!({
         "type": "input",
         "text": text,
         "source": source,
+        "images": images,
     });
     let res = runtime.dispatch_result("input", payload).await;
     let res = match res {
@@ -439,14 +444,19 @@ pub async fn dispatch_input(
             eprintln!("[pi] input dispatch failed (fail-open): {e}");
             return InputEventResult::Continue {
                 text: text.to_string(),
+                images: images.map(|i| i.to_vec()).unwrap_or_default(),
             };
         }
     };
     match res.get("action").and_then(|v| v.as_str()) {
         Some("handled") => InputEventResult::Handled,
-        _ => InputEventResult::Continue {
-            text: res.get("text").and_then(|v| v.as_str()).unwrap_or(text).to_string(),
-        },
+        _ => {
+            let text = res.get("text").and_then(|v| v.as_str()).unwrap_or(text).to_string();
+            let images = res.get("images")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_else(|| images.map(|i| i.to_vec()).unwrap_or_default());
+            InputEventResult::Continue { text, images }
+        }
     }
 }
 

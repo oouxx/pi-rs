@@ -43,6 +43,8 @@ pub struct AgentSessionConfig {
     pub excluded_tool_names: Option<Vec<String>>,
     /// Extension tools loaded via the embedded runtime.
     pub extension_tools: Vec<ToolInfoSerde>,
+    /// Extension commands loaded via the embedded runtime.
+    pub extension_commands: Vec<crate::core::extensions::CommandInfoSerde>,
     /// Embedded extension runtime for calling extension tool handlers.
     pub extension_runtime: Option<std::sync::Arc<ExtensionRuntime>>,
     /// Loaded resources (skills, extensions, prompt templates).
@@ -101,6 +103,8 @@ pub struct AgentSession {
     /// Embedded extension runtime handle, retained so dispose() can stop the
     /// V8 thread gracefully. Tool closures hold their own Arc clones too.
     extension_runtime: Option<Arc<ExtensionRuntime>>,
+    /// Extension slash commands registered by loaded extensions.
+    extension_commands: Vec<crate::core::extensions::CommandInfoSerde>,
 }
 
 impl AgentSession {
@@ -260,6 +264,7 @@ impl AgentSession {
             excluded_tool_names: options.excluded_tool_names,
             _subscriptions: Vec::new(),
             extension_runtime: options.extension_runtime,
+            extension_commands: options.extension_commands,
         };
 
         // Register event-driven persistence subscriber, matching the original
@@ -392,6 +397,14 @@ impl AgentSession {
         &self.cwd
     }
 
+    pub fn get_extension_commands(&self) -> &[crate::core::extensions::CommandInfoSerde] {
+        &self.extension_commands
+    }
+
+    pub fn get_extension_runtime(&self) -> Option<Arc<ExtensionRuntime>> {
+        self.extension_runtime.clone()
+    }
+
     pub fn get_session_id(&self) -> String {
         self.session_manager.lock().unwrap().get_session_id().to_string()
     }
@@ -402,6 +415,19 @@ impl AgentSession {
 
     pub fn set_session_name(&mut self, name: &str) {
         self.session_manager.lock().unwrap().append_session_info(name);
+        // Dispatch session_info_changed to extensions
+        if let Some(ref rt) = self.extension_runtime {
+            tokio::spawn({
+                let rt = Arc::clone(rt);
+                let name = name.to_string();
+                async move {
+                    crate::core::extensions::dispatcher::dispatch_session_info_changed(
+                        &rt, Some(&name),
+                    )
+                    .await;
+                }
+            });
+        }
     }
 
     pub async fn is_streaming(&self) -> bool {
@@ -534,19 +560,53 @@ impl AgentSession {
         if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
             eprintln!("[pi] Failed to refresh session state before next turn: {e}");
         }
-        // Process any pending host commands from extension ops. The handler
-        // acknowledges all known commands; full async wiring to session methods
-        // (setModel, sendMessage, etc.) requires async-aware host command processing.
+        // Process any pending host commands from extension ops. Drain all
+        // commands, then route each to the real session method. Sync operations
+        // (session_manager, model_registry) are called directly; async operations
+        // that require AgentSession access are logged as deferred.
         if let Some(ref rt) = self.extension_runtime {
-            rt.process_host_commands(|function, _args| {
-                match function {
-                    "set_model" | "send_message" | "send_user_message" | "set_session_name"
-                    | "set_label" | "set_thinking_level" | "register_provider"
-                    | "unregister_provider" | "new_session" | "fork" | "switch_session"
-                    | "reload" => Ok(serde_json::json!({})),
-                    _ => Err(format!("unknown host function: {}", function)),
+            let cmds = rt.drain_host_commands();
+            if !cmds.is_empty() {
+                let sm = self.session_manager.clone();
+                for cmd in cmds {
+                    let result = match cmd.function.as_str() {
+                        "set_session_name" => {
+                            let name = cmd.args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            sm.lock().unwrap().append_session_info(name);
+                            Ok(serde_json::json!({}))
+                        }
+                        "set_label" => {
+                            let entry_id = cmd.args.get("entryId").and_then(|v| v.as_str()).unwrap_or("");
+                            let label = cmd.args.get("label").and_then(|v| v.as_str());
+                            sm.lock().unwrap().set_label(entry_id, label);
+                            Ok(serde_json::json!({}))
+                        }
+                        "append_entry" => {
+                            let custom_type = cmd.args.get("customType").and_then(|v| v.as_str()).unwrap_or("");
+                            let data = cmd.args.get("data").cloned();
+                            sm.lock().unwrap().append_custom_message_entry(
+                                custom_type,
+                                data.unwrap_or(serde_json::Value::Null),
+                                true,
+                                None,
+                            );
+                            Ok(serde_json::json!({}))
+                        }
+                        // Async operations that require AgentSession access.
+                        // Full wiring requires passing a session handle or refactoring
+                        // the host command processing to be async-aware.
+                        "set_model" | "send_message" | "send_user_message"
+                        | "set_thinking_level" | "register_provider"
+                        | "unregister_provider" | "new_session" | "fork"
+                        | "switch_session" | "reload" => {
+                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
+                            Ok(serde_json::json!({}))
+                        }
+                        _ => Err(format!("unknown host function: {}", cmd.function)),
+                    };
+                    let _ = cmd.reply.send(result);
                 }
-            });
+            }
         }
         self.add_user_text(text).await;
     }
@@ -576,7 +636,9 @@ impl AgentSession {
         let timestamp = chrono::Utc::now().timestamp_millis();
         let message = AgentMessage::User { content, timestamp };
         // User message is persisted by the event subscriber on MessageEnd
-        self.session_manager.lock().unwrap().set_run_prompt(&text);
+        if let Ok(mut mgr) = self.session_manager.lock() {
+            mgr.set_run_prompt(&text);
+        }
         self.agent.process(vec![message]).await.ok();
     }
 
@@ -584,23 +646,27 @@ impl AgentSession {
         // Dispatch input event to extensions before processing.
         // If an extension handles the input, skip processing entirely.
         // If an extension transforms the text, use the transformed text.
-        let effective_text = if let Some(ref rt) = self.extension_runtime {
-            match crate::core::extensions::dispatcher::dispatch_input(rt, text, "interactive").await
+        let (effective_text, effective_images) = if let Some(ref rt) = self.extension_runtime {
+            match crate::core::extensions::dispatcher::dispatch_input(rt, text, "interactive", None).await
             {
                 crate::core::extensions::dispatcher::InputEventResult::Handled => return,
-                crate::core::extensions::dispatcher::InputEventResult::Continue { text: t } => t,
+                crate::core::extensions::dispatcher::InputEventResult::Continue { text: t, images } => (t, images),
             }
         } else {
-            text.to_string()
+            (text.to_string(), Vec::new())
         };
 
         let timestamp = chrono::Utc::now().timestamp_millis();
+        let mut content = vec![ContentBlock::text(&effective_text)];
+        content.extend(effective_images);
         let message = AgentMessage::User {
-            content: vec![ContentBlock::text(&effective_text)],
+            content,
             timestamp,
         };
         // User message is persisted by the event subscriber on MessageEnd
-        self.session_manager.lock().unwrap().set_run_prompt(&effective_text);
+        if let Ok(mut mgr) = self.session_manager.lock() {
+            mgr.set_run_prompt(&effective_text);
+        }
         self.agent.process(vec![message]).await.ok();
     }
 
@@ -623,6 +689,24 @@ impl AgentSession {
                 &model_id,
                 Some(&previous_model_id),
                 "set",
+            )
+            .await;
+        }
+    }
+
+    /// Set the thinking level on the agent.
+    /// Dispatches `thinking_level_select` to extensions.
+    pub async fn set_thinking_level(&mut self, level: &str) {
+        let previous_level = self.agent.state().await.thinking_level.clone();
+        let mut state = self.agent.state().await;
+        state.thinking_level = level.to_string();
+        drop(state);
+        // Dispatch thinking_level_select to extensions (fire-and-forget)
+        if let Some(ref rt) = self.extension_runtime {
+            crate::core::extensions::dispatcher::dispatch_thinking_level_select(
+                rt,
+                level,
+                &previous_level,
             )
             .await;
         }

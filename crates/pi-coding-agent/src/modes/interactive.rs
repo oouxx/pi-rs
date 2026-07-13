@@ -24,6 +24,8 @@ enum AgentCmd {
     CycleThinkingLevel,
     NewSession(Option<String>),
     SetSessionName(String),
+    ExtensionCommand(String, String),
+    ReloadExtensions,
 }
 
 /// Run the interactive TUI mode.
@@ -103,7 +105,24 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
                         }
-                    }
+                        AgentCmd::ExtensionCommand(cmd_name, args) => {
+                            // Dispatch extension command to the extension runtime.
+                            // The JS handler registered via pi.registerCommand handles it.
+                            if let Some(rt) = sess.get_extension_runtime() {
+                                let payload = serde_json::json!({
+                                    "type": "slash_command",
+                                    "command": cmd_name,
+                                    "args": args,
+                                });
+                                let _ = rt.dispatch_fire_and_forget("slash_command", payload).await;
+                            }
+                        }
+                        AgentCmd::ReloadExtensions => {
+                            if let Some(rt) = sess.get_extension_runtime() {
+                                let cwd = sess.get_cwd().to_string();
+                                let _ = rt.reload(&cwd, None, &[]).await;
+                            }
+                        }
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
             }
@@ -197,7 +216,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         if !text.is_empty() {
                             // Handle slash commands
                             if text.starts_with('/') {
-                                handle_slash_command(&text, &cmd_tx, &mut tui_model);
+                                let ext_cmds = session.get_extension_commands().to_vec();
+                                handle_slash_command(&text, &cmd_tx, &mut tui_model, &ext_cmds);
                             } else {
                                 tui_model.input.clear();
                                 tui_model.messages.push(app::Message { role: "user".into(), text: text.clone() });
@@ -224,7 +244,12 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 }
 
 /// Handle slash commands, matching the original slash command handling.
-fn handle_slash_command(text: &str, cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCmd>, model: &mut pi_tui::Model) {
+fn handle_slash_command(
+    text: &str,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCmd>,
+    model: &mut pi_tui::Model,
+    extension_commands: &[crate::core::extensions::CommandInfoSerde],
+) {
     let parts: Vec<&str> = text.splitn(2, ' ').collect();
     let command = parts[0];
     let args = parts.get(1).copied().unwrap_or("");
@@ -255,10 +280,28 @@ fn handle_slash_command(text: &str, cmd_tx: &tokio::sync::mpsc::UnboundedSender<
                 text: "Commands: /new, /name <name>, /model <provider>/<id>, /help, /quit".into(),
             });
         }
+        "/reload" => {
+            let _ = cmd_tx.send(AgentCmd::ReloadExtensions);
+            model.messages.push(app::Message {
+                role: "system".into(),
+                text: "Reloading extensions...".into(),
+            });
+        }
         "/quit" | "/exit" => {
             // Handled by the main loop
         }
         _ => {
+            // Check if this is an extension command
+            let cmd_name = &command[1..]; // strip leading '/'
+            let is_ext_cmd = extension_commands.iter().any(|c| c.name == cmd_name);
+            if is_ext_cmd {
+                let _ = cmd_tx.send(AgentCmd::ExtensionCommand(cmd_name.to_string(), args.to_string()));
+                model.messages.push(app::Message {
+                    role: "system".into(),
+                    text: format!("Running extension command: /{}", cmd_name),
+                });
+                return;
+            }
             // Unknown command - send as regular message
             model.input.clear();
             model.messages.push(app::Message { role: "user".into(), text: text.to_string() });

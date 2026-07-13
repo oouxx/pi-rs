@@ -228,6 +228,7 @@ pub async fn create_agent_session(
 
     // ── Extension embedded runtime ────────────────────────────────────
     let mut extension_tools: Vec<ToolInfoSerde> = Vec::new();
+    let mut extension_commands: Vec<crate::core::extensions::CommandInfoSerde> = Vec::new();
     let mut extension_runtime: Option<Arc<ExtensionRuntime>> = None;
 
     if options.enable_extensions {
@@ -244,6 +245,7 @@ pub async fn create_agent_session(
                     {
                         Ok(result) => {
                             extension_tools = result.tools;
+                            extension_commands = result.commands;
                             if !result.errors.is_empty() {
                                 for err in &result.errors {
                                     eprintln!("[pi] Extension load warning: {} — {}", err.path, err.error);
@@ -301,6 +303,7 @@ pub async fn create_agent_session(
         allowed_tool_names,
         excluded_tool_names,
         extension_tools,
+        extension_commands,
         extension_runtime,
         resources: None,
     };

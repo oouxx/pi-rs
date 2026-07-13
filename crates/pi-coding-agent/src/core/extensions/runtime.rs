@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use deno_core::v8;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use pi_agent_core::pi_ai_types::ToolExecutionMode;
 use pi_agent_core::types::{AgentTool, AgentToolResult};
@@ -40,7 +40,7 @@ pub enum ExtensionError {
 /// that never exits must not block the caller (and the dropping thread)
 /// forever — the old Bun sidecar had a 30s JSON-RPC timeout; this is the
 /// embedded-runtime equivalent.
-const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(crate) const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Await a oneshot reply with the standard command deadline. A closed channel
 /// maps to `ChannelClosed`; an elapsed deadline maps to `Timeout`.
@@ -89,6 +89,8 @@ enum RuntimeCommand {
         cwd: String,
         agent_dir: Option<String>,
         paths: Vec<String>,
+        mode: String,
+        has_ui: bool,
         reply: oneshot::Sender<Result<LoadResult, ExtensionError>>,
     },
     CallTool {
@@ -103,19 +105,13 @@ enum RuntimeCommand {
         result_returning: bool,
         reply: oneshot::Sender<Result<serde_json::Value, ExtensionError>>,
     },
-    /// V8 thread calls back to the host (main thread) for a synchronous
-    /// operation. Used by ops that need host state (ctx methods, message
-    /// injection, session management, etc.).
-    CallHost {
-        function: String,
-        args: serde_json::Value,
-        reply: oneshot::Sender<Result<serde_json::Value, ExtensionError>>,
-    },
     /// Hot-reload: clear JS registries, re-discover, and re-load extensions.
     Reload {
         cwd: String,
         agent_dir: Option<String>,
         paths: Vec<String>,
+        mode: String,
+        has_ui: bool,
         reply: oneshot::Sender<Result<LoadResult, ExtensionError>>,
     },
     Stop {
@@ -141,7 +137,7 @@ pub struct ExtensionErrorEvent {
 pub struct ExtensionRuntime {
     tx: mpsc::UnboundedSender<RuntimeCommand>,
     host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>>,
-    error_tx: mpsc::UnboundedSender<ExtensionErrorEvent>,
+    error_tx: broadcast::Sender<ExtensionErrorEvent>,
     _join: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
@@ -155,12 +151,13 @@ impl ExtensionRuntime {
         let (tx, rx) = mpsc::unbounded_channel::<RuntimeCommand>();
         let host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (error_tx, _error_rx) = mpsc::unbounded_channel::<ExtensionErrorEvent>();
+        let (error_tx, _) = broadcast::channel::<ExtensionErrorEvent>(64);
         let host_cmds = Arc::clone(&host_commands);
+        let err_tx = error_tx.clone();
         let join = std::thread::Builder::new()
             .name("pi-extension-runtime".into())
             .spawn(move || {
-                runtime_thread_main(rx, host_cmds);
+                runtime_thread_main(rx, host_cmds, err_tx);
             })
             .map_err(|e| ExtensionError::Runtime(format!("failed to spawn extension runtime thread: {e}")))?;
         Ok(Self {
@@ -173,13 +170,20 @@ impl ExtensionRuntime {
 
     /// Subscribe to extension error events. Returns a receiver that yields
     /// `ExtensionErrorEvent` values as they occur.
-    pub fn on_error(&self) -> mpsc::UnboundedReceiver<ExtensionErrorEvent> {
-        let (new_tx, rx) = mpsc::unbounded_channel();
-        // Forward from the internal error channel to the new receiver.
-        // In a full implementation, this would fan out to multiple subscribers.
-        let forward_tx = self.error_tx.clone();
-        let _ = forward_tx; // Placeholder: wire into JS handler exception path
-        rx
+    pub fn on_error(&self) -> broadcast::Receiver<ExtensionErrorEvent> {
+        self.error_tx.subscribe()
+    }
+
+    /// Emit an error event from an extension handler. Called from the V8 thread
+    /// when a JS handler throws an exception. The error is broadcast to all
+    /// subscribers; if no subscriber is listening, the event is silently dropped
+    /// (broadcast capacity of 64 prevents backpressure).
+    pub fn emit_error(&self, extension_path: &str, event: &str, error: &str) {
+        let _ = self.error_tx.send(ExtensionErrorEvent {
+            extension_path: extension_path.to_string(),
+            event: event.to_string(),
+            error: error.to_string(),
+        });
     }
 
     pub async fn load(
@@ -193,6 +197,8 @@ impl ExtensionRuntime {
             cwd: cwd.to_string(),
             agent_dir: agent_dir.map(String::from),
             paths: paths.to_vec(),
+            mode: "rpc".to_string(),
+            has_ui: false,
             reply,
         })?;
         await_reply(rx).await?
@@ -266,22 +272,8 @@ impl ExtensionRuntime {
             cwd: cwd.to_string(),
             agent_dir: agent_dir.map(|s| s.to_string()),
             paths: paths.to_vec(),
-            reply,
-        })?;
-        await_reply(rx).await?
-    }
-
-    /// Call a host function from the V8 thread. The function is executed on the
-    /// main thread and the result is returned. Used by ops that need host state.
-    pub async fn call_host(
-        &self,
-        function: &str,
-        args: serde_json::Value,
-    ) -> Result<serde_json::Value, ExtensionError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx.send(RuntimeCommand::CallHost {
-            function: function.to_string(),
-            args,
+            mode: "rpc".to_string(),
+            has_ui: false,
             reply,
         })?;
         await_reply(rx).await?
@@ -295,7 +287,9 @@ impl ExtensionRuntime {
         if guard.is_empty() {
             return None;
         }
-        Some(guard.remove(0))
+        // Use swap_remove (O(1)) instead of remove(0) (O(n)) to avoid O(n²)
+        // drain cost when draining many commands.
+        Some(guard.swap_remove(0))
     }
 
     /// Process all pending host commands using the provided handler closure.
@@ -309,6 +303,17 @@ impl ExtensionRuntime {
             let result = handler(&cmd.function, &cmd.args);
             let _ = cmd.reply.send(result);
         }
+    }
+
+    /// Drain all pending host commands and return them for async processing.
+    /// The caller is responsible for sending replies via each command's `reply`
+    /// channel. Returns an empty Vec if no commands are pending.
+    pub fn drain_host_commands(&self) -> Vec<super::ops::HostCommand> {
+        let mut guard = match self.host_commands.lock() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        std::mem::take(&mut *guard)
     }
 }
 
@@ -340,13 +345,25 @@ impl Drop for ExtensionRuntime {
 fn runtime_thread_main(
     mut rx: mpsc::UnboundedReceiver<RuntimeCommand>,
     host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>>,
+    error_tx: broadcast::Sender<ExtensionErrorEvent>,
 ) {
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("failed to build extension runtime tokio runtime");
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            // Fail-open: surface the failure rather than panicking the dedicated
+            // runtime thread (a panic here would take the whole process down on
+            // some configurations). With no runtime, the thread simply exits;
+            // callers already degrade to no-extensions mode when commands go
+            // unanswered (CommandTimeout / channel closed).
+            eprintln!("[pi] failed to build extension runtime tokio runtime: {e}");
+            return;
+        }
+    };
     rt.block_on(async move {
-        let mut js = build_js_runtime(host_commands);
+        let mut js = build_js_runtime(host_commands, error_tx);
 
         // The extension! esm_entry_point loads runtime.js on init; drain the
         // event loop to settle any pending evaluation. A failure here means the
@@ -362,9 +379,11 @@ fn runtime_thread_main(
                     cwd,
                     agent_dir,
                     paths,
+                    mode,
+                    has_ui,
                     reply,
                 } => {
-                    let res = handle_load(&mut js, &cwd, agent_dir.as_deref(), &paths).await;
+                    let res = handle_load(&mut js, &cwd, agent_dir.as_deref(), &paths, &mode, has_ui).await;
                     let _ = reply.send(res);
                 }
                 RuntimeCommand::CallTool {
@@ -385,28 +404,28 @@ fn runtime_thread_main(
                     let res = handle_dispatch(&mut js, &event_type, &payload, result_returning).await;
                     let _ = reply.send(res);
                 }
-                RuntimeCommand::CallHost {
-                    function,
-                    args,
-                    reply,
-                } => {
-                    // Host callbacks are handled by the main thread. For now,
-                    // return an error — the host-side handler will be wired in
-                    // a follow-up.
-                    let _ = reply.send(Err(ExtensionError::Runtime(
-                        format!("host function '{}' not yet wired", function),
-                    )));
-                }
                 RuntimeCommand::Reload {
                     cwd,
                     agent_dir,
                     paths,
+                    mode,
+                    has_ui,
                     reply,
                 } => {
                     // Clear JS registries, re-discover, and re-load.
-                    let _ = js.execute_script("<pi-clear>", "globalThis.__piClearRegistries()");
+                    if let Err(e) = js.execute_script("<pi-clear>", "globalThis.__piClearRegistries()") {
+                        eprintln!("[pi] extension reload: __piClearRegistries failed: {e}");
+                    }
                     let _ = js.run_event_loop(Default::default()).await;
-                    let res = handle_load(&mut js, &cwd, agent_dir.as_deref(), &paths).await;
+                    // Filter to only reloadable extensions. Non-reloadable extensions
+                    // (loaded via `-e` explicit path) are excluded from reload.
+                    let discovered = discover_extensions(&cwd, agent_dir.as_deref(), &paths);
+                    let reloadable_paths: Vec<String> = discovered
+                        .iter()
+                        .filter(|ext| ext.reloadable)
+                        .map(|ext| ext.path.to_string_lossy().to_string())
+                        .collect();
+                    let res = handle_load(&mut js, &cwd, agent_dir.as_deref(), &reloadable_paths, &mode, has_ui).await;
                     let _ = reply.send(res);
                 }
                 RuntimeCommand::Stop { reply } => {
@@ -422,6 +441,7 @@ fn runtime_thread_main(
 
 fn build_js_runtime(
     host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>>,
+    error_tx: broadcast::Sender<ExtensionErrorEvent>,
 ) -> deno_core::JsRuntime {
     let loader = std::rc::Rc::new(TsModuleLoader::new());
     let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
@@ -432,6 +452,7 @@ fn build_js_runtime(
     // Put the PiOpState into OpState so ops can borrow it.
     let mut pi_state = PiOpState::new();
     pi_state.host_commands = Some(host_commands);
+    pi_state.error_tx = Some(error_tx);
     js.op_state().borrow_mut().put(pi_state);
     js
 }
@@ -446,23 +467,44 @@ async fn handle_load(
     cwd: &str,
     agent_dir: Option<&str>,
     paths: &[String],
+    mode: &str,
+    has_ui: bool,
 ) -> Result<LoadResult, ExtensionError> {
     // Clear JS-side registries for a fresh load.
-    let _ = js.execute_script("<pi-clear>", "globalThis.__piClearRegistries()");
+    if let Err(e) = js.execute_script("<pi-clear>", "globalThis.__piClearRegistries()") {
+        eprintln!("[pi] extension load: __piClearRegistries failed: {e}");
+    }
     let _ = js.run_event_loop(Default::default()).await;
 
     // Tell the JS shim the session cwd so pi.exec defaults to it (mirrors the
-    // original pi: options?.cwd ?? runner.cwd).
-    let set_cwd = format!(
-        "globalThis.__piSetCwd({})",
-        serde_json::to_string(cwd).unwrap_or_else(|_| "\"/\"".into())
-    );
-    let _ = js.execute_script("<pi-set-cwd>", set_cwd);
+    // original pi: options?.cwd ?? runner.cwd). A &str serializing to JSON
+    // cannot fail for valid UTF-8; if it ever does, surface it rather than
+    // silently substituting "/" (which would feed extensions a wrong cwd).
+    let cwd_json = match serde_json::to_string(cwd) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[pi] extension load: cwd serialization failed ({e}); using \"\"");
+            "\"\"".to_string()
+        }
+    };
+    let set_cwd = format!("globalThis.__piSetCwd({cwd_json})");
+    if let Err(e) = js.execute_script("<pi-set-cwd>", set_cwd) {
+        eprintln!("[pi] extension load: __piSetCwd failed: {e}");
+    }
 
-    // Set the context mode (default: rpc, no UI). The mode is passed from the
-    // host so extensions see the correct ctx.mode / ctx.hasUI values.
-    let set_mode = "globalThis.__piSetContextMode(\"rpc\", false)";
-    let _ = js.execute_script("<pi-set-mode>", set_mode);
+    // Set the context mode so extensions see the correct ctx.mode / ctx.hasUI.
+    let mode_json = match serde_json::to_string(mode) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[pi] extension load: mode serialization failed ({e}); using \"rpc\"");
+            "\"rpc\"".to_string()
+        }
+    };
+    let has_ui_json = if has_ui { "true" } else { "false" };
+    let set_mode = format!("globalThis.__piSetContextMode({mode_json}, {has_ui_json})");
+    if let Err(e) = js.execute_script("<pi-set-mode>", set_mode) {
+        eprintln!("[pi] extension load: __piSetContextMode failed: {e}");
+    }
 
     let discovered = discover_extensions(cwd, agent_dir, paths);
     let mut tools: Vec<ToolInfoSerde> = Vec::new();

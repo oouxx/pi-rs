@@ -201,14 +201,20 @@ globalThis.__piLoadExtension = async (specifier) => {
   await factory(pi);
 };
 
+// Helper to log and emit an extension error.
+function emitExtensionError(eventType, error) {
+  const msg = String(error && error.stack || error);
+  try { Deno.core.ops.op_pi_log(msg); } catch {}
+  try { Deno.core.ops.op_pi_emit_error("runtime.js", eventType, msg); } catch {}
+}
+
 // Fire-and-forget dispatch: serial await, results ignored.
 globalThis.__piDispatch = async (eventType, payload) => {
   const ctx = makeContext(payload && payload.cwd);
   const list = handlers.get(eventType) ?? [];
   for (const h of list) {
     try { await h(payload, ctx); } catch (e) {
-      // Best-effort: log via op, don't break the dispatch chain.
-      try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+      emitExtensionError(eventType, e);
     }
   }
   return null;
@@ -225,7 +231,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
         const r = await h(payload, ctx);
         if (r && r.block) return { block: true, reason: r.reason };
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return { block: false };
@@ -240,13 +246,17 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
     let modified = false;
     for (const h of list) {
       try {
-        const r = await h(payload, ctx);
+        // Pass the accumulated `cur` (not the original payload) so later
+        // handlers in a multi-extension chain see prior handlers' modifications
+        // -- mirrors runner.ts and the message_end/context/before_provider_request
+        // branches below.
+        const r = await h({ ...payload, content: cur.content, details: cur.details, isError: cur.isError }, ctx);
         if (!r) continue;
         if (r.content !== undefined) { cur.content = r.content; modified = true; }
         if (r.details !== undefined) { cur.details = r.details; modified = true; }
         if (r.isError !== undefined) { cur.isError = r.isError; modified = true; }
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return modified ? cur : null;
@@ -262,7 +272,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
           cur = r.message; modified = true;
         }
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return modified ? { message: cur } : null;
@@ -275,7 +285,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
         const r = await h({ type: "context", messages: cur }, ctx);
         if (r && r.messages) cur = r.messages;
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return { messages: cur };
@@ -288,7 +298,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
         const r = await h({ type: "before_provider_request", payload: cur }, ctx);
         if (r !== undefined) cur = r;
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return { payload: cur };
@@ -300,7 +310,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
         const r = await h(payload, ctx);
         if (r !== undefined) return r;
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return null;
@@ -316,7 +326,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
         if (r.promptPaths) result.promptPaths.push(...r.promptPaths);
         if (r.themePaths) result.themePaths.push(...r.themePaths);
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return result;
@@ -330,7 +340,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
           return { trusted: r.trusted, remember: r.remember === true };
         }
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return null;
@@ -349,7 +359,7 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
           if (r.images !== undefined) curImages = r.images;
         }
       } catch (e) {
-        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+        emitExtensionError(eventType, e);
       }
     }
     return { action: "continue", text: curText, images: curImages };

@@ -114,6 +114,7 @@ pub struct PiOpState {
     pub shortcuts: Rc<RefCell<Vec<ShortcutInfoSerde>>>,
     pub flags: Rc<RefCell<Vec<FlagOptionsSerde>>>,
     pub host_commands: Option<Arc<std::sync::Mutex<Vec<HostCommand>>>>,
+    pub error_tx: Option<tokio::sync::broadcast::Sender<super::runtime::ExtensionErrorEvent>>,
 }
 
 impl PiOpState {
@@ -123,6 +124,7 @@ impl PiOpState {
             shortcuts: Rc::new(RefCell::new(Vec::new())),
             flags: Rc::new(RefCell::new(Vec::new())),
             host_commands: None,
+            error_tx: None,
         }
     }
 }
@@ -207,7 +209,35 @@ pub fn op_pi_get_commands(state: &mut OpState) -> Result<Vec<CommandInfoSerde>, 
 }
 
 // ============================================================================
-// Message injection ops (stubs — full impl requires RuntimeCommand variants)
+// Helper: push a HostCommand onto the shared Vec
+// ============================================================================
+
+/// Push a host command onto the shared Vec for main-thread processing.
+/// Returns `true` if the command was queued, `false` if no host_commands channel
+/// is available (e.g. runtime not yet initialized).
+fn push_host_command(
+    state: &mut OpState,
+    function: &str,
+    args: serde_json::Value,
+) -> bool {
+    let pi_state = state.borrow_mut::<PiOpState>();
+    if let Some(ref host_cmds) = pi_state.host_commands {
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let cmd = HostCommand {
+            function: function.to_string(),
+            args,
+            reply,
+        };
+        if let Ok(mut guard) = host_cmds.lock() {
+            guard.push(cmd);
+            return true;
+        }
+    }
+    false
+}
+
+// ============================================================================
+// Message injection ops
 // ============================================================================
 
 #[op2]
@@ -217,18 +247,11 @@ pub fn op_pi_send_message(
     #[string] custom_type: String,
     #[string] content: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (_reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "send_message".into(),
-            args: serde_json::json!({ "customType": custom_type, "content": content }),
-            reply: _reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "send_message",
+        serde_json::json!({ "customType": custom_type, "content": content }),
+    );
     Ok(())
 }
 
@@ -238,18 +261,11 @@ pub fn op_pi_send_user_message(
     state: &mut OpState,
     #[string] content: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (_reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "send_user_message".into(),
-            args: serde_json::json!({ "content": content }),
-            reply: _reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "send_user_message",
+        serde_json::json!({ "content": content }),
+    );
     Ok(())
 }
 
@@ -260,18 +276,11 @@ pub fn op_pi_append_entry(
     #[string] custom_type: String,
     #[serde] data: Option<serde_json::Value>,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (_reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "append_entry".into(),
-            args: serde_json::json!({ "customType": custom_type, "data": data }),
-            reply: _reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "append_entry",
+        serde_json::json!({ "customType": custom_type, "data": data }),
+    );
     Ok(())
 }
 
@@ -285,18 +294,11 @@ pub fn op_pi_set_session_name(
     state: &mut OpState,
     #[string] name: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "set_session_name".into(),
-            args: serde_json::json!({ "name": name }),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "set_session_name",
+        serde_json::json!({ "name": name }),
+    );
     Ok(())
 }
 
@@ -311,18 +313,11 @@ pub fn op_pi_set_label(
     #[string] entry_id: String,
     #[string] label: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "set_label".into(),
-            args: serde_json::json!({ "entryId": entry_id, "label": label }),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "set_label",
+        serde_json::json!({ "entryId": entry_id, "label": label }),
+    );
     Ok(())
 }
 
@@ -336,18 +331,11 @@ pub fn op_pi_set_model(
     state: &mut OpState,
     #[string] model: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "set_model".into(),
-            args: serde_json::json!({ "model": model }),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "set_model",
+        serde_json::json!({ "model": model }),
+    );
     Ok(())
 }
 
@@ -357,18 +345,11 @@ pub fn op_pi_set_thinking_level(
     state: &mut OpState,
     #[string] level: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "set_thinking_level".into(),
-            args: serde_json::json!({ "level": level }),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "set_thinking_level",
+        serde_json::json!({ "level": level }),
+    );
     Ok(())
 }
 
@@ -383,18 +364,11 @@ pub fn op_pi_register_provider(
     #[string] name: String,
     #[serde] config: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "register_provider".into(),
-            args: serde_json::json!({ "name": name, "config": config }),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "register_provider",
+        serde_json::json!({ "name": name, "config": config }),
+    );
     Ok(())
 }
 
@@ -404,18 +378,11 @@ pub fn op_pi_unregister_provider(
     state: &mut OpState,
     #[string] name: String,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "unregister_provider".into(),
-            args: serde_json::json!({ "name": name }),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(
+        state,
+        "unregister_provider",
+        serde_json::json!({ "name": name }),
+    );
     Ok(())
 }
 
@@ -492,18 +459,7 @@ pub fn op_pi_new_session(
     state: &mut OpState,
     #[serde] _options: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "new_session".into(),
-            args: serde_json::json!({}),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(state, "new_session", serde_json::json!({}));
     Ok(())
 }
 
@@ -514,18 +470,7 @@ pub fn op_pi_fork(
     #[string] _entry_id: String,
     #[serde] _options: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "fork".into(),
-            args: serde_json::json!({}),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(state, "fork", serde_json::json!({}));
     Ok(())
 }
 
@@ -536,18 +481,7 @@ pub fn op_pi_switch_session(
     #[string] _session_path: String,
     #[serde] _options: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "switch_session".into(),
-            args: serde_json::json!({}),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(state, "switch_session", serde_json::json!({}));
     Ok(())
 }
 
@@ -556,18 +490,7 @@ pub fn op_pi_switch_session(
 pub fn op_pi_reload(
     state: &mut OpState,
 ) -> Result<(), JsErrorBox> {
-    let pi_state = state.borrow_mut::<PiOpState>();
-    if let Some(ref host_cmds) = pi_state.host_commands {
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let cmd = HostCommand {
-            function: "reload".into(),
-            args: serde_json::json!({}),
-            reply,
-        };
-        if let Ok(mut guard) = host_cmds.lock() {
-            guard.push(cmd);
-        }
-    }
+    push_host_command(state, "reload", serde_json::json!({}));
     Ok(())
 }
 
@@ -589,14 +512,20 @@ pub async fn op_pi_exec(
 ) -> Result<ExecResultSerde, JsErrorBox> {
     let cwd = options.cwd.clone().unwrap_or_else(|| ".".to_string());
     // Default a missing timeout so a runaway subprocess can't pin the V8
-    // thread forever (matching the old Bun sidecar's per-call timeout).
+    // thread forever (matching the old Bun sidecar's per-call timeout). Clamp
+    // any caller-supplied timeout to COMMAND_TIMEOUT: the main thread awaits
+    // the V8 reply with that deadline (await_reply), and the V8 command loop is
+    // strictly serial — an op running longer than COMMAND_TIMEOUT would let the
+    // caller time out first while the V8 thread stays occupied, starving every
+    // subsequently-queued dispatch.
     let timeout = options
         .timeout
         .map(std::time::Duration::from_secs)
-        .or_else(|| Some(std::time::Duration::from_secs(30)));
+        .map(|d| d.min(super::runtime::COMMAND_TIMEOUT))
+        .unwrap_or_else(|| std::time::Duration::from_secs(30));
     let exec_opts = ExecOptions {
         signal: None,
-        timeout,
+        timeout: Some(timeout),
         cwd: options.cwd.clone(),
     };
     let result = exec_command(&command, &args, &cwd, Some(exec_opts)).await;
@@ -620,6 +549,26 @@ pub fn op_pi_notify(
 #[op2(fast)]
 pub fn op_pi_log(#[string] message: String) {
     eprintln!("[pi extension] {message}");
+}
+
+#[op2(fast)]
+pub fn op_pi_emit_error(
+    state: &mut OpState,
+    #[string] extension_path: String,
+    #[string] event: String,
+    #[string] error: String,
+) -> Result<(), JsErrorBox> {
+    let pi_state = state.try_borrow_mut::<PiOpState>();
+    if let Some(pi) = pi_state {
+        if let Some(ref error_tx) = pi.error_tx {
+            let _ = error_tx.send(super::runtime::ExtensionErrorEvent {
+                extension_path,
+                event,
+                error,
+            });
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -663,6 +612,7 @@ deno_core::extension!(
         op_pi_exec,
         op_pi_notify,
         op_pi_log,
+        op_pi_emit_error,
     ],
     esm_entry_point = "ext:pi_extension/runtime.js",
     esm = [dir "src/core/extensions", "runtime.js"],

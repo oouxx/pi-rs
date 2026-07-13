@@ -1077,6 +1077,115 @@ impl AgentSession {
         self.agent.clear_all_queues().await;
     }
 
+    /// Retry the last turn, matching original retry().
+    /// Returns the new messages on success.
+    pub async fn retry(&self) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        self.agent.continue_run().await
+    }
+
+    // =========================================================================
+    // Export
+    // =========================================================================
+
+    /// Export the session as HTML, matching the original exportHTML().
+    /// Returns the HTML content as a string.
+    pub fn export_html(&self) -> String {
+        let mgr = self.session_manager.lock().unwrap();
+        let entries = mgr.get_entries();
+        let session_name = mgr.get_session_name().unwrap_or_else(|| "Session".to_string());
+        let session_id = mgr.get_session_id();
+        let cwd = mgr.get_cwd();
+
+        let mut html = String::new();
+        html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+        html.push_str("<meta charset=\"UTF-8\">\n");
+        html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+        html.push_str(&format!("<title>{}</title>\n", html_escape(&session_name)));
+        html.push_str("<style>\n");
+        html.push_str("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; color: #333; }\n");
+        html.push_str(".message { margin: 12px 0; padding: 12px; border-radius: 8px; }\n");
+        html.push_str(".message.user { background: #f0f7ff; border-left: 3px solid #4a90d9; }\n");
+        html.push_str(".message.assistant { background: #f5f5f5; border-left: 3px solid #6b7280; }\n");
+        html.push_str(".message.tool { background: #faf5ff; border-left: 3px solid #a855f7; font-family: monospace; font-size: 13px; }\n");
+        html.push_str(".message.error { background: #fef2f2; border-left: 3px solid #ef4444; }\n");
+        html.push_str(".message .role { font-weight: 600; font-size: 12px; text-transform: uppercase; color: #666; margin-bottom: 4px; }\n");
+        html.push_str(".message .content { white-space: pre-wrap; word-break: break-word; }\n");
+        html.push_str(".message .timestamp { font-size: 11px; color: #999; margin-top: 4px; }\n");
+        html.push_str(".header { text-align: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; }\n");
+        html.push_str(".header h1 { font-size: 20px; margin: 0; }\n");
+        html.push_str(".header .meta { font-size: 12px; color: #666; margin-top: 4px; }\n");
+        html.push_str("</style>\n</head>\n<body>\n");
+
+        // Header
+        html.push_str("<div class=\"header\">\n");
+        html.push_str(&format!("<h1>{}</h1>\n", html_escape(&session_name)));
+        html.push_str(&format!("<div class=\"meta\">Session: {} | CWD: {}</div>\n", html_escape(session_id), html_escape(cwd)));
+        html.push_str("</div>\n");
+
+        // Messages
+        for entry in entries {
+            match entry {
+                crate::core::session_manager::SessionEntry::Message { message, timestamp, .. } => {
+                    let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let css_class = match role {
+                        "user" => "user",
+                        "assistant" => "assistant",
+                        "toolResult" | "tool_result" => "tool",
+                        _ => "",
+                    };
+                    html.push_str(&format!("<div class=\"message {}\">\n", css_class));
+                    html.push_str(&format!("<div class=\"role\">{}</div>\n", html_escape(role)));
+                    html.push_str(&format!("<div class=\"content\">{}</div>\n", html_escape(content)));
+                    html.push_str(&format!("<div class=\"timestamp\">{}</div>\n", html_escape(timestamp)));
+                    html.push_str("</div>\n");
+                }
+                crate::core::session_manager::SessionEntry::Compaction { summary, timestamp, .. } => {
+                    html.push_str("<div class=\"message\" style=\"background: #fffbeb; border-left: 3px solid #f59e0b;\">\n");
+                    html.push_str("<div class=\"role\">Compaction</div>\n");
+                    html.push_str(&format!("<div class=\"content\">{}</div>\n", html_escape(summary)));
+                    html.push_str(&format!("<div class=\"timestamp\">{}</div>\n", html_escape(timestamp)));
+                    html.push_str("</div>\n");
+                }
+                crate::core::session_manager::SessionEntry::BranchSummary { summary, timestamp, .. } => {
+                    html.push_str("<div class=\"message\" style=\"background: #f0fdf4; border-left: 3px solid #22c55e;\">\n");
+                    html.push_str("<div class=\"role\">Branch Summary</div>\n");
+                    html.push_str(&format!("<div class=\"content\">{}</div>\n", html_escape(summary)));
+                    html.push_str(&format!("<div class=\"timestamp\">{}</div>\n", html_escape(timestamp)));
+                    html.push_str("</div>\n");
+                }
+                _ => {}
+            }
+        }
+
+        html.push_str("</body>\n</html>\n");
+        html
+    }
+
+    /// Export the session as HTML to a file, matching the original exportHTMLToFile().
+    /// Returns the file path on success.
+    pub fn export_html_to_file(&self, file_path: Option<&str>) -> Result<String, String> {
+        let html = self.export_html();
+        let path = file_path.map(|p| p.to_string()).unwrap_or_else(|| {
+            let mgr = self.session_manager.lock().unwrap();
+            let session_id = mgr.get_session_id();
+            format!("session_{}.html", session_id)
+        });
+        std::fs::write(&path, &html).map_err(|e| format!("Failed to write HTML file: {}", e))?;
+        Ok(path)
+    }
+}
+
+/// Escape HTML special characters.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+impl AgentSession {
     // =========================================================================
     // Session Lifecycle (switch / new / fork / import)
     // =========================================================================

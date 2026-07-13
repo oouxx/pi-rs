@@ -240,12 +240,12 @@
 | 分支摘要 | ✅ | ✅ `build_branch_summary_prompt()` | 已复刻 |
 | 树导航 | ✅ | ✅ `navigate_tree()` | 已复刻 |
 | 会话切换 | ✅ | ✅ `switch_session()` | 已复刻（含文件验证） |
-| 导出 HTML | ✅ | ❌ | **缺失** |
+| 导出 HTML | ✅ | ✅ `export_html()` / `export_html_to_file()` | 已复刻 |
 | 上下文使用统计 | ✅ | ✅ `context_usage.rs` | 已复刻 |
 | 事件总线 | ✅ | ✅ `event_bus.rs` | 已复刻 |
 | 技能块解析 | ✅ | ❌ | **缺失** |
-| 重试逻辑 | ✅ | ❌ | **缺失** |
-| 并发控制 | ✅ | ❌ | **缺失** |
+| 重试逻辑 | ✅ | ✅ `retry()` | 已复刻 |
+| 并发控制 | ✅ | ✅ `agent.steer()` / `agent.follow_up()` | 已复刻 |
 
 **进度：~40%** — 核心生命周期和工具管理已复刻，但压缩、分支、导航等高级功能缺失。
 
@@ -271,7 +271,7 @@
 | **SessionCwd** | **100%** | 完全复刻 |
 | **Messages** | **100%** | 完全复刻，Rust 版有增强 |
 | **Compaction** | **~85%** | 类型定义 + 核心逻辑 + 令牌估算 + 分支摘要 + 文件操作工具 |
-| **AgentSession** | **~70%** | 核心生命周期 + 压缩集成 + 树导航 + 会话切换 |
+| **AgentSession** | **~85%** | 核心生命周期 + 压缩集成 + 树导航 + 会话切换 + 导出 HTML + 重试 |
 | **测试覆盖** | **~40%** | SessionManager 35 个 + Compaction 18 个 |
 
 ### 待完成清单（按优先级排序）
@@ -287,10 +287,6 @@
 | 🟡 P1 | 并发会话列表加载 | `session_manager.rs` | 中 | ✅ 已完成 |
 | 🟢 P2 | 树导航 | `agent_session.rs` | 中 | ✅ 已完成 |
 | 🟢 P2 | 会话切换 | `agent_session.rs` | 中 | ✅ 已完成 |
-| 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ⏳ 待完成 |
-| 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ⏳ 待完成 |
-| 🟢 P2 | 测试补充 | `tests/` | 大 | ⏳ 待完成 |
-| 🟢 P2 | 分支摘要生成 | `compaction.rs` | 中 | ⏳ 待完成 |
-| 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ⏳ 待完成 |
-| 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ✅ 已完成 |
+| 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ✅ 已完成 |
 | 🟢 P2 | 测试补充 | `tests/` | 大 | ⏳ 待完成 |

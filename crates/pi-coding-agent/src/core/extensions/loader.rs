@@ -157,6 +157,9 @@ fn transpile(
 #[derive(Debug, Clone)]
 pub struct DiscoveredExtension {
     pub path: PathBuf,
+    /// Whether this extension can be hot-reloaded. Extensions loaded via `-e`
+    /// (explicit path) are not reloadable; project-local and global extensions are.
+    pub reloadable: bool,
 }
 
 /// Discover extension entrypoints from project-local, global, and explicit paths.
@@ -171,45 +174,45 @@ pub fn discover_extensions(
     let mut out: Vec<DiscoveredExtension> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    let add = |p: PathBuf, out: &mut Vec<DiscoveredExtension>, seen: &mut std::collections::HashSet<PathBuf>| {
+    let add = |p: PathBuf, reloadable: bool, out: &mut Vec<DiscoveredExtension>, seen: &mut std::collections::HashSet<PathBuf>| {
         if let Ok(canon) = p.canonicalize() {
             if seen.insert(canon) {
-                out.push(DiscoveredExtension { path: p });
+                out.push(DiscoveredExtension { path: p, reloadable });
             }
         } else if seen.insert(p.clone()) {
-            out.push(DiscoveredExtension { path: p });
+            out.push(DiscoveredExtension { path: p, reloadable });
         }
     };
 
-    // 1. Project-local: {cwd}/.pi-rs/extensions/
+    // 1. Project-local: {cwd}/.pi-rs/extensions/ (reloadable)
     let project_ext_dir = Path::new(cwd).join(".pi-rs").join("extensions");
     for ext in discover_in_dir(&project_ext_dir) {
-        add(ext, &mut out, &mut seen);
+        add(ext, true, &mut out, &mut seen);
     }
 
-    // 2. Global: {agent_dir}/extensions/
+    // 2. Global: {agent_dir}/extensions/ (reloadable)
     if let Some(agent) = agent_dir {
         let global_ext_dir = Path::new(agent).join("extensions");
         for ext in discover_in_dir(&global_ext_dir) {
-            add(ext, &mut out, &mut seen);
+            add(ext, true, &mut out, &mut seen);
         }
     }
 
-    // 3. Explicit paths
+    // 3. Explicit paths (NOT reloadable — loaded via `-e` flag)
     for raw in explicit_paths {
         let p = Path::new(raw);
         if !p.exists() {
             continue;
         }
         if p.is_file() {
-            add(p.to_path_buf(), &mut out, &mut seen);
+            add(p.to_path_buf(), false, &mut out, &mut seen);
         } else if p.is_dir() {
             // Directory: look for index.{ts,js} or scan per package.json manifest.
             if let Some(idx) = find_index(p) {
-                add(idx, &mut out, &mut seen);
+                add(idx, false, &mut out, &mut seen);
             } else {
                 for ext in discover_in_dir(p) {
-                    add(ext, &mut out, &mut seen);
+                    add(ext, false, &mut out, &mut seen);
                 }
             }
         }

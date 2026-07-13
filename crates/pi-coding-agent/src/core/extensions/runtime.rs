@@ -111,6 +111,13 @@ enum RuntimeCommand {
         args: serde_json::Value,
         reply: oneshot::Sender<Result<serde_json::Value, ExtensionError>>,
     },
+    /// Hot-reload: clear JS registries, re-discover, and re-load extensions.
+    Reload {
+        cwd: String,
+        agent_dir: Option<String>,
+        paths: Vec<String>,
+        reply: oneshot::Sender<Result<LoadResult, ExtensionError>>,
+    },
     Stop {
         reply: oneshot::Sender<()>,
     },
@@ -246,6 +253,24 @@ impl ExtensionRuntime {
         Ok(())
     }
 
+    /// Reload all extensions: clear JS registries, re-discover, and re-load.
+    /// Returns the new load result on success.
+    pub async fn reload(
+        &self,
+        cwd: &str,
+        agent_dir: Option<&str>,
+        paths: &[String],
+    ) -> Result<LoadResult, ExtensionError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(RuntimeCommand::Reload {
+            cwd: cwd.to_string(),
+            agent_dir: agent_dir.map(|s| s.to_string()),
+            paths: paths.to_vec(),
+            reply,
+        })?;
+        await_reply(rx).await?
+    }
+
     /// Call a host function from the V8 thread. The function is executed on the
     /// main thread and the result is returned. Used by ops that need host state.
     pub async fn call_host(
@@ -371,6 +396,18 @@ fn runtime_thread_main(
                     let _ = reply.send(Err(ExtensionError::Runtime(
                         format!("host function '{}' not yet wired", function),
                     )));
+                }
+                RuntimeCommand::Reload {
+                    cwd,
+                    agent_dir,
+                    paths,
+                    reply,
+                } => {
+                    // Clear JS registries, re-discover, and re-load.
+                    let _ = js.execute_script("<pi-clear>", "globalThis.__piClearRegistries()");
+                    let _ = js.run_event_loop(Default::default()).await;
+                    let res = handle_load(&mut js, &cwd, agent_dir.as_deref(), &paths).await;
+                    let _ = reply.send(res);
                 }
                 RuntimeCommand::Stop { reply } => {
                     let _ = reply.send(());

@@ -112,6 +112,61 @@ pub fn builtin_slash_commands() -> Vec<BuiltinSlashCommand> {
     ]
 }
 
+/// A resolved command with its invocation name (may include a `:N` suffix
+/// when multiple extensions register the same command name).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedCommand {
+    pub invocation_name: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub source: SlashCommandSource,
+}
+
+/// Merge extension commands with builtin commands, resolving name conflicts.
+///
+/// When multiple extensions register the same command name, each gets a
+/// `:1`, `:2`, ... suffix on its invocation name (matching the original TS
+/// `runner.ts` `resolveRegisteredCommands`). Builtin commands always take
+/// precedence and are never suffixed.
+pub fn resolve_extension_commands(
+    extension_commands: &[super::extensions::CommandInfoSerde],
+) -> Vec<ResolvedCommand> {
+    let builtins = builtin_slash_commands();
+    let mut resolved: Vec<ResolvedCommand> = builtins
+        .iter()
+        .map(|b| ResolvedCommand {
+            invocation_name: b.name.clone(),
+            name: b.name.clone(),
+            description: Some(b.description.clone()),
+            source: SlashCommandSource::Skill,
+        })
+        .collect();
+
+    // Track how many times each name has been seen (including builtins)
+    let mut name_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for cmd in &resolved {
+        *name_counts.entry(cmd.name.clone()).or_insert(0) += 1;
+    }
+
+    for ext_cmd in extension_commands {
+        let count = name_counts.entry(ext_cmd.name.clone()).or_insert(0);
+        *count += 1;
+        let invocation_name = if *count > 1 {
+            format!("{}:{}", ext_cmd.name, count)
+        } else {
+            ext_cmd.name.clone()
+        };
+        resolved.push(ResolvedCommand {
+            invocation_name,
+            name: ext_cmd.name.clone(),
+            description: ext_cmd.description.clone(),
+            source: SlashCommandSource::Extension,
+        });
+    }
+
+    resolved
+}
+
 pub fn is_slash_command(input: &str) -> bool {
     input.starts_with('/') && input.len() > 1 && !input.starts_with("//")
 }
@@ -161,5 +216,56 @@ mod tests {
             Some(("export", "session.html"))
         );
         assert_eq!(parse_slash_command("hello"), None);
+    }
+
+    #[test]
+    fn test_resolve_extension_commands_no_conflict() {
+        let ext_cmds = vec![
+            super::super::extensions::CommandInfoSerde {
+                name: "mycmd".into(),
+                description: Some("My custom command".into()),
+            },
+        ];
+        let resolved = resolve_extension_commands(&ext_cmds);
+        let mycmd = resolved.iter().find(|c| c.name == "mycmd").unwrap();
+        assert_eq!(mycmd.invocation_name, "mycmd");
+        assert_eq!(mycmd.source, SlashCommandSource::Extension);
+    }
+
+    #[test]
+    fn test_resolve_extension_commands_conflict() {
+        // "model" is a builtin command; extension registering "model" gets "model:2"
+        let ext_cmds = vec![
+            super::super::extensions::CommandInfoSerde {
+                name: "model".into(),
+                description: Some("My model command".into()),
+            },
+        ];
+        let resolved = resolve_extension_commands(&ext_cmds);
+        let ext_model = resolved.iter().find(|c| c.source == SlashCommandSource::Extension).unwrap();
+        assert_eq!(ext_model.invocation_name, "model:2");
+        assert_eq!(ext_model.name, "model");
+    }
+
+    #[test]
+    fn test_resolve_extension_commands_multiple_conflicts() {
+        let ext_cmds = vec![
+            super::super::extensions::CommandInfoSerde {
+                name: "model".into(),
+                description: Some("First ext model".into()),
+            },
+            super::super::extensions::CommandInfoSerde {
+                name: "model".into(),
+                description: Some("Second ext model".into()),
+            },
+        ];
+        let resolved = resolve_extension_commands(&ext_cmds);
+        let ext_models: Vec<&ResolvedCommand> = resolved
+            .iter()
+            .filter(|c| c.source == SlashCommandSource::Extension)
+            .collect();
+        assert_eq!(ext_models.len(), 2);
+        assert_eq!(ext_models[0].invocation_name, "model:2");
+        assert_eq!(ext_models[1].invocation_name, "model:3");
     }
 }

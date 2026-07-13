@@ -264,6 +264,36 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
     return null;
   }
 
+  if (eventType === "resources_discover") {
+    const result = { skillPaths: [], promptPaths: [], themePaths: [] };
+    for (const h of list) {
+      try {
+        const r = await h(payload, ctx);
+        if (!r) continue;
+        if (r.skillPaths) result.skillPaths.push(...r.skillPaths);
+        if (r.promptPaths) result.promptPaths.push(...r.promptPaths);
+        if (r.themePaths) result.themePaths.push(...r.themePaths);
+      } catch (e) {
+        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+      }
+    }
+    return result;
+  }
+
+  if (eventType === "project_trust") {
+    for (const h of list) {
+      try {
+        const r = await h(payload, ctx);
+        if (r && (r.trusted === "yes" || r.trusted === "no")) {
+          return { trusted: r.trusted, remember: r.remember === true };
+        }
+      } catch (e) {
+        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+      }
+    }
+    return null;
+  }
+
   // Default: fire-and-forget semantics.
   for (const h of list) {
     try { await h(payload, ctx); } catch (e) {

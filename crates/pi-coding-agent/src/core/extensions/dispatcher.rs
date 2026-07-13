@@ -253,6 +253,155 @@ pub async fn dispatch_session_info_changed(
 }
 
 // ============================================================================
+// resources_discover — extensions contribute skill/prompt/theme paths
+// ============================================================================
+
+/// Result from the `resources_discover` event.
+#[derive(Debug, Default)]
+pub struct ResourcesDiscoverResult {
+    pub skill_paths: Vec<String>,
+    pub prompt_paths: Vec<String>,
+    pub theme_paths: Vec<String>,
+}
+
+/// Dispatch the `resources_discover` event to extensions, collecting
+/// contributed skill/prompt/theme paths.
+pub async fn dispatch_resources_discover(
+    runtime: &ExtensionRuntime,
+    cwd: &str,
+    reason: &str,
+) -> ResourcesDiscoverResult {
+    let payload = serde_json::json!({
+        "type": "resources_discover",
+        "cwd": cwd,
+        "reason": reason,
+    });
+    let res = runtime.dispatch_result("resources_discover", payload).await;
+    let res = match res {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[pi] resources_discover dispatch failed: {e}");
+            return ResourcesDiscoverResult::default();
+        }
+    };
+    ResourcesDiscoverResult {
+        skill_paths: res.get("skillPaths")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        prompt_paths: res.get("promptPaths")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        theme_paths: res.get("themePaths")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+    }
+}
+
+// ============================================================================
+// project_trust — extensions participate in project trust decision
+// ============================================================================
+
+/// Result from the `project_trust` event.
+#[derive(Debug)]
+pub struct ProjectTrustResult {
+    pub trusted: Option<bool>,
+    pub remember: bool,
+}
+
+/// Dispatch the `project_trust` event to extensions, allowing them to make
+/// the trust decision. Returns `None` when all handlers return "undecided"
+/// (the built-in trust flow should be used).
+pub async fn dispatch_project_trust(
+    runtime: &ExtensionRuntime,
+    cwd: &str,
+) -> Option<ProjectTrustResult> {
+    let payload = serde_json::json!({
+        "type": "project_trust",
+        "cwd": cwd,
+    });
+    let res = runtime.dispatch_result("project_trust", payload).await;
+    let res = match res {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[pi] project_trust dispatch failed (fail-open): {e}");
+            return None;
+        }
+    };
+    if res.is_null() {
+        return None;
+    }
+    let trusted = match res.get("trusted").and_then(|v| v.as_str()) {
+        Some("yes") => Some(true),
+        Some("no") => Some(false),
+        _ => return None,
+    };
+    let remember = res.get("remember").and_then(|v| v.as_bool()).unwrap_or(false);
+    Some(ProjectTrustResult { trusted, remember })
+}
+
+// ============================================================================
+// after_provider_response — notification after provider HTTP response
+// ============================================================================
+
+/// Dispatch the `after_provider_response` event (fire-and-forget).
+pub async fn dispatch_after_provider_response(
+    runtime: &ExtensionRuntime,
+    status: u16,
+    headers: &std::collections::HashMap<String, String>,
+) {
+    let payload = serde_json::json!({
+        "type": "after_provider_response",
+        "status": status,
+        "headers": headers,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("after_provider_response", payload).await {
+        eprintln!("[pi] after_provider_response dispatch failed: {e}");
+    }
+}
+
+// ============================================================================
+// model_select — notification when model changes
+// ============================================================================
+
+/// Dispatch the `model_select` event (fire-and-forget).
+pub async fn dispatch_model_select(
+    runtime: &ExtensionRuntime,
+    model: &str,
+    previous_model: Option<&str>,
+    source: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "model_select",
+        "model": model,
+        "previousModel": previous_model,
+        "source": source,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("model_select", payload).await {
+        eprintln!("[pi] model_select dispatch failed: {e}");
+    }
+}
+
+// ============================================================================
+// thinking_level_select — notification when thinking level changes
+// ============================================================================
+
+/// Dispatch the `thinking_level_select` event (fire-and-forget).
+pub async fn dispatch_thinking_level_select(
+    runtime: &ExtensionRuntime,
+    level: &str,
+    previous_level: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "thinking_level_select",
+        "level": level,
+        "previousLevel": previous_level,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("thinking_level_select", payload).await {
+        eprintln!("[pi] thinking_level_select dispatch failed: {e}");
+    }
+}
+
+// ============================================================================
 // fire-and-forget event name mapping from AgentEvent
 // ============================================================================
 

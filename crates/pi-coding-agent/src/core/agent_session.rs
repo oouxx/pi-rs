@@ -582,9 +582,23 @@ impl AgentSession {
     // =========================================================================
 
     /// Set the model on the agent, matching the original setModel().
+    /// Dispatches `model_select` to extensions.
     pub async fn set_model(&mut self, model: Model) {
+        let model_id = model.id.clone();
         let mut state = self.agent.state().await;
+        let previous_model_id = state.model.id.clone();
         state.model = model;
+        drop(state);
+        // Dispatch model_select to extensions (fire-and-forget)
+        if let Some(ref rt) = self.extension_runtime {
+            crate::core::extensions::dispatcher::dispatch_model_select(
+                rt,
+                &model_id,
+                Some(&previous_model_id),
+                "set",
+            )
+            .await;
+        }
     }
 
     /// Cycle through scoped models, matching the original cycleModel().

@@ -300,6 +300,69 @@ pub fn op_pi_unregister_provider(
 }
 
 // ============================================================================
+// ctx action method ops (stubs — full impl requires RuntimeCommand variants)
+// ============================================================================
+
+#[op2(fast)]
+pub fn op_pi_ctx_is_idle(_state: &mut OpState) -> Result<bool, JsErrorBox> {
+    Ok(true)
+}
+
+#[op2(fast)]
+pub fn op_pi_ctx_is_project_trusted(_state: &mut OpState) -> Result<bool, JsErrorBox> {
+    Ok(true)
+}
+
+#[op2(fast)]
+pub fn op_pi_ctx_has_pending_messages(_state: &mut OpState) -> Result<bool, JsErrorBox> {
+    Ok(false)
+}
+
+#[op2(fast)]
+pub fn op_pi_ctx_get_system_prompt(_state: &mut OpState) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+#[op2(fast)]
+pub fn op_pi_ctx_abort(_state: &mut OpState) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+#[op2(fast)]
+pub fn op_pi_ctx_shutdown(_state: &mut OpState) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+// ============================================================================
+// ctx.ui ops (stubs)
+// ============================================================================
+
+#[op2(fast)]
+pub fn op_pi_ui_set_status(
+    _state: &mut OpState,
+    #[string] _key: String,
+    #[string] _text: String,
+) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+#[op2(fast)]
+pub fn op_pi_ui_set_working_message(
+    _state: &mut OpState,
+    #[string] _message: String,
+) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+#[op2(fast)]
+pub fn op_pi_ui_set_title(
+    _state: &mut OpState,
+    #[string] _title: String,
+) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+// ============================================================================
 // exec / notify / log
 // ============================================================================
 
@@ -369,6 +432,15 @@ deno_core::extension!(
         op_pi_set_thinking_level,
         op_pi_register_provider,
         op_pi_unregister_provider,
+        op_pi_ctx_is_idle,
+        op_pi_ctx_is_project_trusted,
+        op_pi_ctx_has_pending_messages,
+        op_pi_ctx_get_system_prompt,
+        op_pi_ctx_abort,
+        op_pi_ctx_shutdown,
+        op_pi_ui_set_status,
+        op_pi_ui_set_working_message,
+        op_pi_ui_set_title,
         op_pi_exec,
         op_pi_notify,
         op_pi_log,

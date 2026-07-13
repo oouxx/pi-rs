@@ -49,17 +49,20 @@ function makeContext(cwd) {
         pendingNotifications.push(msg);
         try { Deno.core.ops.op_pi_notify(msg, type); } catch {}
       },
-      setStatus: () => {},
+      setStatus: (key, text) => {
+        try { Deno.core.ops.op_pi_ui_set_status(key, text); } catch {}
+      },
     },
     exec: (command, args, options) =>
       execWithDefaultCwd(command, args, options, ctxCwd),
-    // Deferred context members (not yet supported in phase 1) -- no-ops/stubs.
-    isIdle: () => true,
-    isProjectTrusted: () => true,
-    abort: () => {},
-    hasPendingMessages: () => false,
-    shutdown: () => {},
-    getSystemPrompt: () => "",
+    // Context action methods - call through to Rust ops (stubs return defaults
+    // until RuntimeCommand variants are added for real host state).
+    isIdle: () => { try { return Deno.core.ops.op_pi_ctx_is_idle(); } catch { return true; } },
+    isProjectTrusted: () => { try { return Deno.core.ops.op_pi_ctx_is_project_trusted(); } catch { return true; } },
+    abort: () => { try { Deno.core.ops.op_pi_ctx_abort(); } catch {} },
+    hasPendingMessages: () => { try { return Deno.core.ops.op_pi_ctx_has_pending_messages(); } catch { return false; } },
+    shutdown: () => { try { Deno.core.ops.op_pi_ctx_shutdown(); } catch {} },
+    getSystemPrompt: () => { try { Deno.core.ops.op_pi_ctx_get_system_prompt(); } catch { return ""; } },
     // ExtensionCommandContext methods (Phase 4.3) -- stubs for now.
     waitForIdle: notSupported("waitForIdle"),
     newSession: notSupported("newSession"),

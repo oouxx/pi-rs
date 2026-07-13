@@ -117,22 +117,21 @@ fn validate_description(description: Option<&str>) -> Vec<String> {
 /// Parse YAML-like frontmatter from markdown text.
 /// Frontmatter is delimited by `---` at the start of the file.
 fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    if !normalized.starts_with("---") {
         return (
             SkillFrontmatter {
                 name: None,
                 description: None,
                 disable_model_invocation: None,
             },
-            content.to_string(),
+            normalized,
             false,
         );
     }
 
     // Find the closing ---
-    let after_first = &trimmed[3..];
-    let end_marker = after_first.find("\n---");
+    let end_marker = normalized[3..].find("\n---");
     if end_marker.is_none() {
         return (
             SkillFrontmatter {
@@ -140,41 +139,35 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
                 description: None,
                 disable_model_invocation: None,
             },
-            content.to_string(),
+            normalized,
             true,
         );
     }
 
-    let end_idx = end_marker.unwrap();
-    let frontmatter_str = &after_first[..end_idx].trim();
-    let body = after_first[end_idx + 4..].trim().to_string();
+    let end_idx = end_marker.unwrap() + 3;
+    let yaml_str = &normalized[4..end_idx];
+    let body = normalized[end_idx + 4..].trim().to_string();
 
-    // Parse YAML-like key: value pairs
-    let mut name: Option<String> = None;
-    let mut description: Option<String> = None;
-    let mut disable_model_invocation: Option<bool> = None;
-
-    for line in frontmatter_str.lines() {
-        let line = line.trim();
-        if let Some((key, value)) = line.split_once(':') {
-            let value = value.trim().to_string();
-            match key.trim() {
-                "name" => name = Some(value),
-                "description" => description = Some(value),
-                "disable-model-invocation" => {
-                    disable_model_invocation = Some(value == "true");
-                }
-                _ => {}
-            }
+    // Use serde_yaml for full YAML parsing (matching original TS `parse` from "yaml")
+    let frontmatter: SkillFrontmatter = match serde_yaml::from_str(yaml_str) {
+        Ok(fm) => fm,
+        Err(e) => {
+            // Return a special marker: description = Some("") signals parse failure
+            // so the caller can emit a diagnostic
+            return (
+                SkillFrontmatter {
+                    name: None,
+                    description: Some(String::new()),
+                    disable_model_invocation: None,
+                },
+                body,
+                true,
+            );
         }
-    }
+    };
 
     (
-        SkillFrontmatter {
-            name,
-            description,
-            disable_model_invocation,
-        },
+        frontmatter,
         body,
         true,
     )
@@ -233,6 +226,15 @@ fn load_skill_from_file(
         .to_string();
 
     let (frontmatter, _body, has_frontmatter) = parse_frontmatter(&content);
+
+    // Check for YAML parse failure (description = Some("") signals this)
+    if has_frontmatter && frontmatter.description.as_deref() == Some("") {
+        diagnostics.push(ResourceDiagnostic::Warning {
+            message: "failed to parse YAML frontmatter".to_string(),
+            path: file_path.to_string(),
+        });
+        return (None, diagnostics);
+    }
 
     // Validate description
     let desc_errors = validate_description(frontmatter.description.as_deref());

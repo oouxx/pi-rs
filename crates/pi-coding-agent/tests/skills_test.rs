@@ -202,19 +202,12 @@ fn test_load_skill_invalid_yaml() {
         include_defaults: false,
         ..Default::default()
     });
-    // Note: Rust frontmatter parser is simpler than the TS YAML parser.
-    // It may not detect all invalid YAML. This test documents the current behavior.
-    // The skill may still be loaded if the parser doesn't detect the YAML error.
-    // At minimum, there should be a diagnostic about the issue.
-    let has_diag = result.diagnostics.iter().any(|d| {
+    // serde_yaml should detect the invalid YAML and return an error
+    assert_eq!(result.skills.len(), 0);
+    assert!(result.diagnostics.iter().any(|d| {
         let msg = diagnostic_message(d);
-        msg.contains("at line") || msg.contains("YAML") || msg.contains("frontmatter")
-    });
-    if !has_diag {
-        // If no diagnostic, the skill was loaded despite invalid YAML
-        // This is a known limitation
-        eprintln!("Note: invalid YAML not detected (known limitation of simple parser)");
-    }
+        msg.contains("YAML") || msg.contains("at line") || msg.contains("frontmatter")
+    }), "expected YAML parse error diagnostic");
 }
 
 #[test]
@@ -231,12 +224,10 @@ fn test_load_skill_multiline_description() {
         include_defaults: false,
         ..Default::default()
     });
-    // Note: Rust frontmatter parser does not support YAML multiline values (|).
-    // This is a known limitation documented in the progress doc.
-    // The skill may be loaded with a partial description.
-    if result.skills.is_empty() {
-        eprintln!("Note: multiline description not supported (known limitation)");
-    }
+    assert_eq!(result.skills.len(), 1);
+    assert!(result.skills[0].description.contains('\n'));
+    assert!(result.skills[0].description.contains("This is a multiline description."));
+    assert_eq!(result.diagnostics.len(), 0);
 }
 
 #[test]

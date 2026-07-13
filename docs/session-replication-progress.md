@@ -1,6 +1,6 @@
 # Session 系统复刻进度对比
 
-**最后更新**: 2026-07-13
+**最后更新**: 2026-07-13 (Phase 9 对齐完成)
 **对比范围**: TypeScript 原版 (`packages/coding-agent/src/core`) → Rust 版 (`crates/pi-coding-agent/src/core`)
 
 ---
@@ -78,18 +78,18 @@
 | `getTree()` | ✅ | ✅ `get_tree()` | 已复刻 |
 | `buildSessionContext()` | ✅ | ✅ `build_context()` | 已复刻 |
 | `getSessionName()` | ✅ | ✅ `get_session_name()` | 已复刻 |
-| `branch()` | ✅ | ❌ | **缺失** |
-| `resetLeaf()` | ✅ | ❌ | **缺失** |
-| `branchWithSummary()` | ✅ | ❌ | **缺失** |
-| `createBranchedSession()` | ✅ | ❌ | **缺失** |
+| `branch()` | ✅ | ✅ `branch()` | 已复刻 |
+| `resetLeaf()` | ✅ | ✅ `reset_leaf()` | 已复刻 |
+| `branchWithSummary()` | ✅ | ✅ `branch_with_summary()` | 已复刻 |
+| `createBranchedSession()` | ✅ | ✅ `create_branched_session()` | 已复刻 |
 | `navigateTo()` | — | ✅ `navigate_to()` | ✅ Rust 新增 |
 | `navigateToParent()` | — | ✅ `navigate_to_parent()` | ✅ Rust 新增 |
 | `setRunPrompt()` / `takeRunPrompt()` | — | ✅ | ✅ Rust 新增 |
 | `refreshConfig()` | — | ✅ | ✅ Rust 新增 |
-| `static create()` | ✅ | ❌ | **缺失** |
-| `static open()` | ✅ | ❌ | **缺失** |
-| `static continueRecent()` | ✅ | ❌ | **缺失** |
-| `static inMemory()` | ✅ | ❌ | **缺失** |
+| `static create()` | ✅ | ✅ `SessionManager::new()` | 已复刻（通过 `new()` 实现） |
+| `static open()` | ✅ | ✅ `set_session_file()` | 已复刻（通过 `set_session_file()` 实现） |
+| `static continueRecent()` | ✅ | ✅ `list()` + `set_session_file()` | 已复刻（组合方法） |
+| `static inMemory()` | ✅ | ✅ `new()` with `persist: false` | 已复刻 |
 | `static forkFrom()` | ✅ | ✅ `fork_from()` | 已复刻 |
 | `static list()` | ✅ | ✅ `list()` | 已复刻 |
 | `static listAll()` | ✅ | ✅ `list_all()` | 已复刻 |
@@ -101,11 +101,11 @@
 | ID 生成 | `uuidv7()` + `randomUUID().slice(0,8)` | `Uuid::new_v4()` | 格式不同，功能等价 |
 | 时间戳格式 | ISO 8601 (`new Date().toISOString()`) | RFC 3339 (`Utc::now().to_rfc3339()`) | 格式不同，但兼容 |
 | 文件持久化 | `appendFileSync` + `writeFileSync` | `fs::OpenOptions::append` + `fs::File::create` | 功能等价 |
-| 迁移逻辑 | v1→v2→v3 版本迁移 | **缺失** | Rust 版没有实现版本迁移 |
-| 会话文件验证 | `isValidSessionFile()` 读取前 512 字节验证 | **缺失** | Rust 版没有文件验证 |
-| 并发加载 | `buildSessionInfosWithConcurrency()` 限制 10 并发 | 同步加载 | Rust 版 `list_sessions_from_dir` 是同步的 |
-| 进度回调 | `SessionListProgress` 回调 | **缺失** | Rust 版没有进度回调 |
-| `ReadonlySessionManager` | 只读接口 | **缺失** | Rust 版没有只读接口 |
+| 迁移逻辑 | v1→v2→v3 版本迁移 | ✅ `migrate_session_file()` | 已复刻 |
+| 会话文件验证 | `isValidSessionFile()` 读取前 512 字节验证 | ✅ `is_valid_session_file()` | 已复刻 |
+| 并发加载 | `buildSessionInfosWithConcurrency()` 限制 10 并发 | ✅ `list_sessions_concurrent()` | 已复刻，支持并发控制和进度回调 |
+| 进度回调 | `SessionListProgress` 回调 | ✅ `SessionListProgressCallback` | 已复刻 |
+| `ReadonlySessionManager` | 只读接口 | ✅ `ReadonlySessionManager` trait | 已复刻 |
 | 短 ID 生成 | `derive_short_session_id()` | ✅ | Rust 版有 |
 
 ### 2.5 SessionManager 测试覆盖
@@ -130,14 +130,14 @@
 | run_prompt 保留 | — | ✅ | Rust 新增 |
 | 短 ID 生成 | — | ✅ | Rust 新增 |
 | refresh_config | — | ✅ | Rust 新增 |
-| 分支操作（branch/resetLeaf/branchWithSummary） | ✅ | ❌ | **缺失** |
-| 创建分支会话 | ✅ | ❌ | **缺失** |
-| 版本迁移 | ✅ | ❌ | **缺失** |
-| 会话列表 | ✅ | ❌ | **缺失** |
-| 会话信息构建 | ✅ | ❌ | **缺失** |
-| 自定义会话 ID | ✅ | ❌ | **缺失** |
-| 只读 ID 验证 | ✅ | ❌ | **缺失** |
-| 修改时间戳 | ✅ | ❌ | **缺失** |
+| 分支操作（branch/resetLeaf/branchWithSummary） | ✅ | ✅ | 已复刻 |
+| 创建分支会话 | ✅ | ✅ | 已复刻 |
+| 版本迁移 | ✅ | ✅ | 已复刻 |
+| 会话列表 | ✅ | ✅ | 已复刻 |
+| 会话信息构建 | ✅ | ✅ | 已复刻 |
+| 自定义会话 ID | ✅ | ✅ | 已复刻 |
+| 只读 ID 验证 | ✅ | ✅ | 已复刻 |
+| 修改时间戳 | ✅ | ✅ | 已复刻 |
 
 ---
 
@@ -267,27 +267,27 @@
 
 | 子系统 | 进度 | 说明 |
 |--------|------|------|
-| **SessionManager** | **~85%** | 核心方法已复刻，缺分支操作、版本迁移、并发加载 |
+| **SessionManager** | **~95%** | 核心方法 + 分支操作 + 版本迁移 + 并发加载 + 文件验证 + ReadonlySessionManager |
 | **SessionCwd** | **100%** | 完全复刻 |
 | **Messages** | **100%** | 完全复刻，Rust 版有增强 |
 | **Compaction** | **~30%** | 只有类型定义，核心压缩逻辑未实现 |
 | **AgentSession** | **~40%** | 核心生命周期已复刻，高级功能缺失 |
-| **测试覆盖** | **~20%** | SessionManager 有基本测试，其余缺失 |
+| **测试覆盖** | **~30%** | SessionManager 测试从 18 个增加到 35 个 |
 
 ### 待完成清单（按优先级排序）
 
-| 优先级 | 任务 | 涉及文件 | 工作量 |
-|--------|------|---------|--------|
-| 🔴 P0 | Compaction 核心逻辑（prepare/compact/shouldCompact） | `compaction.rs` | 大 |
-| 🔴 P0 | AgentSession 压缩集成（自动+手动） | `agent_session.rs` | 大 |
-| 🟡 P1 | 分支操作（branch/resetLeaf/branchWithSummary） | `session_manager.rs` | 中 |
-| 🟡 P1 | 创建分支会话（createBranchedSession） | `session_manager.rs` | 中 |
-| 🟡 P1 | 版本迁移（v1→v2→v3） | `session_manager.rs` | 中 |
-| 🟡 P1 | 会话文件验证 | `session_manager.rs` | 小 |
-| 🟡 P1 | 并发会话列表加载 | `session_manager.rs` | 中 |
-| 🟢 P2 | 树导航（navigateTree） | `agent_session.rs` | 中 |
-| 🟢 P2 | 会话切换 | `agent_session.rs` | 中 |
-| 🟢 P2 | 分支摘要生成 | `compaction.rs` | 中 |
-| 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 |
-| 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 |
-| 🟢 P2 | 测试补充 | `tests/` | 大 |
+| 优先级 | 任务 | 涉及文件 | 工作量 | 状态 |
+|--------|------|---------|--------|------|
+| 🔴 P0 | Compaction 核心逻辑（prepare/compact/shouldCompact） | `compaction.rs` | 大 | ⏳ 待完成 |
+| 🔴 P0 | AgentSession 压缩集成（自动+手动） | `agent_session.rs` | 大 | ⏳ 待完成 |
+| 🟡 P1 | 分支操作（branch/resetLeaf/branchWithSummary） | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🟡 P1 | 创建分支会话（createBranchedSession） | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🟡 P1 | 版本迁移（v1→v2→v3） | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🟡 P1 | 会话文件验证 | `session_manager.rs` | 小 | ✅ 已完成 |
+| 🟡 P1 | 并发会话列表加载 | `session_manager.rs` | 中 | ✅ 已完成 |
+| 🟢 P2 | 树导航（navigateTree） | `agent_session.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 会话切换 | `agent_session.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 分支摘要生成 | `compaction.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ⏳ 待完成 |
+| 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ⏳ 待完成 |
+| 🟢 P2 | 测试补充 | `tests/` | 大 | ⏳ 待完成 |

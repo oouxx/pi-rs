@@ -195,6 +195,39 @@ pub fn op_pi_get_commands(state: &mut OpState) -> Result<Vec<CommandInfoSerde>, 
 }
 
 // ============================================================================
+// Message injection ops (stubs — full impl requires RuntimeCommand variants)
+// ============================================================================
+
+#[op2]
+#[serde]
+pub fn op_pi_send_message(
+    _state: &mut OpState,
+    #[string] _custom_type: String,
+    #[string] _content: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.sendMessage is not yet supported by the embedded runtime"))
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_send_user_message(
+    _state: &mut OpState,
+    #[string] _content: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.sendUserMessage is not yet supported by the embedded runtime"))
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_append_entry(
+    _state: &mut OpState,
+    #[string] _custom_type: String,
+    #[serde] _data: Option<serde_json::Value>,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.appendEntry is not yet supported by the embedded runtime"))
+}
+
+// ============================================================================
 // exec / notify / log
 // ============================================================================
 
@@ -254,6 +287,9 @@ deno_core::extension!(
         op_pi_register_flag,
         op_pi_get_flags,
         op_pi_get_commands,
+        op_pi_send_message,
+        op_pi_send_user_message,
+        op_pi_append_entry,
         op_pi_exec,
         op_pi_notify,
         op_pi_log,

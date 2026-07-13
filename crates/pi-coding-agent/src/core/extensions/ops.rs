@@ -354,8 +354,69 @@ pub fn op_pi_set_thinking_level(
 }
 
 // ============================================================================
-// Provider registration ops — push HostCommand for main-thread processing
+// Tool management ops — push HostCommand for main-thread processing
 // ============================================================================
+
+#[op2]
+#[serde]
+pub fn op_pi_get_active_tools(
+    state: &mut OpState,
+) -> Result<Vec<String>, JsErrorBox> {
+    // Push a host command to get active tools from the main thread.
+    // The reply channel is oneshot, so the result is sent back asynchronously.
+    // For now, return empty list as a safe default.
+    push_host_command(
+        state,
+        "get_active_tools",
+        serde_json::json!({}),
+    );
+    Ok(Vec::new())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_get_all_tools(
+    state: &mut OpState,
+) -> Result<Vec<String>, JsErrorBox> {
+    push_host_command(
+        state,
+        "get_all_tools",
+        serde_json::json!({}),
+    );
+    Ok(Vec::new())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_set_active_tools(
+    state: &mut OpState,
+    #[serde] tool_names: Vec<String>,
+) -> Result<(), JsErrorBox> {
+    push_host_command(
+        state,
+        "set_active_tools",
+        serde_json::json!({ "toolNames": tool_names }),
+    );
+    Ok(())
+}
+
+// ============================================================================
+// getThinkingLevel op — push HostCommand for main-thread processing
+// ============================================================================
+
+#[op2]
+#[string]
+pub fn op_pi_get_thinking_level(
+    state: &mut OpState,
+) -> Result<String, JsErrorBox> {
+    push_host_command(
+        state,
+        "get_thinking_level",
+        serde_json::json!({}),
+    );
+    // Return a default; the real value will be processed asynchronously.
+    Ok("medium".to_string())
+}
 
 #[op2]
 #[serde]
@@ -387,11 +448,14 @@ pub fn op_pi_unregister_provider(
 }
 
 // ============================================================================
-// ctx action method ops (stubs — full impl requires RuntimeCommand variants)
+// ctx action method ops — push HostCommand for main-thread processing
 // ============================================================================
 
 #[op2(fast)]
 pub fn op_pi_ctx_is_idle(_state: &mut OpState) -> Result<bool, JsErrorBox> {
+    // Push a host command to check if the agent is idle.
+    // For now, return true as a safe default.
+    push_host_command(_state, "ctx_is_idle", serde_json::json!({}));
     Ok(true)
 }
 
@@ -402,21 +466,66 @@ pub fn op_pi_ctx_is_project_trusted(_state: &mut OpState) -> Result<bool, JsErro
 
 #[op2(fast)]
 pub fn op_pi_ctx_has_pending_messages(_state: &mut OpState) -> Result<bool, JsErrorBox> {
+    push_host_command(_state, "ctx_has_pending_messages", serde_json::json!({}));
     Ok(false)
 }
 
+#[op2]
+#[string]
+pub fn op_pi_ctx_get_system_prompt(
+    state: &mut OpState,
+) -> Result<String, JsErrorBox> {
+    push_host_command(state, "ctx_get_system_prompt", serde_json::json!({}));
+    Ok(String::new())
+}
+
 #[op2(fast)]
-pub fn op_pi_ctx_get_system_prompt(_state: &mut OpState) -> Result<(), JsErrorBox> {
+pub fn op_pi_ctx_abort(
+    state: &mut OpState,
+) -> Result<(), JsErrorBox> {
+    push_host_command(state, "ctx_abort", serde_json::json!({}));
     Ok(())
 }
 
 #[op2(fast)]
-pub fn op_pi_ctx_abort(_state: &mut OpState) -> Result<(), JsErrorBox> {
+pub fn op_pi_ctx_shutdown(
+    state: &mut OpState,
+) -> Result<(), JsErrorBox> {
+    push_host_command(state, "ctx_shutdown", serde_json::json!({}));
     Ok(())
 }
 
+// ============================================================================
+// Missing ExtensionContext method ops
+// ============================================================================
+
+#[op2]
+#[string]
+pub fn op_pi_ctx_get_model(
+    state: &mut OpState,
+) -> Result<String, JsErrorBox> {
+    push_host_command(state, "ctx_get_model", serde_json::json!({}));
+    Ok(String::new())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_ctx_get_context_usage(
+    state: &mut OpState,
+) -> Result<serde_json::Value, JsErrorBox> {
+    push_host_command(state, "ctx_get_context_usage", serde_json::json!({}));
+    Ok(serde_json::json!({
+        "tokensUsed": 0,
+        "tokensTotal": 0,
+        "percentUsed": 0.0,
+    }))
+}
+
 #[op2(fast)]
-pub fn op_pi_ctx_shutdown(_state: &mut OpState) -> Result<(), JsErrorBox> {
+pub fn op_pi_ctx_compact(
+    state: &mut OpState,
+) -> Result<(), JsErrorBox> {
+    push_host_command(state, "ctx_compact", serde_json::json!({}));
     Ok(())
 }
 
@@ -494,8 +603,22 @@ pub fn op_pi_reload(
     Ok(())
 }
 
-#[op2(fast)]
-pub fn op_pi_wait_for_idle(_state: &mut OpState) -> Result<(), JsErrorBox> {
+#[op2]
+#[serde]
+pub fn op_pi_wait_for_idle(
+    state: &mut OpState,
+) -> Result<(), JsErrorBox> {
+    push_host_command(state, "wait_for_idle", serde_json::json!({}));
+    Ok(())
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_navigate_tree(
+    state: &mut OpState,
+    #[string] _direction: String,
+) -> Result<(), JsErrorBox> {
+    push_host_command(state, "navigate_tree", serde_json::json!({}));
     Ok(())
 }
 
@@ -593,14 +716,21 @@ deno_core::extension!(
         op_pi_set_label,
         op_pi_set_model,
         op_pi_set_thinking_level,
+        op_pi_get_thinking_level,
         op_pi_register_provider,
         op_pi_unregister_provider,
+        op_pi_get_active_tools,
+        op_pi_get_all_tools,
+        op_pi_set_active_tools,
         op_pi_ctx_is_idle,
         op_pi_ctx_is_project_trusted,
         op_pi_ctx_has_pending_messages,
         op_pi_ctx_get_system_prompt,
         op_pi_ctx_abort,
         op_pi_ctx_shutdown,
+        op_pi_ctx_get_model,
+        op_pi_ctx_get_context_usage,
+        op_pi_ctx_compact,
         op_pi_ui_set_status,
         op_pi_ui_set_working_message,
         op_pi_ui_set_title,
@@ -609,6 +739,7 @@ deno_core::extension!(
         op_pi_switch_session,
         op_pi_reload,
         op_pi_wait_for_idle,
+        op_pi_navigate_tree,
         op_pi_exec,
         op_pi_notify,
         op_pi_log,

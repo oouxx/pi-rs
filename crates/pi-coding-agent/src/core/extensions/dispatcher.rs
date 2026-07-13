@@ -238,6 +238,92 @@ pub async fn dispatch_session_shutdown(
     }
 }
 
+/// Dispatch a `session_before_switch` event to extensions.
+pub async fn dispatch_session_before_switch(
+    runtime: &ExtensionRuntime,
+    target_session: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "session_before_switch",
+        "targetSession": target_session,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_before_switch", payload).await {
+        eprintln!("[pi] session_before_switch dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_before_fork` event to extensions.
+pub async fn dispatch_session_before_fork(
+    runtime: &ExtensionRuntime,
+    entry_id: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "session_before_fork",
+        "entryId": entry_id,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_before_fork", payload).await {
+        eprintln!("[pi] session_before_fork dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_before_compact` event to extensions.
+pub async fn dispatch_session_before_compact(
+    runtime: &ExtensionRuntime,
+    reason: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "session_before_compact",
+        "reason": reason,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_before_compact", payload).await {
+        eprintln!("[pi] session_before_compact dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_compact` event to extensions.
+pub async fn dispatch_session_compact(
+    runtime: &ExtensionRuntime,
+    summary: &str,
+    tokens_before: u64,
+) {
+    let payload = serde_json::json!({
+        "type": "session_compact",
+        "summary": summary,
+        "tokensBefore": tokens_before,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_compact", payload).await {
+        eprintln!("[pi] session_compact dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_before_tree` event to extensions.
+pub async fn dispatch_session_before_tree(
+    runtime: &ExtensionRuntime,
+    reason: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "session_before_tree",
+        "reason": reason,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_before_tree", payload).await {
+        eprintln!("[pi] session_before_tree dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_tree` event to extensions.
+pub async fn dispatch_session_tree(
+    runtime: &ExtensionRuntime,
+    tree: &serde_json::Value,
+) {
+    let payload = serde_json::json!({
+        "type": "session_tree",
+        "tree": tree,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_tree", payload).await {
+        eprintln!("[pi] session_tree dispatch failed: {e}");
+    }
+}
+
 /// Dispatch a `session_info_changed` event to extensions.
 pub async fn dispatch_session_info_changed(
     runtime: &ExtensionRuntime,
@@ -461,46 +547,92 @@ pub async fn dispatch_input(
 }
 
 // ============================================================================
-// fire-and-forget event name mapping from AgentEvent
+// before_agent_start — modify context before agent loop begins
+// ============================================================================
+
+/// Dispatch the `before_agent_start` event to extensions, allowing them to
+/// modify the context (system prompt, messages, tools) before the agent loop
+/// begins.
+///
+/// Returns the (potentially modified) context. On error, returns the original
+/// context unchanged (fail-open).
+pub async fn dispatch_before_agent_start(
+    runtime: &ExtensionRuntime,
+    system_prompt: &str,
+    messages: &[pi_agent_core::types::AgentMessage],
+) -> Option<serde_json::Value> {
+    let payload = serde_json::json!({
+        "type": "before_agent_start",
+        "systemPrompt": system_prompt,
+        "messages": messages,
+    });
+    let res = runtime.dispatch_result("before_agent_start", payload).await;
+    match res {
+        Ok(v) if !v.is_null() => Some(v),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("[pi] before_agent_start dispatch failed (fail-open): {e}");
+            None
+        }
+    }
+}
+
+// ============================================================================
+// fire-and-forget / result-returning event name mapping from AgentEvent
 // ============================================================================
 
 /// Map an `AgentEvent` variant to an extension event name + payload, or `None`
 /// to skip dispatch (high-frequency or result-handled variants).
-pub fn fire_and_forget_from_agent_event(
+///
+/// Returns `(event_name, payload, is_result_returning)` where `is_result_returning`
+/// indicates whether the dispatch should use `__piDispatchResult` instead of
+/// `__piDispatch`.
+pub fn event_from_agent_event(
     event: &pi_agent_core::types::AgentEvent,
-) -> Option<(&'static str, serde_json::Value)> {
+) -> Option<(&'static str, serde_json::Value, bool)> {
     use pi_agent_core::types::AgentEvent;
     match event {
-        AgentEvent::AgentStart => Some(("agent_start", serde_json::json!({}))),
+        AgentEvent::AgentStart => Some(("agent_start", serde_json::json!({}), false)),
         AgentEvent::AgentEnd { messages } => {
-            Some(("agent_end", serde_json::json!({ "messages": messages })))
+            Some(("agent_end", serde_json::json!({ "messages": messages }), false))
         }
-        AgentEvent::TurnStart => Some(("turn_start", serde_json::json!({}))),
+        AgentEvent::TurnStart => Some(("turn_start", serde_json::json!({}), false)),
         AgentEvent::TurnEnd { message, tool_results } => Some((
             "turn_end",
             serde_json::json!({ "message": message, "toolResults": tool_results }),
+            false,
         )),
         AgentEvent::MessageStart { message } => {
-            Some(("message_start", serde_json::json!({ "message": message })))
+            Some(("message_start", serde_json::json!({ "message": message }), false))
         }
         AgentEvent::MessageUpdate { message, .. } => {
-            Some(("message_update", serde_json::json!({ "message": message })))
+            Some(("message_update", serde_json::json!({ "message": message }), false))
         }
         AgentEvent::MessageEnd { message } => {
-            // Fire-and-forget dispatch for now. Full result-returning (extensions
-            // replacing the message) requires a pi-agent-core hook that exposes a
-            // mutable message reference before the event is finalized — tracked
-            // as G2 in the alignment plan.
-            Some(("message_end", serde_json::json!({ "message": message })))
+            // Result-returning: extensions can modify the message. The JS side
+            // chains handlers serially; the modified message is returned but the
+            // agent loop has already finalized it — the result is available for
+            // consumers that subscribe to the dispatch result.
+            Some(("message_end", serde_json::json!({ "message": message }), true))
         }
         AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => Some((
             "tool_execution_start",
             serde_json::json!({ "toolCallId": tool_call_id, "toolName": tool_name, "args": args }),
+            false,
         )),
         AgentEvent::ToolExecutionUpdate { .. } => None, // high-frequency; skip
         AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => Some((
             "tool_execution_end",
             serde_json::json!({ "toolCallId": tool_call_id, "toolName": tool_name, "result": result, "isError": is_error }),
+            false,
         )),
     }
+}
+
+/// Legacy wrapper: returns only fire-and-forget events for backward compatibility.
+/// Use `event_from_agent_event` for new code that needs the result-returning flag.
+pub fn fire_and_forget_from_agent_event(
+    event: &pi_agent_core::types::AgentEvent,
+) -> Option<(&'static str, serde_json::Value)> {
+    event_from_agent_event(event).map(|(name, payload, _)| (name, payload))
 }

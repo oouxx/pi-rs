@@ -24,6 +24,15 @@ function execWithDefaultCwd(command, args, options, defaultCwd) {
   return Deno.core.ops.op_pi_exec(command, args ?? [], opts);
 }
 
+// Context mode state - set by Rust via __piSetContextMode.
+let contextMode = "rpc";
+let contextHasUI = false;
+
+globalThis.__piSetContextMode = (mode, hasUI) => {
+  contextMode = mode ?? "rpc";
+  contextHasUI = hasUI === true;
+};
+
 function makeContext(cwd) {
   const ctxCwd = cwd ?? sessionCwd ?? "/";
   const notSupported = (name) => () => {
@@ -31,8 +40,8 @@ function makeContext(cwd) {
   };
   return {
     cwd: ctxCwd,
-    mode: "rpc",
-    hasUI: false,
+    mode: contextMode,
+    hasUI: contextHasUI,
     ui: {
       // Notifications are buffered JS-side so __piCallTool can return them; the
       // Rust op_pi_notify mirrors into OpState for any Rust-side consumer too.

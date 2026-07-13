@@ -328,6 +328,11 @@ async fn handle_load(
     );
     let _ = js.execute_script("<pi-set-cwd>", set_cwd);
 
+    // Set the context mode (default: rpc, no UI). The mode is passed from the
+    // host so extensions see the correct ctx.mode / ctx.hasUI values.
+    let set_mode = "globalThis.__piSetContextMode(\"rpc\", false)";
+    let _ = js.execute_script("<pi-set-mode>", set_mode);
+
     let discovered = discover_extensions(cwd, agent_dir, paths);
     let mut tools: Vec<ToolInfoSerde> = Vec::new();
     let mut commands: Vec<super::ops::CommandInfoSerde> = Vec::new();

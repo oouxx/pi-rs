@@ -103,6 +103,14 @@ enum RuntimeCommand {
         result_returning: bool,
         reply: oneshot::Sender<Result<serde_json::Value, ExtensionError>>,
     },
+    /// V8 thread calls back to the host (main thread) for a synchronous
+    /// operation. Used by ops that need host state (ctx methods, message
+    /// injection, session management, etc.).
+    CallHost {
+        function: String,
+        args: serde_json::Value,
+        reply: oneshot::Sender<Result<serde_json::Value, ExtensionError>>,
+    },
     Stop {
         reply: oneshot::Sender<()>,
     },
@@ -125,6 +133,7 @@ pub struct ExtensionErrorEvent {
 #[derive(Clone)]
 pub struct ExtensionRuntime {
     tx: mpsc::UnboundedSender<RuntimeCommand>,
+    host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>>,
     error_tx: mpsc::UnboundedSender<ExtensionErrorEvent>,
     _join: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
@@ -137,15 +146,19 @@ impl ExtensionRuntime {
     /// panicking the whole CLI — mirroring the old sidecar's `is_available()` gate.
     pub fn new() -> Result<Self, ExtensionError> {
         let (tx, rx) = mpsc::unbounded_channel::<RuntimeCommand>();
+        let host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let (error_tx, _error_rx) = mpsc::unbounded_channel::<ExtensionErrorEvent>();
+        let host_cmds = Arc::clone(&host_commands);
         let join = std::thread::Builder::new()
             .name("pi-extension-runtime".into())
             .spawn(move || {
-                runtime_thread_main(rx);
+                runtime_thread_main(rx, host_cmds);
             })
             .map_err(|e| ExtensionError::Runtime(format!("failed to spawn extension runtime thread: {e}")))?;
         Ok(Self {
             tx,
+            host_commands,
             error_tx,
             _join: Arc::new(std::sync::Mutex::new(Some(join))),
         })
@@ -232,6 +245,33 @@ impl ExtensionRuntime {
         let _ = rx.await;
         Ok(())
     }
+
+    /// Call a host function from the V8 thread. The function is executed on the
+    /// main thread and the result is returned. Used by ops that need host state.
+    pub async fn call_host(
+        &self,
+        function: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, ExtensionError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(RuntimeCommand::CallHost {
+            function: function.to_string(),
+            args,
+            reply,
+        })?;
+        await_reply(rx).await?
+    }
+
+    /// Poll for pending host commands from the V8 thread. Returns the first
+    /// pending command, or `None` if no commands are queued. The main thread
+    /// should call this periodically to process host callbacks from ops.
+    pub fn poll_host_command(&self) -> Option<super::ops::HostCommand> {
+        let mut guard = self.host_commands.lock().ok()?;
+        if guard.is_empty() {
+            return None;
+        }
+        Some(guard.remove(0))
+    }
 }
 
 impl Drop for ExtensionRuntime {
@@ -259,13 +299,16 @@ impl Drop for ExtensionRuntime {
 // Runtime thread body
 // ============================================================================
 
-fn runtime_thread_main(mut rx: mpsc::UnboundedReceiver<RuntimeCommand>) {
+fn runtime_thread_main(
+    mut rx: mpsc::UnboundedReceiver<RuntimeCommand>,
+    host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>>,
+) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build extension runtime tokio runtime");
     rt.block_on(async move {
-        let mut js = build_js_runtime();
+        let mut js = build_js_runtime(host_commands);
 
         // The extension! esm_entry_point loads runtime.js on init; drain the
         // event loop to settle any pending evaluation. A failure here means the
@@ -304,6 +347,18 @@ fn runtime_thread_main(mut rx: mpsc::UnboundedReceiver<RuntimeCommand>) {
                     let res = handle_dispatch(&mut js, &event_type, &payload, result_returning).await;
                     let _ = reply.send(res);
                 }
+                RuntimeCommand::CallHost {
+                    function,
+                    args,
+                    reply,
+                } => {
+                    // Host callbacks are handled by the main thread. For now,
+                    // return an error — the host-side handler will be wired in
+                    // a follow-up.
+                    let _ = reply.send(Err(ExtensionError::Runtime(
+                        format!("host function '{}' not yet wired", function),
+                    )));
+                }
                 RuntimeCommand::Stop { reply } => {
                     let _ = reply.send(());
                     break;
@@ -315,7 +370,9 @@ fn runtime_thread_main(mut rx: mpsc::UnboundedReceiver<RuntimeCommand>) {
     });
 }
 
-fn build_js_runtime() -> deno_core::JsRuntime {
+fn build_js_runtime(
+    host_commands: Arc<std::sync::Mutex<Vec<super::ops::HostCommand>>>,
+) -> deno_core::JsRuntime {
     let loader = std::rc::Rc::new(TsModuleLoader::new());
     let mut js = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(loader),
@@ -323,7 +380,9 @@ fn build_js_runtime() -> deno_core::JsRuntime {
         ..Default::default()
     });
     // Put the PiOpState into OpState so ops can borrow it.
-    js.op_state().borrow_mut().put(PiOpState::new());
+    let mut pi_state = PiOpState::new();
+    pi_state.host_commands = Some(host_commands);
+    js.op_state().borrow_mut().put(pi_state);
     js
 }
 

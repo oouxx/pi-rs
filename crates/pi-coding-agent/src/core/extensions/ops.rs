@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use deno_core::op2;
 use deno_core::OpState;
@@ -96,6 +97,15 @@ impl From<ExecResult> for ExecResultSerde {
 // OpState: Rust-side mirrors of JS registries
 // ============================================================================
 
+/// A command from the V8 thread to the host (main thread). Ops that need host
+/// state (ctx methods, message injection, session management) push a HostCommand
+/// onto the shared Vec; the main thread polls and processes them.
+pub struct HostCommand {
+    pub function: String,
+    pub args: serde_json::Value,
+    pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
 /// State stored in deno_core's OpState. Only holds what JS can't: the
 /// notification buffer (returned with each tool call). Tool/command/flag/handler
 /// registries live in JS (V8 owns the JS function references).
@@ -103,6 +113,7 @@ pub struct PiOpState {
     pub pending_notifications: Rc<RefCell<Vec<String>>>,
     pub shortcuts: Rc<RefCell<Vec<ShortcutInfoSerde>>>,
     pub flags: Rc<RefCell<Vec<FlagOptionsSerde>>>,
+    pub host_commands: Option<Arc<std::sync::Mutex<Vec<HostCommand>>>>,
 }
 
 impl PiOpState {
@@ -111,6 +122,7 @@ impl PiOpState {
             pending_notifications: Rc::new(RefCell::new(Vec::new())),
             shortcuts: Rc::new(RefCell::new(Vec::new())),
             flags: Rc::new(RefCell::new(Vec::new())),
+            host_commands: None,
         }
     }
 }

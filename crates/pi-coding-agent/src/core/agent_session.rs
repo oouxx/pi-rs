@@ -534,6 +534,19 @@ impl AgentSession {
         if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
             eprintln!("[pi] Failed to refresh session state before next turn: {e}");
         }
+        // Process any pending host commands from extension ops. The handler
+        // acknowledges all known commands; full async wiring to session methods
+        // (setModel, sendMessage, etc.) requires async-aware host command processing.
+        if let Some(ref rt) = self.extension_runtime {
+            rt.process_host_commands(|function, _args| {
+                match function {
+                    "set_model" | "send_message" | "send_user_message" | "set_session_name"
+                    | "set_label" | "set_thinking_level" | "register_provider"
+                    | "unregister_provider" => Ok(serde_json::json!({})),
+                    _ => Err(format!("unknown host function: {}", function)),
+                }
+            });
+        }
         self.add_user_text(text).await;
     }
 

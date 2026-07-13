@@ -272,6 +272,19 @@ impl ExtensionRuntime {
         }
         Some(guard.remove(0))
     }
+
+    /// Process all pending host commands using the provided handler closure.
+    /// The handler receives (function_name, args_json) and should return
+    /// a Result with the response value.
+    pub fn process_host_commands<F>(&self, mut handler: F)
+    where
+        F: FnMut(&str, &serde_json::Value) -> Result<serde_json::Value, String>,
+    {
+        while let Some(cmd) = self.poll_host_command() {
+            let result = handler(&cmd.function, &cmd.args);
+            let _ = cmd.reply.send(result);
+        }
+    }
 }
 
 impl Drop for ExtensionRuntime {

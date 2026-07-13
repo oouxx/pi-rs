@@ -228,6 +228,78 @@ pub fn op_pi_append_entry(
 }
 
 // ============================================================================
+// Session metadata ops (stubs)
+// ============================================================================
+
+#[op2]
+#[serde]
+pub fn op_pi_set_session_name(
+    _state: &mut OpState,
+    #[string] _name: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.setSessionName is not yet supported by the embedded runtime"))
+}
+
+#[op2(fast)]
+pub fn op_pi_get_session_name(_state: &mut OpState) -> Result<(), JsErrorBox> {
+    Ok(())
+}
+
+#[op2(fast)]
+pub fn op_pi_set_label(
+    _state: &mut OpState,
+    #[string] _entry_id: String,
+    #[string] _label: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.setLabel is not yet supported by the embedded runtime"))
+}
+
+// ============================================================================
+// Model/thinking ops (stubs)
+// ============================================================================
+
+#[op2]
+#[serde]
+pub fn op_pi_set_model(
+    _state: &mut OpState,
+    #[string] _model: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.setModel is not yet supported by the embedded runtime"))
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_set_thinking_level(
+    _state: &mut OpState,
+    #[string] _level: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.setThinkingLevel is not yet supported by the embedded runtime"))
+}
+
+// ============================================================================
+// Provider registration ops (stubs)
+// ============================================================================
+
+#[op2]
+#[serde]
+pub fn op_pi_register_provider(
+    _state: &mut OpState,
+    #[string] _name: String,
+    #[serde] _config: serde_json::Value,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.registerProvider is not yet supported by the embedded runtime"))
+}
+
+#[op2]
+#[serde]
+pub fn op_pi_unregister_provider(
+    _state: &mut OpState,
+    #[string] _name: String,
+) -> Result<(), JsErrorBox> {
+    Err(JsErrorBox::generic("pi.unregisterProvider is not yet supported by the embedded runtime"))
+}
+
+// ============================================================================
 // exec / notify / log
 // ============================================================================
 
@@ -290,6 +362,13 @@ deno_core::extension!(
         op_pi_send_message,
         op_pi_send_user_message,
         op_pi_append_entry,
+        op_pi_set_session_name,
+        op_pi_get_session_name,
+        op_pi_set_label,
+        op_pi_set_model,
+        op_pi_set_thinking_level,
+        op_pi_register_provider,
+        op_pi_unregister_provider,
         op_pi_exec,
         op_pi_notify,
         op_pi_log,

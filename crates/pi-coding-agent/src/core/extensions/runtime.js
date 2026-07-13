@@ -117,22 +117,40 @@ function makePi() {
     },
     exec: (command, args, options) =>
       execWithDefaultCwd(command, args, options, sessionCwd),
-    events: { emit: () => {}, on: () => () => {} },
-    // Deferred API -- present so extensions import cleanly, but throw on use.
-    registerProvider: notSupported("registerProvider"),
-    unregisterProvider: notSupported("unregisterProvider"),
-    setModel: notSupported("setModel"),
+    // In-process EventEmitter for cross-extension communication (Task 5.9)
+    events: (() => {
+      const eventBusHandlers = new Map();
+      return {
+        emit: (event, data) => {
+          const list = eventBusHandlers.get(event);
+          if (!list) return;
+          for (const h of list) {
+            try { h(data); } catch (e) { try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {} }
+          }
+        },
+        on: (event, handler) => {
+          let list = eventBusHandlers.get(event);
+          if (!list) { list = []; eventBusHandlers.set(event, list); }
+          list.push(handler);
+          return () => { const idx = list.indexOf(handler); if (idx >= 0) list.splice(idx, 1); };
+        },
+      };
+    })(),
+    // Phase 5.4-5.6: ops that throw "not supported" until RuntimeCommand variants are added
+    registerProvider: (name, config) => Deno.core.ops.op_pi_register_provider(name, config),
+    unregisterProvider: (name) => Deno.core.ops.op_pi_unregister_provider(name),
+    setModel: (model) => Deno.core.ops.op_pi_set_model(model.id ?? model),
     getThinkingLevel: () => "medium",
-    setThinkingLevel: notSupported("setThinkingLevel"),
+    setThinkingLevel: (level) => Deno.core.ops.op_pi_set_thinking_level(level),
     getActiveTools: () => [],
     getAllTools: () => [],
     setActiveTools: notSupported("setActiveTools"),
     sendMessage: (message, options) => Deno.core.ops.op_pi_send_message(message.customType ?? "", message.content ?? ""),
     sendUserMessage: (content, options) => Deno.core.ops.op_pi_send_user_message(typeof content === "string" ? content : content?.content ?? ""),
     appendEntry: (customType, data) => Deno.core.ops.op_pi_append_entry(customType, data ?? null),
-    setSessionName: notSupported("setSessionName"),
+    setSessionName: (name) => Deno.core.ops.op_pi_set_session_name(name),
     getSessionName: () => undefined,
-    setLabel: notSupported("setLabel"),
+    setLabel: (entryId, label) => Deno.core.ops.op_pi_set_label(entryId, label ?? null),
     navigateTree: notSupported("navigateTree"),
     registerMessageRenderer: notSupported("registerMessageRenderer"),
     registerEntryRenderer: notSupported("registerEntryRenderer"),

@@ -4,7 +4,7 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
-    StreamFn,
+    StreamFn, TransformContextFn,
 };
 
 use crate::core::compaction::CompactionSettings;
@@ -192,6 +192,39 @@ impl AgentSession {
             None => (None, None),
         };
 
+        // Wire the context event hook: extensions can modify messages before
+        // they are sent to the LLM. The JS side chains handlers serially.
+        let transform_context: Option<TransformContextFn> = options.extension_runtime.as_ref().map(|rt| {
+            let ctx_rt = Arc::clone(rt);
+            let closure = move |messages: Vec<AgentMessage>, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+                let rt = Arc::clone(&ctx_rt);
+                Box::pin(async move {
+                    crate::core::extensions::dispatcher::dispatch_context(&rt, messages).await
+                }) as std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
+            };
+            Arc::new(closure) as TransformContextFn
+        });
+
+        // Wire the before_provider_request event: extensions can inspect/modify
+        // the provider request payload before it is sent. The on_payload callback
+        // fires right before the HTTP request; we dispatch the event here so
+        // extensions see the payload. (Full result-returning modification of the
+        // actual request body requires a future pi-agent-core hook.)
+        let on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>> =
+            options.extension_runtime.as_ref().map(|rt| {
+                let payload_rt = Arc::clone(rt);
+                let closure = move |payload: serde_json::Value| {
+                    let rt = Arc::clone(&payload_rt);
+                    tokio::spawn(async move {
+                        let _ = crate::core::extensions::dispatcher::dispatch_before_provider_request(
+                            &rt, payload,
+                        )
+                        .await;
+                    });
+                };
+                Arc::new(closure) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
+            });
+
         let agent_options = pi_agent_core::agent::AgentOptions {
             initial_state: Some(initial_state),
             convert_to_llm: Some(convert_to_llm),
@@ -199,6 +232,8 @@ impl AgentSession {
             session_id: Some(session_manager.get_session_id().to_string()),
             before_tool_call,
             after_tool_call,
+            transform_context,
+            on_payload,
             ..Default::default()
         };
 

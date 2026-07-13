@@ -252,6 +252,18 @@ globalThis.__piDispatchResult = async (eventType, payload) => {
     return { payload: cur };
   }
 
+  if (eventType === "user_bash") {
+    for (const h of list) {
+      try {
+        const r = await h(payload, ctx);
+        if (r !== undefined) return r;
+      } catch (e) {
+        try { Deno.core.ops.op_pi_log(String(e && e.stack || e)); } catch {}
+      }
+    }
+    return null;
+  }
+
   // Default: fire-and-forget semantics.
   for (const h of list) {
     try { await h(payload, ctx); } catch (e) {

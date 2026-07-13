@@ -111,6 +111,102 @@ pub async fn dispatch_tool_result(
 }
 
 // ============================================================================
+// context — message transform before LLM call
+// ============================================================================
+
+/// Dispatch the `context` event to extensions, allowing them to modify the
+/// message list before it is sent to the LLM.
+///
+/// The JS side (`__piDispatchResult("context", ...)`) chains handlers serially:
+/// each handler sees the messages modified by the previous handler. Returns the
+/// (potentially modified) messages. On error, returns the original messages
+/// unchanged (fail-open).
+pub async fn dispatch_context(
+    runtime: &ExtensionRuntime,
+    messages: Vec<pi_agent_core::types::AgentMessage>,
+) -> Vec<pi_agent_core::types::AgentMessage> {
+    let payload = serde_json::json!({
+        "type": "context",
+        "messages": messages,
+    });
+    let res = runtime.dispatch_result("context", payload).await;
+    let res = match res {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[pi] extension context dispatch failed (fail-open): {e}");
+            return messages;
+        }
+    };
+    res
+        .get("messages")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or(messages)
+}
+
+// ============================================================================
+// before_provider_request — modify provider request payload
+// ============================================================================
+
+/// Dispatch the `before_provider_request` event to extensions, allowing them
+/// to modify the provider request payload before it is sent.
+///
+/// The JS side chains handlers serially: each handler sees the payload modified
+/// by the previous handler. Returns the (potentially modified) payload. On
+/// error, returns the original payload unchanged (fail-open).
+pub async fn dispatch_before_provider_request(
+    runtime: &ExtensionRuntime,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    let event_payload = serde_json::json!({
+        "type": "before_provider_request",
+        "payload": payload,
+    });
+    let res = runtime.dispatch_result("before_provider_request", event_payload).await;
+    let res = match res {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[pi] extension before_provider_request dispatch failed (fail-open): {e}");
+            return payload;
+        }
+    };
+    res
+        .get("payload")
+        .cloned()
+        .unwrap_or(payload)
+}
+
+// ============================================================================
+// user_bash — intercept/modify user `!`/`!!` commands
+// ============================================================================
+
+/// Dispatch the `user_bash` event to extensions, allowing them to intercept or
+/// modify user `!`/`!!` commands.
+///
+/// The JS side executes handlers serially; the first handler that returns a
+/// non-undefined result wins (short-circuit). Returns `None` when no handler
+/// intercepts (the command proceeds normally).
+pub async fn dispatch_user_bash(
+    runtime: &ExtensionRuntime,
+    command: &str,
+    cwd: &str,
+) -> Option<serde_json::Value> {
+    let payload = serde_json::json!({
+        "type": "user_bash",
+        "command": command,
+        "cwd": cwd,
+    });
+    let res = runtime.dispatch_result("user_bash", payload).await;
+    match res {
+        Ok(v) if !v.is_null() => Some(v),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("[pi] extension user_bash dispatch failed (fail-open): {e}");
+            None
+        }
+    }
+}
+
+// ============================================================================
 // fire-and-forget event name mapping from AgentEvent
 // ============================================================================
 
@@ -136,7 +232,13 @@ pub fn fire_and_forget_from_agent_event(
         AgentEvent::MessageUpdate { message, .. } => {
             Some(("message_update", serde_json::json!({ "message": message })))
         }
-        AgentEvent::MessageEnd { .. } => None, // could be result-returning in phase 2
+        AgentEvent::MessageEnd { message } => {
+            // Fire-and-forget dispatch for now. Full result-returning (extensions
+            // replacing the message) requires a pi-agent-core hook that exposes a
+            // mutable message reference before the event is finalized — tracked
+            // as G2 in the alignment plan.
+            Some(("message_end", serde_json::json!({ "message": message })))
+        }
         AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => Some((
             "tool_execution_start",
             serde_json::json!({ "toolCallId": tool_call_id, "toolName": tool_name, "args": args }),

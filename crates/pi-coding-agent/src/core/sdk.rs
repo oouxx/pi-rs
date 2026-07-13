@@ -279,6 +279,10 @@ pub async fn create_agent_session(
         Some(extension_prompt_guidelines)
     };
 
+    // Clone the runtime handle before it's moved into session_options so we can
+    // dispatch session lifecycle events from the SDK level after creation.
+    let session_start_rt = extension_runtime.clone();
+
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
         model,
@@ -302,6 +306,11 @@ pub async fn create_agent_session(
     };
 
     let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
+
+    // Dispatch session_start to extensions after the session is fully initialized.
+    if let Some(ref rt) = session_start_rt {
+        crate::core::extensions::dispatcher::dispatch_session_start(rt, "startup").await;
+    }
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {

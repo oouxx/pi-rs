@@ -207,6 +207,52 @@ pub async fn dispatch_user_bash(
 }
 
 // ============================================================================
+// Session lifecycle events (fire-and-forget)
+// ============================================================================
+
+/// Dispatch a `session_start` event to extensions.
+pub async fn dispatch_session_start(
+    runtime: &ExtensionRuntime,
+    reason: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "session_start",
+        "reason": reason,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_start", payload).await {
+        eprintln!("[pi] session_start dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_shutdown` event to extensions.
+pub async fn dispatch_session_shutdown(
+    runtime: &ExtensionRuntime,
+    reason: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "session_shutdown",
+        "reason": reason,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_shutdown", payload).await {
+        eprintln!("[pi] session_shutdown dispatch failed: {e}");
+    }
+}
+
+/// Dispatch a `session_info_changed` event to extensions.
+pub async fn dispatch_session_info_changed(
+    runtime: &ExtensionRuntime,
+    name: Option<&str>,
+) {
+    let payload = serde_json::json!({
+        "type": "session_info_changed",
+        "name": name,
+    });
+    if let Err(e) = runtime.dispatch_fire_and_forget("session_info_changed", payload).await {
+        eprintln!("[pi] session_info_changed dispatch failed: {e}");
+    }
+}
+
+// ============================================================================
 // fire-and-forget event name mapping from AgentEvent
 // ============================================================================
 

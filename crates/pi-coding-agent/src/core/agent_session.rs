@@ -885,7 +885,12 @@ impl AgentSession {
         self._subscriptions.push(handle);
     }
 
-    pub fn dispose(self) {
+    pub async fn dispose(self) {
+        // Dispatch session_shutdown event before stopping the runtime, so
+        // extensions can perform cleanup (e.g. flush state, close connections).
+        if let Some(ref rt) = self.extension_runtime {
+            crate::core::extensions::dispatcher::dispatch_session_shutdown(rt, "quit").await;
+        }
         // Gracefully stop the embedded extension runtime so the V8 thread and
         // its isolate are torn down rather than lingering until process exit.
         if let Some(rt) = self.extension_runtime {

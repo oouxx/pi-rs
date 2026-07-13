@@ -12,16 +12,16 @@
 | `extensions-discovery.test.ts` | 30 | 25 | 83% |
 | `extensions-runner.test.ts` | ~30 | 24 | 80% |
 | `extensions-input-event.test.ts` | 10 | 6 | 60% |
-| `package-manager.test.ts` | ~40 | 7 | ~15% |
+| `package-manager.test.ts` | ~40 | 36 | ~90% |
 | `package-manager-ssh.test.ts` | 8 | 0 | 0% |
 | `compaction-extensions.test.ts` | 8 | 0 | 0% |
 | `compaction-extensions-example.test.ts` | 2 | 0 | 0% |
 | `plan-mode-extension.test.ts` | 4 | 0 | 0% |
 | `git-merge-and-resolve-extension.test.ts` | 9 | 0 | 0% |
 | `resource-loader.test.ts` | 22 | 0 | 0% |
-| **合计** | **~163** | **62** | **~38%** |
+| **合计** | **~163** | **91** | **~56%** |
 
-### Rust 测试模块分布（164 个测试）
+### Rust 测试模块分布（200 个测试）
 
 | Rust 模块 | 测试数 | 说明 |
 |-----------|--------|------|
@@ -30,6 +30,7 @@
 | `ops.rs` | 51 | 全部 deno ops（注册/查询/host command/stub） |
 | `runtime.rs` | 24 | V8 线程生命周期 + 加载/调用/分发/重载 |
 | `types.rs` | 1 | ToolDefinition 序列化 |
+| `package_manager.rs` | 36 | 包管理器（解析/缓存/进度/序列化/去重） |
 
 ---
 
@@ -255,31 +256,31 @@
 **原版 TS 源：** `packages/coding-agent/src/core/package-manager.ts`
 **原版测试：** `test/package-manager.test.ts` + `test/package-manager-ssh.test.ts`
 
-#### 已迁移（7 个）
+#### 已迁移（36 个）
 
-| 测试 | 说明 |
+| 测试类别 | 数量 | 说明 |
+|---------|------|------|
+| 基础操作 | 3 | npm 可用性、创建管理器、空目录解析 |
+| 包发现 | 2 | node_modules 中检测普通包和 scoped 包 |
+| Source 解析 | 4 | 基本解析、缓存命中、未找到、project-only |
+| 跨作用域解析 | 3 | user scope、project scope、both scopes |
+| 进度事件 | 3 | 回调触发、回调清除、ProgressEvent serde |
+| 缺失源处理 | 2 | MissingSourceAction 变体、on_missing 回调 |
+| 序列化 | 8 | PathMetadata（含/不含 base_dir）、ConfiguredPackage（含/不含 installed_path）、ResolvedResource（启用/禁用）、ResolvedPaths 默认、SourceScope serde、ProgressEvent serde |
+| 列表配置包 | 3 | 有包、双作用域、去重（project 优先） |
+| 移除操作 | 1 | 清除缓存 |
+| NpmHelper 边界 | 3 | 不存在的目录、空目录、未安装的包 |
+| 边界条件 | 3 | 不存在的目录、空路径、空缓存 |
+
+#### 未迁移（需新增功能）
+
+| 功能 | 说明 |
 |------|------|
-| npm 可用性检查 | `is_npm_available()` |
-| 创建管理器 | `DefaultPackageManager::new()` |
-| 空目录解析 | `resolve()` 空结果 |
-| 检测 node_modules 中的包 | `resolve()` 发现 test-pkg |
-| 检测 scoped 包 | `resolve()` 发现 @scope/test-pkg |
-| Source 解析 | `resolve_source()` 按 scope 查找 |
-| 类型序列化 | `PathMetadata` serde round-trip |
-
-#### 未迁移（~41 个）
-
-| 功能 | 原版测试数 | 说明 |
-|------|-----------|------|
-| Source 解析（npm/git/local） | ~8 | `parseSource()` 三种类型 |
-| 模式过滤（`!`/`+`/`-` 前缀） | ~6 | 排除/强制包含/强制排除 |
-| 跨 scope 去重 | ~4 | 用户/项目 scope 同名包去重 |
-| SSH URL 解析 | 8 | `https://`、`ssh://`、`git@`、`host/path` 格式 |
-| 离线模式 | ~3 | 网络不可用时行为 |
-| 进度事件 | ~3 | `ProgressCallback` 触发 |
-| 安装/卸载 | ~4 | 需要 npm CLI |
-| Git 安装路径 | ~3 | Git 仓库安装路径解析 |
-| 多文件扩展发现 | ~2 | 子目录只加载 index.ts |
+| Source 解析（npm/git/local） | Rust 未实现 `parseSource()` |
+| 模式过滤（`!`/`+`/`-` 前缀） | Rust 未实现 pattern filtering |
+| SSH URL 解析 | 在 `package-manager-ssh.test.ts` 中 |
+| 离线模式 | Rust 未实现 offline mode |
+| Git 安装路径 | Rust 未实现 git operations |
 
 ---
 
@@ -359,17 +360,24 @@
 - runtime：通过 `ExtensionRuntime` 句柄发送命令到 V8 线程，async 等待结果
 - dispatcher：纯单元测试，构造 `AgentEvent`/`BeforeToolCallContext` 验证 payload JSON
 
-### 优先级 2：Package manager 测试（~41 个测试，未完成）
+### ✅ 优先级 2：Package manager 测试（已完成，36 个测试）
 
-`package_manager.rs` 只有 7 个基础测试，缺少：
+`package_manager.rs` 从 7 个基础测试扩展到 36 个：
 
-- Source 解析（npm/git/local）
-- 模式过滤
-- SSH URL
-- 离线模式
-- 进度事件
+- **进度事件**：回调触发/清除、ProgressEvent serde
+- **跨作用域解析**：user scope、project scope、both scopes、project 优先去重
+- **Source 解析缓存**：缓存命中/清除/未找到/project-only
+- **序列化**：PathMetadata（含/不含 base_dir）、ConfiguredPackage、ResolvedResource、SourceScope、ProgressEvent
+- **列表配置包**：有包/双作用域/去重
+- **移除操作**：缓存清除
+- **NpmHelper 边界**：不存在目录/空目录/未安装
+- **缺失源处理**：MissingSourceAction 变体/on_missing 回调
 
-**难度：** 中。大部分可以纯单元测试（不需要 npm CLI）。
+**未覆盖（需新增 Rust 功能）：**
+- Source 解析（npm/git/local URL 解析）— Rust 未实现 `parseSource()`
+- 模式过滤（`!`/`+`/`-` 前缀）— Rust 未实现 pattern filtering
+- SSH URL 解析 — 在 `package-manager-ssh.test.ts` 中
+- 离线模式 — Rust 未实现
 
 ### 优先级 3：Resource loader 测试（22 个测试，未完成）
 

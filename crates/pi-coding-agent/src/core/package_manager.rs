@@ -61,7 +61,7 @@ pub struct ConfiguredPackage {
 }
 
 /// Progress event during package operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub event_type: String,
     pub action: String,
@@ -433,8 +433,14 @@ impl PackageManager for DefaultPackageManager {
         if project_nm.exists() {
             for pkg in NpmHelper::list_installed(&project_nm.to_string_lossy()) {
                 let installed = project_nm.join(&pkg).to_string_lossy().to_string();
-                // Avoid duplicates if same package is in both
-                if !packages.iter().any(|p| p.source == pkg && p.scope == "project") {
+                // Project scope wins over user scope for same package name
+                if let Some(pos) = packages.iter().position(|p| p.source == pkg) {
+                    // Replace user-scoped entry with project-scoped
+                    if packages[pos].scope == "user" {
+                        packages[pos].scope = "project".to_string();
+                        packages[pos].installed_path = Some(installed);
+                    }
+                } else {
                     packages.push(ConfiguredPackage {
                         source: pkg,
                         scope: "project".to_string(),
@@ -471,6 +477,7 @@ pub fn get_npm_root(global: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Arc;
 
     #[test]
     fn test_npm_available() {
@@ -550,5 +557,485 @@ mod tests {
 
         let deserialized: PathMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.source, "test");
+    }
+
+    // -----------------------------------------------------------------------
+    // Progress event tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_progress_callback_invoke() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        mgr.set_progress_callback(Some(Box::new(move |evt| {
+            events_clone.lock().unwrap().push(evt);
+        })));
+
+        // Trigger progress via install (will fail since npm may not be available,
+        // but progress should still be emitted before the attempt).
+        let _ = mgr.install("test-pkg", false);
+
+        let captured = events.lock().unwrap();
+        // At minimum, the "install" action should have been emitted.
+        assert!(!captured.is_empty(), "should have at least one progress event");
+        assert_eq!(captured[0].action, "install");
+        assert_eq!(captured[0].source, "test-pkg");
+    }
+
+    #[test]
+    fn test_progress_callback_clear() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        mgr.set_progress_callback(Some(Box::new(|_| {})));
+        // Clear the callback
+        mgr.set_progress_callback(None);
+        // Should not crash when operations run without callback
+        let _ = mgr.resolve(None);
+    }
+
+    #[test]
+    fn test_progress_event_serde() {
+        let evt = ProgressEvent {
+            event_type: "progress".into(),
+            action: "install".into(),
+            source: "test-pkg".into(),
+            message: Some("Installing...".into()),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        let deserialized: ProgressEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.action, "install");
+        assert_eq!(deserialized.message.as_deref(), Some("Installing..."));
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-scope resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_user_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        let user_nm = agent_dir.join("node_modules").join("user-pkg");
+        fs::create_dir_all(&user_nm).unwrap();
+        fs::write(user_nm.join("package.json"), r#"{"name":"user-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            agent_dir.to_str().unwrap(),
+        );
+        let result = mgr.resolve(None).unwrap();
+
+        assert!(result.extensions.iter().any(|r| {
+            r.metadata.source == "user-pkg" && r.metadata.scope == SourceScope::User
+        }));
+    }
+
+    #[test]
+    fn test_resolve_project_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_nm = dir.path().join("node_modules").join("proj-pkg");
+        fs::create_dir_all(&project_nm).unwrap();
+        fs::write(project_nm.join("package.json"), r#"{"name":"proj-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            "/nonexistent",
+        );
+        let result = mgr.resolve(None).unwrap();
+
+        assert!(result.extensions.iter().any(|r| {
+            r.metadata.source == "proj-pkg" && r.metadata.scope == SourceScope::Project
+        }));
+    }
+
+    #[test]
+    fn test_resolve_both_scopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+
+        // User package
+        let user_nm = agent_dir.join("node_modules").join("user-pkg");
+        fs::create_dir_all(&user_nm).unwrap();
+        fs::write(user_nm.join("package.json"), r#"{"name":"user-pkg"}"#).unwrap();
+
+        // Project package
+        let project_nm = dir.path().join("node_modules").join("proj-pkg");
+        fs::create_dir_all(&project_nm).unwrap();
+        fs::write(project_nm.join("package.json"), r#"{"name":"proj-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            agent_dir.to_str().unwrap(),
+        );
+        let result = mgr.resolve(None).unwrap();
+
+        assert_eq!(result.extensions.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Source resolution with cache tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_source_caches_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg_dir = dir.path().join("node_modules").join("cached-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("package.json"), r#"{"name":"cached-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            "/nonexistent",
+        );
+
+        // First call populates cache
+        let r1 = mgr.resolve_source("cached-pkg", false);
+        assert!(r1.is_some());
+
+        // Remove the package from disk
+        fs::remove_dir_all(&pkg_dir).unwrap();
+
+        // Second call should still return cached result
+        let r2 = mgr.resolve_source("cached-pkg", false);
+        assert!(r2.is_some(), "should return cached result even after deletion");
+    }
+
+    #[test]
+    fn test_resolve_source_not_found() {
+        let mgr = DefaultPackageManager::new("/nonexistent", "/nonexistent");
+        let result = mgr.resolve_source("nonexistent-pkg", false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_source_project_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+
+        // Only in user scope
+        let user_nm = agent_dir.join("node_modules").join("my-pkg");
+        fs::create_dir_all(&user_nm).unwrap();
+        fs::write(user_nm.join("package.json"), r#"{"name":"my-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            agent_dir.to_str().unwrap(),
+        );
+
+        // local=true means project scope only — should NOT find user package
+        let result = mgr.resolve_source("my-pkg", true);
+        assert!(result.is_none(), "local=true should not search user scope");
+    }
+
+    // -----------------------------------------------------------------------
+    // Missing source action tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_missing_source_action_variants() {
+        assert_eq!(MissingSourceAction::Install as i32, 0);
+        assert_eq!(MissingSourceAction::Skip as i32, 1);
+        assert_eq!(MissingSourceAction::Error as i32, 2);
+    }
+
+    #[test]
+    fn test_resolve_with_on_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            "/nonexistent",
+        );
+
+        let called = std::sync::Mutex::new(Vec::new());
+        let on_missing = |source: &str| {
+            called.lock().unwrap().push(source.to_string());
+            MissingSourceAction::Skip
+        };
+
+        // resolve should call on_missing for each configured package
+        // (there are none configured, so it shouldn't be called)
+        let result = mgr.resolve(Some(&on_missing)).unwrap();
+        assert!(result.extensions.is_empty());
+        assert!(called.lock().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ConfiguredPackage tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_configured_package_serde() {
+        let pkg = ConfiguredPackage {
+            source: "test-pkg".into(),
+            scope: "user".into(),
+            filtered: false,
+            installed_path: Some("/path/to/pkg".into()),
+        };
+        let json = serde_json::to_string(&pkg).unwrap();
+        let deserialized: ConfiguredPackage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.source, "test-pkg");
+        assert_eq!(deserialized.scope, "user");
+        assert!(!deserialized.filtered);
+        assert_eq!(deserialized.installed_path.as_deref(), Some("/path/to/pkg"));
+    }
+
+    #[test]
+    fn test_configured_package_no_installed_path() {
+        let pkg = ConfiguredPackage {
+            source: "test-pkg".into(),
+            scope: "project".into(),
+            filtered: true,
+            installed_path: None,
+        };
+        let json = serde_json::to_string(&pkg).unwrap();
+        let deserialized: ConfiguredPackage = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.filtered);
+        assert!(deserialized.installed_path.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ResolvedPaths tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolved_paths_default() {
+        let paths = ResolvedPaths::default();
+        assert!(paths.extensions.is_empty());
+        assert!(paths.skills.is_empty());
+        assert!(paths.prompts.is_empty());
+        assert!(paths.themes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ResolvedResource tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolved_resource_serde() {
+        let resource = ResolvedResource {
+            path: "/path/to/ext.ts".into(),
+            enabled: true,
+            metadata: PathMetadata {
+                source: "my-ext".into(),
+                scope: SourceScope::Project,
+                origin: "package".into(),
+                base_dir: Some("/base".into()),
+            },
+        };
+        let json = serde_json::to_string(&resource).unwrap();
+        let deserialized: ResolvedResource = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.path, "/path/to/ext.ts");
+        assert!(deserialized.enabled);
+        assert_eq!(deserialized.metadata.source, "my-ext");
+    }
+
+    #[test]
+    fn test_resolved_resource_disabled() {
+        let resource = ResolvedResource {
+            path: "/path/to/disabled.ts".into(),
+            enabled: false,
+            metadata: PathMetadata {
+                source: "disabled".into(),
+                scope: SourceScope::User,
+                origin: "manual".into(),
+                base_dir: None,
+            },
+        };
+        assert!(!resource.enabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // SourceScope tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_source_scope_serde() {
+        let json = serde_json::to_string(&SourceScope::User).unwrap();
+        assert_eq!(json, "\"user\"");
+
+        let json = serde_json::to_string(&SourceScope::Project).unwrap();
+        assert_eq!(json, "\"project\"");
+
+        let deserialized: SourceScope = serde_json::from_str("\"user\"").unwrap();
+        assert_eq!(deserialized, SourceScope::User);
+
+        let deserialized: SourceScope = serde_json::from_str("\"project\"").unwrap();
+        assert_eq!(deserialized, SourceScope::Project);
+    }
+
+    // -----------------------------------------------------------------------
+    // PathMetadata tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_path_metadata_with_base_dir() {
+        let meta = PathMetadata {
+            source: "test".into(),
+            scope: SourceScope::User,
+            origin: "npm".into(),
+            base_dir: Some("/usr/local/lib/node_modules".into()),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("base_dir"));
+        let deserialized: PathMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.base_dir.as_deref(), Some("/usr/local/lib/node_modules"));
+    }
+
+    #[test]
+    fn test_path_metadata_without_base_dir_skipped_in_json() {
+        let meta = PathMetadata {
+            source: "test".into(),
+            scope: SourceScope::Project,
+            origin: "package".into(),
+            base_dir: None,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        // base_dir should be skipped when None (skip_serializing_if)
+        assert!(!json.contains("base_dir"));
+    }
+
+    // -----------------------------------------------------------------------
+    // NpmHelper edge case tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_npm_list_installed_nonexistent_dir() {
+        let packages = NpmHelper::list_installed("/nonexistent/path");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_npm_list_installed_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = NpmHelper::list_installed(dir.path().to_str().unwrap());
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_npm_is_package_installed_not_found() {
+        assert!(!NpmHelper::is_package_installed("nonexistent", "/nonexistent"));
+    }
+
+    // -----------------------------------------------------------------------
+    // list_configured_packages tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_configured_packages_with_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        let nm = dir.path().join("node_modules").join("test-pkg");
+        fs::create_dir_all(&nm).unwrap();
+        fs::write(nm.join("package.json"), r#"{"name":"test-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            "/nonexistent",
+        );
+        let packages = mgr.list_configured_packages();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].source, "test-pkg");
+        assert_eq!(packages[0].scope, "project");
+    }
+
+    #[test]
+    fn test_list_configured_packages_both_scopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+
+        // User package
+        let user_nm = agent_dir.join("node_modules").join("user-pkg");
+        fs::create_dir_all(&user_nm).unwrap();
+        fs::write(user_nm.join("package.json"), r#"{"name":"user-pkg"}"#).unwrap();
+
+        // Project package
+        let project_nm = dir.path().join("node_modules").join("proj-pkg");
+        fs::create_dir_all(&project_nm).unwrap();
+        fs::write(project_nm.join("package.json"), r#"{"name":"proj-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            agent_dir.to_str().unwrap(),
+        );
+        let packages = mgr.list_configured_packages();
+        assert_eq!(packages.len(), 2);
+    }
+
+    #[test]
+    fn test_list_configured_packages_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+
+        // Same package in both scopes
+        let user_nm = agent_dir.join("node_modules").join("shared-pkg");
+        fs::create_dir_all(&user_nm).unwrap();
+        fs::write(user_nm.join("package.json"), r#"{"name":"shared-pkg"}"#).unwrap();
+
+        let project_nm = dir.path().join("node_modules").join("shared-pkg");
+        fs::create_dir_all(&project_nm).unwrap();
+        fs::write(project_nm.join("package.json"), r#"{"name":"shared-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            agent_dir.to_str().unwrap(),
+        );
+        let packages = mgr.list_configured_packages();
+        // Should only appear once (project scope wins)
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].scope, "project");
+    }
+
+    // -----------------------------------------------------------------------
+    // Remove operation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_remove_clears_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg_dir = dir.path().join("node_modules").join("test-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("package.json"), r#"{"name":"test-pkg"}"#).unwrap();
+
+        let mgr = DefaultPackageManager::new(
+            dir.path().to_str().unwrap(),
+            "/nonexistent",
+        );
+
+        // Populate cache
+        let r = mgr.resolve_source("test-pkg", false);
+        assert!(r.is_some());
+
+        // Remove (will fail at npm level, but cache should be cleared)
+        let _ = mgr.remove("test-pkg", false);
+
+        // Cache should be cleared
+        let cache = mgr.path_cache.lock().unwrap();
+        assert!(!cache.contains_key("test-pkg"), "cache should be cleared after remove");
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_with_nonexistent_dirs() {
+        let mgr = DefaultPackageManager::new("/nonexistent/cwd", "/nonexistent/agent");
+        let result = mgr.resolve(None).unwrap();
+        assert!(result.extensions.is_empty());
+    }
+
+    #[test]
+    fn test_new_with_empty_paths() {
+        let mgr = DefaultPackageManager::new("", "");
+        let result = mgr.resolve(None).unwrap();
+        assert!(result.extensions.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_source_empty_cache() {
+        let mgr = DefaultPackageManager::new("/tmp", "/tmp");
+        // Cache is empty, package doesn't exist
+        let result = mgr.resolve_source("nonexistent", false);
+        assert!(result.is_none());
     }
 }

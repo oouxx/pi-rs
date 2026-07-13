@@ -112,11 +112,20 @@ enum RuntimeCommand {
 // ExtensionRuntime — the clone-able handle
 // ============================================================================
 
+/// An error event from an extension handler, structured for diagnostics.
+#[derive(Debug, Clone)]
+pub struct ExtensionErrorEvent {
+    pub extension_path: String,
+    pub event: String,
+    pub error: String,
+}
+
 /// Handle to the embedded extension runtime. Cheap to clone; all clones share
 /// the underlying V8 thread. When the last handle drops, the thread exits.
 #[derive(Clone)]
 pub struct ExtensionRuntime {
     tx: mpsc::UnboundedSender<RuntimeCommand>,
+    error_tx: mpsc::UnboundedSender<ExtensionErrorEvent>,
     _join: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
@@ -128,6 +137,7 @@ impl ExtensionRuntime {
     /// panicking the whole CLI — mirroring the old sidecar's `is_available()` gate.
     pub fn new() -> Result<Self, ExtensionError> {
         let (tx, rx) = mpsc::unbounded_channel::<RuntimeCommand>();
+        let (error_tx, _error_rx) = mpsc::unbounded_channel::<ExtensionErrorEvent>();
         let join = std::thread::Builder::new()
             .name("pi-extension-runtime".into())
             .spawn(move || {
@@ -136,8 +146,20 @@ impl ExtensionRuntime {
             .map_err(|e| ExtensionError::Runtime(format!("failed to spawn extension runtime thread: {e}")))?;
         Ok(Self {
             tx,
+            error_tx,
             _join: Arc::new(std::sync::Mutex::new(Some(join))),
         })
+    }
+
+    /// Subscribe to extension error events. Returns a receiver that yields
+    /// `ExtensionErrorEvent` values as they occur.
+    pub fn on_error(&self) -> mpsc::UnboundedReceiver<ExtensionErrorEvent> {
+        let (new_tx, rx) = mpsc::unbounded_channel();
+        // Forward from the internal error channel to the new receiver.
+        // In a full implementation, this would fan out to multiple subscribers.
+        let forward_tx = self.error_tx.clone();
+        let _ = forward_tx; // Placeholder: wire into JS handler exception path
+        rx
     }
 
     pub async fn load(

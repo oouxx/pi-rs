@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use pi_coding_agent::core::extensions::{
-    CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
+    CommandRegistry, EventResult, ExtensionAPI, ExtensionContext, ExtensionEvent, ToolCallOutput,
     ToolRegistry,
 };
 
@@ -34,7 +34,12 @@ impl ExtensionAPI for WebAccessExtension {
         None
     }
 
-    async fn exec(&self, _command: String, _args: Vec<String>) -> Result<ExecResult, String> {
-        Err("exec not implemented".into())
+    async fn handle_tool_call(
+        &self,
+        _tool_name: &str,
+        _params: serde_json::Value,
+        _ctx: &ExtensionContext,
+    ) -> Option<ToolCallOutput> {
+        None
     }
 }

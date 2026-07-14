@@ -169,6 +169,7 @@ impl AgentSession {
                 set_status: std::sync::Arc::new(|_key, _value| {}),
                 confirm: std::sync::Arc::new(|_title, _msg| false),
             },
+            runtime: crate::core::extensions::RuntimeHandle::noop(),
         };
         let shared_ext_ctx = Arc::new(ext_ctx);
 
@@ -275,6 +276,7 @@ impl AgentSession {
                     set_status: std::sync::Arc::new(|_key, _value| {}),
                     confirm: std::sync::Arc::new(|_title, _msg| false),
                 },
+                runtime: crate::core::extensions::RuntimeHandle::noop(),
             },
         };
 
@@ -342,6 +344,7 @@ impl AgentSession {
                                 set_status: std::sync::Arc::new(|_key, _value| {}),
                                 confirm: std::sync::Arc::new(|_title, _msg| false),
                             },
+                            runtime: crate::core::extensions::RuntimeHandle::noop(),
                         };
                         tokio::spawn(async move {
                             reg.dispatch_event(&evt, &ext_ctx).await;

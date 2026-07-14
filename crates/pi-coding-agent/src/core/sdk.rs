@@ -260,6 +260,7 @@ pub async fn create_agent_session(
             set_status: std::sync::Arc::new(|_key, _value| {}),
             confirm: std::sync::Arc::new(|_title, _msg| false),
         },
+        runtime: crate::core::extensions::RuntimeHandle::noop(),
     };
     crate::core::extensions::dispatcher::dispatch_session_start(
         &extension_registry_arc,

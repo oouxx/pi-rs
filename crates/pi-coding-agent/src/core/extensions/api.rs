@@ -81,6 +81,31 @@ pub struct ExtensionContext {
     pub cwd: String,
     pub has_ui: bool,
     pub ui: ExtensionUIContext,
+    /// 运行时操作句柄。
+    pub runtime: RuntimeHandle,
+}
+
+/// 运行时操作句柄 — 扩展通过此句柄与运行时交互。
+/// 对应原版 `pi.sendMessage()` / `pi.appendEntry()` / `pi.getActiveTools()` 等。
+#[derive(Clone)]
+pub struct RuntimeHandle {
+    pub send_message: Arc<dyn Fn(Value, Option<SendMessageOptions>) + Send + Sync>,
+    pub send_user_message: Arc<dyn Fn(String, Option<SendUserMessageOptions>) + Send + Sync>,
+    pub append_entry: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+    pub get_active_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    pub set_active_tools: Arc<dyn Fn(Vec<String>) + Send + Sync>,
+}
+
+impl RuntimeHandle {
+    pub fn noop() -> Self {
+        Self {
+            send_message: Arc::new(|_, _| {}),
+            send_user_message: Arc::new(|_, _| {}),
+            append_entry: Arc::new(|_, _| {}),
+            get_active_tools: Arc::new(Vec::new),
+            set_active_tools: Arc::new(|_| {}),
+        }
+    }
 }
 
 /// UI 操作方法。
@@ -185,33 +210,27 @@ pub trait ExtensionAPI: Send + Sync {
         None
     }
 
-    // ── 操作方法（运行时调用） ──────────────────────────────────────────
+    // ── 工具执行 ────────────────────────────────────────────────────────
 
-    /// 发送自定义消息到会话。对应原版 `sendMessage()`。
-    async fn send_message(&self, _message: Value, _options: Option<&SendMessageOptions>) {}
-
-    /// 发送用户消息到 agent。对应原版 `sendUserMessage()`。
-    async fn send_user_message(&self, _content: String, _options: Option<&SendUserMessageOptions>) {}
-
-    /// 追加自定义条目到会话。对应原版 `appendEntry()`。
-    async fn append_entry(&self, _custom_type: String, _data: Option<Value>) {}
-
-    /// 设置会话名称。对应原版 `setSessionName()`。
-    async fn set_session_name(&self, _name: String) {}
-
-    /// 获取会话名称。对应原版 `getSessionName()`。
-    async fn get_session_name(&self) -> Option<String> { None }
-
-    /// 执行 shell 命令。对应原版 `exec()`。
-    async fn exec(&self, _command: String, _args: Vec<String>) -> Result<ExecResult, String> {
-        Err("exec not implemented".into())
+    /// 处理工具调用。对应原版 `registerTool()` 中的 `execute`。
+    /// 返回 `Some(result)` 表示此扩展处理了该工具，`None` 表示不处理。
+    async fn handle_tool_call(
+        &self,
+        tool_name: &str,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Option<ToolCallOutput> {
+        let _ = (tool_name, params, ctx);
+        None
     }
+}
 
-    /// 获取活跃工具列表。对应原版 `getActiveTools()`。
-    async fn get_active_tools(&self) -> Vec<String> { Vec::new() }
-
-    /// 设置活跃工具列表。对应原版 `setActiveTools()`。
-    async fn set_active_tools(&self, _tool_names: Vec<String>) {}
+/// 工具调用结果。
+#[derive(Debug, Clone)]
+pub struct ToolCallOutput {
+    pub content: Vec<Value>,
+    pub details: Option<Value>,
+    pub is_error: bool,
 }
 
 // ============================================================================

@@ -3,21 +3,22 @@
 //! 对应原版 TypeScript 扩展 `pi-goal.pkg` (Michaelliv/pi-goal)。
 //! 管理目标的完整生命周期：创建、暂停、恢复、阻塞、完成。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use pi_coding_agent::core::extensions::{
-    CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
-    RegisteredTool, SendMessageOptions, SendUserMessageOptions, ToolDefinition, ToolRegistry,
+    CommandRegistry, EventResult, ExtensionAPI, ExtensionContext, ExtensionEvent, RuntimeHandle,
+    SendMessageOptions, ToolCallOutput, ToolDefinition, ToolRegistry,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 // ============================================================================
 // 类型定义 — 对应 goal-state.ts
 // ============================================================================
 
-/// 目标状态。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GoalStatus {
     Active,
     Paused,
@@ -36,7 +37,6 @@ impl GoalStatus {
     }
 }
 
-/// 目标事件类型。
 #[derive(Debug, Clone, PartialEq)]
 pub enum GoalEventKind {
     Active,
@@ -62,8 +62,7 @@ impl GoalEventKind {
     }
 }
 
-/// 目标状态数据。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoalState {
     pub version: u32,
     pub id: String,
@@ -80,13 +79,18 @@ pub struct GoalState {
 // 工具函数 — 对应 goal-state.ts
 // ============================================================================
 
+pub struct ParseResult {
+    pub objective: String,
+    pub token_budget: Option<u64>,
+    pub error: Option<String>,
+}
+
 /// 解析 `--tokens 50k` 语法。
 pub fn parse_token_budget(input: &str) -> ParseResult {
     let input = input.trim();
     if input.is_empty() {
         return ParseResult { objective: String::new(), token_budget: None, error: None };
     }
-    // Match --tokens=50k or --tokens 50k
     let re = regex::Regex::new(r"(?:^|\s)--tokens(?:=|\s+)(\S+)(?:\s|$)").unwrap();
     if let Some(caps) = re.captures(input) {
         let raw = caps.get(1).unwrap().as_str().trim();
@@ -98,11 +102,19 @@ pub fn parse_token_budget(input: &str) -> ParseResult {
         let value: f64 = match numeric.parse() {
             Ok(v) => v,
             Err(_) => {
-                return ParseResult { objective: input.to_string(), token_budget: None, error: Some("Token budget must be a number.".into()) };
+                return ParseResult {
+                    objective: input.to_string(),
+                    token_budget: None,
+                    error: Some("Token budget must be a number.".into()),
+                };
             }
         };
         if !value.is_finite() || value <= 0.0 {
-            return ParseResult { objective: input.to_string(), token_budget: None, error: Some("Token budget must be positive.".into()) };
+            return ParseResult {
+                objective: input.to_string(),
+                token_budget: None,
+                error: Some("Token budget must be positive.".into()),
+            };
         }
         let multiplier: u64 = match suffix {
             Some('m') => 1_000_000,
@@ -110,7 +122,6 @@ pub fn parse_token_budget(input: &str) -> ParseResult {
             _ => 1,
         };
         let token_budget = (value * multiplier as f64).round() as u64;
-        // Remove the --tokens part from the objective
         let m = caps.get(0).unwrap();
         let objective = format!("{}{}", &input[..m.start()], &input[m.end()..]).trim().to_string();
         return ParseResult { objective, token_budget: Some(token_budget), error: None };
@@ -118,10 +129,16 @@ pub fn parse_token_budget(input: &str) -> ParseResult {
     ParseResult { objective: input.to_string(), token_budget: None, error: None }
 }
 
-pub struct ParseResult {
-    pub objective: String,
-    pub token_budget: Option<u64>,
-    pub error: Option<String>,
+/// 标准化 token 预算。
+pub fn normalize_token_budget(value: &Value) -> (Option<u64>, Option<String>) {
+    if value.is_null() {
+        return (None, None);
+    }
+    let token_budget = value.as_f64().map(|f| f.round() as u64);
+    match token_budget {
+        Some(b) if b > 0 => (Some(b), None),
+        _ => (None, Some("tokenBudget must be a positive number when provided.".into())),
+    }
 }
 
 /// 格式化 token 数量。
@@ -185,7 +202,7 @@ pub fn goal_usage(state: &GoalState) -> String {
 
 /// 截断目标文本。
 pub fn truncate_objective(objective: &str, max: usize) -> String {
-    let single_line = objective.replace(char::is_whitespace, " ");
+    let single_line: String = objective.split_whitespace().collect::<Vec<_>>().join(" ");
     if single_line.len() > max {
         format!("{}…", &single_line[..max - 1])
     } else {
@@ -195,10 +212,7 @@ pub fn truncate_objective(objective: &str, max: usize) -> String {
 
 /// 创建新目标状态。
 pub fn create_goal_state(objective: String, token_budget: Option<u64>) -> GoalState {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now = current_millis();
     GoalState {
         version: 1,
         id: format!("{now}-{}", rand_id()),
@@ -210,6 +224,13 @@ pub fn create_goal_state(objective: String, token_budget: Option<u64>) -> GoalSt
         created_at: now,
         updated_at: now,
     }
+}
+
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn rand_id() -> String {
@@ -241,6 +262,28 @@ pub fn account_goal_turn(state: &GoalState, token_delta: u64, elapsed_seconds: u
 // ============================================================================
 // 延续提示 — 对应 index.ts 中的 continuationPrompt / budgetLimitPrompt
 // ============================================================================
+
+fn goal_content_for_llm(kind: &GoalEventKind, state: &GoalState) -> String {
+    match kind {
+        GoalEventKind::Active | GoalEventKind::Continuation | GoalEventKind::Resumed => {
+            continuation_prompt(state)
+        }
+        GoalEventKind::BudgetLimited => budget_limit_prompt(state),
+        GoalEventKind::Paused => format!(
+            "The active goal has been paused by the user. Stop pursuing it for now and wait for further instructions.\n\nObjective: {}",
+            state.objective
+        ),
+        GoalEventKind::Cleared => format!(
+            "The active goal has been cleared by the user. Stop pursuing it.\n\nObjective was: {}",
+            state.objective
+        ),
+        GoalEventKind::Complete => format!(
+            "The goal has been marked complete.\n\nObjective: {}\nUsage: {}",
+            state.objective,
+            goal_usage(state)
+        ),
+    }
+}
 
 fn continuation_prompt(state: &GoalState) -> String {
     let token_budget = state.token_budget.map(|b| b.to_string()).unwrap_or_else(|| "none".into());
@@ -312,16 +355,37 @@ Do not call update_goal unless the goal is actually complete."#,
 }
 
 // ============================================================================
+// 从 usage 提取 token 增量 — 对应 usage.ts
+// ============================================================================
+
+fn token_delta_from_usage(usage: &Value) -> u64 {
+    if usage.is_null() {
+        return 0;
+    }
+    if let Some(total) = usage.get("totalTokens").and_then(|v| v.as_u64()) {
+        return total;
+    }
+    let input = usage.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+    let output = usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cache_read = usage.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cache_write = usage.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0);
+    input + output + cache_read + cache_write
+}
+
+// ============================================================================
 // GoalExtension
 // ============================================================================
 
 const CUSTOM_TYPE: &str = "pi-goal";
+const EVENT_TYPE: &str = "pi-goal-event";
 const ACTIVE_GOAL_TOOL_NAMES: &[&str] = &["get_goal", "update_goal"];
 
 pub struct GoalExtension {
     goal: Mutex<Option<GoalState>>,
     status_bar_enabled: AtomicBool,
     continuation_queued: AtomicBool,
+    active_turn_started_at: AtomicU64,
+    active_goal_this_turn_id: Mutex<Option<String>>,
 }
 
 impl GoalExtension {
@@ -330,7 +394,103 @@ impl GoalExtension {
             goal: Mutex::new(None),
             status_bar_enabled: AtomicBool::new(true),
             continuation_queued: AtomicBool::new(false),
+            active_turn_started_at: AtomicU64::new(0),
+            active_goal_this_turn_id: Mutex::new(None),
         }
+    }
+
+    /// 发送目标事件消息到会话。对应原版 emitGoalEvent()。
+    fn emit_goal_event(&self, runtime: &RuntimeHandle, kind: GoalEventKind, state: &GoalState, options: Option<SendMessageOptions>) {
+        let content = goal_content_for_llm(&kind, state);
+        let message = json!({
+            "customType": EVENT_TYPE,
+            "content": content,
+            "display": true,
+            "details": {
+                "kind": kind.as_str(),
+                "goal": state,
+                "timestamp": current_millis(),
+            },
+        });
+        (runtime.send_message)(message, options);
+    }
+
+    /// 同步工具可见性。对应原版 syncGoalTools()。
+    fn sync_goal_tools(&self, runtime: &RuntimeHandle) {
+        let goal = self.goal.lock().unwrap();
+        let want_active_tools = goal.as_ref().map(|g| g.status == GoalStatus::Active).unwrap_or(false);
+        let mut active: Vec<String> = (runtime.get_active_tools)();
+        if !active.contains(&"create_goal".to_string()) {
+            active.push("create_goal".to_string());
+        }
+        for name in ACTIVE_GOAL_TOOL_NAMES {
+            let in_list = active.iter().any(|a| a == *name);
+            if want_active_tools && !in_list {
+                active.push((*name).to_string());
+            } else if !want_active_tools && in_list {
+                active.retain(|a| a != *name);
+            }
+        }
+        (runtime.set_active_tools)(active);
+    }
+
+    /// 持久化目标状态。对应原版 persist()。
+    fn persist(&self, runtime: &RuntimeHandle, ctx: &ExtensionContext, next: Option<GoalState>) {
+        let mut goal = self.goal.lock().unwrap();
+        if next.as_ref().map(|g| g.status != GoalStatus::Active).unwrap_or(true) {
+            self.continuation_queued.store(false, Ordering::Relaxed);
+        }
+        *goal = next;
+        drop(goal);
+        let status_bar_enabled = self.status_bar_enabled.load(Ordering::Relaxed);
+        (runtime.append_entry)(CUSTOM_TYPE.into(), Some(json!({ "goal": *self.goal.lock().unwrap(), "statusBarEnabled": status_bar_enabled })));
+        self.update_status_bar(ctx);
+        self.sync_goal_tools(runtime);
+    }
+
+    /// 持久化设置（不含 goal）。对应原版 persistSettings()。
+    fn persist_settings(&self, runtime: &RuntimeHandle, ctx: &ExtensionContext) {
+        let status_bar_enabled = self.status_bar_enabled.load(Ordering::Relaxed);
+        (runtime.append_entry)(
+            CUSTOM_TYPE.into(),
+            Some(json!({ "goal": *self.goal.lock().unwrap(), "statusBarEnabled": status_bar_enabled })),
+        );
+        self.update_status_bar(ctx);
+    }
+
+    /// 更新状态栏。对应原版 updateStatusBar()。
+    fn update_status_bar(&self, ctx: &ExtensionContext) {
+        let enabled = self.status_bar_enabled.load(Ordering::Relaxed);
+        let goal = self.goal.lock().unwrap();
+        let text = if enabled {
+            goal.as_ref().and_then(|g| status_line(g)).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        (ctx.ui.set_status)(CUSTOM_TYPE.into(), if text.is_empty() { None } else { Some(text) });
+    }
+
+    /// 排队延续消息。对应原版 queueContinuation()。
+    fn queue_continuation(&self, runtime: &RuntimeHandle, state: &GoalState) {
+        if self.continuation_queued.load(Ordering::Relaxed) || state.status != GoalStatus::Active {
+            return;
+        }
+        self.continuation_queued.store(true, Ordering::Relaxed);
+        let rt = runtime.clone();
+        let goal_id = state.id.clone();
+        let goal_snapshot = state.clone();
+        // 延迟发送延续消息（模拟 queueMicrotask）。
+        // continuation_queued 在 persist() 中当 goal 变为非 active 时会清除。
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            // 发送延续消息。此处不再检查状态——persist() 已保证只有 active goal
+            // 才会进入此路径，且变非 active 时会清除 continuation_queued。
+            let ext = GoalExtension::new();
+            ext.emit_goal_event(&rt, GoalEventKind::Continuation, &goal_snapshot, Some(SendMessageOptions {
+                trigger_turn: Some(true),
+                deliver_as: Some("followUp".into()),
+            }));
+        });
     }
 }
 
@@ -349,11 +509,7 @@ impl ExtensionAPI for GoalExtension {
             prompt_guidelines: Some(vec![
                 "Only call get_goal when you actually need the current objective or remaining budget; the continuation prompt already injects them.".into(),
             ]),
-            parameters: Some(serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false,
-            })),
+            parameters: Some(json!({"type": "object", "properties": {}, "additionalProperties": false})),
             render_shell: None,
             execution_mode: None,
         });
@@ -361,7 +517,7 @@ impl ExtensionAPI for GoalExtension {
         registry.register(ToolDefinition {
             name: "create_goal".into(),
             label: Some("Create Goal".into()),
-            description: "Create a new active thread goal only when explicitly requested.".into(),
+            description: "Create a new active thread goal only when explicitly requested. It sets or replaces the current thread goal.".into(),
             prompt_snippet: Some("Create a pi-goal objective only when the user explicitly requests goal mode".into()),
             prompt_guidelines: Some(vec![
                 "Use create_goal only when the user explicitly asks to set/start/follow a goal, or system/developer instructions require a goal.".into(),
@@ -372,17 +528,11 @@ impl ExtensionAPI for GoalExtension {
                 "When called, create_goal replaces any existing goal with the new objective; only call it when the user explicitly asked to set, start, change, or replace a goal.".into(),
                 "Set tokenBudget only when the user explicitly requested a token budget.".into(),
             ]),
-            parameters: Some(serde_json::json!({
+            parameters: Some(json!({
                 "type": "object",
                 "properties": {
-                    "objective": {
-                        "type": "string",
-                        "description": "The concrete objective to pursue as an active thread goal.",
-                    },
-                    "tokenBudget": {
-                        "type": "number",
-                        "description": "Optional positive token budget for the goal, only when explicitly requested.",
-                    },
+                    "objective": {"type": "string", "description": "The concrete objective to pursue as an active thread goal."},
+                    "tokenBudget": {"type": "number", "description": "Optional positive token budget for the goal, only when explicitly requested."},
                 },
                 "required": ["objective"],
                 "additionalProperties": false,
@@ -400,14 +550,10 @@ impl ExtensionAPI for GoalExtension {
                 "Use update_goal only when the current pi-goal objective is fully achieved and verified against concrete evidence.".into(),
                 "Do not use update_goal to pause, resume, abandon, or budget-limit a goal.".into(),
             ]),
-            parameters: Some(serde_json::json!({
+            parameters: Some(json!({
                 "type": "object",
                 "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["complete"],
-                        "description": "Only complete is accepted.",
-                    },
+                    "status": {"type": "string", "enum": ["complete"], "description": "Only complete is accepted."},
                 },
                 "required": ["status"],
                 "additionalProperties": false,
@@ -422,20 +568,28 @@ impl ExtensionAPI for GoalExtension {
     }
 
     async fn on_event(&self, event: &ExtensionEvent, ctx: &ExtensionContext) -> Option<EventResult> {
+        let runtime = &ctx.runtime;
         match event {
             ExtensionEvent::SessionStart { reason, .. } => {
-                // Restore goal state from session
-                let mut goal = self.goal.lock().unwrap();
+                self.continuation_queued.store(false, Ordering::Relaxed);
+                self.active_turn_started_at.store(0, Ordering::Relaxed);
+                *self.active_goal_this_turn_id.lock().unwrap() = None;
+                self.sync_goal_tools(runtime);
+
+                let goal = self.goal.lock().unwrap();
                 if let Some(ref g) = *goal {
                     if g.status == GoalStatus::Active && reason == "reload" {
                         // Reload pauses an active goal
                         let mut next = g.clone();
                         next.status = GoalStatus::Paused;
-                        *goal = Some(next.clone());
+                        next.updated_at = current_millis();
+                        drop(goal);
+                        self.persist(runtime, ctx, Some(next.clone()));
                         (ctx.ui.notify)(
                             format!("‖ Goal paused after reload: {}\nUse /goal resume to continue, or /goal clear to stop.", truncate_objective(&next.objective, 96)),
                             "info",
                         );
+                        return None;
                     } else if g.status == GoalStatus::Active {
                         (ctx.ui.notify)(
                             format!("⚑ Goal restored: {}\nUse /goal pause to stop continuation, or /goal clear to remove it.", truncate_objective(&g.objective, 96)),
@@ -443,22 +597,231 @@ impl ExtensionAPI for GoalExtension {
                         );
                     }
                 }
+                drop(goal);
+                self.update_status_bar(ctx);
+            }
+            ExtensionEvent::TurnStart => {
+                self.active_turn_started_at.store(current_millis(), Ordering::Relaxed);
+                let goal = self.goal.lock().unwrap();
+                *self.active_goal_this_turn_id.lock().unwrap() =
+                    goal.as_ref().filter(|g| g.status == GoalStatus::Active).map(|g| g.id.clone());
+            }
+            ExtensionEvent::TurnEnd { message, .. } => {
+                let goal = self.goal.lock().unwrap();
+                let active_id = self.active_goal_this_turn_id.lock().unwrap().clone();
+                let active_turn_started_at = self.active_turn_started_at.load(Ordering::Relaxed);
+
+                if goal.is_none() || active_id.as_ref() != goal.as_ref().map(|g| &g.id) {
+                    self.active_turn_started_at.store(0, Ordering::Relaxed);
+                    *self.active_goal_this_turn_id.lock().unwrap() = None;
+                    return None;
+                }
+                let g = goal.as_ref().unwrap();
+                let elapsed = if active_turn_started_at > 0 {
+                    let now = current_millis();
+                    if now > active_turn_started_at {
+                        (now - active_turn_started_at) / 1000
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                self.active_turn_started_at.store(0, Ordering::Relaxed);
+                *self.active_goal_this_turn_id.lock().unwrap() = None;
+
+                // Extract usage from the message
+                let usage = message.get("usage").unwrap_or(&Value::Null);
+                let token_delta = token_delta_from_usage(usage);
+                let next = account_goal_turn(g, token_delta, elapsed);
+                let is_budget_limited = next.status == GoalStatus::BudgetLimited;
+                drop(goal);
+                self.persist(runtime, ctx, Some(next.clone()));
+                if is_budget_limited {
+                    self.emit_goal_event(runtime, GoalEventKind::BudgetLimited, &next, Some(SendMessageOptions {
+                        trigger_turn: Some(true),
+                        deliver_as: Some("followUp".into()),
+                    }));
+                }
             }
             ExtensionEvent::AgentEnd { .. } => {
                 let goal = self.goal.lock().unwrap();
                 if let Some(ref g) = *goal {
                     if g.status == GoalStatus::Active {
-                        // Queue continuation
-                        if !self.continuation_queued.load(Ordering::Relaxed) {
-                            self.continuation_queued.store(true, Ordering::Relaxed);
-                            // In a real implementation, this would schedule a microtask
-                            // to send the continuation message
-                        }
+                        let snapshot = g.clone();
+                        drop(goal);
+                        self.queue_continuation(runtime, &snapshot);
                     }
                 }
             }
             _ => {}
         }
         None
+    }
+
+    async fn handle_tool_call(
+        &self,
+        tool_name: &str,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Option<ToolCallOutput> {
+        let runtime = &ctx.runtime;
+        match tool_name {
+            "get_goal" => {
+                let goal = self.goal.lock().unwrap();
+                Some(ToolCallOutput {
+                    content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&*goal).unwrap_or_default() })],
+                    details: Some(json!({ "goal": *goal })),
+                    is_error: false,
+                })
+            }
+            "create_goal" => {
+                let objective = params.get("objective").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).unwrap_or_default();
+                if objective.is_empty() {
+                    return Some(ToolCallOutput {
+                        content: vec![json!({ "type": "text", "text": "objective is required." })],
+                        details: None,
+                        is_error: true,
+                    });
+                }
+                let (token_budget, error) = normalize_token_budget(params.get("tokenBudget").unwrap_or(&Value::Null));
+                if let Some(err) = error {
+                    return Some(ToolCallOutput {
+                        content: vec![json!({ "type": "text", "text": err })],
+                        details: None,
+                        is_error: true,
+                    });
+                }
+                let next = create_goal_state(objective, token_budget);
+                self.persist(runtime, ctx, Some(next.clone()));
+                self.emit_goal_event(runtime, GoalEventKind::Active, &next, Some(SendMessageOptions {
+                    trigger_turn: Some(true),
+                    deliver_as: None,
+                }));
+                Some(ToolCallOutput {
+                    content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&json!({"goal": next, "remainingTokens": token_budget})).unwrap_or_default() })],
+                    details: Some(json!({ "goal": next })),
+                    is_error: false,
+                })
+            }
+            "update_goal" => {
+                let status = params.get("status").and_then(|v| v.as_str()).unwrap_or_default();
+                if status != "complete" {
+                    return Some(ToolCallOutput {
+                        content: vec![json!({ "type": "text", "text": "update_goal only accepts status=complete." })],
+                        details: None,
+                        is_error: true,
+                    });
+                }
+                let goal = self.goal.lock().unwrap();
+                if goal.is_none() {
+                    return Some(ToolCallOutput {
+                        content: vec![json!({ "type": "text", "text": "No goal is set." })],
+                        details: None,
+                        is_error: true,
+                    });
+                }
+                let current = goal.as_ref().unwrap().clone();
+                drop(goal);
+                let now = current_millis();
+                let next = GoalState { status: GoalStatus::Complete, updated_at: now, ..current };
+                self.persist(runtime, ctx, Some(next.clone()));
+                self.emit_goal_event(runtime, GoalEventKind::Complete, &next, None);
+                let remaining = next.token_budget.map(|b| {
+                    if b > next.tokens_used { b - next.tokens_used } else { 0 }
+                });
+                Some(ToolCallOutput {
+                    content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&json!({"goal": next, "remainingTokens": remaining})).unwrap_or_default() })],
+                    details: Some(json!({ "goal": next })),
+                    is_error: false,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_token_budget_none() {
+        let r = parse_token_budget("do the thing");
+        assert_eq!(r.objective, "do the thing");
+        assert!(r.token_budget.is_none());
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_token_budget_with_k() {
+        let r = parse_token_budget("--tokens 50k write tests");
+        assert_eq!(r.objective, "write tests");
+        assert_eq!(r.token_budget, Some(50_000));
+    }
+
+    #[test]
+    fn test_parse_token_budget_with_m() {
+        let r = parse_token_budget("--tokens 1M finish feature");
+        assert_eq!(r.objective, "finish feature");
+        assert_eq!(r.token_budget, Some(1_000_000));
+    }
+
+    #[test]
+    fn test_format_tokens() {
+        assert_eq!(format_tokens(500), "500");
+        assert_eq!(format_tokens(5_000), "5.0K");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn test_format_elapsed() {
+        assert_eq!(format_elapsed(30), "30s");
+        assert_eq!(format_elapsed(90), "1m");
+        assert_eq!(format_elapsed(3700), "1h 1m");
+    }
+
+    #[test]
+    fn test_account_goal_turn_budget() {
+        let state = create_goal_state("test".into(), Some(1000));
+        let next = account_goal_turn(&state, 1500, 10);
+        assert_eq!(next.status, GoalStatus::BudgetLimited);
+        assert_eq!(next.tokens_used, 1500);
+        assert_eq!(next.time_used_seconds, 10);
+    }
+
+    #[test]
+    fn test_account_goal_turn_no_budget() {
+        let state = create_goal_state("test".into(), None);
+        let next = account_goal_turn(&state, 1500, 10);
+        assert_eq!(next.status, GoalStatus::Active);
+        assert_eq!(next.tokens_used, 1500);
+    }
+
+    #[test]
+    fn test_truncate_objective() {
+        assert_eq!(truncate_objective("short", 10), "short");
+        let long = "a".repeat(100);
+        let t = truncate_objective(&long, 10);
+        assert!(t.ends_with('…'));
+        // max-1 chars of 'a' + '…' (1 char) = max visible chars
+        assert_eq!(t.chars().count(), 10);
+    }
+
+    #[test]
+    fn test_token_delta_from_usage_total() {
+        let usage = json!({"totalTokens": 500});
+        assert_eq!(token_delta_from_usage(&usage), 500);
+    }
+
+    #[test]
+    fn test_token_delta_from_usage_parts() {
+        let usage = json!({"input": 100, "output": 50, "cacheRead": 10, "cacheWrite": 5});
+        assert_eq!(token_delta_from_usage(&usage), 165);
+    }
+
+    #[test]
+    fn test_token_delta_from_usage_null() {
+        assert_eq!(token_delta_from_usage(&Value::Null), 0);
     }
 }

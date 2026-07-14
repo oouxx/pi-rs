@@ -5,7 +5,7 @@ pub mod types;
 pub use api::{
     CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
     ExtensionRegistry, ExtensionUIContext, FlagRegistry, RegisteredCommand, RegisteredFlag,
-    RegisteredShortcut, RegisteredTool, SendMessageOptions, SendUserMessageOptions,
-    ShortcutRegistry, ToolRegistry,
+    RegisteredShortcut, RegisteredTool, RuntimeHandle, SendMessageOptions, SendUserMessageOptions,
+    ShortcutRegistry, ToolCallOutput, ToolRegistry,
 };
 pub use types::ToolDefinition;

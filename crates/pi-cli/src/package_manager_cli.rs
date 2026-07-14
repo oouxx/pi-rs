@@ -4,7 +4,7 @@
 
 use colored::*;
 
-use crate::core::package_manager::{is_npm_available, DefaultPackageManager, PackageManager};
+use pi_coding_agent::core::package_manager::{is_npm_available, DefaultPackageManager, PackageManager};
 
 /// Supported package commands.
 #[derive(Debug, Clone, PartialEq)]

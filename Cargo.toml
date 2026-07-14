@@ -9,6 +9,7 @@ members = [
     "crates/pi-extension-api",
     "crates/pi-coding-agent",
     "crates/pi-extensions",
+    "crates/pi-cli",
 ]
 
 

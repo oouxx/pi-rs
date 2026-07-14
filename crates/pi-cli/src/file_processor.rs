@@ -3,12 +3,11 @@
 //! Mirrors packages/coding-agent/src/cli/file-processor.ts
 
 use std::io::Read;
-use std::path::Path;
 
 use colored::*;
 
-use crate::core::tools::path_utils::resolve_read_path;
-use crate::utils::mime::detect_supported_image_mime_type_from_file;
+use pi_coding_agent::core::tools::path_utils::resolve_read_path;
+use pi_coding_agent::utils::mime::detect_supported_image_mime_type_from_file;
 
 /// Result of processing file arguments.
 #[derive(Debug, Clone, Default)]

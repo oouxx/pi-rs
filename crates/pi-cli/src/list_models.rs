@@ -3,8 +3,8 @@
 //! Provides table-formatted output with context/max-token formatting
 //! and optional fuzzy search filtering.
 
-use crate::core::model_registry::ModelRegistry;
 use pi_agent_core::pi_ai_types::Model;
+use pi_coding_agent::core::model_registry::ModelRegistry;
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
@@ -194,7 +194,7 @@ pub async fn list_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model_registry::{builtin_models, ModelRegistry};
+    use pi_coding_agent::core::model_registry::ModelRegistry;
 
     fn sample_models() -> Vec<Model> {
         pi_ai::providers::register_builtins::register_built_in_api_providers();

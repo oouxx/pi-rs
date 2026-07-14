@@ -2,8 +2,8 @@
 //!
 //! Mirrors packages/coding-agent/src/cli/initial-message.ts
 
-use crate::cli::args::CliArgs;
-use crate::cli::file_processor::ImageAttachment;
+use crate::args::CliArgs;
+use crate::file_processor::ImageAttachment;
 
 /// Input for building the initial message.
 pub struct InitialMessageInput<'a> {

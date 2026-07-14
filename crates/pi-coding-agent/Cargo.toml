@@ -27,8 +27,6 @@ similar = "2"
 unicode-normalization = "0.1"
 url = "2"
 fs2 = "0.4"
-colored = "3"
-base64 = "0.22"
 # reqwest bumped 0.11 -> 0.12 to align with pi-ai / pi-agent-core (usage is
 # limited to Client::builder + get/send/json, which is stable across the bump).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

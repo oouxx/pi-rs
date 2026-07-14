@@ -4,12 +4,12 @@
 
 use colored::*;
 
-use crate::cli::args::{print_help, CliArgs, OutputMode};
-use crate::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
-use crate::core::extensions::ExtensionRegistry;
-use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
-use crate::core::session_manager::SessionManager;
-use crate::core::trust_manager::ProjectTrustStore;
+use crate::args::{print_help, CliArgs, OutputMode};
+use pi_coding_agent::core::extensions::ExtensionRegistry;
+use pi_coding_agent::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
+use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
+use pi_coding_agent::core::session_manager::SessionManager;
+use pi_coding_agent::core::trust_manager::ProjectTrustStore;
 
 /// Exit code for successful runs.
 const EXIT_SUCCESS: i32 = 0;
@@ -24,7 +24,7 @@ pub async fn run(args: &CliArgs) -> i32 {
     }
 
     if args.version {
-        println!("{} v{}", crate::config::APP_NAME, crate::config::VERSION);
+        println!("{} v{}", pi_coding_agent::config::APP_NAME, pi_coding_agent::config::VERSION);
         return EXIT_SUCCESS;
     }
 
@@ -38,13 +38,13 @@ pub async fn run(args: &CliArgs) -> i32 {
         return list_available_models(search_opt).await;
     }
 
-    let agent_dir = crate::config::get_agent_dir();
+    let agent_dir = pi_coding_agent::config::get_agent_dir();
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
 
     if args.verbose {
-        eprintln!("{} pi-coding-agent v{}", "[pi]".dimmed(), crate::config::VERSION);
+        eprintln!("{} pi-coding-agent v{}", "[pi]".dimmed(), pi_coding_agent::config::VERSION);
         eprintln!("{} cwd: {}", "[pi]".dimmed(), cwd);
         eprintln!("{} agent_dir: {}", "[pi]".dimmed(), agent_dir.to_string_lossy());
     }
@@ -52,7 +52,7 @@ pub async fn run(args: &CliArgs) -> i32 {
     // ── Project trust ────────────────────────────────────────────────────
     let trust_store = ProjectTrustStore::new(&agent_dir.to_string_lossy());
     let trusted = resolve_project_trusted(
-        crate::core::project_trust::ResolveProjectTrustedOptions {
+        pi_coding_agent::core::project_trust::ResolveProjectTrustedOptions {
             cwd: &cwd,
             trust_store: &trust_store,
             trust_override: args.project_trust_override,
@@ -80,7 +80,7 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // RPC mode creates its own session internally
     if args.mode == OutputMode::Rpc {
-        return crate::modes::rpc::run_rpc_mode().await;
+        return pi_coding_agent::modes::rpc::run_rpc_mode().await;
     }
 
     if !trusted {
@@ -146,14 +146,14 @@ pub async fn run(args: &CliArgs) -> i32 {
         OutputMode::Json => "json",
         _ => "text",
     };
-    let print_opts = crate::modes::print_mode::PrintModeOptions {
+    let print_opts = pi_coding_agent::modes::print_mode::PrintModeOptions {
         mode: mode_str,
         message: &message,
         messages: &[],
         session,
         verbose: args.verbose,
     };
-    crate::modes::print_mode::run_print_mode(print_opts).await
+    pi_coding_agent::modes::print_mode::run_print_mode(print_opts).await
 }
 
 /// Run interactive TUI mode with a session.
@@ -199,7 +199,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         }
     };
 
-    crate::modes::interactive::run_interactive_mode(session).await
+    pi_coding_agent::modes::interactive::run_interactive_mode(session).await
 }
 
 /// Resolve session persistence options from CLI arguments.
@@ -249,7 +249,7 @@ async fn resolve_session_opts(
 /// Delegates to `handle_package_command` from the shared module
 /// to avoid duplicating the package management logic.
 async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
-    let agent_dir = crate::config::get_agent_dir();
+    let agent_dir = pi_coding_agent::config::get_agent_dir();
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
@@ -258,7 +258,7 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
     let mut full_args = vec![cmd.to_string()];
     full_args.extend(args.iter().cloned());
 
-    let code = crate::cli::package_manager_cli::handle_package_command(
+    let code = crate::package_manager_cli::handle_package_command(
         &full_args,
         &cwd,
         &agent_dir.to_string_lossy(),
@@ -286,7 +286,7 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
 
 /// Handle the `config` subcommand: show or set configuration values.
 async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
-    use crate::core::settings_manager::SettingsManager;
+    use pi_coding_agent::core::settings_manager::SettingsManager;
 
     let settings = SettingsManager::create(cwd, Some(agent_dir));
 
@@ -341,9 +341,9 @@ async fn list_available_models(search: Option<&str>) -> i32 {
     // Ensure API providers are registered so pi-ai models are available
     pi_ai::providers::register_builtins::register_built_in_api_providers();
 
-    let model_registry = crate::core::model_registry::ModelRegistry::new(
-        crate::core::model_registry::ModelRegistry::builtin_models_list(),
+    let model_registry = pi_coding_agent::core::model_registry::ModelRegistry::new(
+        pi_coding_agent::core::model_registry::ModelRegistry::builtin_models_list(),
     );
 
-    crate::cli::list_models::list_models(&model_registry, search).await
+    crate::list_models::list_models(&model_registry, search).await
 }

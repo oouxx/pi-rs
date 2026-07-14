@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use crate::config;
-use crate::core::project_trust::DefaultProjectTrust;
+use pi_coding_agent::config;
+use pi_coding_agent::core::project_trust::DefaultProjectTrust;
 
 /// Output mode for non-interactive runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1414,5 +1414,212 @@ mod tests {
         let runtime = ExtensionRuntime::new();
         assert!(runtime.is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // Real extension loading tests (node:crypto shim, .js → .ts fallback)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_node_crypto_import() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        // Simulate an extension that imports from node:crypto (like pi-goal, pi-web-access)
+        fx.write_ext("crypto-user.ts", r#"
+            import { randomUUID } from "node:crypto";
+            export default function(pi) {
+                pi.registerTool({
+                    name: "crypto-tool",
+                    description: "Uses node:crypto",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => {
+                        const id = randomUUID();
+                        return { content: [{ type: "text", text: id }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "node:crypto import should not fail: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "crypto-tool");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_node_fs_import() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("fs-user.ts", r#"
+            import { existsSync } from "node:fs";
+            export default function(pi) {
+                pi.registerTool({
+                    name: "fs-tool",
+                    description: "Uses node:fs",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "node:fs import should not fail: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_node_path_import() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("path-user.ts", r#"
+            import { join } from "node:path";
+            export default function(pi) {
+                pi.registerTool({
+                    name: "path-tool",
+                    description: "Uses node:path",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: join("a", "b") }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "node:path import should not fail: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_js_ts_fallback() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        // Create a helper .ts file
+        let sub_dir = fx.extensions_dir.join("my-ext");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(sub_dir.join("helper.ts"), r#"
+            export function greet(name) { return "Hello " + name; }
+        "#).unwrap();
+
+        // Main extension imports ./helper.js (which doesn't exist, but ./helper.ts does)
+        fs::write(sub_dir.join("index.ts"), r#"
+            import { greet } from "./helper.js";
+            export default function(pi) {
+                pi.registerTool({
+                    name: "greet-tool",
+                    description: "Uses .js → .ts fallback",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: greet("world") }] }),
+                });
+            }
+        "#).unwrap();
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), ".js → .ts fallback should work: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "greet-tool");
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_multiple_node_imports() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        // Simulate an extension that imports from multiple node: modules
+        fx.write_ext("multi-node.ts", r#"
+            import { randomUUID } from "node:crypto";
+            import { join } from "node:path";
+            import { existsSync } from "node:fs";
+            import { platform } from "node:os";
+            import { EventEmitter } from "node:events";
+            import { URL } from "node:url";
+            import { promisify } from "node:util";
+            import { Buffer } from "node:buffer";
+
+            export default function(pi) {
+                pi.registerTool({
+                    name: "multi-node",
+                    description: "Uses many node: modules",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => {
+                        const id = randomUUID();
+                        const p = join("a", "b");
+                        const ee = new EventEmitter();
+                        return { content: [{ type: "text", text: id }] };
+                    },
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "multiple node: imports should not fail: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_stream_import() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("stream-user.ts", r#"
+            import { Readable, Writable } from "node:stream";
+            export default function(pi) {
+                pi.registerTool({
+                    name: "stream-tool",
+                    description: "Uses node:stream",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "node:stream import should not fail: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+
+        runtime.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_runtime_load_extension_with_process_import() {
+        let runtime = ExtensionRuntime::new().unwrap();
+        let fx = ExtFixture::new();
+
+        fx.write_ext("process-user.ts", r#"
+            import { cwd, env } from "node:process";
+            export default function(pi) {
+                pi.registerTool({
+                    name: "process-tool",
+                    description: "Uses node:process",
+                    parameters: { type: "object", properties: {} },
+                    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+                });
+            }
+        "#);
+
+        let result = runtime.load(fx.cwd(), None, &[]).await.unwrap();
+
+        assert!(result.errors.is_empty(), "node:process import should not fail: {:?}", result.errors);
+        assert_eq!(result.tools.len(), 1);
+
+        runtime.stop().await.unwrap();
+    }
 }
 

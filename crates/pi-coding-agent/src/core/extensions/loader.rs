@@ -245,6 +245,24 @@ impl deno_core::ModuleLoader for TsModuleLoader {
             }
         };
 
+        // If the file doesn't exist, try .ts extension fallback for .js imports.
+        // This handles extensions that import `./foo.js` when the source is `./foo.ts`.
+        let path = if !path.exists() {
+            let path_str = path.to_string_lossy();
+            if path_str.ends_with(".js") {
+                let ts_path = PathBuf::from(path_str.trim_end_matches(".js").to_string() + ".ts");
+                if ts_path.exists() {
+                    ts_path
+                } else {
+                    path
+                }
+            } else {
+                path
+            }
+        } else {
+            path
+        };
+
         let media_type = MediaType::from_path(&path);
         match std::fs::read_to_string(&path) {
             Ok(code) => {

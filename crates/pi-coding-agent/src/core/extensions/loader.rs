@@ -125,6 +125,44 @@ impl TsModuleLoader {
             "Cannot find module '{specifier}' — not found in node_modules walk from {referrer}"
         )))
     }
+
+    /// Load a Node.js built-in module shim for `node:` specifiers.
+    ///
+    /// Extensions may import Node.js built-ins like `node:crypto`, `node:fs`,
+    /// `node:path`, etc. Since we run in deno_core (not Node.js), we provide
+    /// lightweight shims that export the most commonly used APIs as stubs.
+    /// Extensions that depend on full Node.js functionality will have limited
+    /// capability, but won't crash at module load time.
+    fn load_node_shim(module_specifier: &ModuleSpecifier) -> ModuleLoadResponse {
+        let module_name = module_specifier.path().trim_start_matches('/');
+        let source = match module_name {
+            "crypto" => NODE_CRYPTO_SHIM,
+            "fs" | "node:fs" => NODE_FS_SHIM,
+            "path" | "node:path" => NODE_PATH_SHIM,
+            "os" | "node:os" => NODE_OS_SHIM,
+            "process" | "node:process" => NODE_PROCESS_SHIM,
+            "url" | "node:url" => NODE_URL_SHIM,
+            "util" | "node:util" => NODE_UTIL_SHIM,
+            "stream" | "node:stream" => NODE_STREAM_SHIM,
+            "events" | "node:events" => NODE_EVENTS_SHIM,
+            "buffer" | "node:buffer" => NODE_BUFFER_SHIM,
+            _ => {
+                return ModuleLoadResponse::Sync(Err(
+                    JsErrorBox::generic(format!(
+                        "Unsupported Node.js built-in module: node:{module_name}"
+                    )),
+                ));
+            }
+        };
+
+        let module_source = ModuleSource::new(
+            ModuleType::JavaScript,
+            ModuleSourceCode::String(source.to_string().into()),
+            module_specifier,
+            None,
+        );
+        ModuleLoadResponse::Sync(Ok(module_source))
+    }
 }
 
 impl Default for TsModuleLoader {
@@ -140,12 +178,14 @@ impl deno_core::ModuleLoader for TsModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        // 1. Relative/absolute specifiers: delegate to deno_core.
+        // 1. Relative/absolute/known-scheme specifiers: delegate to deno_core.
         if specifier.starts_with("./")
             || specifier.starts_with("../")
             || specifier.starts_with('/')
             || specifier.starts_with("file://")
             || specifier.starts_with("data:")
+            || specifier.starts_with("node:")
+            || specifier.starts_with("npm:")
         {
             return deno_core::resolve_import(specifier, referrer)
                 .map_err(|e| JsErrorBox::generic(e.to_string()));
@@ -161,6 +201,27 @@ impl deno_core::ModuleLoader for TsModuleLoader {
         _maybe_referrer: Option<&ModuleLoadReferrer>,
         _options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
+        // Handle node: scheme (Node.js built-in modules) with shims.
+        if module_specifier.scheme() == "node" {
+            return Self::load_node_shim(module_specifier);
+        }
+
+        // Handle npm: scheme — resolve via node_modules.
+        if module_specifier.scheme() == "npm" {
+            // npm: specifier format: npm://package-name or npm:package-name
+            // Strip the scheme and resolve as a bare specifier.
+            let npm_specifier = module_specifier.path().trim_start_matches('/');
+            match self.resolve_node_modules(npm_specifier, "file:///") {
+                Ok(resolved) => {
+                    // Re-dispatch to load() with the resolved file: URL
+                    return self.load(&resolved, _maybe_referrer, _options);
+                }
+                Err(e) => {
+                    return ModuleLoadResponse::Sync(Err(e));
+                }
+            }
+        }
+
         // Only handle file: specifiers (extension files on disk).
         // ext:pi_extension/* is served by the extension! macro's built-in loader.
         if module_specifier.scheme() != "file" {
@@ -686,6 +747,222 @@ fn has_ext(path: &Path, exts: &[&str]) -> bool {
 }
 
 // ============================================================================
+// Node.js built-in module shims
+// ============================================================================
+
+/// Shim for `node:crypto` — exports commonly used crypto functions as stubs.
+const NODE_CRYPTO_SHIM: &str = r#"
+const crypto = {
+    randomBytes: (size) => {
+        const bytes = new Uint8Array(size);
+        for (let i = 0; i < size; i++) bytes[i] = Math.floor(Math.random() * 256);
+        return bytes;
+    },
+    randomUUID: () => { let d = Date.now(); return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = (d + Math.random() * 16) % 16 | 0; d = Math.floor(d / 16); return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16); }); },
+    createHash: () => ({ update: () => ({}), digest: () => "" }),
+    createHmac: () => ({ update: () => ({}), digest: () => "" }),
+    createCipheriv: () => ({ update: () => "", final: () => "" }),
+    createDecipheriv: () => ({ update: () => "", final: () => "" }),
+    randomBytes: (size) => new Uint8Array(size),
+    timingSafeEqual: (a, b) => a.length === b.length,
+};
+export default crypto;
+export const { randomBytes, randomUUID, createHash, createHmac, createCipheriv, createDecipheriv, timingSafeEqual } = crypto;
+"#;
+
+/// Shim for `node:fs` — exports commonly used fs functions as stubs.
+const NODE_FS_SHIM: &str = r#"
+const fs = {
+    existsSync: () => false,
+    readFileSync: () => { throw new Error("fs.readFileSync not available in extension runtime"); },
+    writeFileSync: () => { throw new Error("fs.writeFileSync not available in extension runtime"); },
+    mkdirSync: () => {},
+    readdirSync: () => [],
+    statSync: () => ({ isFile: () => false, isDirectory: () => false }),
+    lstatSync: () => ({ isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false }),
+    realpathSync: (p) => p,
+    unlinkSync: () => {},
+    rmdirSync: () => {},
+    copyFileSync: () => {},
+    appendFileSync: () => {},
+    createReadStream: () => ({ on: () => {}, pipe: () => {} }),
+    createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+    promises: {
+        readFile: async () => "",
+        writeFile: async () => {},
+        mkdir: async () => {},
+        readdir: async () => [],
+        stat: async () => ({ isFile: () => false, isDirectory: () => false }),
+        access: async () => {},
+    },
+    constants: {
+        F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+    },
+};
+export default fs;
+export const { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, promises, constants } = fs;
+"#;
+
+/// Shim for `node:path` — exports path utilities.
+const NODE_PATH_SHIM: &str = r#"
+const path = {
+    sep: "/",
+    delimiter: ":",
+    join: (...parts) => parts.filter(p => p).join("/").replace(/\/+/g, "/"),
+    resolve: (...parts) => { const joined = parts.filter(p => p).join("/").replace(/\/+/g, "/"); return joined.startsWith("/") ? joined : "/" + joined; },
+    dirname: (p) => { const idx = p.lastIndexOf("/"); return idx > 0 ? p.slice(0, idx) : "/"; },
+    basename: (p, ext) => { const base = p.split("/").pop() || ""; return ext && base.endsWith(ext) ? base.slice(0, -ext.length) : base; },
+    extname: (p) => { const base = p.split("/").pop() || ""; const idx = base.lastIndexOf("."); return idx > 0 ? base.slice(idx) : ""; },
+    relative: (from, to) => { const f = from.split("/").filter(Boolean); const t = to.split("/").filter(Boolean); let i = 0; while (i < f.length && i < t.length && f[i] === t[i]) i++; const ups = f.slice(i).map(() => ".."); return [...ups, ...t.slice(i)].join("/"); },
+    normalize: (p) => p.split("/").filter(Boolean).reduce((acc, seg) => { if (seg === ".") return acc; if (seg === "..") { acc.pop(); return acc; } acc.push(seg); return acc; }, []).join("/"),
+    parse: (p) => { const root = p.startsWith("/") ? "/" : ""; const dir = path.dirname(p); const base = path.basename(p); const ext = path.extname(p); const name = ext ? base.slice(0, -ext.length) : base; return { root, dir, base, ext, name }; },
+    format: (obj) => obj.dir ? obj.dir + "/" + obj.base : obj.base,
+    isAbsolute: (p) => p.startsWith("/"),
+};
+export default path;
+export const { sep, delimiter, join, resolve, dirname, basename, extname, relative, normalize, parse, format, isAbsolute } = path;
+"#;
+
+/// Shim for `node:os` — exports OS info stubs.
+const NODE_OS_SHIM: &str = r#"
+const os = {
+    platform: () => "darwin",
+    homedir: () => "/home/user",
+    tmpdir: () => "/tmp",
+    hostname: () => "localhost",
+    type: () => "Darwin",
+    release: () => "0.0.0",
+    arch: () => "arm64",
+    cpus: () => [],
+    totalmem: () => 0,
+    freemem: () => 0,
+    EOL: "\n",
+};
+export default os;
+export const { platform, homedir, tmpdir, hostname, type, release, arch, cpus, totalmem, freemem, EOL } = os;
+"#;
+
+/// Shim for `node:process` — exports process info stubs.
+const NODE_PROCESS_SHIM: &str = r#"
+const proc = {
+    platform: "darwin",
+    arch: "arm64",
+    cwd: () => "/",
+    env: {},
+    argv: [],
+    exit: () => {},
+    nextTick: (fn) => fn(),
+    hrtime: () => [0, 0],
+    stdout: { write: () => true },
+    stderr: { write: () => true },
+    stdin: { on: () => {}, setRawMode: () => {} },
+    pid: 0,
+    ppid: 0,
+    versions: { node: "0.0.0" },
+    version: "0.0.0",
+};
+export default proc;
+export const { platform, arch, cwd, env, argv, exit, nextTick, hrtime, stdout, stderr, stdin, pid, ppid, versions, version } = proc;
+"#;
+
+/// Shim for `node:url` — exports URL utilities.
+const NODE_URL_SHIM: &str = r#"
+const url = {
+    URL: globalThis.URL,
+    URLSearchParams: globalThis.URLSearchParams,
+    fileURLToPath: (url) => url,
+    pathToFileURL: (path) => "file://" + path,
+    format: (obj) => obj.href || "",
+    parse: (str) => new URL(str),
+};
+export default url;
+export const { URL, URLSearchParams, fileURLToPath, pathToFileURL, format, parse } = url;
+"#;
+
+/// Shim for `node:util` — exports utility stubs.
+const NODE_UTIL_SHIM: &str = r#"
+const util = {
+    inherits: (ctor, superCtor) => { Object.setPrototypeOf(ctor.prototype, superCtor.prototype); },
+    promisify: (fn) => { return (...args) => new Promise((resolve, reject) => { try { resolve(fn(...args)); } catch (e) { reject(e); } }); },
+    deprecate: (fn) => fn,
+    format: (...args) => args.map(a => String(a)).join(" "),
+    inspect: (obj) => String(obj),
+    types: {},
+    callbackify: (fn) => fn,
+};
+export default util;
+export const { inherits, promisify, deprecate, format, inspect, types, callbackify } = util;
+"#;
+
+/// Shim for `node:stream` — exports stream stubs.
+const NODE_STREAM_SHIM: &str = r#"
+const { EventEmitter } = globalThis;
+class Readable {
+    constructor() { this._events = {}; }
+    on(event, handler) { this._events[event] = handler; return this; }
+    pipe() { return this; }
+    read() {}
+    push() {}
+    destroy() {}
+}
+class Writable {
+    constructor() { this._events = {}; }
+    on(event, handler) { this._events[event] = handler; return this; }
+    write() { return true; }
+    end() {}
+    destroy() {}
+}
+class Transform extends Writable {
+    constructor() { super(); }
+    _transform() {}
+}
+class PassThrough extends Transform {}
+const stream = { Readable, Writable, Transform, PassThrough, finished: () => {}, pipeline: () => {} };
+export default stream;
+export const { Readable, Writable, Transform, PassThrough, finished, pipeline } = stream;
+"#;
+
+/// Shim for `node:events` — exports EventEmitter.
+const NODE_EVENTS_SHIM: &str = r#"
+class EventEmitter {
+    constructor() { this._listeners = {}; }
+    on(event, handler) { if (!this._listeners[event]) this._listeners[event] = []; this._listeners[event].push(handler); return this; }
+    off(event, handler) { if (!this._listeners[event]) return this; this._listeners[event] = this._listeners[event].filter(h => h !== handler); return this; }
+    emit(event, ...args) { const handlers = this._listeners[event]; if (!handlers) return false; for (const h of handlers) h(...args); return true; }
+    once(event, handler) { const wrapper = (...args) => { this.off(event, wrapper); handler(...args); }; this.on(event, wrapper); return this; }
+    addListener(event, handler) { return this.on(event, handler); }
+    removeListener(event, handler) { return this.off(event, handler); }
+    removeAllListeners(event) { if (event) delete this._listeners[event]; else this._listeners = {}; return this; }
+    listeners(event) { return this._listeners[event] || []; }
+    eventNames() { return Object.keys(this._listeners); }
+}
+export { EventEmitter };
+export default { EventEmitter };
+"#;
+
+/// Shim for `node:buffer` — exports Buffer.
+const NODE_BUFFER_SHIM: &str = r#"
+class Buffer extends Uint8Array {
+    static from(data, encoding) {
+        if (typeof data === 'string') return new Buffer(new TextEncoder().encode(data));
+        if (Array.isArray(data)) return new Buffer(new Uint8Array(data));
+        return new Buffer(data);
+    }
+    static alloc(size) { return new Buffer(new Uint8Array(size)); }
+    static allocUnsafe(size) { return new Buffer(new Uint8Array(size)); }
+    static isBuffer(obj) { return obj instanceof Buffer; }
+    static byteLength(str) { return new TextEncoder().encode(str).length; }
+    static concat(list) { return new Buffer(); }
+    toString(encoding) { return new TextDecoder().decode(this); }
+    toJSON() { return { type: 'Buffer', data: Array.from(this) }; }
+    write(str) { return str.length; }
+    slice(start, end) { return new Buffer(super.slice(start, end)); }
+}
+export { Buffer };
+export default { Buffer };
+"#;
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1152,6 +1429,43 @@ mod tests {
         let loader = TsModuleLoader::new();
         let result = loader.resolve("lodash", "not-a-url", ResolutionKind::Import);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // node: scheme resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_node_scheme() {
+        let loader = TsModuleLoader::new();
+        let result = loader.resolve("node:crypto", "file:///test/bar.js", ResolutionKind::Import);
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.scheme(), "node");
+        assert_eq!(spec.path(), "crypto");
+    }
+
+    #[test]
+    fn test_resolve_node_fs() {
+        let loader = TsModuleLoader::new();
+        let result = loader.resolve("node:fs", "file:///test/bar.js", ResolutionKind::Import);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().scheme(), "node");
+    }
+
+    #[test]
+    fn test_resolve_node_path() {
+        let loader = TsModuleLoader::new();
+        let result = loader.resolve("node:path", "file:///test/bar.js", ResolutionKind::Import);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().scheme(), "node");
+    }
+
+    #[test]
+    fn test_resolve_npm_scheme() {
+        let loader = TsModuleLoader::new();
+        let result = loader.resolve("npm:lodash", "file:///test/bar.js", ResolutionKind::Import);
+        assert!(result.is_ok());
     }
 
     // =======================================================================

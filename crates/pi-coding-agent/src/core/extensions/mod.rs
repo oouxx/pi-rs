@@ -1,12 +1,11 @@
+pub mod api;
 pub mod dispatcher;
-pub mod loader;
-pub mod ops;
-pub mod runtime;
 pub mod types;
 
-pub use runtime::{
-    create_extension_agent_tools, CommandInfoSerde, ExtensionError, ExtensionRuntime, LoadResult,
-    ToolInfoSerde,
+pub use api::{
+    CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
+    ExtensionRegistry, ExtensionUIContext, FlagRegistry, RegisteredCommand, RegisteredFlag,
+    RegisteredShortcut, RegisteredTool, SendMessageOptions, SendUserMessageOptions,
+    ShortcutRegistry, ToolRegistry,
 };
-pub use ops::{FlagOptionsSerde, ShortcutInfoSerde};
-pub use types::*;
+pub use types::ToolDefinition;

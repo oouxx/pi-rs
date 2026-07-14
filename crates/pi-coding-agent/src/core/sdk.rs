@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::event_bus::EventBusController;
-use crate::core::extensions::{ExtensionRuntime, ToolInfoSerde};
+use crate::core::extensions::ExtensionRegistry;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
@@ -226,52 +226,20 @@ pub async fn create_agent_session(
     let allowed_tool_names = options.tools.clone();
     let excluded_tool_names = options.exclude_tools.clone();
 
-    // ── Extension embedded runtime ────────────────────────────────────
-    let mut extension_tools: Vec<ToolInfoSerde> = Vec::new();
-    let mut extension_commands: Vec<crate::core::extensions::CommandInfoSerde> = Vec::new();
-    let mut extension_runtime: Option<Arc<ExtensionRuntime>> = None;
+    // ── Extension registry (Rust native extensions) ───────────────────
+    let mut extension_registry = ExtensionRegistry::new();
+    // Extensions are registered at compile time. Add them here:
+    // extension_registry.register(Box::new(pi_goal::GoalExtension::new()));
+    // extension_registry.register(Box::new(pi_hypa::HypaExtension::new()));
+    // extension_registry.register(Box::new(pi_web_access::WebAccessExtension::new()));
 
-    if options.enable_extensions {
-        // Discover first; only spawn the V8 thread if there's something to load,
-        // so the common no-extensions case pays nothing (no isolate, no thread).
-        let discovered =
-            crate::core::extensions::loader::discover_extensions(&cwd, Some(&agent_dir), &options.extension_paths);
-        if !discovered.is_empty() {
-            match ExtensionRuntime::new() {
-                Ok(rt) => {
-                    match rt
-                        .load(&cwd, Some(&agent_dir), &options.extension_paths)
-                        .await
-                    {
-                        Ok(result) => {
-                            extension_tools = result.tools;
-                            extension_commands = result.commands;
-                            if !result.errors.is_empty() {
-                                for err in &result.errors {
-                                    eprintln!("[pi] Extension load warning: {} — {}", err.path, err.error);
-                                }
-                            }
-                            extension_runtime = Some(Arc::new(rt));
-                        }
-                        Err(e) => {
-                            eprintln!("[pi] Extension runtime error: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Thread/isolate could not be created — degrade to no-extensions
-                    // mode rather than crashing the CLI.
-                    eprintln!("[pi] Extension runtime unavailable: {e}");
-                }
-            }
-        }
-    }
+    let extension_tools = extension_registry.collect_tools();
 
     // Aggregate prompt guidelines from loaded extension tools into the system
     // prompt (each tool may declare promptGuidelines per the original TS API).
     let mut extension_prompt_guidelines: Vec<String> = Vec::new();
     for t in &extension_tools {
-        if let Some(gl) = &t.prompt_guidelines {
+        if let Some(gl) = &t.definition.prompt_guidelines {
             extension_prompt_guidelines.extend(gl.iter().cloned());
         }
     }
@@ -281,9 +249,23 @@ pub async fn create_agent_session(
         Some(extension_prompt_guidelines)
     };
 
-    // Clone the runtime handle before it's moved into session_options so we can
-    // dispatch session lifecycle events from the SDK level after creation.
-    let session_start_rt = extension_runtime.clone();
+    let extension_registry_arc = std::sync::Arc::new(extension_registry);
+
+    // Dispatch session_start to extensions before session creation.
+    let ext_ctx = crate::core::extensions::ExtensionContext {
+        cwd: cwd.clone(),
+        has_ui: false,
+        ui: crate::core::extensions::ExtensionUIContext {
+            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+            set_status: std::sync::Arc::new(|_key, _value| {}),
+            confirm: std::sync::Arc::new(|_title, _msg| false),
+        },
+    };
+    crate::core::extensions::dispatcher::dispatch_session_start(
+        &extension_registry_arc,
+        "startup",
+        &ext_ctx,
+    ).await;
 
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
@@ -302,18 +284,11 @@ pub async fn create_agent_session(
         initial_active_tool_names: Some(initial_active_tool_names),
         allowed_tool_names,
         excluded_tool_names,
-        extension_tools,
-        extension_commands,
-        extension_runtime,
+        extension_registry: Some(extension_registry_arc),
         resources: None,
     };
 
     let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
-
-    // Dispatch session_start to extensions after the session is fully initialized.
-    if let Some(ref rt) = session_start_rt {
-        crate::core::extensions::dispatcher::dispatch_session_start(rt, "startup").await;
-    }
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {

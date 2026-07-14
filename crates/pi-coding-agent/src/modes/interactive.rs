@@ -105,23 +105,12 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
                         }
-                        AgentCmd::ExtensionCommand(cmd_name, args) => {
-                            // Dispatch extension command to the extension runtime.
-                            // The JS handler registered via pi.registerCommand handles it.
-                            if let Some(rt) = sess.get_extension_runtime() {
-                                let payload = serde_json::json!({
-                                    "type": "slash_command",
-                                    "command": cmd_name,
-                                    "args": args,
-                                });
-                                let _ = rt.dispatch_fire_and_forget("slash_command", payload).await;
-                            }
+                        AgentCmd::ExtensionCommand(_cmd_name, _args) => {
+                            // Extension commands are handled by Rust native extensions
+                            // via the ExtensionRegistry. Dispatch is TBD per extension.
                         }
                         AgentCmd::ReloadExtensions => {
-                            if let Some(rt) = sess.get_extension_runtime() {
-                                let cwd = sess.get_cwd().to_string();
-                                let _ = rt.reload(&cwd, None, &[]).await;
-                            }
+                            // Extension reload is not applicable for Rust native extensions.
                         }
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
@@ -216,7 +205,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         if !text.is_empty() {
                             // Handle slash commands
                             if text.starts_with('/') {
-                                let ext_cmds = session.get_extension_commands().to_vec();
+                                let ext_cmds: Vec<crate::core::extensions::RegisteredCommand> = Vec::new();
                                 handle_slash_command(&text, &cmd_tx, &mut tui_model, &ext_cmds);
                             } else {
                                 tui_model.input.clear();
@@ -248,7 +237,7 @@ fn handle_slash_command(
     text: &str,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCmd>,
     model: &mut pi_tui::Model,
-    extension_commands: &[crate::core::extensions::CommandInfoSerde],
+    extension_commands: &[crate::core::extensions::RegisteredCommand],
 ) {
     let parts: Vec<&str> = text.splitn(2, ' ').collect();
     let command = parts[0];

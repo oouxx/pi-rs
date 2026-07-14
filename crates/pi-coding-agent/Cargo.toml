@@ -30,20 +30,13 @@ base64 = "0.22"
 # reqwest bumped 0.11 -> 0.12 to align with pi-ai / pi-agent-core (usage is
 # limited to Client::builder + get/send/json, which is stable across the bump).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# Embedded JS/TS extension runtime (replaces the Bun sidecar).
-# deno_core pulls in V8 (prebuilt static libv8 on macOS arm64) + the swc-based
-# deno_ast transpiler. deno_error is the error trait deno_core ops return.
-deno_core = "0.404"
-deno_ast = { version = "0.53", features = ["transpiling"] }
-deno_error = "0.7"
+# deno_core removed — extensions are now native Rust crates (see extensions::api)
 
 [features]
-# Interactive TUI mode is decoupled from the extension runtime. The pi-tui /
-# crossterm dependencies are currently removed because pi-tui's ratatui 0.29
-# hard-pins unicode-width =0.2.0, which conflicts with deno_ast's swc_common.
-# Re-add `interactive = ["pi-tui", "crossterm"]` (and the two dep lines above as
-# non-optional) once pi-tui upgrades to ratatui 0.30. The interactive mode code
-# stays gated behind `#[cfg(feature = "interactive")]` and is inert until then.
+# Interactive TUI mode. The pi-tui / crossterm dependencies are currently removed
+# because pi-tui's ratatui 0.29 hard-pins unicode-width =0.2.0. Re-add once pi-tui
+# upgrades to ratatui 0.30. The interactive mode code stays gated behind
+# `#[cfg(feature = "interactive")]` and is inert until then.
 default = []
 interactive = []
 

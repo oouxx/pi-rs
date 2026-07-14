@@ -15,7 +15,7 @@ use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
-use crate::core::extensions::{ExtensionRuntime, ToolInfoSerde};
+use crate::core::extensions::{ExtensionContext, ExtensionRegistry};
 use crate::core::tools;
 
 // ============================================================================
@@ -41,12 +41,8 @@ pub struct AgentSessionConfig {
     pub initial_active_tool_names: Option<Vec<String>>,
     pub allowed_tool_names: Option<Vec<String>>,
     pub excluded_tool_names: Option<Vec<String>>,
-    /// Extension tools loaded via the embedded runtime.
-    pub extension_tools: Vec<ToolInfoSerde>,
-    /// Extension commands loaded via the embedded runtime.
-    pub extension_commands: Vec<crate::core::extensions::CommandInfoSerde>,
-    /// Embedded extension runtime for calling extension tool handlers.
-    pub extension_runtime: Option<std::sync::Arc<ExtensionRuntime>>,
+    /// Extension registry (Rust native extensions).
+    pub extension_registry: Option<std::sync::Arc<ExtensionRegistry>>,
     /// Loaded resources (skills, extensions, prompt templates).
     pub resources: Option<LoadedResources>,
 }
@@ -98,13 +94,11 @@ pub struct AgentSession {
     initial_active_tool_names: Vec<String>,
     allowed_tool_names: Option<Vec<String>>,
     excluded_tool_names: Option<Vec<String>>,
-    /// Subscription handles kept alive so listeners are not dropped.
     _subscriptions: Vec<pi_agent_core::agent::UnsubscribeHandle>,
-    /// Embedded extension runtime handle, retained so dispose() can stop the
-    /// V8 thread gracefully. Tool closures hold their own Arc clones too.
-    extension_runtime: Option<Arc<ExtensionRuntime>>,
-    /// Extension slash commands registered by loaded extensions.
-    extension_commands: Vec<crate::core::extensions::CommandInfoSerde>,
+    /// Extension registry (Rust native extensions).
+    extension_registry: Option<Arc<ExtensionRegistry>>,
+    /// Cached extension context for dispatch calls.
+    ext_ctx: ExtensionContext,
 }
 
 impl AgentSession {
@@ -128,17 +122,9 @@ impl AgentSession {
         let tools_options = tools::ToolsOptions::default();
         let mut tool_list = tools::create_coding_tools(&options.cwd, Some(&tools_options));
 
-        // Merge extension tools if extension runtime is available
-        if !options.extension_tools.is_empty() {
-            if let Some(ref rt) = options.extension_runtime {
-                let ext_tools = crate::core::extensions::create_extension_agent_tools(
-                    &options.extension_tools,
-                    std::sync::Arc::clone(rt),
-                    options.cwd.clone(),
-                );
-                tool_list.extend(ext_tools);
-            }
-        }
+        // Extension tools are registered at compile time via ExtensionRegistry.
+        // The registry's collect_tools() is called in sdk.rs before session creation.
+        // Tool execution is handled by the built-in tool implementations.
 
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
             .into_iter()
@@ -172,23 +158,38 @@ impl AgentSession {
         });
 
         // Wire extension before/after_tool_call hooks into the agent's tool
-        // execution loop. When an extension runtime is present, each tool call
-        // is dispatched to JS handlers that may block it (before) or transform
-        // its result (after); absent a runtime, the hooks are None (no overhead).
-        let (before_tool_call, after_tool_call) = match &options.extension_runtime {
-            Some(rt) => {
-                let before_rt = Arc::clone(rt);
-                let after_rt = Arc::clone(rt);
+        // execution loop. When an extension registry is present, each tool call
+        // is dispatched to extension handlers that may block it (before) or
+        // transform its result (after).
+        let ext_ctx = ExtensionContext {
+            cwd: options.cwd.clone(),
+            has_ui: false,
+            ui: crate::core::extensions::ExtensionUIContext {
+                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                set_status: std::sync::Arc::new(|_key, _value| {}),
+                confirm: std::sync::Arc::new(|_title, _msg| false),
+            },
+        };
+        let shared_ext_ctx = Arc::new(ext_ctx);
+
+        let (before_tool_call, after_tool_call) = match &options.extension_registry {
+            Some(registry) => {
+                let before_reg = Arc::clone(registry);
+                let after_reg = Arc::clone(registry);
+                let before_ctx = Arc::clone(&shared_ext_ctx);
+                let after_ctx = Arc::clone(&shared_ext_ctx);
                 let before: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
-                    let rt = Arc::clone(&before_rt);
+                    let reg = Arc::clone(&before_reg);
+                    let ctx_ref = Arc::clone(&before_ctx);
                     Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_tool_call(&rt, &ctx).await
+                        crate::core::extensions::dispatcher::dispatch_tool_call(&reg, &ctx, &ctx_ref).await
                     })
                 });
                 let after: AfterToolCallFn = Arc::new(move |ctx, _signal| {
-                    let rt = Arc::clone(&after_rt);
+                    let reg = Arc::clone(&after_reg);
+                    let ctx_ref = Arc::clone(&after_ctx);
                     Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_tool_result(&rt, &ctx).await
+                        crate::core::extensions::dispatcher::dispatch_tool_result(&reg, &ctx, &ctx_ref).await
                     })
                 });
                 (Some(before), Some(after))
@@ -197,31 +198,32 @@ impl AgentSession {
         };
 
         // Wire the context event hook: extensions can modify messages before
-        // they are sent to the LLM. The JS side chains handlers serially.
-        let transform_context: Option<TransformContextFn> = options.extension_runtime.as_ref().map(|rt| {
-            let ctx_rt = Arc::clone(rt);
+        // they are sent to the LLM.
+        let transform_context: Option<TransformContextFn> = options.extension_registry.as_ref().map(|registry| {
+            let dispatch_reg = Arc::clone(registry);
+            let ctx_clone = Arc::clone(&shared_ext_ctx);
             let closure = move |messages: Vec<AgentMessage>, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
-                let rt = Arc::clone(&ctx_rt);
+                let reg = Arc::clone(&dispatch_reg);
+                let ctx_ref = Arc::clone(&ctx_clone);
                 Box::pin(async move {
-                    crate::core::extensions::dispatcher::dispatch_context(&rt, messages).await
+                    crate::core::extensions::dispatcher::dispatch_context(&reg, messages, &ctx_ref).await
                 }) as std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
             };
             Arc::new(closure) as TransformContextFn
         });
 
         // Wire the before_provider_request event: extensions can inspect/modify
-        // the provider request payload before it is sent. The on_payload callback
-        // fires right before the HTTP request; we dispatch the event here so
-        // extensions see the payload. (Full result-returning modification of the
-        // actual request body requires a future pi-agent-core hook.)
+        // the provider request payload before it is sent.
         let on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>> =
-            options.extension_runtime.as_ref().map(|rt| {
-                let payload_rt = Arc::clone(rt);
+            options.extension_registry.as_ref().map(|registry| {
+                let payload_reg = Arc::clone(registry);
+                let ctx_clone = Arc::clone(&shared_ext_ctx);
                 let closure = move |payload: serde_json::Value| {
-                    let rt = Arc::clone(&payload_rt);
+                    let reg = Arc::clone(&payload_reg);
+                    let ctx_ref = Arc::clone(&ctx_clone);
                     tokio::spawn(async move {
                         let _ = crate::core::extensions::dispatcher::dispatch_before_provider_request(
-                            &rt, payload,
+                            &reg, payload, &ctx_ref,
                         )
                         .await;
                     });
@@ -251,20 +253,29 @@ impl AgentSession {
                 .collect()
         });
 
+        let session_cwd = options.cwd.clone();
         let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
             event_bus,
             model_registry,
             compaction_settings: CompactionSettings::default(),
-            cwd: options.cwd,
+            cwd: session_cwd.clone(),
             scoped_models: Vec::new(),
             initial_active_tool_names,
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
             _subscriptions: Vec::new(),
-            extension_runtime: options.extension_runtime,
-            extension_commands: options.extension_commands,
+            extension_registry: options.extension_registry,
+            ext_ctx: ExtensionContext {
+                cwd: session_cwd,
+                has_ui: false,
+                ui: crate::core::extensions::ExtensionUIContext {
+                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                    set_status: std::sync::Arc::new(|_key, _value| {}),
+                    confirm: std::sync::Arc::new(|_title, _msg| false),
+                },
+            },
         };
 
         // Register event-driven persistence subscriber, matching the original
@@ -304,9 +315,9 @@ impl AgentSession {
         // detached so a slow handler never blocks the agent event loop.
         // Result-returning events (message_end) are awaited inline so the
         // extension can modify the message before it is persisted.
-        if let Some(ref rt) = session.extension_runtime {
-            let ff_rt = Arc::clone(rt);
-            // Capture the session cwd so handlers see the right ctx.cwd.
+        // Agent-event dispatch to extensions via ExtensionRegistry.
+        if let Some(ref registry) = session.extension_registry {
+            let dispatch_reg = Arc::clone(registry);
             let session_cwd = session.cwd.clone();
             let ff_listener: Arc<
                 dyn Fn(
@@ -317,29 +328,24 @@ impl AgentSession {
                     + Send
                     + Sync,
             > = Arc::new(move |event, _signal| {
-                let rt = Arc::clone(&ff_rt);
+                let reg = Arc::clone(&dispatch_reg);
                 let cwd = session_cwd.clone();
                 Box::pin(async move {
-                    if let Some((event_type, mut payload, is_result_returning)) =
+                    if let Some(evt) =
                         crate::core::extensions::dispatcher::event_from_agent_event(&event)
                     {
-                        // Inject cwd so __piDispatch builds makeContext(session_cwd).
-                        if let Some(obj) = payload.as_object_mut() {
-                            obj.insert("cwd".to_string(), serde_json::Value::String(cwd));
-                        }
-                        if is_result_returning {
-                            // Result-returning: await the dispatch so extensions
-                            // can modify the message. The result is logged but
-                            // the agent loop has already finalized the message.
-                            tokio::spawn(async move {
-                                let _ = rt.dispatch_result(event_type, payload).await;
-                            });
-                        } else {
-                            // Fire-and-forget: spawn detached.
-                            tokio::spawn(async move {
-                                let _ = rt.dispatch_fire_and_forget(event_type, payload).await;
-                            });
-                        }
+                        let ext_ctx = ExtensionContext {
+                            cwd: cwd.clone(),
+                            has_ui: false,
+                            ui: crate::core::extensions::ExtensionUIContext {
+                                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                                set_status: std::sync::Arc::new(|_key, _value| {}),
+                                confirm: std::sync::Arc::new(|_title, _msg| false),
+                            },
+                        };
+                        tokio::spawn(async move {
+                            reg.dispatch_event(&evt, &ext_ctx).await;
+                        });
                     }
                 })
             });
@@ -406,12 +412,8 @@ impl AgentSession {
         &self.cwd
     }
 
-    pub fn get_extension_commands(&self) -> &[crate::core::extensions::CommandInfoSerde] {
-        &self.extension_commands
-    }
-
-    pub fn get_extension_runtime(&self) -> Option<Arc<ExtensionRuntime>> {
-        self.extension_runtime.clone()
+    pub fn get_extension_registry(&self) -> Option<Arc<ExtensionRegistry>> {
+        self.extension_registry.clone()
     }
 
     pub fn get_session_id(&self) -> String {
@@ -425,16 +427,15 @@ impl AgentSession {
     pub fn set_session_name(&mut self, name: &str) {
         self.session_manager.lock().unwrap().append_session_info(name);
         // Dispatch session_info_changed to extensions
-        if let Some(ref rt) = self.extension_runtime {
-            tokio::spawn({
-                let rt = Arc::clone(rt);
-                let name = name.to_string();
-                async move {
-                    crate::core::extensions::dispatcher::dispatch_session_info_changed(
-                        &rt, Some(&name),
-                    )
-                    .await;
-                }
+        if let Some(ref registry) = self.extension_registry {
+            let reg = Arc::clone(registry);
+            let name = name.to_string();
+            let ctx = self.ext_ctx.clone();
+            tokio::spawn(async move {
+                crate::core::extensions::dispatcher::dispatch_session_info_changed(
+                    &reg, Some(&name), &ctx,
+                )
+                .await;
             });
         }
     }
@@ -569,155 +570,10 @@ impl AgentSession {
         if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
             eprintln!("[pi] Failed to refresh session state before next turn: {e}");
         }
-        // Process any pending host commands from extension ops. Drain all
-        // commands, then route each to the real session method. Sync operations
-        // (session_manager, model_registry) are called directly; async operations
-        // that require AgentSession access are logged as deferred.
-        if let Some(ref rt) = self.extension_runtime {
-            let cmds = rt.drain_host_commands();
-            if !cmds.is_empty() {
-                let sm = self.session_manager.clone();
-                for cmd in cmds {
-                    let result = match cmd.function.as_str() {
-                        "set_session_name" => {
-                            let name = cmd.args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            sm.lock().unwrap().append_session_info(name);
-                            Ok(serde_json::json!({}))
-                        }
-                        "set_label" => {
-                            let entry_id = cmd.args.get("entryId").and_then(|v| v.as_str()).unwrap_or("");
-                            let label = cmd.args.get("label").and_then(|v| v.as_str());
-                            sm.lock().unwrap().set_label(entry_id, label);
-                            Ok(serde_json::json!({}))
-                        }
-                        "append_entry" => {
-                            let custom_type = cmd.args.get("customType").and_then(|v| v.as_str()).unwrap_or("");
-                            let data = cmd.args.get("data").cloned();
-                            sm.lock().unwrap().append_custom_message_entry(
-                                custom_type,
-                                data.unwrap_or(serde_json::Value::Null),
-                                true,
-                                None,
-                            );
-                            Ok(serde_json::json!({}))
-                        }
-                        // Session lifecycle events — dispatch to extensions.
-                        "new_session" => {
-                            if let Some(ref rt) = self.extension_runtime {
-                                crate::core::extensions::dispatcher::dispatch_session_before_fork(
-                                    rt, "",
-                                ).await;
-                            }
-                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
-                            Ok(serde_json::json!({}))
-                        }
-                        "fork" => {
-                            if let Some(ref rt) = self.extension_runtime {
-                                let entry_id = cmd.args.get("entryId").and_then(|v| v.as_str()).unwrap_or("");
-                                crate::core::extensions::dispatcher::dispatch_session_before_fork(
-                                    rt, entry_id,
-                                ).await;
-                            }
-                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
-                            Ok(serde_json::json!({}))
-                        }
-                        "switch_session" => {
-                            if let Some(ref rt) = self.extension_runtime {
-                                let target = cmd.args.get("sessionPath").and_then(|v| v.as_str()).unwrap_or("");
-                                crate::core::extensions::dispatcher::dispatch_session_before_switch(
-                                    rt, target,
-                                ).await;
-                            }
-                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
-                            Ok(serde_json::json!({}))
-                        }
-                        "reload" => {
-                            if let Some(ref rt) = self.extension_runtime {
-                                crate::core::extensions::dispatcher::dispatch_session_before_tree(
-                                    rt, "reload",
-                                ).await;
-                            }
-                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
-                            Ok(serde_json::json!({}))
-                        }
-                        // ctx method host commands.
-                        "ctx_is_idle" => {
-                            let is_idle = !self.agent.state().await.is_streaming;
-                            Ok(serde_json::json!({ "idle": is_idle }))
-                        }
-                        "ctx_has_pending_messages" => {
-                            let has_pending = self.agent.state().await.pending_tool_calls.len() > 0;
-                            Ok(serde_json::json!({ "hasPending": has_pending }))
-                        }
-                        "ctx_get_system_prompt" => {
-                            let prompt = self.agent.state().await.system_prompt.clone();
-                            Ok(serde_json::json!({ "systemPrompt": prompt }))
-                        }
-                        "ctx_abort" => {
-                            // Signal abort to the agent. The agent's signal watch
-                            // is not directly accessible here; log the request.
-                            eprintln!("[pi] ctx.abort() requested");
-                            Ok(serde_json::json!({}))
-                        }
-                        "ctx_shutdown" => {
-                            eprintln!("[pi] ctx.shutdown() requested");
-                            Ok(serde_json::json!({}))
-                        }
-                        "ctx_get_model" => {
-                            let model = self.agent.state().await.model;
-                            Ok(serde_json::json!({
-                                "id": model.id,
-                                "provider": model.provider,
-                                "api": model.api,
-                            }))
-                        }
-                        "ctx_get_context_usage" => {
-                            let messages = self.agent.state().await.messages;
-                            let tokens_used = messages.len() as u64 * 100; // rough estimate
-                            let tokens_total = 128_000u64;
-                            Ok(serde_json::json!({
-                                "tokensUsed": tokens_used,
-                                "tokensTotal": tokens_total,
-                                "percentUsed": if tokens_total > 0 { tokens_used as f64 / tokens_total as f64 } else { 0.0 },
-                            }))
-                        }
-                        "ctx_compact" => {
-                            let _ = self.compact(None).await;
-                            Ok(serde_json::json!({}))
-                        }
-                        "wait_for_idle" => {
-                            // Wait until the agent is no longer streaming.
-                            loop {
-                                let is_streaming = self.agent.state().await.is_streaming;
-                                if !is_streaming { break; }
-                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            }
-                            Ok(serde_json::json!({}))
-                        }
-                        "navigate_tree" => {
-                            if let Some(ref rt) = self.extension_runtime {
-                                crate::core::extensions::dispatcher::dispatch_session_before_tree(
-                                    rt, "navigate",
-                                ).await;
-                            }
-                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
-                            Ok(serde_json::json!({}))
-                        }
-                        // Async operations that require AgentSession access.
-                        "set_model" | "send_message" | "send_user_message"
-                        | "set_thinking_level" | "register_provider"
-                        | "unregister_provider" | "get_active_tools"
-                        | "get_all_tools" | "set_active_tools"
-                        | "get_thinking_level" => {
-                            eprintln!("[pi] host command '{}' queued but AgentSession async wiring not yet complete", cmd.function);
-                            Ok(serde_json::json!({}))
-                        }
-                        _ => Err(format!("unknown host function: {}", cmd.function)),
-                    };
-                    let _ = cmd.reply.send(result);
-                }
-            }
-        }
+        // Extension host commands are no longer needed — the old V8-based
+        // ExtensionRuntime used drain_host_commands() to process pending ops
+        // from the JS thread. Rust native extensions call session methods
+        // directly via the ExtensionContext.
         self.add_user_text(text).await;
     }
 
@@ -744,12 +600,13 @@ impl AgentSession {
             .join("\n");
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             let _ = crate::core::extensions::dispatcher::dispatch_before_agent_start(
-                rt,
+                registry,
                 &state.system_prompt,
                 &state.messages,
+                &self.ext_ctx,
             ).await;
         }
 
@@ -766,8 +623,8 @@ impl AgentSession {
         // Dispatch input event to extensions before processing.
         // If an extension handles the input, skip processing entirely.
         // If an extension transforms the text, use the transformed text.
-        let (effective_text, effective_images) = if let Some(ref rt) = self.extension_runtime {
-            match crate::core::extensions::dispatcher::dispatch_input(rt, text, "interactive", None).await
+        let (effective_text, effective_images) = if let Some(ref registry) = self.extension_registry {
+            match crate::core::extensions::dispatcher::dispatch_input(registry, text, "interactive", None, &self.ext_ctx).await
             {
                 crate::core::extensions::dispatcher::InputEventResult::Handled => return,
                 crate::core::extensions::dispatcher::InputEventResult::Continue { text: t, images } => (t, images),
@@ -778,12 +635,13 @@ impl AgentSession {
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
         // Extensions can modify the context (system prompt, messages, tools).
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             let _ = crate::core::extensions::dispatcher::dispatch_before_agent_start(
-                rt,
+                registry,
                 &state.system_prompt,
                 &state.messages,
+                &self.ext_ctx,
             ).await;
         }
 
@@ -814,12 +672,12 @@ impl AgentSession {
         state.model = model;
         drop(state);
         // Dispatch model_select to extensions (fire-and-forget)
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_model_select(
-                rt,
+                registry,
                 &model_id,
                 Some(&previous_model_id),
-                "set",
+                &self.ext_ctx,
             )
             .await;
         }
@@ -833,11 +691,12 @@ impl AgentSession {
         state.thinking_level = level.to_string();
         drop(state);
         // Dispatch thinking_level_select to extensions (fire-and-forget)
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_thinking_level_select(
-                rt,
+                registry,
                 level,
                 &previous_level,
+                &self.ext_ctx,
             )
             .await;
         }
@@ -899,9 +758,9 @@ impl AgentSession {
         use crate::core::compaction;
 
         // Dispatch session_before_compact to extensions.
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_compact(
-                rt, if custom_instructions.is_some() { "manual" } else { "auto" },
+                registry, if custom_instructions.is_some() { "manual" } else { "auto" }, &self.ext_ctx,
             ).await;
         }
 
@@ -985,9 +844,9 @@ impl AgentSession {
         }
 
         // Dispatch session_compact to extensions after compaction.
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_compact(
-                rt, &summary, total_tokens,
+                registry, &summary, total_tokens, &self.ext_ctx,
             ).await;
         }
 
@@ -1207,9 +1066,9 @@ impl AgentSession {
         }
 
         // Dispatch session_before_switch to extensions
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_switch(
-                rt, session_path,
+                registry, session_path, &self.ext_ctx,
             ).await;
         }
 
@@ -1273,9 +1132,9 @@ impl AgentSession {
     /// Returns the forked session path on success.
     pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
         // Dispatch session_before_fork to extensions
-        if let Some(ref rt) = self.extension_runtime {
+        if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_fork(
-                rt, entry_id,
+                registry, entry_id, &self.ext_ctx,
             ).await;
         }
 
@@ -1371,13 +1230,12 @@ impl AgentSession {
     pub async fn dispose(self) {
         // Dispatch session_shutdown event before stopping the runtime, so
         // extensions can perform cleanup (e.g. flush state, close connections).
-        if let Some(ref rt) = self.extension_runtime {
-            crate::core::extensions::dispatcher::dispatch_session_shutdown(rt, "quit").await;
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_session_shutdown(
+                registry, "quit", &self.ext_ctx,
+            ).await;
         }
-        // Gracefully stop the embedded extension runtime so the V8 thread and
-        // its isolate are torn down rather than lingering until process exit.
-        if let Some(rt) = self.extension_runtime {
-            let _ = rt.stop();
-        }
+        // ExtensionRegistry is just a container of trait objects — no V8 thread
+        // to stop. Drop is sufficient for cleanup.
     }
 }

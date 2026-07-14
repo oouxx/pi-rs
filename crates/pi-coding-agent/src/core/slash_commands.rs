@@ -129,7 +129,7 @@ pub struct ResolvedCommand {
 /// `runner.ts` `resolveRegisteredCommands`). Builtin commands always take
 /// precedence and are never suffixed.
 pub fn resolve_extension_commands(
-    extension_commands: &[super::extensions::CommandInfoSerde],
+    extension_commands: &[crate::core::extensions::RegisteredCommand],
 ) -> Vec<ResolvedCommand> {
     let builtins = builtin_slash_commands();
     let mut resolved: Vec<ResolvedCommand> = builtins
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn test_resolve_extension_commands_no_conflict() {
         let ext_cmds = vec![
-            super::super::extensions::CommandInfoSerde {
+            crate::core::extensions::RegisteredCommand {
                 name: "mycmd".into(),
                 description: Some("My custom command".into()),
             },
@@ -236,7 +236,7 @@ mod tests {
     fn test_resolve_extension_commands_conflict() {
         // "model" is a builtin command; extension registering "model" gets "model:2"
         let ext_cmds = vec![
-            super::super::extensions::CommandInfoSerde {
+            crate::core::extensions::RegisteredCommand {
                 name: "model".into(),
                 description: Some("My model command".into()),
             },
@@ -250,11 +250,11 @@ mod tests {
     #[test]
     fn test_resolve_extension_commands_multiple_conflicts() {
         let ext_cmds = vec![
-            super::super::extensions::CommandInfoSerde {
+            crate::core::extensions::RegisteredCommand {
                 name: "model".into(),
                 description: Some("First ext model".into()),
             },
-            super::super::extensions::CommandInfoSerde {
+            crate::core::extensions::RegisteredCommand {
                 name: "model".into(),
                 description: Some("Second ext model".into()),
             },

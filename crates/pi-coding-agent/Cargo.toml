@@ -9,6 +9,8 @@ description = "Coding agent CLI with read/bash/edit/write tools and session mana
 [dependencies]
 pi-agent-core = { workspace = true }
 pi-ai = { workspace = true }
+pi-extension-api = { workspace = true }
+pi-extensions = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"

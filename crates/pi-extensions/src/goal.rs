@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use pi_coding_agent::core::extensions::{
+use pi_extension_api::{
     CommandRegistry, EventResult, ExtensionAPI, ExtensionContext, ExtensionEvent, RuntimeHandle,
     SendMessageOptions, ToolCallOutput, ToolDefinition, ToolRegistry,
 };

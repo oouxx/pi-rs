@@ -42,7 +42,6 @@ pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
     )
 }
 
-#[derive(Clone)]
 pub struct CreateAgentSessionOptions {
     pub cwd: String,
     pub agent_dir: Option<String>,
@@ -64,6 +63,9 @@ pub struct CreateAgentSessionOptions {
     pub extension_paths: Vec<String>,
     /// If false, skip the extension RPC sidecar entirely.
     pub enable_extensions: bool,
+    /// Pre-configured extension registry. When set, extensions are injected
+    /// by the caller instead of being auto-discovered from disk.
+    pub extension_registry: Option<ExtensionRegistry>,
     /// CLI provider override (from --provider / -P).
     pub cli_provider: Option<String>,
     /// CLI model override (from --model / -m).
@@ -227,12 +229,12 @@ pub async fn create_agent_session(
     let excluded_tool_names = options.exclude_tools.clone();
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    let mut extension_registry = ExtensionRegistry::new();
-    // Extensions are registered at compile time. Add them here:
-    // extension_registry.register(Box::new(pi_goal::GoalExtension::new()));
-    // extension_registry.register(Box::new(pi_hypa::HypaExtension::new()));
-    // extension_registry.register(Box::new(pi_web_access::WebAccessExtension::new()));
-
+    // Caller injects extensions via options.extension_registry.
+    // Example:
+    //   let mut registry = ExtensionRegistry::new();
+    //   registry.register(Box::new(pi_extensions::goal::GoalExtension::new()));
+    //   options.extension_registry = Some(registry);
+    let mut extension_registry = options.extension_registry.unwrap_or_else(ExtensionRegistry::new);
     let extension_tools = extension_registry.collect_tools();
 
     // Aggregate prompt guidelines from loaded extension tools into the system

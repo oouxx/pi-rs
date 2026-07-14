@@ -6,6 +6,7 @@ use colored::*;
 
 use crate::cli::args::{print_help, CliArgs, OutputMode};
 use crate::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
+use crate::core::extensions::ExtensionRegistry;
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use crate::core::session_manager::SessionManager;
 use crate::core::trust_manager::ProjectTrustStore;
@@ -114,6 +115,11 @@ pub async fn run(args: &CliArgs) -> i32 {
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
         enable_extensions: !args.no_extensions,
+        extension_registry: {
+            let mut reg = ExtensionRegistry::new();
+            reg.register(Box::new(pi_extensions::goal::GoalExtension::new()));
+            Some(reg)
+        },
         persist_session,
         session_file,
         fork_from,
@@ -172,6 +178,11 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
         enable_extensions: !args.no_extensions,
+        extension_registry: {
+            let mut reg = ExtensionRegistry::new();
+            reg.register(Box::new(pi_extensions::goal::GoalExtension::new()));
+            Some(reg)
+        },
         persist_session,
         session_file,
         fork_from,

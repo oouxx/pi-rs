@@ -6,6 +6,7 @@
 members = [
     "crates/pi-agent-core",
     "crates/pi-ai",
+    "crates/pi-extension-api",
     "crates/pi-coding-agent",
     "crates/pi-extensions",
 ]
@@ -26,6 +27,7 @@ authors = ["oouxx"]
 # Internal crates
 pi-ai = { path = "crates/pi-ai" }
 pi-agent-core = { path = "crates/pi-agent-core" }
+pi-extension-api = { path = "crates/pi-extension-api" }
 pi-coding-agent = { path = "crates/pi-coding-agent" }
 pi-extensions = { path = "crates/pi-extensions" }
 

@@ -942,6 +942,8 @@ dependencies = [
  "glob",
  "pi-agent-core",
  "pi-ai",
+ "pi-extension-api",
+ "pi-extensions",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -957,15 +959,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-extension-api"
+version = "1.79.5"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pi-extensions"
 version = "1.79.5"
 dependencies = [
  "async-trait",
- "pi-coding-agent",
+ "pi-extension-api",
  "regex",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
 ]
 

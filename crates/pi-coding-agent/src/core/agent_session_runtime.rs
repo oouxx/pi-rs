@@ -1,4 +1,11 @@
+use std::pin::Pin;
+use std::sync::Arc;
+
+use crate::core::agent_session::AgentSession;
 use crate::core::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
+use crate::core::extensions::dispatcher;
+use crate::core::extensions::ExtensionContext;
+use crate::core::session_cwd::assert_session_cwd_exists;
 use crate::core::session_manager::SessionManager;
 
 // ============================================================================
@@ -28,7 +35,7 @@ impl std::error::Error for SessionImportFileNotFoundError {}
 /// The caller gets the created session, its cwd-bound services, and all
 /// diagnostics collected during setup.
 pub struct CreateAgentSessionRuntimeResult {
-    pub session: String,
+    pub session: AgentSession,
     pub services: AgentSessionServices,
     pub diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     pub model_fallback_message: Option<String>,
@@ -38,6 +45,7 @@ pub struct CreateAgentSessionRuntimeResult {
 // Runtime factory type
 // ============================================================================
 
+/// Parameters for creating a new runtime via the factory.
 pub struct CreateAgentSessionRuntimeParams {
     pub cwd: String,
     pub agent_dir: String,
@@ -54,6 +62,17 @@ pub type CreateAgentSessionRuntimeFactory = Box<
 >;
 
 // ============================================================================
+// SessionStartEvent
+// ============================================================================
+
+/// Event emitted when a session starts, matching the TS SessionStartEvent.
+#[derive(Debug, Clone)]
+pub struct SessionStartEvent {
+    pub reason: String,
+    pub previous_session_file: Option<String>,
+}
+
+// ============================================================================
 // AgentSessionRuntime
 // ============================================================================
 
@@ -62,34 +81,74 @@ pub type CreateAgentSessionRuntimeFactory = Box<
 /// Session replacement methods tear down the current runtime first, then create
 /// and apply the next runtime. If creation fails, the error is propagated to the
 /// caller. The caller is responsible for user-facing error handling.
+///
+/// This is the primary entry point for session lifecycle management:
+/// - `switch_session()` — resume an existing session file
+/// - `new_session()` — create a fresh session
+/// - `fork()` — fork from an entry in the current session
+/// - `import_from_jsonl()` — import a session from a JSONL file
+/// - `dispose()` — clean up the current session
 pub struct AgentSessionRuntime {
-    session: String,
+    session: AgentSession,
     services: AgentSessionServices,
+    create_runtime: CreateAgentSessionRuntimeFactory,
     diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     model_fallback_message: Option<String>,
+    /// Callback invoked after a session replacement to rebind the new session
+    /// to the host (e.g., TUI event listeners).
+    rebind_session: Option<
+        Arc<
+            dyn Fn(
+                    &AgentSession,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        >,
+    >,
+    /// Synchronous callback that runs after `session_shutdown` handlers finish
+    /// but before the current session is invalidated. Used for host-owned UI
+    /// teardown (e.g., detaching extension-provided TUI components).
+    before_session_invalidate: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl AgentSessionRuntime {
     pub fn new(
-        session: String,
+        session: AgentSession,
         services: AgentSessionServices,
+        create_runtime: CreateAgentSessionRuntimeFactory,
         diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
         model_fallback_message: Option<String>,
     ) -> Self {
         Self {
             session,
             services,
+            create_runtime,
             diagnostics,
             model_fallback_message,
+            rebind_session: None,
+            before_session_invalidate: None,
         }
     }
+
+    // =========================================================================
+    // Accessors
+    // =========================================================================
 
     pub fn services(&self) -> &AgentSessionServices {
         &self.services
     }
 
-    pub fn session(&self) -> &str {
+    pub fn session(&self) -> &AgentSession {
         &self.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut AgentSession {
+        &mut self.session
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.services.cwd
     }
 
     pub fn diagnostics(&self) -> &[AgentSessionRuntimeDiagnostic] {
@@ -99,9 +158,475 @@ impl AgentSessionRuntime {
     pub fn model_fallback_message(&self) -> Option<&str> {
         self.model_fallback_message.as_deref()
     }
+
+    // =========================================================================
+    // Callbacks
+    // =========================================================================
+
+    /// Set a callback that runs after session replacement to rebind the new
+    /// session to the host (e.g., TUI event listeners).
+    pub fn set_rebind_session(
+        &mut self,
+        rebind_session: Option<
+            Arc<
+                dyn Fn(
+                        &AgentSession,
+                    )
+                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        >,
+    ) {
+        self.rebind_session = rebind_session;
+    }
+
+    /// Set a synchronous callback that runs after `session_shutdown` handlers
+    /// finish but before the current session is invalidated.
+    ///
+    /// This is for host-owned UI teardown that must not yield to the event loop,
+    /// such as detaching extension-provided TUI components before the old
+    /// extension context becomes stale.
+    pub fn set_before_session_invalidate(
+        &mut self,
+        before_session_invalidate: Option<Box<dyn Fn() + Send + Sync>>,
+    ) {
+        self.before_session_invalidate = before_session_invalidate;
+    }
+
+    // =========================================================================
+    // Internal helpers
+    // =========================================================================
+
+    /// Emit `session_before_switch` to extensions and return whether the
+    /// operation was cancelled.
+    async fn emit_before_switch(
+        &self,
+        reason: &str,
+        target_session_file: Option<&str>,
+    ) -> bool {
+        if let Some(ref registry) = self.session.get_extension_registry() {
+            let ext_ctx = ExtensionContext {
+                cwd: self.cwd().to_string(),
+                has_ui: false,
+                ui: crate::core::extensions::ExtensionUIContext {
+                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                    set_status: std::sync::Arc::new(|_key, _value| {}),
+                    confirm: std::sync::Arc::new(|_title, _msg| false),
+                },
+                runtime: crate::core::extensions::RuntimeHandle::noop(),
+            };
+            dispatcher::dispatch_session_before_switch(
+                registry,
+                target_session_file.unwrap_or(""),
+                &ext_ctx,
+            )
+            .await;
+        }
+        false
+    }
+
+    /// Emit `session_before_fork` to extensions and return whether the
+    /// operation was cancelled.
+    async fn emit_before_fork(&self, entry_id: &str, position: &str) -> bool {
+        if let Some(ref registry) = self.session.get_extension_registry() {
+            let ext_ctx = ExtensionContext {
+                cwd: self.cwd().to_string(),
+                has_ui: false,
+                ui: crate::core::extensions::ExtensionUIContext {
+                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                    set_status: std::sync::Arc::new(|_key, _value| {}),
+                    confirm: std::sync::Arc::new(|_title, _msg| false),
+                },
+                runtime: crate::core::extensions::RuntimeHandle::noop(),
+            };
+            dispatcher::dispatch_session_before_fork(registry, entry_id, &ext_ctx).await;
+        }
+        false
+    }
+
+    /// Tear down the current session: emit shutdown and call before_invalidate.
+    ///
+    /// The old session is NOT disposed here — it will be dropped when `apply()`
+    /// replaces it with the new session. The `session_shutdown` event is
+    /// dispatched so extensions can perform cleanup before the session is
+    /// replaced.
+    async fn teardown_current(&mut self, reason: &str, _target_session_file: Option<&str>) {
+        // Emit session_shutdown to extensions
+        if let Some(ref registry) = self.session.get_extension_registry() {
+            let ext_ctx = ExtensionContext {
+                cwd: self.cwd().to_string(),
+                has_ui: false,
+                ui: crate::core::extensions::ExtensionUIContext {
+                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                    set_status: std::sync::Arc::new(|_key, _value| {}),
+                    confirm: std::sync::Arc::new(|_title, _msg| false),
+                },
+                runtime: crate::core::extensions::RuntimeHandle::noop(),
+            };
+            dispatcher::dispatch_session_shutdown(registry, reason, &ext_ctx).await;
+        }
+
+        // Call before_session_invalidate (synchronous)
+        if let Some(ref invalidate) = self.before_session_invalidate {
+            invalidate();
+        }
+    }
+
+    /// Apply a new runtime result, replacing the current session and services.
+    fn apply(&mut self, result: CreateAgentSessionRuntimeResult) {
+        self.session = result.session;
+        self.services = result.services;
+        self.diagnostics = result.diagnostics;
+        self.model_fallback_message = result.model_fallback_message;
+    }
+
+    /// Finish session replacement: call rebind_session and with_session.
+    async fn finish_session_replacement(
+        &self,
+        with_session: Option<
+            &(dyn Fn(
+                    &AgentSession,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync),
+        >,
+    ) {
+        if let Some(ref rebind) = self.rebind_session {
+            rebind(&self.session).await;
+        }
+        if let Some(ref with) = with_session {
+            with(&self.session).await;
+        }
+    }
+
+    // =========================================================================
+    // Session Lifecycle
+    // =========================================================================
+
+    /// Switch to a different session file, matching the original
+    /// AgentSessionRuntime.switchSession().
+    ///
+    /// Returns `true` if the switch was completed, `false` if cancelled by
+    /// an extension.
+    pub async fn switch_session(
+        &mut self,
+        session_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<bool, String> {
+        // Emit session_before_switch (can cancel)
+        let cancelled = self.emit_before_switch("resume", Some(session_path)).await;
+        if cancelled {
+            return Ok(false);
+        }
+
+        let previous_session_file = self.session.get_session_file();
+        let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
+
+        // Open the target session
+        let effective_cwd = cwd_override.unwrap_or(self.cwd());
+        let session_manager = SessionManager::new(
+            effective_cwd,
+            &session_dir,
+            Some(session_path),
+            true,
+            None,
+        );
+
+        // Validate session cwd exists
+        let session_cwd = session_manager.get_cwd().to_string();
+        if !session_cwd.is_empty() && !std::path::Path::new(&session_cwd).exists() {
+            return Err(format!(
+                "Stored session working directory does not exist: {}",
+                session_cwd
+            ));
+        }
+
+        // Teardown current session
+        self.teardown_current("resume", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+
+        // Create new runtime via factory
+        let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            cwd: session_manager.get_cwd().to_string(),
+            agent_dir: self.services.agent_dir.clone(),
+            session_manager,
+        })
+        .await;
+
+        // Apply new state
+        self.apply(result);
+
+        // Finish replacement
+        self.finish_session_replacement(None).await;
+
+        Ok(true)
+    }
+
+    /// Create a new session, matching the original
+    /// AgentSessionRuntime.newSession().
+    ///
+    /// Returns `true` if the new session was created, `false` if cancelled by
+    /// an extension.
+    pub async fn new_session(
+        &mut self,
+        parent_session: Option<&str>,
+    ) -> Result<bool, String> {
+        // Emit session_before_switch (can cancel)
+        let cancelled = self.emit_before_switch("new", None).await;
+        if cancelled {
+            return Ok(false);
+        }
+
+        let previous_session_file = self.session.get_session_file();
+        let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
+
+        // Create a new session manager
+        let new_session_opts = parent_session.map(|p| {
+            crate::core::session_manager::NewSessionOptions {
+                id: None,
+                parent_session: Some(p.to_string()),
+            }
+        });
+        let session_manager = SessionManager::new(
+            self.cwd(),
+            &session_dir,
+            None,
+            true,
+            new_session_opts,
+        );
+
+        // Teardown current session
+        self.teardown_current("new", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+
+        // Create new runtime via factory
+        let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            cwd: self.cwd().to_string(),
+            agent_dir: self.services.agent_dir.clone(),
+            session_manager,
+        })
+        .await;
+
+        // Apply new state
+        self.apply(result);
+
+        // Finish replacement
+        self.finish_session_replacement(None).await;
+
+        Ok(true)
+    }
+
+    /// Fork the session at a specific entry, matching the original
+    /// AgentSessionRuntime.fork().
+    ///
+    /// Returns `(cancelled, selected_text)` where `cancelled` indicates whether
+    /// the operation was cancelled by an extension, and `selected_text` is the
+    /// extracted user message text when forking "before" a user message.
+    pub async fn fork(
+        &mut self,
+        entry_id: &str,
+        position: Option<&str>,
+    ) -> Result<(bool, Option<String>), String> {
+        let position = position.unwrap_or("before");
+
+        // Emit session_before_fork (can cancel)
+        let cancelled = self.emit_before_fork(entry_id, position).await;
+        if cancelled {
+            return Ok((true, None));
+        }
+
+        // Validate the entry exists
+        let entry = self.session.get_session_manager().get_entry(entry_id)
+            .ok_or_else(|| format!("Invalid entry ID for forking: {}", entry_id))?
+            .clone();
+
+        // Determine target leaf ID and selected text
+        let (target_leaf_id, selected_text) = if position == "at" {
+            (Some(entry_id.to_string()), None)
+        } else {
+            // "before" position: fork before the entry
+            // For user messages, extract the text
+            let parent_id = entry.parent_id().map(|s| s.to_string());
+            let text = if let crate::core::session_manager::SessionEntry::Message { message, .. } = &entry {
+                extract_user_message_text(message)
+            } else {
+                None
+            };
+            (parent_id, text)
+        };
+
+        let previous_session_file = self.session.get_session_file();
+        let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
+
+        // Create the forked session
+        let session_manager = if let Some(ref leaf_id) = target_leaf_id {
+            // Create a branched session from the target leaf.
+            // For both persisted and in-memory sessions, we use
+            // create_branched_session which copies entries up to the
+            // target leaf into a new session file.
+            let cwd = self.cwd().to_string();
+            let branch_path = {
+                let mut mgr = self.session.get_session_manager();
+                mgr.create_branched_session(leaf_id, None)?
+            };
+            SessionManager::new(
+                &cwd,
+                &session_dir,
+                Some(&branch_path),
+                true,
+                None,
+            )
+        } else {
+            // No target leaf: create a fresh session
+            SessionManager::new(
+                self.cwd(),
+                &session_dir,
+                None,
+                true,
+                Some(crate::core::session_manager::NewSessionOptions {
+                    id: None,
+                    parent_session: previous_session_file.clone().map(|p| p.to_string_lossy().to_string()),
+                }),
+            )
+        };
+
+        // Teardown current session
+        self.teardown_current("fork", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+
+        // Create new runtime via factory
+        let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            cwd: session_manager.get_cwd().to_string(),
+            agent_dir: self.services.agent_dir.clone(),
+            session_manager,
+        })
+        .await;
+
+        // Apply new state
+        self.apply(result);
+
+        // Finish replacement
+        self.finish_session_replacement(None).await;
+
+        Ok((false, selected_text))
+    }
+
+    /// Import a session from a JSONL file, matching the original
+    /// AgentSessionRuntime.importFromJsonl().
+    ///
+    /// Returns `true` if the import was completed, `false` if cancelled by
+    /// an extension.
+    pub async fn import_from_jsonl(
+        &mut self,
+        input_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<bool, String> {
+        let resolved_path = std::path::Path::new(input_path);
+        if !resolved_path.exists() {
+            return Err(format!("File not found: {}", input_path));
+        }
+
+        let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
+
+        // Ensure session directory exists
+        if !std::path::Path::new(&session_dir).exists() {
+            std::fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
+        }
+
+        // Copy the file to the session directory
+        let destination_path = std::path::Path::new(&session_dir).join(
+            resolved_path.file_name().unwrap_or_default(),
+        );
+        if destination_path != resolved_path {
+            std::fs::copy(resolved_path, &destination_path).map_err(|e| e.to_string())?;
+        }
+
+        // Emit session_before_switch (can cancel)
+        let cancelled = self
+            .emit_before_switch("resume", Some(&destination_path.to_string_lossy()))
+            .await;
+        if cancelled {
+            return Ok(false);
+        }
+
+        let previous_session_file = self.session.get_session_file();
+
+        // Open the imported session
+        let effective_cwd = cwd_override.unwrap_or(self.cwd());
+        let session_manager = SessionManager::new(
+            effective_cwd,
+            &session_dir,
+            Some(&destination_path.to_string_lossy()),
+            true,
+            None,
+        );
+
+        // Validate session cwd exists
+        let session_cwd = session_manager.get_cwd().to_string();
+        if !session_cwd.is_empty() && !std::path::Path::new(&session_cwd).exists() {
+            return Err(format!(
+                "Stored session working directory does not exist: {}",
+                session_cwd
+            ));
+        }
+
+        // Teardown current session
+        self.teardown_current("resume", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+
+        // Create new runtime via factory
+        let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            cwd: session_manager.get_cwd().to_string(),
+            agent_dir: self.services.agent_dir.clone(),
+            session_manager,
+        })
+        .await;
+
+        // Apply new state
+        self.apply(result);
+
+        // Finish replacement
+        self.finish_session_replacement(None).await;
+
+        Ok(true)
+    }
+
+    /// Dispose the runtime, emitting session_shutdown to extensions.
+    pub async fn dispose(mut self) {
+        self.teardown_current("quit", None).await;
+    }
+}
+
+// ============================================================================
+// Helper: extract user message text from a message value
+// ============================================================================
+
+fn extract_user_message_text(message: &serde_json::Value) -> Option<String> {
+    if let Some(content) = message.get("content") {
+        if let Some(text) = content.as_str() {
+            return Some(text.to_string());
+        }
+        if let Some(blocks) = content.as_array() {
+            let texts: Vec<String> = blocks
+                .iter()
+                .filter_map(|block| {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !texts.is_empty() {
+                return Some(texts.join(""));
+            }
+        }
+    }
+    None
 }
 
 /// Create the initial runtime from a runtime factory.
+///
+/// The same factory is stored on the returned AgentSessionRuntime and reused for
+/// later /new, /resume, /fork, and import flows.
 pub async fn create_agent_session_runtime(
     factory: CreateAgentSessionRuntimeFactory,
     params: CreateAgentSessionRuntimeParams,
@@ -110,6 +635,7 @@ pub async fn create_agent_session_runtime(
     AgentSessionRuntime::new(
         result.session,
         result.services,
+        factory,
         result.diagnostics,
         result.model_fallback_message,
     )

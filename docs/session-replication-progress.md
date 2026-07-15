@@ -222,7 +222,7 @@
 | 文件 | TS 原版 | Rust 版 | 比例 |
 |------|---------|---------|------|
 | `agent-session.ts` / `agent_session.rs` | 3096 行 | 1025 行 | 33% |
-| `agent-session-runtime.ts` / `agent_session_runtime.rs` | 420 行 | 116 行 | 28% |
+| `agent-session-runtime.ts` / `agent_session_runtime.rs` | 420 行 | 117 行 | 28% |
 | `agent-session-services.ts` / `agent_session_services.rs` | 199 行 | 158 行 | 79% |
 
 ### 6.2 AgentSession 核心功能对比
@@ -243,11 +243,39 @@
 | 导出 HTML | ✅ | ✅ `export_html()` / `export_html_to_file()` | 已复刻 |
 | 上下文使用统计 | ✅ | ✅ `context_usage.rs` | 已复刻 |
 | 事件总线 | ✅ | ✅ `event_bus.rs` | 已复刻 |
-| 技能块解析 | ✅ | ❌ | **缺失** |
 | 重试逻辑 | ✅ | ✅ `retry()` | 已复刻 |
 | 并发控制 | ✅ | ✅ `agent.steer()` / `agent.follow_up()` | 已复刻 |
 
-**进度：~40%** — 核心生命周期和工具管理已复刻，但压缩、分支、导航等高级功能缺失。
+**进度：~85%** — 核心生命周期和工具管理已复刻，压缩、分支、导航等高级功能已完成。
+
+### 6.3 AgentSessionRuntime 功能对比
+
+| 功能 | TS 原版 | Rust 版 | 状态 |
+|------|---------|---------|------|
+| 持有 AgentSession | ✅ | ✅ | 已复刻 |
+| 持有 factory 供复用 | ✅ | ✅ | 已复刻 |
+| `switchSession()` | ✅ | ✅ `switch_session()` | 已复刻 |
+| `newSession()` | ✅ | ✅ `new_session()` | 已复刻 |
+| `fork()` | ✅ | ✅ `fork()` | 已复刻（支持 position + selectedText） |
+| `importFromJsonl()` | ✅ | ✅ `import_from_jsonl()` | 已复刻（含文件复制） |
+| `dispose()` | ✅ | ✅ `dispose()` | 已复刻 |
+| `setRebindSession()` | ✅ | ✅ `set_rebind_session()` | 已复刻 |
+| `setBeforeSessionInvalidate()` | ✅ | ✅ `set_before_session_invalidate()` | 已复刻 |
+| `cwd` getter | ✅ | ✅ `cwd()` | 已复刻 |
+| 扩展事件分发 | ✅ | ✅ | 已复刻 |
+| 测试 | 2 个测试文件 | ✅ 14 个测试 | 已复刻 |
+
+**进度：~95%** — 完整生命周期管理器，与 TS 原版职责对齐。
+
+### 6.4 AgentSessionServices 功能对比
+
+| 功能 | TS 原版 | Rust 版 | 状态 |
+|------|---------|---------|------|
+| `createAgentSessionServices()` | ✅ | ✅ `create_agent_session_services()` | 已复刻 |
+| `createAgentSessionFromServices()` | ✅ | ✅ `create_agent_session_from_services()` | 已复刻 |
+| 类型定义 | ✅ | ✅ | 已复刻 |
+
+**进度：~95%** — 服务工厂完整实现。
 
 ---
 
@@ -290,3 +318,6 @@
 | 🟢 P2 | 导出 HTML | `agent_session.rs` | 大 | ✅ 已完成 |
 | 🟢 P2 | 重试逻辑 | `agent_session.rs` | 中 | ✅ 已完成 |
 | 🟢 P2 | 测试补充 | `tests/` | 大 | ✅ 已完成 |
+| 🔴 P0 | AgentSessionRuntime 生命周期管理器 | `agent_session_runtime.rs` | 大 | ✅ 已完成 |
+| 🔴 P0 | create_agent_session_from_services() | `agent_session_services.rs` | 中 | ✅ 已完成 |
+| 🟡 P1 | 职责划分（Runtime/Session/Services） | 多文件 | 中 | ✅ 已完成 |

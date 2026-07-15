@@ -423,6 +423,14 @@ impl AgentSession {
         self.session_manager.lock().unwrap().get_session_id().to_string()
     }
 
+    pub fn get_session_file(&self) -> Option<std::path::PathBuf> {
+        self.session_manager.lock().unwrap().get_session_file().map(|p| p.to_path_buf())
+    }
+
+    pub fn get_session_dir(&self) -> std::path::PathBuf {
+        self.session_manager.lock().unwrap().get_session_dir().to_path_buf()
+    }
+
     pub fn get_session_name(&self) -> Option<String> {
         self.session_manager.lock().unwrap().get_session_name()
     }
@@ -1050,6 +1058,10 @@ fn html_escape(s: &str) -> String {
 impl AgentSession {
     // =========================================================================
     // Session Lifecycle (switch / new / fork / import)
+    //
+    // These methods operate at the session-manager level. For the full
+    // lifecycle management with extension events and factory-based creation,
+    // use AgentSessionRuntime instead.
     // =========================================================================
 
     /// Switch to a different session file, matching original switchSession().
@@ -1066,13 +1078,6 @@ impl AgentSession {
         }
         if !crate::core::session_manager::is_valid_session_file(path) {
             return Err(format!("Invalid session file: {}", session_path));
-        }
-
-        // Dispatch session_before_switch to extensions
-        if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_before_switch(
-                registry, session_path, &self.ext_ctx,
-            ).await;
         }
 
         let session_dir = self
@@ -1134,13 +1139,6 @@ impl AgentSession {
     /// Fork the session at a specific entry, matching original fork().
     /// Returns the forked session path on success.
     pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
-        // Dispatch session_before_fork to extensions
-        if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_before_fork(
-                registry, entry_id, &self.ext_ctx,
-            ).await;
-        }
-
         // Use create_branched_session to create the fork
         let branch_path = self.session_manager.lock().unwrap()
             .create_branched_session(entry_id, None)?;
@@ -1230,14 +1228,12 @@ impl AgentSession {
         self._subscriptions.push(handle);
     }
 
+    /// Dispose the session.
+    ///
+    /// Note: When used through AgentSessionRuntime, the session_shutdown event
+    /// is dispatched by the Runtime's teardown_current. This method only
+    /// performs internal cleanup.
     pub async fn dispose(self) {
-        // Dispatch session_shutdown event before stopping the runtime, so
-        // extensions can perform cleanup (e.g. flush state, close connections).
-        if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_shutdown(
-                registry, "quit", &self.ext_ctx,
-            ).await;
-        }
         // ExtensionRegistry is just a container of trait objects — no V8 thread
         // to stop. Drop is sufficient for cleanup.
     }

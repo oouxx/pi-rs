@@ -1,8 +1,13 @@
 use std::path::Path;
+use std::sync::Arc;
 
+use crate::core::agent_session::AgentSession;
 use crate::core::auth_storage::AuthStorage;
+use crate::core::event_bus::EventBusController;
+use crate::core::extensions::ExtensionRegistry;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::{self, LoadedResources, ResourceLoaderOptions};
+use crate::core::sdk::{CreateAgentSessionResult, NoToolsMode};
 use crate::core::session_manager::SessionManager;
 use crate::core::settings_manager::SettingsManager;
 
@@ -66,6 +71,11 @@ pub struct CreateAgentSessionServicesOptions {
 pub struct CreateAgentSessionFromServicesOptions {
     pub services: AgentSessionServices,
     pub session_manager: SessionManager,
+    pub model: Option<pi_agent_core::pi_ai_types::Model>,
+    pub thinking_level: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+    pub scoped_models: Option<Vec<(pi_agent_core::pi_ai_types::Model, Option<pi_agent_core::pi_ai_types::ThinkingLevel>)>>,
+    pub tools: Option<Vec<String>>,
+    pub no_tools: Option<NoToolsMode>,
 }
 
 // ============================================================================
@@ -150,9 +160,73 @@ pub async fn create_agent_session_services(
 /// cwd before constructing the session.
 pub async fn create_agent_session_from_services(
     options: CreateAgentSessionFromServicesOptions,
-) -> Result<String, String> {
-    let _services = options.services;
-    let _session_manager = options.session_manager;
-    // TODO: wire up full AgentSession creation from services
-    Err("create_agent_session_from_services not yet fully wired".to_string())
+) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
+    let services = options.services;
+    let session_manager = options.session_manager;
+
+    // Resolve model: use provided model, or fall back to the first available
+    // model from the registry
+    let model = match options.model {
+        Some(m) => m,
+        None => {
+            let available = services.model_registry.get_available();
+            if available.is_empty() {
+                return Err("No models available. Please configure an API key.".into());
+            }
+            available.into_iter().next().unwrap()
+        }
+    };
+
+    let thinking_level = match options.thinking_level {
+        Some(t) => t,
+        None => "medium".to_string(),
+    };
+
+    let event_bus = EventBusController::new();
+
+    // Create extension registry (empty by default — caller can inject via
+    // services.resources if needed)
+    let extension_registry = Arc::new(ExtensionRegistry::new());
+
+    // Build the options struct for the inner creation function
+    let sdk_options = crate::core::sdk::CreateAgentSessionOptions {
+        cwd: services.cwd.clone(),
+        agent_dir: Some(services.agent_dir.clone()),
+        model: Some(model.clone()),
+        thinking_level: Some(thinking_level.clone()),
+        scoped_models: options.scoped_models,
+        no_tools: options.no_tools,
+        tools: options.tools,
+        exclude_tools: None,
+        custom_prompt: None,
+        append_system_prompt: None,
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        extension_paths: Vec::new(),
+        enable_extensions: false,
+        extension_registry: None,
+        cli_provider: None,
+        cli_model: None,
+        persist_session: false,
+        session_file: None,
+        fork_from: None,
+        session_dir: None,
+    };
+
+    let (session, result) = crate::core::sdk::create_agent_session_inner(
+        services.cwd,
+        services.agent_dir,
+        model,
+        thinking_level,
+        services.model_registry,
+        session_manager,
+        event_bus,
+        extension_registry,
+        sdk_options,
+        None,
+    )
+    .await;
+
+    Ok((session, result))
 }

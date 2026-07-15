@@ -94,8 +94,129 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
 }
 
-pub async fn create_agent_session(
+/// Create an AgentSession from pre-resolved inputs.
+///
+/// This is the core session creation logic, shared by both
+/// `create_agent_session()` (which resolves services first) and
+/// `create_agent_session_from_services()` (which takes pre-created services).
+pub async fn create_agent_session_inner(
+    cwd: String,
+    agent_dir: String,
+    model: Model,
+    thinking_level: String,
+    model_registry: ModelRegistry,
+    session_manager: SessionManager,
+    event_bus: EventBusController,
+    extension_registry: Arc<crate::core::extensions::ExtensionRegistry>,
     options: CreateAgentSessionOptions,
+    fallback_message: Option<String>,
+) -> (AgentSession, CreateAgentSessionResult) {
+    // Extension tools are collected by the caller before wrapping in Arc.
+    // We pass them through via the extension_registry which is already set up.
+
+    // Dispatch session_start to extensions before session creation.
+    let ext_ctx = crate::core::extensions::ExtensionContext {
+        cwd: cwd.clone(),
+        has_ui: false,
+        ui: crate::core::extensions::ExtensionUIContext {
+            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+            set_status: std::sync::Arc::new(|_key, _value| {}),
+            confirm: std::sync::Arc::new(|_title, _msg| false),
+        },
+        runtime: crate::core::extensions::RuntimeHandle::noop(),
+    };
+    crate::core::extensions::dispatcher::dispatch_session_start(
+        &extension_registry,
+        "startup",
+        &ext_ctx,
+    )
+    .await;
+
+    // Load resources for context files and skills
+    let resource_options = ResourceLoaderOptions {
+        cwd: cwd.clone(),
+        agent_dir: Some(agent_dir.clone()),
+        include_defaults: true,
+        ..Default::default()
+    };
+    let resources = resource_loader::load_all_resources(&resource_options);
+
+    let context_files: Vec<ContextFile> = resources
+        .context_files
+        .into_iter()
+        .map(|cf| ContextFile {
+            path: cf.path,
+            content: cf.content,
+        })
+        .collect();
+
+    let skills: Vec<SkillInfo> = resources
+        .skills
+        .into_iter()
+        .map(|s| SkillInfo {
+            name: s.name,
+            description: s.description,
+            file_path: s.file_path,
+            base_dir: s.base_dir,
+        })
+        .collect();
+
+    let default_active_tool_names: Vec<String> = match options.no_tools {
+        Some(NoToolsMode::All) => Vec::new(),
+        Some(NoToolsMode::Builtin) => Vec::new(),
+        None => vec![
+            "read".to_string(),
+            "bash".to_string(),
+            "edit".to_string(),
+            "write".to_string(),
+        ],
+    };
+
+    let initial_active_tool_names = options.tools.clone().unwrap_or(default_active_tool_names);
+    let allowed_tool_names = options.tools.clone();
+    let excluded_tool_names = options.exclude_tools.clone();
+
+    let session_options = AgentSessionConfig {
+        cwd: cwd.clone(),
+        model,
+        thinking_level,
+        custom_prompt: options.custom_prompt,
+        append_system_prompt: options.append_system_prompt,
+        selected_tools: options.tools,
+        tool_snippets: None,
+        prompt_guidelines: None,
+        context_files,
+        skills,
+        session_name: options.session_name,
+        stream_fn: options.stream_fn.or_else(|| Some(create_default_stream_fn())),
+        convert_to_llm: options.convert_to_llm,
+        initial_active_tool_names: Some(initial_active_tool_names),
+        allowed_tool_names,
+        excluded_tool_names,
+        extension_registry: Some(extension_registry),
+        resources: None,
+    };
+
+    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
+
+    // Load persisted messages into agent state if restoring from a session file
+    if session.get_session_manager().get_session_file().is_some() {
+        let count = session.load_messages_from_session().await;
+        if count > 0 {
+            eprintln!("[pi] Restored {count} messages from session file");
+        }
+    }
+
+    (
+        session,
+        CreateAgentSessionResult {
+            model_fallback_message: fallback_message,
+        },
+    )
+}
+
+pub async fn create_agent_session(
+    mut options: CreateAgentSessionOptions,
 ) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
     // Ensure API providers are registered before any LLM calls
     pi_ai::providers::register_builtins::register_built_in_api_providers();
@@ -156,34 +277,6 @@ pub async fn create_agent_session(
         _ => "medium".to_string(),
     };
 
-    let resource_options = ResourceLoaderOptions {
-        cwd: cwd.clone(),
-        agent_dir: Some(agent_dir.clone()),
-        include_defaults: true,
-        ..Default::default()
-    };
-    let resources = resource_loader::load_all_resources(&resource_options);
-
-    let context_files: Vec<ContextFile> = resources
-        .context_files
-        .into_iter()
-        .map(|cf| ContextFile {
-            path: cf.path,
-            content: cf.content,
-        })
-        .collect();
-
-    let skills: Vec<SkillInfo> = resources
-        .skills
-        .into_iter()
-        .map(|s| SkillInfo {
-            name: s.name,
-            description: s.description,
-            file_path: s.file_path,
-            base_dir: s.base_dir,
-        })
-        .collect();
-
     // Resolve session directory: --session-dir overrides default
     let session_dir = options
         .session_dir
@@ -212,99 +305,22 @@ pub async fn create_agent_session(
 
     let event_bus = EventBusController::new();
 
-    let default_active_tool_names: Vec<String> = match options.no_tools {
-        Some(NoToolsMode::All) => Vec::new(),
-        Some(NoToolsMode::Builtin) => Vec::new(),
-        None => vec![
-            "read".to_string(),
-            "bash".to_string(),
-            "edit".to_string(),
-            "write".to_string(),
-        ],
-    };
-
-    let initial_active_tool_names = options.tools.clone().unwrap_or(default_active_tool_names);
-
-    let allowed_tool_names = options.tools.clone();
-    let excluded_tool_names = options.exclude_tools.clone();
-
     // ── Extension registry (Rust native extensions) ───────────────────
-    // Caller injects extensions via options.extension_registry.
-    // Example:
-    //   let mut registry = ExtensionRegistry::new();
-    //   registry.register(Box::new(pi_extensions::goal::GoalExtension::new()));
-    //   options.extension_registry = Some(registry);
-    let mut extension_registry = options.extension_registry.unwrap_or_else(ExtensionRegistry::new);
-    let extension_tools = extension_registry.collect_tools();
-
-    // Aggregate prompt guidelines from loaded extension tools into the system
-    // prompt (each tool may declare promptGuidelines per the original TS API).
-    let mut extension_prompt_guidelines: Vec<String> = Vec::new();
-    for t in &extension_tools {
-        if let Some(gl) = &t.definition.prompt_guidelines {
-            extension_prompt_guidelines.extend(gl.iter().cloned());
-        }
-    }
-    let prompt_guidelines = if extension_prompt_guidelines.is_empty() {
-        None
-    } else {
-        Some(extension_prompt_guidelines)
-    };
-
+    let extension_registry = options.extension_registry.take().unwrap_or_else(ExtensionRegistry::new);
     let extension_registry_arc = std::sync::Arc::new(extension_registry);
 
-    // Dispatch session_start to extensions before session creation.
-    let ext_ctx = crate::core::extensions::ExtensionContext {
-        cwd: cwd.clone(),
-        has_ui: false,
-        ui: crate::core::extensions::ExtensionUIContext {
-            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-            set_status: std::sync::Arc::new(|_key, _value| {}),
-            confirm: std::sync::Arc::new(|_title, _msg| false),
-        },
-        runtime: crate::core::extensions::RuntimeHandle::noop(),
-    };
-    crate::core::extensions::dispatcher::dispatch_session_start(
-        &extension_registry_arc,
-        "startup",
-        &ext_ctx,
-    ).await;
-
-    let session_options = AgentSessionConfig {
-        cwd: cwd.clone(),
+    let (session, result) = create_agent_session_inner(
+        cwd,
+        agent_dir,
         model,
         thinking_level,
-        custom_prompt: options.custom_prompt,
-        append_system_prompt: options.append_system_prompt,
-        selected_tools: options.tools,
-        tool_snippets: None,
-        prompt_guidelines,
-        context_files,
-        skills,
-        session_name: options.session_name,
-        stream_fn: options.stream_fn.or_else(|| Some(create_default_stream_fn())),
-        convert_to_llm: options.convert_to_llm,
-        initial_active_tool_names: Some(initial_active_tool_names),
-        allowed_tool_names,
-        excluded_tool_names,
-        extension_registry: Some(extension_registry_arc),
-        resources: None,
-    };
+        model_registry,
+        session_manager,
+        event_bus,
+        extension_registry_arc,
+        options,
+        initial_model.fallback_message,
+    ).await;
 
-    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
-
-    // Load persisted messages into agent state if restoring from a session file
-    if session.get_session_manager().get_session_file().is_some() {
-        let count = session.load_messages_from_session().await;
-        if count > 0 {
-            eprintln!("[pi] Restored {count} messages from session file");
-        }
-    }
-
-    Ok((
-        session,
-        CreateAgentSessionResult {
-            model_fallback_message: initial_model.fallback_message,
-        },
-    ))
+    Ok((session, result))
 }

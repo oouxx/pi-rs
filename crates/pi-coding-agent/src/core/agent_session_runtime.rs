@@ -1,11 +1,9 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
 use crate::core::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
 use crate::core::extensions::dispatcher;
-use crate::core::extensions::ExtensionContext;
-use crate::core::session_cwd::assert_session_cwd_exists;
+use crate::core::extensions::{ExtensionContext, ExtensionUIContext, RuntimeHandle};
 use crate::core::session_manager::SessionManager;
 
 // ============================================================================
@@ -60,17 +58,6 @@ pub type CreateAgentSessionRuntimeFactory = Box<
         > + Send
         + Sync,
 >;
-
-// ============================================================================
-// SessionStartEvent
-// ============================================================================
-
-/// Event emitted when a session starts, matching the TS SessionStartEvent.
-#[derive(Debug, Clone)]
-pub struct SessionStartEvent {
-    pub reason: String,
-    pub previous_session_file: Option<String>,
-}
 
 // ============================================================================
 // AgentSessionRuntime
@@ -198,6 +185,21 @@ impl AgentSessionRuntime {
     // Internal helpers
     // =========================================================================
 
+    /// Create a noop ExtensionContext for the current cwd.
+    /// Used for extension event dispatch during lifecycle operations.
+    fn noop_ext_ctx(&self) -> ExtensionContext {
+        ExtensionContext {
+            cwd: self.cwd().to_string(),
+            has_ui: false,
+            ui: ExtensionUIContext {
+                notify: Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                set_status: Arc::new(|_key, _value| {}),
+                confirm: Arc::new(|_title, _msg| false),
+            },
+            runtime: RuntimeHandle::noop(),
+        }
+    }
+
     /// Emit `session_before_switch` to extensions and return whether the
     /// operation was cancelled.
     async fn emit_before_switch(
@@ -206,22 +208,15 @@ impl AgentSessionRuntime {
         target_session_file: Option<&str>,
     ) -> bool {
         if let Some(ref registry) = self.session.get_extension_registry() {
-            let ext_ctx = ExtensionContext {
-                cwd: self.cwd().to_string(),
-                has_ui: false,
-                ui: crate::core::extensions::ExtensionUIContext {
-                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                    set_status: std::sync::Arc::new(|_key, _value| {}),
-                    confirm: std::sync::Arc::new(|_title, _msg| false),
-                },
-                runtime: crate::core::extensions::RuntimeHandle::noop(),
-            };
+            let ext_ctx = self.noop_ext_ctx();
             dispatcher::dispatch_session_before_switch(
                 registry,
                 target_session_file.unwrap_or(""),
                 &ext_ctx,
             )
             .await;
+            // TODO: wire up cancellation when dispatch_session_before_switch
+            // returns a cancellation signal (matching TS original).
         }
         false
     }
@@ -230,17 +225,10 @@ impl AgentSessionRuntime {
     /// operation was cancelled.
     async fn emit_before_fork(&self, entry_id: &str, position: &str) -> bool {
         if let Some(ref registry) = self.session.get_extension_registry() {
-            let ext_ctx = ExtensionContext {
-                cwd: self.cwd().to_string(),
-                has_ui: false,
-                ui: crate::core::extensions::ExtensionUIContext {
-                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                    set_status: std::sync::Arc::new(|_key, _value| {}),
-                    confirm: std::sync::Arc::new(|_title, _msg| false),
-                },
-                runtime: crate::core::extensions::RuntimeHandle::noop(),
-            };
+            let ext_ctx = self.noop_ext_ctx();
             dispatcher::dispatch_session_before_fork(registry, entry_id, &ext_ctx).await;
+            // TODO: wire up cancellation when dispatch_session_before_fork
+            // returns a cancellation signal (matching TS original).
         }
         false
     }
@@ -251,19 +239,10 @@ impl AgentSessionRuntime {
     /// replaces it with the new session. The `session_shutdown` event is
     /// dispatched so extensions can perform cleanup before the session is
     /// replaced.
-    async fn teardown_current(&mut self, reason: &str, _target_session_file: Option<&str>) {
+    async fn teardown_current(&mut self, reason: &str) {
         // Emit session_shutdown to extensions
         if let Some(ref registry) = self.session.get_extension_registry() {
-            let ext_ctx = ExtensionContext {
-                cwd: self.cwd().to_string(),
-                has_ui: false,
-                ui: crate::core::extensions::ExtensionUIContext {
-                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                    set_status: std::sync::Arc::new(|_key, _value| {}),
-                    confirm: std::sync::Arc::new(|_title, _msg| false),
-                },
-                runtime: crate::core::extensions::RuntimeHandle::noop(),
-            };
+            let ext_ctx = self.noop_ext_ctx();
             dispatcher::dispatch_session_shutdown(registry, reason, &ext_ctx).await;
         }
 
@@ -281,23 +260,10 @@ impl AgentSessionRuntime {
         self.model_fallback_message = result.model_fallback_message;
     }
 
-    /// Finish session replacement: call rebind_session and with_session.
-    async fn finish_session_replacement(
-        &self,
-        with_session: Option<
-            &(dyn Fn(
-                    &AgentSession,
-                )
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                + Send
-                + Sync),
-        >,
-    ) {
+    /// Finish session replacement: call rebind_session.
+    async fn finish_session_replacement(&self) {
         if let Some(ref rebind) = self.rebind_session {
             rebind(&self.session).await;
-        }
-        if let Some(ref with) = with_session {
-            with(&self.session).await;
         }
     }
 
@@ -321,7 +287,6 @@ impl AgentSessionRuntime {
             return Ok(false);
         }
 
-        let previous_session_file = self.session.get_session_file();
         let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
 
         // Open the target session
@@ -344,7 +309,7 @@ impl AgentSessionRuntime {
         }
 
         // Teardown current session
-        self.teardown_current("resume", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+        self.teardown_current("resume").await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -358,7 +323,7 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement(None).await;
+        self.finish_session_replacement().await;
 
         Ok(true)
     }
@@ -378,7 +343,6 @@ impl AgentSessionRuntime {
             return Ok(false);
         }
 
-        let previous_session_file = self.session.get_session_file();
         let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
 
         // Create a new session manager
@@ -397,7 +361,7 @@ impl AgentSessionRuntime {
         );
 
         // Teardown current session
-        self.teardown_current("new", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+        self.teardown_current("new").await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -411,7 +375,7 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement(None).await;
+        self.finish_session_replacement().await;
 
         Ok(true)
     }
@@ -455,7 +419,6 @@ impl AgentSessionRuntime {
             (parent_id, text)
         };
 
-        let previous_session_file = self.session.get_session_file();
         let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
 
         // Create the forked session
@@ -485,13 +448,13 @@ impl AgentSessionRuntime {
                 true,
                 Some(crate::core::session_manager::NewSessionOptions {
                     id: None,
-                    parent_session: previous_session_file.clone().map(|p| p.to_string_lossy().to_string()),
+                    parent_session: None,
                 }),
             )
         };
 
         // Teardown current session
-        self.teardown_current("fork", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+        self.teardown_current("fork").await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -505,7 +468,7 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement(None).await;
+        self.finish_session_replacement().await;
 
         Ok((false, selected_text))
     }
@@ -548,8 +511,6 @@ impl AgentSessionRuntime {
             return Ok(false);
         }
 
-        let previous_session_file = self.session.get_session_file();
-
         // Open the imported session
         let effective_cwd = cwd_override.unwrap_or(self.cwd());
         let session_manager = SessionManager::new(
@@ -570,7 +531,7 @@ impl AgentSessionRuntime {
         }
 
         // Teardown current session
-        self.teardown_current("resume", session_manager.get_session_file().map(|p| p.to_string_lossy().to_string()).as_deref()).await;
+        self.teardown_current("resume").await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -584,14 +545,14 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement(None).await;
+        self.finish_session_replacement().await;
 
         Ok(true)
     }
 
     /// Dispose the runtime, emitting session_shutdown to extensions.
     pub async fn dispose(mut self) {
-        self.teardown_current("quit", None).await;
+        self.teardown_current("quit").await;
     }
 }
 

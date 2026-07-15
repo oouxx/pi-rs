@@ -76,6 +76,11 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub scoped_models: Option<Vec<(pi_agent_core::pi_ai_types::Model, Option<pi_agent_core::pi_ai_types::ThinkingLevel>)>>,
     pub tools: Option<Vec<String>>,
     pub no_tools: Option<NoToolsMode>,
+    /// Pre-configured extension registry. When set, extensions are injected
+    /// by the caller instead of being auto-discovered from disk.
+    pub extension_registry: Option<ExtensionRegistry>,
+    /// Model fallback message, propagated from model resolution.
+    pub fallback_message: Option<String>,
 }
 
 // ============================================================================
@@ -184,9 +189,22 @@ pub async fn create_agent_session_from_services(
 
     let event_bus = EventBusController::new();
 
-    // Create extension registry (empty by default — caller can inject via
-    // services.resources if needed)
-    let extension_registry = Arc::new(ExtensionRegistry::new());
+    // Use caller-provided extension registry, or create an empty one
+    let mut extension_registry = options.extension_registry.unwrap_or_else(ExtensionRegistry::new);
+    // Collect tools and extract prompt_guidelines BEFORE wrapping in Arc
+    let extension_tools = extension_registry.collect_tools();
+    let mut extension_prompt_guidelines: Vec<String> = Vec::new();
+    for t in &extension_tools {
+        if let Some(gl) = &t.definition.prompt_guidelines {
+            extension_prompt_guidelines.extend(gl.iter().cloned());
+        }
+    }
+    let prompt_guidelines = if extension_prompt_guidelines.is_empty() {
+        None
+    } else {
+        Some(extension_prompt_guidelines)
+    };
+    let extension_registry = Arc::new(extension_registry);
 
     // Build the options struct for the inner creation function
     let sdk_options = crate::core::sdk::CreateAgentSessionOptions {
@@ -224,7 +242,8 @@ pub async fn create_agent_session_from_services(
         event_bus,
         extension_registry,
         sdk_options,
-        None,
+        options.fallback_message,
+        prompt_guidelines,
     )
     .await;
 

@@ -110,10 +110,8 @@ pub async fn create_agent_session_inner(
     extension_registry: Arc<crate::core::extensions::ExtensionRegistry>,
     options: CreateAgentSessionOptions,
     fallback_message: Option<String>,
+    prompt_guidelines: Option<Vec<String>>,
 ) -> (AgentSession, CreateAgentSessionResult) {
-    // Extension tools are collected by the caller before wrapping in Arc.
-    // We pass them through via the extension_registry which is already set up.
-
     // Dispatch session_start to extensions before session creation.
     let ext_ctx = crate::core::extensions::ExtensionContext {
         cwd: cwd.clone(),
@@ -184,7 +182,7 @@ pub async fn create_agent_session_inner(
         append_system_prompt: options.append_system_prompt,
         selected_tools: options.tools,
         tool_snippets: None,
-        prompt_guidelines: None,
+        prompt_guidelines,
         context_files,
         skills,
         session_name: options.session_name,
@@ -306,7 +304,21 @@ pub async fn create_agent_session(
     let event_bus = EventBusController::new();
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    let extension_registry = options.extension_registry.take().unwrap_or_else(ExtensionRegistry::new);
+    let mut extension_registry = options.extension_registry.take().unwrap_or_else(ExtensionRegistry::new);
+    // Collect tools and extract prompt_guidelines BEFORE wrapping in Arc
+    // (collect_tools() requires &mut self, which Arc doesn't provide).
+    let extension_tools = extension_registry.collect_tools();
+    let mut extension_prompt_guidelines: Vec<String> = Vec::new();
+    for t in &extension_tools {
+        if let Some(gl) = &t.definition.prompt_guidelines {
+            extension_prompt_guidelines.extend(gl.iter().cloned());
+        }
+    }
+    let prompt_guidelines = if extension_prompt_guidelines.is_empty() {
+        None
+    } else {
+        Some(extension_prompt_guidelines)
+    };
     let extension_registry_arc = std::sync::Arc::new(extension_registry);
 
     let (session, result) = create_agent_session_inner(
@@ -320,6 +332,7 @@ pub async fn create_agent_session(
         extension_registry_arc,
         options,
         initial_model.fallback_message,
+        prompt_guidelines,
     ).await;
 
     Ok((session, result))

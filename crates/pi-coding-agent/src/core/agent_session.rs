@@ -4,7 +4,7 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
-    StreamFn, StreamFnOptions, TransformContextFn,
+    StreamFn, TransformContextFn,
 };
 
 use crate::core::compaction::CompactionSettings;
@@ -1228,12 +1228,20 @@ impl AgentSession {
         self._subscriptions.push(handle);
     }
 
-    /// Dispose the session.
+    /// Dispose the session, dispatching session_shutdown to extensions.
     ///
     /// Note: When used through AgentSessionRuntime, the session_shutdown event
-    /// is dispatched by the Runtime's teardown_current. This method only
-    /// performs internal cleanup.
+    /// is dispatched by the Runtime's teardown_current BEFORE dispose() is
+    /// called, so there is no double-dispatch. When called directly (e.g. from
+    /// RPC handler or interactive mode), this method dispatches the event.
     pub async fn dispose(self) {
+        // Dispatch session_shutdown to extensions so they can flush state
+        // and close connections before the session is destroyed.
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_session_shutdown(
+                registry, "quit", &self.ext_ctx,
+            ).await;
+        }
         // ExtensionRegistry is just a container of trait objects — no V8 thread
         // to stop. Drop is sufficient for cleanup.
     }

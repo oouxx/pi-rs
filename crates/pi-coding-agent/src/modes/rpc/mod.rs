@@ -72,6 +72,38 @@ pub async fn run_rpc_mode() -> i32 {
         }
     });
 
+    // ── Signal handlers for graceful shutdown ─────────────────────────
+    // Register SIGTERM/SIGHUP to clean up on early termination,
+    // matching the original rpc-mode.ts behavior.
+    let session_for_signal = Arc::new(tokio::sync::Mutex::new(Some(session)));
+    let signal_session = session_for_signal.clone();
+
+    let mut term_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .ok();
+    let mut hang_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .ok();
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = async {
+                if let Some(ref mut sig) = term_signal {
+                    sig.recv().await;
+                }
+            } => {}
+            _ = async {
+                if let Some(ref mut sig) = hang_signal {
+                    sig.recv().await;
+                }
+            } => {}
+        }
+        if let Some(session) = signal_session.lock().await.take() {
+            session.dispose().await;
+        }
+        std::process::exit(1);
+    });
+
+    let mut session = session_for_signal.lock().await.take().unwrap();
+
     // ── Main loop: read JSON commands from stdin ──────────────────────
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);

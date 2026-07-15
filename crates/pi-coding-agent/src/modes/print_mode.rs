@@ -22,6 +22,8 @@ pub struct PrintModeOptions<'a> {
     pub messages: &'a [String],
     /// First message to send.
     pub message: &'a str,
+    /// Optional images to attach to the first message.
+    pub images: Option<&'a [ContentBlock]>,
     /// Agent session to use.
     pub session: AgentSession,
     /// Whether to show verbose tool execution output on stderr.
@@ -30,11 +32,49 @@ pub struct PrintModeOptions<'a> {
 
 /// Run in print mode (single-shot).
 /// Sends prompts to the agent and outputs the result.
+///
+/// Registers signal handlers (SIGTERM/SIGHUP) to clean up child processes
+/// on early termination, matching the original print-mode.ts behavior.
 pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
-    match options.mode {
-        "json" => run_json_mode(options.session, options.message, options.messages).await,
-        _ => run_text_mode(options.session, options.message, options.messages, options.verbose).await,
-    }
+    // Register signal handlers for cleanup on early termination
+    let session_for_signal = Arc::new(tokio::sync::Mutex::new(Some(options.session)));
+    let signal_session = session_for_signal.clone();
+
+    // Set up SIGTERM handler
+    let mut term_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .ok();
+    let mut hang_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .ok();
+
+    let term_handler = tokio::spawn(async move {
+        tokio::select! {
+            _ = async {
+                if let Some(ref mut sig) = term_signal {
+                    sig.recv().await;
+                }
+            } => {}
+            _ = async {
+                if let Some(ref mut sig) = hang_signal {
+                    sig.recv().await;
+                }
+            } => {}
+        }
+        if let Some(session) = signal_session.lock().await.take() {
+            session.dispose().await;
+        }
+        std::process::exit(1);
+    });
+
+    let session = session_for_signal.lock().await.take().unwrap();
+    let images = options.images.unwrap_or(&[]);
+
+    let result = match options.mode {
+        "json" => run_json_mode(session, options.message, options.messages, images).await,
+        _ => run_text_mode(session, options.message, options.messages, images, options.verbose).await,
+    };
+
+    term_handler.abort();
+    result
 }
 
 /// Run in text mode: stream response to stdout.
@@ -42,6 +82,7 @@ async fn run_text_mode(
     mut session: AgentSession,
     message: &str,
     messages: &[String],
+    images: &[ContentBlock],
     verbose: bool,
 ) -> i32 {
     let has_error = Arc::new(AtomicBool::new(false));
@@ -112,8 +153,14 @@ async fn run_text_mode(
 
     session.subscribe(listener).await;
 
-    // Send the first message
-    session.add_user_text(message).await;
+    // Send the first message (with images if provided)
+    if images.is_empty() {
+        session.add_user_text(message).await;
+    } else {
+        let mut content = vec![ContentBlock::text(message)];
+        content.extend_from_slice(images);
+        session.add_user_message(content).await;
+    }
     session.wait_for_idle().await;
 
     // Send additional messages
@@ -137,6 +184,7 @@ async fn run_json_mode(
     mut session: AgentSession,
     message: &str,
     messages: &[String],
+    images: &[ContentBlock],
 ) -> i32 {
     let has_error = Arc::new(AtomicBool::new(false));
     let err_flag = has_error.clone();
@@ -193,8 +241,14 @@ async fn run_json_mode(
 
     session.subscribe(listener).await;
 
-    // Send the first message
-    session.add_user_text(message).await;
+    // Send the first message (with images if provided)
+    if images.is_empty() {
+        session.add_user_text(message).await;
+    } else {
+        let mut content = vec![ContentBlock::text(message)];
+        content.extend_from_slice(images);
+        session.add_user_message(content).await;
+    }
     session.wait_for_idle().await;
 
     // Send additional messages

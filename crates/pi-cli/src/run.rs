@@ -150,6 +150,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         mode: mode_str,
         message: &message,
         messages: &[],
+        images: None,
         session,
         verbose: args.verbose,
     };

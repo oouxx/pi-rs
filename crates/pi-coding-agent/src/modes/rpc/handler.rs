@@ -140,16 +140,14 @@ pub async fn handle_command(
             command,
             exclude_from_context: _,
         } => {
-            session
-                .add_user_text(&format!(
-                    "Run this command and show me the output:\n```bash\n{command}\n```"
-                ))
-                .await;
-            Some(rpc_success(
-                id,
-                "bash",
-                Some(serde_json::json!({"status": "queued_as_prompt"})),
-            ))
+            match session.execute_bash(&command).await {
+                Ok(output) => Some(rpc_success(
+                    id,
+                    "bash",
+                    Some(serde_json::json!({"status": "completed", "output": output})),
+                )),
+                Err(e) => Some(rpc_error(id, "bash", e)),
+            }
         }
 
         // ── Session ──────────────────────────────────────────────────────

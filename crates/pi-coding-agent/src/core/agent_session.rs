@@ -1258,6 +1258,15 @@ impl AgentSession {
         self.ext_ctx.invalidate();
     }
 
+    /// Execute a bash command directly, matching the original executeBash().
+    /// Returns the command output as a string.
+    pub async fn execute_bash(&self, command: &str) -> Result<String, String> {
+        use crate::core::bash_executor::BashExecutor;
+        let executor = BashExecutor::new(&self.cwd);
+        let result = executor.execute(command, None).await.map_err(|e| e.to_string())?;
+        Ok(result.output)
+    }
+
     pub async fn abort(&self) {
         self.agent.abort().await;
     }

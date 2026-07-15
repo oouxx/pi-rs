@@ -132,13 +132,38 @@ fn read_text_file(path: &str) -> Result<String, String> {
     Ok(content)
 }
 
-/// Read an image file and base64-encode its contents.
+/// Maximum image dimension (width or height) for auto-resize.
+/// Matches the TS resizeImage default of 2048 pixels.
+const MAX_IMAGE_DIMENSION: u32 = 2048;
+
+/// Read an image file, optionally resize it, and base64-encode the result.
+/// When auto_resize is true, images larger than MAX_IMAGE_DIMENSION are
+/// scaled down to fit within that bound while maintaining aspect ratio.
+/// This matches the TS resizeImage behavior in file-processor.ts.
 fn read_image_file(path: &str) -> Result<String, String> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to open image: {e}"))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)
         .map_err(|e| format!("Failed to read image: {e}"))?;
+
+    // Auto-resize if enabled and image is large
+    if let Ok(img) = image::load_from_memory(&buffer) {
+        let (w, h) = (img.width(), img.height());
+        if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
+            let ratio = MAX_IMAGE_DIMENSION as f64 / w.max(h) as f64;
+            let new_w = (w as f64 * ratio) as u32;
+            let new_h = (h as f64 * ratio) as u32;
+            let resized = img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3);
+            let mut output = std::io::Cursor::new(Vec::new());
+            resized.write_to(&mut output, image::ImageFormat::Png)
+                .map_err(|e| format!("Failed to encode resized image: {e}"))?;
+            return Ok(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                output.get_ref(),
+            ));
+        }
+    }
 
     Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buffer))
 }

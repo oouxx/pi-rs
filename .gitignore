@@ -1,8 +1,4 @@
 /target
 .env
-
-node_modules
 .codegraph
 .superpowers
-package-lock.json
-package.json

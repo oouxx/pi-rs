@@ -203,16 +203,16 @@ impl AgentSessionRuntime {
     /// Create a noop ExtensionContext for the current cwd.
     /// Used for extension event dispatch during lifecycle operations.
     fn noop_ext_ctx(&self) -> ExtensionContext {
-        ExtensionContext {
-            cwd: self.cwd().to_string(),
-            has_ui: false,
-            ui: ExtensionUIContext {
+        ExtensionContext::new(
+            self.cwd().to_string(),
+            false,
+            ExtensionUIContext {
                 notify: Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
                 set_status: Arc::new(|_key, _value| {}),
                 confirm: Arc::new(|_title, _msg| false),
             },
-            runtime: RuntimeHandle::noop(),
-        }
+            RuntimeHandle::noop(),
+        )
     }
 
     /// Emit `session_before_switch` to extensions and return whether the
@@ -248,7 +248,8 @@ impl AgentSessionRuntime {
         false
     }
 
-    /// Tear down the current session: emit shutdown and call before_invalidate.
+    /// Tear down the current session: emit shutdown, invalidate extension
+    /// context, and call before_invalidate.
     ///
     /// The old session is NOT disposed here — it will be dropped when `apply()`
     /// replaces it with the new session. The `session_shutdown` event is
@@ -260,6 +261,10 @@ impl AgentSessionRuntime {
             let ext_ctx = self.noop_ext_ctx();
             dispatcher::dispatch_session_shutdown(registry, reason, &ext_ctx).await;
         }
+
+        // Invalidate the extension context so any captured references
+        // to the old session's context are detected as stale.
+        self.session.invalidate_ext_ctx();
 
         // Call before_session_invalidate (synchronous)
         if let Some(ref invalidate) = self.before_session_invalidate {

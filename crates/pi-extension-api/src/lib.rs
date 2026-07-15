@@ -4,6 +4,7 @@
 //! 每个扩展实现此 trait，通过 `ExtensionRegistry` 注册到 agent 运行时。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -118,6 +119,10 @@ pub struct EventResult {
 
 /// 扩展事件处理时收到的上下文。
 /// 对应原版 `ExtensionContext` 接口。
+///
+/// 包含过期检测：会话替换后上下文被标记为无效，
+/// 后续访问会返回错误，防止扩展使用过期引用。
+/// 对应原版 `ExtensionRunner.invalidate()` / `assertActive()`。
 #[derive(Clone)]
 pub struct ExtensionContext {
     pub cwd: String,
@@ -125,6 +130,41 @@ pub struct ExtensionContext {
     pub ui: ExtensionUIContext,
     /// 运行时操作句柄。
     pub runtime: RuntimeHandle,
+    /// 有效性标志。会话替换后设为 false。
+    /// 所有 `ExtensionContext` 克隆共享同一标志。
+    valid: Arc<AtomicBool>,
+}
+
+impl ExtensionContext {
+    /// 创建一个新的有效上下文。
+    pub fn new(cwd: String, has_ui: bool, ui: ExtensionUIContext, runtime: RuntimeHandle) -> Self {
+        Self {
+            cwd,
+            has_ui,
+            ui,
+            runtime,
+            valid: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    /// 检查上下文是否仍然有效。
+    /// 如果上下文已被作废（会话替换后），返回错误信息。
+    pub fn assert_active(&self) -> Result<(), String> {
+        if self.valid.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err("This extension context is stale after session replacement or reload. \
+                 Do not use a captured context after ctx.newSession(), ctx.fork(), \
+                 ctx.switchSession(), or ctx.reload()."
+                .to_string())
+        }
+    }
+
+    /// 将上下文标记为无效。会话替换后调用。
+    /// 所有克隆共享同一标志，因此一次调用即可作废所有引用。
+    pub fn invalidate(&self) {
+        self.valid.store(false, Ordering::SeqCst);
+    }
 }
 
 /// 运行时操作句柄 — 扩展通过此句柄与运行时交互。

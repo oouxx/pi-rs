@@ -161,16 +161,16 @@ impl AgentSession {
         // execution loop. When an extension registry is present, each tool call
         // is dispatched to extension handlers that may block it (before) or
         // transform its result (after).
-        let ext_ctx = ExtensionContext {
-            cwd: options.cwd.clone(),
-            has_ui: false,
-            ui: crate::core::extensions::ExtensionUIContext {
+        let ext_ctx = ExtensionContext::new(
+            options.cwd.clone(),
+            false,
+            crate::core::extensions::ExtensionUIContext {
                 notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
                 set_status: std::sync::Arc::new(|_key, _value| {}),
                 confirm: std::sync::Arc::new(|_title, _msg| false),
             },
-            runtime: crate::core::extensions::RuntimeHandle::noop(),
-        };
+            crate::core::extensions::RuntimeHandle::noop(),
+        );
         let shared_ext_ctx = Arc::new(ext_ctx);
 
         let (before_tool_call, after_tool_call) = match &options.extension_registry {
@@ -268,16 +268,16 @@ impl AgentSession {
             excluded_tool_names: options.excluded_tool_names,
             _subscriptions: Vec::new(),
             extension_registry: options.extension_registry,
-            ext_ctx: ExtensionContext {
-                cwd: session_cwd,
-                has_ui: false,
-                ui: crate::core::extensions::ExtensionUIContext {
+            ext_ctx: ExtensionContext::new(
+                session_cwd,
+                false,
+                crate::core::extensions::ExtensionUIContext {
                     notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
                     set_status: std::sync::Arc::new(|_key, _value| {}),
                     confirm: std::sync::Arc::new(|_title, _msg| false),
                 },
-                runtime: crate::core::extensions::RuntimeHandle::noop(),
-            },
+                crate::core::extensions::RuntimeHandle::noop(),
+            ),
         };
 
         // Register event-driven persistence subscriber, matching the original
@@ -336,16 +336,16 @@ impl AgentSession {
                     if let Some(evt) =
                         crate::core::extensions::dispatcher::event_from_agent_event(&event)
                     {
-                        let ext_ctx = ExtensionContext {
-                            cwd: cwd.clone(),
-                            has_ui: false,
-                            ui: crate::core::extensions::ExtensionUIContext {
+                        let ext_ctx = ExtensionContext::new(
+                            cwd.clone(),
+                            false,
+                            crate::core::extensions::ExtensionUIContext {
                                 notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
                                 set_status: std::sync::Arc::new(|_key, _value| {}),
                                 confirm: std::sync::Arc::new(|_title, _msg| false),
                             },
-                            runtime: crate::core::extensions::RuntimeHandle::noop(),
-                        };
+                            crate::core::extensions::RuntimeHandle::noop(),
+                        );
                         // Await message_end inline so extensions can process it
                         // before the message is persisted. Other events are
                         // fire-and-forget to avoid blocking the agent loop.
@@ -1251,6 +1251,12 @@ impl AgentSession {
     // =========================================================================
     // Lifecycle
     // =========================================================================
+
+    /// Invalidate the extension context, marking it as stale.
+    /// Called by AgentSessionRuntime during session replacement.
+    pub fn invalidate_ext_ctx(&self) {
+        self.ext_ctx.invalidate();
+    }
 
     pub async fn abort(&self) {
         self.agent.abort().await;

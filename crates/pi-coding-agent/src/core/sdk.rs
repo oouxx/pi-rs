@@ -148,16 +148,16 @@ pub async fn create_agent_session_inner(
         prompt_guidelines,
     } = params;
     // Dispatch session_start to extensions before session creation.
-    let ext_ctx = crate::core::extensions::ExtensionContext {
-        cwd: cwd.clone(),
-        has_ui: false,
-        ui: crate::core::extensions::ExtensionUIContext {
+    let ext_ctx = crate::core::extensions::ExtensionContext::new(
+        cwd.clone(),
+        false,
+        crate::core::extensions::ExtensionUIContext {
             notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
             set_status: std::sync::Arc::new(|_key, _value| {}),
             confirm: std::sync::Arc::new(|_title, _msg| false),
         },
-        runtime: crate::core::extensions::RuntimeHandle::noop(),
-    };
+        crate::core::extensions::RuntimeHandle::noop(),
+    );
     crate::core::extensions::dispatcher::dispatch_session_start(
         &extension_registry,
         "startup",

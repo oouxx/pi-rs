@@ -70,6 +70,8 @@ pub fn tool_result_payload(ctx: &AfterToolCallContext) -> serde_json::Value {
 
 /// Dispatch `tool_result` event to extensions.
 ///
+/// Merges content, details, and isError modifications from all extension
+/// handlers, matching the TS emitToolResult() behavior.
 /// Returns `Some(AfterToolCallResult)` when an extension modifies the result.
 pub async fn dispatch_tool_result(
     registry: &ExtensionRegistry,
@@ -87,19 +89,42 @@ pub async fn dispatch_tool_result(
         is_error: ctx.is_error,
     };
     let results = registry.dispatch_event(&event, ext_ctx).await;
+    let mut merged_content: Option<Vec<serde_json::Value>> = None;
+    let mut merged_details: Option<serde_json::Value> = None;
+    let mut merged_is_error: Option<bool> = None;
+    let mut blocked = false;
+
     for (_name, result) in &results {
         if let Some(r) = result {
             if r.block.unwrap_or(false) {
-                return Some(AfterToolCallResult {
-                    content: None,
-                    details: None,
-                    is_error: None,
-                    terminate: None,
-                });
+                blocked = true;
+            }
+            if let Some(content) = &r.content {
+                merged_content = Some(content.clone());
+            }
+            if let Some(details) = &r.details {
+                merged_details = Some(details.clone());
+            }
+            if let Some(is_error) = r.is_error {
+                merged_is_error = Some(is_error);
             }
         }
     }
-    None
+
+    if blocked || merged_content.is_some() || merged_details.is_some() || merged_is_error.is_some() {
+        Some(AfterToolCallResult {
+            content: merged_content.map(|v| {
+                v.into_iter().filter_map(|val| {
+                    serde_json::from_value(val).ok()
+                }).collect()
+            }),
+            details: merged_details,
+            is_error: merged_is_error,
+            terminate: None,
+        })
+    } else {
+        None
+    }
 }
 
 // ============================================================================
@@ -108,13 +133,17 @@ pub async fn dispatch_tool_result(
 
 /// Dispatch the `context` event to extensions, allowing them to modify the
 /// message list before it is sent to the LLM.
+///
+/// Chains modifications through all extensions: each handler sees the result
+/// of the previous handler, matching the TS emitContext() behavior.
 pub async fn dispatch_context(
     registry: &ExtensionRegistry,
     messages: Vec<pi_agent_core::types::AgentMessage>,
     ext_ctx: &ExtensionContext,
 ) -> Vec<pi_agent_core::types::AgentMessage> {
+    let mut current_messages = messages;
     let event = ExtensionEvent::Context {
-        messages: serde_json::to_value(&messages).ok()
+        messages: serde_json::to_value(&current_messages).ok()
             .and_then(|v| match v { serde_json::Value::Array(arr) => Some(arr), _ => None })
             .unwrap_or_default(),
     };
@@ -123,12 +152,12 @@ pub async fn dispatch_context(
         if let Some(r) = result {
             if let Some(msgs) = &r.messages {
                 if let Ok(parsed) = serde_json::from_value(serde_json::Value::Array(msgs.clone())) {
-                    return parsed;
+                    current_messages = parsed;
                 }
             }
         }
     }
-    messages
+    current_messages
 }
 
 // ============================================================================
@@ -136,13 +165,27 @@ pub async fn dispatch_context(
 // ============================================================================
 
 /// Dispatch the `before_provider_request` event to extensions.
+///
+/// Extensions can modify the provider request payload. Returns the (potentially
+/// modified) payload. The last extension's modification wins.
 pub async fn dispatch_before_provider_request(
     registry: &ExtensionRegistry,
     payload: serde_json::Value,
     ext_ctx: &ExtensionContext,
 ) -> serde_json::Value {
-    let _ = (registry, ext_ctx);
-    payload
+    let event = ExtensionEvent::BeforeProviderRequest {
+        payload: payload.clone(),
+    };
+    let results = registry.dispatch_event(&event, ext_ctx).await;
+    let mut result_payload = payload;
+    for (_name, result) in &results {
+        if let Some(r) = result {
+            if let Some(p) = &r.payload {
+                result_payload = p.clone();
+            }
+        }
+    }
+    result_payload
 }
 
 // ============================================================================
@@ -205,37 +248,51 @@ pub async fn dispatch_session_compact(
 /// Dispatch a `session_before_switch` event to extensions.
 pub async fn dispatch_session_before_switch(
     registry: &ExtensionRegistry,
-    _target_session: &str,
+    target_session: &str,
     ext_ctx: &ExtensionContext,
 ) {
-    let _ = (registry, ext_ctx);
+    let event = ExtensionEvent::SessionBeforeSwitch {
+        reason: "resume".to_string(),
+        target_session_file: Some(target_session.to_string()),
+    };
+    registry.dispatch_event(&event, ext_ctx).await;
 }
 
 /// Dispatch a `session_before_fork` event to extensions.
 pub async fn dispatch_session_before_fork(
     registry: &ExtensionRegistry,
-    _entry_id: &str,
+    entry_id: &str,
     ext_ctx: &ExtensionContext,
 ) {
-    let _ = (registry, ext_ctx);
+    let event = ExtensionEvent::SessionBeforeFork {
+        entry_id: entry_id.to_string(),
+        position: "before".to_string(),
+    };
+    registry.dispatch_event(&event, ext_ctx).await;
 }
 
 /// Dispatch a `session_before_tree` event to extensions.
 pub async fn dispatch_session_before_tree(
     registry: &ExtensionRegistry,
-    _target_id: &str,
+    target_id: &str,
     ext_ctx: &ExtensionContext,
 ) {
-    let _ = (registry, ext_ctx);
+    let event = ExtensionEvent::SessionBeforeTree {
+        target_id: target_id.to_string(),
+    };
+    registry.dispatch_event(&event, ext_ctx).await;
 }
 
 /// Dispatch a `session_info_changed` event to extensions.
 pub async fn dispatch_session_info_changed(
     registry: &ExtensionRegistry,
-    _name: Option<&str>,
+    name: Option<&str>,
     ext_ctx: &ExtensionContext,
 ) {
-    let _ = (registry, ext_ctx);
+    let event = ExtensionEvent::SessionInfoChanged {
+        name: name.map(String::from),
+    };
+    registry.dispatch_event(&event, ext_ctx).await;
 }
 
 // ============================================================================
@@ -243,25 +300,48 @@ pub async fn dispatch_session_info_changed(
 // ============================================================================
 
 /// Dispatch the `before_agent_start` event to extensions.
+///
+/// Chains system_prompt modifications through all extensions and collects
+/// messages from all handlers, matching the TS emitBeforeAgentStart() behavior.
+/// Returns the last extension's system_prompt override, if any.
 pub async fn dispatch_before_agent_start(
     registry: &ExtensionRegistry,
     system_prompt: &str,
-    _messages: &[pi_agent_core::types::AgentMessage],
+    messages: &[pi_agent_core::types::AgentMessage],
     ext_ctx: &ExtensionContext,
 ) -> Option<serde_json::Value> {
     let event = ExtensionEvent::BeforeAgentStart {
-        prompt: String::new(),
+        prompt: messages.iter()
+            .filter_map(|m| {
+                if let pi_agent_core::types::AgentMessage::User { content, .. } = m {
+                    Some(content.iter()
+                        .filter_map(|c| {
+                            if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<&str>>()
+                        .join("\n"))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("\n"),
         system_prompt: system_prompt.to_string(),
     };
     let results = registry.dispatch_event(&event, ext_ctx).await;
+    let mut last_system_prompt: Option<String> = None;
     for (_name, result) in &results {
         if let Some(r) = result {
             if let Some(sp) = &r.system_prompt {
-                return Some(serde_json::json!({ "systemPrompt": sp }));
+                last_system_prompt = Some(sp.clone());
             }
         }
     }
-    None
+    last_system_prompt.map(|sp| serde_json::json!({ "systemPrompt": sp }))
 }
 
 // ============================================================================
@@ -281,16 +361,23 @@ pub enum InputEventResult {
 }
 
 /// Dispatch the `input` event to extensions.
+///
+/// Chains transforms through all extensions: each handler sees the transformed
+/// text from the previous handler, matching the TS emitInput() behavior.
+/// Returns Handled if any extension handles the input.
 pub async fn dispatch_input(
     registry: &ExtensionRegistry,
     text: &str,
-    _source: &str,
-    _images: Option<&[pi_agent_core::pi_ai_types::ContentBlock]>,
+    source: &str,
+    images: Option<&[pi_agent_core::pi_ai_types::ContentBlock]>,
     ext_ctx: &ExtensionContext,
 ) -> InputEventResult {
+    let mut current_text = text.to_string();
+    let mut current_images = images.map(|i| i.to_vec()).unwrap_or_default();
+
     let event = ExtensionEvent::Input {
-        text: text.to_string(),
-        source: _source.to_string(),
+        text: current_text.clone(),
+        source: source.to_string(),
     };
     let results = registry.dispatch_event(&event, ext_ctx).await;
     for (_name, result) in &results {
@@ -298,18 +385,22 @@ pub async fn dispatch_input(
             match r.action.as_deref() {
                 Some("handled") => return InputEventResult::Handled,
                 Some("transform") => {
-                    return InputEventResult::Continue {
-                        text: r.text.clone().unwrap_or_else(|| text.to_string()),
-                        images: _images.map(|i| i.to_vec()).unwrap_or_default(),
-                    };
+                    if let Some(t) = &r.text {
+                        current_text = t.clone();
+                    }
+                    if let Some(imgs) = &r.images {
+                        current_images = imgs.iter()
+                            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                            .collect();
+                    }
                 }
                 _ => {}
             }
         }
     }
     InputEventResult::Continue {
-        text: text.to_string(),
-        images: _images.map(|i| i.to_vec()).unwrap_or_default(),
+        text: current_text,
+        images: current_images,
     }
 }
 

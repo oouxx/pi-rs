@@ -100,6 +100,16 @@ pub struct EventResult {
     pub prompt_paths: Option<Vec<String>>,
     pub theme_paths: Option<Vec<String>>,
     pub cancel: Option<bool>,
+    /// Modified tool result content (for tool_result events).
+    pub content: Option<Vec<Value>>,
+    /// Modified tool result details (for tool_result events).
+    pub details: Option<Value>,
+    /// Modified tool result is_error flag (for tool_result events).
+    pub is_error: Option<bool>,
+    /// Modified provider request payload (for before_provider_request events).
+    pub payload: Option<Value>,
+    /// Modified input images (for input events).
+    pub images: Option<Vec<Value>>,
 }
 
 // ============================================================================
@@ -269,54 +279,78 @@ pub struct ToolCallOutput {
 // 注册表
 // ============================================================================
 
+/// Registry for extension-provided tools.
+///
+/// Extensions register their tool definitions here during initialization.
+/// The registry collects all tools via `into_vec()` for use by the agent.
 pub struct ToolRegistry {
     pub(crate) tools: Vec<RegisteredTool>,
 }
 
 impl ToolRegistry {
+    /// Create a new empty tool registry.
     pub fn new() -> Self { Self { tools: Vec::new() } }
+    /// Register a tool definition.
     pub fn register(&mut self, tool: ToolDefinition) {
         self.tools.push(RegisteredTool { definition: tool });
     }
+    /// Consume the registry and return all registered tools.
     pub fn into_vec(self) -> Vec<RegisteredTool> { self.tools }
 }
 
+/// Registry for extension-provided commands.
+///
+/// Commands are slash-commands that users can invoke in the TUI or CLI.
 pub struct CommandRegistry {
     pub(crate) commands: Vec<RegisteredCommand>,
 }
 
 impl CommandRegistry {
+    /// Create a new empty command registry.
     pub fn new() -> Self { Self { commands: Vec::new() } }
+    /// Register a command with the given name and optional description.
     pub fn register(&mut self, name: &str, description: Option<&str>) {
         self.commands.push(RegisteredCommand {
             name: name.to_string(),
             description: description.map(String::from),
         });
     }
+    /// Consume the registry and return all registered commands.
     pub fn into_vec(self) -> Vec<RegisteredCommand> { self.commands }
 }
 
+/// Registry for extension-provided keyboard shortcuts.
+///
+/// Shortcuts are keybindings that users can use in the TUI.
 pub struct ShortcutRegistry {
     pub(crate) shortcuts: Vec<RegisteredShortcut>,
 }
 
 impl ShortcutRegistry {
+    /// Create a new empty shortcut registry.
     pub fn new() -> Self { Self { shortcuts: Vec::new() } }
+    /// Register a keyboard shortcut with the given key and optional description.
     pub fn register(&mut self, key: &str, description: Option<&str>) {
         self.shortcuts.push(RegisteredShortcut {
             key: key.to_string(),
             description: description.map(String::from),
         });
     }
+    /// Consume the registry and return all registered shortcuts.
     pub fn into_vec(self) -> Vec<RegisteredShortcut> { self.shortcuts }
 }
 
+/// Registry for extension-provided CLI flags.
+///
+/// Flags are command-line options that users can pass to the CLI.
 pub struct FlagRegistry {
     pub(crate) flags: Vec<RegisteredFlag>,
 }
 
 impl FlagRegistry {
+    /// Create a new empty flag registry.
     pub fn new() -> Self { Self { flags: Vec::new() } }
+    /// Register a CLI flag with the given name, description, and type.
     pub fn register(&mut self, name: &str, description: Option<&str>, flag_type: &str) {
         self.flags.push(RegisteredFlag {
             name: name.to_string(),
@@ -325,6 +359,7 @@ impl FlagRegistry {
             default: None,
         });
     }
+    /// Consume the registry and return all registered flags.
     pub fn into_vec(self) -> Vec<RegisteredFlag> { self.flags }
 }
 

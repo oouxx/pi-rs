@@ -15,7 +15,7 @@ use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
-use crate::core::extensions::{ExtensionContext, ExtensionRegistry};
+use crate::core::extensions::{ExtensionContext, ExtensionEvent, ExtensionRegistry};
 use crate::core::tools;
 
 // ============================================================================
@@ -312,12 +312,12 @@ impl AgentSession {
         let handle = session.agent.subscribe(persist_listener).await;
         session._subscriptions.push(handle);
 
-        // Agent-event dispatch to extensions. Each AgentEvent is mapped to an
-        // extension event name + payload. Fire-and-forget events are spawned
-        // detached so a slow handler never blocks the agent event loop.
-        // Result-returning events (message_end) are awaited inline so the
-        // extension can modify the message before it is persisted.
         // Agent-event dispatch to extensions via ExtensionRegistry.
+        // Fire-and-forget events (all except message_end) are spawned detached
+        // so a slow handler never blocks the agent event loop.
+        // message_end is awaited inline so the extension can process it before
+        // the message is persisted (even though the result is not yet used to
+        // replace the message in-place — that requires agent loop changes).
         if let Some(ref registry) = session.extension_registry {
             let dispatch_reg = Arc::clone(registry);
             let session_cwd = session.cwd.clone();
@@ -346,9 +346,16 @@ impl AgentSession {
                             },
                             runtime: crate::core::extensions::RuntimeHandle::noop(),
                         };
-                        tokio::spawn(async move {
+                        // Await message_end inline so extensions can process it
+                        // before the message is persisted. Other events are
+                        // fire-and-forget to avoid blocking the agent loop.
+                        if matches!(evt, ExtensionEvent::MessageEnd { .. }) {
                             reg.dispatch_event(&evt, &ext_ctx).await;
-                        });
+                        } else {
+                            tokio::spawn(async move {
+                                reg.dispatch_event(&evt, &ext_ctx).await;
+                            });
+                        }
                     }
                 })
             });

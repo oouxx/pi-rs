@@ -5,7 +5,7 @@
 //! were removed in Phase 6.6 cleanup (those types were dead code
 //! replaced by the embedded deno_core JS runtime).
 
-use pi_coding_agent::core::extensions::types::ToolDefinition;
+use pi_coding_agent::core::extensions::ToolDefinition;
 
 // ============================================================================
 // Helper functions

@@ -336,6 +336,24 @@ pub struct RpcSessionState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
     pub message_count: usize,
+    /// Whether the session is currently being compacted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_compacting: Option<bool>,
+    /// Steering queue mode: "all" or "one-at-a-time".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steering_mode: Option<String>,
+    /// Follow-up queue mode: "all" or "one-at-a-time".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_up_mode: Option<String>,
+    /// Path to the current session file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_file: Option<String>,
+    /// Whether auto-compaction is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compaction_enabled: Option<bool>,
+    /// Number of pending (queued) messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_message_count: Option<usize>,
 }
 
 /// Helper to create a success response.

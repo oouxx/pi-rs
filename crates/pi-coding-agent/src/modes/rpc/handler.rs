@@ -166,6 +166,7 @@ pub async fn handle_command(
         RpcCommand::GetState { id } => {
             let model = session.get_model().await;
             let thinking_level = session.get_thinking_level().await;
+            let session_file = session.get_session_file().map(|p| p.to_string_lossy().to_string());
             let state_data = RpcSessionState {
                 model: model.id.clone(),
                 thinking_level,
@@ -173,6 +174,12 @@ pub async fn handle_command(
                 session_id: session.get_session_id(),
                 session_name: session.get_session_name(),
                 message_count: session.get_messages().await.len(),
+                is_compacting: None, // Not yet tracked on AgentSession
+                steering_mode: None, // Not yet implemented
+                follow_up_mode: None, // Not yet implemented
+                session_file,
+                auto_compaction_enabled: Some(session.get_compaction_settings().compact_on_threshold),
+                pending_message_count: Some(session.get_messages().await.len()),
             };
             Some(rpc_success(
                 id,
@@ -240,15 +247,16 @@ pub async fn handle_command(
         // ── Thinking ──────────────────────────────────────────────────────
 
         RpcCommand::SetThinkingLevel { id, level } => {
-            // Thinking level is stored in agent state
-            Some(rpc_success(id, "set_thinking_level", None))
+            session.set_thinking_level(&level).await;
+            Some(rpc_success(id, "set_thinking_level", Some(serde_json::json!({"level": level}))))
         }
 
         RpcCommand::CycleThinkingLevel { id } => {
-            let levels = ["off", "minimal", "low", "medium", "high"];
+            let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
             let current = session.get_thinking_level().await;
             let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
             let next = levels[(idx + 1) % levels.len()];
+            session.set_thinking_level(next).await;
             Some(rpc_success(
                 id,
                 "cycle_thinking_level",
@@ -259,10 +267,12 @@ pub async fn handle_command(
         // ── Queue Modes ──────────────────────────────────────────────────
 
         RpcCommand::SetSteeringMode { id, mode: _ } => {
+            // Steering mode is not yet implemented on AgentSession
             Some(rpc_success(id, "set_steering_mode", None))
         }
 
         RpcCommand::SetFollowUpMode { id, mode: _ } => {
+            // Follow-up mode is not yet implemented on AgentSession
             Some(rpc_success(id, "set_follow_up_mode", None))
         }
 
@@ -287,13 +297,17 @@ pub async fn handle_command(
             }
         }
 
-        RpcCommand::SetAutoCompaction { id, enabled: _ } => {
-            Some(rpc_success(id, "set_auto_compaction", None))
+        RpcCommand::SetAutoCompaction { id, enabled } => {
+            let mut settings = session.get_compaction_settings().clone();
+            settings.compact_on_threshold = enabled;
+            session.set_compaction_settings(settings);
+            Some(rpc_success(id, "set_auto_compaction", Some(serde_json::json!({"enabled": enabled}))))
         }
 
         // ── Retry ─────────────────────────────────────────────────────────
 
         RpcCommand::SetAutoRetry { id, enabled: _ } => {
+            // Auto-retry is not yet implemented on AgentSession
             Some(rpc_success(id, "set_auto_retry", None))
         }
 
@@ -447,8 +461,16 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetCommands { id } => {
-            // Return available commands (slash commands, skills)
-            let commands: Vec<serde_json::Value> = Vec::new();
+            // Return available commands (slash commands, skills, prompt templates)
+            // Currently returns built-in slash commands. Extension commands and
+            // skills are not yet registered in the RPC handler.
+            let commands: Vec<serde_json::Value> = vec![
+                serde_json::json!({"name": "new", "description": "Start a new session"}),
+                serde_json::json!({"name": "resume", "description": "Resume a previous session"}),
+                serde_json::json!({"name": "fork", "description": "Fork the session at an entry"}),
+                serde_json::json!({"name": "compact", "description": "Compact the session"}),
+                serde_json::json!({"name": "help", "description": "Show help"}),
+            ];
             Some(rpc_success(
                 id,
                 "get_commands",

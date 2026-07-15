@@ -32,6 +32,7 @@ pub struct AgentSessionServices {
 }
 
 impl AgentSessionServices {
+    /// Create a new AgentSessionServices instance.
     pub fn new(
         cwd: String,
         agent_dir: String,
@@ -178,7 +179,8 @@ pub async fn create_agent_session_from_services(
             if available.is_empty() {
                 return Err("No models available. Please configure an API key.".into());
             }
-            available.into_iter().next().unwrap()
+            // SAFETY: is_empty() check above guarantees at least one element
+            available.into_iter().next().unwrap_or_else(|| unreachable!())
         }
     };
 
@@ -191,19 +193,8 @@ pub async fn create_agent_session_from_services(
 
     // Use caller-provided extension registry, or create an empty one
     let mut extension_registry = options.extension_registry.unwrap_or_else(ExtensionRegistry::new);
-    // Collect tools and extract prompt_guidelines BEFORE wrapping in Arc
-    let extension_tools = extension_registry.collect_tools();
-    let mut extension_prompt_guidelines: Vec<String> = Vec::new();
-    for t in &extension_tools {
-        if let Some(gl) = &t.definition.prompt_guidelines {
-            extension_prompt_guidelines.extend(gl.iter().cloned());
-        }
-    }
-    let prompt_guidelines = if extension_prompt_guidelines.is_empty() {
-        None
-    } else {
-        Some(extension_prompt_guidelines)
-    };
+    // Collect prompt_guidelines BEFORE wrapping in Arc
+    let prompt_guidelines = crate::core::sdk::collect_prompt_guidelines(&mut extension_registry);
     let extension_registry = Arc::new(extension_registry);
 
     // Build the options struct for the inner creation function
@@ -233,17 +224,19 @@ pub async fn create_agent_session_from_services(
     };
 
     let (session, result) = crate::core::sdk::create_agent_session_inner(
-        services.cwd,
-        services.agent_dir,
-        model,
-        thinking_level,
-        services.model_registry,
-        session_manager,
-        event_bus,
-        extension_registry,
-        sdk_options,
-        options.fallback_message,
-        prompt_guidelines,
+        crate::core::sdk::CreateAgentSessionInnerParams {
+            cwd: services.cwd,
+            agent_dir: services.agent_dir,
+            model,
+            thinking_level,
+            model_registry: services.model_registry,
+            session_manager,
+            event_bus,
+            extension_registry,
+            options: sdk_options,
+            fallback_message: options.fallback_message,
+            prompt_guidelines,
+        },
     )
     .await;
 

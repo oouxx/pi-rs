@@ -94,24 +94,59 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
 }
 
+/// Collect prompt_guidelines from extension tools.
+///
+/// Must be called BEFORE wrapping the registry in Arc, because
+/// `collect_tools()` requires `&mut self`.
+pub fn collect_prompt_guidelines(registry: &mut crate::core::extensions::ExtensionRegistry) -> Option<Vec<String>> {
+    let tools = registry.collect_tools();
+    let mut guidelines: Vec<String> = Vec::new();
+    for t in &tools {
+        if let Some(gl) = &t.definition.prompt_guidelines {
+            guidelines.extend(gl.iter().cloned());
+        }
+    }
+    if guidelines.is_empty() { None } else { Some(guidelines) }
+}
+
+/// Parameters for `create_agent_session_inner`.
+///
+/// Groups all pre-resolved inputs needed to create an AgentSession.
+pub struct CreateAgentSessionInnerParams {
+    pub cwd: String,
+    pub agent_dir: String,
+    pub model: Model,
+    pub thinking_level: String,
+    pub model_registry: ModelRegistry,
+    pub session_manager: SessionManager,
+    pub event_bus: EventBusController,
+    pub extension_registry: Arc<crate::core::extensions::ExtensionRegistry>,
+    pub options: CreateAgentSessionOptions,
+    pub fallback_message: Option<String>,
+    pub prompt_guidelines: Option<Vec<String>>,
+}
+
 /// Create an AgentSession from pre-resolved inputs.
 ///
 /// This is the core session creation logic, shared by both
 /// `create_agent_session()` (which resolves services first) and
 /// `create_agent_session_from_services()` (which takes pre-created services).
 pub async fn create_agent_session_inner(
-    cwd: String,
-    agent_dir: String,
-    model: Model,
-    thinking_level: String,
-    model_registry: ModelRegistry,
-    session_manager: SessionManager,
-    event_bus: EventBusController,
-    extension_registry: Arc<crate::core::extensions::ExtensionRegistry>,
-    options: CreateAgentSessionOptions,
-    fallback_message: Option<String>,
-    prompt_guidelines: Option<Vec<String>>,
+    params: CreateAgentSessionInnerParams,
 ) -> (AgentSession, CreateAgentSessionResult) {
+    let CreateAgentSessionInnerParams {
+        cwd,
+        agent_dir,
+        model,
+        thinking_level,
+        model_registry,
+        session_manager,
+        event_bus,
+        extension_registry,
+        options,
+        fallback_message,
+        prompt_guidelines,
+    } = params;
     // Dispatch session_start to extensions before session creation.
     let ext_ctx = crate::core::extensions::ExtensionContext {
         cwd: cwd.clone(),
@@ -264,7 +299,8 @@ pub async fn create_agent_session(
             if available.is_empty() {
                 return Err("No models available. Please configure an API key.".into());
             }
-            available.into_iter().next().unwrap()
+            // SAFETY: is_empty() check above guarantees at least one element
+            available.into_iter().next().unwrap_or_else(|| unreachable!())
         }
     };
 
@@ -305,34 +341,25 @@ pub async fn create_agent_session(
 
     // ── Extension registry (Rust native extensions) ───────────────────
     let mut extension_registry = options.extension_registry.take().unwrap_or_else(ExtensionRegistry::new);
-    // Collect tools and extract prompt_guidelines BEFORE wrapping in Arc
+    // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
-    let extension_tools = extension_registry.collect_tools();
-    let mut extension_prompt_guidelines: Vec<String> = Vec::new();
-    for t in &extension_tools {
-        if let Some(gl) = &t.definition.prompt_guidelines {
-            extension_prompt_guidelines.extend(gl.iter().cloned());
-        }
-    }
-    let prompt_guidelines = if extension_prompt_guidelines.is_empty() {
-        None
-    } else {
-        Some(extension_prompt_guidelines)
-    };
+    let prompt_guidelines = collect_prompt_guidelines(&mut extension_registry);
     let extension_registry_arc = std::sync::Arc::new(extension_registry);
 
     let (session, result) = create_agent_session_inner(
-        cwd,
-        agent_dir,
-        model,
-        thinking_level,
-        model_registry,
-        session_manager,
-        event_bus,
-        extension_registry_arc,
-        options,
-        initial_model.fallback_message,
-        prompt_guidelines,
+        CreateAgentSessionInnerParams {
+            cwd,
+            agent_dir,
+            model,
+            thinking_level,
+            model_registry,
+            session_manager,
+            event_bus,
+            extension_registry: extension_registry_arc,
+            options,
+            fallback_message: initial_model.fallback_message,
+            prompt_guidelines,
+        },
     ).await;
 
     Ok((session, result))

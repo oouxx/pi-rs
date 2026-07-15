@@ -1065,6 +1065,10 @@ impl AgentSession {
     // =========================================================================
 
     /// Switch to a different session file, matching original switchSession().
+    ///
+    /// Dispatches `session_before_switch` to extensions before the switch.
+    /// When used through AgentSessionRuntime, the Runtime handles extension
+    /// events and factory-based session creation instead.
     pub async fn switch_session(
         &mut self,
         session_path: &str,
@@ -1078,6 +1082,13 @@ impl AgentSession {
         }
         if !crate::core::session_manager::is_valid_session_file(path) {
             return Err(format!("Invalid session file: {}", session_path));
+        }
+
+        // Dispatch session_before_switch to extensions
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_session_before_switch(
+                registry, session_path, &self.ext_ctx,
+            ).await;
         }
 
         let session_dir = self
@@ -1138,7 +1149,18 @@ impl AgentSession {
 
     /// Fork the session at a specific entry, matching original fork().
     /// Returns the forked session path on success.
+    ///
+    /// Dispatches `session_before_fork` to extensions before the fork.
+    /// When used through AgentSessionRuntime, the Runtime handles extension
+    /// events and factory-based session creation instead.
     pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
+        // Dispatch session_before_fork to extensions
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_session_before_fork(
+                registry, entry_id, &self.ext_ctx,
+            ).await;
+        }
+
         // Use create_branched_session to create the fork
         let branch_path = self.session_manager.lock().unwrap()
             .create_branched_session(entry_id, None)?;

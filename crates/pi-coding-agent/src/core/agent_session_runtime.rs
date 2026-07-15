@@ -50,6 +50,11 @@ pub struct CreateAgentSessionRuntimeParams {
     pub session_manager: SessionManager,
 }
 
+/// Factory type for creating a new runtime.
+///
+/// The factory closes over process-global fixed inputs, recreates cwd-bound
+/// services for the effective cwd, resolves session options against those
+/// services, and finally creates the AgentSession.
 pub type CreateAgentSessionRuntimeFactory = Box<
     dyn Fn(
             CreateAgentSessionRuntimeParams,
@@ -100,6 +105,10 @@ pub struct AgentSessionRuntime {
 }
 
 impl AgentSessionRuntime {
+    /// Create a new AgentSessionRuntime.
+    ///
+    /// The `create_runtime` factory is stored and reused for later session
+    /// replacement operations (switch, new, fork, import).
     pub fn new(
         session: AgentSession,
         services: AgentSessionServices,
@@ -122,26 +131,32 @@ impl AgentSessionRuntime {
     // Accessors
     // =========================================================================
 
+    /// Returns a reference to the cwd-bound services.
     pub fn services(&self) -> &AgentSessionServices {
         &self.services
     }
 
+    /// Returns a reference to the current AgentSession.
     pub fn session(&self) -> &AgentSession {
         &self.session
     }
 
+    /// Returns a mutable reference to the current AgentSession.
     pub fn session_mut(&mut self) -> &mut AgentSession {
         &mut self.session
     }
 
+    /// Returns the effective working directory of the current session.
     pub fn cwd(&self) -> &str {
         &self.services.cwd
     }
 
+    /// Returns diagnostics collected during runtime creation.
     pub fn diagnostics(&self) -> &[AgentSessionRuntimeDiagnostic] {
         &self.diagnostics
     }
 
+    /// Returns the model fallback message, if any.
     pub fn model_fallback_message(&self) -> Option<&str> {
         self.model_fallback_message.as_deref()
     }
@@ -281,6 +296,15 @@ impl AgentSessionRuntime {
         session_path: &str,
         cwd_override: Option<&str>,
     ) -> Result<bool, String> {
+        // Validate the target session file exists and is a valid session file
+        let path = std::path::Path::new(session_path);
+        if !path.exists() {
+            return Err(format!("Session file not found: {}", session_path));
+        }
+        if !crate::core::session_manager::is_valid_session_file(path) {
+            return Err(format!("Invalid session file: {}", session_path));
+        }
+
         // Emit session_before_switch (can cancel)
         let cancelled = self.emit_before_switch("resume", Some(session_path)).await;
         if cancelled {
@@ -495,20 +519,23 @@ impl AgentSessionRuntime {
             std::fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
         }
 
-        // Copy the file to the session directory
-        let destination_path = std::path::Path::new(&session_dir).join(
-            resolved_path.file_name().unwrap_or_default(),
-        );
-        if destination_path != resolved_path {
-            std::fs::copy(resolved_path, &destination_path).map_err(|e| e.to_string())?;
-        }
+        // Emit session_before_switch (can cancel) BEFORE copying the file,
+        // so a cancelled import doesn't leave an orphaned file.
+        let file_name = resolved_path.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("Input path has no file name: {}", input_path))?;
+        let destination_path = std::path::Path::new(&session_dir).join(file_name);
 
-        // Emit session_before_switch (can cancel)
         let cancelled = self
             .emit_before_switch("resume", Some(&destination_path.to_string_lossy()))
             .await;
         if cancelled {
             return Ok(false);
+        }
+
+        // Copy the file to the session directory
+        if destination_path != resolved_path {
+            std::fs::copy(resolved_path, &destination_path).map_err(|e| e.to_string())?;
         }
 
         // Open the imported session
@@ -561,6 +588,10 @@ impl AgentSessionRuntime {
 // ============================================================================
 
 fn extract_user_message_text(message: &serde_json::Value) -> Option<String> {
+    // Only extract text from user messages
+    if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return None;
+    }
     if let Some(content) = message.get("content") {
         if let Some(text) = content.as_str() {
             return Some(text.to_string());

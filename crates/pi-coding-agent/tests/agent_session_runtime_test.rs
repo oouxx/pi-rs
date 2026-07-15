@@ -262,11 +262,10 @@ async fn test_runtime_switch_session() {
 async fn test_runtime_switch_session_nonexistent() {
     let (mut runtime, _dir) = create_test_runtime().await;
 
-    // Switching to a nonexistent file creates a new session (SessionManager
-    // creates a new file if the target doesn't exist)
+    // Switching to a nonexistent file should fail with file-not-found error
     let result = runtime.switch_session("/nonexistent/session.jsonl", None).await;
-    // This should succeed (creates a new session at the path)
-    assert!(result.is_ok());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not found"));
 }
 
 #[tokio::test]

@@ -621,10 +621,12 @@ impl AgentSession {
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             let _ = crate::core::extensions::dispatcher::dispatch_before_agent_start(
-                registry,
-                &state.system_prompt,
-                &state.messages,
-                &self.ext_ctx,
+                crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
+                    registry,
+                    system_prompt: &state.system_prompt,
+                    messages: &state.messages,
+                    ext_ctx: &self.ext_ctx,
+                },
             ).await;
         }
 
@@ -642,8 +644,15 @@ impl AgentSession {
         // If an extension handles the input, skip processing entirely.
         // If an extension transforms the text, use the transformed text.
         let (effective_text, effective_images) = if let Some(ref registry) = self.extension_registry {
-            match crate::core::extensions::dispatcher::dispatch_input(registry, text, "interactive", None, &self.ext_ctx).await
-            {
+            match crate::core::extensions::dispatcher::dispatch_input(
+                crate::core::extensions::dispatcher::DispatchInputParams {
+                    registry,
+                    text,
+                    source: "interactive",
+                    images: None,
+                    ext_ctx: &self.ext_ctx,
+                },
+            ).await {
                 crate::core::extensions::dispatcher::InputEventResult::Handled => return,
                 crate::core::extensions::dispatcher::InputEventResult::Continue { text: t, images } => (t, images),
             }
@@ -656,10 +665,12 @@ impl AgentSession {
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             let _ = crate::core::extensions::dispatcher::dispatch_before_agent_start(
-                registry,
-                &state.system_prompt,
-                &state.messages,
-                &self.ext_ctx,
+                crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
+                    registry,
+                    system_prompt: &state.system_prompt,
+                    messages: &state.messages,
+                    ext_ctx: &self.ext_ctx,
+                },
             ).await;
         }
 
@@ -692,10 +703,12 @@ impl AgentSession {
         // Dispatch model_select to extensions (fire-and-forget)
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_model_select(
-                registry,
-                &model_id,
-                Some(&previous_model_id),
-                &self.ext_ctx,
+                crate::core::extensions::dispatcher::DispatchModelSelectParams {
+                    registry,
+                    model: &model_id,
+                    previous_model: Some(&previous_model_id),
+                    ext_ctx: &self.ext_ctx,
+                },
             )
             .await;
         }
@@ -711,10 +724,12 @@ impl AgentSession {
         // Dispatch thinking_level_select to extensions (fire-and-forget)
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_thinking_level_select(
-                registry,
-                level,
-                &previous_level,
-                &self.ext_ctx,
+                crate::core::extensions::dispatcher::DispatchThinkingLevelSelectParams {
+                    registry,
+                    level,
+                    previous_level: &previous_level,
+                    ext_ctx: &self.ext_ctx,
+                },
             )
             .await;
         }
@@ -864,7 +879,12 @@ impl AgentSession {
         // Dispatch session_compact to extensions after compaction.
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_compact(
-                registry, &summary, total_tokens, &self.ext_ctx,
+                crate::core::extensions::dispatcher::DispatchSessionCompactParams {
+                    registry,
+                    summary: &summary,
+                    tokens_before: total_tokens,
+                    ext_ctx: &self.ext_ctx,
+                },
             ).await;
         }
 

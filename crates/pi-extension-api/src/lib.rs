@@ -415,7 +415,18 @@ impl ExtensionRegistry {
     pub async fn dispatch_event(&self, event: &ExtensionEvent, ctx: &ExtensionContext) -> Vec<(String, Option<EventResult>)> {
         let mut results = Vec::new();
         for ext in &self.extensions {
-            let result = ext.on_event(event, ctx).await;
+            // Isolate each extension's handler with catch_unwind so a panic
+            // in one extension doesn't crash the entire dispatch loop.
+            // This matches the TS ExtensionRunner's per-handler try/catch.
+            // catch_unwind catches panics during future construction;
+            // panics during async polling still propagate to the runtime.
+            let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ext.on_event(event, ctx)
+            }));
+            let result = match future {
+                Ok(f) => f.await,
+                Err(_) => None,
+            };
             results.push((ext.name().to_string(), result));
         }
         results

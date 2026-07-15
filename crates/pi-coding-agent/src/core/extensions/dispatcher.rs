@@ -4,11 +4,58 @@
 //! results back into the Rust hook result types. Replaces the old JS-based
 //! dispatch that went through deno_core + V8.
 
+use pi_agent_core::pi_ai_types::ContentBlock;
 use pi_agent_core::types::{
-    AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult,
+    AfterToolCallContext, AfterToolCallResult, AgentMessage, BeforeToolCallContext,
+    BeforeToolCallResult,
 };
 
 use super::api::{EventResult, ExtensionContext, ExtensionEvent, ExtensionRegistry};
+
+// ============================================================================
+// Parameter structs (to keep function signatures ≤ 3 params per spec)
+// ============================================================================
+
+/// Parameters for `dispatch_session_compact`.
+pub struct DispatchSessionCompactParams<'a> {
+    pub registry: &'a ExtensionRegistry,
+    pub summary: &'a str,
+    pub tokens_before: u64,
+    pub ext_ctx: &'a ExtensionContext,
+}
+
+/// Parameters for `dispatch_before_agent_start`.
+pub struct DispatchBeforeAgentStartParams<'a> {
+    pub registry: &'a ExtensionRegistry,
+    pub system_prompt: &'a str,
+    pub messages: &'a [AgentMessage],
+    pub ext_ctx: &'a ExtensionContext,
+}
+
+/// Parameters for `dispatch_input`.
+pub struct DispatchInputParams<'a> {
+    pub registry: &'a ExtensionRegistry,
+    pub text: &'a str,
+    pub source: &'a str,
+    pub images: Option<&'a [ContentBlock]>,
+    pub ext_ctx: &'a ExtensionContext,
+}
+
+/// Parameters for `dispatch_model_select`.
+pub struct DispatchModelSelectParams<'a> {
+    pub registry: &'a ExtensionRegistry,
+    pub model: &'a str,
+    pub previous_model: Option<&'a str>,
+    pub ext_ctx: &'a ExtensionContext,
+}
+
+/// Parameters for `dispatch_thinking_level_select`.
+pub struct DispatchThinkingLevelSelectParams<'a> {
+    pub registry: &'a ExtensionRegistry,
+    pub level: &'a str,
+    pub previous_level: &'a str,
+    pub ext_ctx: &'a ExtensionContext,
+}
 
 // ============================================================================
 // tool_call (before_tool_call) — block short-circuit
@@ -232,17 +279,12 @@ pub async fn dispatch_session_before_compact(
 }
 
 /// Dispatch a `session_compact` event to extensions.
-pub async fn dispatch_session_compact(
-    registry: &ExtensionRegistry,
-    summary: &str,
-    tokens_before: u64,
-    ext_ctx: &ExtensionContext,
-) {
+pub async fn dispatch_session_compact(params: DispatchSessionCompactParams<'_>) {
     let event = ExtensionEvent::SessionCompact {
-        summary: summary.to_string(),
-        tokens_before,
+        summary: params.summary.to_string(),
+        tokens_before: params.tokens_before,
     };
-    registry.dispatch_event(&event, ext_ctx).await;
+    params.registry.dispatch_event(&event, params.ext_ctx).await;
 }
 
 /// Dispatch a `session_before_switch` event to extensions.
@@ -305,13 +347,10 @@ pub async fn dispatch_session_info_changed(
 /// messages from all handlers, matching the TS emitBeforeAgentStart() behavior.
 /// Returns the last extension's system_prompt override, if any.
 pub async fn dispatch_before_agent_start(
-    registry: &ExtensionRegistry,
-    system_prompt: &str,
-    messages: &[pi_agent_core::types::AgentMessage],
-    ext_ctx: &ExtensionContext,
+    params: DispatchBeforeAgentStartParams<'_>,
 ) -> Option<serde_json::Value> {
     let event = ExtensionEvent::BeforeAgentStart {
-        prompt: messages.iter()
+        prompt: params.messages.iter()
             .filter_map(|m| {
                 if let pi_agent_core::types::AgentMessage::User { content, .. } = m {
                     Some(content.iter()
@@ -330,9 +369,9 @@ pub async fn dispatch_before_agent_start(
             })
             .collect::<Vec<String>>()
             .join("\n"),
-        system_prompt: system_prompt.to_string(),
+        system_prompt: params.system_prompt.to_string(),
     };
-    let results = registry.dispatch_event(&event, ext_ctx).await;
+    let results = params.registry.dispatch_event(&event, params.ext_ctx).await;
     let mut last_system_prompt: Option<String> = None;
     for (_name, result) in &results {
         if let Some(r) = result {
@@ -366,20 +405,16 @@ pub enum InputEventResult {
 /// text from the previous handler, matching the TS emitInput() behavior.
 /// Returns Handled if any extension handles the input.
 pub async fn dispatch_input(
-    registry: &ExtensionRegistry,
-    text: &str,
-    source: &str,
-    images: Option<&[pi_agent_core::pi_ai_types::ContentBlock]>,
-    ext_ctx: &ExtensionContext,
+    params: DispatchInputParams<'_>,
 ) -> InputEventResult {
-    let mut current_text = text.to_string();
-    let mut current_images = images.map(|i| i.to_vec()).unwrap_or_default();
+    let mut current_text = params.text.to_string();
+    let mut current_images = params.images.map(|i| i.to_vec()).unwrap_or_default();
 
     let event = ExtensionEvent::Input {
         text: current_text.clone(),
-        source: source.to_string(),
+        source: params.source.to_string(),
     };
-    let results = registry.dispatch_event(&event, ext_ctx).await;
+    let results = params.registry.dispatch_event(&event, params.ext_ctx).await;
     for (_name, result) in &results {
         if let Some(r) = result {
             match r.action.as_deref() {
@@ -409,31 +444,21 @@ pub async fn dispatch_input(
 // ============================================================================
 
 /// Dispatch the `model_select` event.
-pub async fn dispatch_model_select(
-    registry: &ExtensionRegistry,
-    model: &str,
-    previous_model: Option<&str>,
-    ext_ctx: &ExtensionContext,
-) {
+pub async fn dispatch_model_select(params: DispatchModelSelectParams<'_>) {
     let event = ExtensionEvent::ModelSelect {
-        model: model.to_string(),
-        previous_model: previous_model.map(String::from),
+        model: params.model.to_string(),
+        previous_model: params.previous_model.map(String::from),
     };
-    registry.dispatch_event(&event, ext_ctx).await;
+    params.registry.dispatch_event(&event, params.ext_ctx).await;
 }
 
 /// Dispatch the `thinking_level_select` event.
-pub async fn dispatch_thinking_level_select(
-    registry: &ExtensionRegistry,
-    level: &str,
-    previous_level: &str,
-    ext_ctx: &ExtensionContext,
-) {
+pub async fn dispatch_thinking_level_select(params: DispatchThinkingLevelSelectParams<'_>) {
     let event = ExtensionEvent::ThinkingLevelSelect {
-        level: level.to_string(),
-        previous_level: previous_level.to_string(),
+        level: params.level.to_string(),
+        previous_level: params.previous_level.to_string(),
     };
-    registry.dispatch_event(&event, ext_ctx).await;
+    params.registry.dispatch_event(&event, params.ext_ctx).await;
 }
 
 // ============================================================================

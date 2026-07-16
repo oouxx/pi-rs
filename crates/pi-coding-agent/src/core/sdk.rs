@@ -94,6 +94,42 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
 }
 
+// ============================================================================
+// Re-exports — matching the original TypeScript sdk.ts re-exports
+// ============================================================================
+
+// Re-export everything from agent-session-runtime (AgentSessionRuntime, etc.)
+pub use crate::core::agent_session_runtime::*;
+
+// Extension types
+pub use crate::core::extensions::{
+    ExtensionAPI, ExtensionContext, ToolDefinition,
+};
+
+// Slash command types (re-exported from extensions/index.ts in TS)
+pub use crate::core::slash_commands::{SlashCommandInfo, SlashCommandSource};
+
+// Prompt template type
+pub use crate::core::prompt_templates::PromptTemplate;
+
+// Skill type
+pub use crate::core::skills::Skill;
+
+// Tool types and factory functions
+pub use crate::core::tools::{
+    create_coding_tools, create_read_only_tools, DynTool, ToolName,
+};
+pub use crate::core::tools::bash::create_bash_tool;
+pub use crate::core::tools::edit::create_edit_tool;
+pub use crate::core::tools::file_mutation_queue::with_file_mutation_queue;
+pub use crate::core::tools::find::create_find_tool;
+pub use crate::core::tools::grep::create_grep_tool;
+pub use crate::core::tools::ls::create_ls_tool;
+pub use crate::core::tools::read::create_read_tool;
+pub use crate::core::tools::write::create_write_tool;
+
+// ============================================================================
+
 /// Collect prompt_guidelines from extension tools.
 ///
 /// Must be called BEFORE wrapping the registry in Arc, because

@@ -47,6 +47,7 @@ pub async fn run_rpc_mode() -> i32 {
         fork_from: None, session_dir: None, extension_registry: None,
         cli_provider: None,
         cli_model: None,
+        custom_tools:None,
     };
 
     let (mut session, _result) = match create_agent_session(sdk_options).await {

@@ -126,6 +126,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         session_dir,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
+        custom_tools: None,
     };
 
     let (session, result) = match create_agent_session(sdk_options).await {

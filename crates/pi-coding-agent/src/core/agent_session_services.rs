@@ -221,6 +221,7 @@ pub async fn create_agent_session_from_services(
         session_file: None,
         fork_from: None,
         session_dir: None,
+        custom_tools: None,
     };
 
     let (session, result) = crate::core::sdk::create_agent_session_inner(

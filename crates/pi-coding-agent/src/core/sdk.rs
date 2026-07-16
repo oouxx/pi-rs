@@ -1,5 +1,6 @@
 use pi_agent_core::pi_ai_types::{Model, ThinkingLevel};
 use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
+use pi_extension_api::ToolDefinition;
 
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use crate::core::resource_loader::{self, ResourceLoaderOptions};
 use crate::core::session_manager::SessionManager;
 use crate::core::settings_manager::SettingsManager;
 use crate::core::system_prompt::{ContextFile, SkillInfo};
+use crate::core::tools::tool_definition_wrapper;
 
 /// Create the default StreamFn that bridges to the pi-ai provider system.
 /// Public for testing.
@@ -41,7 +43,6 @@ pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
         },
     )
 }
-
 pub struct CreateAgentSessionOptions {
     pub cwd: String,
     pub agent_dir: Option<String>,
@@ -56,6 +57,7 @@ pub struct CreateAgentSessionOptions {
     pub session_name: Option<String>,
     pub stream_fn: Option<StreamFn>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
+    pub custom_tools: Option<Vec<ToolDefinition>>,
     /// Additional paths to extension files/directories.
     /// Extensions will also be auto-discovered from:
     ///   - {cwd}/.pi/extensions/

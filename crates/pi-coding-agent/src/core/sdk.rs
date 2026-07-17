@@ -1,6 +1,5 @@
 use pi_agent_core::pi_ai_types::{Model, ThinkingLevel};
 use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
-use pi_extension_api::ToolDefinition;
 
 use std::sync::Arc;
 

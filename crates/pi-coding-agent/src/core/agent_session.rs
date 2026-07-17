@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use pi_agent_core::agent::Agent;
-use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
+use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel, ToolExecutionMode};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
     StreamFn, TransformContextFn,
@@ -15,7 +15,7 @@ use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
-use crate::core::extensions::{ExtensionContext, ExtensionEvent, ExtensionRegistry};
+use crate::core::extensions::{ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolDefinition};
 use crate::core::tools;
 
 // ============================================================================
@@ -45,6 +45,11 @@ pub struct AgentSessionConfig {
     pub extension_registry: Option<std::sync::Arc<ExtensionRegistry>>,
     /// Loaded resources (skills, extensions, prompt templates).
     pub resources: Option<LoadedResources>,
+    /// Custom tool definitions injected by the caller (e.g. trading tools).
+    /// The SDK creates stub DynTool entries from these definitions.
+    /// Call `agent.add_tools()` after session creation to replace stubs
+    /// with real execute implementations.
+    pub custom_tools: Option<Vec<ToolDefinition>>,
 }
 
 /// Options for AgentSession.prompt().
@@ -125,6 +130,53 @@ impl AgentSession {
         // Extension tools are registered at compile time via ExtensionRegistry.
         // The registry's collect_tools() is called in sdk.rs before session creation.
         // Tool execution is handled by the built-in tool implementations.
+
+        // Custom tools: create stub DynTool entries from ToolDefinition metadata.
+        // These are placeholders — call agent.add_tools() after construction to
+        // replace stubs with real execute implementations.
+        if let Some(ref custom_tools) = options.custom_tools {
+            use pi_agent_core::pi_ai_types::ToolExecutionMode;
+            use pi_agent_core::types::{AgentToolResult, DynTool};
+            use crate::core::extensions::ToolDefinition;
+            for def in custom_tools {
+                let tool_name = def.name.clone();
+                let stub_execute: Arc<
+                    dyn Fn(
+                            String,
+                            serde_json::Value,
+                            Option<tokio::sync::watch::Receiver<bool>>,
+                            Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>,
+                        ) -> std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = Result<
+                                            pi_agent_core::types::AgentToolResult<serde_json::Value>,
+                                            Box<dyn std::error::Error + Send + Sync>,
+                                        >,
+                                    > + Send,
+                            >,
+                        > + Send + Sync,
+                > = Arc::new(move |_id, _params, _signal, _callback| {
+                    let err: Box<dyn std::error::Error + Send + Sync> = format!(
+                        "Tool '{tool_name}' has no execute — call agent.add_tools() to provide one"
+                    ).into();
+                    Box::pin(async move { Err(err) })
+                });
+                tool_list.push(pi_agent_core::types::AgentTool {
+                    name: def.name.clone(),
+                    description: def.description.clone(),
+                    label: def.label.clone().unwrap_or_default(),
+                    parameters_schema: def.parameters.clone().unwrap_or(serde_json::json!({"type": "object", "properties": {}, "required": []})),
+                    execution_mode: def.execution_mode.as_deref().and_then(|m| match m {
+                        "sequential" => Some(ToolExecutionMode::Sequential),
+                        "parallel" => Some(ToolExecutionMode::Parallel),
+                        _ => None,
+                    }),
+                    prepare_arguments: None,
+                    execute: stub_execute,
+                });
+            }
+        }
 
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
             .into_iter()

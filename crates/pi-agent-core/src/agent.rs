@@ -312,6 +312,22 @@ impl Agent {
         self.state.read().await.clone()
     }
 
+    /// Add or replace tools in the agent's tool list.
+    ///
+    /// Tools with the same `name` as an existing entry are replaced in-place,
+    /// allowing callers to upgrade stub tool entries (created from
+    /// `custom_tools` metadata) with real execute implementations.
+    pub async fn add_tools(&self, tools: Vec<Arc<crate::types::DynTool>>) {
+        let mut state = self.state.write().await;
+        for tool in tools {
+            if let Some(pos) = state.tools.iter().position(|t| t.name == tool.name) {
+                state.tools[pos] = tool;
+            } else {
+                state.tools.push(tool);
+            }
+        }
+    }
+
     pub async fn set_steering_mode(&self, mode: QueueMode) {
         self.steering_queue.lock().await.mode = mode;
     }

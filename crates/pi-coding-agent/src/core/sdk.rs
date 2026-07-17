@@ -265,6 +265,7 @@ pub async fn create_agent_session_inner(
         excluded_tool_names,
         extension_registry: Some(extension_registry),
         resources: None,
+        custom_tools: options.custom_tools,
     };
 
     let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;

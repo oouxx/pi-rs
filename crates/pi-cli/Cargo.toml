@@ -7,8 +7,6 @@ description = "CLI binary for pi-coding-agent — argument parsing, run orchestr
 
 [dependencies]
 pi-coding-agent = { workspace = true }
-pi-agent-core = { workspace = true }
-pi-ai = { workspace = true }
 pi-extensions = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

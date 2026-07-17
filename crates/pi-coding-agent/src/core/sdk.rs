@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::event_bus::EventBusController;
-use crate::core::extensions::ExtensionRegistry;
+use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
@@ -25,14 +25,14 @@ pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
          _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
          options: pi_agent_core::types::StreamFnOptions| {
             Box::pin(async move {
-                let mut stream_opts = pi_ai::types::StreamOptions::default();
+                let mut stream_opts = pi_agent_core::pi_ai::types::StreamOptions::default();
                 stream_opts.signal = options.signal;
                 stream_opts.api_key = options.api_key;
                 stream_opts.headers = options.headers;
                 stream_opts.session_id = options.session_id;
 
                 let event_stream =
-                    pi_ai::stream::stream(&model, &context, Some(stream_opts));
+                    pi_agent_core::pi_ai::stream::stream(&model, &context, Some(stream_opts));
 
                 let boxed: StreamResponse =
                     Box::new(event_stream);
@@ -96,38 +96,125 @@ pub struct CreateAgentSessionResult {
 }
 
 // ============================================================================
-// Re-exports — matching the original TypeScript sdk.ts re-exports
+// SDK Re-exports — pi-coding-agent public API for downstream consumers
+//
+// Use via:
+//   use pi_coding_agent::sdk::prelude::*;
+//
+// This prelude groups the public API so that sdk.rs can keep its internal
+// `use` imports (for function bodies) without name conflicts.
 // ============================================================================
 
-// Re-export everything from agent-session-runtime (AgentSessionRuntime, etc.)
-pub use crate::core::agent_session_runtime::*;
+pub mod prelude {
+    // ── Agent runtime ───────────────────────────────────────────────────────
+    pub use crate::core::agent_session::{AgentSession, AgentSessionConfig, PromptOptions, SessionStats, TokenUsage};
 
-// Extension types
-pub use crate::core::extensions::{
-    ExtensionAPI, ExtensionContext, ToolDefinition,
-};
+    // ── Session management ──────────────────────────────────────────────────
+    pub use crate::core::session_manager::{
+        SessionManager, SessionEntry, SessionContext, SessionHeader, SessionInfo, SessionTreeNode,
+        NewSessionOptions, ModelInfo, build_session_context, derive_short_session_id,
+        is_valid_session_file, migrate_session_file, list_sessions_concurrent, SessionListProgressCallback,
+        ReadonlySessionManager,
+    };
 
-// Slash command types (re-exported from extensions/index.ts in TS)
-pub use crate::core::slash_commands::{SlashCommandInfo, SlashCommandSource};
+    // ── Extensions ──────────────────────────────────────────────────────────
+    pub use crate::core::extensions::{
+        ExtensionAPI, ExtensionContext, ExtensionRegistry, ToolDefinition, ExtensionEvent, EventResult,
+        RegisteredTool, RegisteredCommand, RegisteredFlag, RegisteredShortcut,
+        ToolRegistry, CommandRegistry, ShortcutRegistry, FlagRegistry,
+        RuntimeHandle, ExtensionUIContext, ToolCallOutput, ExecResult,
+        SendMessageOptions, SendUserMessageOptions,
+    };
 
-// Prompt template type
-pub use crate::core::prompt_templates::PromptTemplate;
+    // ── Slash commands & skills & prompts ───────────────────────────────────
+    pub use crate::core::slash_commands::{SlashCommandInfo, SlashCommandSource};
+    pub use crate::core::prompt_templates::PromptTemplate;
+    pub use crate::core::skills::Skill;
 
-// Skill type
-pub use crate::core::skills::Skill;
+    // ── Tool types and factory functions ────────────────────────────────────
+    pub use crate::core::tools::{
+        create_coding_tools, create_read_only_tools, ToolName,
+        OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot,
+        TruncationOptions, TruncationResult,
+    };
+    pub use crate::core::tools::bash::create_bash_tool;
+    pub use crate::core::tools::edit::create_edit_tool;
+    pub use crate::core::tools::file_mutation_queue::with_file_mutation_queue;
+    pub use crate::core::tools::find::create_find_tool;
+    pub use crate::core::tools::grep::create_grep_tool;
+    pub use crate::core::tools::ls::create_ls_tool;
+    pub use crate::core::tools::read::create_read_tool;
+    pub use crate::core::tools::write::create_write_tool;
+    pub use crate::core::tools::path_utils::resolve_read_path;
+    pub use crate::core::tools::tool_definition_wrapper::wrap_tool_definitions;
 
-// Tool types and factory functions
-pub use crate::core::tools::{
-    create_coding_tools, create_read_only_tools, DynTool, ToolName,
-};
-pub use crate::core::tools::bash::create_bash_tool;
-pub use crate::core::tools::edit::create_edit_tool;
-pub use crate::core::tools::file_mutation_queue::with_file_mutation_queue;
-pub use crate::core::tools::find::create_find_tool;
-pub use crate::core::tools::grep::create_grep_tool;
-pub use crate::core::tools::ls::create_ls_tool;
-pub use crate::core::tools::read::create_read_tool;
-pub use crate::core::tools::write::create_write_tool;
+    // ── Model registry & resolution ─────────────────────────────────────────
+    pub use crate::core::model_registry::{
+        ModelRegistry, ModelRegistryEntry, ProviderConfig, ProviderConfigInput, ApiKeyResult,
+        builtin_models,
+    };
+    pub use crate::core::model_resolver::{ScopedModel, find_initial_model};
+
+    // ── Settings ────────────────────────────────────────────────────────────
+    pub use crate::core::settings_manager::{
+        Settings, SettingsManager, SettingsScope, SettingsStorage, FileSettingsStorage,
+        CompactionSettings, BranchSummarySettings, RetrySettings, TerminalSettings,
+        ImageSettings, ThinkingBudgetsSettings, MarkdownSettings, WarningSettings,
+        ProviderRetrySettings,
+    };
+
+    // ── Project trust & auth ────────────────────────────────────────────────
+    pub use crate::core::project_trust::{
+        DefaultProjectTrust, ProjectTrustContext, ResolveProjectTrustedOptions,
+        resolve_project_trusted,
+    };
+    pub use crate::core::trust_manager::{
+        ProjectTrustStore, ProjectTrustStoreEntry, ProjectTrustUpdate, ProjectTrustOption,
+        find_nearest_trust_entry, get_project_trust_parent_path, get_project_trust_options,
+        has_trust_requiring_project_resources,
+    };
+    pub use crate::core::auth_storage::{AuthStorage, AuthCredential, AuthStorageBackend, OAuthCredentials};
+
+    // ── Message pipeline ────────────────────────────────────────────────────
+    pub use crate::core::messages::{
+        convert_to_llm, normalize_ingested_message, bash_execution_to_text,
+    };
+
+    // ── System prompt ───────────────────────────────────────────────────────
+    pub use crate::core::system_prompt::{
+        build_system_prompt, BuildSystemPromptOptions, ContextFile, SkillInfo,
+    };
+
+    // ── Event bus ───────────────────────────────────────────────────────────
+    pub use crate::core::event_bus::EventBusController;
+
+    // ── Config helpers ──────────────────────────────────────────────────────
+    pub use crate::config::{
+        APP_NAME, VERSION, CONFIG_DIR_NAME, PACKAGE_NAME, APP_TITLE,
+        get_agent_dir, get_models_path, get_auth_path, get_settings_path,
+        get_sessions_dir, get_tools_dir, get_bin_dir, get_prompts_dir, get_debug_log_path,
+        expand_tilde_path,
+    };
+
+    // ── Agent-core types (re-exported for convenience) ──────────────────────
+    pub use pi_agent_core::types::AgentTool;
+    pub use pi_agent_core::types::AgentToolResult;
+    pub use pi_agent_core::types::AgentState;
+    pub use pi_agent_core::types::AgentMessage;
+    pub use pi_agent_core::types::AgentEvent;
+    pub use pi_agent_core::types::StreamFn;
+    pub use pi_agent_core::types::StreamFnOptions;
+    pub use pi_agent_core::types::ConvertToLlmFn;
+    pub use pi_agent_core::types::BeforeToolCallContext;
+    pub use pi_agent_core::types::AfterToolCallContext;
+    pub use pi_agent_core::types::BeforeToolCallResult;
+    pub use pi_agent_core::types::AfterToolCallResult;
+
+    /// Re-exports from agent_session_runtime (AgentSessionRuntime etc.).
+    pub use crate::core::agent_session_runtime::*;
+}
+
+// ============================================================================
 
 // ============================================================================
 
@@ -290,7 +377,7 @@ pub async fn create_agent_session(
     mut options: CreateAgentSessionOptions,
 ) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
     // Ensure API providers are registered before any LLM calls
-    pi_ai::providers::register_builtins::register_built_in_api_providers();
+    pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
 
     let cwd = options.cwd.clone();
     let agent_dir = options

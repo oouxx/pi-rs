@@ -9,7 +9,7 @@ use crate::harness::types::{
 use crate::pi_ai_types::ContentBlock;
 use crate::types::AgentMessage;
 
-use pi_ai::env_api_keys::get_env_api_key;
+use crate::pi_ai_types::get_env_api_key;
 use pi_ai::stream::stream as pi_stream;
 
 pub struct BranchPreparation {

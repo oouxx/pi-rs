@@ -4,7 +4,7 @@ use std::sync::RwLock;
 use pi_agent_core::pi_ai_types::Model;
 
 use crate::config;
-use crate::core::env_api_keys::get_env_api_key;
+use pi_agent_core::pi_ai_types::get_env_api_key;
 
 use serde::Deserialize;
 
@@ -247,10 +247,10 @@ struct ModelCostDef {
 /// Load models from the pi-ai generated model registry.
 /// These models have correct base_url, names, etc. from the build-time generated data.
 fn get_pi_ai_models() -> Vec<Model> {
-    let providers = pi_ai::models::get_providers();
+    let providers = pi_agent_core::pi_ai::models::get_providers();
     let mut models = Vec::new();
     for provider in &providers {
-        for m in pi_ai::models::get_models(provider) {
+        for m in pi_agent_core::pi_ai::models::get_models(provider) {
             models.push(Model {
                 id: m.id.clone(),
                 name: m.name.clone(),
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_model_registry_find() {
-        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
         let model = registry.find("anthropic", "claude-sonnet-4-6");
         assert!(model.is_some());
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn test_model_registry_providers() {
         // Register built-in providers so pi-ai models are available
-        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
         let providers = registry.get_providers();
         assert!(providers.contains(&"anthropic".to_string()));
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_model_registry_models_for_provider() {
-        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
         let models = registry.get_models_for_provider("openai");
         assert!(!models.is_empty());
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_builtin_models_count() {
-        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         let models = ModelRegistry::builtin_models_list();
         assert!(models.len() >= 10);
     }

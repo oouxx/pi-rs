@@ -687,12 +687,12 @@ mod tests {
     use crate::core::model_registry::ModelRegistry;
 
     fn test_registry() -> ModelRegistry {
-        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         ModelRegistry::new(ModelRegistry::builtin_models_list())
     }
 
     fn test_models() -> Vec<Model> {
-        pi_ai::providers::register_builtins::register_built_in_api_providers();
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         ModelRegistry::builtin_models_list()
     }
 

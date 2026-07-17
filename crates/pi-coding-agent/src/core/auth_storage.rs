@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::core::resolve_config_value;
-use pi_ai::env_api_keys::get_env_api_key;
-use pi_ai::env_api_keys::get_env_var_name;
+use pi_agent_core::pi_ai_types::get_env_api_key;
+use pi_agent_core::pi_ai_types::get_env_var_name;
 
 // ---------------------------------------------------------------------------
 // OAuth types – defined here until pi-ai exposes them upstream

@@ -8,7 +8,6 @@ pub mod compaction;
 pub mod context_usage;
 pub mod defaults;
 pub mod diagnostics;
-pub mod env_api_keys;
 pub mod event_bus;
 pub mod exec;
 pub mod experimental;

@@ -13,9 +13,9 @@ use pi_agent_core::types::AgentEvent;
 #[ignore = "Requires DEEPSEEK_API_KEY"]
 async fn test_stream_fn_bridge() {
     let key = std::env::var("DEEPSEEK_API_KEY").expect("Set DEEPSEEK_API_KEY");
-    pi_ai::providers::register_builtins::register_built_in_api_providers();
+    pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
 
-    let models = pi_ai::models::get_models("deepseek");
+    let models = pi_agent_core::pi_ai::models::get_models("deepseek");
     let pi_model = models.iter().find(|m| m.id == "deepseek-chat")
         .or_else(|| models.first()).cloned().expect("No models");
 
@@ -74,28 +74,28 @@ async fn test_stream_fn_bridge() {
 #[ignore = "Requires DEEPSEEK_API_KEY"]
 async fn test_pi_ai_direct() {
     let key = std::env::var("DEEPSEEK_API_KEY").expect("Set DEEPSEEK_API_KEY");
-    pi_ai::providers::register_builtins::register_built_in_api_providers();
+    pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
 
-    let models = pi_ai::models::get_models("deepseek");
+    let models = pi_agent_core::pi_ai::models::get_models("deepseek");
     let model = models.iter().find(|m| m.id == "deepseek-chat")
         .or_else(|| models.first()).cloned().expect("No DeepSeek models");
 
-    let mut opts = pi_ai::types::SimpleStreamOptions::default();
+    let mut opts = pi_agent_core::pi_ai::types::SimpleStreamOptions::default();
     opts.base.api_key = Some(key);
 
-    let ctx = pi_ai::types::Context {
+    let ctx = pi_agent_core::pi_ai::types::Context {
         system_prompt: Some("You are helpful.".into()),
-        messages: vec![pi_ai::types::Message::User {
-            content: vec![pi_ai::types::ContentBlock::Text { text: "say hi".into(), text_signature: None }],
+        messages: vec![pi_agent_core::pi_ai::types::Message::User {
+            content: vec![pi_agent_core::pi_ai::types::ContentBlock::Text { text: "say hi".into(), text_signature: None }],
             timestamp: chrono::Utc::now().timestamp_millis(),
         }],
         tools: None,
     };
 
-    let msg = pi_ai::stream::complete_simple(&model, &ctx, Some(opts))
+    let msg = pi_agent_core::pi_ai::stream::complete_simple(&model, &ctx, Some(opts))
         .await.expect("complete_simple failed");
     let text: String = msg.content.iter()
-        .filter_map(|b| if let pi_ai::types::ContentBlock::Text { text, .. } = b { Some(text.clone()) } else { None })
+        .filter_map(|b| if let pi_agent_core::pi_ai::types::ContentBlock::Text { text, .. } = b { Some(text.clone()) } else { None })
         .collect();
     eprintln!("[direct] '{text}'");
     assert!(!text.is_empty(), "Expected non-empty response");
@@ -106,7 +106,7 @@ async fn test_pi_ai_direct() {
 #[ignore = "Requires DEEPSEEK_API_KEY"]
 async fn test_sdk_full_flow() {
     let _key = std::env::var("DEEPSEEK_API_KEY").expect("Set DEEPSEEK_API_KEY");
-    pi_ai::providers::register_builtins::register_built_in_api_providers();
+    pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
 
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
     let agent_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

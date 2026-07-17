@@ -1,8 +1,9 @@
-//! Re-exports from pi_ai::types for use within pi-agent-core.
+//! Re-exports from pi-ai for use within pi-agent-core and downstream crates.
 //!
 //! All AI-related types live in the pi-ai crate. This module re-exports
 //! them directly, plus adds a few pi-agent-core-specific types and helpers.
 
+pub use pi_ai::env_api_keys::{get_env_api_key, get_env_var_name};
 pub use pi_ai::types::{
     AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent,
     CacheRetention, ContentBlock, Context, ImagesModel, Message, Model, ModelCompat, ModelCost,

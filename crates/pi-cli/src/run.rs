@@ -341,7 +341,7 @@ async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i
 /// List available models, delegating to the `list_models` module.
 async fn list_available_models(search: Option<&str>) -> i32 {
     // Ensure API providers are registered so pi-ai models are available
-    pi_ai::providers::register_builtins::register_built_in_api_providers();
+    pi_coding_agent::pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
 
     let model_registry = pi_coding_agent::core::model_registry::ModelRegistry::new(
         pi_coding_agent::core::model_registry::ModelRegistry::builtin_models_list(),

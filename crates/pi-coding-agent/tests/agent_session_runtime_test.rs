@@ -87,6 +87,7 @@ async fn create_test_session(
         allowed_tool_names: None,
         excluded_tool_names: None,
         extension_registry: Some(extension_registry),
+        custom_tools: None,
         resources: None,
     };
 

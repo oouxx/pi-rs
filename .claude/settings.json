@@ -9,5 +9,42 @@
       "mcp__codegraph__codegraph_node",
       "mcp__codegraph__codegraph_status"
     ]
+  },
+    "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/check-unwrap.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/block-git-danger.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/verify-before-stop.sh",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
   }
 }

@@ -10,7 +10,7 @@
       "mcp__codegraph__codegraph_status"
     ]
   },
-    "hooks": {
+  "hooks": {
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -31,6 +31,11 @@
             "type": "command",
             "command": "./.claude/hooks/block-git-danger.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "./.claude/hooks/check-contract-table.sh",
+            "timeout": 15
           }
         ]
       }
@@ -42,6 +47,11 @@
             "type": "command",
             "command": "./.claude/hooks/verify-before-stop.sh",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "./.claude/hooks/check-contract-consistency.sh",
+            "timeout": 15
           }
         ]
       }

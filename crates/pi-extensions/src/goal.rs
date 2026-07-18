@@ -512,6 +512,7 @@ impl ExtensionAPI for GoalExtension {
             parameters: Some(json!({"type": "object", "properties": {}, "additionalProperties": false})),
             render_shell: None,
             execution_mode: None,
+            execute: None,
         });
 
         registry.register(ToolDefinition {
@@ -539,6 +540,7 @@ impl ExtensionAPI for GoalExtension {
             })),
             render_shell: None,
             execution_mode: None,
+            execute: None,
         });
 
         registry.register(ToolDefinition {
@@ -560,6 +562,7 @@ impl ExtensionAPI for GoalExtension {
             })),
             render_shell: None,
             execution_mode: None,
+            execute: None,
         });
     }
 

@@ -22,6 +22,7 @@ fn make_tool_def(name: &str, description: &str) -> ToolDefinition {
         parameters: None,
         render_shell: None,
         execution_mode: None,
+        execute: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn test_tool_definition_minimal_serialization() {
         parameters: None,
         render_shell: None,
         execution_mode: None,
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -67,6 +69,7 @@ fn test_tool_definition_with_execution_mode() {
         parameters: None,
         render_shell: None,
         execution_mode: Some("sequential".into()),
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -84,6 +87,7 @@ fn test_tool_definition_with_parallel_mode() {
         parameters: None,
         render_shell: None,
         execution_mode: Some("parallel".into()),
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -109,6 +113,7 @@ fn test_tool_definition_with_prompt_guidelines() {
         parameters: None,
         render_shell: None,
         execution_mode: None,
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -135,6 +140,7 @@ fn test_tool_definition_with_parameters_schema() {
         parameters: Some(params),
         render_shell: None,
         execution_mode: None,
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -154,6 +160,7 @@ fn test_tool_definition_with_render_shell() {
         parameters: None,
         render_shell: Some("self".into()),
         execution_mode: None,
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -171,6 +178,7 @@ fn test_tool_definition_with_label() {
         parameters: None,
         render_shell: None,
         execution_mode: None,
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
@@ -188,6 +196,7 @@ fn test_tool_definition_with_prompt_snippet() {
         parameters: None,
         render_shell: None,
         execution_mode: None,
+        execute: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();

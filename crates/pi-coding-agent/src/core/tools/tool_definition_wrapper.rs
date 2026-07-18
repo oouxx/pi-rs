@@ -1,15 +1,19 @@
 use std::sync::Arc;
 
 use pi_agent_core::types::AgentTool;
+use serde::de::DeserializeOwned;
 
 use crate::core::extensions::ToolDefinition;
 
 /// Wrap a ToolDefinition into an AgentTool for the core runtime.
+///
+/// When `definition.execute` is set, the AgentTool uses it as the real
+/// execute implementation. Otherwise a stub error is returned.
 pub fn wrap_tool_definition<TDetails>(
     definition: ToolDefinition,
 ) -> AgentTool<serde_json::Value, TDetails>
 where
-    TDetails: Clone + Send + Sync + 'static,
+    TDetails: Clone + Send + Sync + 'static + serde::de::DeserializeOwned,
 {
     let params = definition
         .parameters
@@ -23,6 +27,64 @@ where
             _ => None,
         });
 
+    let execute: Arc<
+        dyn Fn(
+                String,
+                serde_json::Value,
+                Option<tokio::sync::watch::Receiver<bool>>,
+                Option<
+                    Arc<
+                        dyn Fn(
+                                pi_agent_core::types::AgentToolResult<TDetails>,
+                            ) + Send
+                            + Sync,
+                    >,
+                >,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<
+                                pi_agent_core::types::AgentToolResult<TDetails>,
+                                Box<dyn std::error::Error + Send + Sync>,
+                            >,
+                        > + Send,
+                >,
+            > + Send
+            + Sync,
+    > = if let Some(ref tool_exec) = definition.execute {
+        let exec = tool_exec.clone();
+        Arc::new(move |id, params, signal, _on_update| {
+            let exec = exec.clone();
+            Box::pin(async move {
+                let output = exec(id.clone(), params, signal).await?;
+                let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
+                    .content
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect();
+                let details: TDetails = output
+                    .details
+                    .map(|v| serde_json::from_value(v).unwrap_or_else(|_| {
+                        serde_json::from_value(serde_json::Value::Null).unwrap()
+                    }))
+                    .unwrap_or_else(|| {
+                        serde_json::from_value(serde_json::Value::Null).unwrap()
+                    });
+                Ok(pi_agent_core::types::AgentToolResult {
+                    content,
+                    details,
+                    terminate: None,
+                })
+            })
+        })
+    } else {
+        Arc::new(|_id, _args, _signal, _on_update| {
+            Box::pin(async move {
+                Err("Tool not implemented via definition wrapper (execute not wired)".into())
+            })
+        })
+    };
+
     AgentTool {
         name: definition.name,
         description: definition.description,
@@ -30,11 +92,7 @@ where
         parameters_schema: params,
         execution_mode: exec_mode,
         prepare_arguments: None,
-        execute: Arc::new(|_id, _args, _signal, _on_update| {
-            Box::pin(async move {
-                Err("Tool not implemented via definition wrapper (execute not wired)".into())
-            })
-        }),
+        execute,
     }
 }
 
@@ -67,6 +125,7 @@ pub fn create_tool_definition_from_agent_tool(
             pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential => "sequential".into(),
             pi_agent_core::pi_ai_types::ToolExecutionMode::Parallel => "parallel".into(),
         }),
+        execute: None,
     }
 }
 
@@ -90,6 +149,7 @@ mod tests {
             })),
             render_shell: None,
             execution_mode: None,
+            execute: None,
         };
 
         let tool = wrap_tool_definition::<()>(def);
@@ -110,6 +170,7 @@ mod tests {
                 parameters: None,
                 render_shell: None,
                 execution_mode: None,
+                execute: None,
             },
             ToolDefinition {
                 name: "tool2".into(),
@@ -120,6 +181,7 @@ mod tests {
                 parameters: None,
                 render_shell: None,
                 execution_mode: None,
+                execute: None,
             },
         ];
 
@@ -162,6 +224,7 @@ mod tests {
             parameters: None,
             render_shell: None,
             execution_mode: None,
+            execute: None,
         };
 
         let tool = wrap_tool_definition::<()>(def);

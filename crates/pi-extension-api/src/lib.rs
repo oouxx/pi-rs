@@ -4,6 +4,8 @@
 //! 每个扩展实现此 trait，通过 `ExtensionRegistry` 注册到 agent 运行时。
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -16,8 +18,28 @@ use serde::{Deserialize, Serialize};
 // Tool Definition
 // ============================================================================
 
+/// Execute callback for a custom tool.
+///
+/// Takes (tool_call_id, params, signal) and returns a `ToolCallOutput`.
+/// This mirrors the TypeScript `ToolDefinition.execute()` signature
+/// without depending on `pi-agent-core` types directly.
+pub type ToolExecuteFn = Arc<
+    dyn Fn(
+            String,
+            serde_json::Value,
+            Option<tokio::sync::watch::Receiver<bool>>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<ToolCallOutput, Box<dyn std::error::Error + Send + Sync>>> + Send>>
+            + Send
+            + Sync,
+>;
+
 /// Tool definition matching the original TypeScript ToolDefinition interface.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The optional `execute` field lets callers provide a runnable callback,
+/// matching the TS `ToolDefinition.execute()` — without it, the tool is
+/// a metadata-only definition (usable for registration and display).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Tool name (used in LLM tool calls).
     pub name: String,
@@ -42,6 +64,43 @@ pub struct ToolDefinition {
     /// Execution mode: "sequential" or "parallel".
     #[serde(default)]
     pub execution_mode: Option<String>,
+    /// Optional execute callback. When provided, the tool is immediately
+    /// executable — no separate `agent.add_tools()` call needed.
+    /// Matches the TS `ToolDefinition.execute()` pattern.
+    #[serde(skip)]
+    pub execute: Option<ToolExecuteFn>,
+}
+
+impl Default for ToolDefinition {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            label: None,
+            description: String::new(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
+            parameters: None,
+            render_shell: None,
+            execution_mode: None,
+            execute: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ToolDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolDefinition")
+            .field("name", &self.name)
+            .field("label", &self.label)
+            .field("description", &self.description)
+            .field("prompt_snippet", &self.prompt_snippet)
+            .field("prompt_guidelines", &self.prompt_guidelines)
+            .field("parameters", &self.parameters)
+            .field("render_shell", &self.render_shell)
+            .field("execution_mode", &self.execution_mode)
+            .field("execute", &self.execute.as_ref().map(|_| "Some(fn)"))
+            .finish()
+    }
 }
 
 // ============================================================================

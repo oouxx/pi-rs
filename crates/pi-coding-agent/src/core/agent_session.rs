@@ -131,16 +131,16 @@ impl AgentSession {
         // The registry's collect_tools() is called in sdk.rs before session creation.
         // Tool execution is handled by the built-in tool implementations.
 
-        // Custom tools: create stub DynTool entries from ToolDefinition metadata.
-        // These are placeholders — call agent.add_tools() after construction to
-        // replace stubs with real execute implementations.
+        // Custom tools: create DynTool entries from ToolDefinition metadata.
+        // When `def.execute` is provided, it is used directly (matching the
+        // TS ToolDefinition.execute() behavior). Without it, a stub is created
+        // and the caller should call agent.add_tools() to replace it.
         if let Some(ref custom_tools) = options.custom_tools {
             use pi_agent_core::pi_ai_types::ToolExecutionMode;
             use pi_agent_core::types::{AgentToolResult, DynTool};
-            use crate::core::extensions::ToolDefinition;
             for def in custom_tools {
                 let tool_name = def.name.clone();
-                let stub_execute: Arc<
+                let execute: Arc<
                     dyn Fn(
                             String,
                             serde_json::Value,
@@ -156,12 +156,34 @@ impl AgentSession {
                                     > + Send,
                             >,
                         > + Send + Sync,
-                > = Arc::new(move |_id, _params, _signal, _callback| {
-                    let err: Box<dyn std::error::Error + Send + Sync> = format!(
-                        "Tool '{tool_name}' has no execute — call agent.add_tools() to provide one"
-                    ).into();
-                    Box::pin(async move { Err(err) })
-                });
+                > = if let Some(ref tool_exec) = def.execute {
+                    // Real execute callback provided — wrap it into AgentTool signature.
+                    let exec = tool_exec.clone();
+                    Arc::new(move |id, params, signal, _on_update| {
+                        let exec = exec.clone();
+                        Box::pin(async move {
+                            let output = exec(id.clone(), params, signal).await?;
+                            let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
+                                .content
+                                .into_iter()
+                                .filter_map(|v| serde_json::from_value(v).ok())
+                                .collect();
+                            Ok(AgentToolResult {
+                                content,
+                                details: output.details.unwrap_or(serde_json::Value::Null),
+                                terminate: None,
+                            })
+                        })
+                    })
+                } else {
+                    // No execute — stub that guides the caller to add_tools().
+                    Arc::new(move |_id, _params, _signal, _callback| {
+                        let err: Box<dyn std::error::Error + Send + Sync> = format!(
+                            "Tool '{tool_name}' has no execute — call agent.add_tools() to provide one"
+                        ).into();
+                        Box::pin(async move { Err(err) })
+                    })
+                };
                 tool_list.push(pi_agent_core::types::AgentTool {
                     name: def.name.clone(),
                     description: def.description.clone(),
@@ -173,7 +195,7 @@ impl AgentSession {
                         _ => None,
                     }),
                     prepare_arguments: None,
-                    execute: stub_execute,
+                    execute,
                 });
             }
         }

@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::core::agent_session::AgentSession;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
@@ -50,7 +49,7 @@ pub async fn run_rpc_mode() -> i32 {
         custom_tools:None,
     };
 
-    let (mut session, _result) = match create_agent_session(sdk_options).await {
+    let ( session, _result) = match create_agent_session(sdk_options).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("RPC init error: {e}");

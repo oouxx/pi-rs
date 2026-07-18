@@ -12,7 +12,6 @@ use crate::core::resource_loader::{self, ResourceLoaderOptions};
 use crate::core::session_manager::SessionManager;
 use crate::core::settings_manager::SettingsManager;
 use crate::core::system_prompt::{ContextFile, SkillInfo};
-use crate::core::tools::tool_definition_wrapper;
 
 /// Create the default StreamFn that bridges to the pi-ai provider system.
 /// Public for testing.
@@ -298,7 +297,7 @@ pub async fn create_agent_session_inner(
     };
     let resources = resource_loader::load_all_resources(&resource_options);
 
-    let context_files: Vec<ContextFile> = resources
+    let context_files: Vec<ContextFile> = resources.clone()
         .context_files
         .into_iter()
         .map(|cf| ContextFile {
@@ -307,7 +306,7 @@ pub async fn create_agent_session_inner(
         })
         .collect();
 
-    let skills: Vec<SkillInfo> = resources
+    let skills: Vec<SkillInfo> = resources.clone()
         .skills
         .into_iter()
         .map(|s| SkillInfo {
@@ -351,7 +350,7 @@ pub async fn create_agent_session_inner(
         allowed_tool_names,
         excluded_tool_names,
         extension_registry: Some(extension_registry),
-        resources: None,
+        resources: Some(resources),
         custom_tools: options.custom_tools,
     };
 

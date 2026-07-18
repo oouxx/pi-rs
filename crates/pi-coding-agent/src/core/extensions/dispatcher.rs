@@ -10,7 +10,7 @@ use pi_agent_core::types::{
     BeforeToolCallResult,
 };
 
-use super::api::{EventResult, ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolCallOutput};
+use super::api::{ ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolCallOutput};
 
 // ============================================================================
 // Parameter structs (to keep function signatures ≤ 3 params per spec)

@@ -19,10 +19,3 @@ pub fn open_browser(target: &str) {
     let _ = Command::new(program).args(args).spawn();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // No tests — open_browser is a best-effort function that spawns
-    // a system process; testing it would open actual browser windows.
-}

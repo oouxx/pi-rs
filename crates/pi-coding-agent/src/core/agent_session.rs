@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use pi_agent_core::agent::Agent;
-use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel, ToolExecutionMode};
+use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
     StreamFn, TransformContextFn,
@@ -481,7 +481,7 @@ impl AgentSession {
             }
         }
 
-        let mut session = Self {
+        let  session = Self {
             agent,
             session_manager: session_manager.clone(),
             event_bus,
@@ -707,8 +707,8 @@ impl AgentSession {
     }
 
     pub fn should_compact(&self) -> bool {
-        use crate::core::compaction;
-        let context_window = 128_000u64;
+        // use crate::core::compaction;
+        // let context_window = 128_000u64;
         // Estimate tokens from messages — we need async here but the method is sync.
         // Return false if we can't get messages easily; overridden by check_auto_compact().
         false

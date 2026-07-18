@@ -9,12 +9,12 @@ use pi_coding_agent::core::model_registry::ModelRegistry;
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
 
-const IMAGE_SUPPORTING_APIS: &[&str] = &[
-    "anthropic-messages",
-    "openai-completions",
-    "google-generative-ai",
-    "vertex-ai-anthropic",
-];
+// const IMAGE_SUPPORTING_APIS: &[&str] = &[
+//     "anthropic-messages",
+//     "openai-completions",
+//     "google-generative-ai",
+//     "vertex-ai-anthropic",
+// ];
 
 fn supports_images(model: &Model) -> bool {
     model.input.iter().any(|i| i == "image")

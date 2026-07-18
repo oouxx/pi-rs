@@ -10,12 +10,14 @@ use pi_agent_core::types::{
 use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
 use crate::core::event_bus::EventBusController;
+use crate::core::extensions::{
+    ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolDefinition,
+};
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
-use crate::core::extensions::{ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolDefinition};
 use crate::core::tools;
 
 // ============================================================================
@@ -140,7 +142,10 @@ impl AgentSession {
         let mut tool_list: Vec<pi_agent_core::types::DynTool> = Vec::new();
 
         // 1. Built-in tools (read, bash, edit, write)
-        tool_list.extend(tools::create_coding_tools(&options.cwd, Some(&tools_options)));
+        tool_list.extend(tools::create_coding_tools(
+            &options.cwd,
+            Some(&tools_options),
+        ));
 
         // 2. Custom tools from SDK callers (via custom_tools / ToolDefinition + execute)
         if let Some(ref custom_tools) = options.custom_tools {
@@ -153,17 +158,26 @@ impl AgentSession {
                             String,
                             serde_json::Value,
                             Option<tokio::sync::watch::Receiver<bool>>,
-                            Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>,
+                            Option<
+                                Arc<
+                                    dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>)
+                                        + Send
+                                        + Sync,
+                                >,
+                            >,
                         ) -> std::pin::Pin<
                             Box<
                                 dyn std::future::Future<
                                         Output = Result<
-                                            pi_agent_core::types::AgentToolResult<serde_json::Value>,
+                                            pi_agent_core::types::AgentToolResult<
+                                                serde_json::Value,
+                                            >,
                                             Box<dyn std::error::Error + Send + Sync>,
                                         >,
                                     > + Send,
                             >,
-                        > + Send + Sync,
+                        > + Send
+                        + Sync,
                 > = if let Some(ref tool_exec) = def.execute {
                     let exec = tool_exec.clone();
                     Arc::new(move |id, params, signal, _on_update| {
@@ -194,7 +208,9 @@ impl AgentSession {
                     name: def.name.clone(),
                     description: def.description.clone(),
                     label: def.label.clone().unwrap_or_default(),
-                    parameters_schema: def.parameters.clone().unwrap_or(serde_json::json!({"type": "object", "properties": {}, "required": []})),
+                    parameters_schema: def.parameters.clone().unwrap_or(
+                        serde_json::json!({"type": "object", "properties": {}, "required": []}),
+                    ),
                     execution_mode: def.execution_mode.as_deref().and_then(|m| match m {
                         "sequential" => Some(ToolExecutionMode::Sequential),
                         "parallel" => Some(ToolExecutionMode::Parallel),
@@ -222,17 +238,26 @@ impl AgentSession {
                             String,
                             serde_json::Value,
                             Option<tokio::sync::watch::Receiver<bool>>,
-                            Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>,
+                            Option<
+                                Arc<
+                                    dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>)
+                                        + Send
+                                        + Sync,
+                                >,
+                            >,
                         ) -> std::pin::Pin<
                             Box<
                                 dyn std::future::Future<
                                         Output = Result<
-                                            pi_agent_core::types::AgentToolResult<serde_json::Value>,
+                                            pi_agent_core::types::AgentToolResult<
+                                                serde_json::Value,
+                                            >,
                                             Box<dyn std::error::Error + Send + Sync>,
                                         >,
                                     > + Send,
                             >,
-                        > + Send + Sync,
+                        > + Send
+                        + Sync,
                 > = Arc::new(move |_id, params, _signal, _on_update| {
                     let reg = Arc::clone(&ext_reg);
                     let ctx = Arc::clone(&ext_ctx_clone);
@@ -240,7 +265,9 @@ impl AgentSession {
                     Box::pin(async move {
                         match crate::core::extensions::dispatcher::dispatch_handle_tool_call(
                             &reg, &name, params, &ctx,
-                        ).await {
+                        )
+                        .await
+                        {
                             Some(output) => {
                                 let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
                                     .content
@@ -253,9 +280,9 @@ impl AgentSession {
                                     terminate: None,
                                 })
                             }
-                            None => Err(
-                                format!("Tool '{name}' not handled by any extension").into()
-                            ),
+                            None => {
+                                Err(format!("Tool '{name}' not handled by any extension").into())
+                            }
                         }
                     })
                 });
@@ -263,7 +290,9 @@ impl AgentSession {
                     name: def.name,
                     description: def.description,
                     label: def.label.unwrap_or_default(),
-                    parameters_schema: def.parameters.unwrap_or(serde_json::json!({"type": "object", "properties": {}, "required": []})),
+                    parameters_schema: def.parameters.unwrap_or(
+                        serde_json::json!({"type": "object", "properties": {}, "required": []}),
+                    ),
                     execution_mode: def.execution_mode.as_deref().and_then(|m| match m {
                         "sequential" => Some(ToolExecutionMode::Sequential),
                         "parallel" => Some(ToolExecutionMode::Parallel),
@@ -274,7 +303,6 @@ impl AgentSession {
                 });
             }
         }
-
         // Save full tool list as registry (before filtering/activation).
         let tool_registry: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
             .iter()
@@ -297,7 +325,8 @@ impl AgentSession {
             if let Some(ref custom_tools) = options.custom_tools {
                 for def in custom_tools {
                     if let Some(ref snippet) = def.prompt_snippet {
-                        let normalized = snippet.trim().replace(|c: char| c.is_ascii_control(), " ");
+                        let normalized =
+                            snippet.trim().replace(|c: char| c.is_ascii_control(), " ");
                         if !normalized.is_empty() {
                             map.insert(def.name.clone(), normalized);
                         }
@@ -325,7 +354,6 @@ impl AgentSession {
         };
 
         let selected_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
-
         let system_prompt = system_prompt::build_system_prompt(&BuildSystemPromptOptions {
             cwd: options.cwd.clone(),
             custom_prompt: options.custom_prompt,
@@ -340,14 +368,28 @@ impl AgentSession {
         // 6. Apply initial_active_tool_names: only built-in tools are gated
         //    by this; custom + extension tools are always active (matching
         //    TS includeAllExtensionTools: true).
-        let initial_active = options.initial_active_tool_names.clone().unwrap_or_default();
-        let custom_names: std::collections::HashSet<String> = options.custom_tools.as_ref().map(|ct|
-            ct.iter().map(|d| d.name.clone()).collect()
-        ).unwrap_or_default();
+        let initial_active = options
+            .initial_active_tool_names
+            .clone()
+            .unwrap_or_default();
+        let custom_names: std::collections::HashSet<String> = options
+            .custom_tools
+            .as_ref()
+            .map(|ct| ct.iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default();
+        // Built-in tool names (read/bash/edit/write) are the only ones subject
+        // to gating by initial_active_tool_names. Extension tools (e.g. goal)
+        // and custom tools are always active.
+        let builtin_names: std::collections::HashSet<String> =
+            tools::create_coding_tools(&options.cwd, None)
+                .iter()
+                .map(|t| t.name.clone())
+                .collect();
         tool_list.retain(|t| {
-            custom_names.contains(&t.name) || initial_active.contains(&t.name)
+            custom_names.contains(&t.name)
+                || !builtin_names.contains(&t.name)
+                || initial_active.contains(&t.name)
         });
-
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
             .into_iter()
             .map(|t| Arc::new(t) as Arc<pi_agent_core::types::DynTool>)
@@ -394,14 +436,20 @@ impl AgentSession {
                     let reg = Arc::clone(&before_reg);
                     let ctx_ref = Arc::clone(&before_ctx);
                     Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_tool_call(&reg, &ctx, &ctx_ref).await
+                        crate::core::extensions::dispatcher::dispatch_tool_call(
+                            &reg, &ctx, &ctx_ref,
+                        )
+                        .await
                     })
                 });
                 let after: AfterToolCallFn = Arc::new(move |ctx, _signal| {
                     let reg = Arc::clone(&after_reg);
                     let ctx_ref = Arc::clone(&after_ctx);
                     Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_tool_result(&reg, &ctx, &ctx_ref).await
+                        crate::core::extensions::dispatcher::dispatch_tool_result(
+                            &reg, &ctx, &ctx_ref,
+                        )
+                        .await
                     })
                 });
                 (Some(before), Some(after))
@@ -411,18 +459,27 @@ impl AgentSession {
 
         // Wire the context event hook: extensions can modify messages before
         // they are sent to the LLM.
-        let transform_context: Option<TransformContextFn> = options.extension_registry.as_ref().map(|registry| {
-            let dispatch_reg = Arc::clone(registry);
-            let ctx_clone = Arc::clone(&shared_ext_ctx);
-            let closure = move |messages: Vec<AgentMessage>, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
-                let reg = Arc::clone(&dispatch_reg);
-                let ctx_ref = Arc::clone(&ctx_clone);
-                Box::pin(async move {
-                    crate::core::extensions::dispatcher::dispatch_context(&reg, messages, &ctx_ref).await
-                }) as std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
-            };
-            Arc::new(closure) as TransformContextFn
-        });
+        let transform_context: Option<TransformContextFn> =
+            options.extension_registry.as_ref().map(|registry| {
+                let dispatch_reg = Arc::clone(registry);
+                let ctx_clone = Arc::clone(&shared_ext_ctx);
+                let closure =
+                    move |messages: Vec<AgentMessage>,
+                          _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+                        let reg = Arc::clone(&dispatch_reg);
+                        let ctx_ref = Arc::clone(&ctx_clone);
+                        Box::pin(async move {
+                            crate::core::extensions::dispatcher::dispatch_context(
+                                &reg, messages, &ctx_ref,
+                            )
+                            .await
+                        })
+                            as std::pin::Pin<
+                                Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>,
+                            >
+                    };
+                Arc::new(closure) as TransformContextFn
+            });
 
         // Wire the before_provider_request event: extensions can inspect/modify
         // the provider request payload before it is sent.
@@ -434,10 +491,11 @@ impl AgentSession {
                     let reg = Arc::clone(&payload_reg);
                     let ctx_ref = Arc::clone(&ctx_clone);
                     tokio::spawn(async move {
-                        let _ = crate::core::extensions::dispatcher::dispatch_before_provider_request(
-                            &reg, payload, &ctx_ref,
-                        )
-                        .await;
+                        let _ =
+                            crate::core::extensions::dispatcher::dispatch_before_provider_request(
+                                &reg, payload, &ctx_ref,
+                            )
+                            .await;
                     });
                 };
                 Arc::new(closure) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
@@ -467,8 +525,10 @@ impl AgentSession {
 
         let session_cwd = options.cwd.clone();
         // Build tool definitions registry (matching TS `_toolDefinitions`).
-        let mut tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition> =
-            std::collections::HashMap::new();
+        let mut tool_definitions: std::collections::HashMap<
+            String,
+            crate::core::extensions::ToolDefinition,
+        > = std::collections::HashMap::new();
         if let Some(ref custom_tools) = options.custom_tools {
             for def in custom_tools {
                 tool_definitions.insert(def.name.clone(), def.clone());
@@ -476,12 +536,13 @@ impl AgentSession {
         }
         if let Some(ref registry) = options.extension_registry {
             for rt in registry.collect_tools_from_ref() {
-                tool_definitions.entry(rt.definition.name.clone())
+                tool_definitions
+                    .entry(rt.definition.name.clone())
                     .or_insert(rt.definition);
             }
         }
 
-        let  session = Self {
+        let session = Self {
             agent,
             session_manager: session_manager.clone(),
             event_bus,
@@ -658,15 +719,27 @@ impl AgentSession {
     }
 
     pub fn get_session_id(&self) -> String {
-        self.session_manager.lock().unwrap().get_session_id().to_string()
+        self.session_manager
+            .lock()
+            .unwrap()
+            .get_session_id()
+            .to_string()
     }
 
     pub fn get_session_file(&self) -> Option<std::path::PathBuf> {
-        self.session_manager.lock().unwrap().get_session_file().map(|p| p.to_path_buf())
+        self.session_manager
+            .lock()
+            .unwrap()
+            .get_session_file()
+            .map(|p| p.to_path_buf())
     }
 
     pub fn get_session_dir(&self) -> std::path::PathBuf {
-        self.session_manager.lock().unwrap().get_session_dir().to_path_buf()
+        self.session_manager
+            .lock()
+            .unwrap()
+            .get_session_dir()
+            .to_path_buf()
     }
 
     pub fn get_session_name(&self) -> Option<String> {
@@ -674,7 +747,10 @@ impl AgentSession {
     }
 
     pub fn set_session_name(&mut self, name: &str) {
-        self.session_manager.lock().unwrap().append_session_info(name);
+        self.session_manager
+            .lock()
+            .unwrap()
+            .append_session_info(name);
         // Dispatch session_info_changed to extensions
         if let Some(ref registry) = self.extension_registry {
             let reg = Arc::clone(registry);
@@ -682,7 +758,9 @@ impl AgentSession {
             let ctx = self.ext_ctx.clone();
             tokio::spawn(async move {
                 crate::core::extensions::dispatcher::dispatch_session_info_changed(
-                    &reg, Some(&name), &ctx,
+                    &reg,
+                    Some(&name),
+                    &ctx,
                 )
                 .await;
             });
@@ -784,11 +862,20 @@ impl AgentSession {
 
     /// Get the names of currently active tools, matching TS `getActiveToolNames()`.
     pub async fn get_active_tool_names(&self) -> Vec<String> {
-        self.agent.state().await.tools.iter().map(|t| t.name.clone()).collect()
+        self.agent
+            .state()
+            .await
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
     }
 
     /// Get a tool definition by name, matching TS `getToolDefinition()`.
-    pub fn get_tool_definition(&self, name: &str) -> Option<&crate::core::extensions::ToolDefinition> {
+    pub fn get_tool_definition(
+        &self,
+        name: &str,
+    ) -> Option<&crate::core::extensions::ToolDefinition> {
         self.tool_definitions.get(name)
     }
 
@@ -818,12 +905,7 @@ impl AgentSession {
     pub async fn set_active_tools_by_name(&self, tool_names: &[String]) {
         let selected: Vec<Arc<pi_agent_core::types::DynTool>> = tool_names
             .iter()
-            .filter_map(|name| {
-                self.tool_registry
-                    .iter()
-                    .find(|t| t.name == *name)
-                    .cloned()
-            })
+            .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
             .collect();
         let mut state = self.agent.state().await;
         state.tools = selected;
@@ -855,7 +937,9 @@ impl AgentSession {
                                 if let Some(content) = message.get("content") {
                                     if let Some(blocks) = content.as_array() {
                                         for block in blocks {
-                                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                                            if block.get("type").and_then(|v| v.as_str())
+                                                == Some("tool_use")
+                                            {
                                                 tool_calls += 1;
                                             }
                                         }
@@ -874,7 +958,9 @@ impl AgentSession {
         let total_messages = user_messages + assistant_messages + tool_calls + tool_results;
 
         SessionStats {
-            session_file: mgr.get_session_file().map(|p| p.to_string_lossy().to_string()),
+            session_file: mgr
+                .get_session_file()
+                .map(|p| p.to_string_lossy().to_string()),
             session_id: mgr.get_session_id().to_string(),
             user_messages,
             assistant_messages,
@@ -938,7 +1024,8 @@ impl AgentSession {
                     messages: &state.messages,
                     ext_ctx: &self.ext_ctx,
                 },
-            ).await;
+            )
+            .await;
         }
 
         let timestamp = chrono::Utc::now().timestamp_millis();
@@ -954,7 +1041,8 @@ impl AgentSession {
         // Dispatch input event to extensions before processing.
         // If an extension handles the input, skip processing entirely.
         // If an extension transforms the text, use the transformed text.
-        let (effective_text, effective_images) = if let Some(ref registry) = self.extension_registry {
+        let (effective_text, effective_images) = if let Some(ref registry) = self.extension_registry
+        {
             match crate::core::extensions::dispatcher::dispatch_input(
                 crate::core::extensions::dispatcher::DispatchInputParams {
                     registry,
@@ -963,9 +1051,14 @@ impl AgentSession {
                     images: None,
                     ext_ctx: &self.ext_ctx,
                 },
-            ).await {
+            )
+            .await
+            {
                 crate::core::extensions::dispatcher::InputEventResult::Handled => return,
-                crate::core::extensions::dispatcher::InputEventResult::Continue { text: t, images } => (t, images),
+                crate::core::extensions::dispatcher::InputEventResult::Continue {
+                    text: t,
+                    images,
+                } => (t, images),
             }
         } else {
             (text.to_string(), Vec::new())
@@ -982,16 +1075,14 @@ impl AgentSession {
                     messages: &state.messages,
                     ext_ctx: &self.ext_ctx,
                 },
-            ).await;
+            )
+            .await;
         }
 
         let timestamp = chrono::Utc::now().timestamp_millis();
         let mut content = vec![ContentBlock::text(&effective_text)];
         content.extend(effective_images);
-        let message = AgentMessage::User {
-            content,
-            timestamp,
-        };
+        let message = AgentMessage::User { content, timestamp };
         // User message is persisted by the event subscriber on MessageEnd
         if let Ok(mut mgr) = self.session_manager.lock() {
             mgr.set_run_prompt(&effective_text);
@@ -1088,15 +1179,19 @@ impl AgentSession {
 
     /// Cycle through scoped models, matching the original cycleModel().
     /// Returns the new model and thinking level, and whether it's a scoped model.
-    pub async fn cycle_model(&mut self, direction: &str) -> Option<(Model, Option<ThinkingLevel>, bool)> {
+    pub async fn cycle_model(
+        &mut self,
+        direction: &str,
+    ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
         if self.scoped_models.is_empty() {
             return None;
         }
 
         let current_model = self.agent.state().await.model;
-        let current_idx = self.scoped_models.iter().position(|(m, _)| {
-            m.provider == current_model.provider && m.id == current_model.id
-        });
+        let current_idx = self
+            .scoped_models
+            .iter()
+            .position(|(m, _)| m.provider == current_model.provider && m.id == current_model.id);
 
         let new_idx = match (current_idx, direction) {
             (Some(i), "forward") => (i + 1) % self.scoped_models.len(),
@@ -1144,8 +1239,15 @@ impl AgentSession {
         // Dispatch session_before_compact to extensions.
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_compact(
-                registry, if custom_instructions.is_some() { "manual" } else { "auto" }, &self.ext_ctx,
-            ).await;
+                registry,
+                if custom_instructions.is_some() {
+                    "manual"
+                } else {
+                    "auto"
+                },
+                &self.ext_ctx,
+            )
+            .await;
         }
 
         let messages = self.agent.state().await.messages;
@@ -1159,7 +1261,11 @@ impl AgentSession {
         let keep_recent_turns = 5usize;
         let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);
 
-        let prepared = compaction::prepare_compaction(&messages, keep_recent_turns, self.compaction_settings.clone());
+        let prepared = compaction::prepare_compaction(
+            &messages,
+            keep_recent_turns,
+            self.compaction_settings.clone(),
+        );
 
         // Build the summarization prompt
         let summarization_prompt = compaction::build_summarization_prompt(
@@ -1174,7 +1280,9 @@ impl AgentSession {
             let llm_context = pi_agent_core::pi_ai_types::Context {
                 system_prompt: Some(compaction::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
                 messages: vec![pi_agent_core::pi_ai_types::Message::User {
-                    content: vec![pi_agent_core::pi_ai_types::ContentBlock::text(&summarization_prompt)],
+                    content: vec![pi_agent_core::pi_ai_types::ContentBlock::text(
+                        &summarization_prompt,
+                    )],
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 }],
                 tools: None,
@@ -1184,20 +1292,32 @@ impl AgentSession {
                 llm_context,
                 None,
                 pi_agent_core::types::StreamFnOptions::default(),
-            ).await {
+            )
+            .await
+            {
                 Ok(mut stream) => {
                     use futures::StreamExt;
                     let mut full_text = String::new();
                     while let Some(event) = stream.next().await {
                         match &event {
-                            pi_agent_core::pi_ai_types::AssistantMessageEvent::TextDelta { delta, .. } => {
+                            pi_agent_core::pi_ai_types::AssistantMessageEvent::TextDelta {
+                                delta,
+                                ..
+                            } => {
                                 full_text.push_str(delta);
                             }
-                            pi_agent_core::pi_ai_types::AssistantMessageEvent::Done { message, .. } => {
+                            pi_agent_core::pi_ai_types::AssistantMessageEvent::Done {
+                                message,
+                                ..
+                            } => {
                                 // Use the final message content if we have no deltas
                                 if full_text.is_empty() {
                                     for block in &message.content {
-                                        if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
+                                        if let pi_agent_core::pi_ai_types::ContentBlock::Text {
+                                            text,
+                                            ..
+                                        } = block
+                                        {
                                             full_text.push_str(text);
                                         }
                                     }
@@ -1208,7 +1328,10 @@ impl AgentSession {
                         }
                     }
                     if full_text.is_empty() {
-                        format!("Compacted {} messages (summary generation unavailable)", messages.len())
+                        format!(
+                            "Compacted {} messages (summary generation unavailable)",
+                            messages.len()
+                        )
                     } else {
                         full_text
                     }
@@ -1224,7 +1347,13 @@ impl AgentSession {
         // Record compaction in session manager
         {
             let mut mgr = self.session_manager.lock().unwrap();
-            mgr.append_compaction(&summary, &cut_point.first_kept_entry_index.to_string(), total_tokens, None, None);
+            mgr.append_compaction(
+                &summary,
+                &cut_point.first_kept_entry_index.to_string(),
+                total_tokens,
+                None,
+                None,
+            );
         }
 
         // Dispatch session_compact to extensions after compaction.
@@ -1236,7 +1365,8 @@ impl AgentSession {
                     tokens_before: total_tokens,
                     ext_ctx: &self.ext_ctx,
                 },
-            ).await;
+            )
+            .await;
         }
 
         Ok(summary)
@@ -1287,7 +1417,12 @@ impl AgentSession {
         self.session_manager
             .lock()
             .unwrap()
-            .append_custom_message_entry(custom_type, serde_json::to_value(&message).unwrap_or_default(), true, None);
+            .append_custom_message_entry(
+                custom_type,
+                serde_json::to_value(&message).unwrap_or_default(),
+                true,
+                None,
+            );
         self.agent.process(vec![message]).await.ok();
     }
 
@@ -1327,7 +1462,9 @@ impl AgentSession {
 
     /// Retry the last turn, matching original retry().
     /// Returns the new messages on success.
-    pub async fn retry(&self) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn retry(
+        &self,
+    ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
         self.agent.continue_run().await
     }
 
@@ -1340,20 +1477,26 @@ impl AgentSession {
     pub fn export_html(&self) -> String {
         let mgr = self.session_manager.lock().unwrap();
         let entries = mgr.get_entries();
-        let session_name = mgr.get_session_name().unwrap_or_else(|| "Session".to_string());
+        let session_name = mgr
+            .get_session_name()
+            .unwrap_or_else(|| "Session".to_string());
         let session_id = mgr.get_session_id();
         let cwd = mgr.get_cwd();
 
         let mut html = String::new();
         html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
         html.push_str("<meta charset=\"UTF-8\">\n");
-        html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+        html.push_str(
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
+        );
         html.push_str(&format!("<title>{}</title>\n", html_escape(&session_name)));
         html.push_str("<style>\n");
         html.push_str("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; color: #333; }\n");
         html.push_str(".message { margin: 12px 0; padding: 12px; border-radius: 8px; }\n");
         html.push_str(".message.user { background: #f0f7ff; border-left: 3px solid #4a90d9; }\n");
-        html.push_str(".message.assistant { background: #f5f5f5; border-left: 3px solid #6b7280; }\n");
+        html.push_str(
+            ".message.assistant { background: #f5f5f5; border-left: 3px solid #6b7280; }\n",
+        );
         html.push_str(".message.tool { background: #faf5ff; border-left: 3px solid #a855f7; font-family: monospace; font-size: 13px; }\n");
         html.push_str(".message.error { background: #fef2f2; border-left: 3px solid #ef4444; }\n");
         html.push_str(".message .role { font-weight: 600; font-size: 12px; text-transform: uppercase; color: #666; margin-bottom: 4px; }\n");
@@ -1367,15 +1510,27 @@ impl AgentSession {
         // Header
         html.push_str("<div class=\"header\">\n");
         html.push_str(&format!("<h1>{}</h1>\n", html_escape(&session_name)));
-        html.push_str(&format!("<div class=\"meta\">Session: {} | CWD: {}</div>\n", html_escape(session_id), html_escape(cwd)));
+        html.push_str(&format!(
+            "<div class=\"meta\">Session: {} | CWD: {}</div>\n",
+            html_escape(session_id),
+            html_escape(cwd)
+        ));
         html.push_str("</div>\n");
 
         // Messages
         for entry in entries {
             match entry {
-                crate::core::session_manager::SessionEntry::Message { message, timestamp, .. } => {
-                    let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
-                    let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                crate::core::session_manager::SessionEntry::Message {
+                    message, timestamp, ..
+                } => {
+                    let role = message
+                        .get("role")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let content = message
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let css_class = match role {
                         "user" => "user",
                         "assistant" => "assistant",
@@ -1383,23 +1538,52 @@ impl AgentSession {
                         _ => "",
                     };
                     html.push_str(&format!("<div class=\"message {}\">\n", css_class));
-                    html.push_str(&format!("<div class=\"role\">{}</div>\n", html_escape(role)));
-                    html.push_str(&format!("<div class=\"content\">{}</div>\n", html_escape(content)));
-                    html.push_str(&format!("<div class=\"timestamp\">{}</div>\n", html_escape(timestamp)));
+                    html.push_str(&format!(
+                        "<div class=\"role\">{}</div>\n",
+                        html_escape(role)
+                    ));
+                    html.push_str(&format!(
+                        "<div class=\"content\">{}</div>\n",
+                        html_escape(content)
+                    ));
+                    html.push_str(&format!(
+                        "<div class=\"timestamp\">{}</div>\n",
+                        html_escape(timestamp)
+                    ));
                     html.push_str("</div>\n");
                 }
-                crate::core::session_manager::SessionEntry::Compaction { summary, timestamp, .. } => {
+                crate::core::session_manager::SessionEntry::Compaction {
+                    summary,
+                    timestamp,
+                    ..
+                } => {
                     html.push_str("<div class=\"message\" style=\"background: #fffbeb; border-left: 3px solid #f59e0b;\">\n");
                     html.push_str("<div class=\"role\">Compaction</div>\n");
-                    html.push_str(&format!("<div class=\"content\">{}</div>\n", html_escape(summary)));
-                    html.push_str(&format!("<div class=\"timestamp\">{}</div>\n", html_escape(timestamp)));
+                    html.push_str(&format!(
+                        "<div class=\"content\">{}</div>\n",
+                        html_escape(summary)
+                    ));
+                    html.push_str(&format!(
+                        "<div class=\"timestamp\">{}</div>\n",
+                        html_escape(timestamp)
+                    ));
                     html.push_str("</div>\n");
                 }
-                crate::core::session_manager::SessionEntry::BranchSummary { summary, timestamp, .. } => {
+                crate::core::session_manager::SessionEntry::BranchSummary {
+                    summary,
+                    timestamp,
+                    ..
+                } => {
                     html.push_str("<div class=\"message\" style=\"background: #f0fdf4; border-left: 3px solid #22c55e;\">\n");
                     html.push_str("<div class=\"role\">Branch Summary</div>\n");
-                    html.push_str(&format!("<div class=\"content\">{}</div>\n", html_escape(summary)));
-                    html.push_str(&format!("<div class=\"timestamp\">{}</div>\n", html_escape(timestamp)));
+                    html.push_str(&format!(
+                        "<div class=\"content\">{}</div>\n",
+                        html_escape(summary)
+                    ));
+                    html.push_str(&format!(
+                        "<div class=\"timestamp\">{}</div>\n",
+                        html_escape(timestamp)
+                    ));
                     html.push_str("</div>\n");
                 }
                 _ => {}
@@ -1465,8 +1649,11 @@ impl AgentSession {
         // Dispatch session_before_switch to extensions
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_switch(
-                registry, session_path, &self.ext_ctx,
-            ).await;
+                registry,
+                session_path,
+                &self.ext_ctx,
+            )
+            .await;
         }
 
         let session_dir = self
@@ -1483,7 +1670,9 @@ impl AgentSession {
 
         // Check if session cwd exists
         let session_cwd = new_mgr.get_cwd();
-        let session_file_opt = new_mgr.get_session_file().map(|p| p.to_string_lossy().to_string());
+        let session_file_opt = new_mgr
+            .get_session_file()
+            .map(|p| p.to_string_lossy().to_string());
         if let Some(ref sf) = session_file_opt {
             if !session_cwd.is_empty() && !std::path::Path::new(session_cwd).exists() {
                 return Err(format!(
@@ -1514,12 +1703,11 @@ impl AgentSession {
             .to_string_lossy()
             .to_string();
 
-        let new_session_opts = parent_session.map(|p| {
-            crate::core::session_manager::NewSessionOptions {
+        let new_session_opts =
+            parent_session.map(|p| crate::core::session_manager::NewSessionOptions {
                 id: None,
                 parent_session: Some(p.to_string()),
-            }
-        });
+            });
 
         let new_mgr = SM::new(&self.cwd, &session_dir, None, true, new_session_opts);
         *self.session_manager.lock().unwrap() = new_mgr;
@@ -1535,12 +1723,18 @@ impl AgentSession {
         // Dispatch session_before_fork to extensions
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_fork(
-                registry, entry_id, &self.ext_ctx,
-            ).await;
+                registry,
+                entry_id,
+                &self.ext_ctx,
+            )
+            .await;
         }
 
         // Use create_branched_session to create the fork
-        let branch_path = self.session_manager.lock().unwrap()
+        let branch_path = self
+            .session_manager
+            .lock()
+            .unwrap()
             .create_branched_session(entry_id, None)?;
 
         // Switch to the new session
@@ -1574,7 +1768,9 @@ impl AgentSession {
 
         let fallback_cwd = self.cwd.clone();
         let session_cwd = new_mgr.get_cwd();
-        let session_file_opt = new_mgr.get_session_file().map(|p| p.to_string_lossy().to_string());
+        let session_file_opt = new_mgr
+            .get_session_file()
+            .map(|p| p.to_string_lossy().to_string());
         if let Some(ref sf) = session_file_opt {
             if !session_cwd.is_empty() && !std::path::Path::new(session_cwd).exists() {
                 return Err(format!(
@@ -1614,7 +1810,10 @@ impl AgentSession {
     pub async fn execute_bash(&self, command: &str) -> Result<String, String> {
         use crate::core::bash_executor::BashExecutor;
         let executor = BashExecutor::new(&self.cwd);
-        let result = executor.execute(command, None).await.map_err(|e| e.to_string())?;
+        let result = executor
+            .execute(command, None)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(result.output)
     }
 
@@ -1679,8 +1878,11 @@ impl AgentSession {
         // and close connections before the session is destroyed.
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_shutdown(
-                registry, "quit", &self.ext_ctx,
-            ).await;
+                registry,
+                "quit",
+                &self.ext_ctx,
+            )
+            .await;
         }
         // ExtensionRegistry is just a container of trait objects — no V8 thread
         // to stop. Drop is sufficient for cleanup.

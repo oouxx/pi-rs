@@ -10,7 +10,7 @@ use pi_agent_core::types::{
     BeforeToolCallResult,
 };
 
-use super::api::{EventResult, ExtensionContext, ExtensionEvent, ExtensionRegistry};
+use super::api::{EventResult, ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolCallOutput};
 
 // ============================================================================
 // Parameter structs (to keep function signatures ≤ 3 params per spec)
@@ -510,6 +510,33 @@ pub fn event_from_agent_event(
             })
         }
     }
+}
+
+// ============================================================================
+// Extension tool execution dispatch
+// ============================================================================
+
+/// Dispatch a tool call to extension `handle_tool_call` handlers.
+///
+/// Each extension's `handle_tool_call()` is tried in registration order;
+/// the first one that returns `Some(ToolCallOutput)` wins.
+/// Returns `None` when no extension handles the tool.
+///
+/// This bridges `AgentTool.execute` → `ExtensionAPI.handle_tool_call`,
+/// matching the TS behavior where extension-registered tools are wrapped
+/// into AgentTool entries via `wrapRegisteredTools`.
+pub async fn dispatch_handle_tool_call(
+    registry: &ExtensionRegistry,
+    tool_name: &str,
+    params: serde_json::Value,
+    ext_ctx: &ExtensionContext,
+) -> Option<ToolCallOutput> {
+    for ext in registry.extensions() {
+        if let Some(result) = ext.handle_tool_call(tool_name, params.clone(), ext_ctx).await {
+            return Some(result);
+        }
+    }
+    None
 }
 
 // ============================================================================

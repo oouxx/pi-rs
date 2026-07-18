@@ -301,10 +301,26 @@ async fn resolve_kind(env: &dyn ExecutionEnv, info: &FileInfoType, diagnostics: 
                     }
                     None
                 }
-                Err(_) => None,
+                Err(e) => {
+                    diagnostics.push(SkillDiagnostic {
+                        diagnostic_type: "warning".into(),
+                        code: "file_info_failed".into(),
+                        message: format!("Failed to read file info: {}", e.message),
+                        path: info.path.clone(),
+                    });
+                    None
+                }
             }
         }
-        Err(_) => None,
+        Err(e) => {
+            diagnostics.push(SkillDiagnostic {
+                diagnostic_type: "warning".into(),
+                code: "file_info_failed".into(),
+                message: format!("Failed to resolve path: {}", e.message),
+                path: info.path.clone(),
+            });
+            None
+        }
     }
 }
 
@@ -332,7 +348,18 @@ async fn add_ignore_rules(
                     continue;
                 }
             }
-            Err(_) => continue,
+            Err(e) => {
+                if e.code.to_lowercase().contains("not_found") || e.code.to_lowercase().contains("not found") {
+                    continue;
+                }
+                diagnostics.push(SkillDiagnostic {
+                    diagnostic_type: "warning".into(),
+                    code: "file_info_failed".into(),
+                    message: format!("Failed to read ignore file info: {}", e.message),
+                    path: ignore_path.clone(),
+                });
+                continue;
+            }
         }
         let content = env.read_text_file(&ignore_path, None).await;
         match content {
@@ -345,7 +372,14 @@ async fn add_ignore_rules(
                     ig.add_patterns(&patterns);
                 }
             }
-            Err(_) => {}
+            Err(e) => {
+                diagnostics.push(SkillDiagnostic {
+                    diagnostic_type: "warning".into(),
+                    code: "read_failed".into(),
+                    message: format!("Failed to read ignore file: {}", e.message),
+                    path: ignore_path.clone(),
+                });
+            }
         }
     }
 }

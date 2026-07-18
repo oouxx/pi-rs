@@ -120,7 +120,7 @@ pub mod prelude {
     // ── Extensions ──────────────────────────────────────────────────────────
     pub use crate::core::extensions::{
         ExtensionAPI, ExtensionContext, ExtensionRegistry, ToolDefinition, ExtensionEvent, EventResult,
-        RegisteredTool, RegisteredCommand, RegisteredFlag, RegisteredShortcut,
+        RegisteredTool, RegisteredCommand, RegisteredFlag, RegisteredShortcut, ToolInfo,
         ToolRegistry, CommandRegistry, ShortcutRegistry, FlagRegistry,
         RuntimeHandle, ExtensionUIContext, ToolCallOutput, ExecResult,
         SendMessageOptions, SendUserMessageOptions,

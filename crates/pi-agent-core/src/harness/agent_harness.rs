@@ -55,8 +55,6 @@ struct TurnState<S: Clone, P: Clone> {
     system_prompt: String,
     model: Model,
     thinking_level: ThinkingLevel,
-    tools: Vec<String>,
-    active_tools: Vec<String>,
 }
 
 // ============================================================
@@ -127,7 +125,7 @@ pub type GetApiKeyAndHeadersFn = Arc<
 // Helper trait for accessing .name on generic Skill/PromptTemplate
 // ============================================================
 
-pub(crate) trait Named {
+pub trait Named {
     fn name(&self) -> &str;
 }
 
@@ -457,32 +455,6 @@ where
     // Queue operations
     // ========================================================
 
-    async fn drain_queue(&self, queue: &RwLock<Vec<AgentMessage>>, mode: QueueMode) -> Vec<AgentMessage> {
-        let mut guard = queue.write().await;
-        let messages: Vec<AgentMessage> = match mode {
-            QueueMode::Queue => guard.drain(..).collect(),
-            QueueMode::Replace => {
-                if guard.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![guard.remove(0)]
-                }
-            }
-            QueueMode::Drop => {
-                if guard.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![guard.remove(0)]
-                }
-            }
-        };
-        drop(guard);
-        if !messages.is_empty() {
-            self.emit_queue_update().await;
-        }
-        messages
-    }
-
     async fn emit_queue_update(&self) {
         self.emit_own(AgentHarnessOwnEvent::QueueUpdate {
             steer_queue: self.steer_queue.read().await.clone(),
@@ -629,8 +601,6 @@ where
             system_prompt,
             model,
             thinking_level,
-            tools: self.tools.read().await.clone(),
-            active_tools,
         })
     }
 
@@ -696,14 +666,14 @@ where
         };
 
         let get_ak_ah = self.get_api_key_and_headers.clone();
-        let stream_opts_arc = self.stream_options.clone();
+        let stream_snapshot = turn_state.stream_options;
         let session_id = turn_state.session_id.clone();
         let session_id2 = session_id.clone();
         let model = turn_state.model.clone();
 
         let stream_fn: StreamFn = Arc::new(move |model: Model, ctx: crate::pi_ai_types::Context, reasoning: Option<ThinkingLevel>, opts: StreamFnOptions| {
             let get_ak_ah = get_ak_ah.clone();
-            let stream_opts_arc = stream_opts_arc.clone();
+            let mut snapshot = clone_stream_options(&stream_snapshot);
             let session_id = session_id.clone();
 
             Box::pin(async move {
@@ -714,9 +684,6 @@ where
                         None => None,
                     }
                 };
-
-                let base_opts = stream_opts_arc.read().await.clone();
-                let mut snapshot = clone_stream_options(&base_opts);
                 if let Some((_api_key, auth_headers)) = &auth {
                     snapshot.headers = merge_headers(&[snapshot.headers.clone(), auth_headers.clone()]);
                 }

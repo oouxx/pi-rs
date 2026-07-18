@@ -450,7 +450,7 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetLastAssistantText { id } => {
-            let text = session.get_last_assistant_text();
+            let text = session.get_last_assistant_text().await;
             Some(rpc_success(
                 id,
                 "get_last_assistant_text",

@@ -99,11 +99,20 @@ pub struct AgentSession {
     initial_active_tool_names: Vec<String>,
     allowed_tool_names: Option<Vec<String>>,
     excluded_tool_names: Option<Vec<String>>,
-    _subscriptions: Vec<pi_agent_core::agent::UnsubscribeHandle>,
     /// Extension registry (Rust native extensions).
     extension_registry: Option<Arc<ExtensionRegistry>>,
     /// Cached extension context for dispatch calls.
     ext_ctx: ExtensionContext,
+    /// Full tool registry (all available tools, not just active ones),
+    /// matching TS `_toolRegistry`. Used by `set_active_tools_by_name()`.
+    tool_registry: Vec<Arc<pi_agent_core::types::DynTool>>,
+    /// Tool definitions registry, matching TS `_toolDefinitions` (used by
+    /// getAllTools / getToolDefinition). Populated from custom_tools and
+    /// extension tools at construction time.
+    tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition>,
+    /// Pending bash execution results queued while agent is streaming,
+    /// matching TS `_pendingBashMessages`.
+    pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
 }
 
 impl AgentSession {
@@ -113,31 +122,30 @@ impl AgentSession {
         model_registry: ModelRegistry,
         options: AgentSessionConfig,
     ) -> Self {
-        let system_prompt = system_prompt::build_system_prompt(&BuildSystemPromptOptions {
-            cwd: options.cwd.clone(),
-            custom_prompt: options.custom_prompt,
-            append_system_prompt: options.append_system_prompt,
-            selected_tools: options.selected_tools.clone(),
-            tool_snippets: options.tool_snippets,
-            prompt_guidelines: options.prompt_guidelines,
-            context_files: Some(options.context_files),
-            skills: Some(options.skills),
-        });
+        // ── Extension context (needed early for extension tool dispatch) ──
+        let ext_ctx = ExtensionContext::new(
+            options.cwd.clone(),
+            false,
+            crate::core::extensions::ExtensionUIContext {
+                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                set_status: std::sync::Arc::new(|_key, _value| {}),
+                confirm: std::sync::Arc::new(|_title, _msg| false),
+            },
+            crate::core::extensions::RuntimeHandle::noop(),
+        );
+        let shared_ext_ctx = Arc::new(ext_ctx);
 
+        // ── Build tool list ──
         let tools_options = tools::ToolsOptions::default();
-        let mut tool_list = tools::create_coding_tools(&options.cwd, Some(&tools_options));
+        let mut tool_list: Vec<pi_agent_core::types::DynTool> = Vec::new();
 
-        // Extension tools are registered at compile time via ExtensionRegistry.
-        // The registry's collect_tools() is called in sdk.rs before session creation.
-        // Tool execution is handled by the built-in tool implementations.
+        // 1. Built-in tools (read, bash, edit, write)
+        tool_list.extend(tools::create_coding_tools(&options.cwd, Some(&tools_options)));
 
-        // Custom tools: create DynTool entries from ToolDefinition metadata.
-        // When `def.execute` is provided, it is used directly (matching the
-        // TS ToolDefinition.execute() behavior). Without it, a stub is created
-        // and the caller should call agent.add_tools() to replace it.
+        // 2. Custom tools from SDK callers (via custom_tools / ToolDefinition + execute)
         if let Some(ref custom_tools) = options.custom_tools {
             use pi_agent_core::pi_ai_types::ToolExecutionMode;
-            use pi_agent_core::types::{AgentToolResult, DynTool};
+            use pi_agent_core::types::AgentToolResult;
             for def in custom_tools {
                 let tool_name = def.name.clone();
                 let execute: Arc<
@@ -157,7 +165,6 @@ impl AgentSession {
                             >,
                         > + Send + Sync,
                 > = if let Some(ref tool_exec) = def.execute {
-                    // Real execute callback provided — wrap it into AgentTool signature.
                     let exec = tool_exec.clone();
                     Arc::new(move |id, params, signal, _on_update| {
                         let exec = exec.clone();
@@ -176,7 +183,6 @@ impl AgentSession {
                         })
                     })
                 } else {
-                    // No execute — stub that guides the caller to add_tools().
                     Arc::new(move |_id, _params, _signal, _callback| {
                         let err: Box<dyn std::error::Error + Send + Sync> = format!(
                             "Tool '{tool_name}' has no execute — call agent.add_tools() to provide one"
@@ -199,6 +205,148 @@ impl AgentSession {
                 });
             }
         }
+
+        // 3. Extension tools from ExtensionRegistry (via handle_tool_call dispatch)
+        //    Matches TS _refreshToolRegistry wrapping extension tools into AgentTool entries.
+        if let Some(ref registry) = options.extension_registry {
+            use pi_agent_core::pi_ai_types::ToolExecutionMode;
+            use pi_agent_core::types::AgentToolResult;
+            let collected = registry.collect_tools_from_ref();
+            for rt in collected {
+                let def = rt.definition;
+                let ext_tool_name = def.name.clone();
+                let ext_reg = Arc::clone(registry);
+                let ext_ctx_clone = Arc::clone(&shared_ext_ctx);
+                let execute: Arc<
+                    dyn Fn(
+                            String,
+                            serde_json::Value,
+                            Option<tokio::sync::watch::Receiver<bool>>,
+                            Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>>,
+                        ) -> std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = Result<
+                                            pi_agent_core::types::AgentToolResult<serde_json::Value>,
+                                            Box<dyn std::error::Error + Send + Sync>,
+                                        >,
+                                    > + Send,
+                            >,
+                        > + Send + Sync,
+                > = Arc::new(move |_id, params, _signal, _on_update| {
+                    let reg = Arc::clone(&ext_reg);
+                    let ctx = Arc::clone(&ext_ctx_clone);
+                    let name = ext_tool_name.clone();
+                    Box::pin(async move {
+                        match crate::core::extensions::dispatcher::dispatch_handle_tool_call(
+                            &reg, &name, params, &ctx,
+                        ).await {
+                            Some(output) => {
+                                let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
+                                    .content
+                                    .into_iter()
+                                    .filter_map(|v| serde_json::from_value(v).ok())
+                                    .collect();
+                                Ok(AgentToolResult {
+                                    content,
+                                    details: output.details.unwrap_or(serde_json::Value::Null),
+                                    terminate: None,
+                                })
+                            }
+                            None => Err(
+                                format!("Tool '{name}' not handled by any extension").into()
+                            ),
+                        }
+                    })
+                });
+                tool_list.push(pi_agent_core::types::AgentTool {
+                    name: def.name,
+                    description: def.description,
+                    label: def.label.unwrap_or_default(),
+                    parameters_schema: def.parameters.unwrap_or(serde_json::json!({"type": "object", "properties": {}, "required": []})),
+                    execution_mode: def.execution_mode.as_deref().and_then(|m| match m {
+                        "sequential" => Some(ToolExecutionMode::Sequential),
+                        "parallel" => Some(ToolExecutionMode::Parallel),
+                        _ => None,
+                    }),
+                    prepare_arguments: None,
+                    execute,
+                });
+            }
+        }
+
+        // Save full tool list as registry (before filtering/activation).
+        let tool_registry: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
+            .iter()
+            .map(|t| Arc::new(t.clone()) as Arc<pi_agent_core::types::DynTool>)
+            .collect();
+
+        // 4. Filter tool list by allowed/excluded names (matching TS isAllowedTool)
+        if let Some(ref allowed) = options.allowed_tool_names {
+            tool_list.retain(|t| allowed.contains(&t.name));
+        }
+        if let Some(ref excluded) = options.excluded_tool_names {
+            tool_list.retain(|t| !excluded.contains(&t.name));
+        }
+
+        // 5. Build system prompt with tool metadata from ALL active tools.
+        //    Matches TS _rebuildSystemPrompt(validToolNames) which runs after
+        //    tool registry refresh and includes tool snippets/guidelines.
+        let tool_snippets: std::collections::HashMap<String, String> = {
+            let mut map = options.tool_snippets.clone().unwrap_or_default();
+            if let Some(ref custom_tools) = options.custom_tools {
+                for def in custom_tools {
+                    if let Some(ref snippet) = def.prompt_snippet {
+                        let normalized = snippet.trim().replace(|c: char| c.is_ascii_control(), " ");
+                        if !normalized.is_empty() {
+                            map.insert(def.name.clone(), normalized);
+                        }
+                    }
+                }
+            }
+            map
+        };
+
+        let prompt_guidelines: Vec<String> = {
+            let mut guidelines = options.prompt_guidelines.clone().unwrap_or_default();
+            if let Some(ref custom_tools) = options.custom_tools {
+                for def in custom_tools {
+                    if let Some(ref g) = def.prompt_guidelines {
+                        for line in g {
+                            let trimmed = line.trim().to_string();
+                            if !trimmed.is_empty() {
+                                guidelines.push(trimmed);
+                            }
+                        }
+                    }
+                }
+            }
+            guidelines
+        };
+
+        let selected_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
+
+        let system_prompt = system_prompt::build_system_prompt(&BuildSystemPromptOptions {
+            cwd: options.cwd.clone(),
+            custom_prompt: options.custom_prompt,
+            append_system_prompt: options.append_system_prompt,
+            selected_tools: Some(selected_tool_names),
+            tool_snippets: Some(tool_snippets),
+            prompt_guidelines: Some(prompt_guidelines),
+            context_files: Some(options.context_files),
+            skills: Some(options.skills),
+        });
+
+        // 6. Apply initial_active_tool_names: only built-in tools are gated
+        //    by this; custom + extension tools are always active (matching
+        //    TS includeAllExtensionTools: true).
+        let initial_active = options.initial_active_tool_names.clone().unwrap_or_default();
+        let custom_names: std::collections::HashSet<String> = options.custom_tools.as_ref().map(|ct|
+            ct.iter().map(|d| d.name.clone()).collect()
+        ).unwrap_or_default();
+        tool_list.retain(|t| {
+            custom_names.contains(&t.name) || initial_active.contains(&t.name)
+        });
 
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
             .into_iter()
@@ -235,17 +383,6 @@ impl AgentSession {
         // execution loop. When an extension registry is present, each tool call
         // is dispatched to extension handlers that may block it (before) or
         // transform its result (after).
-        let ext_ctx = ExtensionContext::new(
-            options.cwd.clone(),
-            false,
-            crate::core::extensions::ExtensionUIContext {
-                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                set_status: std::sync::Arc::new(|_key, _value| {}),
-                confirm: std::sync::Arc::new(|_title, _msg| false),
-            },
-            crate::core::extensions::RuntimeHandle::noop(),
-        );
-        let shared_ext_ctx = Arc::new(ext_ctx);
 
         let (before_tool_call, after_tool_call) = match &options.extension_registry {
             Some(registry) => {
@@ -329,6 +466,21 @@ impl AgentSession {
         });
 
         let session_cwd = options.cwd.clone();
+        // Build tool definitions registry (matching TS `_toolDefinitions`).
+        let mut tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition> =
+            std::collections::HashMap::new();
+        if let Some(ref custom_tools) = options.custom_tools {
+            for def in custom_tools {
+                tool_definitions.insert(def.name.clone(), def.clone());
+            }
+        }
+        if let Some(ref registry) = options.extension_registry {
+            for rt in registry.collect_tools_from_ref() {
+                tool_definitions.entry(rt.definition.name.clone())
+                    .or_insert(rt.definition);
+            }
+        }
+
         let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
@@ -340,7 +492,6 @@ impl AgentSession {
             initial_active_tool_names,
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
-            _subscriptions: Vec::new(),
             extension_registry: options.extension_registry,
             ext_ctx: ExtensionContext::new(
                 session_cwd,
@@ -352,6 +503,9 @@ impl AgentSession {
                 },
                 crate::core::extensions::RuntimeHandle::noop(),
             ),
+            tool_registry,
+            tool_definitions,
+            pending_bash_messages: std::sync::Mutex::new(Vec::new()),
         };
 
         // Register event-driven persistence subscriber, matching the original
@@ -383,8 +537,7 @@ impl AgentSession {
                 }
             })
         });
-        let handle = session.agent.subscribe(persist_listener).await;
-        session._subscriptions.push(handle);
+        let _handle = session.agent.subscribe(persist_listener).await;
 
         // Agent-event dispatch to extensions via ExtensionRegistry.
         // Fire-and-forget events (all except message_end) are spawned detached
@@ -433,8 +586,7 @@ impl AgentSession {
                     }
                 })
             });
-            let handle = session.agent.subscribe(ff_listener).await;
-            session._subscriptions.push(handle);
+            let _handle = session.agent.subscribe(ff_listener).await;
         }
 
         session
@@ -446,6 +598,11 @@ impl AgentSession {
 
     pub fn get_agent(&self) -> &Agent {
         &self.agent
+    }
+
+    /// Get full agent state, matching TS `get state()`.
+    pub async fn get_state(&self) -> AgentState {
+        self.agent.state().await
     }
 
     pub async fn get_messages(&self) -> Vec<AgentMessage> {
@@ -536,6 +693,11 @@ impl AgentSession {
         self.agent.state().await.is_streaming
     }
 
+    /// Whether the agent has no active run, matching TS `get isIdle()`.
+    pub async fn is_idle(&self) -> bool {
+        !self.agent.state().await.is_streaming
+    }
+
     pub fn get_error_message(&self) -> Option<&str> {
         None
     }
@@ -545,10 +707,38 @@ impl AgentSession {
     }
 
     pub fn should_compact(&self) -> bool {
+        use crate::core::compaction;
+        let context_window = 128_000u64;
+        // Estimate tokens from messages — we need async here but the method is sync.
+        // Return false if we can't get messages easily; overridden by check_auto_compact().
         false
     }
 
-    pub fn get_last_assistant_text(&self) -> Option<String> {
+    /// Get text content of the last assistant message, matching TS.
+    pub async fn get_last_assistant_text(&self) -> Option<String> {
+        let messages = self.agent.state().await.messages;
+        for msg in messages.iter().rev() {
+            if let AgentMessage::Assistant { content, .. } = msg {
+                let text: String = content
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Text { text, .. } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<&str>>()
+                    .join("")
+                    .trim()
+                    .to_string();
+                if !text.is_empty() {
+                    return Some(text);
+                }
+                // Check for aborted messages with no content (skip like TS does)
+                return None;
+            }
+        }
         None
     }
 
@@ -590,6 +780,53 @@ impl AgentSession {
 
     pub fn get_excluded_tool_names(&self) -> Option<&[String]> {
         self.excluded_tool_names.as_deref()
+    }
+
+    /// Get the names of currently active tools, matching TS `getActiveToolNames()`.
+    pub async fn get_active_tool_names(&self) -> Vec<String> {
+        self.agent.state().await.tools.iter().map(|t| t.name.clone()).collect()
+    }
+
+    /// Get a tool definition by name, matching TS `getToolDefinition()`.
+    pub fn get_tool_definition(&self, name: &str) -> Option<&crate::core::extensions::ToolDefinition> {
+        self.tool_definitions.get(name)
+    }
+
+    /// Get all configured tools with name, description, parameter schema,
+    /// prompt guidelines, and source metadata, matching TS `getAllTools()`.
+    pub fn get_all_tools(&self) -> Vec<crate::core::extensions::ToolInfo> {
+        self.tool_definitions
+            .values()
+            .map(|def| crate::core::extensions::ToolInfo {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                parameters: def.parameters.clone(),
+                prompt_guidelines: def.prompt_guidelines.clone(),
+            })
+            .collect()
+    }
+
+    /// Set active tools by name, matching TS `setActiveToolsByName()`.
+    ///
+    /// Looks up each name in the full tool registry. Unknown names are
+    /// silently ignored. The active tools are immediately reflected on
+    /// `agent.state.tools`.
+    ///
+    /// Note: System prompt rebuild on tool change (as in TS) is not yet
+    /// implemented; the tools are available to the LLM but the system
+    /// prompt "Available tools" section is not updated dynamically.
+    pub async fn set_active_tools_by_name(&self, tool_names: &[String]) {
+        let selected: Vec<Arc<pi_agent_core::types::DynTool>> = tool_names
+            .iter()
+            .filter_map(|name| {
+                self.tool_registry
+                    .iter()
+                    .find(|t| t.name == *name)
+                    .cloned()
+            })
+            .collect();
+        let mut state = self.agent.state().await;
+        state.tools = selected;
     }
 
     // =========================================================================
@@ -789,24 +1026,64 @@ impl AgentSession {
     }
 
     /// Set the thinking level on the agent.
+    /// Clamps to model capabilities, matching TS setThinkingLevel().
     /// Dispatches `thinking_level_select` to extensions.
     pub async fn set_thinking_level(&mut self, level: &str) {
-        let previous_level = self.agent.state().await.thinking_level.clone();
-        let mut state = self.agent.state().await;
-        state.thinking_level = level.to_string();
+        let state = self.agent.state().await;
+        let available = pi_agent_core::pi_ai_types::get_supported_thinking_levels(&state.model);
+        let effective = if available.contains(&level) {
+            level.to_string()
+        } else {
+            pi_agent_core::pi_ai_types::clamp_thinking_level(&state.model, level)
+        };
+        let previous_level = state.thinking_level.clone();
+        let is_changing = effective != previous_level;
         drop(state);
-        // Dispatch thinking_level_select to extensions (fire-and-forget)
-        if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_thinking_level_select(
-                crate::core::extensions::dispatcher::DispatchThinkingLevelSelectParams {
-                    registry,
-                    level,
-                    previous_level: &previous_level,
-                    ext_ctx: &self.ext_ctx,
-                },
-            )
-            .await;
+
+        if is_changing {
+            let mut state = self.agent.state().await;
+            state.thinking_level = effective.clone();
+            drop(state);
+
+            // Dispatch thinking_level_select to extensions
+            if let Some(ref registry) = self.extension_registry {
+                crate::core::extensions::dispatcher::dispatch_thinking_level_select(
+                    crate::core::extensions::dispatcher::DispatchThinkingLevelSelectParams {
+                        registry,
+                        level: &effective,
+                        previous_level: &previous_level,
+                        ext_ctx: &self.ext_ctx,
+                    },
+                )
+                .await;
+            }
         }
+    }
+
+    /// Get available thinking levels for the current model, matching TS.
+    pub async fn get_available_thinking_levels(&self) -> Vec<&'static str> {
+        let model = self.agent.state().await.model;
+        pi_agent_core::pi_ai_types::get_supported_thinking_levels(&model)
+    }
+
+    /// Check if the current model supports thinking/reasoning, matching TS.
+    pub async fn supports_thinking(&self) -> bool {
+        self.agent.state().await.model.reasoning
+    }
+
+    /// Cycle to the next thinking level, matching TS cycleThinkingLevel().
+    /// Returns the new level, or None if the model doesn't support thinking.
+    pub async fn cycle_thinking_level(&mut self) -> Option<String> {
+        if !self.supports_thinking().await {
+            return None;
+        }
+        let levels = self.get_available_thinking_levels().await;
+        let current = self.agent.state().await.thinking_level;
+        let current_idx = levels.iter().position(|&l| l == current).unwrap_or(0);
+        let next_idx = (current_idx + 1) % levels.len();
+        let next = levels[next_idx].to_string();
+        self.set_thinking_level(&next).await;
+        Some(next)
     }
 
     /// Cycle through scoped models, matching the original cycleModel().
@@ -1341,6 +1618,30 @@ impl AgentSession {
         Ok(result.output)
     }
 
+    /// Whether a bash command is currently running, matching TS `get isBashRunning()`.
+    pub fn is_bash_running(&self) -> bool {
+        false
+    }
+
+    /// Record a bash execution result, matching TS `recordBashResult()`.
+    /// Queues the result when the agent is streaming; appends immediately otherwise.
+    pub fn record_bash_result(&self, _command: &str, _output: &str, _exit_code: i32) {
+        // TODO: implement bash result queuing for streaming mode,
+        // matching TS _pendingBashMessages + _flushPendingBashMessages.
+    }
+
+    /// Whether there are pending bash messages waiting to be flushed,
+    /// matching TS `get hasPendingBashMessages()`.
+    pub fn has_pending_bash_messages(&self) -> bool {
+        !self.pending_bash_messages.lock().unwrap().is_empty()
+    }
+
+    /// Abort running bash command, matching TS `abortBash()`.
+    pub fn abort_bash(&self) {
+        // TODO: implement bash abort via CancellationToken when
+        // BashExecutor supports it.
+    }
+
     pub async fn abort(&self) {
         self.agent.abort().await;
     }
@@ -1350,6 +1651,8 @@ impl AgentSession {
         self.agent.wait_for_idle().await;
     }
 
+    /// Subscribe to agent events, matching TS `subscribe()`.
+    /// Returns a handle that can be used to unsubscribe the listener.
     pub async fn subscribe(
         &mut self,
         listener: Arc<
@@ -1361,9 +1664,8 @@ impl AgentSession {
                 + Send
                 + Sync,
         >,
-    ) {
-        let handle = self.agent.subscribe(listener).await;
-        self._subscriptions.push(handle);
+    ) -> pi_agent_core::agent::UnsubscribeHandle {
+        self.agent.subscribe(listener).await
     }
 
     /// Dispose the session, dispatching session_shutdown to extensions.

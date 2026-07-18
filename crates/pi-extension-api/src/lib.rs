@@ -366,6 +366,15 @@ pub trait ExtensionAPI: Send + Sync {
     }
 }
 
+/// Tool info returned by `getAllTools()`.
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+    pub parameters: Option<serde_json::Value>,
+    pub prompt_guidelines: Option<Vec<String>>,
+}
+
 /// 工具调用结果。
 #[derive(Debug, Clone)]
 pub struct ToolCallOutput {
@@ -484,6 +493,21 @@ impl ExtensionRegistry {
     pub fn collect_tools(&mut self) -> Vec<RegisteredTool> {
         let mut all = Vec::new();
         for ext in &mut self.extensions {
+            let mut reg = ToolRegistry::new();
+            ext.register_tools(&mut reg);
+            all.extend(reg.into_vec());
+        }
+        all
+    }
+
+    /// Collect tools from the registry using a shared reference.
+    ///
+    /// Unlike `collect_tools`, this works on `&self` so it can be called
+    /// through an `Arc<ExtensionRegistry>`. Each call re-registers tools
+    /// into a fresh registry — the extensions are not consumed.
+    pub fn collect_tools_from_ref(&self) -> Vec<RegisteredTool> {
+        let mut all = Vec::new();
+        for ext in &self.extensions {
             let mut reg = ToolRegistry::new();
             ext.register_tools(&mut reg);
             all.extend(reg.into_vec());

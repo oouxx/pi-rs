@@ -12,7 +12,10 @@ pub use pi_ai::types::{
     ThinkingLevelMap, Tool, ToolCall, Transport, Usage, UsageCost, VercelGatewayRouting,
 };
 
-pub use pi_ai::models::{calculate_cost, get_model, get_models, get_providers};
+pub use pi_ai::models::{
+    calculate_cost, clamp_thinking_level, get_model, get_models, get_providers,
+    get_supported_thinking_levels,
+};
 
 use serde::{Deserialize, Serialize};
 

@@ -248,7 +248,7 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
                             || arch
                                 .input_modalities
                                 .as_ref()
-                                .map_or(false, |m| m.contains(&"image".to_string()))
+                                .is_some_and(|m| m.contains(&"image".to_string()))
                         {
                             inputs.push("image".to_string());
                         }

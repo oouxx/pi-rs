@@ -74,7 +74,12 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub session_manager: SessionManager,
     pub model: Option<pi_agent_core::pi_ai_types::Model>,
     pub thinking_level: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
-    pub scoped_models: Option<Vec<(pi_agent_core::pi_ai_types::Model, Option<pi_agent_core::pi_ai_types::ThinkingLevel>)>>,
+    pub scoped_models: Option<
+        Vec<(
+            pi_agent_core::pi_ai_types::Model,
+            Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+        )>,
+    >,
     pub tools: Option<Vec<String>>,
     pub no_tools: Option<NoToolsMode>,
     /// Pre-configured extension registry. When set, extensions are injected
@@ -90,7 +95,11 @@ pub struct CreateAgentSessionFromServicesOptions {
 
 fn default_agent_dir() -> String {
     dirs::home_dir()
-        .map(|h| h.join(crate::config::CONFIG_DIR_NAME).to_string_lossy().to_string())
+        .map(|h| {
+            h.join(crate::config::CONFIG_DIR_NAME)
+                .to_string_lossy()
+                .to_string()
+        })
         .unwrap_or_else(|| crate::config::CONFIG_DIR_NAME.to_string())
 }
 
@@ -101,30 +110,28 @@ pub async fn create_agent_session_services(
     options: CreateAgentSessionServicesOptions,
 ) -> AgentSessionServices {
     let cwd = options.cwd;
-    let agent_dir = options
-        .agent_dir
-        .unwrap_or_else(default_agent_dir);
+    let agent_dir = options.agent_dir.unwrap_or_else(default_agent_dir);
 
-    let auth_storage = options.auth_storage.unwrap_or_else(|| {
-        AuthStorage::create(Path::new(&agent_dir).join("auth.json"))
-    });
+    let auth_storage = options
+        .auth_storage
+        .unwrap_or_else(|| AuthStorage::create(Path::new(&agent_dir).join("auth.json")));
 
-    let settings_manager = options.settings_manager.unwrap_or_else(|| {
-        SettingsManager::create(&cwd, Some(&agent_dir))
-    });
+    let settings_manager = options
+        .settings_manager
+        .unwrap_or_else(|| SettingsManager::create(&cwd, Some(&agent_dir)));
 
-    let model_registry = options.model_registry.unwrap_or_else(|| {
-        ModelRegistry::new(vec![])
-    });
+    let model_registry = options
+        .model_registry
+        .unwrap_or_else(|| ModelRegistry::new(vec![]));
 
-    let resource_opts = options.resource_loader_options.unwrap_or_else(|| {
-        ResourceLoaderOptions {
+    let resource_opts = options
+        .resource_loader_options
+        .unwrap_or_else(|| ResourceLoaderOptions {
             cwd: cwd.clone(),
             agent_dir: Some(agent_dir.clone()),
             include_defaults: true,
             ..Default::default()
-        }
-    });
+        });
 
     let resources = resource_loader::load_all_resources(&resource_opts);
     let diagnostics: Vec<AgentSessionRuntimeDiagnostic> = resources
@@ -163,7 +170,9 @@ pub async fn create_agent_session_services(
 ///
 /// This keeps session creation separate from service creation so callers can
 /// resolve model, thinking, tools, and other session inputs against the target
-/// cwd before constructing the session.
+/// cwd before constructing the session. It assembles a complete
+/// `CreateAgentSessionOptions` and delegates to `create_agent_session`, which
+/// is the single session-creation entry point.
 pub async fn create_agent_session_from_services(
     options: CreateAgentSessionFromServicesOptions,
 ) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
@@ -180,7 +189,10 @@ pub async fn create_agent_session_from_services(
                 return Err("No models available. Please configure an API key.".into());
             }
             // SAFETY: is_empty() check above guarantees at least one element
-            available.into_iter().next().unwrap_or_else(|| unreachable!())
+            available
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!())
         }
     };
 
@@ -189,20 +201,14 @@ pub async fn create_agent_session_from_services(
         None => "medium".to_string(),
     };
 
-    let event_bus = EventBusController::new();
-
-    // Use caller-provided extension registry, or create an empty one
-    let mut extension_registry = options.extension_registry.unwrap_or_else(ExtensionRegistry::new);
-    // Collect prompt_guidelines BEFORE wrapping in Arc
-    let prompt_guidelines = crate::core::sdk::collect_prompt_guidelines(&mut extension_registry);
-    let extension_registry = Arc::new(extension_registry);
-
-    // Build the options struct for the inner creation function
+    // Build the options struct and delegate to the single entry point.
+    // `create_agent_session` handles extension registry wrapping,
+    // prompt_guidelines collection, resource loading, and session assembly.
     let sdk_options = crate::core::sdk::CreateAgentSessionOptions {
         cwd: services.cwd.clone(),
         agent_dir: Some(services.agent_dir.clone()),
-        model: Some(model.clone()),
-        thinking_level: Some(thinking_level.clone()),
+        model: Some(model),
+        thinking_level: Some(thinking_level),
         scoped_models: options.scoped_models,
         no_tools: options.no_tools,
         tools: options.tools,
@@ -214,7 +220,7 @@ pub async fn create_agent_session_from_services(
         convert_to_llm: None,
         extension_paths: Vec::new(),
         enable_extensions: false,
-        extension_registry: None,
+        extension_registry: options.extension_registry,
         cli_provider: None,
         cli_model: None,
         persist_session: false,
@@ -224,22 +230,5 @@ pub async fn create_agent_session_from_services(
         custom_tools: None,
     };
 
-    let (session, result) = crate::core::sdk::create_agent_session_inner(
-        crate::core::sdk::CreateAgentSessionInnerParams {
-            cwd: services.cwd,
-            agent_dir: services.agent_dir,
-            model,
-            thinking_level,
-            model_registry: services.model_registry,
-            session_manager,
-            event_bus,
-            extension_registry,
-            options: sdk_options,
-            fallback_message: options.fallback_message,
-            prompt_guidelines,
-        },
-    )
-    .await;
-
-    Ok((session, result))
+    crate::core::sdk::create_agent_session(sdk_options).await
 }

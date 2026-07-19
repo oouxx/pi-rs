@@ -33,8 +33,7 @@ pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
                 let event_stream =
                     pi_agent_core::pi_ai::stream::stream(&model, &context, Some(stream_opts));
 
-                let boxed: StreamResponse =
-                    Box::new(event_stream);
+                let boxed: StreamResponse = Box::new(event_stream);
 
                 Ok(boxed)
             })
@@ -106,77 +105,79 @@ pub struct CreateAgentSessionResult {
 
 pub mod prelude {
     // ── Agent runtime ───────────────────────────────────────────────────────
-    pub use crate::core::agent_session::{AgentSession, AgentSessionConfig, PromptOptions, SessionStats, TokenUsage};
+    pub use crate::core::agent_session::{
+        AgentSession, AgentSessionConfig, PromptOptions, SessionStats, TokenUsage,
+    };
 
     // ── Session management ──────────────────────────────────────────────────
     pub use crate::core::session_manager::{
-        SessionManager, SessionEntry, SessionContext, SessionHeader, SessionInfo, SessionTreeNode,
-        NewSessionOptions, ModelInfo, build_session_context, derive_short_session_id,
-        is_valid_session_file, migrate_session_file, list_sessions_concurrent, SessionListProgressCallback,
-        ReadonlySessionManager,
+        build_session_context, derive_short_session_id, is_valid_session_file,
+        list_sessions_concurrent, migrate_session_file, ModelInfo, NewSessionOptions,
+        ReadonlySessionManager, SessionContext, SessionEntry, SessionHeader, SessionInfo,
+        SessionListProgressCallback, SessionManager, SessionTreeNode,
     };
 
     // ── Extensions ──────────────────────────────────────────────────────────
     pub use crate::core::extensions::{
-        ExtensionAPI, ExtensionContext, ExtensionRegistry, ToolDefinition, ExtensionEvent, EventResult,
-        RegisteredTool, RegisteredCommand, RegisteredFlag, RegisteredShortcut, ToolInfo,
-        ToolRegistry, CommandRegistry, ShortcutRegistry, FlagRegistry,
-        RuntimeHandle, ExtensionUIContext, ToolCallOutput, ExecResult,
-        SendMessageOptions, SendUserMessageOptions,
+        CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
+        ExtensionRegistry, ExtensionUIContext, FlagRegistry, RegisteredCommand, RegisteredFlag,
+        RegisteredShortcut, RegisteredTool, RuntimeHandle, SendMessageOptions,
+        SendUserMessageOptions, ShortcutRegistry, ToolCallOutput, ToolDefinition, ToolInfo,
+        ToolRegistry,
     };
 
     // ── Slash commands & skills & prompts ───────────────────────────────────
-    pub use crate::core::slash_commands::{SlashCommandInfo, SlashCommandSource};
     pub use crate::core::prompt_templates::PromptTemplate;
     pub use crate::core::skills::Skill;
+    pub use crate::core::slash_commands::{SlashCommandInfo, SlashCommandSource};
 
     // ── Tool types and factory functions ────────────────────────────────────
-    pub use crate::core::tools::{
-        create_coding_tools, create_read_only_tools, ToolName,
-        OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot,
-        TruncationOptions, TruncationResult,
-    };
     pub use crate::core::tools::bash::create_bash_tool;
     pub use crate::core::tools::edit::create_edit_tool;
     pub use crate::core::tools::file_mutation_queue::with_file_mutation_queue;
     pub use crate::core::tools::find::create_find_tool;
     pub use crate::core::tools::grep::create_grep_tool;
     pub use crate::core::tools::ls::create_ls_tool;
-    pub use crate::core::tools::read::create_read_tool;
-    pub use crate::core::tools::write::create_write_tool;
     pub use crate::core::tools::path_utils::resolve_read_path;
+    pub use crate::core::tools::read::create_read_tool;
     pub use crate::core::tools::tool_definition_wrapper::wrap_tool_definitions;
+    pub use crate::core::tools::write::create_write_tool;
+    pub use crate::core::tools::{
+        create_coding_tools, create_read_only_tools, OutputAccumulator, OutputAccumulatorOptions,
+        OutputSnapshot, ToolName, TruncationOptions, TruncationResult,
+    };
 
     // ── Model registry & resolution ─────────────────────────────────────────
     pub use crate::core::model_registry::{
-        ModelRegistry, ModelRegistryEntry, ProviderConfig, ProviderConfigInput, ApiKeyResult,
-        builtin_models,
+        builtin_models, ApiKeyResult, ModelRegistry, ModelRegistryEntry, ProviderConfig,
+        ProviderConfigInput,
     };
-    pub use crate::core::model_resolver::{ScopedModel, find_initial_model};
+    pub use crate::core::model_resolver::{find_initial_model, ScopedModel};
 
     // ── Settings ────────────────────────────────────────────────────────────
     pub use crate::core::settings_manager::{
-        Settings, SettingsManager, SettingsScope, SettingsStorage, FileSettingsStorage,
-        CompactionSettings, BranchSummarySettings, RetrySettings, TerminalSettings,
-        ImageSettings, ThinkingBudgetsSettings, MarkdownSettings, WarningSettings,
-        ProviderRetrySettings,
+        BranchSummarySettings, CompactionSettings, FileSettingsStorage, ImageSettings,
+        MarkdownSettings, ProviderRetrySettings, RetrySettings, Settings, SettingsManager,
+        SettingsScope, SettingsStorage, TerminalSettings, ThinkingBudgetsSettings, WarningSettings,
     };
 
     // ── Project trust & auth ────────────────────────────────────────────────
+    pub use crate::core::auth_storage::{
+        AuthCredential, AuthStorage, AuthStorageBackend, OAuthCredentials,
+    };
     pub use crate::core::project_trust::{
-        DefaultProjectTrust, ProjectTrustContext, ResolveProjectTrustedOptions,
-        resolve_project_trusted,
+        resolve_project_trusted, DefaultProjectTrust, ProjectTrustContext,
+        ResolveProjectTrustedOptions,
     };
     pub use crate::core::trust_manager::{
-        ProjectTrustStore, ProjectTrustStoreEntry, ProjectTrustUpdate, ProjectTrustOption,
-        find_nearest_trust_entry, get_project_trust_parent_path, get_project_trust_options,
-        has_trust_requiring_project_resources,
+        find_nearest_trust_entry, get_project_trust_options, get_project_trust_parent_path,
+        has_trust_requiring_project_resources, ProjectTrustOption, ProjectTrustStore,
+        ProjectTrustStoreEntry, ProjectTrustUpdate,
     };
-    pub use crate::core::auth_storage::{AuthStorage, AuthCredential, AuthStorageBackend, OAuthCredentials};
 
     // ── Message pipeline ────────────────────────────────────────────────────
     pub use crate::core::messages::{
-        convert_to_llm, normalize_ingested_message, bash_execution_to_text,
+        bash_execution_to_text, convert_to_llm, normalize_ingested_message,
     };
 
     // ── System prompt ───────────────────────────────────────────────────────
@@ -189,25 +190,24 @@ pub mod prelude {
 
     // ── Config helpers ──────────────────────────────────────────────────────
     pub use crate::config::{
-        APP_NAME, VERSION, CONFIG_DIR_NAME, PACKAGE_NAME, APP_TITLE,
-        get_agent_dir, get_models_path, get_auth_path, get_settings_path,
-        get_sessions_dir, get_tools_dir, get_bin_dir, get_prompts_dir, get_debug_log_path,
-        expand_tilde_path,
+        expand_tilde_path, get_agent_dir, get_auth_path, get_bin_dir, get_debug_log_path,
+        get_models_path, get_prompts_dir, get_sessions_dir, get_settings_path, get_tools_dir,
+        APP_NAME, APP_TITLE, CONFIG_DIR_NAME, PACKAGE_NAME, VERSION,
     };
 
     // ── Agent-core types (re-exported for convenience) ──────────────────────
+    pub use pi_agent_core::types::AfterToolCallContext;
+    pub use pi_agent_core::types::AfterToolCallResult;
+    pub use pi_agent_core::types::AgentEvent;
+    pub use pi_agent_core::types::AgentMessage;
+    pub use pi_agent_core::types::AgentState;
     pub use pi_agent_core::types::AgentTool;
     pub use pi_agent_core::types::AgentToolResult;
-    pub use pi_agent_core::types::AgentState;
-    pub use pi_agent_core::types::AgentMessage;
-    pub use pi_agent_core::types::AgentEvent;
+    pub use pi_agent_core::types::BeforeToolCallContext;
+    pub use pi_agent_core::types::BeforeToolCallResult;
+    pub use pi_agent_core::types::ConvertToLlmFn;
     pub use pi_agent_core::types::StreamFn;
     pub use pi_agent_core::types::StreamFnOptions;
-    pub use pi_agent_core::types::ConvertToLlmFn;
-    pub use pi_agent_core::types::BeforeToolCallContext;
-    pub use pi_agent_core::types::AfterToolCallContext;
-    pub use pi_agent_core::types::BeforeToolCallResult;
-    pub use pi_agent_core::types::AfterToolCallResult;
 
     /// Re-exports from agent_session_runtime (AgentSessionRuntime etc.).
     pub use crate::core::agent_session_runtime::*;
@@ -221,7 +221,9 @@ pub mod prelude {
 ///
 /// Must be called BEFORE wrapping the registry in Arc, because
 /// `collect_tools()` requires `&mut self`.
-pub fn collect_prompt_guidelines(registry: &mut crate::core::extensions::ExtensionRegistry) -> Option<Vec<String>> {
+pub fn collect_prompt_guidelines(
+    registry: &mut crate::core::extensions::ExtensionRegistry,
+) -> Option<Vec<String>> {
     let tools = registry.collect_tools();
     let mut guidelines: Vec<String> = Vec::new();
     for t in &tools {
@@ -229,47 +231,141 @@ pub fn collect_prompt_guidelines(registry: &mut crate::core::extensions::Extensi
             guidelines.extend(gl.iter().cloned());
         }
     }
-    if guidelines.is_empty() { None } else { Some(guidelines) }
+    if guidelines.is_empty() {
+        None
+    } else {
+        Some(guidelines)
+    }
 }
 
-/// Parameters for `create_agent_session_inner`.
+/// Create an AgentSession from resolved options.
 ///
-/// Groups all pre-resolved inputs needed to create an AgentSession.
-pub struct CreateAgentSessionInnerParams {
-    pub cwd: String,
-    pub agent_dir: String,
-    pub model: Model,
-    pub thinking_level: String,
-    pub model_registry: ModelRegistry,
-    pub session_manager: SessionManager,
-    pub event_bus: EventBusController,
-    pub extension_registry: Arc<crate::core::extensions::ExtensionRegistry>,
-    pub options: CreateAgentSessionOptions,
-    pub fallback_message: Option<String>,
-    pub prompt_guidelines: Option<Vec<String>>,
-}
+/// This is the single entry point for session creation. It resolves the
+/// model, thinking level, session manager, event bus, and extension registry
+/// from the provided `CreateAgentSessionOptions`, then assembles the
+/// `AgentSession`.
+///
+/// `create_agent_session_from_services()` (in `agent_session_services.rs`)
+/// builds a complete `CreateAgentSessionOptions` and delegates here, so all
+/// session-creation logic lives in one place.
+pub async fn create_agent_session(
+    mut options: CreateAgentSessionOptions,
+) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
+    // Ensure API providers are registered before any LLM calls
+    pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
 
-/// Create an AgentSession from pre-resolved inputs.
-///
-/// This is the core session creation logic, shared by both
-/// `create_agent_session()` (which resolves services first) and
-/// `create_agent_session_from_services()` (which takes pre-created services).
-pub async fn create_agent_session_inner(
-    params: CreateAgentSessionInnerParams,
-) -> (AgentSession, CreateAgentSessionResult) {
-    let CreateAgentSessionInnerParams {
-        cwd,
-        agent_dir,
-        model,
-        thinking_level,
-        model_registry,
-        session_manager,
-        event_bus,
-        extension_registry,
-        options,
-        fallback_message,
-        prompt_guidelines,
-    } = params;
+    let cwd = options.cwd.clone();
+    let agent_dir = options
+        .agent_dir
+        .clone()
+        .unwrap_or_else(|| crate::config::get_agent_dir().to_string_lossy().to_string());
+
+    let settings_manager = SettingsManager::create(&cwd, Some(&agent_dir));
+    let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+
+    let default_provider = settings_manager.get_settings().default_provider.clone();
+    let default_model_id = settings_manager.get_settings().default_model.clone();
+    let default_thinking_level = settings_manager.get_settings().thinking_level.clone();
+
+    let scoped = options
+        .scoped_models
+        .as_ref()
+        .map(|models| {
+            models
+                .iter()
+                .map(|(m, tl)| ScopedModel {
+                    model: m.clone(),
+                    thinking_level: tl.as_ref().map(|t| format!("{:?}", t).to_lowercase()),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    // Resolve the model. When the caller has already resolved a model (e.g.
+    // `create_agent_session_from_services`), honor it directly and skip the
+    // default resolution path. Otherwise resolve from CLI flags / scoped
+    // models / settings, falling back to the first available model.
+    let (model, thinking_level, fallback_message) = if let Some(m) = options.model.clone() {
+        let tl = options
+            .thinking_level
+            .clone()
+            .map(|t| match t.as_str() {
+                "high" => "high".to_string(),
+                "low" => "low".to_string(),
+                _ => "medium".to_string(),
+            })
+            .unwrap_or_else(|| "medium".to_string());
+        (m, tl, None)
+    } else {
+        let initial_model = model_resolver::find_initial_model(
+            options.cli_provider.as_deref(),
+            options.cli_model.as_deref(),
+            &scoped,
+            false,
+            default_provider.as_deref(),
+            default_model_id.as_deref(),
+            default_thinking_level.as_deref(),
+            &model_registry,
+        );
+
+        let model = match initial_model.model {
+            Some(m) => m,
+            None => {
+                let available = model_registry.get_available();
+                if available.is_empty() {
+                    return Err("No models available. Please configure an API key.".into());
+                }
+                // SAFETY: is_empty() check above guarantees at least one element
+                available
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| unreachable!())
+            }
+        };
+
+        let thinking_level = match initial_model.thinking_level.as_str() {
+            "high" => "high".to_string(),
+            "medium" => "medium".to_string(),
+            "low" => "low".to_string(),
+            _ => "medium".to_string(),
+        };
+
+        (model, thinking_level, initial_model.fallback_message)
+    };
+
+    // Resolve session directory: --session-dir overrides default
+    let session_dir = options
+        .session_dir
+        .clone()
+        .unwrap_or_else(|| SessionManager::default_session_dir(&cwd, &agent_dir));
+
+    // Create or restore session manager
+    let session_manager = if let Some(ref fork_path) = options.fork_from {
+        SessionManager::fork_from(fork_path, &cwd, Some(&session_dir), None)
+            .map_err(|e| format!("Failed to fork session: {e}"))?
+    } else {
+        let persist = options.persist_session || options.session_file.is_some();
+        SessionManager::new(
+            &cwd,
+            &session_dir,
+            options.session_file.as_deref(),
+            persist,
+            None,
+        )
+    };
+
+    let event_bus = EventBusController::new();
+
+    // ── Extension registry (Rust native extensions) ───────────────────
+    let mut extension_registry = options
+        .extension_registry
+        .take()
+        .unwrap_or_else(ExtensionRegistry::new);
+    // Collect prompt_guidelines BEFORE wrapping in Arc
+    // (collect_tools() requires &mut self, which Arc doesn't provide).
+    let prompt_guidelines = collect_prompt_guidelines(&mut extension_registry);
+    let extension_registry_arc = std::sync::Arc::new(extension_registry);
+
     // Dispatch session_start to extensions before session creation.
     let ext_ctx = crate::core::extensions::ExtensionContext::new(
         cwd.clone(),
@@ -282,7 +378,7 @@ pub async fn create_agent_session_inner(
         crate::core::extensions::RuntimeHandle::noop(),
     );
     crate::core::extensions::dispatcher::dispatch_session_start(
-        &extension_registry,
+        &extension_registry_arc,
         "startup",
         &ext_ctx,
     )
@@ -297,7 +393,8 @@ pub async fn create_agent_session_inner(
     };
     let resources = resource_loader::load_all_resources(&resource_options);
 
-    let context_files: Vec<ContextFile> = resources.clone()
+    let context_files: Vec<ContextFile> = resources
+        .clone()
         .context_files
         .into_iter()
         .map(|cf| ContextFile {
@@ -306,7 +403,8 @@ pub async fn create_agent_session_inner(
         })
         .collect();
 
-    let skills: Vec<SkillInfo> = resources.clone()
+    let skills: Vec<SkillInfo> = resources
+        .clone()
         .skills
         .into_iter()
         .map(|s| SkillInfo {
@@ -344,17 +442,20 @@ pub async fn create_agent_session_inner(
         context_files,
         skills,
         session_name: options.session_name,
-        stream_fn: options.stream_fn.or_else(|| Some(create_default_stream_fn())),
+        stream_fn: options
+            .stream_fn
+            .or_else(|| Some(create_default_stream_fn())),
         convert_to_llm: options.convert_to_llm,
         initial_active_tool_names: Some(initial_active_tool_names),
         allowed_tool_names,
         excluded_tool_names,
-        extension_registry: Some(extension_registry),
+        extension_registry: Some(extension_registry_arc),
         resources: Some(resources),
         custom_tools: options.custom_tools,
     };
 
-    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
+    let session =
+        AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {
@@ -364,127 +465,10 @@ pub async fn create_agent_session_inner(
         }
     }
 
-    (
+    Ok((
         session,
         CreateAgentSessionResult {
             model_fallback_message: fallback_message,
         },
-    )
-}
-
-pub async fn create_agent_session(
-    mut options: CreateAgentSessionOptions,
-) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
-    // Ensure API providers are registered before any LLM calls
-    pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
-
-    let cwd = options.cwd.clone();
-    let agent_dir = options
-        .agent_dir
-        .clone()
-        .unwrap_or_else(|| crate::config::get_agent_dir().to_string_lossy().to_string());
-
-    let settings_manager = SettingsManager::create(&cwd, Some(&agent_dir));
-    let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
-
-    let default_provider = settings_manager.get_settings().default_provider.clone();
-    let default_model_id = settings_manager.get_settings().default_model.clone();
-    let default_thinking_level = settings_manager.get_settings().thinking_level.clone();
-
-    let scoped = options
-        .scoped_models
-        .as_ref()
-        .map(|models| {
-            models
-                .iter()
-                .map(|(m, tl)| ScopedModel {
-                    model: m.clone(),
-                    thinking_level: tl.as_ref().map(|t| format!("{:?}", t).to_lowercase()),
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let initial_model = model_resolver::find_initial_model(
-        options.cli_provider.as_deref(),
-        options.cli_model.as_deref(),
-        &scoped,
-        false,
-        default_provider.as_deref(),
-        default_model_id.as_deref(),
-        default_thinking_level.as_deref(),
-        &model_registry,
-    );
-
-    let model = match initial_model.model {
-        Some(m) => m,
-        None => {
-            let available = model_registry.get_available();
-            if available.is_empty() {
-                return Err("No models available. Please configure an API key.".into());
-            }
-            // SAFETY: is_empty() check above guarantees at least one element
-            available.into_iter().next().unwrap_or_else(|| unreachable!())
-        }
-    };
-
-    let thinking_level = match initial_model.thinking_level.as_str() {
-        "high" => "high".to_string(),
-        "medium" => "medium".to_string(),
-        "low" => "low".to_string(),
-        _ => "medium".to_string(),
-    };
-
-    // Resolve session directory: --session-dir overrides default
-    let session_dir = options
-        .session_dir
-        .clone()
-        .unwrap_or_else(|| SessionManager::default_session_dir(&cwd, &agent_dir));
-
-    // Create or restore session manager
-    let session_manager = if let Some(ref fork_path) = options.fork_from {
-        SessionManager::fork_from(
-            fork_path,
-            &cwd,
-            Some(&session_dir),
-            None,
-        )
-        .map_err(|e| format!("Failed to fork session: {e}"))?
-    } else {
-        let persist = options.persist_session || options.session_file.is_some();
-        SessionManager::new(
-            &cwd,
-            &session_dir,
-            options.session_file.as_deref(),
-            persist,
-            None,
-        )
-    };
-
-    let event_bus = EventBusController::new();
-
-    // ── Extension registry (Rust native extensions) ───────────────────
-    let mut extension_registry = options.extension_registry.take().unwrap_or_else(ExtensionRegistry::new);
-    // Collect prompt_guidelines BEFORE wrapping in Arc
-    // (collect_tools() requires &mut self, which Arc doesn't provide).
-    let prompt_guidelines = collect_prompt_guidelines(&mut extension_registry);
-    let extension_registry_arc = std::sync::Arc::new(extension_registry);
-
-    let (session, result) = create_agent_session_inner(
-        CreateAgentSessionInnerParams {
-            cwd,
-            agent_dir,
-            model,
-            thinking_level,
-            model_registry,
-            session_manager,
-            event_bus,
-            extension_registry: extension_registry_arc,
-            options,
-            fallback_message: initial_model.fallback_message,
-            prompt_guidelines,
-        },
-    ).await;
-
-    Ok((session, result))
+    ))
 }

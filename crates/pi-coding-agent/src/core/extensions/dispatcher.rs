@@ -139,6 +139,7 @@ pub async fn dispatch_tool_result(
     let mut merged_content: Option<Vec<serde_json::Value>> = None;
     let mut merged_details: Option<serde_json::Value> = None;
     let mut merged_is_error: Option<bool> = None;
+    let mut merged_terminate: Option<bool> = None;
     let mut blocked = false;
 
     for (_name, result) in &results {
@@ -155,10 +156,13 @@ pub async fn dispatch_tool_result(
             if let Some(is_error) = r.is_error {
                 merged_is_error = Some(is_error);
             }
+            if let Some(terminate) = r.terminate {
+                merged_terminate = Some(terminate);
+            }
         }
     }
 
-    if blocked || merged_content.is_some() || merged_details.is_some() || merged_is_error.is_some() {
+    if blocked || merged_content.is_some() || merged_details.is_some() || merged_is_error.is_some() || merged_terminate.is_some() {
         Some(AfterToolCallResult {
             content: merged_content.map(|v| {
                 v.into_iter().filter_map(|val| {
@@ -167,7 +171,7 @@ pub async fn dispatch_tool_result(
             }),
             details: merged_details,
             is_error: merged_is_error,
-            terminate: None,
+            terminate: merged_terminate,
         })
     } else {
         None

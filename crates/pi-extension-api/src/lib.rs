@@ -166,6 +166,9 @@ pub struct EventResult {
     pub details: Option<Value>,
     /// Modified tool result is_error flag (for tool_result events).
     pub is_error: Option<bool>,
+    /// Modified tool result terminate flag (for tool_result events).
+    /// When `Some(true)`, signals the agent loop to stop after this tool call.
+    pub terminate: Option<bool>,
     /// Modified provider request payload (for before_provider_request events).
     pub payload: Option<Value>,
     /// Modified input images (for input events).
@@ -381,6 +384,10 @@ pub struct ToolCallOutput {
     pub content: Vec<Value>,
     pub details: Option<Value>,
     pub is_error: bool,
+    /// When `Some(true)`, signals the agent loop to stop after this tool call.
+    /// This allows extension-provided tools (e.g. a "submit decision" tool)
+    /// to terminate the agent loop without relying on `DynTool` directly.
+    pub terminate: Option<bool>,
 }
 
 // ============================================================================

@@ -676,6 +676,7 @@ impl ExtensionAPI for GoalExtension {
                     content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&*goal).unwrap_or_default() })],
                     details: Some(json!({ "goal": *goal })),
                     is_error: false,
+                    terminate: None,
                 })
             }
             "create_goal" => {
@@ -685,6 +686,7 @@ impl ExtensionAPI for GoalExtension {
                         content: vec![json!({ "type": "text", "text": "objective is required." })],
                         details: None,
                         is_error: true,
+                        terminate: None,
                     });
                 }
                 let (token_budget, error) = normalize_token_budget(params.get("tokenBudget").unwrap_or(&Value::Null));
@@ -693,6 +695,7 @@ impl ExtensionAPI for GoalExtension {
                         content: vec![json!({ "type": "text", "text": err })],
                         details: None,
                         is_error: true,
+                        terminate: None,
                     });
                 }
                 let next = create_goal_state(objective, token_budget);
@@ -705,6 +708,7 @@ impl ExtensionAPI for GoalExtension {
                     content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&json!({"goal": next, "remainingTokens": token_budget})).unwrap_or_default() })],
                     details: Some(json!({ "goal": next })),
                     is_error: false,
+                    terminate: None,
                 })
             }
             "update_goal" => {
@@ -714,6 +718,7 @@ impl ExtensionAPI for GoalExtension {
                         content: vec![json!({ "type": "text", "text": "update_goal only accepts status=complete." })],
                         details: None,
                         is_error: true,
+                        terminate: None,
                     });
                 }
                 let goal = self.goal.lock().unwrap();
@@ -722,6 +727,7 @@ impl ExtensionAPI for GoalExtension {
                         content: vec![json!({ "type": "text", "text": "No goal is set." })],
                         details: None,
                         is_error: true,
+                        terminate: None,
                     });
                 }
                 let current = goal.as_ref().unwrap().clone();
@@ -737,6 +743,7 @@ impl ExtensionAPI for GoalExtension {
                     content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&json!({"goal": next, "remainingTokens": remaining})).unwrap_or_default() })],
                     details: Some(json!({ "goal": next })),
                     is_error: false,
+                    terminate: None,
                 })
             }
             _ => None,

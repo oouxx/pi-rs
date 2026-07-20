@@ -570,7 +570,7 @@ impl AgentSession {
         };
 
         // Register event-driven persistence subscriber, matching the original
-        // TS behavior: persist user / assistant / toolResult messages on each
+        // TS behavior: persist user / assistant / toolResult / custom messages on each
         // message_end event.
         let persist_sm = session_manager.clone();
         let persist_listener: Arc<
@@ -586,6 +586,15 @@ impl AgentSession {
             Box::pin(async move {
                 if let AgentEvent::MessageEnd { ref message } = event {
                     match message {
+                        AgentMessage::Custom { custom_type, content, display, details, .. } => {
+                            let content_json = serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
+                            sm.lock().unwrap().append_custom_message_entry(
+                                custom_type,
+                                content_json,
+                                *display,
+                                details.clone(),
+                            );
+                        }
                         AgentMessage::User { .. }
                         | AgentMessage::Assistant { .. }
                         | AgentMessage::ToolResult { .. } => {

@@ -134,6 +134,44 @@ pub struct CreateAgentSessionOptions {
     pub session_start_event: Option<SessionStartEvent>,
 }
 
+impl Default for CreateAgentSessionOptions {
+    fn default() -> Self {
+        Self {
+            cwd: std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string()),
+            agent_dir: None,
+            model: None,
+            thinking_level: None,
+            scoped_models: None,
+            no_tools: None,
+            tools: None,
+            exclude_tools: None,
+            custom_prompt: None,
+            append_system_prompt: None,
+            session_name: None,
+            stream_fn: None,
+            convert_to_llm: None,
+            custom_tools: None,
+            extension_paths: Vec::new(),
+            enable_extensions: true,
+            extension_registry: None,
+            cli_provider: None,
+            cli_model: None,
+            persist_session: false,
+            session_file: None,
+            fork_from: None,
+            session_dir: None,
+            auth_storage: None,
+            model_registry: None,
+            resource_loader: None,
+            session_manager: None,
+            settings_manager: None,
+            session_start_event: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoToolsMode {
     All,

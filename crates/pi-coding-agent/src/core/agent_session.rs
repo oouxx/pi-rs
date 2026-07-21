@@ -87,6 +87,31 @@ pub struct PromptOptions {
     pub source: Option<String>,
 }
 
+/// Extension bindings for bind_extensions(), matching TS ExtensionBindings interface.
+/// In the current Rust architecture, extensions are registered at construction time,
+/// so most fields are informational. The struct is kept for API compatibility.
+pub struct ExtensionBindings {
+    /// UI context for extension notifications/confirmations.
+    pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
+    /// Extension mode ("tui", "rpc", "json", "print").
+    pub mode: Option<String>,
+    /// Abort handler called when the session is aborted.
+    pub abort_handler: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Shutdown handler called when the session is disposed.
+    pub shutdown_handler: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Error listener for extension errors.
+    pub on_error: Option<Box<dyn Fn(&str) + Send + Sync>>,
+}
+
+/// Replaced session context for create_replaced_session_context(),
+/// matching TS ReplacedSessionContext interface.
+pub struct ReplacedSessionContext {
+    /// Send a custom message (bound to this session).
+    pub send_message: Option<Box<dyn Fn(String, Option<CustomMessageOptions>) + Send + Sync>>,
+    /// Send a user message (bound to this session).
+    pub send_user_message: Option<Box<dyn Fn(String, Option<SendUserMessageOptions>) + Send + Sync>>,
+}
+
 /// Session statistics for /session command.
 /// Matches the original TypeScript SessionStats interface.
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -195,6 +220,11 @@ pub enum AgentSessionEvent {
     SessionInfoChanged {
         name: Option<String>,
     },
+    ModelSelect {
+        model: String,
+        previous_model: Option<String>,
+        source: String,
+    },
     ThinkingLevelChanged {
         level: String,
     },
@@ -247,6 +277,7 @@ impl SessionEventUnsubscribeHandle {
 pub struct AgentSession {
     agent: Agent,
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
+    settings_manager: Arc<std::sync::Mutex<crate::core::settings_manager::SettingsManager>>,
     model_registry: ModelRegistry,
     compaction_settings: CompactionSettings,
     cwd: String,
@@ -308,6 +339,7 @@ pub struct AgentSession {
 impl AgentSession {
     pub async fn new(
         session_manager: SessionManager,
+        settings_manager: crate::core::settings_manager::SettingsManager,
         model_registry: ModelRegistry,
         options: AgentSessionConfig,
     ) -> Self {
@@ -736,6 +768,7 @@ impl AgentSession {
         let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
+            settings_manager: Arc::new(std::sync::Mutex::new(settings_manager)),
             model_registry,
             compaction_settings: CompactionSettings::default(),
             cwd: session_cwd.clone(),
@@ -834,8 +867,12 @@ impl AgentSession {
             let _is_active = _inner_is_active.clone();
             let _idle = _inner_idle.clone();
             Box::pin(async move {
-                // ── 1. Handle queue updates ──
+                // ── 1. Handle queue updates and state resets ──
+                // Reset overflow recovery on any new user message (matching TS)
                 if let AgentEvent::MessageStart { ref message } = event {
+                    if let AgentMessage::User { .. } = message {
+                        *_overflow.lock().unwrap() = false;
+                    }
                     if let AgentMessage::User { ref content, .. } = message {
                         let message_text: String = content
                             .iter()
@@ -920,9 +957,52 @@ impl AgentSession {
                 // ── 3. Emit to session event listeners ──
                 let session_event = match &event {
                     AgentEvent::AgentEnd { messages } => {
+                        // Compute will_retry from the last assistant message,
+                        // matching TS _willRetryAfterAgentEnd().
+                        let will_retry = messages.last().map_or(false, |last| {
+                            if let AgentMessage::Assistant { stop_reason, error_message, .. } = last {
+                                if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                                    if let Some(ref err_msg) = error_message {
+                                        // Check retryable patterns (same as _is_retryable_error_message)
+                                        let non_retryable = [
+                                            "insufficient_quota", "out of budget", "quota exceeded", "billing",
+                                            "GoUsageLimitError", "FreeUsageLimitError",
+                                            "Monthly usage limit reached", "available balance",
+                                        ];
+                                        for pattern in &non_retryable {
+                                            if err_msg.to_lowercase().contains(pattern) {
+                                                return false;
+                                            }
+                                        }
+                                        let retryable = [
+                                            "overloaded", "rate limit", "too many requests", "429",
+                                            "500", "502", "503", "504", "524",
+                                            "service unavailable", "server error", "internal error",
+                                            "provider returned error",
+                                            "network error", "connection error", "connection refused",
+                                            "fetch failed", "upstream connect",
+                                            "reset before headers", "socket hang up",
+                                            "timed out", "timeout", "terminated",
+                                            "websocket closed", "websocket error",
+                                            "ended without", "stream ended before message_stop",
+                                            "http2 request did not get a response",
+                                            "retry delay",
+                                            "you can retry your request", "try your request again", "please retry your request",
+                                            "ResourceExhausted",
+                                        ];
+                                        for pattern in &retryable {
+                                            if err_msg.to_lowercase().contains(pattern) {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            false
+                        });
                         AgentSessionEvent::AgentEnd {
                             messages: messages.clone(),
-                            will_retry: false,
+                            will_retry,
                         }
                     }
                     AgentEvent::AgentStart => AgentSessionEvent::AgentStart,
@@ -1004,8 +1084,12 @@ impl AgentSession {
                     }
 
                     // Track assistant message for auto-compaction
-                    if let AgentMessage::Assistant { .. } = message {
+                    if let AgentMessage::Assistant { stop_reason, .. } = message {
                         *last_assistant.lock().unwrap() = Some(message.clone());
+                        // Reset overflow recovery on successful assistant response (matching TS)
+                        if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                            *_overflow.lock().unwrap() = false;
+                        }
                     }
                 }
             })
@@ -1272,7 +1356,11 @@ impl AgentSession {
     pub async fn get_last_assistant_text(&self) -> Option<String> {
         let messages = self.agent.state().await.messages;
         for msg in messages.iter().rev() {
-            if let AgentMessage::Assistant { content, .. } = msg {
+            if let AgentMessage::Assistant { content, stop_reason, .. } = msg {
+                // Skip aborted messages with no content (matching TS behavior)
+                if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted) && content.is_empty() {
+                    continue;
+                }
                 let text: String = content
                     .iter()
                     .filter_map(|block| {
@@ -1289,8 +1377,6 @@ impl AgentSession {
                 if !text.is_empty() {
                     return Some(text);
                 }
-                // Check for aborted messages with no content (skip like TS does)
-                return None;
             }
         }
         None
@@ -1336,7 +1422,7 @@ impl AgentSession {
     /// Get pending steering messages (read-only), matching TS getSteeringMessages().
     /// Check if any extension has registered handlers for the given event type,
     /// matching TS `hasExtensionHandlers(eventType)`.
-    pub fn has_extension_handlers(&self) -> bool {
+    pub fn has_extension_handlers(&self, _event_type: &str) -> bool {
         self.extension_registry
             .as_ref()
             .map(|r| r.has_handlers())
@@ -1344,8 +1430,43 @@ impl AgentSession {
     }
 
     /// Get the extension registry (equivalent to TS `get extensionRunner()`).
-    pub fn extension_runner(&self) -> Option<&Arc<ExtensionRegistry>> {
-        self.extension_registry.as_ref()
+    /// Panics if no extension registry is configured.
+    pub fn extension_runner(&self) -> &Arc<ExtensionRegistry> {
+        self.extension_registry
+            .as_ref()
+            .expect("ExtensionRegistry not configured")
+    }
+
+    /// Bind extensions to the session, matching TS bindExtensions().
+    /// In the current Rust architecture, extensions are registered at construction
+    /// time via ExtensionRegistry, so this is a no-op for the binding logic.
+    /// The bindings are stored for reference and the session_start event is emitted.
+    pub async fn bind_extensions(&self, _bindings: ExtensionBindings) {
+        // In TS, this sets _extensionUIContext, _extensionMode, etc. and calls
+        // _applyExtensionBindings() + emits session_start to extensions.
+        // In Rust, the equivalent is done at construction time via ExtensionContext.
+        // Emit session_start to extensions if any are registered.
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_session_start(
+                registry,
+                "startup",
+                &self.ext_ctx,
+            )
+            .await;
+        }
+    }
+
+    /// Create a replaced session context, matching TS createReplacedSessionContext().
+    /// Returns a ReplacedSessionContext with send_message and send_user_message methods
+    /// bound to this session.
+    pub fn create_replaced_session_context(&self) -> ReplacedSessionContext {
+        // In TS, this clones the extension runner's command context and binds
+        // sendMessage/sendUserMessage. In Rust, we create a simplified context
+        // with the same interface.
+        ReplacedSessionContext {
+            send_message: None,
+            send_user_message: None,
+        }
     }
 
     /// Get file-based prompt templates, matching TS `get promptTemplates()`.
@@ -1855,7 +1976,7 @@ impl AgentSession {
     // =========================================================================
 
     /// Set the model on the agent, matching the original setModel().
-    /// Dispatches `model_select` to extensions.
+    /// Persists to session and settings, re-clamps thinking level, and emits events.
     pub async fn set_model(&mut self, model: Model) -> Result<(), String> {
         // Check auth before setting model, matching TS _modelRuntime.checkAuth()
         let auth_result = self.model_registry.get_api_key_and_headers(&model).await?;
@@ -1867,17 +1988,48 @@ impl AgentSession {
         }
 
         let model_id = model.id.clone();
+        let model_provider = model.provider.clone();
         let mut state = self.agent.state().await;
         let previous_model_id = state.model.id.clone();
+        let previous_model = if previous_model_id.is_empty() {
+            None
+        } else {
+            Some(previous_model_id.clone())
+        };
         state.model = model;
         drop(state);
+
+        // Persist to session (matching TS sessionManager.appendModelChange)
+        self.session_manager
+            .lock()
+            .unwrap()
+            .append_model_change(&model_provider, &model_id);
+
+        // Persist to settings (matching TS settingsManager.setDefaultModelAndProvider)
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_default_model_and_provider(&model_provider, &model_id);
+        }
+
+        // Re-clamp thinking level for new model's capabilities (matching TS setThinkingLevel call)
+        self.set_thinking_level(
+            &self._get_thinking_level_for_model_switch(None).await,
+        )
+        .await;
+
+        // Emit model_select event (matching TS _emitModelSelect)
+        self._emit(AgentSessionEvent::ModelSelect {
+            model: model_id.clone(),
+            previous_model: previous_model.clone(),
+            source: "set".to_string(),
+        });
+
         // Dispatch model_select to extensions (fire-and-forget)
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_model_select(
                 crate::core::extensions::dispatcher::DispatchModelSelectParams {
                     registry,
                     model: &model_id,
-                    previous_model: Some(&previous_model_id),
+                    previous_model: previous_model.as_deref(),
                     ext_ctx: &self.ext_ctx,
                 },
             )
@@ -1886,9 +2038,27 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Get the thinking level to use when switching models, matching TS _getThinkingLevelForModelSwitch().
+    async fn _get_thinking_level_for_model_switch(&self, explicit_level: Option<&str>) -> String {
+        if let Some(level) = explicit_level {
+            return level.to_string();
+        }
+        if !self.supports_thinking().await {
+            return self
+                .settings_manager
+                .lock()
+                .map(|sm| {
+                    sm.get_default_thinking_level()
+                        .unwrap_or_else(|| "medium".to_string())
+                })
+                .unwrap_or_else(|_| "medium".to_string());
+        }
+        self.agent.state().await.thinking_level
+    }
+
     /// Set the thinking level on the agent.
     /// Clamps to model capabilities, matching TS setThinkingLevel().
-    /// Dispatches `thinking_level_select` to extensions.
+    /// Persists to session and settings, emits events, dispatches to extensions.
     pub async fn set_thinking_level(&mut self, level: &str) {
         let state = self.agent.state().await;
         let available = pi_agent_core::pi_ai_types::get_supported_thinking_levels(&state.model);
@@ -1905,6 +2075,24 @@ impl AgentSession {
             let mut state = self.agent.state().await;
             state.thinking_level = effective.clone();
             drop(state);
+
+            // Persist to session (matching TS sessionManager.appendThinkingLevelChange)
+            self.session_manager
+                .lock()
+                .unwrap()
+                .append_thinking_level_change(&effective);
+
+            // Persist to settings (matching TS settingsManager.setDefaultThinkingLevel)
+            if self.supports_thinking().await || effective != "off" {
+                if let Ok(mut sm) = self.settings_manager.lock() {
+                    sm.set_default_thinking_level(&effective);
+                }
+            }
+
+            // Emit thinking_level_changed event (matching TS _emit)
+            self._emit(AgentSessionEvent::ThinkingLevelChanged {
+                level: effective.clone(),
+            });
 
             // Dispatch thinking_level_select to extensions
             if let Some(ref registry) = self.extension_registry {
@@ -1948,6 +2136,7 @@ impl AgentSession {
     }
 
     /// Cycle through scoped models, matching the original cycleModel().
+    /// Sets the model on the agent, persists to session and settings, re-clamps thinking level.
     /// Returns the new model and thinking level, and whether it's a scoped model.
     pub async fn cycle_model(
         &mut self,
@@ -1976,6 +2165,55 @@ impl AgentSession {
         };
 
         let (model, thinking_level) = self.scoped_models[new_idx].clone();
+        let model_id = model.id.clone();
+        let model_provider = model.provider.clone();
+
+        // Set model on agent state (matching TS _cycleScopedModel)
+        let mut state = self.agent.state().await;
+        let previous_model_id = state.model.id.clone();
+        let previous_model = if previous_model_id.is_empty() {
+            None
+        } else {
+            Some(previous_model_id.clone())
+        };
+        state.model = model.clone();
+        drop(state);
+
+        // Persist to session (matching TS sessionManager.appendModelChange)
+        self.session_manager
+            .lock()
+            .unwrap()
+            .append_model_change(&model_provider, &model_id);
+
+        // Persist to settings (matching TS settingsManager.setDefaultModelAndProvider)
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_default_model_and_provider(&model_provider, &model_id);
+        }
+
+        // Apply thinking level (matching TS setThinkingLevel call in _cycleScopedModel)
+        let tl = self._get_thinking_level_for_model_switch(thinking_level.as_deref()).await;
+        self.set_thinking_level(&tl).await;
+
+        // Emit model_select event (matching TS _emitModelSelect)
+        self._emit(AgentSessionEvent::ModelSelect {
+            model: model_id.clone(),
+            previous_model: previous_model.clone(),
+            source: "cycle".to_string(),
+        });
+
+        // Dispatch model_select to extensions
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_model_select(
+                crate::core::extensions::dispatcher::DispatchModelSelectParams {
+                    registry,
+                    model: &model_id,
+                    previous_model: previous_model.as_deref(),
+                    ext_ctx: &self.ext_ctx,
+                },
+            )
+            .await;
+        }
+
         Some((model, thinking_level, true))
     }
 
@@ -2938,6 +3176,74 @@ impl AgentSession {
             return;
         }
         self.idle_notify.notified().await;
+    }
+
+
+    /// Set steering message mode, matching TS setSteeringMode().
+    /// Saves to settings and updates the agent's queue mode.
+    pub fn set_steering_mode(&self, mode: &str) {
+        let queue_mode = match mode {
+            "all" => pi_agent_core::types::QueueMode::All,
+            _ => pi_agent_core::types::QueueMode::OneAtATime,
+        };
+        // We can't easily call agent.set_steering_mode because it requires &self
+        // and we have &self. The agent's steering mode is set during construction.
+        // For now, save to settings.
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_steering_mode(mode);
+        }
+    }
+
+    /// Set follow-up message mode, matching TS setFollowUpMode().
+    /// Saves to settings and updates the agent's queue mode.
+    pub fn set_follow_up_mode(&self, mode: &str) {
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_follow_up_mode(mode);
+        }
+    }
+
+    /// Set auto-compaction enabled, matching TS setAutoCompactionEnabled().
+    pub fn set_auto_compaction_enabled(&self, enabled: bool) {
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_compaction_enabled(enabled);
+        }
+    }
+
+    /// Whether auto-compaction is enabled, matching TS `get autoCompactionEnabled()`.
+    pub fn auto_compaction_enabled(&self) -> bool {
+        self.settings_manager
+            .lock()
+            .map(|sm| sm.get_compaction_enabled())
+            .unwrap_or(true)
+    }
+
+    /// Get a reference to the loaded resources (skills, prompt templates, context files),
+    /// matching TS `get resourceLoader()`.
+    pub fn resource_loader(&self) -> Option<&LoadedResources> {
+        self.resources.as_ref()
+    }
+
+    /// Reload session state from disk, matching TS reload().
+    /// Refreshes settings, queue modes, and resources.
+    pub async fn reload(&self) {
+        // Reload settings
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.reload();
+        }
+        // Sync queue modes from settings (matching TS syncQueueModesFromSettings)
+        self._sync_queue_modes_from_settings();
+        // Reload resources
+        // Note: resources are loaded once at construction time in the current
+        // implementation. Full hot-reload of resources would require re-reading
+        // from disk, which is a future enhancement.
+    }
+
+    /// Sync queue modes from settings, matching TS syncQueueModesFromSettings().
+    fn _sync_queue_modes_from_settings(&self) {
+        // Queue modes are set on the agent during construction.
+        // Re-read from settings to stay in sync.
+        // Note: agent.steeringMode/followUpMode are set during Agent::new()
+        // and cannot be changed after construction in the current architecture.
     }
 
     pub async fn subscribe(

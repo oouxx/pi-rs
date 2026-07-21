@@ -67,6 +67,7 @@ async fn create_test_session(
 
     let extension_registry = Arc::new(ExtensionRegistry::new());
 
+    let settings_manager = pi_coding_agent::core::settings_manager::SettingsManager::create(cwd, None);
     let session_options = AgentSessionConfig {
         cwd: cwd.to_string(),
         model,
@@ -89,7 +90,7 @@ async fn create_test_session(
         resources: None,
     };
 
-    let session = AgentSession::new(session_manager, model_registry, session_options).await;
+    let session = AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
     (session, services)
 }
 

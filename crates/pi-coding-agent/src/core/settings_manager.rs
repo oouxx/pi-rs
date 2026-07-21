@@ -350,6 +350,79 @@ impl SettingsManager {
         self.settings = deep_merge_settings(&self.settings, overrides);
     }
 
+
+    /// Get steering mode from settings. Defaults to "one-at-a-time".
+    pub fn get_steering_mode(&self) -> String {
+        self.settings
+            .steering_mode
+            .clone()
+            .unwrap_or_else(|| "one-at-a-time".to_string())
+    }
+
+    /// Set steering mode in global settings.
+    pub fn set_steering_mode(&mut self, mode: &str) {
+        self.set_global("steeringMode", serde_json::json!(mode));
+    }
+
+    /// Get follow-up mode from settings. Defaults to "one-at-a-time".
+    pub fn get_follow_up_mode(&self) -> String {
+        // followUpMode is not a top-level field in Settings, so we read it via get()
+        self.get::<String>("followUpMode")
+            .unwrap_or_else(|| "one-at-a-time".to_string())
+    }
+
+    /// Set follow-up mode in global settings.
+    pub fn set_follow_up_mode(&mut self, mode: &str) {
+        self.set_global("followUpMode", serde_json::json!(mode));
+    }
+
+    /// Get whether auto-compaction is enabled. Defaults to true.
+    pub fn get_compaction_enabled(&self) -> bool {
+        self.settings
+            .compaction
+            .as_ref()
+            .and_then(|c| c.enabled)
+            .unwrap_or(true)
+    }
+
+    /// Set auto-compaction enabled in global settings.
+    pub fn set_compaction_enabled(&mut self, enabled: bool) {
+        let mut compaction = self.settings.compaction.clone().unwrap_or_default();
+        compaction.enabled = Some(enabled);
+        self.set_global("compaction", serde_json::to_value(&compaction).unwrap_or_default());
+    }
+
+    /// Get compaction settings as a struct.
+    pub fn get_compaction_settings(&self) -> CompactionSettings {
+        self.settings.compaction.clone().unwrap_or_default()
+    }
+
+    /// Get retry settings.
+    pub fn get_retry_settings(&self) -> RetrySettings {
+        self.settings.retry.clone().unwrap_or_default()
+    }
+
+    /// Get default thinking level from settings.
+    pub fn get_default_thinking_level(&self) -> Option<String> {
+        self.settings.thinking_level.clone()
+    }
+
+    /// Set default thinking level in global settings.
+    pub fn set_default_thinking_level(&mut self, level: &str) {
+        self.set_global("thinkingLevel", serde_json::json!(level));
+    }
+
+    /// Set default model and provider in global settings.
+    pub fn set_default_model_and_provider(&mut self, provider: &str, model_id: &str) {
+        self.set_global("defaultProvider", serde_json::json!(provider));
+        self.set_global("defaultModel", serde_json::json!(model_id));
+    }
+
+    /// Whether the project is trusted (always true in Rust native mode).
+    pub fn is_project_trusted(&self) -> bool {
+        true
+    }
+
     pub fn reload(&mut self) {
         self.global_settings = Self::load_from_storage(&*self.storage, SettingsScope::Global);
         self.project_settings = Self::load_from_storage(&*self.storage, SettingsScope::Project);

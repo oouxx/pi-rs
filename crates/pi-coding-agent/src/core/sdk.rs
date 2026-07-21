@@ -592,7 +592,7 @@ pub async fn create_agent_session(
     };
 
     let session =
-        AgentSession::new(session_manager, model_registry, session_options).await;
+        AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {

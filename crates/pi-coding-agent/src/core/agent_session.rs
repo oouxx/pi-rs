@@ -9,7 +9,6 @@ use pi_agent_core::types::{
 
 use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
-use crate::core::event_bus::EventBusController;
 use crate::core::extensions::{
     ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolDefinition,
 };
@@ -93,7 +92,6 @@ pub struct TokenUsage {
 pub struct AgentSession {
     agent: Agent,
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
-    event_bus: EventBusController,
     model_registry: ModelRegistry,
     compaction_settings: CompactionSettings,
     cwd: String,
@@ -120,7 +118,6 @@ pub struct AgentSession {
 impl AgentSession {
     pub async fn new(
         session_manager: SessionManager,
-        event_bus: EventBusController,
         model_registry: ModelRegistry,
         options: AgentSessionConfig,
     ) -> Self {
@@ -542,10 +539,12 @@ impl AgentSession {
             }
         }
 
+        // Clone registry ref for EventPublisher (before it's moved into self)
+        let extension_registry_ref = options.extension_registry.as_ref().map(std::sync::Arc::clone);
+
         let session = Self {
             agent,
             session_manager: session_manager.clone(),
-            event_bus,
             model_registry,
             compaction_settings: CompactionSettings::default(),
             cwd: session_cwd.clone(),
@@ -554,16 +553,38 @@ impl AgentSession {
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
             extension_registry: options.extension_registry,
-            ext_ctx: ExtensionContext::new(
-                session_cwd,
-                false,
-                crate::core::extensions::ExtensionUIContext {
-                    notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                    set_status: std::sync::Arc::new(|_key, _value| {}),
-                    confirm: std::sync::Arc::new(|_title, _msg| false),
-                },
-                crate::core::extensions::RuntimeHandle::noop(),
-            ),
+            ext_ctx: {
+                let publisher = extension_registry_ref.as_ref().map(|reg| {
+                    crate::core::extensions::EventPublisher::new(
+                        std::sync::Arc::clone(reg),
+                        "agent-session".to_string(),
+                    )
+                });
+                if let Some(pub_) = publisher {
+                    ExtensionContext::with_publisher(
+                        session_cwd,
+                        false,
+                        crate::core::extensions::ExtensionUIContext {
+                            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                            set_status: std::sync::Arc::new(|_key, _value| {}),
+                            confirm: std::sync::Arc::new(|_title, _msg| false),
+                        },
+                        crate::core::extensions::RuntimeHandle::noop(),
+                        pub_,
+                    )
+                } else {
+                    ExtensionContext::new(
+                        session_cwd,
+                        false,
+                        crate::core::extensions::ExtensionUIContext {
+                            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                            set_status: std::sync::Arc::new(|_key, _value| {}),
+                            confirm: std::sync::Arc::new(|_title, _msg| false),
+                        },
+                        crate::core::extensions::RuntimeHandle::noop(),
+                    )
+                }
+            },
             tool_registry,
             tool_definitions,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
@@ -841,9 +862,6 @@ impl AgentSession {
         self.session_manager.lock().unwrap()
     }
 
-    pub fn get_event_bus(&self) -> &EventBusController {
-        &self.event_bus
-    }
 
     pub fn get_model_registry(&self) -> &ModelRegistry {
         &self.model_registry

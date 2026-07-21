@@ -4,7 +4,6 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 use std::sync::Arc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
-use crate::core::event_bus::EventBusController;
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
@@ -297,7 +296,6 @@ pub mod prelude {
     };
 
     // ── Event bus ───────────────────────────────────────────────────────────
-    pub use crate::core::event_bus::EventBusController;
 
     // ── Config helpers ──────────────────────────────────────────────────────
     pub use crate::config::{
@@ -475,7 +473,6 @@ pub async fn create_agent_session(
         )
     };
 
-    let event_bus = EventBusController::new();
 
     // ── Extension registry (Rust native extensions) ───────────────────
     let mut extension_registry = options
@@ -595,7 +592,7 @@ pub async fn create_agent_session(
     };
 
     let session =
-        AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
+        AgentSession::new(session_manager, model_registry, session_options).await;
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {

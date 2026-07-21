@@ -25,7 +25,6 @@ async fn create_test_session(
     session_manager: SessionManager,
 ) -> (AgentSession, AgentSessionServices) {
     use pi_coding_agent::core::agent_session::AgentSessionConfig;
-    use pi_coding_agent::core::event_bus::EventBusController;
     use pi_coding_agent::core::extensions::ExtensionRegistry;
     use pi_coding_agent::core::model_registry::ModelRegistry;
 
@@ -66,7 +65,6 @@ async fn create_test_session(
         }
     });
 
-    let event_bus = EventBusController::new();
     let extension_registry = Arc::new(ExtensionRegistry::new());
 
     let session_options = AgentSessionConfig {
@@ -91,7 +89,7 @@ async fn create_test_session(
         resources: None,
     };
 
-    let session = AgentSession::new(session_manager, event_bus, model_registry, session_options).await;
+    let session = AgentSession::new(session_manager, model_registry, session_options).await;
     (session, services)
 }
 

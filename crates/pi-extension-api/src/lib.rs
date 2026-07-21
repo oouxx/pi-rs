@@ -143,9 +143,55 @@ pub enum ExtensionEvent {
     ToolResult { tool_call_id: String, tool_name: String, input: Value, content: Vec<Value>, is_error: bool },
     UserBash { command: String, cwd: String },
     Input { text: String, source: String },
+    /// 扩展自定义事件。用于扩展间通信。
+    /// `event_type` 作为 channel 标识，扩展按此过滤。
+    Custom {
+        event_type: String,
+        payload: Value,
+    },
 }
 
-/// 事件处理结果。
+// ============================================================================
+// 事件发布器 — 扩展间通信
+// ============================================================================
+
+/// 扩展事件发布器。
+///
+/// 扩展通过 `ctx.publish_event("channel", payload)` 广播自定义事件，
+/// 其他扩展通过 `on_event(ExtensionEvent::Custom { .. })` 接收。
+/// 发布者不会收到自己发出的事件（防回声）。
+#[derive(Clone)]
+pub struct EventPublisher {
+    registry: std::sync::Arc<ExtensionRegistry>,
+    source: String,
+}
+
+impl EventPublisher {
+    /// 创建一个新的事件发布器。
+    pub fn new(registry: std::sync::Arc<ExtensionRegistry>, source: String) -> Self {
+        Self { registry, source }
+    }
+
+    /// 广播自定义事件给所有其他扩展。
+    /// 发布者自己不会收到此事件。
+    pub async fn publish(&self, event_type: &str, payload: Value) {
+        let event = ExtensionEvent::Custom {
+            event_type: event_type.to_string(),
+            payload,
+        };
+        for ext in self.registry.extensions() {
+            if ext.name() == self.source {
+                continue;
+            }
+            let _ = ext.on_event(&event, &ExtensionContext::empty()).await;
+        }
+    }
+}
+
+// ============================================================================
+// 事件处理结果
+// ============================================================================
+
 #[derive(Debug, Clone, Default)]
 pub struct EventResult {
     pub block: Option<bool>,
@@ -194,7 +240,12 @@ pub struct ExtensionContext {
     pub runtime: RuntimeHandle,
     /// 有效性标志。会话替换后设为 false。
     /// 所有 `ExtensionContext` 克隆共享同一标志。
+    /// 有效性标志。会话替换后设为 false。
+    /// 所有 `ExtensionContext` 克隆共享同一标志。
     valid: Arc<AtomicBool>,
+    /// 事件发布器，用于扩展间通信。
+    /// 为 None 时，publish_event() 是空操作。
+    publisher: Option<EventPublisher>,
 }
 
 impl ExtensionContext {
@@ -206,6 +257,42 @@ impl ExtensionContext {
             ui,
             runtime,
             valid: Arc::new(AtomicBool::new(true)),
+            publisher: None,
+        }
+    }
+
+    /// 创建一个新的有效上下文，并注入事件发布器。
+    pub fn with_publisher(
+        cwd: String,
+        has_ui: bool,
+        ui: ExtensionUIContext,
+        runtime: RuntimeHandle,
+        publisher: EventPublisher,
+    ) -> Self {
+        Self {
+            cwd,
+            has_ui,
+            ui,
+            runtime,
+            valid: Arc::new(AtomicBool::new(true)),
+            publisher: Some(publisher),
+        }
+    }
+
+    /// 创建一个空的上下文（无 cwd、无 UI、无运行时）。
+    /// 用于 EventPublisher 内部向其他扩展广播事件。
+    pub fn empty() -> Self {
+        Self {
+            cwd: String::new(),
+            has_ui: false,
+            ui: ExtensionUIContext {
+                notify: std::sync::Arc::new(|_, _| {}),
+                set_status: std::sync::Arc::new(|_, _| {}),
+                confirm: std::sync::Arc::new(|_, _| false),
+            },
+            runtime: RuntimeHandle::noop(),
+            valid: Arc::new(AtomicBool::new(true)),
+            publisher: None,
         }
     }
 
@@ -227,6 +314,18 @@ impl ExtensionContext {
     pub fn invalidate(&self) {
         self.valid.store(false, Ordering::SeqCst);
     }
+
+    /// 广播自定义事件给所有其他扩展。
+    ///
+    /// 如果上下文没有注入 EventPublisher（publisher 为 None），
+    /// 此方法是空操作。
+    /// 发布者不会收到自己发出的事件（防回声）。
+    pub async fn publish_event(&self, event_type: &str, payload: Value) {
+        if let Some(ref publisher) = self.publisher {
+            publisher.publish(event_type, payload).await;
+        }
+    }
+
 }
 
 /// 运行时操作句柄 — 扩展通过此句柄与运行时交互。

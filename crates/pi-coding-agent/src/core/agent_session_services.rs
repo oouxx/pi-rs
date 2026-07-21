@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
 use crate::core::auth_storage::AuthStorage;
-use crate::core::event_bus::EventBusController;
 use crate::core::extensions::ExtensionRegistry;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::{self, LoadedResources, ResourceLoaderOptions};

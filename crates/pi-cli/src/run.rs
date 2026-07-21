@@ -131,6 +131,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         resource_loader: None,
         session_manager: None,
         settings_manager: None,
+        session_start_event: None,
         custom_tools: None,
     };
 

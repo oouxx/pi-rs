@@ -41,6 +41,43 @@ pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
         },
     )
 }
+/// Why a session start event was fired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionStartReason {
+    /// Initial startup.
+    Startup,
+    /// Session reload (e.g. config change).
+    Reload,
+    /// Brand new session.
+    New,
+    /// Resuming an existing session.
+    Resume,
+    /// Forked from another session.
+    Fork,
+}
+
+impl std::fmt::Display for SessionStartReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Startup => write!(f, "startup"),
+            Self::Reload => write!(f, "reload"),
+            Self::New => write!(f, "new"),
+            Self::Resume => write!(f, "resume"),
+            Self::Fork => write!(f, "fork"),
+        }
+    }
+}
+
+/// Fired when a session is started, loaded, or reloaded.
+/// Mirrors the TypeScript `SessionStartEvent` interface.
+#[derive(Debug, Clone)]
+pub struct SessionStartEvent {
+    /// Why this session start happened.
+    pub reason: SessionStartReason,
+    /// Previously active session file. Present for "new", "resume", and "fork".
+    pub previous_session_file: Option<String>,
+}
+
 pub struct CreateAgentSessionOptions {
     pub cwd: String,
     pub agent_dir: Option<String>,
@@ -92,6 +129,9 @@ pub struct CreateAgentSessionOptions {
     pub session_manager: Option<SessionManager>,
     /// Pre-configured settings manager. When set, used instead of creating a new one.
     pub settings_manager: Option<SettingsManager>,
+    /// Session start event metadata for extension runtime startup.
+    /// When set, used instead of the default "startup" reason.
+    pub session_start_event: Option<SessionStartEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +143,27 @@ pub enum NoToolsMode {
 #[derive(Debug, Clone)]
 pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
+    /// Loaded extensions result. Populated when extensions are enabled.
+    pub extensions_result: Option<ExtensionsResult>,
+}
+
+/// Result of loading extensions.
+/// Mirrors the TypeScript `LoadExtensionsResult` interface.
+#[derive(Debug, Clone)]
+pub struct ExtensionsResult {
+    /// Loaded extension names.
+    pub extensions: Vec<String>,
+    /// Errors encountered during extension loading.
+    pub errors: Vec<ExtensionError>,
+}
+
+/// An error encountered during extension loading.
+#[derive(Debug, Clone)]
+pub struct ExtensionError {
+    /// Path to the extension that failed to load.
+    pub path: String,
+    /// Error message.
+    pub error: String,
 }
 
 // ============================================================================
@@ -208,6 +269,8 @@ pub mod prelude {
     };
 
     // ── Agent-core types (re-exported for convenience) ──────────────────────
+    /// Type alias matching the TypeScript `Tool` export.
+    pub use pi_agent_core::types::AgentTool as Tool;
     pub use pi_agent_core::types::AfterToolCallContext;
     pub use pi_agent_core::types::AfterToolCallResult;
     pub use pi_agent_core::types::AgentEvent;
@@ -386,6 +449,17 @@ pub async fn create_agent_session(
     let prompt_guidelines = collect_prompt_guidelines(&mut extension_registry);
     let extension_registry_arc = std::sync::Arc::new(extension_registry);
 
+    // Collect extension names before the Arc is moved into AgentSessionConfig
+    let extension_names: Vec<String> = if options.enable_extensions {
+        extension_registry_arc
+            .extensions()
+            .iter()
+            .map(|ext| ext.name().to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     // Dispatch session_start to extensions before session creation.
     let ext_ctx = crate::core::extensions::ExtensionContext::new(
         cwd.clone(),
@@ -397,9 +471,14 @@ pub async fn create_agent_session(
         },
         crate::core::extensions::RuntimeHandle::noop(),
     );
+    let session_start_reason = options
+        .session_start_event
+        .as_ref()
+        .map(|e| e.reason.to_string())
+        .unwrap_or_else(|| "startup".to_string());
     crate::core::extensions::dispatcher::dispatch_session_start(
         &extension_registry_arc,
-        "startup",
+        &session_start_reason,
         &ext_ctx,
     )
     .await;
@@ -488,10 +567,21 @@ pub async fn create_agent_session(
         }
     }
 
+    // Build extensions result from pre-collected names
+    let extensions_result = if options.enable_extensions {
+        Some(ExtensionsResult {
+            extensions: extension_names,
+            errors: Vec::new(),
+        })
+    } else {
+        None
+    };
+
     Ok((
         session,
         CreateAgentSessionResult {
             model_fallback_message: fallback_message,
+            extensions_result,
         },
     ))
 }

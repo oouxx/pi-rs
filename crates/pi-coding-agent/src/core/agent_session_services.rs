@@ -232,6 +232,7 @@ pub async fn create_agent_session_from_services(
         resource_loader: None,
         session_manager: None,
         settings_manager: None,
+        session_start_event: None,
         custom_tools: None,
     };
 

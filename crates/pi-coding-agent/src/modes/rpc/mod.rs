@@ -51,6 +51,7 @@ pub async fn run_rpc_mode() -> i32 {
         resource_loader: None,
         session_manager: None,
         settings_manager: None,
+        session_start_event: None,
         custom_tools:None,
     };
 

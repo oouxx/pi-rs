@@ -101,21 +101,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                         .map(|m| match m {
                             Message::User { content, timestamp } => {
                                 pi_agent_core::pi_ai::types::Message::User {
-                                    content: content
-                                        .iter()
-                                        .map(|cb| match cb {
-                                            ContentBlock::Text { text, .. } => {
-                                                pi_agent_core::pi_ai::types::ContentBlock::Text {
-                                                    text: text.clone(),
-                                                    text_signature: None,
-                                                }
-                                            }
-                                            _ => pi_agent_core::pi_ai::types::ContentBlock::Text {
-                                                text: String::new(),
-                                                text_signature: None,
-                                            },
-                                        })
-                                        .collect(),
+                                    content: content.clone(),
                                     timestamp: *timestamp,
                                 }
                             }
@@ -127,21 +113,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 timestamp,
                                 ..
                             } => pi_agent_core::pi_ai::types::Message::Assistant {
-                                content: content
-                                    .iter()
-                                    .map(|cb| match cb {
-                                        ContentBlock::Text { text, .. } => {
-                                            pi_agent_core::pi_ai::types::ContentBlock::Text {
-                                                text: text.clone(),
-                                                text_signature: None,
-                                            }
-                                        }
-                                        _ => pi_agent_core::pi_ai::types::ContentBlock::Text {
-                                            text: String::new(),
-                                            text_signature: None,
-                                        },
-                                    })
-                                    .collect(),
+                                content: content.clone(),
                                 api: api.clone(),
                                 provider: provider.clone(),
                                 model: model.clone(),
@@ -153,9 +125,20 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 error_message: None,
                                 timestamp: *timestamp,
                             },
-                            _ => pi_agent_core::pi_ai::types::Message::User {
-                                content: vec![],
-                                timestamp: 0,
+                            Message::ToolResult {
+                                tool_call_id,
+                                tool_name,
+                                content,
+                                details,
+                                is_error,
+                                timestamp,
+                            } => pi_agent_core::pi_ai::types::Message::ToolResult {
+                                tool_call_id: tool_call_id.clone(),
+                                tool_name: tool_name.clone(),
+                                content: content.clone(),
+                                details: details.clone(),
+                                is_error: *is_error,
+                                timestamp: *timestamp,
                             },
                         })
                         .collect(),
@@ -526,7 +509,6 @@ async fn test_session_builtin_bash_tool_exec() {
 /// Ask the LLM what tools it has access to and assert the reply mentions the
 /// built-in `bash` tool. Requires `OPENROUTER_API_KEY` and network access.
 #[tokio::test]
-#[ignore = "requires OPENROUTER_API_KEY and network"]
 async fn test_llm_detect_builtin_tools() {
     let api_key = require_api_key();
     let ext_registry = create_registry();
@@ -602,4 +584,106 @@ async fn test_llm_detect_builtin_tools() {
         reply.to_lowercase().contains("bash"),
         "Expected LLM to report the built-in bash tool, but reply was: {reply}"
     );
+}
+
+/// Ask the LLM what tools it has access to and assert the reply mentions the
+/// built-in `bash` tool. Requires `OPENROUTER_API_KEY` and network access.
+#[tokio::test]
+#[ignore = "requires OPENROUTER_API_KEY and network"]
+async fn test_invoke_agent() {
+    let api_key = require_api_key();
+    let ext_registry = create_registry();
+    let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+        cwd: ".".to_string(),
+        agent_dir: None,
+        model: Some(make_model()),
+        thinking_level: Some("off".to_string()),
+        scoped_models: None,
+        no_tools: None,
+        tools: None,
+        exclude_tools: None,
+        custom_prompt: None,
+        append_system_prompt: None,
+        session_name: None,
+        stream_fn: Some(make_openrouter_stream_fn(&api_key)),
+        convert_to_llm: None,
+        custom_tools: None,
+        extension_paths: Vec::new(),
+        enable_extensions: true,
+        extension_registry: Some(ext_registry),
+        cli_provider: None,
+        cli_model: None,
+        persist_session: false,
+        session_file: None,
+        fork_from: None,
+        session_dir: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
+        session_start_event: None,
+    })
+    .await
+    .expect("create_agent_session failed");
+
+    let messages = session
+        .get_agent()
+        .prompt(PromptInput::Text("执行ls命令"))
+        .await
+        .expect("agent prompt failed");
+
+    // Print all messages for debugging
+    println!("[dbg] === All messages ({}) ===", messages.len());
+    for (i, msg) in messages.iter().enumerate() {
+        match msg {
+            AgentMessage::Assistant { content, .. } => {
+                println!("[dbg]   [{i}] Assistant ({} blocks):", content.len());
+                for (j, block) in content.iter().enumerate() {
+                    match block {
+                        ContentBlock::Text { text, .. } => {
+                            println!("[dbg]     [{j}] Text: {text}");
+                        }
+                        ContentBlock::ToolCall { id, name, arguments, .. } => {
+                            println!("[dbg]     [{j}] ToolCall: id={id} name={name} args={arguments}");
+                        }
+                        ContentBlock::Thinking { thinking, .. } => {
+                            println!("[dbg]     [{j}] Thinking: {thinking}");
+                        }
+                        _ => {
+                            println!("[dbg]     [{j}] Other: {block:?}");
+                        }
+                    }
+                }
+            }
+            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, .. } => {
+                let text = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                println!("[dbg]   [{i}] ToolResult: tool={tool_name} id={tool_call_id} is_error={is_error} text={text}");
+            }
+            AgentMessage::BashExecution { command, output, exit_code, .. } => {
+                println!("[dbg]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}");
+            }
+            _ => {
+                println!("[dbg]   [{i}] Other: {msg:?}");
+            }
+        }
+    }
+
+    // Verify that the LLM made at least one tool call (bash with ls)
+    let has_tool_call = messages.iter().any(|m| match m {
+        AgentMessage::Assistant { content, .. } => content.iter().any(|b| matches!(b, ContentBlock::ToolCall { .. })),
+        _ => false,
+    });
+    assert!(has_tool_call, "Expected at least one tool call in assistant messages");
+
+    // Verify that at least one tool result came back
+    let has_tool_result = messages.iter().any(|m| matches!(m, AgentMessage::ToolResult { .. }));
+    assert!(has_tool_result, "Expected at least one tool result");
 }

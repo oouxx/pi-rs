@@ -46,6 +46,11 @@ pub async fn run_rpc_mode() -> i32 {
         fork_from: None, session_dir: None, extension_registry: None,
         cli_provider: None,
         cli_model: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
         custom_tools:None,
     };
 

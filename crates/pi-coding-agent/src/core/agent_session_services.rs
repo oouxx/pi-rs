@@ -227,6 +227,11 @@ pub async fn create_agent_session_from_services(
         session_file: None,
         fork_from: None,
         session_dir: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
         custom_tools: None,
     };
 

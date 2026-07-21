@@ -126,6 +126,11 @@ pub async fn run(args: &CliArgs) -> i32 {
         session_dir,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
         custom_tools: None,
     };
 

@@ -8,6 +8,7 @@ use crate::core::event_bus::EventBusController;
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
+use crate::core::auth_storage::AuthStorage;
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
 use crate::core::session_manager::SessionManager;
 use crate::core::settings_manager::SettingsManager;
@@ -80,6 +81,17 @@ pub struct CreateAgentSessionOptions {
     pub fork_from: Option<String>,
     /// Custom session directory (from --session-dir).
     pub session_dir: Option<String>,
+    /// Pre-configured auth storage. When set, used instead of creating a new one.
+    pub auth_storage: Option<AuthStorage>,
+    /// Pre-configured model registry. When set, used instead of creating a new one.
+    pub model_registry: Option<ModelRegistry>,
+    /// Custom resource loader options. When set, used instead of defaults.
+    pub resource_loader: Option<ResourceLoaderOptions>,
+    /// Pre-configured session manager. When set, used instead of creating a new one.
+    /// Takes precedence over `session_file`, `fork_from`, and `session_dir`.
+    pub session_manager: Option<SessionManager>,
+    /// Pre-configured settings manager. When set, used instead of creating a new one.
+    pub settings_manager: Option<SettingsManager>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,8 +272,14 @@ pub async fn create_agent_session(
         .clone()
         .unwrap_or_else(|| crate::config::get_agent_dir().to_string_lossy().to_string());
 
-    let settings_manager = SettingsManager::create(&cwd, Some(&agent_dir));
-    let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+    let settings_manager = options
+        .settings_manager
+        .take()
+        .unwrap_or_else(|| SettingsManager::create(&cwd, Some(&agent_dir)));
+    let model_registry = options
+        .model_registry
+        .take()
+        .unwrap_or_else(|| ModelRegistry::new(ModelRegistry::builtin_models_list()));
 
     let default_provider = settings_manager.get_settings().default_provider.clone();
     let default_model_id = settings_manager.get_settings().default_model.clone();
@@ -340,7 +358,9 @@ pub async fn create_agent_session(
         .unwrap_or_else(|| SessionManager::default_session_dir(&cwd, &agent_dir));
 
     // Create or restore session manager
-    let session_manager = if let Some(ref fork_path) = options.fork_from {
+    let session_manager = if let Some(sm) = options.session_manager {
+        sm
+    } else if let Some(ref fork_path) = options.fork_from {
         SessionManager::fork_from(fork_path, &cwd, Some(&session_dir), None)
             .map_err(|e| format!("Failed to fork session: {e}"))?
     } else {
@@ -385,12 +405,15 @@ pub async fn create_agent_session(
     .await;
 
     // Load resources for context files and skills
-    let resource_options = ResourceLoaderOptions {
-        cwd: cwd.clone(),
-        agent_dir: Some(agent_dir.clone()),
-        include_defaults: true,
-        ..Default::default()
-    };
+    let resource_options = options
+        .resource_loader
+        .clone()
+        .unwrap_or_else(|| ResourceLoaderOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(agent_dir.clone()),
+            include_defaults: true,
+            ..Default::default()
+        });
     let resources = resource_loader::load_all_resources(&resource_options);
 
     let context_files: Vec<ContextFile> = resources

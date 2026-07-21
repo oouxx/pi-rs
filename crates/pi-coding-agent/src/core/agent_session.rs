@@ -1,5 +1,4 @@
 use std::sync::Arc;
-
 use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
@@ -18,6 +17,11 @@ use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
 use crate::core::tools;
+use pi_agent_core::pi_ai_types::AssistantMessageEvent;
+use crate::core::compaction::CompactionResult;
+use crate::core::session_manager::SessionEntry;
+use tokio::sync::Notify;
+
 
 // ============================================================================
 // Types
@@ -85,6 +89,133 @@ pub struct TokenUsage {
     pub total: u64,
 }
 
+
+
+// ============================================================================
+// AgentSessionEvent — Session-level events for UI layer
+// ============================================================================
+
+/// Reason for compaction, matching TS `"manual" | "threshold" | "overflow"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionReason {
+    Manual,
+    Threshold,
+    Overflow,
+}
+
+impl std::fmt::Display for CompactionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompactionReason::Manual => write!(f, "manual"),
+            CompactionReason::Threshold => write!(f, "threshold"),
+            CompactionReason::Overflow => write!(f, "overflow"),
+        }
+    }
+}
+
+/// Session-specific events that extend the core AgentEvent.
+/// Matches the original TypeScript AgentSessionEvent type.
+#[derive(Debug, Clone)]
+pub enum AgentSessionEvent {
+    // ── Passthrough from AgentEvent (all variants except AgentEnd) ──
+    AgentStart,
+    TurnStart,
+    TurnEnd {
+        message: AgentMessage,
+        tool_results: Vec<AgentMessage>,
+    },
+    MessageStart {
+        message: AgentMessage,
+    },
+    MessageUpdate {
+        message: AgentMessage,
+        assistant_message_event: AssistantMessageEvent,
+    },
+    MessageEnd {
+        message: AgentMessage,
+    },
+    ToolExecutionStart {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+    },
+    ToolExecutionUpdate {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+        partial_result: serde_json::Value,
+    },
+    ToolExecutionEnd {
+        tool_call_id: String,
+        tool_name: String,
+        result: serde_json::Value,
+        is_error: bool,
+    },
+    // ── AgentEnd with willRetry ──
+    AgentEnd {
+        messages: Vec<AgentMessage>,
+        will_retry: bool,
+    },
+    // ── Session-specific events ──
+    AgentSettled,
+    QueueUpdate {
+        steering: Vec<String>,
+        follow_up: Vec<String>,
+    },
+    CompactionStart {
+        reason: CompactionReason,
+    },
+    EntryAppended {
+        entry: SessionEntry,
+    },
+    SessionInfoChanged {
+        name: Option<String>,
+    },
+    ThinkingLevelChanged {
+        level: String,
+    },
+    CompactionEnd {
+        reason: CompactionReason,
+        result: Option<CompactionResult>,
+        aborted: bool,
+        will_retry: bool,
+        error_message: Option<String>,
+    },
+    AutoRetryStart {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+    },
+    AutoRetryEnd {
+        success: bool,
+        attempt: u32,
+        final_error: Option<String>,
+    },
+}
+
+/// Listener function for agent session events.
+pub type AgentSessionEventListener = Arc<dyn Fn(AgentSessionEvent) + Send + Sync>;
+
+/// Handle returned by [`AgentSession::subscribe_session_events`].
+/// Call `unsubscribe()` to stop receiving events.
+pub struct SessionEventUnsubscribeHandle {
+    listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    index: usize,
+}
+
+impl SessionEventUnsubscribeHandle {
+    /// Remove the listener. After this call the listener will no longer receive events.
+    pub fn unsubscribe(self) {
+        let mut listeners = self.listeners.lock().unwrap();
+        if self.index < listeners.len() {
+            // Replace with a no-op so the slot stays valid and Vec indices are not disturbed.
+            listeners[self.index] = Arc::new(|_| {});
+        }
+    }
+}
+
+
 // ============================================================================
 // AgentSession
 // ============================================================================
@@ -113,6 +244,24 @@ pub struct AgentSession {
     /// Pending bash execution results queued while agent is streaming,
     /// matching TS `_pendingBashMessages`.
     pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
+    // ── Event subscription state ──
+    event_listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    /// Handle to the internal agent event subscription.
+    _agent_subscription: Option<pi_agent_core::agent::UnsubscribeHandle>,
+    /// Whether the agent is currently processing a run.
+    is_agent_run_active: Arc<std::sync::Mutex<bool>>,
+    /// Notifier for idle detection (wakes wait_for_idle callers).
+    idle_notify: Arc<Notify>,
+    /// Tracks pending steering messages for UI display. Removed when delivered.
+    steering_messages: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Tracks pending follow-up messages for UI display. Removed when delivered.
+    follow_up_messages: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Current retry attempt (0 if not retrying).
+    retry_attempt: Arc<std::sync::Mutex<u32>>,
+    /// Whether overflow recovery has been attempted in the current turn.
+    overflow_recovery_attempted: Arc<std::sync::Mutex<bool>>,
+    /// Last assistant message received, for auto-compaction and retry checks.
+    last_assistant_message: Arc<std::sync::Mutex<Option<AgentMessage>>>,
 }
 
 impl AgentSession {
@@ -521,6 +670,7 @@ impl AgentSession {
         });
 
         let session_cwd = options.cwd.clone();
+        let session_cwd_for_ext = session_cwd.clone();
         // Build tool definitions registry (matching TS `_toolDefinitions`).
         let mut tool_definitions: std::collections::HashMap<
             String,
@@ -542,7 +692,7 @@ impl AgentSession {
         // Clone registry ref for EventPublisher (before it's moved into self)
         let extension_registry_ref = options.extension_registry.as_ref().map(std::sync::Arc::clone);
 
-        let session = Self {
+        let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
             model_registry,
@@ -562,7 +712,7 @@ impl AgentSession {
                 });
                 if let Some(pub_) = publisher {
                     ExtensionContext::with_publisher(
-                        session_cwd,
+                        session_cwd_for_ext.clone(),
                         false,
                         crate::core::extensions::ExtensionUIContext {
                             notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
@@ -574,7 +724,7 @@ impl AgentSession {
                     )
                 } else {
                     ExtensionContext::new(
-                        session_cwd,
+                        session_cwd_for_ext.clone(),
                         false,
                         crate::core::extensions::ExtensionUIContext {
                             notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
@@ -588,7 +738,232 @@ impl AgentSession {
             tool_registry,
             tool_definitions,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
+            event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
+            _agent_subscription: None,
+            is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
+            idle_notify: Arc::new(Notify::new()),
+            steering_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+            follow_up_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+            retry_attempt: Arc::new(std::sync::Mutex::new(0)),
+            overflow_recovery_attempted: Arc::new(std::sync::Mutex::new(false)),
+            last_assistant_message: Arc::new(std::sync::Mutex::new(None)),
         };
+
+        // ── Register internal agent event handler ──
+        // Folds persistence, extension dispatch, and session event dispatch
+        // into a single subscription, matching TS `_handleAgentEvent`.
+        let inner_sm = session_manager.clone();
+        let inner_reg = extension_registry_ref.clone();
+        let inner_cwd = session_cwd.clone();
+        let inner_listeners = session.event_listeners.clone();
+        let inner_steering = session.steering_messages.clone();
+        let inner_follow_up = session.follow_up_messages.clone();
+        let inner_last_assistant = session.last_assistant_message.clone();
+        let inner_retry = session.retry_attempt.clone();
+        let inner_overflow = session.overflow_recovery_attempted.clone();
+        let inner_is_active = session.is_agent_run_active.clone();
+        let inner_idle = session.idle_notify.clone();
+
+        let internal_listener: Arc<
+            dyn Fn(
+                    AgentEvent,
+                    Option<tokio::sync::watch::Receiver<bool>>,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move |event: AgentEvent, _signal| {
+            let sm = inner_sm.clone();
+            let reg = inner_reg.clone();
+            let cwd = inner_cwd.clone();
+            let listeners = inner_listeners.clone();
+            let steering = inner_steering.clone();
+            let follow_up = inner_follow_up.clone();
+            let last_assistant = inner_last_assistant.clone();
+            let retry = inner_retry.clone();
+            let overflow = inner_overflow.clone();
+            let is_active = inner_is_active.clone();
+            let idle = inner_idle.clone();
+            Box::pin(async move {
+                // ── 1. Handle queue updates ──
+                if let AgentEvent::MessageStart { ref message } = event {
+                    if let AgentMessage::User { ref content, .. } = message {
+                        let message_text: String = content
+                            .iter()
+                            .filter_map(|b| {
+                                if let ContentBlock::Text { text, .. } = b {
+                                    Some(text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<&str>>()
+                            .join("");
+                        if !message_text.is_empty() {
+                            // Check steering queue first
+                            let mut steer = steering.lock().unwrap();
+                            let steer_idx = steer.iter().position(|m| m == &message_text);
+                            if let Some(idx) = steer_idx {
+                                steer.remove(idx);
+                                // Emit queue update
+                                let follow = follow_up.lock().unwrap();
+                                let evt = AgentSessionEvent::QueueUpdate {
+                                    steering: steer.clone(),
+                                    follow_up: follow.clone(),
+                                };
+                                drop(steer);
+                                drop(follow);
+                                let l = listeners.lock().unwrap();
+                                for listener in l.iter() {
+                                    listener(evt.clone());
+                                }
+                            } else {
+                                drop(steer);
+                                // Check follow-up queue
+                                let mut follow = follow_up.lock().unwrap();
+                                let follow_idx = follow.iter().position(|m| m == &message_text);
+                                if let Some(idx) = follow_idx {
+                                    follow.remove(idx);
+                                    // Emit queue update
+                                    let steer = steering.lock().unwrap();
+                                    let evt = AgentSessionEvent::QueueUpdate {
+                                        steering: steer.clone(),
+                                        follow_up: follow.clone(),
+                                    };
+                                    drop(steer);
+                                    drop(follow);
+                                    let l = listeners.lock().unwrap();
+                                    for listener in l.iter() {
+                                        listener(evt.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 2. Emit to extensions ──
+                if let Some(ref registry) = reg {
+                    if let Some(evt) =
+                        crate::core::extensions::dispatcher::event_from_agent_event(&event)
+                    {
+                        let ext_ctx = ExtensionContext::new(
+                            cwd.clone(),
+                            false,
+                            crate::core::extensions::ExtensionUIContext {
+                                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                                set_status: std::sync::Arc::new(|_key, _value| {}),
+                                confirm: std::sync::Arc::new(|_title, _msg| false),
+                            },
+                            crate::core::extensions::RuntimeHandle::noop(),
+                        );
+                        if matches!(evt, ExtensionEvent::MessageEnd { .. }) {
+                            registry.dispatch_event(&evt, &ext_ctx).await;
+                        } else {
+                            let reg_for_spawn = Arc::clone(registry);
+                            tokio::spawn(async move {
+                                reg_for_spawn.dispatch_event(&evt, &ext_ctx).await;
+                            });
+                        }
+                    }
+                }
+
+                // ── 3. Emit to session event listeners ──
+                let session_event = match &event {
+                    AgentEvent::AgentEnd { messages } => {
+                        AgentSessionEvent::AgentEnd {
+                            messages: messages.clone(),
+                            will_retry: false,
+                        }
+                    }
+                    AgentEvent::AgentStart => AgentSessionEvent::AgentStart,
+                    AgentEvent::TurnStart => AgentSessionEvent::TurnStart,
+                    AgentEvent::TurnEnd { message, tool_results } => {
+                        AgentSessionEvent::TurnEnd {
+                            message: message.clone(),
+                            tool_results: tool_results.clone(),
+                        }
+                    }
+                    AgentEvent::MessageStart { message } => {
+                        AgentSessionEvent::MessageStart {
+                            message: message.clone(),
+                        }
+                    }
+                    AgentEvent::MessageUpdate { message, assistant_message_event } => {
+                        AgentSessionEvent::MessageUpdate {
+                            message: message.clone(),
+                            assistant_message_event: assistant_message_event.clone(),
+                        }
+                    }
+                    AgentEvent::MessageEnd { message } => {
+                        AgentSessionEvent::MessageEnd {
+                            message: message.clone(),
+                        }
+                    }
+                    AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                        AgentSessionEvent::ToolExecutionStart {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: tool_name.clone(),
+                            args: args.clone(),
+                        }
+                    }
+                    AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result } => {
+                        AgentSessionEvent::ToolExecutionUpdate {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: tool_name.clone(),
+                            args: args.clone(),
+                            partial_result: partial_result.clone(),
+                        }
+                    }
+                    AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                        AgentSessionEvent::ToolExecutionEnd {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: tool_name.clone(),
+                            result: result.clone(),
+                            is_error: *is_error,
+                        }
+                    }
+                };
+                {
+                    let l = listeners.lock().unwrap();
+                    for listener in l.iter() {
+                        listener(session_event.clone());
+                    }
+                }
+
+                // ── 4. Handle session persistence ──
+                if let AgentEvent::MessageEnd { ref message } = event {
+                    match message {
+                        AgentMessage::Custom { custom_type, content, display, details, .. } => {
+                            let content_json = serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
+                            if let Ok(mut mgr) = sm.lock() {
+                                mgr.append_custom_message_entry(
+                                    custom_type,
+                                    content_json,
+                                    *display,
+                                    details.clone(),
+                                );
+                            }
+                        }
+                        AgentMessage::User { .. } | AgentMessage::Assistant { .. } | AgentMessage::ToolResult { .. } => {
+                            let msg_value = serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
+                            if let Ok(mut mgr) = sm.lock() {
+                                mgr.append_message(msg_value);
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Track assistant message for auto-compaction
+                    if let AgentMessage::Assistant { .. } = message {
+                        *last_assistant.lock().unwrap() = Some(message.clone());
+                    }
+                }
+            })
+        });
+
+        let _subscription_handle = session.agent.subscribe(internal_listener).await;
+        session._agent_subscription = Some(_subscription_handle);
 
         // Register event-driven persistence subscriber, matching the original
         // TS behavior: persist user / assistant / toolResult / custom messages on each
@@ -1065,6 +1440,7 @@ impl AgentSession {
     }
 
     pub async fn add_user_text(&mut self, text: &str) {
+        *self.is_agent_run_active.lock().unwrap() = true;
         // Dispatch input event to extensions before processing.
         // If an extension handles the input, skip processing entirely.
         // If an extension transforms the text, use the transformed text.
@@ -1501,6 +1877,62 @@ impl AgentSession {
 
     /// Export the session as HTML, matching the original exportHTML().
     /// Returns the HTML content as a string.
+
+    // =========================================================================
+    // Event Subscription (Session-level)
+    // =========================================================================
+
+    /// Emit an event to all registered session event listeners.
+    fn _emit(&self, event: AgentSessionEvent) {
+        let listeners = self.event_listeners.lock().unwrap();
+        for listener in listeners.iter() {
+            listener(event.clone());
+        }
+    }
+
+    /// Emit a queue_update event with current steering and follow-up messages.
+    fn _emit_queue_update(&self) {
+        let steering = self.steering_messages.lock().unwrap();
+        let follow_up = self.follow_up_messages.lock().unwrap();
+        self._emit(AgentSessionEvent::QueueUpdate {
+            steering: steering.clone(),
+            follow_up: follow_up.clone(),
+        });
+    }
+
+    /// Emit agent_settled and resolve idle waiters.
+    async fn _emit_agent_settled(&self) {
+        *self.is_agent_run_active.lock().unwrap() = false;
+        self._emit(AgentSessionEvent::AgentSettled);
+        self.idle_notify.notify_waiters();
+    }
+
+    /// Check whether the agent should retry after an agent_end event.
+    /// Matches TS `_willRetryAfterAgentEnd`.
+    fn _will_retry_after_agent_end(&self, _event: &AgentEvent) -> bool {
+        // TODO: implement retry settings check when SettingsManager is available
+        // For now, always return false (no retry)
+        false
+    }
+
+
+    /// Subscribe to session-level events (AgentSessionEvent).
+    /// Returns an unsubscribe handle. Call `handle.unsubscribe()` to stop receiving events.
+    /// Matches TS `subscribe()` which returns AgentSessionEvent.
+    pub fn subscribe_session_events(
+        &self,
+        listener: AgentSessionEventListener,
+    ) -> SessionEventUnsubscribeHandle {
+        let mut listeners = self.event_listeners.lock().unwrap();
+        let index = listeners.len();
+        listeners.push(listener);
+        SessionEventUnsubscribeHandle {
+            listeners: self.event_listeners.clone(),
+            index,
+        }
+    }
+
+
     pub fn export_html(&self) -> String {
         let mgr = self.session_manager.lock().unwrap();
         let entries = mgr.get_entries();
@@ -1874,11 +2306,12 @@ impl AgentSession {
 
     /// Wait for the agent to finish processing (idle).
     pub async fn wait_for_idle(&self) {
-        self.agent.wait_for_idle().await;
+        if !*self.is_agent_run_active.lock().unwrap() {
+            return;
+        }
+        self.idle_notify.notified().await;
     }
 
-    /// Subscribe to agent events, matching TS `subscribe()`.
-    /// Returns a handle that can be used to unsubscribe the listener.
     pub async fn subscribe(
         &mut self,
         listener: Arc<
@@ -1894,7 +2327,10 @@ impl AgentSession {
         self.agent.subscribe(listener).await
     }
 
-    /// Dispose the session, dispatching session_shutdown to extensions.
+    /// Subscribe to raw agent events (AgentEvent).
+    /// For session-level events (AgentSessionEvent), use subscribe_session_events().
+    /// Returns a handle that can be used to unsubscribe the listener.
+        /// Dispose the session, dispatching session_shutdown to extensions.
     ///
     /// Note: When used through AgentSessionRuntime, the session_shutdown event
     /// is dispatched by the Runtime's teardown_current BEFORE dispose() is

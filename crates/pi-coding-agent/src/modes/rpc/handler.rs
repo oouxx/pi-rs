@@ -114,12 +114,12 @@ pub async fn handle_command(
         // ── Streaming Queue ──────────────────────────────────────────────
 
         RpcCommand::Steer { id, message, .. } => {
-            session.steer(&message).await;
+            session.steer(&message, None).await;
             Some(rpc_success(id, "steer", None))
         }
 
         RpcCommand::FollowUp { id, message, .. } => {
-            session.follow_up(&message).await;
+            session.follow_up(&message, None).await;
             Some(rpc_success(id, "follow_up", None))
         }
 
@@ -140,11 +140,11 @@ pub async fn handle_command(
             command,
             exclude_from_context: _,
         } => {
-            match session.execute_bash(&command).await {
-                Ok(output) => Some(rpc_success(
+            match session.execute_bash(&command, None).await {
+                Ok(result) => Some(rpc_success(
                     id,
                     "bash",
-                    Some(serde_json::json!({"status": "completed", "output": output})),
+                    Some(serde_json::json!({"status": "completed", "output": result.output})),
                 )),
                 Err(e) => Some(rpc_error(id, "bash", e)),
             }
@@ -197,12 +197,18 @@ pub async fn handle_command(
             let model = models.iter().find(|m| m.provider == provider && m.id == model_id).cloned();
             match model {
                 Some(m) => {
-                    session.set_model(m.clone()).await;
-                    Some(rpc_success(
-                        id,
-                        "set_model",
-                        Some(serde_json::json!({"id": m.id, "provider": m.provider})),
-                    ))
+                    match session.set_model(m.clone()).await {
+                        Ok(_) => Some(rpc_success(
+                            id,
+                            "set_model",
+                            Some(serde_json::json!({"id": m.id, "provider": m.provider})),
+                        )),
+                        Err(e) => Some(rpc_error(
+                            id,
+                            "set_model",
+                            format!("Auth error: {e}"),
+                        )),
+                    }
                 }
                 None => Some(rpc_error(
                     id,
@@ -221,12 +227,18 @@ pub async fn handle_command(
             let current_idx = models.iter().position(|m| m.id == current_id).unwrap_or(0);
             let next_idx = (current_idx + 1) % models.len();
             let next = &models[next_idx];
-            session.set_model(next.clone()).await;
-            Some(rpc_success(
-                id,
-                "cycle_model",
-                Some(serde_json::json!({"model": {"id": next.id, "provider": next.provider}})),
-            ))
+            match session.set_model(next.clone()).await {
+                Ok(_) => Some(rpc_success(
+                    id,
+                    "cycle_model",
+                    Some(serde_json::json!({"model": {"id": next.id, "provider": next.provider}})),
+                )),
+                Err(e) => Some(rpc_error(
+                    id,
+                    "cycle_model",
+                    format!("Auth error: {e}"),
+                )),
+            }
         }
 
         RpcCommand::GetAvailableModels { id } => {

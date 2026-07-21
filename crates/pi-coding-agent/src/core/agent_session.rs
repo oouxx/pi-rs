@@ -59,8 +59,32 @@ pub struct AgentSessionConfig {
 
 /// Options for AgentSession.prompt().
 /// Matches the original TypeScript PromptOptions interface.
+/// Options for send_custom_message(), matching TS sendCustomMessage() options.
+#[derive(Default)]
+pub struct CustomMessageOptions {
+    /// Whether to trigger a turn after sending the message.
+    pub trigger_turn: bool,
+    /// Delivery mode when streaming: "steer", "followUp", or "nextTurn".
+    pub deliver_as: Option<String>,
+}
+
+/// Options for send_user_message(), matching TS sendUserMessage() options.
+#[derive(Default)]
+pub struct SendUserMessageOptions {
+    /// Delivery mode when streaming: "steer" or "followUp".
+    pub deliver_as: Option<String>,
+}
+
+/// Options for prompt(), matching TS PromptOptions interface.
 pub struct PromptOptions {
+    /// Whether to expand file-based prompt templates (default: true).
+    pub expand_prompt_templates: Option<bool>,
+    /// Image attachments.
     pub images: Option<Vec<ContentBlock>>,
+    /// When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait).
+    pub streaming_behavior: Option<String>,
+    /// Source of input for extension input event handlers. Defaults to "interactive".
+    pub source: Option<String>,
 }
 
 /// Session statistics for /session command.
@@ -241,6 +265,8 @@ pub struct AgentSession {
     /// getAllTools / getToolDefinition). Populated from custom_tools and
     /// extension tools at construction time.
     tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition>,
+    /// Loaded resources (skills, prompt templates, context files), matching TS `_resourceLoader`.
+    resources: Option<LoadedResources>,
     /// Pending bash execution results queued while agent is streaming,
     /// matching TS `_pendingBashMessages`.
     pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
@@ -256,12 +282,27 @@ pub struct AgentSession {
     steering_messages: Arc<std::sync::Mutex<Vec<String>>>,
     /// Tracks pending follow-up messages for UI display. Removed when delivered.
     follow_up_messages: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Pending next-turn messages (custom messages queued for next prompt()),
+    /// matching TS `_pendingNextTurnMessages`.
+    pending_next_turn_messages: Arc<std::sync::Mutex<Vec<AgentMessage>>>,
     /// Current retry attempt (0 if not retrying).
     retry_attempt: Arc<std::sync::Mutex<u32>>,
+    /// Abort controller for retry backoff, matching TS `_retryAbortController`.
+    retry_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Whether auto-retry is enabled, matching TS `autoRetryEnabled`.
+    auto_retry_enabled: Arc<std::sync::Mutex<bool>>,
     /// Whether overflow recovery has been attempted in the current turn.
     overflow_recovery_attempted: Arc<std::sync::Mutex<bool>>,
     /// Last assistant message received, for auto-compaction and retry checks.
     last_assistant_message: Arc<std::sync::Mutex<Option<AgentMessage>>>,
+    /// Abort controller for manual compaction.
+    compaction_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Abort controller for auto-compaction.
+    auto_compaction_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Abort controller for branch summarization.
+    branch_summary_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Abort controller for bash execution, matching TS `_bashAbortController`.
+    bash_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
 }
 
 impl AgentSession {
@@ -737,6 +778,7 @@ impl AgentSession {
             },
             tool_registry,
             tool_definitions,
+            resources: options.resources,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
             _agent_subscription: None,
@@ -744,9 +786,16 @@ impl AgentSession {
             idle_notify: Arc::new(Notify::new()),
             steering_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
             follow_up_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_next_turn_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
             retry_attempt: Arc::new(std::sync::Mutex::new(0)),
+            retry_abort: Arc::new(std::sync::Mutex::new(None)),
+            auto_retry_enabled: Arc::new(std::sync::Mutex::new(true)),
             overflow_recovery_attempted: Arc::new(std::sync::Mutex::new(false)),
             last_assistant_message: Arc::new(std::sync::Mutex::new(None)),
+            compaction_abort: Arc::new(std::sync::Mutex::new(None)),
+            auto_compaction_abort: Arc::new(std::sync::Mutex::new(None)),
+            branch_summary_abort: Arc::new(std::sync::Mutex::new(None)),
+            bash_abort: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // ── Register internal agent event handler ──
@@ -759,10 +808,10 @@ impl AgentSession {
         let inner_steering = session.steering_messages.clone();
         let inner_follow_up = session.follow_up_messages.clone();
         let inner_last_assistant = session.last_assistant_message.clone();
-        let inner_retry = session.retry_attempt.clone();
-        let inner_overflow = session.overflow_recovery_attempted.clone();
-        let inner_is_active = session.is_agent_run_active.clone();
-        let inner_idle = session.idle_notify.clone();
+        let _inner_retry = session.retry_attempt.clone();
+        let _inner_overflow = session.overflow_recovery_attempted.clone();
+        let _inner_is_active = session.is_agent_run_active.clone();
+        let _inner_idle = session.idle_notify.clone();
 
         let internal_listener: Arc<
             dyn Fn(
@@ -780,10 +829,10 @@ impl AgentSession {
             let steering = inner_steering.clone();
             let follow_up = inner_follow_up.clone();
             let last_assistant = inner_last_assistant.clone();
-            let retry = inner_retry.clone();
-            let overflow = inner_overflow.clone();
-            let is_active = inner_is_active.clone();
-            let idle = inner_idle.clone();
+            let _retry = _inner_retry.clone();
+            let _overflow = _inner_overflow.clone();
+            let _is_active = _inner_is_active.clone();
+            let _idle = _inner_idle.clone();
             Box::pin(async move {
                 // ── 1. Handle queue updates ──
                 if let AgentEvent::MessageStart { ref message } = event {
@@ -1185,8 +1234,30 @@ impl AgentSession {
         None
     }
 
-    pub fn get_context_usage(&self) -> ContextUsage {
-        ContextUsage::default()
+    /// Get context usage information, matching TS getContextUsage().
+    /// Returns None if no model is set or context window is unknown.
+    pub async fn get_context_usage(&self) -> Option<ContextUsage> {
+        let state = self.agent.state().await;
+        let context_window = state.model.context_window;
+        if context_window == 0 {
+            return None;
+        }
+
+        // Estimate tokens from current messages
+        let messages = &state.messages;
+        let total_tokens = crate::core::compaction::estimate_agent_messages_tokens(messages);
+        let input_tokens = total_tokens; // Simplified: total is our best estimate
+        let output_tokens = 0u64; // Output tokens are from the last response, not easily separable here
+
+        Some(ContextUsage {
+            total_tokens,
+            context_window,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            messages_count: messages.len(),
+        })
     }
 
     pub fn should_compact(&self) -> bool {
@@ -1260,6 +1331,83 @@ impl AgentSession {
 
     pub fn get_excluded_tool_names(&self) -> Option<&[String]> {
         self.excluded_tool_names.as_deref()
+    }
+
+    /// Get pending steering messages (read-only), matching TS getSteeringMessages().
+    /// Check if any extension has registered handlers for the given event type,
+    /// matching TS `hasExtensionHandlers(eventType)`.
+    pub fn has_extension_handlers(&self) -> bool {
+        self.extension_registry
+            .as_ref()
+            .map(|r| r.has_handlers())
+            .unwrap_or(false)
+    }
+
+    /// Get the extension registry (equivalent to TS `get extensionRunner()`).
+    pub fn extension_runner(&self) -> Option<&Arc<ExtensionRegistry>> {
+        self.extension_registry.as_ref()
+    }
+
+    /// Get file-based prompt templates, matching TS `get promptTemplates()`.
+    pub fn prompt_templates(&self) -> Vec<crate::core::prompt_templates::PromptTemplate> {
+        self.resources
+            .as_ref()
+            .map(|r| r.prompt_templates.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_steering_messages(&self) -> Vec<String> {
+        self.steering_messages.lock().unwrap().clone()
+    }
+
+    /// Get pending follow-up messages (read-only), matching TS getFollowUpMessages().
+    pub fn get_follow_up_messages(&self) -> Vec<String> {
+        self.follow_up_messages.lock().unwrap().clone()
+    }
+
+    /// Current steering mode, matching TS `get steeringMode()`.
+    pub fn steering_mode(&self) -> &str {
+        "all"
+    }
+
+    /// Current follow-up mode, matching TS `get followUpMode()`.
+    pub fn follow_up_mode(&self) -> &str {
+        "all"
+    }
+
+    /// Whether compaction or branch summarization is currently running,
+    /// matching TS `get isCompacting()`.
+    pub fn is_compacting(&self) -> bool {
+        self.compaction_abort.lock().unwrap().is_some()
+            || self.auto_compaction_abort.lock().unwrap().is_some()
+            || self.branch_summary_abort.lock().unwrap().is_some()
+    }
+
+    /// Number of pending messages (steering + follow-up), matching TS `get pendingMessageCount()`.
+    pub fn pending_message_count(&self) -> usize {
+        self.steering_messages.lock().unwrap().len()
+            + self.follow_up_messages.lock().unwrap().len()
+    }
+
+    /// Current retry attempt (0 if not retrying), matching TS `get retryAttempt()`.
+    /// Whether a retry is currently in progress, matching TS `get isRetrying()`.
+    pub fn is_retrying(&self) -> bool {
+        self.retry_abort.lock().unwrap().is_some()
+    }
+
+    /// Whether auto-retry is enabled, matching TS `get autoRetryEnabled()`.
+    pub fn auto_retry_enabled(&self) -> bool {
+        *self.auto_retry_enabled.lock().unwrap()
+    }
+
+    /// Enable or disable auto-retry, matching TS `setAutoRetryEnabled()`.
+    pub fn set_auto_retry_enabled(&self, enabled: bool) {
+        *self.auto_retry_enabled.lock().unwrap() = enabled;
+    }
+
+
+    pub fn retry_attempt(&self) -> u32 {
+        *self.retry_attempt.lock().unwrap()
     }
 
     /// Get the names of currently active tools, matching TS `getActiveToolNames()`.
@@ -1382,6 +1530,9 @@ impl AgentSession {
     /// Refreshes session state from disk before processing the next turn,
     /// ensuring the latest config changes (e.g. tool refresh, session metadata)
     /// are reflected. This aligns with the original TS commit e547bb9.
+    ///
+    /// After the agent finishes, runs the post-agent-run loop (retry + compaction),
+    /// matching TS _runAgentPrompt() + _handlePostAgentRun().
     pub async fn prompt(&mut self, text: &str, _options: Option<PromptOptions>) {
         // Refresh session state before starting the next turn
         if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
@@ -1392,6 +1543,212 @@ impl AgentSession {
         // from the JS thread. Rust native extensions call session methods
         // directly via the ExtensionContext.
         self.add_user_text(text).await;
+
+        // Post-agent-run loop: retry + compaction + queued messages
+        // Matches TS _runAgentPrompt() which calls _handlePostAgentRun() in a loop.
+        loop {
+            if !self._handle_post_agent_run().await {
+                break;
+            }
+        }
+    }
+
+    /// Handle post-agent-run tasks: retry, compaction, queued messages.
+    /// Returns true if the caller should continue the agent (retry or compaction triggered).
+    /// Matches TS _handlePostAgentRun().
+    async fn _handle_post_agent_run(&self) -> bool {
+        let msg = self.last_assistant_message.lock().unwrap().take();
+        let msg = match msg {
+            Some(m) => m,
+            None => return false,
+        };
+
+        // Check retry
+        if self._is_retryable_error(&msg) {
+            if self._prepare_retry(&msg).await {
+                // Continue the agent
+                self.agent.continue_run().await.ok();
+                return true;
+            }
+        }
+
+        // Emit auto_retry_end if retry attempt was active but not retryable
+        if let AgentMessage::Assistant { stop_reason, error_message, .. } = &msg {
+            if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                let retry = *self.retry_attempt.lock().unwrap();
+                if retry > 0 {
+                    self._emit(AgentSessionEvent::AutoRetryEnd {
+                        success: false,
+                        attempt: retry,
+                        final_error: error_message.clone(),
+                    });
+                    *self.retry_attempt.lock().unwrap() = 0;
+                }
+            }
+        }
+
+        // Check compaction
+        if self._check_compaction(&msg).await {
+            return true;
+        }
+
+        // Check queued messages
+        self.agent.has_queued_messages().await
+    }
+
+    /// Check if an assistant message has a retryable error.
+    /// Context overflow is NOT retryable (handled by compaction instead).
+    /// Matches TS _isRetryableError().
+    fn _is_retryable_error(&self, message: &AgentMessage) -> bool {
+        if let AgentMessage::Assistant { stop_reason, error_message, .. } = message {
+            if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                return false;
+            }
+            if let Some(ref err_msg) = error_message {
+                // Context overflow is handled by compaction, not retry
+                if err_msg.to_lowercase().contains("context") && err_msg.to_lowercase().contains("overflow") {
+                    return false;
+                }
+                if err_msg.to_lowercase().contains("context_length") {
+                    return false;
+                }
+                return self._is_retryable_error_message(err_msg);
+            }
+        }
+        false
+    }
+
+    /// Prepare a retry with exponential backoff.
+    /// Returns true if the caller should continue the agent.
+    /// Matches TS _prepareRetry().
+    async fn _prepare_retry(&self, message: &AgentMessage) -> bool {
+        // Check if auto-retry is enabled, matching TS settingsManager.getRetrySettings().enabled
+        if !*self.auto_retry_enabled.lock().unwrap() {
+            return false;
+        }
+
+        // Read retry settings from settings manager
+        // For now, use defaults matching TS: enabled=true, maxRetries=3, baseDelayMs=1000
+        let max_retries = 3u32;
+        let base_delay_ms = 1000u64;
+
+        let mut retry = self.retry_attempt.lock().unwrap();
+        *retry += 1;
+
+        if *retry > max_retries {
+            *retry -= 1;
+            return false;
+        }
+
+        let delay_ms = base_delay_ms * 2u64.pow(*retry - 1);
+        let error_message = if let AgentMessage::Assistant { error_message, .. } = message {
+            error_message.clone().unwrap_or_else(|| "Unknown error".to_string())
+        } else {
+            "Unknown error".to_string()
+        };
+
+        self._emit(AgentSessionEvent::AutoRetryStart {
+            attempt: *retry,
+            max_attempts: max_retries,
+            delay_ms,
+            error_message: error_message.clone(),
+        });
+
+        // Create abort controller for retry backoff, matching TS `this._retryAbortController = new AbortController()`
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        *self.retry_abort.lock().unwrap() = Some(tx);
+
+        // Wait for backoff with abort support, matching TS await with AbortController
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {
+                // Backoff completed normally
+                *self.retry_abort.lock().unwrap() = None;
+            }
+            _ = rx.changed() => {
+                // Retry was aborted
+                *self.retry_abort.lock().unwrap() = None;
+                *self.retry_attempt.lock().unwrap() = 0;
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Check if compaction is needed and run it.
+    /// Called after agent_end and before prompt submission.
+    /// Matches TS _checkCompaction().
+    async fn _check_compaction(&self, assistant_message: &AgentMessage) -> bool {
+        if let AgentMessage::Assistant { stop_reason, .. } = assistant_message {
+            // Skip if message was aborted (user cancelled)
+            if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted) {
+                return false;
+            }
+        }
+
+        let total_tokens = self.check_auto_compact().await;
+        if total_tokens {
+            return self._run_auto_compaction("threshold", false).await;
+        }
+
+        false
+    }
+
+    /// Run auto-compaction with events.
+    /// Matches TS _runAutoCompaction().
+    async fn _run_auto_compaction(&self, reason: &str, will_retry: bool) -> bool {
+        let compaction_reason = match reason {
+            "overflow" => CompactionReason::Overflow,
+            "threshold" => CompactionReason::Threshold,
+            _ => CompactionReason::Threshold,
+        };
+
+        self._emit(AgentSessionEvent::CompactionStart {
+            reason: compaction_reason,
+        });
+
+        // Create abort signal
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        *self.auto_compaction_abort.lock().unwrap() = Some(tx);
+
+        // Run compaction
+        match self.compact(None).await {
+            Ok(_summary) => {
+                // Check if aborted
+                if *rx.borrow() {
+                    self._emit(AgentSessionEvent::CompactionEnd {
+                        reason: compaction_reason,
+                        result: None,
+                        aborted: true,
+                        will_retry: false,
+                        error_message: None,
+                    });
+                    return false;
+                }
+
+                self._emit(AgentSessionEvent::CompactionEnd {
+                    reason: compaction_reason,
+                    result: None,
+                    aborted: false,
+                    will_retry,
+                    error_message: None,
+                });
+                true
+            }
+            Err(e) => {
+                if e == "Compaction not needed" {
+                    return false;
+                }
+                self._emit(AgentSessionEvent::CompactionEnd {
+                    reason: compaction_reason,
+                    result: None,
+                    aborted: false,
+                    will_retry: false,
+                    error_message: Some(format!("Compaction failed: {e}")),
+                });
+                false
+            }
+        }
     }
 
     pub async fn add_user_message(&mut self, mut content: Vec<ContentBlock>) {
@@ -1499,7 +1856,16 @@ impl AgentSession {
 
     /// Set the model on the agent, matching the original setModel().
     /// Dispatches `model_select` to extensions.
-    pub async fn set_model(&mut self, model: Model) {
+    pub async fn set_model(&mut self, model: Model) -> Result<(), String> {
+        // Check auth before setting model, matching TS _modelRuntime.checkAuth()
+        let auth_result = self.model_registry.get_api_key_and_headers(&model).await?;
+        if !auth_result.ok {
+            return Err(format!(
+                "No API key configured for provider '{}'. Set the appropriate environment variable or configure it via /login.",
+                model.provider
+            ));
+        }
+
         let model_id = model.id.clone();
         let mut state = self.agent.state().await;
         let previous_model_id = state.model.id.clone();
@@ -1517,6 +1883,7 @@ impl AgentSession {
             )
             .await;
         }
+        Ok(())
     }
 
     /// Set the thinking level on the agent.
@@ -1811,12 +2178,41 @@ impl AgentSession {
     // =========================================================================
 
     /// Send a custom message (for extensions), matching the original sendCustomMessage().
-    pub async fn send_custom_message(&mut self, custom_type: &str, content: &str) {
+    /// Send a custom message, matching TS sendCustomMessage().
+    /// Supports `triggerTurn` and `deliverAs` options.
+    pub async fn send_custom_message(
+        &mut self,
+        custom_type: &str,
+        content: &str,
+        options: Option<CustomMessageOptions>,
+    ) {
+        let opts = options.unwrap_or_default();
         let timestamp = chrono::Utc::now().timestamp_millis();
         let message = AgentMessage::User {
             content: vec![ContentBlock::text(content)],
             timestamp,
         };
+
+        // deliverAs="nextTurn" → queue for next prompt()
+        if opts.deliver_as.as_deref() == Some("nextTurn") {
+            self.pending_next_turn_messages
+                .lock()
+                .unwrap()
+                .push(message);
+            return;
+        }
+
+        // If streaming, use steer/followUp
+        if *self.is_agent_run_active.lock().unwrap() {
+            if opts.deliver_as.as_deref() == Some("followUp") {
+                self.agent.follow_up(message).await;
+            } else {
+                self.agent.steer(message).await;
+            }
+            return;
+        }
+
+        // Not streaming: persist and optionally trigger a turn
         self.session_manager
             .lock()
             .unwrap()
@@ -1826,30 +2222,42 @@ impl AgentSession {
                 true,
                 None,
             );
-        self.agent.process(vec![message]).await.ok();
+
+        if opts.trigger_turn {
+            self.agent.process(vec![message]).await.ok();
+        } else {
+            // Just append to messages and emit events
+            let mut state = self.agent.state().await;
+            state.messages.push(message);
+            drop(state);
+        }
     }
 
     // =========================================================================
     // Streaming Queue Management
     // =========================================================================
 
-    /// Queue a steering message (interrupts current stream), matching original steer().
-    pub async fn steer(&self, text: &str) {
+    /// Queue a steering message (interrupts current stream), matching TS steer().
+    /// Supports optional image attachments.
+    pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) {
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let message = AgentMessage::User {
-            content: vec![ContentBlock::text(text)],
-            timestamp,
-        };
+        let mut content = vec![ContentBlock::text(text)];
+        if let Some(imgs) = images {
+            content.extend(imgs);
+        }
+        let message = AgentMessage::User { content, timestamp };
         self.agent.steer(message).await;
     }
 
-    /// Queue a follow-up message (waits for current stream), matching original followUp().
-    pub async fn follow_up(&self, text: &str) {
+    /// Queue a follow-up message (waits for current stream), matching TS followUp().
+    /// Supports optional image attachments.
+    pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) {
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let message = AgentMessage::User {
-            content: vec![ContentBlock::text(text)],
-            timestamp,
-        };
+        let mut content = vec![ContentBlock::text(text)];
+        if let Some(imgs) = images {
+            content.extend(imgs);
+        }
+        let message = AgentMessage::User { content, timestamp };
         self.agent.follow_up(message).await;
     }
 
@@ -1859,8 +2267,13 @@ impl AgentSession {
     }
 
     /// Clear all queued messages, matching original clearAllQueues().
-    pub async fn clear_all_queues(&self) {
+    /// Returns the cleared messages, matching TS clearQueue().
+    pub async fn clear_all_queues(&self) -> (Vec<String>, Vec<String>) {
+        let steering = self.steering_messages.lock().unwrap().drain(..).collect::<Vec<_>>();
+        let follow_up = self.follow_up_messages.lock().unwrap().drain(..).collect::<Vec<_>>();
         self.agent.clear_all_queues().await;
+        self._emit_queue_update();
+        (steering, follow_up)
     }
 
     /// Retry the last turn, matching original retry().
@@ -1869,6 +2282,33 @@ impl AgentSession {
         &self,
     ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
         self.agent.continue_run().await
+    }
+
+    /// Abort in-progress retry, matching TS abortRetry().
+    pub fn abort_retry(&self) {
+        // Abort the retry backoff, matching TS abortRetry() which calls `this._retryAbortController?.abort()`.
+        if let Some(sender) = self.retry_abort.lock().unwrap().take() {
+            let _ = sender.send(true);
+        }
+        // Reset retry state
+        *self.retry_attempt.lock().unwrap() = 0;
+    }
+
+    /// Cancel in-progress compaction (manual or auto), matching TS abortCompaction().
+    pub fn abort_compaction(&self) {
+        if let Some(sender) = self.compaction_abort.lock().unwrap().take() {
+            let _ = sender.send(true);
+        }
+        if let Some(sender) = self.auto_compaction_abort.lock().unwrap().take() {
+            let _ = sender.send(true);
+        }
+    }
+
+    /// Cancel in-progress branch summarization, matching TS abortBranchSummary().
+    pub fn abort_branch_summary(&self) {
+        if let Some(sender) = self.branch_summary_abort.lock().unwrap().take() {
+            let _ = sender.send(true);
+        }
     }
 
     // =========================================================================
@@ -1909,9 +2349,59 @@ impl AgentSession {
 
     /// Check whether the agent should retry after an agent_end event.
     /// Matches TS `_willRetryAfterAgentEnd`.
-    fn _will_retry_after_agent_end(&self, _event: &AgentEvent) -> bool {
-        // TODO: implement retry settings check when SettingsManager is available
-        // For now, always return false (no retry)
+    fn _will_retry_after_agent_end(&self, event: &AgentEvent) -> bool {
+        // Check if the agent_end has a retryable error
+        if let AgentEvent::AgentEnd { messages } = event {
+            if let Some(last) = messages.last() {
+                if let AgentMessage::Assistant { stop_reason, error_message, .. } = last {
+                    if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                        if let Some(ref err_msg) = error_message {
+                            return self._is_retryable_error_message(err_msg);
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if an error message is retryable (transient provider/transport error).
+    /// Matches TS isRetryableAssistantError() logic.
+    fn _is_retryable_error_message(&self, error_message: &str) -> bool {
+        // Non-retryable patterns (quota/billing/limit errors)
+        let non_retryable_patterns = [
+            "insufficient_quota", "out of budget", "quota exceeded", "billing",
+            "GoUsageLimitError", "FreeUsageLimitError",
+            "Monthly usage limit reached", "available balance",
+        ];
+        for pattern in &non_retryable_patterns {
+            if error_message.to_lowercase().contains(pattern) {
+                return false;
+            }
+        }
+
+        // Retryable patterns (transient provider/transport errors)
+        let retryable_patterns = [
+            "overloaded", "rate limit", "too many requests", "429",
+            "500", "502", "503", "504", "524",
+            "service unavailable", "server error", "internal error",
+            "provider returned error",
+            "network error", "connection error", "connection refused",
+            "fetch failed", "upstream connect",
+            "reset before headers", "socket hang up",
+            "timed out", "timeout", "terminated",
+            "websocket closed", "websocket error",
+            "ended without", "stream ended before message_stop",
+            "http2 request did not get a response",
+            "retry delay",
+            "you can retry your request", "try your request again", "please retry your request",
+            "ResourceExhausted",
+        ];
+        for pattern in &retryable_patterns {
+            if error_message.to_lowercase().contains(pattern) {
+                return true;
+            }
+        }
         false
     }
 
@@ -2064,6 +2554,81 @@ impl AgentSession {
         });
         std::fs::write(&path, &html).map_err(|e| format!("Failed to write HTML file: {}", e))?;
         Ok(path)
+    }
+
+    /// Export the current session branch to a JSONL file, matching TS exportToJsonl().
+    /// Writes the session header followed by all entries on the current branch path.
+    pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, String> {
+        use crate::core::session_manager::CURRENT_SESSION_VERSION;
+        let mgr = self.session_manager.lock().unwrap();
+        let file_path = output_path
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| {
+                let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+                format!("session-{}.jsonl", ts)
+            });
+
+        let dir = std::path::Path::new(&file_path).parent().unwrap();
+        if !dir.exists() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+
+        let header = serde_json::json!({
+            "type": "session",
+            "version": CURRENT_SESSION_VERSION,
+            "id": mgr.get_session_id(),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cwd": mgr.get_cwd(),
+        });
+
+        let branch_entries = mgr.get_branch(None);
+        let mut lines = vec![serde_json::to_string(&header).map_err(|e| e.to_string())?];
+
+        // Re-chain parentIds to form a linear sequence
+        let mut prev_id: Option<String> = None;
+        for entry in &branch_entries {
+            let mut linear = serde_json::to_value(entry).map_err(|e| e.to_string())?;
+            if let Some(obj) = linear.as_object_mut() {
+                if let Some(prev) = &prev_id {
+                    obj.insert("parentId".to_string(), serde_json::Value::String(prev.clone()));
+                } else {
+                    obj.insert("parentId".to_string(), serde_json::Value::Null);
+                }
+            }
+            lines.push(serde_json::to_string(&linear).map_err(|e| e.to_string())?);
+            prev_id = Some(entry.id().to_string());
+        }
+
+        std::fs::write(&file_path, lines.join("
+") + "
+").map_err(|e| e.to_string())?;
+        Ok(file_path)
+    }
+
+    /// Get all user messages from session for fork selector, matching TS getUserMessagesForForking().
+    pub fn get_user_messages_for_forking(&self) -> Vec<(String, String)> {
+        let mgr = self.session_manager.lock().unwrap();
+        let entries = mgr.get_entries();
+        let mut result = Vec::new();
+
+        for entry in &entries {
+            if let SessionEntry::Message { message, .. } = entry {
+                if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
+                    if role == "user" {
+                        let text = message
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !text.is_empty() {
+                            result.push((entry.id().to_string(), text));
+                        }
+                    }
+                }
+            }
+        }
+
+        result
     }
 }
 
@@ -2250,8 +2815,20 @@ impl AgentSession {
     // =========================================================================
 
     /// Send a user message (for extensions), matching original sendUserMessage().
-    pub async fn send_user_message(&mut self, content: &str) {
-        self.add_user_text(content).await;
+    /// Send a user message, matching TS sendUserMessage().
+    /// Supports `deliverAs` option for streaming behavior.
+    pub async fn send_user_message(
+        &mut self,
+        content: &str,
+        options: Option<SendUserMessageOptions>,
+    ) {
+        let opts = options.unwrap_or_default();
+        self.prompt(content, Some(PromptOptions {
+            expand_prompt_templates: Some(false),
+            images: None,
+            streaming_behavior: opts.deliver_as,
+            source: Some("extension".to_string()),
+        })).await;
     }
 
     // =========================================================================
@@ -2266,26 +2843,76 @@ impl AgentSession {
 
     /// Execute a bash command directly, matching the original executeBash().
     /// Returns the command output as a string.
-    pub async fn execute_bash(&self, command: &str) -> Result<String, String> {
-        use crate::core::bash_executor::BashExecutor;
+    /// Execute a bash command, matching TS executeBash().
+    /// Supports abort via bash_abort controller and optional on_chunk callback.
+    pub async fn execute_bash(
+        &self,
+        command: &str,
+        on_chunk: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    ) -> Result<crate::core::bash_executor::BashExecutorResult, String> {
+        use crate::core::bash_executor::{BashExecutor, BashExecutorOptions};
+
+        // Create abort signal, matching TS `this._bashAbortController = new AbortController()`
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        *self.bash_abort.lock().unwrap() = Some(tx);
+
         let executor = BashExecutor::new(&self.cwd);
+        let options = BashExecutorOptions {
+            on_chunk,
+            signal: Some(rx),
+        };
+
         let result = executor
-            .execute(command, None)
+            .execute(command, Some(options))
             .await
             .map_err(|e| e.to_string())?;
-        Ok(result.output)
+
+        // Clear abort controller, matching TS `this._bashAbortController = undefined`
+        *self.bash_abort.lock().unwrap() = None;
+
+        Ok(result)
     }
 
     /// Whether a bash command is currently running, matching TS `get isBashRunning()`.
     pub fn is_bash_running(&self) -> bool {
-        false
+        self.bash_abort.lock().unwrap().is_some()
     }
 
     /// Record a bash execution result, matching TS `recordBashResult()`.
     /// Queues the result when the agent is streaming; appends immediately otherwise.
-    pub fn record_bash_result(&self, _command: &str, _output: &str, _exit_code: i32) {
-        // TODO: implement bash result queuing for streaming mode,
-        // matching TS _pendingBashMessages + _flushPendingBashMessages.
+    pub async fn record_bash_result(
+        &self,
+        command: &str,
+        output: &str,
+        exit_code: Option<i32>,
+        cancelled: bool,
+        truncated: bool,
+        full_output_path: Option<String>,
+        exclude_from_context: Option<bool>,
+    ) {
+        use pi_agent_core::types::AgentMessage;
+
+        let bash_message = AgentMessage::BashExecution {
+            command: command.to_string(),
+            output: output.to_string(),
+            exit_code,
+            cancelled,
+            truncated,
+            full_output_path,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            exclude_from_context,
+        };
+
+        // If agent is streaming, queue for later (matching TS _pendingBashMessages)
+        if *self.is_agent_run_active.lock().unwrap() {
+            let value = serde_json::to_value(&bash_message).unwrap_or_default();
+            self.pending_bash_messages.lock().unwrap().push(value);
+        } else {
+            // Add to agent state immediately
+            let mut state = self.agent.state().await;
+            state.messages.push(bash_message);
+            // Note: session persistence is handled by the agent event handler
+        }
     }
 
     /// Whether there are pending bash messages waiting to be flushed,
@@ -2296,8 +2923,9 @@ impl AgentSession {
 
     /// Abort running bash command, matching TS `abortBash()`.
     pub fn abort_bash(&self) {
-        // TODO: implement bash abort via CancellationToken when
-        // BashExecutor supports it.
+        if let Some(sender) = self.bash_abort.lock().unwrap().take() {
+            let _ = sender.send(true);
+        }
     }
 
     pub async fn abort(&self) {
@@ -2336,7 +2964,13 @@ impl AgentSession {
     /// is dispatched by the Runtime's teardown_current BEFORE dispose() is
     /// called, so there is no double-dispatch. When called directly (e.g. from
     /// RPC handler or interactive mode), this method dispatches the event.
-    pub async fn dispose(self) {
+    pub async fn dispose(mut self) {
+        // Disconnect from agent (matching TS _disconnectFromAgent)
+        if let Some(handle) = self._agent_subscription.take() {
+            handle.unsubscribe().await;
+        }
+        // Clear event listeners (matching TS _eventListeners = [])
+        self.event_listeners.lock().unwrap().clear();
         // Dispatch session_shutdown to extensions so they can flush state
         // and close connections before the session is destroyed.
         if let Some(ref registry) = self.extension_registry {

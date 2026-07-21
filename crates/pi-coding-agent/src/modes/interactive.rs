@@ -87,7 +87,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                                     cache_write: 0.0,
                                 },
                             };
-                            sess.set_model(model).await;
+                            let _ = sess.set_model(model).await;
                         }
                         AgentCmd::CycleModel => {
                             // Cycle through available models via the agent

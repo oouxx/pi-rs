@@ -641,6 +641,12 @@ impl ExtensionRegistry {
         all
     }
 
+    /// Check if any extension has registered handlers (has at least one extension).
+    /// Matching TS ExtensionRunner.hasHandlers().
+    pub fn has_handlers(&self) -> bool {
+        !self.extensions.is_empty()
+    }
+
     pub async fn dispatch_event(&self, event: &ExtensionEvent, ctx: &ExtensionContext) -> Vec<(String, Option<EventResult>)> {
         let mut results = Vec::new();
         for ext in &self.extensions {

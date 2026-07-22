@@ -1,18 +1,21 @@
-//! `ExtensionAPI` trait — Rust 原生扩展接口。
+//! `HookHandler` trait — Rust 原生扩展接口。
 //!
-//! 与原版 TypeScript `ExtensionAPI` 接口保持语义一致。
-//! 每个扩展实现此 trait，通过 `ExtensionRegistry` 注册到 agent 运行时。
+//! 基于 ZeroClaw 的 Hook 系统设计。所有扩展实现 `HookHandler` trait，
+//! 通过 `ExtensionRegistry` 注册到 agent 运行时。
 
-use std::collections::HashMap;
+pub mod hook;
+
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::Value;
-
 use serde::{Deserialize, Serialize};
+
+pub use hook::{
+    CommandRegistry, FlagRegistry, HookHandler, HookResult, HookRunner, RegisteredCommand,
+    RegisteredFlag, RegisteredShortcut, RegisteredTool, ShortcutRegistry, ToolRegistry,
+};
 
 // ============================================================================
 // Tool Definition
@@ -21,8 +24,6 @@ use serde::{Deserialize, Serialize};
 /// Execute callback for a custom tool.
 ///
 /// Takes (tool_call_id, params, signal) and returns a `ToolCallOutput`.
-/// This mirrors the TypeScript `ToolDefinition.execute()` signature
-/// without depending on `pi-agent-core` types directly.
 pub type ToolExecuteFn = Arc<
     dyn Fn(
             String,
@@ -35,38 +36,23 @@ pub type ToolExecuteFn = Arc<
 >;
 
 /// Tool definition matching the original TypeScript ToolDefinition interface.
-///
-/// The optional `execute` field lets callers provide a runnable callback,
-/// matching the TS `ToolDefinition.execute()` — without it, the tool is
-/// a metadata-only definition (usable for registration and display).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
-    /// Tool name (used in LLM tool calls).
     pub name: String,
-    /// Human-readable label for UI display.
     #[serde(default)]
     pub label: Option<String>,
-    /// Description for the LLM.
     #[serde(default)]
     pub description: String,
-    /// Optional one-line prompt snippet.
     #[serde(default)]
     pub prompt_snippet: Option<String>,
-    /// Optional prompt guidelines for the LLM.
     #[serde(default)]
     pub prompt_guidelines: Option<Vec<String>>,
-    /// JSON Schema for tool parameters.
     #[serde(default)]
     pub parameters: Option<serde_json::Value>,
-    /// Shell rendering mode.
     #[serde(default)]
     pub render_shell: Option<String>,
-    /// Execution mode: "sequential" or "parallel".
     #[serde(default)]
     pub execution_mode: Option<String>,
-    /// Optional execute callback. When provided, the tool is immediately
-    /// executable — no separate `agent.add_tools()` call needed.
-    /// Matches the TS `ToolDefinition.execute()` pattern.
     #[serde(skip)]
     pub execute: Option<ToolExecuteFn>,
 }
@@ -104,566 +90,540 @@ impl std::fmt::Debug for ToolDefinition {
 }
 
 // ============================================================================
-// 事件类型 — 对应原版 ExtensionEvent 联合类型
+// ToolCallOutput
 // ============================================================================
 
-/// 扩展可订阅的所有事件。
-#[derive(Debug, Clone)]
-pub enum ExtensionEvent {
-    ProjectTrust { cwd: String },
-    ResourcesDiscover { cwd: String, reason: String },
-    SessionStart { reason: String, previous_session_file: Option<String> },
-    SessionInfoChanged { name: Option<String> },
-    SessionBeforeSwitch { reason: String, target_session_file: Option<String> },
-    SessionBeforeFork { entry_id: String, position: String },
-    SessionBeforeCompact { reason: String, will_retry: bool },
-    SessionCompact { summary: String, tokens_before: u64 },
-    SessionShutdown { reason: String, target_session_file: Option<String> },
-    SessionBeforeTree { target_id: String },
-    SessionTree { new_leaf_id: Option<String>, old_leaf_id: Option<String> },
-    Context { messages: Vec<Value> },
-    BeforeProviderRequest { payload: Value },
-    BeforeProviderHeaders { headers: HashMap<String, String> },
-    AfterProviderResponse { status: u16, headers: HashMap<String, String> },
-    BeforeAgentStart { prompt: String, system_prompt: String },
-    AgentStart,
-    AgentEnd { messages: Vec<Value> },
-    AgentSettled,
-    TurnStart,
-    TurnEnd { message: Value, tool_results: Vec<Value> },
-    MessageStart { message: Value },
-    MessageUpdate { message: Value },
-    MessageEnd { message: Value },
-    ToolExecutionStart { tool_call_id: String, tool_name: String, args: Value },
-    ToolExecutionUpdate { tool_call_id: String, tool_name: String, args: Value, partial_result: Value },
-    ToolExecutionEnd { tool_call_id: String, tool_name: String, result: Value, is_error: bool },
-    ModelSelect { model: String, previous_model: Option<String> },
-    ThinkingLevelSelect { level: String, previous_level: String },
-    ToolCall { tool_call_id: String, tool_name: String, input: Value },
-    ToolResult { tool_call_id: String, tool_name: String, input: Value, content: Vec<Value>, is_error: bool },
-    UserBash { command: String, cwd: String },
-    Input { text: String, source: String },
-    /// 扩展自定义事件。用于扩展间通信。
-    /// `event_type` 作为 channel 标识，扩展按此过滤。
-    Custom {
-        event_type: String,
-        payload: Value,
-    },
-}
-
-// ============================================================================
-// 事件发布器 — 扩展间通信
-// ============================================================================
-
-/// 扩展事件发布器。
-///
-/// 扩展通过 `ctx.publish_event("channel", payload)` 广播自定义事件，
-/// 其他扩展通过 `on_event(ExtensionEvent::Custom { .. })` 接收。
-/// 发布者不会收到自己发出的事件（防回声）。
-#[derive(Clone)]
-pub struct EventPublisher {
-    registry: std::sync::Arc<ExtensionRegistry>,
-    source: String,
-}
-
-impl EventPublisher {
-    /// 创建一个新的事件发布器。
-    pub fn new(registry: std::sync::Arc<ExtensionRegistry>, source: String) -> Self {
-        Self { registry, source }
-    }
-
-    /// 广播自定义事件给所有其他扩展。
-    /// 发布者自己不会收到此事件。
-    pub async fn publish(&self, event_type: &str, payload: Value) {
-        let event = ExtensionEvent::Custom {
-            event_type: event_type.to_string(),
-            payload,
-        };
-        for ext in self.registry.extensions() {
-            if ext.name() == self.source {
-                continue;
-            }
-            let _ = ext.on_event(&event, &ExtensionContext::empty()).await;
-        }
-    }
-}
-
-// ============================================================================
-// 事件处理结果
-// ============================================================================
-
-#[derive(Debug, Clone, Default)]
-pub struct EventResult {
-    pub block: Option<bool>,
-    pub reason: Option<String>,
-    pub messages: Option<Vec<Value>>,
-    pub system_prompt: Option<String>,
-    pub action: Option<String>,
-    pub text: Option<String>,
-    pub trusted: Option<String>,
-    pub remember: bool,
-    pub skill_paths: Option<Vec<String>>,
-    pub prompt_paths: Option<Vec<String>>,
-    pub theme_paths: Option<Vec<String>>,
-    pub cancel: Option<bool>,
-    /// Modified tool result content (for tool_result events).
-    pub content: Option<Vec<Value>>,
-    /// Modified tool result details (for tool_result events).
+/// Output from a tool call handled by an extension.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallOutput {
+    pub content: Vec<Value>,
     pub details: Option<Value>,
-    /// Modified tool result is_error flag (for tool_result events).
-    pub is_error: Option<bool>,
-    /// Modified tool result terminate flag (for tool_result events).
-    /// When `Some(true)`, signals the agent loop to stop after this tool call.
+    pub is_error: bool,
     pub terminate: Option<bool>,
-    /// Modified provider request payload (for before_provider_request events).
-    pub payload: Option<Value>,
-    /// Modified input images (for input events).
-    pub images: Option<Vec<Value>>,
 }
 
 // ============================================================================
-// 扩展上下文 — 对应原版 ExtensionContext 接口
+// ToolInfo
 // ============================================================================
 
-/// 扩展事件处理时收到的上下文。
-/// 对应原版 `ExtensionContext` 接口。
-///
-/// 包含过期检测：会话替换后上下文被标记为无效，
-/// 后续访问会返回错误，防止扩展使用过期引用。
-/// 对应原版 `ExtensionRunner.invalidate()` / `assertActive()`。
-#[derive(Clone)]
+/// Information about a tool for extension use.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+    pub parameters: Option<Value>,
+}
+
+// ============================================================================
+// ExtensionContext
+// ============================================================================
+
+/// Context provided to extensions for interacting with the agent.
 pub struct ExtensionContext {
-    pub cwd: String,
-    pub has_ui: bool,
+    pub session_id: String,
+    pub is_connected: bool,
     pub ui: ExtensionUIContext,
-    /// 运行时操作句柄。
     pub runtime: RuntimeHandle,
-    /// 有效性标志。会话替换后设为 false。
-    /// 所有 `ExtensionContext` 克隆共享同一标志。
-    /// 有效性标志。会话替换后设为 false。
-    /// 所有 `ExtensionContext` 克隆共享同一标志。
-    valid: Arc<AtomicBool>,
-    /// 事件发布器，用于扩展间通信。
-    /// 为 None 时，publish_event() 是空操作。
-    publisher: Option<EventPublisher>,
 }
 
 impl ExtensionContext {
-    /// 创建一个新的有效上下文。
-    pub fn new(cwd: String, has_ui: bool, ui: ExtensionUIContext, runtime: RuntimeHandle) -> Self {
-        Self {
-            cwd,
-            has_ui,
-            ui,
-            runtime,
-            valid: Arc::new(AtomicBool::new(true)),
-            publisher: None,
-        }
-    }
-
-    /// 创建一个新的有效上下文，并注入事件发布器。
-    pub fn with_publisher(
-        cwd: String,
-        has_ui: bool,
+    pub fn new(
+        session_id: String,
+        is_connected: bool,
         ui: ExtensionUIContext,
         runtime: RuntimeHandle,
-        publisher: EventPublisher,
     ) -> Self {
         Self {
-            cwd,
-            has_ui,
+            session_id,
+            is_connected,
             ui,
             runtime,
-            valid: Arc::new(AtomicBool::new(true)),
-            publisher: Some(publisher),
         }
     }
-
-    /// 创建一个空的上下文（无 cwd、无 UI、无运行时）。
-    /// 用于 EventPublisher 内部向其他扩展广播事件。
-    pub fn empty() -> Self {
-        Self {
-            cwd: String::new(),
-            has_ui: false,
-            ui: ExtensionUIContext {
-                notify: std::sync::Arc::new(|_, _| {}),
-                set_status: std::sync::Arc::new(|_, _| {}),
-                confirm: std::sync::Arc::new(|_, _| false),
-            },
-            runtime: RuntimeHandle::noop(),
-            valid: Arc::new(AtomicBool::new(true)),
-            publisher: None,
-        }
-    }
-
-    /// 检查上下文是否仍然有效。
-    /// 如果上下文已被作废（会话替换后），返回错误信息。
-    pub fn assert_active(&self) -> Result<(), String> {
-        if self.valid.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err("This extension context is stale after session replacement or reload. \
-                 Do not use a captured context after ctx.newSession(), ctx.fork(), \
-                 ctx.switchSession(), or ctx.reload()."
-                .to_string())
-        }
-    }
-
-    /// 将上下文标记为无效。会话替换后调用。
-    /// 所有克隆共享同一标志，因此一次调用即可作废所有引用。
-    pub fn invalidate(&self) {
-        self.valid.store(false, Ordering::SeqCst);
-    }
-
-    /// 广播自定义事件给所有其他扩展。
-    ///
-    /// 如果上下文没有注入 EventPublisher（publisher 为 None），
-    /// 此方法是空操作。
-    /// 发布者不会收到自己发出的事件（防回声）。
-    pub async fn publish_event(&self, event_type: &str, payload: Value) {
-        if let Some(ref publisher) = self.publisher {
-            publisher.publish(event_type, payload).await;
-        }
-    }
-
 }
 
-/// 运行时操作句柄 — 扩展通过此句柄与运行时交互。
-/// 对应原版 `pi.sendMessage()` / `pi.appendEntry()` / `pi.getActiveTools()` 等。
+// ============================================================================
+// ExtensionUIContext
+// ============================================================================
+
+/// UI context for extensions to interact with the user interface.
+#[derive(Clone)]
+pub struct ExtensionUIContext {
+    pub notify: Arc<dyn Fn(&str, &Value) + Send + Sync>,
+    pub set_status: Arc<dyn Fn(&str, &str) + Send + Sync>,
+    pub confirm: Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+}
+
+// ============================================================================
+// RuntimeHandle
+// ============================================================================
+
+/// Handle for extensions to interact with the agent runtime.
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    pub send_message: Arc<dyn Fn(Value, Option<SendMessageOptions>) + Send + Sync>,
-    pub send_user_message: Arc<dyn Fn(String, Option<SendUserMessageOptions>) + Send + Sync>,
-    pub append_entry: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
-    pub get_active_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
-    pub set_active_tools: Arc<dyn Fn(Vec<String>) + Send + Sync>,
+    pub send_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+    pub send_user_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+    pub set_custom_prompt: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub set_model: Arc<dyn Fn(String) + Send + Sync>,
+    pub set_thinking_level: Arc<dyn Fn(String) + Send + Sync>,
+    pub set_selected_tools: Arc<dyn Fn(Option<Vec<String>>) + Send + Sync>,
+    pub set_allowed_tools: Arc<dyn Fn(Option<Vec<String>>) + Send + Sync>,
+    pub set_excluded_tools: Arc<dyn Fn(Option<Vec<String>>) + Send + Sync>,
+    pub set_append_system_prompt: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub set_session_name: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub set_session_cwd: Arc<dyn Fn(String) + Send + Sync>,
+    pub abort: Arc<dyn Fn() + Send + Sync>,
+    pub new_session: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub switch_session: Arc<dyn Fn(String) + Send + Sync>,
+    pub fork_session: Arc<dyn Fn(String, String) + Send + Sync>,
+    pub compact_session: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub export_html: Arc<dyn Fn() + Send + Sync>,
+    pub get_session_stats: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub get_config: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub set_config: Arc<dyn Fn(Value) + Send + Sync>,
+    pub get_settings: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub set_settings: Arc<dyn Fn(Value) + Send + Sync>,
+    pub get_theme: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub get_env: Arc<dyn Fn(String) -> Option<String> + Send + Sync>,
+    pub set_env: Arc<dyn Fn(String, String) + Send + Sync>,
+    pub get_cwd: Arc<dyn Fn() -> String + Send + Sync>,
+    pub set_cwd: Arc<dyn Fn(String) + Send + Sync>,
+    pub get_agent_dir: Arc<dyn Fn() -> String + Send + Sync>,
+    pub get_session_dir: Arc<dyn Fn() -> String + Send + Sync>,
+    pub get_session_file: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    pub get_session_id: Arc<dyn Fn() -> String + Send + Sync>,
+    pub get_session_name: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    pub get_model: Arc<dyn Fn() -> String + Send + Sync>,
+    pub get_thinking_level: Arc<dyn Fn() -> String + Send + Sync>,
+    pub get_selected_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    pub get_allowed_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    pub get_excluded_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    pub get_custom_prompt: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    pub get_append_system_prompt: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    pub get_messages: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub get_tool_definitions: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub get_context_usage: Arc<dyn Fn() -> Value + Send + Sync>,
+    pub get_config_value: Arc<dyn Fn(String) -> Option<Value> + Send + Sync>,
+    pub set_config_value: Arc<dyn Fn(String, Value) + Send + Sync>,
+    pub get_setting: Arc<dyn Fn(String) -> Option<Value> + Send + Sync>,
+    pub set_setting: Arc<dyn Fn(String, Value) + Send + Sync>,
+    pub read_file: Arc<dyn Fn(String) -> Option<String> + Send + Sync>,
+    pub write_file: Arc<dyn Fn(String, String) + Send + Sync>,
+    pub list_dir: Arc<dyn Fn(String) -> Vec<String> + Send + Sync>,
+    pub file_exists: Arc<dyn Fn(String) -> bool + Send + Sync>,
+    pub create_dir: Arc<dyn Fn(String) + Send + Sync>,
+    pub remove_file: Arc<dyn Fn(String) + Send + Sync>,
+    pub run_command: Arc<dyn Fn(String, String) -> Value + Send + Sync>,
+    pub open_url: Arc<dyn Fn(String) + Send + Sync>,
+    pub log: Arc<dyn Fn(String, String) + Send + Sync>,
 }
 
 impl RuntimeHandle {
-    pub fn noop() -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        send_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+        send_user_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+        set_custom_prompt: Arc<dyn Fn(Option<String>) + Send + Sync>,
+        set_model: Arc<dyn Fn(String) + Send + Sync>,
+        set_thinking_level: Arc<dyn Fn(String) + Send + Sync>,
+        set_selected_tools: Arc<dyn Fn(Option<Vec<String>>) + Send + Sync>,
+        set_allowed_tools: Arc<dyn Fn(Option<Vec<String>>) + Send + Sync>,
+        set_excluded_tools: Arc<dyn Fn(Option<Vec<String>>) + Send + Sync>,
+        set_append_system_prompt: Arc<dyn Fn(Option<String>) + Send + Sync>,
+        set_session_name: Arc<dyn Fn(Option<String>) + Send + Sync>,
+        set_session_cwd: Arc<dyn Fn(String) + Send + Sync>,
+        abort: Arc<dyn Fn() + Send + Sync>,
+        new_session: Arc<dyn Fn(Option<String>) + Send + Sync>,
+        switch_session: Arc<dyn Fn(String) + Send + Sync>,
+        fork_session: Arc<dyn Fn(String, String) + Send + Sync>,
+        compact_session: Arc<dyn Fn(Option<String>) + Send + Sync>,
+        export_html: Arc<dyn Fn() + Send + Sync>,
+        get_session_stats: Arc<dyn Fn() -> Value + Send + Sync>,
+        get_config: Arc<dyn Fn() -> Value + Send + Sync>,
+        set_config: Arc<dyn Fn(Value) + Send + Sync>,
+        get_settings: Arc<dyn Fn() -> Value + Send + Sync>,
+        set_settings: Arc<dyn Fn(Value) + Send + Sync>,
+        get_theme: Arc<dyn Fn() -> Value + Send + Sync>,
+        get_env: Arc<dyn Fn(String) -> Option<String> + Send + Sync>,
+        set_env: Arc<dyn Fn(String, String) + Send + Sync>,
+        get_cwd: Arc<dyn Fn() -> String + Send + Sync>,
+        set_cwd: Arc<dyn Fn(String) + Send + Sync>,
+        get_agent_dir: Arc<dyn Fn() -> String + Send + Sync>,
+        get_session_dir: Arc<dyn Fn() -> String + Send + Sync>,
+        get_session_file: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        get_session_id: Arc<dyn Fn() -> String + Send + Sync>,
+        get_session_name: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        get_model: Arc<dyn Fn() -> String + Send + Sync>,
+        get_thinking_level: Arc<dyn Fn() -> String + Send + Sync>,
+        get_selected_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+        get_allowed_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+        get_excluded_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+        get_custom_prompt: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        get_append_system_prompt: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        get_messages: Arc<dyn Fn() -> Value + Send + Sync>,
+        get_tool_definitions: Arc<dyn Fn() -> Value + Send + Sync>,
+        get_context_usage: Arc<dyn Fn() -> Value + Send + Sync>,
+        get_config_value: Arc<dyn Fn(String) -> Option<Value> + Send + Sync>,
+        set_config_value: Arc<dyn Fn(String, Value) + Send + Sync>,
+        get_setting: Arc<dyn Fn(String) -> Option<Value> + Send + Sync>,
+        set_setting: Arc<dyn Fn(String, Value) + Send + Sync>,
+        read_file: Arc<dyn Fn(String) -> Option<String> + Send + Sync>,
+        write_file: Arc<dyn Fn(String, String) + Send + Sync>,
+        list_dir: Arc<dyn Fn(String) -> Vec<String> + Send + Sync>,
+        file_exists: Arc<dyn Fn(String) -> bool + Send + Sync>,
+        create_dir: Arc<dyn Fn(String) + Send + Sync>,
+        remove_file: Arc<dyn Fn(String) + Send + Sync>,
+        run_command: Arc<dyn Fn(String, String) -> Value + Send + Sync>,
+        open_url: Arc<dyn Fn(String) + Send + Sync>,
+        log: Arc<dyn Fn(String, String) + Send + Sync>,
+    ) -> Self {
         Self {
-            send_message: Arc::new(|_, _| {}),
-            send_user_message: Arc::new(|_, _| {}),
-            append_entry: Arc::new(|_, _| {}),
-            get_active_tools: Arc::new(Vec::new),
-            set_active_tools: Arc::new(|_| {}),
+            send_message,
+            send_user_message,
+            set_custom_prompt,
+            set_model,
+            set_thinking_level,
+            set_selected_tools,
+            set_allowed_tools,
+            set_excluded_tools,
+            set_append_system_prompt,
+            set_session_name,
+            set_session_cwd,
+            abort,
+            new_session,
+            switch_session,
+            fork_session,
+            compact_session,
+            export_html,
+            get_session_stats,
+            get_config,
+            set_config,
+            get_settings,
+            set_settings,
+            get_theme,
+            get_env,
+            set_env,
+            get_cwd,
+            set_cwd,
+            get_agent_dir,
+            get_session_dir,
+            get_session_file,
+            get_session_id,
+            get_session_name,
+            get_model,
+            get_thinking_level,
+            get_selected_tools,
+            get_allowed_tools,
+            get_excluded_tools,
+            get_custom_prompt,
+            get_append_system_prompt,
+            get_messages,
+            get_tool_definitions,
+            get_context_usage,
+            get_config_value,
+            set_config_value,
+            get_setting,
+            set_setting,
+            read_file,
+            write_file,
+            list_dir,
+            file_exists,
+            create_dir,
+            remove_file,
+            run_command,
+            open_url,
+            log,
         }
+    }
+
+    /// Create a no-op RuntimeHandle for testing.
+    pub fn noop() -> Self {
+        Self::new(
+            Arc::new(|_, _| {}),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+            Arc::new(|| Value::Null),
+            Arc::new(|| Value::Null),
+            Arc::new(|_| {}),
+            Arc::new(|| Value::Null),
+            Arc::new(|_| {}),
+            Arc::new(|| Value::Null),
+            Arc::new(|_| None),
+            Arc::new(|_, _| {}),
+            Arc::new(|| String::new()),
+            Arc::new(|_| {}),
+            Arc::new(|| String::new()),
+            Arc::new(|| String::new()),
+            Arc::new(|| None),
+            Arc::new(|| String::new()),
+            Arc::new(|| None),
+            Arc::new(|| String::new()),
+            Arc::new(|| String::new()),
+            Arc::new(|| vec![]),
+            Arc::new(|| vec![]),
+            Arc::new(|| vec![]),
+            Arc::new(|| None),
+            Arc::new(|| None),
+            Arc::new(|| Value::Null),
+            Arc::new(|| Value::Null),
+            Arc::new(|| Value::Null),
+            Arc::new(|_| None),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| None),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| None),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| vec![]),
+            Arc::new(|_| false),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_, _| Value::Null),
+            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
+        )
     }
 }
 
-/// UI 操作方法。
-/// 对应原版 `ExtensionUIContext` 接口的子集。
+// ============================================================================
+// EventPublisher
+// ============================================================================
+
+/// Publisher for session-level events, used by extensions to emit events
+/// to the UI layer.
 #[derive(Clone)]
-pub struct ExtensionUIContext {
-    pub notify: Arc<dyn Fn(String, &str) + Send + Sync>,
-    pub set_status: Arc<dyn Fn(String, Option<String>) + Send + Sync>,
-    pub confirm: Arc<dyn Fn(String, String) -> bool + Send + Sync>,
+pub struct EventPublisher {
+    sender: tokio::sync::mpsc::UnboundedSender<Value>,
+}
+
+impl EventPublisher {
+    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<Value>) -> Self {
+        Self { sender }
+    }
+
+    pub fn publish(&self, event: Value) {
+        let _ = self.sender.send(event);
+    }
 }
 
 // ============================================================================
-// 注册类型 — 对应原版 RegisteredTool / RegisteredCommand 等
+// SendMessageOptions / SendUserMessageOptions
 // ============================================================================
 
-#[derive(Debug, Clone)]
-pub struct RegisteredTool {
-    pub definition: ToolDefinition,
-}
-
-#[derive(Debug, Clone)]
-pub struct RegisteredCommand {
-    pub name: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RegisteredShortcut {
-    pub key: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RegisteredFlag {
-    pub name: String,
-    pub description: Option<String>,
-    pub flag_type: String,
-    pub default: Option<Value>,
-}
-
-// ============================================================================
-// 消息选项 — 对应原版 sendMessage / sendUserMessage 选项
-// ============================================================================
-
+/// Options for sending a custom message from an extension.
 #[derive(Debug, Clone)]
 pub struct SendMessageOptions {
     pub trigger_turn: Option<bool>,
     pub deliver_as: Option<String>,
 }
 
+/// Options for sending a user message from an extension.
 #[derive(Debug, Clone)]
 pub struct SendUserMessageOptions {
     pub deliver_as: Option<String>,
 }
 
 // ============================================================================
-// 执行结果 — 对应原版 ExecResult
+// ExtensionRegistry
 // ============================================================================
 
-#[derive(Debug, Clone)]
-pub struct ExecResult {
-    pub code: i32,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-// ============================================================================
-// ExtensionAPI trait — 对应原版 TypeScript ExtensionAPI 接口
-// ============================================================================
-
-/// 扩展实现此 trait 来注册工具、命令、事件处理器。
+/// Registry for extensions. Wraps a `HookRunner` and provides
+/// tool/command/shortcut collection.
 ///
-/// 对应原版 TypeScript 的 `ExtensionAPI` 接口。
-/// 所有方法都有默认实现，扩展只需覆盖需要的部分。
-#[async_trait]
-pub trait ExtensionAPI: Send + Sync {
-    // ── 元数据 ──────────────────────────────────────────────────────────
-
-    /// 扩展名称（唯一标识）。
-    fn name(&self) -> &'static str;
-
-    // ── 注册方法（加载时调用） ─────────────────────────────────────────
-
-    /// 注册工具。对应原版 `registerTool()`。
-    fn register_tools(&self, _registry: &mut ToolRegistry) {}
-
-    /// 注册命令。对应原版 `registerCommand()`。
-    fn register_commands(&self, _registry: &mut CommandRegistry) {}
-
-    /// 注册快捷键。对应原版 `registerShortcut()`。
-    fn register_shortcuts(&self, _registry: &mut ShortcutRegistry) {}
-
-    /// 注册 CLI flag。对应原版 `registerFlag()`。
-    fn register_flags(&self, _registry: &mut FlagRegistry) {}
-
-    // ── 事件处理器 ──────────────────────────────────────────────────────
-
-    /// 事件处理器。对应原版 `on(event, handler)`。
-    /// 返回 `Some(result)` 表示处理了该事件，`None` 表示不处理。
-    async fn on_event(&self, event: &ExtensionEvent, ctx: &ExtensionContext) -> Option<EventResult> {
-        let _ = (event, ctx);
-        None
-    }
-
-    // ── 工具执行 ────────────────────────────────────────────────────────
-
-    /// 处理工具调用。对应原版 `registerTool()` 中的 `execute`。
-    /// 返回 `Some(result)` 表示此扩展处理了该工具，`None` 表示不处理。
-    async fn handle_tool_call(
-        &self,
-        tool_name: &str,
-        params: Value,
-        ctx: &ExtensionContext,
-    ) -> Option<ToolCallOutput> {
-        let _ = (tool_name, params, ctx);
-        None
-    }
-}
-
-/// Tool info returned by `getAllTools()`.
-#[derive(Debug, Clone)]
-pub struct ToolInfo {
-    pub name: String,
-    pub description: String,
-    pub parameters: Option<serde_json::Value>,
-    pub prompt_guidelines: Option<Vec<String>>,
-}
-
-/// 工具调用结果。
-#[derive(Debug, Clone)]
-pub struct ToolCallOutput {
-    pub content: Vec<Value>,
-    pub details: Option<Value>,
-    pub is_error: bool,
-    /// When `Some(true)`, signals the agent loop to stop after this tool call.
-    /// This allows extension-provided tools (e.g. a "submit decision" tool)
-    /// to terminate the agent loop without relying on `DynTool` directly.
-    pub terminate: Option<bool>,
-}
-
-// ============================================================================
-// 注册表
-// ============================================================================
-
-/// Registry for extension-provided tools.
-///
-/// Extensions register their tool definitions here during initialization.
-/// The registry collects all tools via `into_vec()` for use by the agent.
-pub struct ToolRegistry {
-    pub(crate) tools: Vec<RegisteredTool>,
-}
-
-impl ToolRegistry {
-    /// Create a new empty tool registry.
-    pub fn new() -> Self { Self { tools: Vec::new() } }
-    /// Register a tool definition.
-    pub fn register(&mut self, tool: ToolDefinition) {
-        self.tools.push(RegisteredTool { definition: tool });
-    }
-    /// Consume the registry and return all registered tools.
-    pub fn into_vec(self) -> Vec<RegisteredTool> { self.tools }
-}
-
-/// Registry for extension-provided commands.
-///
-/// Commands are slash-commands that users can invoke in the TUI or CLI.
-pub struct CommandRegistry {
-    pub(crate) commands: Vec<RegisteredCommand>,
-}
-
-impl CommandRegistry {
-    /// Create a new empty command registry.
-    pub fn new() -> Self { Self { commands: Vec::new() } }
-    /// Register a command with the given name and optional description.
-    pub fn register(&mut self, name: &str, description: Option<&str>) {
-        self.commands.push(RegisteredCommand {
-            name: name.to_string(),
-            description: description.map(String::from),
-        });
-    }
-    /// Consume the registry and return all registered commands.
-    pub fn into_vec(self) -> Vec<RegisteredCommand> { self.commands }
-}
-
-/// Registry for extension-provided keyboard shortcuts.
-///
-/// Shortcuts are keybindings that users can use in the TUI.
-pub struct ShortcutRegistry {
-    pub(crate) shortcuts: Vec<RegisteredShortcut>,
-}
-
-impl ShortcutRegistry {
-    /// Create a new empty shortcut registry.
-    pub fn new() -> Self { Self { shortcuts: Vec::new() } }
-    /// Register a keyboard shortcut with the given key and optional description.
-    pub fn register(&mut self, key: &str, description: Option<&str>) {
-        self.shortcuts.push(RegisteredShortcut {
-            key: key.to_string(),
-            description: description.map(String::from),
-        });
-    }
-    /// Consume the registry and return all registered shortcuts.
-    pub fn into_vec(self) -> Vec<RegisteredShortcut> { self.shortcuts }
-}
-
-/// Registry for extension-provided CLI flags.
-///
-/// Flags are command-line options that users can pass to the CLI.
-pub struct FlagRegistry {
-    pub(crate) flags: Vec<RegisteredFlag>,
-}
-
-impl FlagRegistry {
-    /// Create a new empty flag registry.
-    pub fn new() -> Self { Self { flags: Vec::new() } }
-    /// Register a CLI flag with the given name, description, and type.
-    pub fn register(&mut self, name: &str, description: Option<&str>, flag_type: &str) {
-        self.flags.push(RegisteredFlag {
-            name: name.to_string(),
-            description: description.map(String::from),
-            flag_type: flag_type.to_string(),
-            default: None,
-        });
-    }
-    /// Consume the registry and return all registered flags.
-    pub fn into_vec(self) -> Vec<RegisteredFlag> { self.flags }
-}
-
-// ============================================================================
-// ExtensionRegistry — 管理所有已注册的扩展
-// ============================================================================
-
+/// This is the single entry point for all extension-related operations.
 pub struct ExtensionRegistry {
-    extensions: Vec<Box<dyn ExtensionAPI>>,
+    hook_runner: HookRunner,
+    tools: Vec<RegisteredTool>,
+    commands: Vec<RegisteredCommand>,
+    shortcuts: Vec<RegisteredShortcut>,
+    flags: Vec<RegisteredFlag>,
 }
 
 impl ExtensionRegistry {
-    pub fn new() -> Self { Self { extensions: Vec::new() } }
-
-    pub fn register(&mut self, ext: Box<dyn ExtensionAPI>) {
-        self.extensions.push(ext);
-    }
-
-    pub fn extensions(&self) -> &[Box<dyn ExtensionAPI>] {
-        &self.extensions
-    }
-
-    pub fn collect_tools(&mut self) -> Vec<RegisteredTool> {
-        let mut all = Vec::new();
-        for ext in &mut self.extensions {
-            let mut reg = ToolRegistry::new();
-            ext.register_tools(&mut reg);
-            all.extend(reg.into_vec());
+    pub fn new() -> Self {
+        Self {
+            hook_runner: HookRunner::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            shortcuts: Vec::new(),
+            flags: Vec::new(),
         }
-        all
     }
 
-    /// Collect tools from the registry using a shared reference.
-    ///
-    /// Unlike `collect_tools`, this works on `&self` so it can be called
-    /// through an `Arc<ExtensionRegistry>`. Each call re-registers tools
-    /// into a fresh registry — the extensions are not consumed.
-    pub fn collect_tools_from_ref(&self) -> Vec<RegisteredTool> {
-        let mut all = Vec::new();
-        for ext in &self.extensions {
-            let mut reg = ToolRegistry::new();
-            ext.register_tools(&mut reg);
-            all.extend(reg.into_vec());
-        }
-        all
+    /// Register a HookHandler. This collects tools/commands/shortcuts/flags
+    /// from the handler immediately.
+    pub fn register(&mut self, handler: Box<dyn HookHandler>) {
+        // Collect tools
+        let mut tool_reg = ToolRegistry::new();
+        handler.register_tools(&mut tool_reg);
+        self.tools.extend(tool_reg.into_vec());
+
+        // Collect commands
+        let mut cmd_reg = CommandRegistry::new();
+        handler.register_commands(&mut cmd_reg);
+        self.commands.extend(cmd_reg.into_vec());
+
+        // Collect shortcuts
+        let mut shortcut_reg = ShortcutRegistry::new();
+        handler.register_shortcuts(&mut shortcut_reg);
+        self.shortcuts.extend(shortcut_reg.into_vec());
+
+        // Collect flags
+        let mut flag_reg = FlagRegistry::new();
+        handler.register_flags(&mut flag_reg);
+        self.flags.extend(flag_reg.into_vec());
+
+        // Register with hook runner for event dispatch
+        self.hook_runner.register(handler);
     }
 
-    pub fn collect_commands(&mut self) -> Vec<RegisteredCommand> {
-        let mut all = Vec::new();
-        for ext in &mut self.extensions {
-            let mut reg = CommandRegistry::new();
-            ext.register_commands(&mut reg);
-            all.extend(reg.into_vec());
-        }
-        all
+    /// Access the HookRunner for event dispatch.
+    pub fn hook_runner(&self) -> &HookRunner {
+        &self.hook_runner
     }
 
-    pub fn collect_shortcuts(&mut self) -> Vec<RegisteredShortcut> {
-        let mut all = Vec::new();
-        for ext in &mut self.extensions {
-            let mut reg = ShortcutRegistry::new();
-            ext.register_shortcuts(&mut reg);
-            all.extend(reg.into_vec());
-        }
-        all
-    }
-
-    /// Check if any extension has registered handlers (has at least one extension).
-    /// Matching TS ExtensionRunner.hasHandlers().
+    /// Check if any handlers are registered.
     pub fn has_handlers(&self) -> bool {
-        !self.extensions.is_empty()
+        self.hook_runner.has_handlers()
     }
 
-    pub async fn dispatch_event(&self, event: &ExtensionEvent, ctx: &ExtensionContext) -> Vec<(String, Option<EventResult>)> {
-        let mut results = Vec::new();
-        for ext in &self.extensions {
-            // Isolate each extension's handler with catch_unwind so a panic
-            // in one extension doesn't crash the entire dispatch loop.
-            // This matches the TS ExtensionRunner's per-handler try/catch.
-            // catch_unwind catches panics during future construction;
-            // panics during async polling still propagate to the runtime.
-            let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                ext.on_event(event, ctx)
-            }));
-            let result = match future {
-                Ok(f) => f.await,
-                Err(_) => None,
-            };
-            results.push((ext.name().to_string(), result));
+    /// Number of registered handlers.
+    pub fn handler_count(&self) -> usize {
+        self.hook_runner.handler_count()
+    }
+
+    /// Get collected tools.
+    pub fn tools(&self) -> &[RegisteredTool] {
+        &self.tools
+    }
+
+    /// Get collected commands.
+    pub fn commands(&self) -> &[RegisteredCommand] {
+        &self.commands
+    }
+
+    /// Get collected shortcuts.
+    pub fn shortcuts(&self) -> &[RegisteredShortcut] {
+        &self.shortcuts
+    }
+
+    /// Get collected flags.
+    pub fn flags(&self) -> &[RegisteredFlag] {
+        &self.flags
+    }
+
+    /// Consume and return collected tools.
+    pub fn collect_tools(&mut self) -> Vec<RegisteredTool> {
+        std::mem::take(&mut self.tools)
+    }
+
+    /// Consume and return collected commands.
+    pub fn collect_commands(&mut self) -> Vec<RegisteredCommand> {
+        std::mem::take(&mut self.commands)
+    }
+
+    /// Consume and return collected shortcuts.
+    pub fn collect_shortcuts(&mut self) -> Vec<RegisteredShortcut> {
+        std::mem::take(&mut self.shortcuts)
+    }
+
+    /// Consume and return collected flags.
+    pub fn collect_flags(&mut self) -> Vec<RegisteredFlag> {
+        std::mem::take(&mut self.flags)
+    }
+}
+
+impl Default for ExtensionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use super::*;
+
+    #[test]
+    fn test_tool_definition_default() {
+        let def = ToolDefinition::default();
+        assert_eq!(def.name, "");
+        assert!(def.execute.is_none());
+    }
+
+    #[test]
+    fn test_extension_registry_empty() {
+        let reg = ExtensionRegistry::new();
+        assert!(!reg.has_handlers());
+        assert_eq!(reg.handler_count(), 0);
+        assert!(reg.tools().is_empty());
+        assert!(reg.commands().is_empty());
+        assert!(reg.shortcuts().is_empty());
+    }
+
+    #[test]
+    fn test_extension_registry_register_handler() {
+        use hook::HookHandler;
+
+        struct TestHandler;
+
+        #[async_trait]
+        impl HookHandler for TestHandler {
+            fn name(&self) -> &str {
+                "test"
+            }
         }
-        results
+
+        let mut reg = ExtensionRegistry::new();
+        reg.register(Box::new(TestHandler));
+
+        assert!(reg.has_handlers());
+        assert_eq!(reg.handler_count(), 1);
+    }
+
+    #[test]
+    fn test_extension_registry_collect_tools() {
+        use hook::{HookHandler, ToolRegistry};
+
+        struct ToolHandler;
+
+        #[async_trait]
+        impl HookHandler for ToolHandler {
+            fn name(&self) -> &str {
+                "tool_handler"
+            }
+
+            fn register_tools(&self, tools: &mut ToolRegistry) {
+                tools.register("test_tool", ToolDefinition {
+                    name: "test_tool".into(),
+                    description: "A test tool".into(),
+                    ..Default::default()
+                });
+            }
+        }
+
+        let mut reg = ExtensionRegistry::new();
+        reg.register(Box::new(ToolHandler));
+
+        let tools = reg.collect_tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "test_tool");
     }
 }

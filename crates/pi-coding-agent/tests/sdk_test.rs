@@ -509,6 +509,7 @@ async fn test_session_builtin_bash_tool_exec() {
 /// Ask the LLM what tools it has access to and assert the reply mentions the
 /// built-in `bash` tool. Requires `OPENROUTER_API_KEY` and network access.
 #[tokio::test]
+#[ignore = "requires OPENROUTER_API_KEY and network"]
 async fn test_llm_detect_builtin_tools() {
     let api_key = require_api_key();
     let ext_registry = create_registry();

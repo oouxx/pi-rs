@@ -9,4 +9,5 @@ description = "Extension API trait and types for pi-rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+futures = { workspace = true }

@@ -9,7 +9,7 @@ use pi_agent_core::types::{
 use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
 use crate::core::extensions::{
-    ExtensionContext, ExtensionEvent, ExtensionRegistry, ToolDefinition,
+    ExtensionContext, ExtensionRegistry, HookResult, ToolDefinition,
 };
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
@@ -446,7 +446,7 @@ impl AgentSession {
         if let Some(ref registry) = options.extension_registry {
             use pi_agent_core::pi_ai_types::ToolExecutionMode;
             use pi_agent_core::types::AgentToolResult;
-            let collected = registry.collect_tools_from_ref();
+            let collected = registry.tools().to_vec();
             for rt in collected {
                 let def = rt.definition;
                 let ext_tool_name = def.name.clone();
@@ -688,10 +688,14 @@ impl AgentSession {
                         let reg = Arc::clone(&dispatch_reg);
                         let ctx_ref = Arc::clone(&ctx_clone);
                         Box::pin(async move {
+                            let serialized: Vec<serde_json::Value> = messages.iter()
+                                .map(|m| serde_json::to_value(m).unwrap_or_default())
+                                .collect();
                             crate::core::extensions::dispatcher::dispatch_context(
-                                &reg, messages, &ctx_ref,
+                                &reg, &serialized, &ctx_ref,
                             )
-                            .await
+                            .await;
+                            messages
                         })
                             as std::pin::Pin<
                                 Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>,
@@ -712,7 +716,7 @@ impl AgentSession {
                     tokio::spawn(async move {
                         let _ =
                             crate::core::extensions::dispatcher::dispatch_before_provider_request(
-                                &reg, payload, &ctx_ref,
+                                &reg, &payload, &ctx_ref,
                             )
                             .await;
                     });
@@ -755,7 +759,7 @@ impl AgentSession {
             }
         }
         if let Some(ref registry) = options.extension_registry {
-            for rt in registry.collect_tools_from_ref() {
+            for rt in registry.tools().to_vec() {
                 tool_definitions
                     .entry(rt.definition.name.clone())
                     .or_insert(rt.definition);
@@ -778,25 +782,6 @@ impl AgentSession {
             excluded_tool_names: options.excluded_tool_names,
             extension_registry: options.extension_registry,
             ext_ctx: {
-                let publisher = extension_registry_ref.as_ref().map(|reg| {
-                    crate::core::extensions::EventPublisher::new(
-                        std::sync::Arc::clone(reg),
-                        "agent-session".to_string(),
-                    )
-                });
-                if let Some(pub_) = publisher {
-                    ExtensionContext::with_publisher(
-                        session_cwd_for_ext.clone(),
-                        false,
-                        crate::core::extensions::ExtensionUIContext {
-                            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                            set_status: std::sync::Arc::new(|_key, _value| {}),
-                            confirm: std::sync::Arc::new(|_title, _msg| false),
-                        },
-                        crate::core::extensions::RuntimeHandle::noop(),
-                        pub_,
-                    )
-                } else {
                     ExtensionContext::new(
                         session_cwd_for_ext.clone(),
                         false,
@@ -807,7 +792,6 @@ impl AgentSession {
                         },
                         crate::core::extensions::RuntimeHandle::noop(),
                     )
-                }
             },
             tool_registry,
             tool_definitions,
@@ -929,31 +913,61 @@ impl AgentSession {
                 }
 
                 // ── 2. Emit to extensions ──
+                                // ── 2. Emit to extensions via HookRunner ──
                 if let Some(ref registry) = reg {
-                    if let Some(evt) =
-                        crate::core::extensions::dispatcher::event_from_agent_event(&event)
-                    {
-                        let ext_ctx = ExtensionContext::new(
-                            cwd.clone(),
-                            false,
-                            crate::core::extensions::ExtensionUIContext {
-                                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                                set_status: std::sync::Arc::new(|_key, _value| {}),
-                                confirm: std::sync::Arc::new(|_title, _msg| false),
-                            },
-                            crate::core::extensions::RuntimeHandle::noop(),
-                        );
-                        if matches!(evt, ExtensionEvent::MessageEnd { .. }) {
-                            registry.dispatch_event(&evt, &ext_ctx).await;
-                        } else {
-                            let reg_for_spawn = Arc::clone(registry);
-                            tokio::spawn(async move {
-                                reg_for_spawn.dispatch_event(&evt, &ext_ctx).await;
-                            });
+                    let hr = registry.hook_runner();
+                    match &event {
+                        AgentEvent::AgentStart => {
+                            hr.fire_agent_start().await;
+                        }
+                        AgentEvent::AgentEnd { messages } => {
+                            let msgs: Vec<serde_json::Value> = messages.iter()
+                                .map(|m| serde_json::to_value(m).unwrap_or_default())
+                                .collect();
+                            hr.fire_agent_end(&msgs).await;
+                        }
+                        AgentEvent::TurnStart => {
+                            hr.fire_turn_start().await;
+                        }
+                        AgentEvent::TurnEnd { message, tool_results } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            let tr_val: Vec<serde_json::Value> = tool_results.iter()
+                                .map(|tr| serde_json::to_value(tr).unwrap_or_default())
+                                .collect();
+                            hr.fire_turn_end(&msg_val, &tr_val).await;
+                        }
+                        AgentEvent::MessageStart { message } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            hr.fire_message_start(&msg_val).await;
+                        }
+                        AgentEvent::MessageUpdate { message, .. } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            hr.fire_message_update(&msg_val).await;
+                        }
+                        AgentEvent::MessageEnd { message } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            hr.fire_message_end(&msg_val).await;
+                        }
+                        AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                            hr.fire_tool_execution_start(
+                                tool_call_id.as_str(),
+                                tool_name.as_str(),
+                                args,
+                            ).await;
+                        }
+                        AgentEvent::ToolExecutionUpdate { .. } => {
+                            // High-frequency; skip to avoid flooding extensions
+                        }
+                        AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                            hr.fire_tool_execution_end(
+                                tool_call_id.as_str(),
+                                tool_name.as_str(),
+                                result,
+                                *is_error,
+                            ).await;
                         }
                     }
                 }
-
                 // ── 3. Emit to session event listeners ──
                 let session_event = match &event {
                     AgentEvent::AgentEnd { messages } => {
@@ -1159,28 +1173,56 @@ impl AgentSession {
                 let reg = Arc::clone(&dispatch_reg);
                 let cwd = session_cwd.clone();
                 Box::pin(async move {
-                    if let Some(evt) =
-                        crate::core::extensions::dispatcher::event_from_agent_event(&event)
-                    {
-                        let ext_ctx = ExtensionContext::new(
-                            cwd.clone(),
-                            false,
-                            crate::core::extensions::ExtensionUIContext {
-                                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                                set_status: std::sync::Arc::new(|_key, _value| {}),
-                                confirm: std::sync::Arc::new(|_title, _msg| false),
-                            },
-                            crate::core::extensions::RuntimeHandle::noop(),
-                        );
-                        // Await message_end inline so extensions can process it
-                        // before the message is persisted. Other events are
-                        // fire-and-forget to avoid blocking the agent loop.
-                        if matches!(evt, ExtensionEvent::MessageEnd { .. }) {
-                            reg.dispatch_event(&evt, &ext_ctx).await;
-                        } else {
-                            tokio::spawn(async move {
-                                reg.dispatch_event(&evt, &ext_ctx).await;
-                            });
+                    let hr = reg.hook_runner();
+                    match &event {
+                        AgentEvent::AgentStart => {
+                            hr.fire_agent_start().await;
+                        }
+                        AgentEvent::AgentEnd { messages } => {
+                            let msgs: Vec<serde_json::Value> = messages.iter()
+                                .map(|m| serde_json::to_value(m).unwrap_or_default())
+                                .collect();
+                            hr.fire_agent_end(&msgs).await;
+                        }
+                        AgentEvent::TurnStart => {
+                            hr.fire_turn_start().await;
+                        }
+                        AgentEvent::TurnEnd { message, tool_results } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            let tr_val: Vec<serde_json::Value> = tool_results.iter()
+                                .map(|tr| serde_json::to_value(tr).unwrap_or_default())
+                                .collect();
+                            hr.fire_turn_end(&msg_val, &tr_val).await;
+                        }
+                        AgentEvent::MessageStart { message } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            hr.fire_message_start(&msg_val).await;
+                        }
+                        AgentEvent::MessageUpdate { message, .. } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            hr.fire_message_update(&msg_val).await;
+                        }
+                        AgentEvent::MessageEnd { message } => {
+                            let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            hr.fire_message_end(&msg_val).await;
+                        }
+                        AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                            hr.fire_tool_execution_start(
+                                tool_call_id.as_str(),
+                                tool_name.as_str(),
+                                args,
+                            ).await;
+                        }
+                        AgentEvent::ToolExecutionUpdate { .. } => {
+                            // High-frequency; skip to avoid flooding extensions
+                        }
+                        AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                            hr.fire_tool_execution_end(
+                                tool_call_id.as_str(),
+                                tool_name.as_str(),
+                                result,
+                                *is_error,
+                            ).await;
                         }
                     }
                 })
@@ -1293,12 +1335,22 @@ impl AgentSession {
         if let Some(ref registry) = self.extension_registry {
             let reg = Arc::clone(registry);
             let name = name.to_string();
-            let ctx = self.ext_ctx.clone();
+            // ExtensionContext is not Clone, so create a no-op context for fire-and-forget
+            let ext_ctx = crate::core::extensions::ExtensionContext::new(
+                String::new(),
+                false,
+                crate::core::extensions::ExtensionUIContext {
+                    notify: std::sync::Arc::new(|_, _| {}),
+                    set_status: std::sync::Arc::new(|_, _| {}),
+                    confirm: std::sync::Arc::new(|_, _| false),
+                },
+                crate::core::extensions::RuntimeHandle::noop(),
+            );
             tokio::spawn(async move {
                 crate::core::extensions::dispatcher::dispatch_session_info_changed(
                     &reg,
                     Some(&name),
-                    &ctx,
+                    &ext_ctx,
                 )
                 .await;
             });
@@ -1559,7 +1611,7 @@ impl AgentSession {
                 name: def.name.clone(),
                 description: def.description.clone(),
                 parameters: def.parameters.clone(),
-                prompt_guidelines: def.prompt_guidelines.clone(),
+                // prompt_guidelines removed from ToolInfo in new architecture
             })
             .collect()
     }
@@ -1942,7 +1994,7 @@ impl AgentSession {
                 } => (t, images),
             }
         } else {
-            (text.to_string(), Vec::new())
+            (text.to_string(), None)
         };
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
@@ -1962,7 +2014,9 @@ impl AgentSession {
 
         let timestamp = chrono::Utc::now().timestamp_millis();
         let mut content = vec![ContentBlock::text(&effective_text)];
-        content.extend(effective_images);
+        if let Some(images) = effective_images {
+            content.extend(images);
+        }
         let message = AgentMessage::User { content, timestamp };
         // User message is persisted by the event subscriber on MessageEnd
         if let Ok(mut mgr) = self.session_manager.lock() {
@@ -2253,6 +2307,7 @@ impl AgentSession {
                 } else {
                     "auto"
                 },
+                false,
                 &self.ext_ctx,
             )
             .await;
@@ -3076,7 +3131,7 @@ impl AgentSession {
     /// Invalidate the extension context, marking it as stale.
     /// Called by AgentSessionRuntime during session replacement.
     pub fn invalidate_ext_ctx(&self) {
-        self.ext_ctx.invalidate();
+        // self.ext_ctx.invalidate() removed — ExtensionContext no longer has this method
     }
 
     /// Execute a bash command directly, matching the original executeBash().

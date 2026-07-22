@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
 use crate::core::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
-use crate::core::extensions::dispatcher;
+
 use crate::core::extensions::{ExtensionContext, ExtensionUIContext, RuntimeHandle};
 use crate::core::session_manager::SessionManager;
 
@@ -223,15 +223,16 @@ impl AgentSessionRuntime {
         target_session_file: Option<&str>,
     ) -> bool {
         if let Some(ref registry) = self.session.get_extension_registry() {
-            let ext_ctx = self.noop_ext_ctx();
-            dispatcher::dispatch_session_before_switch(
-                registry,
-                target_session_file.unwrap_or(""),
-                &ext_ctx,
-            )
-            .await;
-            // TODO: wire up cancellation when dispatch_session_before_switch
-            // returns a cancellation signal (matching TS original).
+            let result = registry
+                .hook_runner()
+                .run_before_session_switch(
+                    reason.to_string(),
+                    target_session_file.map(|s| s.to_string()),
+                )
+                .await;
+            if result.is_cancel() {
+                return true;
+            }
         }
         false
     }
@@ -240,10 +241,13 @@ impl AgentSessionRuntime {
     /// operation was cancelled.
     async fn emit_before_fork(&self, entry_id: &str, position: &str) -> bool {
         if let Some(ref registry) = self.session.get_extension_registry() {
-            let ext_ctx = self.noop_ext_ctx();
-            dispatcher::dispatch_session_before_fork(registry, entry_id, &ext_ctx).await;
-            // TODO: wire up cancellation when dispatch_session_before_fork
-            // returns a cancellation signal (matching TS original).
+            let result = registry
+                .hook_runner()
+                .run_before_session_fork(entry_id.to_string(), position.to_string())
+                .await;
+            if result.is_cancel() {
+                return true;
+            }
         }
         false
     }
@@ -258,8 +262,7 @@ impl AgentSessionRuntime {
     async fn teardown_current(&mut self, reason: &str) {
         // Emit session_shutdown to extensions
         if let Some(ref registry) = self.session.get_extension_registry() {
-            let ext_ctx = self.noop_ext_ctx();
-            dispatcher::dispatch_session_shutdown(registry, reason, &ext_ctx).await;
+            registry.hook_runner().fire_session_shutdown(reason, None).await;
         }
 
         // Invalidate the extension context so any captured references

@@ -159,7 +159,7 @@ pub fn resolve_extension_commands(
         resolved.push(ResolvedCommand {
             invocation_name,
             name: ext_cmd.name.clone(),
-            description: ext_cmd.description.clone(),
+            description: Some(ext_cmd.description.clone()),
             source: SlashCommandSource::Extension,
         });
     }
@@ -223,7 +223,8 @@ mod tests {
         let ext_cmds = vec![
             crate::core::extensions::RegisteredCommand {
                 name: "mycmd".into(),
-                description: Some("My custom command".into()),
+                description: "My custom command".into(),
+                execute: std::sync::Arc::new(|_| Box::pin(async move {})),
             },
         ];
         let resolved = resolve_extension_commands(&ext_cmds);
@@ -238,7 +239,8 @@ mod tests {
         let ext_cmds = vec![
             crate::core::extensions::RegisteredCommand {
                 name: "model".into(),
-                description: Some("My model command".into()),
+                description: "My model command".into(),
+                execute: std::sync::Arc::new(|_| Box::pin(async move {})),
             },
         ];
         let resolved = resolve_extension_commands(&ext_cmds);
@@ -252,11 +254,13 @@ mod tests {
         let ext_cmds = vec![
             crate::core::extensions::RegisteredCommand {
                 name: "model".into(),
-                description: Some("First ext model".into()),
+                description: "First ext model".into(),
+                execute: std::sync::Arc::new(|_| Box::pin(async move {})),
             },
             crate::core::extensions::RegisteredCommand {
                 name: "model".into(),
-                description: Some("Second ext model".into()),
+                description: "Second ext model".into(),
+                execute: std::sync::Arc::new(|_| Box::pin(async move {})),
             },
         ];
         let resolved = resolve_extension_commands(&ext_cmds);

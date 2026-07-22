@@ -1485,6 +1485,7 @@ name = "pi-extension-api"
 version = "1.79.21"
 dependencies = [
  "async-trait",
+ "futures",
  "serde",
  "serde_json",
  "tokio",

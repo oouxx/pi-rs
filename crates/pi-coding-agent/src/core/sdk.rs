@@ -4,7 +4,7 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 use std::sync::Arc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
-use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
+use crate::core::extensions::{ExtensionRegistry, HookHandler, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
@@ -229,8 +229,8 @@ pub mod prelude {
 
     // ── Extensions ──────────────────────────────────────────────────────────
     pub use crate::core::extensions::{
-        CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
-        ExtensionRegistry, ExtensionUIContext, FlagRegistry, RegisteredCommand, RegisteredFlag,
+        CommandRegistry, EventPublisher, ExtensionContext, ExtensionRegistry, ExtensionUIContext,
+        FlagRegistry, HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag,
         RegisteredShortcut, RegisteredTool, RuntimeHandle, SendMessageOptions,
         SendUserMessageOptions, ShortcutRegistry, ToolCallOutput, ToolDefinition, ToolInfo,
         ToolRegistry,
@@ -333,13 +333,13 @@ pub mod prelude {
 /// Must be called BEFORE wrapping the registry in Arc, because
 /// `collect_tools()` requires `&mut self`.
 pub fn collect_prompt_guidelines(
-    registry: &mut crate::core::extensions::ExtensionRegistry,
+    registry: &crate::core::extensions::ExtensionRegistry,
 ) -> Option<Vec<String>> {
-    let tools = registry.collect_tools();
+    let tools = registry.tools();
     let mut guidelines: Vec<String> = Vec::new();
-    for t in &tools {
+    for t in tools {
         if let Some(gl) = &t.definition.prompt_guidelines {
-            guidelines.extend(gl.iter().cloned());
+            for g in gl { guidelines.push(g.clone()); }
         }
     }
     if guidelines.is_empty() {
@@ -481,15 +481,16 @@ pub async fn create_agent_session(
         .unwrap_or_else(ExtensionRegistry::new);
     // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
-    let prompt_guidelines = collect_prompt_guidelines(&mut extension_registry);
+    let prompt_guidelines = collect_prompt_guidelines(&extension_registry);
     let extension_registry_arc = std::sync::Arc::new(extension_registry);
 
     // Collect extension names before the Arc is moved into AgentSessionConfig
     let extension_names: Vec<String> = if options.enable_extensions {
         extension_registry_arc
-            .extensions()
+            .hook_runner()
+            .handlers()
             .iter()
-            .map(|ext| ext.name().to_string())
+            .map(|ext: &Box<dyn HookHandler>| ext.name().to_string())
             .collect()
     } else {
         Vec::new()

@@ -3,8 +3,8 @@ pub mod dispatcher;
 pub mod types;
 
 pub use api::{
-    CommandRegistry, EventResult, ExecResult, ExtensionAPI, ExtensionContext, ExtensionEvent,
-    ExtensionRegistry, ExtensionUIContext, FlagRegistry, RegisteredCommand, RegisteredFlag,
-    RegisteredShortcut, RegisteredTool, RuntimeHandle, SendMessageOptions, SendUserMessageOptions,
-    ShortcutRegistry, EventPublisher, ToolCallOutput, ToolDefinition, ToolInfo, ToolRegistry,
+    CommandRegistry, EventPublisher, ExtensionContext, ExtensionRegistry, ExtensionUIContext, FlagRegistry,
+    HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag, RegisteredShortcut,
+    RegisteredTool, RuntimeHandle, SendMessageOptions, SendUserMessageOptions, ShortcutRegistry,
+    ToolCallOutput, ToolDefinition, ToolInfo, ToolRegistry,
 };

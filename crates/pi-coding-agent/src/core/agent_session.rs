@@ -1,27 +1,24 @@
-use std::sync::Arc;
 use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
     StreamFn, TransformContextFn,
 };
+use std::sync::Arc;
 
+use crate::core::compaction::CompactionResult;
 use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
-use crate::core::extensions::{
-    ExtensionContext, ExtensionRegistry, HookResult, ToolDefinition,
-};
+use crate::core::extensions::{ExtensionContext, ExtensionRegistry, HookResult, ToolDefinition};
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
+use crate::core::session_manager::SessionEntry;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
 use crate::core::tools;
 use pi_agent_core::pi_ai_types::AssistantMessageEvent;
-use crate::core::compaction::CompactionResult;
-use crate::core::session_manager::SessionEntry;
 use tokio::sync::Notify;
-
 
 // ============================================================================
 // Types
@@ -109,7 +106,8 @@ pub struct ReplacedSessionContext {
     /// Send a custom message (bound to this session).
     pub send_message: Option<Box<dyn Fn(String, Option<CustomMessageOptions>) + Send + Sync>>,
     /// Send a user message (bound to this session).
-    pub send_user_message: Option<Box<dyn Fn(String, Option<SendUserMessageOptions>) + Send + Sync>>,
+    pub send_user_message:
+        Option<Box<dyn Fn(String, Option<SendUserMessageOptions>) + Send + Sync>>,
 }
 
 /// Session statistics for /session command.
@@ -137,8 +135,6 @@ pub struct TokenUsage {
     pub cache_write: u64,
     pub total: u64,
 }
-
-
 
 // ============================================================================
 // AgentSessionEvent — Session-level events for UI layer
@@ -268,7 +264,6 @@ impl SessionEventUnsubscribeHandle {
         }
     }
 }
-
 
 // ============================================================================
 // AgentSession
@@ -688,11 +683,14 @@ impl AgentSession {
                         let reg = Arc::clone(&dispatch_reg);
                         let ctx_ref = Arc::clone(&ctx_clone);
                         Box::pin(async move {
-                            let serialized: Vec<serde_json::Value> = messages.iter()
+                            let serialized: Vec<serde_json::Value> = messages
+                                .iter()
                                 .map(|m| serde_json::to_value(m).unwrap_or_default())
                                 .collect();
                             crate::core::extensions::dispatcher::dispatch_context(
-                                &reg, &serialized, &ctx_ref,
+                                &reg,
+                                &serialized,
+                                &ctx_ref,
                             )
                             .await;
                             messages
@@ -767,7 +765,10 @@ impl AgentSession {
         }
 
         // Clone registry ref for EventPublisher (before it's moved into self)
-        let extension_registry_ref = options.extension_registry.as_ref().map(std::sync::Arc::clone);
+        let extension_registry_ref = options
+            .extension_registry
+            .as_ref()
+            .map(std::sync::Arc::clone);
 
         let mut session = Self {
             agent,
@@ -782,16 +783,16 @@ impl AgentSession {
             excluded_tool_names: options.excluded_tool_names,
             extension_registry: options.extension_registry,
             ext_ctx: {
-                    ExtensionContext::new(
-                        session_cwd_for_ext.clone(),
-                        false,
-                        crate::core::extensions::ExtensionUIContext {
-                            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                            set_status: std::sync::Arc::new(|_key, _value| {}),
-                            confirm: std::sync::Arc::new(|_title, _msg| false),
-                        },
-                        crate::core::extensions::RuntimeHandle::noop(),
-                    )
+                ExtensionContext::new(
+                    session_cwd_for_ext.clone(),
+                    false,
+                    crate::core::extensions::ExtensionUIContext {
+                        notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                        set_status: std::sync::Arc::new(|_key, _value| {}),
+                        confirm: std::sync::Arc::new(|_title, _msg| false),
+                    },
+                    crate::core::extensions::RuntimeHandle::noop(),
+                )
             },
             tool_registry,
             tool_definitions,
@@ -913,7 +914,7 @@ impl AgentSession {
                 }
 
                 // ── 2. Emit to extensions ──
-                                // ── 2. Emit to extensions via HookRunner ──
+                // ── 2. Emit to extensions via HookRunner ──
                 if let Some(ref registry) = reg {
                     let hr = registry.hook_runner();
                     match &event {
@@ -921,7 +922,8 @@ impl AgentSession {
                             hr.fire_agent_start().await;
                         }
                         AgentEvent::AgentEnd { messages } => {
-                            let msgs: Vec<serde_json::Value> = messages.iter()
+                            let msgs: Vec<serde_json::Value> = messages
+                                .iter()
                                 .map(|m| serde_json::to_value(m).unwrap_or_default())
                                 .collect();
                             hr.fire_agent_end(&msgs).await;
@@ -929,9 +931,13 @@ impl AgentSession {
                         AgentEvent::TurnStart => {
                             hr.fire_turn_start().await;
                         }
-                        AgentEvent::TurnEnd { message, tool_results } => {
+                        AgentEvent::TurnEnd {
+                            message,
+                            tool_results,
+                        } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
-                            let tr_val: Vec<serde_json::Value> = tool_results.iter()
+                            let tr_val: Vec<serde_json::Value> = tool_results
+                                .iter()
                                 .map(|tr| serde_json::to_value(tr).unwrap_or_default())
                                 .collect();
                             hr.fire_turn_end(&msg_val, &tr_val).await;
@@ -948,23 +954,34 @@ impl AgentSession {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             hr.fire_message_end(&msg_val).await;
                         }
-                        AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                        AgentEvent::ToolExecutionStart {
+                            tool_call_id,
+                            tool_name,
+                            args,
+                        } => {
                             hr.fire_tool_execution_start(
                                 tool_call_id.as_str(),
                                 tool_name.as_str(),
                                 args,
-                            ).await;
+                            )
+                            .await;
                         }
                         AgentEvent::ToolExecutionUpdate { .. } => {
                             // High-frequency; skip to avoid flooding extensions
                         }
-                        AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                        AgentEvent::ToolExecutionEnd {
+                            tool_call_id,
+                            tool_name,
+                            result,
+                            is_error,
+                        } => {
                             hr.fire_tool_execution_end(
                                 tool_call_id.as_str(),
                                 tool_name.as_str(),
                                 result,
                                 *is_error,
-                            ).await;
+                            )
+                            .await;
                         }
                     }
                 }
@@ -974,14 +991,26 @@ impl AgentSession {
                         // Compute will_retry from the last assistant message,
                         // matching TS _willRetryAfterAgentEnd().
                         let will_retry = messages.last().map_or(false, |last| {
-                            if let AgentMessage::Assistant { stop_reason, error_message, .. } = last {
-                                if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                            if let AgentMessage::Assistant {
+                                stop_reason,
+                                error_message,
+                                ..
+                            } = last
+                            {
+                                if stop_reason
+                                    == &Some(pi_agent_core::pi_ai_types::StopReason::Error)
+                                {
                                     if let Some(ref err_msg) = error_message {
                                         // Check retryable patterns (same as _is_retryable_error_message)
                                         let non_retryable = [
-                                            "insufficient_quota", "out of budget", "quota exceeded", "billing",
-                                            "GoUsageLimitError", "FreeUsageLimitError",
-                                            "Monthly usage limit reached", "available balance",
+                                            "insufficient_quota",
+                                            "out of budget",
+                                            "quota exceeded",
+                                            "billing",
+                                            "GoUsageLimitError",
+                                            "FreeUsageLimitError",
+                                            "Monthly usage limit reached",
+                                            "available balance",
                                         ];
                                         for pattern in &non_retryable {
                                             if err_msg.to_lowercase().contains(pattern) {
@@ -989,19 +1018,38 @@ impl AgentSession {
                                             }
                                         }
                                         let retryable = [
-                                            "overloaded", "rate limit", "too many requests", "429",
-                                            "500", "502", "503", "504", "524",
-                                            "service unavailable", "server error", "internal error",
+                                            "overloaded",
+                                            "rate limit",
+                                            "too many requests",
+                                            "429",
+                                            "500",
+                                            "502",
+                                            "503",
+                                            "504",
+                                            "524",
+                                            "service unavailable",
+                                            "server error",
+                                            "internal error",
                                             "provider returned error",
-                                            "network error", "connection error", "connection refused",
-                                            "fetch failed", "upstream connect",
-                                            "reset before headers", "socket hang up",
-                                            "timed out", "timeout", "terminated",
-                                            "websocket closed", "websocket error",
-                                            "ended without", "stream ended before message_stop",
+                                            "network error",
+                                            "connection error",
+                                            "connection refused",
+                                            "fetch failed",
+                                            "upstream connect",
+                                            "reset before headers",
+                                            "socket hang up",
+                                            "timed out",
+                                            "timeout",
+                                            "terminated",
+                                            "websocket closed",
+                                            "websocket error",
+                                            "ended without",
+                                            "stream ended before message_stop",
                                             "http2 request did not get a response",
                                             "retry delay",
-                                            "you can retry your request", "try your request again", "please retry your request",
+                                            "you can retry your request",
+                                            "try your request again",
+                                            "please retry your request",
                                             "ResourceExhausted",
                                         ];
                                         for pattern in &retryable {
@@ -1021,51 +1069,57 @@ impl AgentSession {
                     }
                     AgentEvent::AgentStart => AgentSessionEvent::AgentStart,
                     AgentEvent::TurnStart => AgentSessionEvent::TurnStart,
-                    AgentEvent::TurnEnd { message, tool_results } => {
-                        AgentSessionEvent::TurnEnd {
-                            message: message.clone(),
-                            tool_results: tool_results.clone(),
-                        }
-                    }
-                    AgentEvent::MessageStart { message } => {
-                        AgentSessionEvent::MessageStart {
-                            message: message.clone(),
-                        }
-                    }
-                    AgentEvent::MessageUpdate { message, assistant_message_event } => {
-                        AgentSessionEvent::MessageUpdate {
-                            message: message.clone(),
-                            assistant_message_event: assistant_message_event.clone(),
-                        }
-                    }
-                    AgentEvent::MessageEnd { message } => {
-                        AgentSessionEvent::MessageEnd {
-                            message: message.clone(),
-                        }
-                    }
-                    AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
-                        AgentSessionEvent::ToolExecutionStart {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: tool_name.clone(),
-                            args: args.clone(),
-                        }
-                    }
-                    AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result } => {
-                        AgentSessionEvent::ToolExecutionUpdate {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: tool_name.clone(),
-                            args: args.clone(),
-                            partial_result: partial_result.clone(),
-                        }
-                    }
-                    AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
-                        AgentSessionEvent::ToolExecutionEnd {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: tool_name.clone(),
-                            result: result.clone(),
-                            is_error: *is_error,
-                        }
-                    }
+                    AgentEvent::TurnEnd {
+                        message,
+                        tool_results,
+                    } => AgentSessionEvent::TurnEnd {
+                        message: message.clone(),
+                        tool_results: tool_results.clone(),
+                    },
+                    AgentEvent::MessageStart { message } => AgentSessionEvent::MessageStart {
+                        message: message.clone(),
+                    },
+                    AgentEvent::MessageUpdate {
+                        message,
+                        assistant_message_event,
+                    } => AgentSessionEvent::MessageUpdate {
+                        message: message.clone(),
+                        assistant_message_event: assistant_message_event.clone(),
+                    },
+                    AgentEvent::MessageEnd { message } => AgentSessionEvent::MessageEnd {
+                        message: message.clone(),
+                    },
+                    AgentEvent::ToolExecutionStart {
+                        tool_call_id,
+                        tool_name,
+                        args,
+                    } => AgentSessionEvent::ToolExecutionStart {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        args: args.clone(),
+                    },
+                    AgentEvent::ToolExecutionUpdate {
+                        tool_call_id,
+                        tool_name,
+                        args,
+                        partial_result,
+                    } => AgentSessionEvent::ToolExecutionUpdate {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        args: args.clone(),
+                        partial_result: partial_result.clone(),
+                    },
+                    AgentEvent::ToolExecutionEnd {
+                        tool_call_id,
+                        tool_name,
+                        result,
+                        is_error,
+                    } => AgentSessionEvent::ToolExecutionEnd {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        result: result.clone(),
+                        is_error: *is_error,
+                    },
                 };
                 {
                     let l = listeners.lock().unwrap();
@@ -1077,8 +1131,15 @@ impl AgentSession {
                 // ── 4. Handle session persistence ──
                 if let AgentEvent::MessageEnd { ref message } = event {
                     match message {
-                        AgentMessage::Custom { custom_type, content, display, details, .. } => {
-                            let content_json = serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
+                        AgentMessage::Custom {
+                            custom_type,
+                            content,
+                            display,
+                            details,
+                            ..
+                        } => {
+                            let content_json =
+                                serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
                             if let Ok(mut mgr) = sm.lock() {
                                 mgr.append_custom_message_entry(
                                     custom_type,
@@ -1088,8 +1149,11 @@ impl AgentSession {
                                 );
                             }
                         }
-                        AgentMessage::User { .. } | AgentMessage::Assistant { .. } | AgentMessage::ToolResult { .. } => {
-                            let msg_value = serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
+                        AgentMessage::User { .. }
+                        | AgentMessage::Assistant { .. }
+                        | AgentMessage::ToolResult { .. } => {
+                            let msg_value =
+                                serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
                             if let Ok(mut mgr) = sm.lock() {
                                 mgr.append_message(msg_value);
                             }
@@ -1129,8 +1193,15 @@ impl AgentSession {
             Box::pin(async move {
                 if let AgentEvent::MessageEnd { ref message } = event {
                     match message {
-                        AgentMessage::Custom { custom_type, content, display, details, .. } => {
-                            let content_json = serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
+                        AgentMessage::Custom {
+                            custom_type,
+                            content,
+                            display,
+                            details,
+                            ..
+                        } => {
+                            let content_json =
+                                serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
                             sm.lock().unwrap().append_custom_message_entry(
                                 custom_type,
                                 content_json,
@@ -1179,7 +1250,8 @@ impl AgentSession {
                             hr.fire_agent_start().await;
                         }
                         AgentEvent::AgentEnd { messages } => {
-                            let msgs: Vec<serde_json::Value> = messages.iter()
+                            let msgs: Vec<serde_json::Value> = messages
+                                .iter()
                                 .map(|m| serde_json::to_value(m).unwrap_or_default())
                                 .collect();
                             hr.fire_agent_end(&msgs).await;
@@ -1187,9 +1259,13 @@ impl AgentSession {
                         AgentEvent::TurnStart => {
                             hr.fire_turn_start().await;
                         }
-                        AgentEvent::TurnEnd { message, tool_results } => {
+                        AgentEvent::TurnEnd {
+                            message,
+                            tool_results,
+                        } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
-                            let tr_val: Vec<serde_json::Value> = tool_results.iter()
+                            let tr_val: Vec<serde_json::Value> = tool_results
+                                .iter()
                                 .map(|tr| serde_json::to_value(tr).unwrap_or_default())
                                 .collect();
                             hr.fire_turn_end(&msg_val, &tr_val).await;
@@ -1206,23 +1282,34 @@ impl AgentSession {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             hr.fire_message_end(&msg_val).await;
                         }
-                        AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                        AgentEvent::ToolExecutionStart {
+                            tool_call_id,
+                            tool_name,
+                            args,
+                        } => {
                             hr.fire_tool_execution_start(
                                 tool_call_id.as_str(),
                                 tool_name.as_str(),
                                 args,
-                            ).await;
+                            )
+                            .await;
                         }
                         AgentEvent::ToolExecutionUpdate { .. } => {
                             // High-frequency; skip to avoid flooding extensions
                         }
-                        AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                        AgentEvent::ToolExecutionEnd {
+                            tool_call_id,
+                            tool_name,
+                            result,
+                            is_error,
+                        } => {
                             hr.fire_tool_execution_end(
                                 tool_call_id.as_str(),
                                 tool_name.as_str(),
                                 result,
                                 *is_error,
-                            ).await;
+                            )
+                            .await;
                         }
                     }
                 })
@@ -1408,9 +1495,16 @@ impl AgentSession {
     pub async fn get_last_assistant_text(&self) -> Option<String> {
         let messages = self.agent.state().await.messages;
         for msg in messages.iter().rev() {
-            if let AgentMessage::Assistant { content, stop_reason, .. } = msg {
+            if let AgentMessage::Assistant {
+                content,
+                stop_reason,
+                ..
+            } = msg
+            {
                 // Skip aborted messages with no content (matching TS behavior)
-                if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted) && content.is_empty() {
+                if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted)
+                    && content.is_empty()
+                {
                     continue;
                 }
                 let text: String = content
@@ -1445,7 +1539,6 @@ impl AgentSession {
     pub fn get_session_manager(&self) -> std::sync::MutexGuard<'_, SessionManager> {
         self.session_manager.lock().unwrap()
     }
-
 
     pub fn get_model_registry(&self) -> &ModelRegistry {
         &self.model_registry
@@ -1558,8 +1651,7 @@ impl AgentSession {
 
     /// Number of pending messages (steering + follow-up), matching TS `get pendingMessageCount()`.
     pub fn pending_message_count(&self) -> usize {
-        self.steering_messages.lock().unwrap().len()
-            + self.follow_up_messages.lock().unwrap().len()
+        self.steering_messages.lock().unwrap().len() + self.follow_up_messages.lock().unwrap().len()
     }
 
     /// Current retry attempt (0 if not retrying), matching TS `get retryAttempt()`.
@@ -1577,7 +1669,6 @@ impl AgentSession {
     pub fn set_auto_retry_enabled(&self, enabled: bool) {
         *self.auto_retry_enabled.lock().unwrap() = enabled;
     }
-
 
     pub fn retry_attempt(&self) -> u32 {
         *self.retry_attempt.lock().unwrap()
@@ -1746,7 +1837,12 @@ impl AgentSession {
         }
 
         // Emit auto_retry_end if retry attempt was active but not retryable
-        if let AgentMessage::Assistant { stop_reason, error_message, .. } = &msg {
+        if let AgentMessage::Assistant {
+            stop_reason,
+            error_message,
+            ..
+        } = &msg
+        {
             if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
                 let retry = *self.retry_attempt.lock().unwrap();
                 if retry > 0 {
@@ -1773,13 +1869,20 @@ impl AgentSession {
     /// Context overflow is NOT retryable (handled by compaction instead).
     /// Matches TS _isRetryableError().
     fn _is_retryable_error(&self, message: &AgentMessage) -> bool {
-        if let AgentMessage::Assistant { stop_reason, error_message, .. } = message {
+        if let AgentMessage::Assistant {
+            stop_reason,
+            error_message,
+            ..
+        } = message
+        {
             if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
                 return false;
             }
             if let Some(ref err_msg) = error_message {
                 // Context overflow is handled by compaction, not retry
-                if err_msg.to_lowercase().contains("context") && err_msg.to_lowercase().contains("overflow") {
+                if err_msg.to_lowercase().contains("context")
+                    && err_msg.to_lowercase().contains("overflow")
+                {
                     return false;
                 }
                 if err_msg.to_lowercase().contains("context_length") {
@@ -1815,7 +1918,9 @@ impl AgentSession {
 
         let delay_ms = base_delay_ms * 2u64.pow(*retry - 1);
         let error_message = if let AgentMessage::Assistant { error_message, .. } = message {
-            error_message.clone().unwrap_or_else(|| "Unknown error".to_string())
+            error_message
+                .clone()
+                .unwrap_or_else(|| "Unknown error".to_string())
         } else {
             "Unknown error".to_string()
         };
@@ -2065,10 +2170,8 @@ impl AgentSession {
         }
 
         // Re-clamp thinking level for new model's capabilities (matching TS setThinkingLevel call)
-        self.set_thinking_level(
-            &self._get_thinking_level_for_model_switch(None).await,
-        )
-        .await;
+        self.set_thinking_level(&self._get_thinking_level_for_model_switch(None).await)
+            .await;
 
         // Emit model_select event (matching TS _emitModelSelect)
         self._emit(AgentSessionEvent::ModelSelect {
@@ -2245,7 +2348,9 @@ impl AgentSession {
         }
 
         // Apply thinking level (matching TS setThinkingLevel call in _cycleScopedModel)
-        let tl = self._get_thinking_level_for_model_switch(thinking_level.as_deref()).await;
+        let tl = self
+            ._get_thinking_level_for_model_switch(thinking_level.as_deref())
+            .await;
         self.set_thinking_level(&tl).await;
 
         // Emit model_select event (matching TS _emitModelSelect)
@@ -2562,8 +2667,18 @@ impl AgentSession {
     /// Clear all queued messages, matching original clearAllQueues().
     /// Returns the cleared messages, matching TS clearQueue().
     pub async fn clear_all_queues(&self) -> (Vec<String>, Vec<String>) {
-        let steering = self.steering_messages.lock().unwrap().drain(..).collect::<Vec<_>>();
-        let follow_up = self.follow_up_messages.lock().unwrap().drain(..).collect::<Vec<_>>();
+        let steering = self
+            .steering_messages
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect::<Vec<_>>();
+        let follow_up = self
+            .follow_up_messages
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect::<Vec<_>>();
         self.agent.clear_all_queues().await;
         self._emit_queue_update();
         (steering, follow_up)
@@ -2646,7 +2761,12 @@ impl AgentSession {
         // Check if the agent_end has a retryable error
         if let AgentEvent::AgentEnd { messages } = event {
             if let Some(last) = messages.last() {
-                if let AgentMessage::Assistant { stop_reason, error_message, .. } = last {
+                if let AgentMessage::Assistant {
+                    stop_reason,
+                    error_message,
+                    ..
+                } = last
+                {
                     if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
                         if let Some(ref err_msg) = error_message {
                             return self._is_retryable_error_message(err_msg);
@@ -2663,9 +2783,14 @@ impl AgentSession {
     fn _is_retryable_error_message(&self, error_message: &str) -> bool {
         // Non-retryable patterns (quota/billing/limit errors)
         let non_retryable_patterns = [
-            "insufficient_quota", "out of budget", "quota exceeded", "billing",
-            "GoUsageLimitError", "FreeUsageLimitError",
-            "Monthly usage limit reached", "available balance",
+            "insufficient_quota",
+            "out of budget",
+            "quota exceeded",
+            "billing",
+            "GoUsageLimitError",
+            "FreeUsageLimitError",
+            "Monthly usage limit reached",
+            "available balance",
         ];
         for pattern in &non_retryable_patterns {
             if error_message.to_lowercase().contains(pattern) {
@@ -2675,19 +2800,38 @@ impl AgentSession {
 
         // Retryable patterns (transient provider/transport errors)
         let retryable_patterns = [
-            "overloaded", "rate limit", "too many requests", "429",
-            "500", "502", "503", "504", "524",
-            "service unavailable", "server error", "internal error",
+            "overloaded",
+            "rate limit",
+            "too many requests",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "524",
+            "service unavailable",
+            "server error",
+            "internal error",
             "provider returned error",
-            "network error", "connection error", "connection refused",
-            "fetch failed", "upstream connect",
-            "reset before headers", "socket hang up",
-            "timed out", "timeout", "terminated",
-            "websocket closed", "websocket error",
-            "ended without", "stream ended before message_stop",
+            "network error",
+            "connection error",
+            "connection refused",
+            "fetch failed",
+            "upstream connect",
+            "reset before headers",
+            "socket hang up",
+            "timed out",
+            "timeout",
+            "terminated",
+            "websocket closed",
+            "websocket error",
+            "ended without",
+            "stream ended before message_stop",
             "http2 request did not get a response",
             "retry delay",
-            "you can retry your request", "try your request again", "please retry your request",
+            "you can retry your request",
+            "try your request again",
+            "please retry your request",
             "ResourceExhausted",
         ];
         for pattern in &retryable_patterns {
@@ -2697,7 +2841,6 @@ impl AgentSession {
         }
         false
     }
-
 
     /// Subscribe to session-level events (AgentSessionEvent).
     /// Returns an unsubscribe handle. Call `handle.unsubscribe()` to stop receiving events.
@@ -2714,7 +2857,6 @@ impl AgentSession {
             index,
         }
     }
-
 
     pub fn export_html(&self) -> String {
         let mgr = self.session_manager.lock().unwrap();
@@ -2854,12 +2996,10 @@ impl AgentSession {
     pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, String> {
         use crate::core::session_manager::CURRENT_SESSION_VERSION;
         let mgr = self.session_manager.lock().unwrap();
-        let file_path = output_path
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| {
-                let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
-                format!("session-{}.jsonl", ts)
-            });
+        let file_path = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
+            let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+            format!("session-{}.jsonl", ts)
+        });
 
         let dir = std::path::Path::new(&file_path).parent().unwrap();
         if !dir.exists() {
@@ -2883,7 +3023,10 @@ impl AgentSession {
             let mut linear = serde_json::to_value(entry).map_err(|e| e.to_string())?;
             if let Some(obj) = linear.as_object_mut() {
                 if let Some(prev) = &prev_id {
-                    obj.insert("parentId".to_string(), serde_json::Value::String(prev.clone()));
+                    obj.insert(
+                        "parentId".to_string(),
+                        serde_json::Value::String(prev.clone()),
+                    );
                 } else {
                     obj.insert("parentId".to_string(), serde_json::Value::Null);
                 }
@@ -2892,9 +3035,15 @@ impl AgentSession {
             prev_id = Some(entry.id().to_string());
         }
 
-        std::fs::write(&file_path, lines.join("
-") + "
-").map_err(|e| e.to_string())?;
+        std::fs::write(
+            &file_path,
+            lines.join(
+                "
+",
+            ) + "
+",
+        )
+        .map_err(|e| e.to_string())?;
         Ok(file_path)
     }
 
@@ -3116,12 +3265,16 @@ impl AgentSession {
         options: Option<SendUserMessageOptions>,
     ) {
         let opts = options.unwrap_or_default();
-        self.prompt(content, Some(PromptOptions {
-            expand_prompt_templates: Some(false),
-            images: None,
-            streaming_behavior: opts.deliver_as,
-            source: Some("extension".to_string()),
-        })).await;
+        self.prompt(
+            content,
+            Some(PromptOptions {
+                expand_prompt_templates: Some(false),
+                images: None,
+                streaming_behavior: opts.deliver_as,
+                source: Some("extension".to_string()),
+            }),
+        )
+        .await;
     }
 
     // =========================================================================
@@ -3233,7 +3386,6 @@ impl AgentSession {
         self.idle_notify.notified().await;
     }
 
-
     /// Set steering message mode, matching TS setSteeringMode().
     /// Saves to settings and updates the agent's queue mode.
     pub fn set_steering_mode(&self, mode: &str) {
@@ -3302,7 +3454,7 @@ impl AgentSession {
     }
 
     pub async fn subscribe(
-        &mut self,
+        &self,
         listener: Arc<
             dyn Fn(
                     AgentEvent,
@@ -3319,7 +3471,7 @@ impl AgentSession {
     /// Subscribe to raw agent events (AgentEvent).
     /// For session-level events (AgentSessionEvent), use subscribe_session_events().
     /// Returns a handle that can be used to unsubscribe the listener.
-        /// Dispose the session, dispatching session_shutdown to extensions.
+    /// Dispose the session, dispatching session_shutdown to extensions.
     ///
     /// Note: When used through AgentSessionRuntime, the session_shutdown event
     /// is dispatched by the Runtime's teardown_current BEFORE dispose() is

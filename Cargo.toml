@@ -20,7 +20,7 @@ resolver = "2"
 # crates (e.g. reqwest's feature/default-flags matrix) stay per-crate.
 
 [workspace.package]
-version = "1.79.21"
+version = "1.79.25"
 edition = "2021"
 license = "MIT"
 authors = ["oouxx"]

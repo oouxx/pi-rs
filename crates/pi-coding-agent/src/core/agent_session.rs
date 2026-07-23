@@ -1797,7 +1797,7 @@ impl AgentSession {
     ///
     /// After the agent finishes, runs the post-agent-run loop (retry + compaction),
     /// matching TS _runAgentPrompt() + _handlePostAgentRun().
-    pub async fn prompt(&mut self, text: &str, _options: Option<PromptOptions>) {
+    pub async fn prompt(&self, text: &str, _options: Option<PromptOptions>) {
         // Refresh session state before starting the next turn
         if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
             eprintln!("[pi] Failed to refresh session state before next turn: {e}");
@@ -2074,7 +2074,7 @@ impl AgentSession {
         self.agent.process(vec![message]).await.ok();
     }
 
-    pub async fn add_user_text(&mut self, text: &str) {
+    pub async fn add_user_text(&self, text: &str) {
         *self.is_agent_run_active.lock().unwrap() = true;
         // Dispatch input event to extensions before processing.
         // If an extension handles the input, skip processing entirely.
@@ -3260,7 +3260,7 @@ impl AgentSession {
     /// Send a user message, matching TS sendUserMessage().
     /// Supports `deliverAs` option for streaming behavior.
     pub async fn send_user_message(
-        &mut self,
+        &self,
         content: &str,
         options: Option<SendUserMessageOptions>,
     ) {

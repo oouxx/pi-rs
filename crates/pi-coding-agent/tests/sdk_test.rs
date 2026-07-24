@@ -756,12 +756,12 @@ fn make_mock_multi_turn_stream_fn() -> StreamFn {
                                 now,
                             )
                         } else {
-                            // Turn 2: read the file via `bash cat`.
+                            // Turn 2: read the file via `read` tool (different tool from turn 1).
                             assistant_message(
                                 vec![tool_call_block(
-                                    "call_cat_1".to_string(),
-                                    "bash".to_string(),
-                                    serde_json::json!({"command": "cat test.txt"}),
+                                    "call_read_1".to_string(),
+                                    "read".to_string(),
+                                    serde_json::json!({"path": "test.txt"}),
                                 )],
                                 api,
                                 provider,
@@ -775,7 +775,7 @@ fn make_mock_multi_turn_stream_fn() -> StreamFn {
                     Some(Message::ToolResult { tool_name, .. }) => {
                         // After tool execution the assistant produces a final
                         // text response referencing the file content.
-                        let text = if tool_name == "bash" {
+                        let text = if tool_name == "bash" || tool_name == "read" {
                             "The file test.txt contains: hello world".to_string()
                         } else {
                             "Done.".to_string()
@@ -815,7 +815,7 @@ fn make_mock_multi_turn_stream_fn() -> StreamFn {
 
 /// Multi-turn conversation test: send two related prompts and verify the agent
 /// maintains context across turns. Also exercises tool-to-tool communication:
-/// turn 1 creates a file (bash echo), turn 2 reads it back (bash cat).
+/// turn 1 creates a file (bash echo), turn 2 reads it back (read tool).
 ///
 /// Uses a deterministic mock `StreamFn` (no network / API key required) so the
 /// test is repeatable, while still exercising the real agent loop and the real
@@ -849,7 +849,7 @@ async fn test_multi_turn_tool_communication() {
         cli_provider: None,
         cli_model: None,
         persist_session: false,
-        session_file: None,
+        session_file: Some(tmp.path().join("test-session.jsonl").to_string_lossy().to_string()),
         fork_from: None,
         session_dir: None,
         auth_storage: None,
@@ -975,7 +975,7 @@ async fn test_multi_turn_tool_communication() {
     }
     let turn2_messages = session
         .get_agent()
-        .prompt(PromptInput::Text("读取 test.txt 的内容，使用 bash 的 cat 命令"))
+        .prompt(PromptInput::Text("读取 test.txt 的内容，使用 read 工具"))
         .await
         .expect("turn 2 prompt failed");
 
@@ -1019,16 +1019,16 @@ async fn test_multi_turn_tool_communication() {
         }
     }
 
-    // Verify turn 2 had a tool call (bash with cat)
+    // Verify turn 2 had a tool call (read tool, different from turn 1)
     let turn2_tool_calls: Vec<&AgentMessage> = turn2_messages
         .iter()
         .filter(|m| {
-            matches!(m, AgentMessage::Assistant { content, .. } if content.iter().any(|b| matches!(b, ContentBlock::ToolCall { name, .. } if name == "bash")))
+            matches!(m, AgentMessage::Assistant { content, .. } if content.iter().any(|b| matches!(b, ContentBlock::ToolCall { name, .. } if name == "read")))
         })
         .collect();
     assert!(
         !turn2_tool_calls.is_empty(),
-        "Turn 2 should have a bash tool call to read the file"
+        "Turn 2 should have a read tool call to read the file"
     );
 
     // Verify turn 2 had a tool result
@@ -1076,4 +1076,81 @@ async fn test_multi_turn_tool_communication() {
         "Agent state should have at least 4 messages (2 user + 2 assistant), got {}",
         all_messages.len()
     );
+    // ── Analyze persisted session ────────────────────────────────────────
+    let session_path = tmp.path().join("test-session.jsonl");
+    println!("[test] === Session file: {} ===", session_path.display());
+    if session_path.exists() {
+        let raw = std::fs::read_to_string(&session_path).expect("read session file");
+        let file_lines: Vec<&str> = raw.lines().collect();
+        println!("[test] Session file has {} lines", file_lines.len());
+
+        // Parse header
+        if let Some(header_line) = file_lines.first() {
+            if let Ok(header) = serde_json::from_str::<serde_json::Value>(header_line) {
+                println!("[test]   Header:");
+                println!("[test]     type:      {}", header.get("type").and_then(|v| v.as_str()).unwrap_or("?"));
+                println!("[test]     version:   {}", header.get("version").and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or("?".to_string()));
+                println!("[test]     id:        {}", header.get("id").and_then(|v| v.as_str()).unwrap_or("?"));
+                println!("[test]     timestamp: {}", header.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?"));
+                println!("[test]     cwd:       {}", header.get("cwd").and_then(|v| v.as_str()).unwrap_or("?"));
+            }
+        }
+
+        // Parse entries — format: {"type":"message","id":"...","parentId":...,"timestamp":"...","message":{...}}
+        // The "message" field contains the serialized AgentMessage with a "role" field.
+        let mut user_count = 0u32;
+        let mut assistant_count = 0u32;
+        let mut tool_result_count = 0u32;
+        let mut bash_count = 0u32;
+        let mut read_count = 0u32;
+        for line in file_lines.iter().skip(1) {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                if entry_type == "message" {
+                    if let Some(msg) = entry.get("message") {
+                        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                        match role {
+                            "user" => user_count += 1,
+                            "assistant" => {
+                                assistant_count += 1;
+                                // Check for tool calls inside content blocks
+                                if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
+                                    for block in content {
+                                        if block.get("type").and_then(|v| v.as_str()) == Some("toolCall") {
+                                            if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                                match name {
+                                                    "bash" => bash_count += 1,
+                                                    "read" => read_count += 1,
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "tool" | "toolResult" => tool_result_count += 1,
+                            _ => {
+                                println!("[test]   Unknown role: {role}");
+                            }
+                        }
+                    }
+                } else {
+                    println!("[test]   Non-message entry: type={entry_type}");
+                }
+            }
+        }
+        println!("[test]   Entries: user={user_count} assistant={assistant_count} tool_result={tool_result_count}");
+        println!("[test]   Tool calls: bash={bash_count} read={read_count}");
+        println!("[test]   Total entries (excl. header): {}", file_lines.len() - 1);
+
+        // Verify both tools were used
+        assert!(bash_count >= 1, "Session should contain at least one bash tool call");
+        assert!(read_count >= 1, "Session should contain at least one read tool call");
+        assert!(user_count >= 2, "Session should contain at least 2 user messages");
+        assert!(assistant_count >= 2, "Session should contain at least 2 assistant messages");
+        println!("[test] === Session analysis complete ===");
+    } else {
+        println!("[test] WARNING: session file not found at {}", session_path.display());
+    }
+
 }

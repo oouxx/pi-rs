@@ -382,7 +382,7 @@ pub async fn create_agent_session(
 
     let default_provider = settings_manager.get_settings().default_provider.clone();
     let default_model_id = settings_manager.get_settings().default_model.clone();
-    let default_thinking_level = settings_manager.get_settings().thinking_level.clone();
+    let default_thinking_level = settings_manager.get_settings().default_thinking_level.clone();
 
     let scoped = options
         .scoped_models

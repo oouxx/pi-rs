@@ -2097,7 +2097,8 @@ impl AgentSession {
                 .lock()
                 .map(|sm| {
                     sm.get_default_thinking_level()
-                        .unwrap_or_else(|| "medium".to_string())
+                        .unwrap_or("medium")
+                        .to_string()
                 })
                 .unwrap_or_else(|_| "medium".to_string());
         }
@@ -3289,7 +3290,8 @@ impl AgentSession {
                 QueueMode::All => "all",
                 QueueMode::OneAtATime => "one-at-a-time",
             };
-            sm.set_steering_mode(mode_str);
+            let mode = if mode_str == "all" { crate::core::settings_manager::SteeringMode::All } else { crate::core::settings_manager::SteeringMode::OneAtATime };
+            sm.set_steering_mode(mode);
         }
     }
 
@@ -3302,7 +3304,8 @@ impl AgentSession {
                 QueueMode::All => "all",
                 QueueMode::OneAtATime => "one-at-a-time",
             };
-            sm.set_follow_up_mode(mode_str);
+            let mode = if mode_str == "all" { crate::core::settings_manager::FollowUpMode::All } else { crate::core::settings_manager::FollowUpMode::OneAtATime };
+            sm.set_follow_up_mode(mode);
         }
     }
 
@@ -3348,8 +3351,14 @@ impl AgentSession {
             let steering = sm.get_steering_mode();
             let follow_up = sm.get_follow_up_mode();
             drop(sm);
-            let steering_mode = if steering == "all" { QueueMode::All } else { QueueMode::OneAtATime };
-            let follow_up_mode = if follow_up == "all" { QueueMode::All } else { QueueMode::OneAtATime };
+            let steering_mode = match steering {
+                crate::core::settings_manager::SteeringMode::All => pi_agent_core::types::QueueMode::All,
+                crate::core::settings_manager::SteeringMode::OneAtATime => pi_agent_core::types::QueueMode::OneAtATime,
+            };
+            let follow_up_mode = match follow_up {
+                crate::core::settings_manager::FollowUpMode::All => pi_agent_core::types::QueueMode::All,
+                crate::core::settings_manager::FollowUpMode::OneAtATime => pi_agent_core::types::QueueMode::OneAtATime,
+            };
             self.agent.set_steering_mode(steering_mode).await;
             self.agent.set_follow_up_mode(follow_up_mode).await;
         }

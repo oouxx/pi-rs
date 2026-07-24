@@ -310,14 +310,12 @@ async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i
         println!("Global settings:");
         println!("  default_model: {:?}", global.default_model);
         println!("  default_provider: {:?}", global.default_provider);
-        println!("  thinking_level: {:?}", global.thinking_level);
-        println!("  custom_system_prompt: {:?}", global.custom_system_prompt.as_ref().map(|_| "(set)"));
+        println!("  thinking_level: {:?}", global.default_thinking_level);
         println!();
         println!("Project settings:");
         println!("  default_model: {:?}", project.default_model);
         println!("  default_provider: {:?}", project.default_provider);
-        println!("  thinking_level: {:?}", project.thinking_level);
-        println!("  custom_system_prompt: {:?}", project.custom_system_prompt.as_ref().map(|_| "(set)"));
+        println!("  thinking_level: {:?}", project.default_thinking_level);
 
         EXIT_SUCCESS
     } else if args.len() >= 2 {

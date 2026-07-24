@@ -688,3 +688,392 @@ async fn test_invoke_agent() {
     let has_tool_result = messages.iter().any(|m| matches!(m, AgentMessage::ToolResult { .. }));
     assert!(has_tool_result, "Expected at least one tool result");
 }
+
+/// Build a deterministic, offline `StreamFn` that drives the multi-turn tool
+/// communication test without hitting a real LLM. The agent loop + real
+/// built-in `bash` tool are exercised end-to-end; only the assistant
+/// responses are canned. This keeps the test repeatable (per the project
+/// guideline that LLM-dependent tests should use recorded fixtures / mocks
+/// rather than live network calls).
+// The boxed-future return type mirrors `StreamFn` and is inherently verbose;
+#[allow(clippy::type_complexity)]
+fn make_mock_multi_turn_stream_fn() -> StreamFn {
+    Arc::new(
+        move |model: Model,
+              context: Context,
+              _thinking_level: Option<ThinkingLevel>,
+              _options: pi_agent_core::types::StreamFnOptions|
+              -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            pi_agent_core::pi_ai_types::StreamResponse,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send,
+            >,
+        > {
+            Box::pin(async move {
+                use pi_agent_core::pi_ai_types::{
+                    assistant_message, text_block, tool_call_block, AssistantMessageEvent,
+                    Message, StreamResponse, StopReason, Usage,
+                };
+
+                let api = model.api.clone();
+                let provider = model.provider.clone();
+                let model_id = model.id.clone();
+                let now = chrono::Utc::now().timestamp_millis();
+
+                // The agent loop calls stream_fn once per LLM turn. A turn that
+                // ends with `StopReason::ToolUse` triggers tool execution and a
+                // follow-up stream_fn call whose last context message is a
+                // `ToolResult`. We branch on the last converted message so the
+                // mock is order-independent and robust to extra steering
+                // messages.
+                let response = match context.messages.last() {
+                    Some(Message::User { content, .. }) => {
+                        let user_text: String = content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if user_text.contains("创建") || user_text.contains("create") {
+                            // Turn 1: create the file via `bash echo`.
+                            assistant_message(
+                                vec![tool_call_block(
+                                    "call_echo_1".to_string(),
+                                    "bash".to_string(),
+                                    serde_json::json!({"command": "echo \"hello world\" > test.txt"}),
+                                )],
+                                api,
+                                provider,
+                                model_id,
+                                Usage::default(),
+                                StopReason::ToolUse,
+                                now,
+                            )
+                        } else {
+                            // Turn 2: read the file via `bash cat`.
+                            assistant_message(
+                                vec![tool_call_block(
+                                    "call_cat_1".to_string(),
+                                    "bash".to_string(),
+                                    serde_json::json!({"command": "cat test.txt"}),
+                                )],
+                                api,
+                                provider,
+                                model_id,
+                                Usage::default(),
+                                StopReason::ToolUse,
+                                now,
+                            )
+                        }
+                    }
+                    Some(Message::ToolResult { tool_name, .. }) => {
+                        // After tool execution the assistant produces a final
+                        // text response referencing the file content.
+                        let text = if tool_name == "bash" {
+                            "The file test.txt contains: hello world".to_string()
+                        } else {
+                            "Done.".to_string()
+                        };
+                        assistant_message(
+                            vec![text_block(text)],
+                            api,
+                            provider,
+                            model_id,
+                            Usage::default(),
+                            StopReason::Stop,
+                            now,
+                        )
+                    }
+                    _ => assistant_message(
+                        vec![text_block("Done.")],
+                        api,
+                        provider,
+                        model_id,
+                        Usage::default(),
+                        StopReason::Stop,
+                        now,
+                    ),
+                };
+
+                let stop = response.stop_reason.clone();
+                let event = AssistantMessageEvent::Done {
+                    reason: stop,
+                    message: response,
+                };
+                let stream: StreamResponse = Box::new(futures::stream::iter(vec![event]));
+                Ok(stream)
+            })
+        },
+    )
+}
+
+/// Multi-turn conversation test: send two related prompts and verify the agent
+/// maintains context across turns. Also exercises tool-to-tool communication:
+/// turn 1 creates a file (bash echo), turn 2 reads it back (bash cat).
+///
+/// Uses a deterministic mock `StreamFn` (no network / API key required) so the
+/// test is repeatable, while still exercising the real agent loop and the real
+/// built-in `bash` tool.
+#[tokio::test]
+async fn test_multi_turn_tool_communication() {
+    let ext_registry = create_registry();
+
+    // Use a temp directory so file operations don't pollute the workspace.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cwd = tmp.path().to_string_lossy().to_string();
+
+    let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+        cwd: cwd.clone(),
+        agent_dir: None,
+        model: Some(make_model()),
+        thinking_level: Some("off".to_string()),
+        scoped_models: None,
+        no_tools: None,
+        tools: None,
+        exclude_tools: None,
+        custom_prompt: None,
+        append_system_prompt: None,
+        session_name: None,
+        stream_fn: Some(make_mock_multi_turn_stream_fn()),
+        convert_to_llm: None,
+        custom_tools: None,
+        extension_paths: Vec::new(),
+        enable_extensions: true,
+        extension_registry: Some(ext_registry),
+        cli_provider: None,
+        cli_model: None,
+        persist_session: false,
+        session_file: None,
+        fork_from: None,
+        session_dir: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
+        session_start_event: None,
+    })
+    .await
+    .expect("create_agent_session failed");
+
+    // ── Turn 1: create a file ──────────────────────────────────────────
+    println!("[test] === Turn 1: create file ===");
+    let turn1_messages = session
+        .get_agent()
+        .prompt(PromptInput::Text(
+            &format!(
+                "在目录 {} 下创建一个名为 test.txt 的文件，内容为 hello world，使用 bash 的 echo 命令",
+                cwd
+            ),
+        ))
+        .await
+        .expect("turn 1 prompt failed");
+
+    // Print turn 1 messages
+    println!("[test] Turn 1 messages ({}):", turn1_messages.len());
+    for (i, msg) in turn1_messages.iter().enumerate() {
+        match msg {
+            AgentMessage::Assistant { content, .. } => {
+                for block in content.iter() {
+                    match block {
+                        ContentBlock::Text { text, .. } => {
+                            println!("[test]   [{i}] Assistant Text: {text}");
+                        }
+                        ContentBlock::ToolCall { id, name, arguments, .. } => {
+                            println!("[test]   [{i}] ToolCall: id={id} name={name} args={arguments}");
+                        }
+                        ContentBlock::Thinking { thinking, .. } => {
+                            println!("[test]   [{i}] Thinking: {thinking}");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, .. } => {
+                let text = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                println!("[test]   [{i}] ToolResult: tool={tool_name} id={tool_call_id} is_error={is_error} text={text}");
+            }
+            AgentMessage::BashExecution { command, output, exit_code, .. } => {
+                println!("[test]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}");
+            }
+            _ => {
+                println!("[test]   [{i}] Other: {msg:?}");
+            }
+        }
+    }
+
+    // Verify turn 1 had a tool call (bash with echo)
+    let turn1_tool_calls: Vec<&AgentMessage> = turn1_messages
+        .iter()
+        .filter(|m| {
+            matches!(m, AgentMessage::Assistant { content, .. } if content.iter().any(|b| matches!(b, ContentBlock::ToolCall { name, .. } if name == "bash")))
+        })
+        .collect();
+    assert!(
+        !turn1_tool_calls.is_empty(),
+        "Turn 1 should have a bash tool call to create the file"
+    );
+
+    // Verify turn 1 had a tool result (bash output)
+    let turn1_tool_results: Vec<&AgentMessage> = turn1_messages
+        .iter()
+        .filter(|m| matches!(m, AgentMessage::ToolResult { .. }))
+        .collect();
+    assert!(
+        !turn1_tool_results.is_empty(),
+        "Turn 1 should have at least one tool result"
+    );
+
+    // Verify the file was actually created
+    let file_path = std::path::Path::new(&cwd).join("test.txt");
+    assert!(
+        file_path.exists(),
+        "File test.txt should exist after turn 1"
+    );
+    let content = std::fs::read_to_string(&file_path).expect("read test.txt");
+    println!("[test] File content after turn 1: {content:?}");
+    assert!(
+        content.trim() == "hello world",
+        "File should contain 'hello world', got {content:?}"
+    );
+
+    // ── Turn 2: read the file back ─────────────────────────────────────
+    println!("[test] === Turn 2: read file ===");
+    // Show the messages already in agent state before turn 2.
+    let pre_messages = session.get_agent().messages().await;
+    println!("[test] Pre-turn-2 agent state messages ({})", pre_messages.len());
+    for (i, msg) in pre_messages.iter().enumerate() {
+        match msg {
+            AgentMessage::User { content, .. } => {
+                let texts: Vec<&str> = content.iter().filter_map(|b| match b { ContentBlock::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
+                println!("[test]   pre[{i}] User: {:?}", texts);
+            }
+            AgentMessage::Assistant { content, stop_reason, .. } => {
+                let texts: Vec<&str> = content.iter().filter_map(|b| match b { ContentBlock::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
+                println!("[test]   pre[{i}] Assistant: {:?} stop={:?}", texts, stop_reason);
+            }
+            AgentMessage::ToolResult { tool_name, is_error, .. } => {
+                println!("[test]   pre[{i}] ToolResult: tool={} is_error={}", tool_name, is_error);
+            }
+            _ => {
+                println!("[test]   pre[{i}] Other: {:?}", std::mem::discriminant(msg));
+            }
+        }
+    }
+    let turn2_messages = session
+        .get_agent()
+        .prompt(PromptInput::Text("读取 test.txt 的内容，使用 bash 的 cat 命令"))
+        .await
+        .expect("turn 2 prompt failed");
+
+    // Print turn 2 messages
+    println!("[test] Turn 2 messages ({}):", turn2_messages.len());
+    for (i, msg) in turn2_messages.iter().enumerate() {
+        match msg {
+            AgentMessage::Assistant { content, .. } => {
+                for block in content.iter() {
+                    match block {
+                        ContentBlock::Text { text, .. } => {
+                            println!("[test]   [{i}] Assistant Text: {text}");
+                        }
+                        ContentBlock::ToolCall { id, name, arguments, .. } => {
+                            println!("[test]   [{i}] ToolCall: id={id} name={name} args={arguments}");
+                        }
+                        ContentBlock::Thinking { thinking, .. } => {
+                            println!("[test]   [{i}] Thinking: {thinking}");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, .. } => {
+                let text = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                println!("[test]   [{i}] ToolResult: tool={tool_name} id={tool_call_id} is_error={is_error} text={text}");
+            }
+            AgentMessage::BashExecution { command, output, exit_code, .. } => {
+                println!("[test]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}");
+            }
+            _ => {
+                println!("[test]   [{i}] Other: {msg:?}");
+            }
+        }
+    }
+
+    // Verify turn 2 had a tool call (bash with cat)
+    let turn2_tool_calls: Vec<&AgentMessage> = turn2_messages
+        .iter()
+        .filter(|m| {
+            matches!(m, AgentMessage::Assistant { content, .. } if content.iter().any(|b| matches!(b, ContentBlock::ToolCall { name, .. } if name == "bash")))
+        })
+        .collect();
+    assert!(
+        !turn2_tool_calls.is_empty(),
+        "Turn 2 should have a bash tool call to read the file"
+    );
+
+    // Verify turn 2 had a tool result
+    let turn2_tool_results: Vec<&AgentMessage> = turn2_messages
+        .iter()
+        .filter(|m| matches!(m, AgentMessage::ToolResult { .. }))
+        .collect();
+    assert!(
+        !turn2_tool_results.is_empty(),
+        "Turn 2 should have at least one tool result"
+    );
+
+    // Verify the final assistant response mentions "hello world" or the file content
+    let final_text: String = turn2_messages
+        .iter()
+        .filter_map(|m| match m {
+            AgentMessage::Assistant { content, .. } => Some(
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    println!("[test] Final assistant text: {final_text}");
+    assert!(
+        final_text.to_lowercase().contains("hello world")
+            || final_text.to_lowercase().contains("hello")
+            || final_text.to_lowercase().contains("test.txt"),
+        "Final response should mention the file content, got: {final_text}"
+    );
+
+    // ── Verify agent state has all messages ────────────────────────────
+    let all_messages = session.get_agent().messages().await;
+    println!("[test] Total messages in agent state: {}", all_messages.len());
+    assert!(
+        all_messages.len() >= 4,
+        "Agent state should have at least 4 messages (2 user + 2 assistant), got {}",
+        all_messages.len()
+    );
+}

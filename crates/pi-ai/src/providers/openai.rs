@@ -331,7 +331,10 @@ async fn stream_openai_inner(
     api_key: Option<&str>,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let api_key = api_key.ok_or_else(|| format!("No API key for provider: {}", model.provider))?;
+    // If no API key is provided, use an empty string.
+    // Local providers like Ollama don't require authentication, and the
+    // HTTP request will fail naturally for providers that do require one.
+    let api_key = api_key.unwrap_or("");
     let max_tokens = options.and_then(|o| o.max_tokens);
     let temperature = options.and_then(|o| o.temperature);
     let signal = options.and_then(|o| o.signal.clone());

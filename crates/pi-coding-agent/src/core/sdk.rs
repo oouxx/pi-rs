@@ -428,15 +428,15 @@ pub async fn create_agent_session(
         let model = match initial_model.model {
             Some(m) => m,
             None => {
-                let available = model_registry.get_available();
-                if available.is_empty() {
-                    return Err("No models available. Please configure an API key.".into());
-                }
-                // SAFETY: is_empty() check above guarantees at least one element
-                available
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| unreachable!())
+                let default_provider = default_provider.unwrap_or_else(|| "unknown".to_string());
+                let default_model_id = default_model_id.unwrap_or_else(|| "unknown".to_string());
+                return Err(
+                    format!(
+                        "Model '{}' for provider '{}' not found in the registry.                          Check your settings.json and models.json configuration.",
+                        default_model_id, default_provider
+                    )
+                    .into(),
+                );
             }
         };
 

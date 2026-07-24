@@ -2,7 +2,7 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
-    QueueMode, StreamFn, TransformContextFn,
+    GetApiKeyFn, QueueMode, StreamFn, TransformContextFn,
 };
 use std::sync::Arc;
 
@@ -722,6 +722,18 @@ impl AgentSession {
                 Arc::new(closure) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
             });
 
+        // Wire the API key resolution callback so the agent loop can
+        // look up keys from env vars, registered providers, and models.json config.
+        let model_registry_for_key = model_registry.clone();
+        let get_api_key: Option<pi_agent_core::types::GetApiKeyFn> = Some(std::sync::Arc::new(
+            move |provider: String| {
+                let registry = model_registry_for_key.clone();
+                Box::pin(async move {
+                    registry.get_api_key_for_provider(&provider)
+                })
+            },
+        ));
+
         let agent_options = pi_agent_core::agent::AgentOptions {
             initial_state: Some(initial_state),
             convert_to_llm: Some(convert_to_llm),
@@ -731,6 +743,7 @@ impl AgentSession {
             after_tool_call,
             transform_context,
             on_payload,
+            get_api_key,
             ..Default::default()
         };
 

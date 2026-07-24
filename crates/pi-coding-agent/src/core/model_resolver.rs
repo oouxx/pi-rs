@@ -585,32 +585,8 @@ pub fn find_initial_model(
         }
     }
 
-    let available = model_registry.get_available();
-    if !available.is_empty() {
-        let default_models = [
-            ("anthropic", "claude-sonnet-4-6"),
-            ("openai", "gpt-4o"),
-            ("google", "gemini-2.5-flash"),
-            ("deepseek", "deepseek-chat"),
-        ];
-        for (provider, model_id) in &default_models {
-            if let Some(model) = available
-                .iter()
-                .find(|m| m.provider == *provider && m.id == *model_id)
-            {
-                return InitialModelResult {
-                    model: Some(model.clone()),
-                    thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
-                    fallback_message: None,
-                };
-            }
-        }
-        return InitialModelResult {
-            model: Some(available[0].clone()),
-            thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
-            fallback_message: None,
-        };
-    }
+    // No fallback: if no model was configured or found in the registry,
+    // return None so the caller can raise a clear error.
 
     InitialModelResult {
         model: None,

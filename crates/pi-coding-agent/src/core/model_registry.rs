@@ -15,6 +15,16 @@ pub struct ModelRegistry {
     models_json_providers: RwLock<HashMap<String, ProviderConfig>>,
 }
 
+impl Clone for ModelRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            models: RwLock::new(self.models.read().unwrap().clone()),
+            registered_providers: RwLock::new(self.registered_providers.read().unwrap().clone()),
+            models_json_providers: RwLock::new(self.models_json_providers.read().unwrap().clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
     pub name: Option<String>,
@@ -154,6 +164,34 @@ impl ModelRegistry {
                 .and_then(|c| c.api_key.as_ref())
                 .is_some();
         !has_key
+    }
+
+    /// Get API key for a provider, checking env vars, registered providers,
+    /// and models.json provider configs in order.
+    pub fn get_api_key_for_provider(&self, provider: &str) -> Option<String> {
+        // Check env first
+        if let Some(key) = get_env_api_key(provider) {
+            return Some(key);
+        }
+        // Check registered providers (from register_provider calls)
+        let providers = self.registered_providers.read().unwrap();
+        if let Some(config) = providers.get(provider) {
+            if let Some(key) = &config.api_key {
+                return Some(key.clone());
+            }
+        }
+        drop(providers);
+
+        // Check models.json provider configs
+        let json_providers = self.models_json_providers.read().unwrap();
+        if let Some(config) = json_providers.get(provider) {
+            if let Some(key) = &config.api_key {
+                return Some(key.clone());
+            }
+        }
+        drop(json_providers);
+
+        None
     }
 
     pub async fn get_api_key_and_headers(&self, model: &Model) -> Result<ApiKeyResult, String> {

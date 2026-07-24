@@ -8,6 +8,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const ENV_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
 pub const ENV_SESSION_DIR: &str = "PI_CODING_AGENT_SESSION_DIR";
+pub const ENV_PI_RS_HOME: &str = "PI_RS_HOME";
 
 pub const CURRENT_SESSION_VERSION: u32 = 3;
 
@@ -20,14 +21,30 @@ pub fn expand_tilde_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub fn get_agent_dir() -> PathBuf {
-    if let Ok(env_dir) = std::env::var(ENV_AGENT_DIR) {
+/// Returns the base `.pi-rs` config directory.
+///
+/// Priority:
+/// 1. `$PI_RS_HOME` environment variable
+/// 2. `~/.pi-rs`
+pub fn get_pi_rs_home() -> PathBuf {
+    if let Ok(env_dir) = std::env::var(ENV_PI_RS_HOME) {
         return expand_tilde_path(&env_dir);
     }
     dirs::home_dir()
         .expect("Could not determine home directory")
         .join(CONFIG_DIR_NAME)
-        .join("agent")
+}
+
+/// Returns the agent configuration directory.
+///
+/// Priority:
+/// 1. `$PI_CODING_AGENT_DIR` environment variable
+/// 2. `$PI_RS_HOME/agent` (or `~/.pi-rs/agent` if `PI_RS_HOME` is unset)
+pub fn get_agent_dir() -> PathBuf {
+    if let Ok(env_dir) = std::env::var(ENV_AGENT_DIR) {
+        return expand_tilde_path(&env_dir);
+    }
+    get_pi_rs_home().join("agent")
 }
 
 pub fn get_models_path() -> PathBuf {
@@ -54,7 +71,15 @@ pub fn get_prompts_dir() -> PathBuf {
     get_agent_dir().join("prompts")
 }
 
+/// Returns the sessions directory.
+///
+/// Priority:
+/// 1. `$PI_CODING_AGENT_SESSION_DIR` environment variable
+/// 2. `{agent_dir}/sessions` (derived from `get_agent_dir()`)
 pub fn get_sessions_dir() -> PathBuf {
+    if let Ok(env_dir) = std::env::var(ENV_SESSION_DIR) {
+        return expand_tilde_path(&env_dir);
+    }
     get_agent_dir().join("sessions")
 }
 
@@ -66,22 +91,18 @@ pub fn get_custom_themes_dir() -> PathBuf {
     get_agent_dir().join("themes")
 }
 
-pub fn get_default_session_dir(cwd: &str, agent_dir: Option<&str>) -> PathBuf {
-    let resolved_agent_dir = match agent_dir {
-        Some(d) => PathBuf::from(d),
-        None => get_agent_dir(),
-    };
-    let dir = get_default_session_dir_path(cwd, &resolved_agent_dir);
+/// Returns the default session directory for the given `cwd`.
+///
+/// The path is `{sessions_dir}/--encoded-cwd--`.
+/// Sessions dir resolution follows `get_sessions_dir()` priority.
+pub fn get_default_session_dir(cwd: &str, _agent_dir: Option<&str>) -> PathBuf {
+    let sessions_base = get_sessions_dir();
+    let safe_path = encode_cwd_to_dir_name(&resolve_path(cwd));
+    let dir = sessions_base.join(safe_path);
     if !dir.exists() {
         std::fs::create_dir_all(&dir).ok();
     }
     dir
-}
-
-fn get_default_session_dir_path(cwd: &str, agent_dir: &std::path::Path) -> PathBuf {
-    let resolved_cwd = resolve_path(cwd);
-    let safe_path = encode_cwd_to_dir_name(&resolved_cwd);
-    agent_dir.join("sessions").join(safe_path)
 }
 
 fn encode_cwd_to_dir_name(cwd: &str) -> String {
@@ -129,5 +150,50 @@ mod tests {
         assert_eq!(APP_NAME, "pi");
         assert_eq!(CONFIG_DIR_NAME, ".pi-rs");
         assert_eq!(CURRENT_SESSION_VERSION, 3);
+    }
+
+    /// All env-var-dependent tests in one serial function to avoid races
+    /// on global `std::env` between parallel test threads.
+    #[test]
+    fn test_env_var_config() {
+        // --- get_pi_rs_home: default (no env var) ---
+        std::env::remove_var("PI_RS_HOME");
+        std::env::remove_var("PI_CODING_AGENT_DIR");
+        std::env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+        let home = get_pi_rs_home();
+        let expected = dirs::home_dir().unwrap().join(".pi-rs");
+        assert_eq!(home, expected);
+
+        // --- get_pi_rs_home: PI_RS_HOME override ---
+        std::env::set_var("PI_RS_HOME", "/custom/pi-home");
+        let home = get_pi_rs_home();
+        assert_eq!(home, PathBuf::from("/custom/pi-home"));
+
+        // --- get_agent_dir: uses PI_RS_HOME ---
+        std::env::remove_var("PI_CODING_AGENT_DIR");
+        let agent = get_agent_dir();
+        assert_eq!(agent, PathBuf::from("/custom/pi-home/agent"));
+
+        // --- get_agent_dir: PI_CODING_AGENT_DIR takes precedence ---
+        std::env::set_var("PI_CODING_AGENT_DIR", "/direct/agent");
+        let agent = get_agent_dir();
+        assert_eq!(agent, PathBuf::from("/direct/agent"));
+
+        // --- get_sessions_dir: PI_CODING_AGENT_SESSION_DIR override ---
+        std::env::set_var("PI_CODING_AGENT_SESSION_DIR", "/custom/sessions");
+        let sessions = get_sessions_dir();
+        assert_eq!(sessions, PathBuf::from("/custom/sessions"));
+
+        // --- get_sessions_dir: default (under agent dir) ---
+        std::env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+        std::env::set_var("PI_RS_HOME", "/tmp/test-pi-home");
+        std::env::remove_var("PI_CODING_AGENT_DIR");
+        let sessions = get_sessions_dir();
+        assert_eq!(sessions, PathBuf::from("/tmp/test-pi-home/agent/sessions"));
+
+        // Cleanup
+        std::env::remove_var("PI_RS_HOME");
+        std::env::remove_var("PI_CODING_AGENT_DIR");
+        std::env::remove_var("PI_CODING_AGENT_SESSION_DIR");
     }
 }

@@ -288,6 +288,12 @@ pub trait HookHandler: Send + Sync {
     /// 上下文消息更新时触发。
     async fn on_context(&self, _messages: &[Value]) {}
 
+    /// 上下文消息更新时触发（modifying 版本）。
+    /// 可以修改消息列表。按 priority 顺序执行。
+    async fn on_context_mut(&self, _messages: Vec<Value>) -> HookResult<Vec<Value>> {
+        HookResult::Continue(_messages)
+    }
+
     /// 用户 bash 执行时触发。
     async fn on_user_bash(&self, _command: &str, _cwd: &str) {}
 
@@ -310,6 +316,19 @@ pub trait HookHandler: Send + Sync {
         _is_error: bool,
     ) -> HookResult<()> {
         HookResult::Continue(())
+    }
+
+    /// 工具结果处理（modifying 版本）。
+    /// 可以修改工具结果的内容（JSON 序列化后的 ContentBlock 列表）、详情和错误状态。
+    /// 按 priority 顺序执行。
+    async fn on_tool_result_mut(
+        &self,
+        _tool_name: &str,
+        _content: Vec<Value>,
+        _details: Option<Value>,
+        _is_error: bool,
+    ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
+        HookResult::Continue((_content, _details, _is_error))
     }
 
     /// Agent 开始前触发。可修改 prompt 和 system_prompt，或取消。
@@ -624,6 +643,24 @@ impl HookRunner {
         futures::future::join_all(futures).await;
     }
 
+    /// Run `on_context_mut` handlers in priority order.
+    /// Returns the (possibly modified) messages, or Cancel.
+    pub async fn run_on_context(
+        &self,
+        messages: Vec<Value>,
+    ) -> HookResult<Vec<Value>> {
+        let mut current = messages;
+        for handler in &self.handlers {
+            match handler.on_context_mut(current).await {
+                HookResult::Continue(m) => {
+                    current = m;
+                }
+                HookResult::Cancel(reason) => return HookResult::Cancel(reason),
+            }
+        }
+        HookResult::Continue(current)
+    }
+
     /// Fire `on_user_bash` to all handlers (parallel).
     pub async fn fire_user_bash(&self, command: &str, cwd: &str) {
         let futures: Vec<_> = self
@@ -668,6 +705,30 @@ impl HookRunner {
             }
         }
         HookResult::Continue(())
+    }
+
+    /// Run `on_tool_result_mut` handlers in priority order.
+    /// Returns the (possibly modified) content, details, and is_error.
+    pub async fn run_on_tool_result(
+        &self,
+        tool_name: &str,
+        content: Vec<Value>,
+        details: Option<Value>,
+        is_error: bool,
+    ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
+        let mut current = (content, details, is_error);
+        for handler in &self.handlers {
+            match handler
+                .on_tool_result_mut(tool_name, current.0.clone(), current.1.clone(), current.2)
+                .await
+            {
+                HookResult::Continue((c, d, e)) => {
+                    current = (c, d, e);
+                }
+                HookResult::Cancel(reason) => return HookResult::Cancel(reason),
+            }
+        }
+        HookResult::Continue(current)
     }
 
     /// Run `before_agent_start` handlers in priority order.

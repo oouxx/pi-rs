@@ -367,7 +367,7 @@ async fn test_create_agent_session_with_extension() {
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
         agent_dir: None,
-        model: None,
+        model: Some(make_model()),
         thinking_level: None,
         scoped_models: None,
         no_tools: None,
@@ -439,7 +439,7 @@ async fn test_session_builtin_bash_tool_exec() {
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
         agent_dir: None,
-        model: None,
+        model: Some(make_model()),
         thinking_level: None,
         scoped_models: None,
         no_tools: None,

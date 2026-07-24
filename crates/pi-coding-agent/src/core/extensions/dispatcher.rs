@@ -9,7 +9,7 @@ use pi_agent_core::types::{
     BeforeToolCallResult,
 };
 
-use super::api::{ExtensionContext, ExtensionRegistry, ToolCallOutput};
+use super::api::{ExtensionContext, ExtensionRegistry, HookResult, ToolCallOutput};
 
 // ============================================================================
 // Parameter structs (to keep function signatures ≤ 3 params per spec)
@@ -131,14 +131,48 @@ pub async fn dispatch_tool_result(
     _ext_ctx: &ExtensionContext,
 ) -> Option<AfterToolCallResult> {
     let result_value = serde_json::to_value(&ctx.result.content).unwrap_or_default();
+    // First fire the void hook (notification)
     registry
         .hook_runner()
         .run_after_tool_call(&ctx.tool_call.name, &result_value, ctx.is_error)
         .await;
-    // HookRunner's after_tool_call doesn't modify the result in the current design.
-    // The TS original merged content/details from extensions, but that pattern
-    // is not commonly used. We return None for now.
-    None
+    // Then run the modifying hook to allow extensions to merge content/details/isError
+    // Convert ContentBlock → Value for the hook (pi-extension-api can't depend on pi-agent-core)
+    let content_json: Vec<serde_json::Value> = ctx.result.content
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap_or_default())
+        .collect();
+    let details = Some(ctx.result.details.clone());
+    let result = registry
+        .hook_runner()
+        .run_on_tool_result(&ctx.tool_call.name, content_json, details, ctx.is_error)
+        .await;
+    match result {
+        HookResult::Continue((content_json, details, is_error)) => {
+            // Convert Value → ContentBlock for AfterToolCallResult
+            let original_content_json: Vec<serde_json::Value> = ctx.result.content
+                .iter()
+                .map(|c| serde_json::to_value(c).unwrap_or_default())
+                .collect();
+            let original_details = Some(ctx.result.details.clone());
+            // Check if anything was actually modified
+            if content_json != original_content_json || details != original_details || is_error != ctx.is_error {
+                let content: Vec<ContentBlock> = content_json
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect();
+                Some(AfterToolCallResult {
+                    content: Some(content),
+                    details,
+                    is_error: Some(is_error),
+                    terminate: None,
+                })
+            } else {
+                None
+            }
+        }
+        HookResult::Cancel(_) => None,
+    }
 }
 
 // ============================================================================
@@ -146,12 +180,22 @@ pub async fn dispatch_tool_result(
 // ============================================================================
 
 /// Dispatch `context` event to extensions via HookRunner.
+///
+/// Returns the (possibly modified) messages, or the original messages if
+/// no extension modified them.
 pub async fn dispatch_context(
     registry: &ExtensionRegistry,
     messages: &[serde_json::Value],
     _ext_ctx: &ExtensionContext,
-) {
-    registry.hook_runner().fire_context(messages).await;
+) -> Vec<serde_json::Value> {
+    let result = registry
+        .hook_runner()
+        .run_on_context(messages.to_vec())
+        .await;
+    match result {
+        HookResult::Continue(m) => m,
+        HookResult::Cancel(_) => messages.to_vec(),
+    }
 }
 
 // ============================================================================
@@ -159,15 +203,18 @@ pub async fn dispatch_context(
 // ============================================================================
 
 /// Dispatch `before_provider_request` event to extensions via HookRunner.
+///
+/// Returns `true` if the request was cancelled by an extension.
 pub async fn dispatch_before_provider_request(
     registry: &ExtensionRegistry,
     payload: &serde_json::Value,
     _ext_ctx: &ExtensionContext,
-) {
-    let _ = registry
+) -> bool {
+    let result = registry
         .hook_runner()
         .run_before_provider_request(payload)
         .await;
+    result.is_cancel()
 }
 
 // ============================================================================
@@ -308,12 +355,21 @@ pub async fn dispatch_session_info_changed(
 // before_agent_start — modifying
 // ============================================================================
 
+/// Result from dispatching a before_agent_start event.
+pub struct BeforeAgentStartResult {
+    /// Whether the agent start was cancelled by an extension.
+    pub cancelled: bool,
+    /// The (possibly modified) system prompt.
+    pub system_prompt: String,
+}
+
 /// Dispatch `before_agent_start` event to extensions via HookRunner.
 ///
-/// Returns `true` if the agent start was cancelled by an extension.
+/// Returns a `BeforeAgentStartResult` indicating whether the agent start was
+/// cancelled and the (possibly modified) system prompt.
 pub async fn dispatch_before_agent_start(
     params: DispatchBeforeAgentStartParams<'_>,
-) -> bool {
+) -> BeforeAgentStartResult {
     let result = params.registry
         .hook_runner()
         .run_before_agent_start(params.messages.first().and_then(|m| {
@@ -330,7 +386,16 @@ pub async fn dispatch_before_agent_start(
             }
         }).unwrap_or_default(), params.system_prompt.to_string())
         .await;
-    result.is_cancel()
+    match result {
+        HookResult::Cancel(_) => BeforeAgentStartResult {
+            cancelled: true,
+            system_prompt: params.system_prompt.to_string(),
+        },
+        HookResult::Continue((_prompt, system_prompt)) => BeforeAgentStartResult {
+            cancelled: false,
+            system_prompt,
+        },
+    }
 }
 
 // ============================================================================

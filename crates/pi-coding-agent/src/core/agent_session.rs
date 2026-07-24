@@ -687,12 +687,22 @@ impl AgentSession {
                                 .iter()
                                 .map(|m| serde_json::to_value(m).unwrap_or_default())
                                 .collect();
-                            crate::core::extensions::dispatcher::dispatch_context(
+                            let modified = crate::core::extensions::dispatcher::dispatch_context(
                                 &reg,
                                 &serialized,
                                 &ctx_ref,
                             )
                             .await;
+                            // Deserialize modified messages back, or fall back to originals
+                            if modified.len() == messages.len() {
+                                let deserialized: Vec<Option<AgentMessage>> = modified
+                                    .into_iter()
+                                    .map(|v| serde_json::from_value(v).ok())
+                                    .collect();
+                                if deserialized.iter().all(|m| m.is_some()) {
+                                    return deserialized.into_iter().map(|m| m.unwrap()).collect();
+                                }
+                            }
                             messages
                         })
                             as std::pin::Pin<
@@ -712,11 +722,14 @@ impl AgentSession {
                     let reg = Arc::clone(&payload_reg);
                     let ctx_ref = Arc::clone(&ctx_clone);
                     tokio::spawn(async move {
-                        let _ =
+                        let cancelled =
                             crate::core::extensions::dispatcher::dispatch_before_provider_request(
                                 &reg, &payload, &ctx_ref,
                             )
                             .await;
+                        if cancelled {
+                            eprintln!("[pi] Provider request cancelled by extension");
+                        }
                     });
                 };
                 Arc::new(closure) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
@@ -1719,6 +1732,9 @@ impl AgentSession {
                 break;
             }
         }
+        // Emit agent_settled after the agent run is fully complete
+        // (no retry, compaction, or queued messages pending).
+        self._emit_agent_settled().await;
     }
 
     /// Handle post-agent-run tasks: retry, compaction, queued messages.
@@ -1956,9 +1972,10 @@ impl AgentSession {
             .join("\n");
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
+        // Extensions can cancel the agent start or modify the system prompt.
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
-            let _ = crate::core::extensions::dispatcher::dispatch_before_agent_start(
+            let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
                     system_prompt: &state.system_prompt,
@@ -1967,6 +1984,9 @@ impl AgentSession {
                 },
             )
             .await;
+            if result.cancelled {
+                return;
+            }
         }
 
         let timestamp = chrono::Utc::now().timestamp_millis();
@@ -2007,10 +2027,10 @@ impl AgentSession {
         };
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
-        // Extensions can modify the context (system prompt, messages, tools).
+        // Extensions can cancel the agent start or modify the system prompt.
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
-            let _ = crate::core::extensions::dispatcher::dispatch_before_agent_start(
+            let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
                     system_prompt: &state.system_prompt,
@@ -2019,6 +2039,10 @@ impl AgentSession {
                 },
             )
             .await;
+            if result.cancelled {
+                *self.is_agent_run_active.lock().unwrap() = false;
+                return;
+            }
         }
 
         let timestamp = chrono::Utc::now().timestamp_millis();
@@ -2658,6 +2682,10 @@ impl AgentSession {
     async fn _emit_agent_settled(&self) {
         *self.is_agent_run_active.lock().unwrap() = false;
         self._emit(AgentSessionEvent::AgentSettled);
+        // Fire agent_settled to extensions
+        if let Some(ref registry) = self.extension_registry {
+            registry.hook_runner().fire_agent_settled().await;
+        }
         self.idle_notify.notify_waiters();
     }
 

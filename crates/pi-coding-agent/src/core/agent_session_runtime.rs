@@ -546,14 +546,12 @@ impl AgentSessionRuntime {
             std::fs::copy(resolved_path, &destination_path).map_err(|e| e.to_string())?;
         }
 
-        // Open the imported session
-        let effective_cwd = cwd_override.unwrap_or(self.cwd());
-        let session_manager = SessionManager::new(
-            effective_cwd,
-            &session_dir,
-            Some(&destination_path.to_string_lossy()),
-            true,
-            None,
+        // Open the imported session, matching TS SessionManager.open() behavior
+        // which extracts cwd from the session header if no cwd_override is provided.
+        let session_manager = SessionManager::open(
+            &destination_path.to_string_lossy(),
+            Some(&session_dir),
+            cwd_override,
         );
 
         // Validate session cwd exists

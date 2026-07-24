@@ -1054,6 +1054,7 @@ mod tests {
             first_kept_entry_id: "entry-u1".to_string(),
             tokens_before: 1234,
             details: None,
+            usage: None,
             from_hook: None,
         };
         let u2 = SessionTreeEntry::Message {
@@ -1148,6 +1149,7 @@ mod tests {
             summary: "Branch summary with enough text to contribute tokens to the context window"
                 .to_string(),
             details: None,
+            usage: None,
             from_hook: None,
         };
         let u1 = SessionTreeEntry::Message {

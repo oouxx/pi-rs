@@ -314,6 +314,7 @@ pub enum SessionTreeEntry {
         first_kept_entry_id: String,
         tokens_before: u64,
         details: Option<serde_json::Value>,
+        usage: Option<serde_json::Value>,
         from_hook: Option<bool>,
     },
     Custom {
@@ -358,6 +359,7 @@ pub enum SessionTreeEntry {
         from_id: String,
         summary: String,
         details: Option<serde_json::Value>,
+        usage: Option<serde_json::Value>,
         from_hook: Option<bool>,
     },
 }
@@ -953,6 +955,7 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         tokens_before: u64,
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
+        usage: Option<serde_json::Value>,
     ) -> std::result::Result<String, SessionError> {
         let id = self.storage.read().await.create_entry_id().await;
         let leaf_id = self.storage.read().await.get_leaf_id().await;
@@ -964,6 +967,7 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
             first_kept_entry_id,
             tokens_before,
             details,
+            usage,
             from_hook,
         };
         self.storage.write().await.append_entry(entry).await?;
@@ -1060,6 +1064,7 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
                 from_id: entry_id.unwrap_or("root").to_string(),
                 summary: s.summary,
                 details: s.details,
+                usage: None,
                 from_hook: s.from_hook,
             };
             self.storage.write().await.append_entry(entry).await?;

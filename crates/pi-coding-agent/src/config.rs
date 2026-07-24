@@ -24,11 +24,17 @@ pub fn expand_tilde_path(path: &str) -> PathBuf {
 /// Returns the base `.pi-rs` config directory.
 ///
 /// Priority:
-/// 1. `$PI_RS_HOME` environment variable
+/// 1. `$PI_RS_HOME` environment variable (supports relative paths, resolved against cwd)
 /// 2. `~/.pi-rs`
 pub fn get_pi_rs_home() -> PathBuf {
     if let Ok(env_dir) = std::env::var(ENV_PI_RS_HOME) {
-        return expand_tilde_path(&env_dir);
+        let expanded = expand_tilde_path(&env_dir);
+        if expanded.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                return cwd.join(expanded);
+            }
+        }
+        return expanded;
     }
     dirs::home_dir()
         .expect("Could not determine home directory")
@@ -42,7 +48,13 @@ pub fn get_pi_rs_home() -> PathBuf {
 /// 2. `$PI_RS_HOME/agent` (or `~/.pi-rs/agent` if `PI_RS_HOME` is unset)
 pub fn get_agent_dir() -> PathBuf {
     if let Ok(env_dir) = std::env::var(ENV_AGENT_DIR) {
-        return expand_tilde_path(&env_dir);
+        let expanded = expand_tilde_path(&env_dir);
+        if expanded.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                return cwd.join(expanded);
+            }
+        }
+        return expanded;
     }
     get_pi_rs_home().join("agent")
 }
@@ -78,7 +90,13 @@ pub fn get_prompts_dir() -> PathBuf {
 /// 2. `{agent_dir}/sessions` (derived from `get_agent_dir()`)
 pub fn get_sessions_dir() -> PathBuf {
     if let Ok(env_dir) = std::env::var(ENV_SESSION_DIR) {
-        return expand_tilde_path(&env_dir);
+        let expanded = expand_tilde_path(&env_dir);
+        if expanded.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                return cwd.join(expanded);
+            }
+        }
+        return expanded;
     }
     get_agent_dir().join("sessions")
 }

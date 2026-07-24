@@ -104,21 +104,19 @@ async fn wait_for_child(
         }
     });
 
-    let status = loop {
-        tokio::select! {
-            status = child.wait() => break status,
-            _ = async {
-                if let Some(ref mut sig) = signal {
-                    sig.changed().await.ok()
-                } else {
-                    std::future::pending::<()>().await;
-                    unreachable!()
-                }
-            } => {
-                let _ = child.kill().await;
-                *killed = true;
-                break child.wait().await;
+    let status = tokio::select! {
+        status = child.wait() => status,
+        _ = async {
+            if let Some(ref mut sig) = signal {
+                sig.changed().await.ok()
+            } else {
+                std::future::pending::<()>().await;
+                unreachable!()
             }
+        } => {
+            let _ = child.kill().await;
+            *killed = true;
+            child.wait().await
         }
     };
 

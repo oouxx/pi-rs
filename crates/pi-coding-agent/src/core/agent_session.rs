@@ -2,7 +2,7 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
-    StreamFn, TransformContextFn,
+    QueueMode, StreamFn, TransformContextFn,
 };
 use std::sync::Arc;
 
@@ -1453,8 +1453,8 @@ impl AgentSession {
         !self.agent.state().await.is_streaming
     }
 
-    pub fn get_error_message(&self) -> Option<&str> {
-        None
+    pub async fn get_error_message(&self) -> Option<String> {
+        self.agent.state().await.error_message.clone()
     }
 
     /// Get context usage information, matching TS getContextUsage().
@@ -1466,29 +1466,60 @@ impl AgentSession {
             return None;
         }
 
+        // After compaction, the last assistant usage reflects pre-compaction context size.
+        // We can only trust usage from an assistant that responded after the latest compaction.
+        // If no such assistant exists, context token count is unknown until the next LLM response.
+        let mgr = self.session_manager.lock().unwrap();
+        let branch_entries = mgr.get_branch(None);
+
+        // Find the latest compaction entry
+        let latest_compaction_idx = branch_entries.iter().rposition(|e| matches!(e, SessionEntry::Compaction { .. }));
+
+        if let Some(compaction_idx) = latest_compaction_idx {
+            // Check if there's a valid assistant usage after the compaction boundary
+            let mut has_post_compaction_usage = false;
+            for i in (compaction_idx + 1..branch_entries.len()).rev() {
+                if let SessionEntry::Message { message, .. } = &branch_entries[i] {
+                    if message.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                        let stop_reason = message.get("stopReason").and_then(|r| r.as_str());
+                        // Skip aborted and error messages
+                        if stop_reason != Some("aborted") && stop_reason != Some("error") {
+                            if let Some(usage) = message.get("usage") {
+                                let total_tokens = usage.get("totalTokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                                if total_tokens > 0 {
+                                    has_post_compaction_usage = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !has_post_compaction_usage {
+                return None;
+            }
+        }
+        drop(mgr);
+
         // Estimate tokens from current messages
         let messages = &state.messages;
         let total_tokens = crate::core::compaction::estimate_agent_messages_tokens(messages);
-        let input_tokens = total_tokens; // Simplified: total is our best estimate
-        let output_tokens = 0u64; // Output tokens are from the last response, not easily separable here
 
         Some(ContextUsage {
             total_tokens,
             context_window,
-            input_tokens,
-            output_tokens,
+            input_tokens: total_tokens,
+            output_tokens: 0,
             cache_read_tokens: None,
             cache_write_tokens: None,
             messages_count: messages.len(),
         })
     }
 
-    pub fn should_compact(&self) -> bool {
-        // use crate::core::compaction;
-        // let context_window = 128_000u64;
-        // Estimate tokens from messages — we need async here but the method is sync.
-        // Return false if we can't get messages easily; overridden by check_auto_compact().
-        false
+    /// Check whether compaction should be triggered, matching TS shouldCompact().
+    pub async fn should_compact(&self) -> bool {
+        self.check_auto_compact().await
     }
 
     /// Get text content of the last assistant message, matching TS.
@@ -1632,13 +1663,13 @@ impl AgentSession {
     }
 
     /// Current steering mode, matching TS `get steeringMode()`.
-    pub fn steering_mode(&self) -> &str {
-        "all"
+    pub async fn steering_mode(&self) -> QueueMode {
+        self.agent.steering_mode().await
     }
 
     /// Current follow-up mode, matching TS `get followUpMode()`.
-    pub fn follow_up_mode(&self) -> &str {
-        "all"
+    pub async fn follow_up_mode(&self) -> QueueMode {
+        self.agent.follow_up_mode().await
     }
 
     /// Whether compaction or branch summarization is currently running,
@@ -2521,6 +2552,7 @@ impl AgentSession {
                 total_tokens,
                 None,
                 None,
+                None,
             );
         }
 
@@ -2995,11 +3027,14 @@ impl AgentSession {
     /// Writes the session header followed by all entries on the current branch path.
     pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, String> {
         use crate::core::session_manager::CURRENT_SESSION_VERSION;
+        use crate::utils::paths::{resolve_path, PathOptions};
         let mgr = self.session_manager.lock().unwrap();
-        let file_path = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
+        let cwd = mgr.get_cwd().to_string();
+        let raw_path = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
             format!("session-{}.jsonl", ts)
         });
+        let file_path = resolve_path(&raw_path, &cwd, &PathOptions::default());
 
         let dir = std::path::Path::new(&file_path).parent().unwrap();
         if !dir.exists() {
@@ -3229,8 +3264,7 @@ impl AgentSession {
             .to_string_lossy()
             .to_string();
 
-        let effective_cwd = cwd_override.unwrap_or(&self.cwd);
-        let new_mgr = SM::new(effective_cwd, &session_dir, Some(input_path), true, None);
+        let new_mgr = SM::open(input_path, Some(&session_dir), cwd_override);
 
         let fallback_cwd = self.cwd.clone();
         let session_cwd = new_mgr.get_cwd();
@@ -3388,24 +3422,27 @@ impl AgentSession {
 
     /// Set steering message mode, matching TS setSteeringMode().
     /// Saves to settings and updates the agent's queue mode.
-    pub fn set_steering_mode(&self, mode: &str) {
-        let queue_mode = match mode {
-            "all" => pi_agent_core::types::QueueMode::All,
-            _ => pi_agent_core::types::QueueMode::OneAtATime,
-        };
-        // We can't easily call agent.set_steering_mode because it requires &self
-        // and we have &self. The agent's steering mode is set during construction.
-        // For now, save to settings.
+    pub async fn set_steering_mode(&self, mode: QueueMode) {
+        self.agent.set_steering_mode(mode).await;
         if let Ok(mut sm) = self.settings_manager.lock() {
-            sm.set_steering_mode(mode);
+            let mode_str = match mode {
+                QueueMode::All => "all",
+                QueueMode::OneAtATime => "one-at-a-time",
+            };
+            sm.set_steering_mode(mode_str);
         }
     }
 
     /// Set follow-up message mode, matching TS setFollowUpMode().
     /// Saves to settings and updates the agent's queue mode.
-    pub fn set_follow_up_mode(&self, mode: &str) {
+    pub async fn set_follow_up_mode(&self, mode: QueueMode) {
+        self.agent.set_follow_up_mode(mode).await;
         if let Ok(mut sm) = self.settings_manager.lock() {
-            sm.set_follow_up_mode(mode);
+            let mode_str = match mode {
+                QueueMode::All => "all",
+                QueueMode::OneAtATime => "one-at-a-time",
+            };
+            sm.set_follow_up_mode(mode_str);
         }
     }
 
@@ -3438,7 +3475,7 @@ impl AgentSession {
             sm.reload();
         }
         // Sync queue modes from settings (matching TS syncQueueModesFromSettings)
-        self._sync_queue_modes_from_settings();
+        self._sync_queue_modes_from_settings().await;
         // Reload resources
         // Note: resources are loaded once at construction time in the current
         // implementation. Full hot-reload of resources would require re-reading
@@ -3446,11 +3483,16 @@ impl AgentSession {
     }
 
     /// Sync queue modes from settings, matching TS syncQueueModesFromSettings().
-    fn _sync_queue_modes_from_settings(&self) {
-        // Queue modes are set on the agent during construction.
-        // Re-read from settings to stay in sync.
-        // Note: agent.steeringMode/followUpMode are set during Agent::new()
-        // and cannot be changed after construction in the current architecture.
+    async fn _sync_queue_modes_from_settings(&self) {
+        if let Ok(sm) = self.settings_manager.lock() {
+            let steering = sm.get_steering_mode();
+            let follow_up = sm.get_follow_up_mode();
+            drop(sm);
+            let steering_mode = if steering == "all" { QueueMode::All } else { QueueMode::OneAtATime };
+            let follow_up_mode = if follow_up == "all" { QueueMode::All } else { QueueMode::OneAtATime };
+            self.agent.set_steering_mode(steering_mode).await;
+            self.agent.set_follow_up_mode(follow_up_mode).await;
+        }
     }
 
     pub async fn subscribe(

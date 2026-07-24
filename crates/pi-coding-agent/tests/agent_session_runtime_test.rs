@@ -247,6 +247,21 @@ async fn test_runtime_switch_session() {
         None,
     );
     let other_session_file = other_mgr.get_session_file().unwrap().to_string_lossy().to_string();
+    // Write session header to disk (SessionManager::new() sets the path but
+    // doesn't write the file until the first assistant message arrives)
+    {
+        use std::io::Write;
+        let header = serde_json::json!({
+            "type": "session",
+            "version": pi_coding_agent::core::session_manager::CURRENT_SESSION_VERSION,
+            "id": other_mgr.get_session_id(),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cwd": other_mgr.get_cwd(),
+        });
+        let mut f = std::fs::File::create(&other_session_file).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&header).unwrap()).unwrap();
+    }
+
 
     // Switch to the other session
     let result = runtime.switch_session(&other_session_file, None).await;
@@ -284,6 +299,20 @@ async fn test_runtime_import_from_jsonl() {
     );
     // Write the session file to the import path
     let session_file = import_mgr.get_session_file().unwrap();
+    // Write session header to disk first
+    {
+        use std::io::Write;
+        let header = serde_json::json!({
+            "type": "session",
+            "version": pi_coding_agent::core::session_manager::CURRENT_SESSION_VERSION,
+            "id": import_mgr.get_session_id(),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cwd": import_mgr.get_cwd(),
+        });
+        let mut f = std::fs::File::create(&session_file).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&header).unwrap()).unwrap();
+    }
+
     std::fs::copy(&session_file, &import_path).unwrap();
 
     // Import the session

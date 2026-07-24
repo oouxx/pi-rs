@@ -21,6 +21,7 @@ pub struct SlashCommandInfo {
 pub struct BuiltinSlashCommand {
     pub name: String,
     pub description: String,
+    pub argument_hint: Option<String>,
 }
 
 pub fn builtin_slash_commands() -> Vec<BuiltinSlashCommand> {
@@ -28,86 +29,112 @@ pub fn builtin_slash_commands() -> Vec<BuiltinSlashCommand> {
         BuiltinSlashCommand {
             name: "settings".into(),
             description: "Open settings menu".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "model".into(),
             description: "Select model (opens selector UI)".into(),
+            argument_hint: Some("<provider/model>".into()),
         },
         BuiltinSlashCommand {
             name: "scoped-models".into(),
             description: "Enable/disable models for Ctrl+P cycling".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "export".into(),
             description: "Export session (HTML default or specify path: .html/.jsonl)".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "import".into(),
             description: "Import and resume a session from a JSONL file".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "share".into(),
             description: "Share session as a secret GitHub gist".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "copy".into(),
             description: "Copy last agent message to clipboard".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "name".into(),
             description: "Set session display name".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "session".into(),
             description: "Show session info and stats".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "changelog".into(),
             description: "Show changelog entries".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "hotkeys".into(),
             description: "Show all keyboard shortcuts".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "fork".into(),
             description: "Create a new fork from a previous user message".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "clone".into(),
             description: "Duplicate the current session at the current position".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "tree".into(),
             description: "Navigate session tree (switch branches)".into(),
+            argument_hint: None,
+        },
+        BuiltinSlashCommand {
+            name: "trust".into(),
+            description: "Save project trust decision for future sessions".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "login".into(),
             description: "Configure provider authentication".into(),
+            argument_hint: Some("<provider>".into()),
         },
         BuiltinSlashCommand {
             name: "logout".into(),
             description: "Remove provider authentication".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "new".into(),
             description: "Start a new session".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "compact".into(),
             description: "Manually compact the session context".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "resume".into(),
             description: "Resume a different session".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "reload".into(),
-            description: "Reload keybindings, extensions, skills, prompts, and themes".into(),
+            description: "Reload keybindings, extensions, skills, prompts, themes, and context files".into(),
+            argument_hint: None,
         },
         BuiltinSlashCommand {
             name: "quit".into(),
             description: format!("Quit {}", APP_NAME),
+            argument_hint: None,
         },
     ]
 }

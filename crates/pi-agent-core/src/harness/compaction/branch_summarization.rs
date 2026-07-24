@@ -390,6 +390,7 @@ mod tests {
                 first_kept_entry_id: "e0".to_string(),
                 tokens_before: 1000,
                 details: None,
+                usage: None,
                 from_hook: None,
             },
             SessionTreeEntry::Message {
@@ -417,6 +418,7 @@ mod tests {
                 from_id: "branch-id".to_string(),
                 summary: "Branch summary".to_string(),
                 details: None,
+                usage: None,
                 from_hook: None,
             },
             SessionTreeEntry::Message {
@@ -496,6 +498,7 @@ mod tests {
                 "readFiles": ["read1.rs", "read2.rs"],
                 "modifiedFiles": ["mod1.rs"]
             })),
+            usage: None,
             from_hook: Some(false),
         }];
         let (_, file_ops) = collect_entries_for_branch_summary(&entries);
@@ -515,6 +518,7 @@ mod tests {
                 "readFiles": ["read1.rs"],
                 "modifiedFiles": ["mod1.rs"]
             })),
+            usage: None,
             from_hook: Some(true),
         }];
         let (_, file_ops) = collect_entries_for_branch_summary(&entries);
@@ -531,6 +535,7 @@ mod tests {
             from_id: "branch-id".to_string(),
             summary: "Summary".to_string(),
             details: None,
+            usage: None,
             from_hook: Some(false),
         }];
         let (_, file_ops) = collect_entries_for_branch_summary(&entries);

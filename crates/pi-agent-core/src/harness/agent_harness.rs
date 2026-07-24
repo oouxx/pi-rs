@@ -1394,6 +1394,7 @@ where
                             result.tokens_before,
                             result.details.clone(),
                             Some(true),
+                            None,
                         )
                         .await
                         .map_err(HarnessError::Session)?;

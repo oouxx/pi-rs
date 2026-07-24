@@ -36,7 +36,7 @@ pub type ToolExecuteFn = Arc<
 >;
 
 /// Tool definition matching the original TypeScript ToolDefinition interface.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ToolDefinition {
     pub name: String,
     #[serde(default)]
@@ -57,21 +57,6 @@ pub struct ToolDefinition {
     pub execute: Option<ToolExecuteFn>,
 }
 
-impl Default for ToolDefinition {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            label: None,
-            description: String::new(),
-            prompt_snippet: None,
-            prompt_guidelines: None,
-            parameters: None,
-            render_shell: None,
-            execution_mode: None,
-            execute: None,
-        }
-    }
-}
 
 impl std::fmt::Debug for ToolDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -148,6 +133,7 @@ impl ExtensionContext {
 
 /// UI context for extensions to interact with the user interface.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct ExtensionUIContext {
     pub notify: Arc<dyn Fn(&str, &Value) + Send + Sync>,
     pub set_status: Arc<dyn Fn(&str, &str) + Send + Sync>,
@@ -364,18 +350,18 @@ impl RuntimeHandle {
             Arc::new(|| Value::Null),
             Arc::new(|_| None),
             Arc::new(|_, _| {}),
-            Arc::new(|| String::new()),
+            Arc::new(String::new),
             Arc::new(|_| {}),
-            Arc::new(|| String::new()),
-            Arc::new(|| String::new()),
+            Arc::new(String::new),
+            Arc::new(String::new),
             Arc::new(|| None),
-            Arc::new(|| String::new()),
+            Arc::new(String::new),
             Arc::new(|| None),
-            Arc::new(|| String::new()),
-            Arc::new(|| String::new()),
-            Arc::new(|| vec![]),
-            Arc::new(|| vec![]),
-            Arc::new(|| vec![]),
+            Arc::new(String::new),
+            Arc::new(String::new),
+            Arc::new(Vec::new),
+            Arc::new(Vec::new),
+            Arc::new(Vec::new),
             Arc::new(|| None),
             Arc::new(|| None),
             Arc::new(|| Value::Null),

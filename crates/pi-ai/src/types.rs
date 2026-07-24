@@ -77,7 +77,7 @@ impl ToolCall {
 // Usage and cost types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UsageCost {
     #[serde(default)]
     pub input: f64,
@@ -93,19 +93,8 @@ pub struct UsageCost {
     pub total: f64,
 }
 
-impl Default for UsageCost {
-    fn default() -> Self {
-        Self {
-            input: 0.0,
-            output: 0.0,
-            cache_read: 0.0,
-            cache_write: 0.0,
-            total: 0.0,
-        }
-    }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Usage {
     #[serde(default)]
     pub input: u64,
@@ -124,18 +113,6 @@ pub struct Usage {
     pub cost: UsageCost,
 }
 
-impl Default for Usage {
-    fn default() -> Self {
-        Self {
-            input: 0,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-            total_tokens: 0,
-            cost: UsageCost::default(),
-        }
-    }
-}
 
 // ============================================================================
 // Stop reason
@@ -343,7 +320,6 @@ pub type Provider = String;
 
 pub type ThinkingLevel = String;
 /// Valid values: "off", "minimal", "low", "medium", "high", "xhigh"
-
 pub type ThinkingLevelMap = std::collections::HashMap<String, Option<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -534,7 +510,7 @@ pub struct Model {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ModelCompat {
-    OpenAICompletions(OpenAICompletionsCompat),
+    OpenAICompletions(Box<OpenAICompletionsCompat>),
     OpenAIResponses(OpenAIResponsesCompat),
     AnthropicMessages(AnthropicMessagesCompat),
 }
@@ -599,7 +575,7 @@ pub enum ToolChoiceMode {
 // Stream options
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1061,11 +1037,11 @@ mod tests {
             context_window: 128000,
             max_tokens: 16384,
             headers: None,
-            compat: Some(ModelCompat::OpenAICompletions(OpenAICompletionsCompat {
+            compat: Some(ModelCompat::OpenAICompletions(Box::new(OpenAICompletionsCompat {
                 supports_store: Some(true),
                 max_tokens_field: Some("max_completion_tokens".into()),
                 ..Default::default()
-            })),
+            }))),
         };
         let json = serde_json::to_string(&model).unwrap();
         assert!(json.contains("\"supportsStore\":true"));

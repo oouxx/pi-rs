@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::{ExtensionContext, ToolCallOutput, ToolDefinition};
+type CommandFn = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 // ============================================================================
 // HookResult
@@ -57,7 +58,8 @@ pub struct RegisteredTool {
 pub struct RegisteredCommand {
     pub name: String,
     pub description: String,
-    pub execute: Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    #[allow(dead_code)]
+    pub execute: CommandFn,
 }
 
 /// A shortcut registered by an extension.
@@ -112,7 +114,7 @@ impl CommandRegistry {
         &mut self,
         name: &str,
         description: &str,
-        execute: Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+        execute: CommandFn,
     ) {
         self.commands.push(RegisteredCommand {
             name: name.to_string(),
@@ -383,6 +385,7 @@ pub trait HookHandler: Send + Sync {
 // HookRunner
 // ============================================================================
 
+#[derive(Default)]
 /// 管理所有注册的 HookHandler，按 priority 排序分发事件。
 pub struct HookRunner {
     handlers: Vec<Box<dyn HookHandler>>,
@@ -398,7 +401,7 @@ impl HookRunner {
     /// Register a hook handler. Maintains priority-sorted order.
     pub fn register(&mut self, handler: Box<dyn HookHandler>) {
         self.handlers.push(handler);
-        self.handlers.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        self.handlers.sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
     /// Check if any handlers are registered.

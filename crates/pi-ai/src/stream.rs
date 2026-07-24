@@ -10,7 +10,7 @@ use crate::utils::event_stream::AssistantMessageEventStream;
 
 /// Check if an explicit API key was provided.
 fn has_explicit_api_key(api_key: Option<&str>) -> bool {
-    api_key.map_or(false, |k| !k.trim().is_empty())
+    api_key.is_some_and(|k| !k.trim().is_empty())
 }
 
 /// Resolve API key from options or environment.
@@ -70,23 +70,3 @@ pub async fn complete_simple(
     stream_simple(model, context, options).result().await
 }
 
-impl Default for StreamOptions {
-    fn default() -> Self {
-        Self {
-            temperature: None,
-            max_tokens: None,
-            signal: None,
-            api_key: None,
-            transport: None,
-            tool_choice: None,
-            cache_retention: None,
-            session_id: None,
-            headers: None,
-            timeout_ms: None,
-            websocket_connect_timeout_ms: None,
-            max_retries: None,
-            max_retry_delay_ms: None,
-            metadata: None,
-        }
-    }
-}

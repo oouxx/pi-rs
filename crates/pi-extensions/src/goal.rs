@@ -27,6 +27,7 @@ pub enum GoalStatus {
 }
 
 impl GoalStatus {
+    #[allow(dead_code)]
     fn as_str(&self) -> &'static str {
         match self {
             GoalStatus::Active => "active",
@@ -193,8 +194,10 @@ fn create_goal_state(objective: String, token_budget: Option<u64>) -> GoalState 
 // ============================================================================
 
 /// Goal 扩展，管理目标生命周期。
+#[derive(Default)]
 pub struct GoalExtension {
     goal: Mutex<Option<GoalState>>,
+    #[allow(dead_code)]
     start_time: AtomicU64,
     continuation_queued: AtomicBool,
     last_turn_time: AtomicU64,
@@ -235,6 +238,7 @@ impl GoalExtension {
         })));
     }
 
+    #[allow(dead_code)]
     fn queue_continuation(&self, runtime: &RuntimeHandle, goal: &GoalState) {
         if self.continuation_queued.swap(true, Ordering::SeqCst) {
             return;
@@ -245,7 +249,7 @@ impl GoalExtension {
         let runtime_clone = runtime.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let remaining = token_budget.map(|b| if b > tokens_used { b - tokens_used } else { 0 });
+            let remaining = token_budget.map(|b| b.saturating_sub(tokens_used));
             let msg = if let Some(rem) = remaining {
                 if rem > 0 {
                     format!(
@@ -365,7 +369,7 @@ impl HookHandler for GoalExtension {
     }
 
     async fn on_agent_end(&self, _messages: &[Value]) {
-        let mut goal = self.goal.lock().unwrap();
+        let goal = self.goal.lock().unwrap();
         if let Some(ref g) = *goal {
             if g.status == GoalStatus::Active {
                 let _snapshot = g.clone();
@@ -386,7 +390,7 @@ impl HookHandler for GoalExtension {
         let runtime = &ctx.runtime;
         match tool_name {
             "get_goal" => {
-                let mut goal = self.goal.lock().unwrap();
+                let goal = self.goal.lock().unwrap();
                 Some(ToolCallOutput {
                     content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&*goal).unwrap_or_default() })],
                     details: Some(json!({ "goal": *goal })),
@@ -436,7 +440,7 @@ impl HookHandler for GoalExtension {
                         terminate: None,
                     });
                 }
-                let mut goal = self.goal.lock().unwrap();
+                let goal = self.goal.lock().unwrap();
                 if goal.is_none() {
                     return Some(ToolCallOutput {
                         content: vec![json!({ "type": "text", "text": "No goal is set." })],
@@ -452,7 +456,7 @@ impl HookHandler for GoalExtension {
                 self.persist(runtime, ctx, Some(next.clone()));
                 self.emit_goal_event(runtime, GoalEventKind::Complete, &next, None);
                 let remaining = next.token_budget.map(|b| {
-                    if b > next.tokens_used { b - next.tokens_used } else { 0 }
+                    b.saturating_sub(next.tokens_used)
                 });
                 Some(ToolCallOutput {
                     content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&json!({"goal": next, "remainingTokens": remaining})).unwrap_or_default() })],

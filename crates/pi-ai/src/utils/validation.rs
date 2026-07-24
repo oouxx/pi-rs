@@ -92,7 +92,7 @@ pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Valu
             "Validation failed for tool \"{}\":\n{}{}",
             tool.name,
             errors.join("\n"),
-            format!(
+            format_args!(
                 "\n\nReceived arguments:\n{}",
                 serde_json::to_string_pretty(&tool_call.arguments).unwrap_or_default()
             )
@@ -213,11 +213,7 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
             Value::Null => Value::Number(0.into()),
             Value::String(s) => {
                 if let Ok(n) = s.parse::<f64>() {
-                    if n.fract() == 0.0 && n.is_finite() {
                         Value::Number(serde_json::Number::from_f64(n).unwrap_or(0.into()))
-                    } else {
-                        Value::Number(serde_json::Number::from_f64(n).unwrap_or(0.into()))
-                    }
                 } else {
                     value.clone()
                 }

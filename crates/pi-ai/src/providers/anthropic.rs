@@ -135,6 +135,7 @@ enum AnthropicSystemPrompt {
 
 // SSE event types from Anthropic
 #[derive(Debug, Deserialize)]
+#[allow(clippy::enum_variant_names)]
 #[serde(tag = "type")]
 enum AnthropicSseEvent {
     #[serde(rename = "message_start")]
@@ -183,6 +184,7 @@ struct AnthropicUsage {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+#[allow(clippy::enum_variant_names)]
 #[serde(tag = "type")]
 enum AnthropicContentBlockStart {
     #[serde(rename = "text")]
@@ -201,6 +203,7 @@ enum AnthropicContentBlockStart {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::enum_variant_names)]
 enum AnthropicContentDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },

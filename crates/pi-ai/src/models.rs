@@ -82,7 +82,7 @@ pub fn get_supported_thinking_levels(model: &Model) -> Vec<&'static str> {
 /// Clamp a requested thinking level to the nearest available level.
 pub fn clamp_thinking_level(model: &Model, level: &str) -> String {
     let available = get_supported_thinking_levels(model);
-    if available.iter().any(|&l| l == level) {
+    if available.contains(&level) {
         return level.to_string();
     }
     let requested_index = EXTENDED_THINKING_LEVELS.iter().position(|&l| l == level);
@@ -90,15 +90,13 @@ pub fn clamp_thinking_level(model: &Model, level: &str) -> String {
         return available.first().copied().unwrap_or("off").to_string();
     }
     let ri = requested_index.unwrap();
-    for i in ri..EXTENDED_THINKING_LEVELS.len() {
-        let candidate = EXTENDED_THINKING_LEVELS[i];
-        if available.iter().any(|&l| l == candidate) {
+    for candidate in &EXTENDED_THINKING_LEVELS[ri..] {
+        if available.contains(candidate) {
             return candidate.to_string();
         }
     }
-    for i in (0..ri).rev() {
-        let candidate = EXTENDED_THINKING_LEVELS[i];
-        if available.iter().any(|&l| l == candidate) {
+    for candidate in EXTENDED_THINKING_LEVELS[..ri].iter().rev() {
+        if available.contains(candidate) {
             return candidate.to_string();
         }
     }

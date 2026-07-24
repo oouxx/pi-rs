@@ -90,7 +90,7 @@ pub fn adjust_max_tokens_for_thinking(
     };
 
     let thinking_budget = if max_tokens <= thinking_budget {
-        (max_tokens.saturating_sub(min_output_tokens)).max(0)
+        max_tokens.saturating_sub(min_output_tokens)
     } else {
         thinking_budget
     };

@@ -98,9 +98,8 @@ pub fn repair_json(json: &str) -> String {
 
 /// Parse JSON with repair fallback.
 pub fn parse_json_with_repair<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, String> {
-    match serde_json::from_str::<T>(json) {
-        Ok(v) => return Ok(v),
-        Err(_) => {}
+    if let Ok(v) = serde_json::from_str::<T>(json) {
+        return Ok(v);
     }
     let repaired = repair_json(json);
     serde_json::from_str::<T>(&repaired).map_err(|e| format!("JSON parse error: {}", e))

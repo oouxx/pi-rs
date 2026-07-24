@@ -1402,7 +1402,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pi-agent-core"
-version = "1.79.28"
+version = "1.79.29"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "1.79.28"
+version = "1.79.29"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "pi-cli"
-version = "1.79.28"
+version = "1.79.29"
 dependencies = [
  "base64",
  "colored",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "1.79.28"
+version = "1.79.29"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extension-api"
-version = "1.79.28"
+version = "1.79.29"
 dependencies = [
  "async-trait",
  "futures",
@@ -1493,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extensions"
-version = "1.79.28"
+version = "1.79.29"
 dependencies = [
  "async-trait",
  "pi-extension-api",

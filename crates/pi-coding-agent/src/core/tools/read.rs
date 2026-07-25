@@ -338,3 +338,50 @@ pub fn create_read_tool(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_tool_input_deserialization() {
+        let json = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "offset": 10,
+            "limit": 20
+        });
+        let input: ReadToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.path, "/tmp/test.txt");
+        assert_eq!(input.offset, Some(10));
+        assert_eq!(input.limit, Some(20));
+    }
+
+    #[test]
+    fn test_read_tool_input_minimal() {
+        let json = serde_json::json!({
+            "path": "/tmp/test.txt"
+        });
+        let input: ReadToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.path, "/tmp/test.txt");
+        assert_eq!(input.offset, None);
+        assert_eq!(input.limit, None);
+    }
+
+    #[test]
+    fn test_read_parameters_schema() {
+        let schema = read_parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["path"].is_object());
+        assert!(schema["properties"]["offset"].is_object());
+        assert!(schema["properties"]["limit"].is_object());
+        assert_eq!(schema["required"][0], "path");
+    }
+
+    #[test]
+    fn test_read_tool_creation() {
+        let tool = create_read_tool("/tmp", None);
+        assert_eq!(tool.name, "read");
+        assert!(tool.description.contains("Read the contents"));
+        assert!(tool.parameters_schema.is_object());
+    }
+}

@@ -318,3 +318,46 @@ pub fn create_find_tool(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_tool_input_deserialization() {
+        let json = serde_json::json!({
+            "pattern": "**/*.rs",
+            "path": "/tmp"
+        });
+        let input: FindToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.pattern, "**/*.rs");
+        assert_eq!(input.path, Some("/tmp".to_string()));
+    }
+
+    #[test]
+    fn test_find_tool_input_minimal() {
+        let json = serde_json::json!({
+            "pattern": "**/*.rs"
+        });
+        let input: FindToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.pattern, "**/*.rs");
+        assert_eq!(input.path, None);
+    }
+
+    #[test]
+    fn test_find_parameters_schema() {
+        let schema = find_parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["pattern"].is_object());
+        assert!(schema["properties"]["path"].is_object());
+        assert_eq!(schema["required"][0], "pattern");
+    }
+
+    #[test]
+    fn test_find_tool_creation() {
+        let tool = create_find_tool("/tmp", None);
+        assert_eq!(tool.name, "find");
+        assert!(!tool.description.is_empty());
+        assert!(tool.parameters_schema.is_object());
+    }
+}

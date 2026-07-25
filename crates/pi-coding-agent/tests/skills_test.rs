@@ -472,3 +472,30 @@ fn test_skill_name_collision() {
     assert_eq!(collision_warnings.len(), 1);
     assert!(collision_warnings[0].contains("name collision"));
 }
+
+#[test]
+fn test_expand_tilde_in_skill_paths() {
+    // Test that ~ in skillPaths is expanded to home directory
+    // This mirrors the TS test: "should expand ~ in skillPaths"
+    let home_skills_dir = dirs::home_dir()
+        .map(|p| p.join(".pi/agent/skills").to_string_lossy().to_string())
+        .unwrap_or_else(|| "~/.pi/agent/skills".to_string());
+
+    let result_with_tilde = load_skills(&LoadSkillsOptions {
+        cwd: empty_cwd_dir().to_string_lossy().to_string(),
+        agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
+        skill_paths: vec!["~/.pi/agent/skills".to_string()],
+        include_defaults: true,
+    });
+
+    let result_without_tilde = load_skills(&LoadSkillsOptions {
+        cwd: empty_cwd_dir().to_string_lossy().to_string(),
+        agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
+        skill_paths: vec![home_skills_dir.clone()],
+        include_defaults: true,
+    });
+
+    // Both should produce the same result (tilde expansion should match explicit path)
+    assert_eq!(result_with_tilde.skills.len(), result_without_tilde.skills.len());
+}
+

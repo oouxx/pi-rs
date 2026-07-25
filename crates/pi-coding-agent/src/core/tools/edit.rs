@@ -572,4 +572,77 @@ mod tests {
         let result = prepare_edit_arguments(&params);
         assert!(result.get("edits").is_none());
     }
+
+    #[test]
+    fn test_prepare_arguments_non_object() {
+        // null should pass through unchanged
+        let result = prepare_edit_arguments(&serde_json::Value::Null);
+        assert_eq!(result, serde_json::Value::Null);
+
+        // string should pass through unchanged
+        let result = prepare_edit_arguments(&serde_json::Value::String("garbage".into()));
+        assert_eq!(result, serde_json::Value::String("garbage".into()));
+    }
+
+    #[test]
+    fn test_prepare_arguments_invalid_json_edits() {
+        // When edits is a string that is not valid JSON, leave it alone
+        let params = serde_json::json!({
+            "path": "test.txt",
+            "edits": "not json"
+        });
+        let result = prepare_edit_arguments(&params);
+        assert_eq!(result["edits"], "not json");
+    }
+
+    #[test]
+    fn test_edit_parameters_schema_no_legacy_fields() {
+        let schema = edit_parameters_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(!props.contains_key("oldText"), "schema should not contain oldText at top level");
+        assert!(!props.contains_key("newText"), "schema should not contain newText at top level");
+    }
+
+    // TS: "prepared args execute correctly" — integration test that verifies
+    // prepare_arguments + execute works end-to-end with legacy format.
+    #[tokio::test]
+    async fn test_prepared_args_execute_correctly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("legacy.txt");
+        tokio::fs::write(&file_path, "before\n").await.unwrap();
+
+        let cwd = dir.path().to_string_lossy().to_string();
+        let tool = create_edit_tool(&cwd, None);
+
+        // Prepare arguments using legacy format (oldText/newText)
+        let prepared = (tool.prepare_arguments.as_ref().unwrap())(&serde_json::json!({
+            "path": "legacy.txt",
+            "oldText": "before",
+            "newText": "after",
+        }));
+
+        // Execute with prepared args
+        let result = (tool.execute)(
+            "tool-1".to_string(),
+            prepared,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Verify result message
+        let has_success = result.content.iter().any(|block| {
+            if let ContentBlock::Text { text, .. } = block {
+                text.contains("Successfully replaced")
+            } else {
+                false
+            }
+        });
+        assert!(has_success, "result should contain success message: {:?}", result.content);
+
+        // Verify file content
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "after\n");
+    }
 }

@@ -474,3 +474,50 @@ fn search_directory(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grep_tool_input_deserialization() {
+        let json = serde_json::json!({
+            "pattern": "hello",
+            "path": "/tmp",
+            "context": 2,
+            "limit": 10
+        });
+        let input: GrepToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.pattern, "hello");
+        assert_eq!(input.path, Some("/tmp".to_string()));
+        assert_eq!(input.context, Some(2));
+        assert_eq!(input.limit, Some(10));
+    }
+
+    #[test]
+    fn test_grep_tool_input_minimal() {
+        let json = serde_json::json!({
+            "pattern": "hello"
+        });
+        let input: GrepToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.pattern, "hello");
+        assert_eq!(input.path, None);
+    }
+
+    #[test]
+    fn test_grep_parameters_schema() {
+        let schema = grep_parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["pattern"].is_object());
+        assert!(schema["properties"]["path"].is_object());
+        assert_eq!(schema["required"][0], "pattern");
+    }
+
+    #[test]
+    fn test_grep_tool_creation() {
+        let tool = create_grep_tool("/tmp", None);
+        assert_eq!(tool.name, "grep");
+        assert!(!tool.description.is_empty());
+        assert!(tool.parameters_schema.is_object());
+    }
+}

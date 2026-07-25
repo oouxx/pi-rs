@@ -395,11 +395,170 @@ pub fn count_occurrences(content: &str, old_text: &str) -> usize {
 // Edit application
 // ============================================================================
 
+#[derive(Clone)]
 struct MatchedEdit {
     edit_index: usize,
     match_index: usize,
     match_length: usize,
     new_text: String,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for preserving unchanged lines during fuzzy-match replacement
+// ---------------------------------------------------------------------------
+
+/// Split content into lines, preserving line-ending characters.
+///
+/// Equivalent to `splitLinesWithEndings` in edit-diff.ts.
+fn split_lines_with_endings(content: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (i, ch) in content.char_indices() {
+        if ch == '\n' {
+            lines.push(&content[start..=i]);
+            start = i + 1;
+        }
+    }
+    if start < content.len() {
+        lines.push(&content[start..]);
+    }
+    lines
+}
+
+/// Compute byte-offset spans for each line.
+///
+/// Equivalent to `getLineSpans` in edit-diff.ts.
+struct LineSpan {
+    start: usize,
+    end: usize,
+}
+
+fn get_line_spans(content: &str) -> Vec<LineSpan> {
+    let mut offset = 0;
+    split_lines_with_endings(content)
+        .into_iter()
+        .map(|line| {
+            let span = LineSpan {
+                start: offset,
+                end: offset + line.len(),
+            };
+            offset = span.end;
+            span
+        })
+        .collect()
+}
+
+/// Find the line range that a replacement touches.
+///
+/// Equivalent to `getReplacementLineRange` in edit-diff.ts.
+fn get_replacement_line_range(lines: &[LineSpan], replacement: &MatchedEdit) -> (usize, usize) {
+    let replacement_start = replacement.match_index;
+    let replacement_end = replacement.match_index + replacement.match_length;
+
+    let mut start_line = None;
+    for (i, line) in lines.iter().enumerate() {
+        if replacement_start >= line.start && replacement_start < line.end {
+            start_line = Some(i);
+            break;
+        }
+    }
+    let start_line = start_line.expect("Replacement range is outside the base content.");
+
+    let mut end_line = start_line;
+    while end_line < lines.len() && lines[end_line].end < replacement_end {
+        end_line += 1;
+    }
+    if end_line >= lines.len() {
+        panic!("Replacement range is outside the base content.");
+    }
+
+    (start_line, end_line + 1)
+}
+
+/// Apply replacements to a content string in reverse order.
+///
+/// Equivalent to `applyReplacements` in edit-diff.ts.
+fn apply_replacements(content: &str, replacements: &[MatchedEdit], offset: usize) -> String {
+    let mut result = content.to_string();
+    for m in replacements.iter().rev() {
+        let match_index = m.match_index - offset;
+        result = format!(
+            "{}{}{}",
+            &result[..match_index],
+            m.new_text,
+            &result[match_index + m.match_length..]
+        );
+    }
+    result
+}
+
+/// Apply replacements matched against `base_content` to `original_content` while
+/// preserving unchanged line blocks from the original.
+///
+/// Equivalent to `applyReplacementsPreservingUnchangedLines` in edit-diff.ts.
+fn apply_replacements_preserving_unchanged_lines(
+    original_content: &str,
+    base_content: &str,
+    replacements: &[MatchedEdit],
+) -> String {
+    let original_lines = split_lines_with_endings(original_content);
+    let base_lines = get_line_spans(base_content);
+
+    if original_lines.len() != base_lines.len() {
+        panic!("Cannot preserve unchanged lines because the base content has a different line count.");
+    }
+
+    // Group replacements by the line ranges they touch
+    struct ReplacementGroup {
+        start_line: usize,
+        end_line: usize,
+        replacements: Vec<MatchedEdit>,
+    }
+
+    let mut groups: Vec<ReplacementGroup> = Vec::new();
+    let mut sorted_replacements = replacements.to_vec();
+    sorted_replacements.sort_by_key(|r| r.match_index);
+
+    for replacement in &sorted_replacements {
+        let (start_line, end_line) = get_replacement_line_range(&base_lines, replacement);
+        if let Some(current) = groups.last_mut() {
+            if start_line < current.end_line {
+                current.end_line = current.end_line.max(end_line);
+                current.replacements.push(replacement.clone());
+                continue;
+            }
+        }
+        groups.push(ReplacementGroup {
+            start_line,
+            end_line,
+            replacements: vec![replacement.clone()],
+        });
+    }
+
+    let mut original_line_index = 0;
+    let mut result = String::new();
+
+    for group in &groups {
+        // Copy unchanged lines before this group
+        for line in &original_lines[original_line_index..group.start_line] {
+            result.push_str(line);
+        }
+
+        // Apply replacements within the group's range
+        let group_start_offset = base_lines[group.start_line].start;
+        let group_end_offset = base_lines[group.end_line - 1].end;
+        let group_content = &base_content[group_start_offset..group_end_offset];
+        result.push_str(&apply_replacements(group_content, &group.replacements, group_start_offset));
+
+        original_line_index = group.end_line;
+    }
+
+    // Copy remaining unchanged lines
+    for line in &original_lines[original_line_index..] {
+        result.push_str(line);
+    }
+
+    result
 }
 
 /// Apply one or more exact-text replacements to LF-normalized content.
@@ -441,7 +600,8 @@ pub fn apply_edits_to_normalized_content(
         .map(|edit| fuzzy_find_text(normalized_content, &edit.old_text))
         .collect();
 
-    let base_content = if initial_matches.iter().any(|m| m.used_fuzzy_match) {
+    let used_fuzzy_match = initial_matches.iter().any(|m| m.used_fuzzy_match);
+    let replacement_base_content = if used_fuzzy_match {
         normalize_for_fuzzy_match(normalized_content)
     } else {
         normalized_content.to_string()
@@ -450,7 +610,7 @@ pub fn apply_edits_to_normalized_content(
     let mut matched_edits: Vec<MatchedEdit> = Vec::with_capacity(normalized_edits.len());
 
     for (i, edit) in normalized_edits.iter().enumerate() {
-        let match_result = fuzzy_find_text(&base_content, &edit.old_text);
+        let match_result = fuzzy_find_text(&replacement_base_content, &edit.old_text);
 
         if !match_result.found {
             return Err(EditError::NotFound {
@@ -460,7 +620,7 @@ pub fn apply_edits_to_normalized_content(
             });
         }
 
-        let occurrences = count_occurrences(&base_content, &edit.old_text);
+        let occurrences = count_occurrences(&replacement_base_content, &edit.old_text);
         if occurrences > 1 {
             return Err(EditError::Duplicate {
                 path: path.to_string(),
@@ -492,16 +652,26 @@ pub fn apply_edits_to_normalized_content(
         }
     }
 
-    // Apply edits in reverse order to preserve offsets
-    let mut new_content = base_content.clone();
-    for m in matched_edits.into_iter().rev() {
-        new_content = format!(
-            "{}{}{}",
-            &new_content[..m.match_index],
-            m.new_text,
-            &new_content[m.match_index + m.match_length..]
-        );
-    }
+    // Apply edits
+    let base_content = normalized_content.to_string();
+    let new_content = if used_fuzzy_match {
+        apply_replacements_preserving_unchanged_lines(
+            normalized_content,
+            &replacement_base_content,
+            &matched_edits,
+        )
+    } else {
+        let mut result = replacement_base_content.clone();
+        for m in matched_edits.into_iter().rev() {
+            result = format!(
+                "{}{}{}",
+                &result[..m.match_index],
+                m.new_text,
+                &result[m.match_index + m.match_length..]
+            );
+        }
+        result
+    };
 
     if base_content == new_content {
         return Err(EditError::NoChange {

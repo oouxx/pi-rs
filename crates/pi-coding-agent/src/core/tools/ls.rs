@@ -324,3 +324,39 @@ pub fn create_ls_tool(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ls_tool_input_deserialization() {
+        let json = serde_json::json!({
+            "path": "/tmp"
+        });
+        let input: LsToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.path, Some("/tmp".to_string()));
+    }
+
+    #[test]
+    fn test_ls_tool_input_empty() {
+        let json = serde_json::json!({});
+        let input: LsToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.path, None);
+    }
+
+    #[test]
+    fn test_ls_parameters_schema() {
+        let schema = ls_parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["path"].is_object());
+    }
+
+    #[test]
+    fn test_ls_tool_creation() {
+        let tool = create_ls_tool("/tmp", None);
+        assert_eq!(tool.name, "ls");
+        assert!(!tool.description.is_empty());
+        assert!(tool.parameters_schema.is_object());
+    }
+}

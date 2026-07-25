@@ -2679,6 +2679,118 @@ mod tests {
     }
 
     #[test]
+
+    #[test]
+    fn test_build_context_single_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+
+        let old_msg_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "Old message 1"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "Old response 1"
+        }));
+        let kept_msg_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "Kept message"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "Kept response"
+        }));
+        mgr.append_compaction("Summary of old messages", &kept_msg_id, 1000, None, None, None);
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "New message"
+        }));
+
+        let ctx = mgr.build_context();
+        // Should have: compaction summary + kept messages + new messages
+        assert!(ctx.messages.len() >= 3);
+        // First message should contain the compaction summary text
+        let first_content = ctx.messages[0].get("content").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(first_content.contains("Summary of old messages"));
+    }
+
+    #[test]
+    fn test_build_context_multiple_compactions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+
+        let msg1 = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "First"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "Response 1"
+        }));
+        let msg2 = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "Second"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "Response 2"
+        }));
+        // First compaction
+        mgr.append_compaction("First summary", &msg2, 1000, None, None, None);
+        let msg3 = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "Third"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "Response 3"
+        }));
+        // Second compaction
+        mgr.append_compaction("Second summary", &msg3, 2000, None, None, None);
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "Fourth"
+        }));
+
+        let ctx = mgr.build_context();
+        // Should have: second summary + kept messages + new messages
+        assert!(ctx.messages.len() >= 2);
+        // The first message should contain the most recent compaction summary
+        let first_content = ctx.messages[0].get("content").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(first_content.contains("Second summary"));
+    }
+
+    #[test]
+    fn test_build_context_no_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "Hello"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "Hi there"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "How are you?"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "I am fine"
+        }));
+
+        let ctx = mgr.build_context();
+        // Without compaction, all messages should be present
+        assert_eq!(ctx.messages.len(), 4);
+    }
+
     fn test_custom_entry() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =

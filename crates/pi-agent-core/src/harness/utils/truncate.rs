@@ -99,7 +99,7 @@
 
 )]
 pub const DEFAULT_MAX_LINES: usize = 2000;
-pub const DEFAULT_MAX_BYTES: u64 = 500_000;
+pub const DEFAULT_MAX_BYTES: u64 = 50 * 1024; // 50KB, matching TS
 pub const GREP_MAX_LINE_LENGTH: usize = 500;
 
 #[derive(Debug, Clone)]
@@ -301,10 +301,13 @@ fn truncate_string_to_bytes_from_end(s: &str, max_bytes: usize) -> String {
 
 pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
     let max = max_chars.unwrap_or(GREP_MAX_LINE_LENGTH);
-    if line.len() <= max {
+    // Use char_indices to safely find the byte boundary of the max-th character.
+    // This avoids panicking on multi-byte UTF-8 characters (e.g. CJK, emoji).
+    let byte_pos = line.char_indices().nth(max).map(|(pos, _)| pos).unwrap_or(line.len());
+    if byte_pos >= line.len() {
         return (line.to_string(), false);
     }
-    (format!("{}... [truncated]", &line[..max]), true)
+    (format!("{}... [truncated]", &line[..byte_pos]), true)
 }
 
 pub struct TruncationOptions {

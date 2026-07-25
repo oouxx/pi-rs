@@ -298,3 +298,37 @@ format!("Error writing file: {}", e),
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_write_tool_input_deserialization() {
+        let json = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "content": "hello world"
+        });
+        let input: WriteToolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.path, "/tmp/test.txt");
+        assert_eq!(input.content, "hello world");
+    }
+
+    #[test]
+    fn test_write_parameters_schema() {
+        let schema = write_parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["path"].is_object());
+        assert!(schema["properties"]["content"].is_object());
+        assert_eq!(schema["required"][0], "path");
+        assert_eq!(schema["required"][1], "content");
+    }
+
+    #[test]
+    fn test_write_tool_creation() {
+        let tool = create_write_tool("/tmp", None);
+        assert_eq!(tool.name, "write");
+        assert!(tool.description.contains("Write"));
+        assert!(tool.parameters_schema.is_object());
+    }
+}

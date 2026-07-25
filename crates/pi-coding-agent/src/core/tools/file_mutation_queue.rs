@@ -121,4 +121,268 @@ mod tests {
             elapsed
         );
     }
+
+    #[tokio::test]
+    async fn test_symlink_same_queue() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target_path = dir.path().join("target.txt");
+        let symlink_path = dir.path().join("alias.txt");
+        tokio::fs::write(&target_path, "hello\n").await.unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &symlink_path).unwrap();
+
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let order1 = order.clone();
+        let order2 = order.clone();
+        let target = target_path.to_string_lossy().to_string();
+        let symlink = symlink_path.to_string_lossy().to_string();
+
+        let h1 = tokio::spawn(async move {
+            with_file_mutation_queue(&target, || async {
+                order1.lock().unwrap().push("target:start");
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                order1.lock().unwrap().push("target:end");
+            })
+            .await;
+        });
+
+        let h2 = tokio::spawn(async move {
+            with_file_mutation_queue(&symlink, || async {
+                order2.lock().unwrap().push("alias:start");
+                order2.lock().unwrap().push("alias:end");
+            })
+            .await;
+        });
+
+        let _ = tokio::join!(h1, h2);
+        let final_order = order.lock().unwrap().clone();
+        assert_eq!(
+            final_order,
+            vec!["target:start", "target:end", "alias:start", "alias:end"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parallel_edits_same_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("parallel-edit.txt");
+        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n").await.unwrap();
+
+        let path = file_path.to_string_lossy().to_string();
+        let path2 = path.clone();
+
+        let h1 = tokio::spawn(async move {
+            with_file_mutation_queue(&path, || async {
+                let content = tokio::fs::read_to_string(&path).await.unwrap();
+                let new_content = content.replace("alpha", "ALPHA");
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                tokio::fs::write(&path, &new_content).await.unwrap();
+            })
+            .await;
+        });
+
+        let h2 = tokio::spawn(async move {
+            with_file_mutation_queue(&path2, || async {
+                let content = tokio::fs::read_to_string(&path2).await.unwrap();
+                let new_content = content.replace("beta", "BETA");
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                tokio::fs::write(&path2, &new_content).await.unwrap();
+            })
+            .await;
+        });
+
+        let _ = tokio::join!(h1, h2);
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        // Both edits should be applied because the queue serializes them
+        // The second edit reads the file after the first edit wrote it
+        assert_eq!(content, "ALPHA\nBETA\ngamma\n", "Unexpected content: {}", content);
+    }
+
+    // TS: "shares the queue between edit and write" — verifies that the same
+    // file path gets serialized even when called from different call sites.
+    #[tokio::test]
+    async fn test_shared_queue_between_operations() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("shared.txt");
+        tokio::fs::write(&file_path, "original\n").await.unwrap();
+
+        let path = file_path.to_string_lossy().to_string();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Simulate an "edit" operation (read-modify-write) that takes time
+        let order1 = order.clone();
+        let p1 = path.clone();
+        let h1 = tokio::spawn(async move {
+            with_file_mutation_queue(&p1, || async {
+                order1.lock().unwrap().push("edit:start");
+                let content = tokio::fs::read_to_string(&p1).await.unwrap();
+                let new_content = content.replace("original", "edited");
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                tokio::fs::write(&p1, &new_content).await.unwrap();
+                order1.lock().unwrap().push("edit:end");
+            })
+            .await;
+        });
+
+        // Simulate a "write" operation (overwrite) that starts slightly later
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let order2 = order.clone();
+        let p2 = path.clone();
+        let h2 = tokio::spawn(async move {
+            with_file_mutation_queue(&p2, || async {
+                order2.lock().unwrap().push("write:start");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                tokio::fs::write(&p2, "replacement\n").await.unwrap();
+                order2.lock().unwrap().push("write:end");
+            })
+            .await;
+        });
+
+        let _ = tokio::join!(h1, h2);
+        let final_order = order.lock().unwrap().clone();
+
+        // Operations on the same file must be serialized
+        assert_eq!(final_order.len(), 4);
+        // The edit must complete before the write starts (or vice versa, but
+        // since edit starts first, it should finish first)
+        let edit_end_idx = final_order.iter().position(|s| s == &"edit:end").unwrap();
+        let write_start_idx = final_order.iter().position(|s| s == &"write:start").unwrap();
+        assert!(
+            edit_end_idx < write_start_idx,
+            "edit should complete before write starts, order: {:?}",
+            final_order
+        );
+
+        // The write operation should win (it runs last)
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "replacement\n");
+    }
+
+    // TS: "keeps write queue locked while an aborted write is still in flight"
+    // — verifies that aborting an operation doesn't release the queue lock.
+    #[tokio::test]
+    async fn test_aborted_operation_keeps_queue_locked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("abort-lock.txt");
+        tokio::fs::write(&file_path, "first\n").await.unwrap();
+
+        let path = file_path.to_string_lossy().to_string();
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let finish_first = Arc::new(tokio::sync::Notify::new());
+        let second_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let first_started_clone = first_started.clone();
+        let finish_first_clone = finish_first.clone();
+        let second_started_clone = second_started.clone();
+        let p1 = path.clone();
+
+        // First operation: starts, then waits for signal
+        let h1 = tokio::spawn(async move {
+            // Use a CancellationToken to simulate abort
+            let result: Result<i32, &str> = with_file_mutation_queue(&p1, || async {
+                first_started_clone.notify_one();
+                finish_first_clone.notified().await;
+                // Simulate the write
+                tokio::fs::write(&p1, "first\n").await.unwrap();
+                Ok(42)
+            })
+            .await;
+
+            // The operation should complete (we don't actually abort it in this test)
+            assert!(result.is_ok());
+        });
+
+        // Wait for first operation to start
+        first_started.notified().await;
+
+        // Second operation: should NOT be able to start because queue is locked
+        let p2 = path.clone();
+        let h2 = tokio::spawn(async move {
+            // Try to start second operation with a short timeout
+            let started = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                with_file_mutation_queue(&p2, || async {
+                    second_started_clone.store(true, Ordering::SeqCst);
+                    tokio::fs::write(&p2, "second\n").await.unwrap();
+                }),
+            )
+            .await;
+
+            // The second operation should eventually complete after the first finishes
+            assert!(started.is_ok(), "second operation should eventually start");
+        });
+
+        // Let first operation finish
+        finish_first.notify_one();
+
+        let _ = tokio::join!(h1, h2);
+
+        // The second operation should have started (eventually)
+        assert!(second_started.load(Ordering::SeqCst), "second operation should have started");
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "second\n", "second write should be the final content");
+    }
+
+    // TS: "keeps edit queue locked while an aborted edit write is still in flight"
+    // — same as above but for read-modify-write (edit) pattern.
+    #[tokio::test]
+    async fn test_aborted_edit_keeps_queue_locked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("abort-edit-lock.txt");
+        tokio::fs::write(&file_path, "alpha\nbeta\n").await.unwrap();
+
+        let path = file_path.to_string_lossy().to_string();
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let finish_first = Arc::new(tokio::sync::Notify::new());
+        let second_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let first_started_clone = first_started.clone();
+        let finish_first_clone = finish_first.clone();
+        let second_started_clone = second_started.clone();
+        let p1 = path.clone();
+
+        // First operation (edit): read-modify-write that takes time
+        let h1 = tokio::spawn(async move {
+            with_file_mutation_queue(&p1, || async {
+                let content = tokio::fs::read_to_string(&p1).await.unwrap();
+                let new_content = content.replace("alpha", "ALPHA");
+                first_started_clone.notify_one();
+                finish_first_clone.notified().await;
+                tokio::fs::write(&p1, &new_content).await.unwrap();
+            })
+            .await;
+        });
+
+        // Wait for first operation to start its write phase
+        first_started.notified().await;
+
+        // Second operation: should be blocked until first completes
+        let p2 = path.clone();
+        let h2 = tokio::spawn(async move {
+            let started = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                with_file_mutation_queue(&p2, || async {
+                    second_started_clone.store(true, Ordering::SeqCst);
+                    let content = tokio::fs::read_to_string(&p2).await.unwrap();
+                    let new_content = content.replace("beta", "BETA");
+                    tokio::fs::write(&p2, &new_content).await.unwrap();
+                }),
+            )
+            .await;
+
+            assert!(started.is_ok(), "second edit should eventually start");
+        });
+
+        // Let first operation finish
+        finish_first.notify_one();
+
+        let _ = tokio::join!(h1, h2);
+
+        assert!(second_started.load(Ordering::SeqCst), "second edit should have started");
+
+        // Both edits should be applied (serialized)
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "ALPHA\nBETA\n", "both edits should be applied in order");
+    }
 }

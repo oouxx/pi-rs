@@ -6,7 +6,6 @@
 //!
 //! Mirrors packages/coding-agent/src/modes/print-mode.ts
 
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -140,9 +139,9 @@ async fn run_text_mode(
                     }
                     if verbose {
                         if is_error {
-                            eprintln!("  \u{2717} {tool_name} {}", "failed");
+                            eprintln!("  \u{2717} {tool_name} failed");
                         } else {
-                            eprintln!("  \u{2713} {tool_name} {}", "done");
+                            eprintln!("  \u{2713} {tool_name} done");
                         }
                     }
                 }
@@ -268,7 +267,7 @@ async fn run_json_mode(
 }
 
 /// Run in quiet text mode: only print the final response text.
-pub async fn run_quiet_text_mode(mut session: AgentSession, message: &str) -> i32 {
+pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
     let final_text = Arc::new(std::sync::Mutex::new(String::new()));
     let output_text = final_text.clone();
 
@@ -317,8 +316,7 @@ pub async fn run_quiet_text_mode(mut session: AgentSession, message: &str) -> i3
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    
     #[test]
     fn test_options_default_mode() {
         assert_eq!("text", "text");

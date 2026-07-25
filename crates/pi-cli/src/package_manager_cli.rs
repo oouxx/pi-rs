@@ -234,7 +234,7 @@ fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: boo
     std::fs::create_dir_all(&ext_dir)
         .map_err(|e| format!("Failed to create {ext_dir:?}: {e}"))?;
 
-    let pkg_name_short = pkg_name.split('/').last().unwrap_or(pkg_name);
+    let pkg_name_short = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
     let link_path = ext_dir.join(format!("{pkg_name_short}.pkg"));
 
     // Remove old link if exists
@@ -245,7 +245,7 @@ fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: boo
     {
         std::os::unix::fs::symlink(&pkg_dir, &link_path)
             .map_err(|e| format!("Failed to link {pkg_name} to {ext_dir:?}: {e}"))?;
-        println!("  {} Linked to {ext_dir:?}", "🔗".to_string());
+        println!("  🔗 Linked to {ext_dir:?}");
     }
     #[cfg(not(unix))]
     {

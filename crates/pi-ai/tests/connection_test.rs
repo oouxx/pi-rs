@@ -18,7 +18,7 @@ async fn stream_one(
     provider: &str,
     prompt: &str,
 ) -> pi_ai::types::AssistantMessage {
-    let _ = register_built_in_api_providers();
+    register_built_in_api_providers();
 
     let model = get_model(provider, model_id).unwrap_or_else(|| {
         panic!(

@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+#[allow(dead_code)]
 struct GitPaths {
     repo_dir: String,
     head_path: String,
@@ -49,6 +50,7 @@ fn resolve_branch_from_head(head_content: &str) -> Option<String> {
 
 pub struct FooterDataProvider {
     git_paths: Option<GitPaths>,
+    #[allow(dead_code)]
     cached_branch: Option<Option<String>>,
     extension_statuses: HashMap<String, String>,
     available_provider_count: Arc<AtomicUsize>,
@@ -68,14 +70,13 @@ impl FooterDataProvider {
     }
 
     pub fn get_git_branch(&self) -> Option<String> {
-        let result = match &self.git_paths {
+        match &self.git_paths {
             Some(paths) => {
                 let head = read_git_head(&paths.head_path)?;
                 resolve_branch_from_head(&head)
             }
             None => None,
-        };
-        result
+        }
     }
 
     pub fn get_extension_statuses(&self) -> &HashMap<String, String> {

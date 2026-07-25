@@ -28,6 +28,8 @@ pub struct DispatchBeforeAgentStartParams<'a> {
     pub registry: &'a ExtensionRegistry,
     pub system_prompt: &'a str,
     pub messages: &'a [AgentMessage],
+    pub images: Option<&'a [ContentBlock]>,
+    pub system_prompt_options: Option<serde_json::Value>,
     pub ext_ctx: &'a ExtensionContext,
 }
 
@@ -37,6 +39,7 @@ pub struct DispatchInputParams<'a> {
     pub text: &'a str,
     pub source: &'a str,
     pub images: Option<&'a [ContentBlock]>,
+    pub streaming_behavior: Option<&'a str>,
     pub ext_ctx: &'a ExtensionContext,
 }
 
@@ -84,7 +87,8 @@ pub fn tool_call_payload(ctx: &BeforeToolCallContext) -> serde_json::Value {
 
 /// Dispatch `tool_call` event to extensions via HookRunner.
 ///
-/// Returns `Some(BeforeToolCallResult)` when an extension blocks the call.
+/// Returns `Some(BeforeToolCallResult)` when an extension blocks the call
+/// or modifies the arguments.
 pub async fn dispatch_tool_call(
     registry: &ExtensionRegistry,
     ctx: &BeforeToolCallContext,
@@ -99,9 +103,21 @@ pub async fn dispatch_tool_call(
             Some(BeforeToolCallResult {
                 block: true,
                 reason: Some(reason),
+                modified_args: None,
             })
         }
-        crate::core::extensions::HookResult::Continue(_) => None,
+        crate::core::extensions::HookResult::Continue((_name, args)) => {
+            // Check if args were modified by the hook chain
+            if args != ctx.args {
+                Some(BeforeToolCallResult {
+                    block: false,
+                    reason: None,
+                    modified_args: Some(args),
+                })
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -199,22 +215,54 @@ pub async fn dispatch_context(
 }
 
 // ============================================================================
+// message_end — modifying
+// ============================================================================
+
+/// Dispatch `message_end` event to extensions via HookRunner.
+///
+/// Returns `Some(Value)` when an extension modifies the message,
+/// or `None` when no extension modifies it.
+pub async fn dispatch_message_end(
+    registry: &ExtensionRegistry,
+    message: &serde_json::Value,
+    _ext_ctx: &ExtensionContext,
+) -> Option<serde_json::Value> {
+    let result = registry
+        .hook_runner()
+        .run_on_message_end(message.clone())
+        .await;
+    match result {
+        HookResult::Continue(m) => {
+            if &m != message {
+                Some(m)
+            } else {
+                None
+            }
+        }
+        HookResult::Cancel(_) => None,
+    }
+}
+
+// ============================================================================
 // before_provider_request — modifying
 // ============================================================================
 
 /// Dispatch `before_provider_request` event to extensions via HookRunner.
 ///
-/// Returns `true` if the request was cancelled by an extension.
+/// Returns `Some(Value)` with the (possibly modified) payload, or `None` if cancelled.
 pub async fn dispatch_before_provider_request(
     registry: &ExtensionRegistry,
-    payload: &serde_json::Value,
+    payload: serde_json::Value,
     _ext_ctx: &ExtensionContext,
-) -> bool {
+) -> Option<serde_json::Value> {
     let result = registry
         .hook_runner()
         .run_before_provider_request(payload)
         .await;
-    result.is_cancel()
+    match result {
+        HookResult::Continue(modified) => Some(modified),
+        HookResult::Cancel(_) => None,
+    }
 }
 
 // ============================================================================
@@ -254,16 +302,18 @@ pub async fn dispatch_session_shutdown(
 // ============================================================================
 
 /// Dispatch `session_before_compact` event to extensions via HookRunner.
+/// Returns `true` if the operation was cancelled by an extension.
 pub async fn dispatch_session_before_compact(
     registry: &ExtensionRegistry,
     reason: &str,
     will_retry: bool,
     _ext_ctx: &ExtensionContext,
-) {
-    let _ = registry
+) -> bool {
+    let result = registry
         .hook_runner()
         .run_before_session_compact(reason.to_string(), will_retry)
         .await;
+    result.is_cancel()
 }
 
 // ============================================================================
@@ -285,12 +335,13 @@ pub async fn dispatch_session_compact(
 // ============================================================================
 
 /// Dispatch `session_before_switch` event to extensions via HookRunner.
+/// Returns `true` if the operation was cancelled by an extension.
 pub async fn dispatch_session_before_switch(
     registry: &ExtensionRegistry,
     target_session_file: &str,
     _ext_ctx: &ExtensionContext,
-) {
-    let _ = registry
+) -> bool {
+    let result = registry
         .hook_runner()
         .run_before_session_switch(
             "resume".to_string(),
@@ -301,6 +352,7 @@ pub async fn dispatch_session_before_switch(
             },
         )
         .await;
+    result.is_cancel()
 }
 
 // ============================================================================
@@ -308,15 +360,17 @@ pub async fn dispatch_session_before_switch(
 // ============================================================================
 
 /// Dispatch `session_before_fork` event to extensions via HookRunner.
+/// Returns `true` if the operation was cancelled by an extension.
 pub async fn dispatch_session_before_fork(
     registry: &ExtensionRegistry,
     entry_id: &str,
     _ext_ctx: &ExtensionContext,
-) {
-    let _ = registry
+) -> bool {
+    let result = registry
         .hook_runner()
         .run_before_session_fork(entry_id.to_string(), "current".to_string())
         .await;
+    result.is_cancel()
 }
 
 // ============================================================================
@@ -324,15 +378,17 @@ pub async fn dispatch_session_before_fork(
 // ============================================================================
 
 /// Dispatch `session_before_tree` event to extensions via HookRunner.
+/// Returns `true` if the operation was cancelled by an extension.
 pub async fn dispatch_session_before_tree(
     registry: &ExtensionRegistry,
     target_id: &str,
     _ext_ctx: &ExtensionContext,
-) {
-    let _ = registry
+) -> bool {
+    let result = registry
         .hook_runner()
         .run_before_session_tree(target_id)
         .await;
+    result.is_cancel()
 }
 
 // ============================================================================
@@ -361,6 +417,8 @@ pub struct BeforeAgentStartResult {
     pub cancelled: bool,
     /// The (possibly modified) system prompt.
     pub system_prompt: String,
+    /// Optional messages added by extensions (e.g., custom messages to prepend).
+    pub messages: Option<Vec<AgentMessage>>,
 }
 
 /// Dispatch `before_agent_start` event to extensions via HookRunner.
@@ -370,30 +428,47 @@ pub struct BeforeAgentStartResult {
 pub async fn dispatch_before_agent_start(
     params: DispatchBeforeAgentStartParams<'_>,
 ) -> BeforeAgentStartResult {
+    let prompt = params.messages.first().and_then(|m| {
+        if let AgentMessage::User { content, .. } = m {
+            content.first().and_then(|b| {
+                if let ContentBlock::Text { text, .. } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
+    }).unwrap_or_default();
+
+    // Convert images to Value for the hook system
+    let images_value: Option<Vec<serde_json::Value>> = params.images.map(|imgs| {
+        imgs.iter().map(|img| serde_json::to_value(img).unwrap_or_default()).collect()
+    });
+
     let result = params.registry
         .hook_runner()
-        .run_before_agent_start(params.messages.first().and_then(|m| {
-            if let AgentMessage::User { content, .. } = m {
-                content.first().and_then(|b| {
-                    if let ContentBlock::Text { text, .. } = b {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            }
-        }).unwrap_or_default(), params.system_prompt.to_string())
+        .run_before_agent_start(prompt, images_value, params.system_prompt.to_string(), params.system_prompt_options.clone())
         .await;
     match result {
         HookResult::Cancel(_) => BeforeAgentStartResult {
             cancelled: true,
             system_prompt: params.system_prompt.to_string(),
+            messages: None,
         },
-        HookResult::Continue((_prompt, system_prompt)) => BeforeAgentStartResult {
-            cancelled: false,
-            system_prompt,
+        HookResult::Continue((_prompt, system_prompt, messages)) => {
+            // Deserialize messages from Value to AgentMessage
+            let msgs: Option<Vec<AgentMessage>> = messages.map(|msgs| {
+                msgs.into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect()
+            });
+            BeforeAgentStartResult {
+                cancelled: false,
+                system_prompt,
+                messages: msgs,
+            }
         },
     }
 }
@@ -409,9 +484,19 @@ pub async fn dispatch_before_agent_start(
 pub async fn dispatch_input(
     params: DispatchInputParams<'_>,
 ) -> InputEventResult {
+    // Convert images to Value for the hook system
+    let images_value: Option<Vec<serde_json::Value>> = params.images.map(|imgs| {
+        imgs.iter().map(|img| serde_json::to_value(img).unwrap_or_default()).collect()
+    });
+
     let result = params.registry
         .hook_runner()
-        .run_on_input(params.text.to_string(), params.source.to_string())
+        .run_on_input(
+            params.text.to_string(),
+            images_value,
+            params.source.to_string(),
+            params.streaming_behavior.map(|s| s.to_string()),
+        )
         .await;
     match result {
         crate::core::extensions::HookResult::Continue(text) => {
@@ -450,6 +535,98 @@ pub async fn dispatch_thinking_level_select(
         .fire_thinking_level_select(params.level, params.previous_level)
         .await;
 }
+// ============================================================================
+// user_bash — fire-and-forget
+// ============================================================================
+
+/// Dispatch `user_bash` event to extensions via HookRunner.
+pub async fn dispatch_user_bash(
+    registry: &ExtensionRegistry,
+    command: &str,
+    cwd: &str,
+    _ext_ctx: &ExtensionContext,
+) -> Option<crate::core::extensions::UserBashResult> {
+    registry
+        .hook_runner()
+        .fire_user_bash(command, cwd)
+        .await
+}
+
+// ============================================================================
+// project_trust — fire-and-forget
+// ============================================================================
+
+/// Dispatch `project_trust` event to extensions via HookRunner.
+pub async fn dispatch_project_trust(
+    registry: &ExtensionRegistry,
+    cwd: &str,
+    _ext_ctx: &ExtensionContext,
+) -> Option<crate::core::extensions::ProjectTrustResult> {
+    registry
+        .hook_runner()
+        .fire_project_trust(cwd)
+        .await
+}
+
+// ============================================================================
+// resources_discover — fire-and-forget
+// ============================================================================
+
+/// Dispatch `resources_discover` event to extensions via HookRunner.
+pub async fn dispatch_resources_discover(
+    registry: &ExtensionRegistry,
+    cwd: &str,
+    reason: &str,
+    _ext_ctx: &ExtensionContext,
+) -> crate::core::extensions::ResourcesDiscoverResult {
+    registry
+        .hook_runner()
+        .fire_resources_discover(cwd, reason)
+        .await
+}
+
+// ============================================================================
+// before_provider_headers — modifying
+// ============================================================================
+
+use std::collections::HashMap;
+
+/// Dispatch `before_provider_headers` event to extensions via HookRunner.
+///
+/// Returns the (possibly modified) headers.
+pub async fn dispatch_before_provider_headers(
+    registry: &ExtensionRegistry,
+    headers: HashMap<String, String>,
+    _ext_ctx: &ExtensionContext,
+) -> HashMap<String, String> {
+    let result = registry
+        .hook_runner()
+        .run_before_provider_headers(headers)
+        .await;
+    match result {
+        HookResult::Continue(h) => h,
+        HookResult::Cancel(_) => HashMap::new(),
+    }
+}
+
+// ============================================================================
+// after_provider_response — modifying
+// ============================================================================
+
+/// Dispatch `after_provider_response` event to extensions via HookRunner.
+pub async fn dispatch_after_provider_response(
+    registry: &ExtensionRegistry,
+    status: u16,
+    headers: HashMap<String, String>,
+    _ext_ctx: &ExtensionContext,
+) {
+    let _ = registry
+        .hook_runner()
+        .run_after_provider_response(status, headers)
+        .await;
+}
+
+
 
 // ============================================================================
 // Extension tool execution dispatch
@@ -479,7 +656,7 @@ pub async fn dispatch_handle_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_agent_core::types::{AgentToolCall, AgentToolResult, BeforeToolCallContext};
+    use pi_agent_core::types::{AgentToolCall, BeforeToolCallContext};
 
     #[test]
     fn test_tool_call_payload_structure() {

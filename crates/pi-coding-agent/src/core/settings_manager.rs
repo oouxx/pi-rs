@@ -119,6 +119,7 @@ pub enum SteeringMode {
     OneAtATime,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for SteeringMode {
     fn default() -> Self {
         SteeringMode::OneAtATime
@@ -292,6 +293,7 @@ pub struct Settings {
 
 /// Deep merge settings: project/overrides take precedence, nested objects merge shallowly.
 /// Matches TS `deepMergeSettings` behavior exactly.
+#[allow(clippy::collapsible_if)]
 fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
     let base_json = serde_json::to_value(base).unwrap_or(serde_json::Value::Object(Default::default()));
     let overrides_json = serde_json::to_value(overrides).unwrap_or(serde_json::Value::Object(Default::default()));
@@ -460,10 +462,7 @@ impl SettingsStorage for FileSettingsStorage {
 
         // Check if file exists before trying to read
         let current = if path.exists() {
-            match fs::read_to_string(&path) {
-                Ok(content) => Some(content),
-                Err(_) => None,
-            }
+            fs::read_to_string(&path).ok()
         } else {
             None
         };
@@ -535,6 +534,7 @@ pub struct SettingsError {
 // SettingsManager
 // ============================================================================
 
+#[allow(clippy::type_complexity)]
 pub struct SettingsManager {
     storage: Box<dyn SettingsStorage>,
     global_settings: Settings,
@@ -1437,7 +1437,7 @@ impl SettingsManager {
     }
 
     pub fn set_editor_padding_x(&mut self, padding: u32) {
-        let p = std::cmp::max(0, std::cmp::min(3, padding));
+        let p = padding.clamp(0, 3);
         self.global_settings.editor_padding_x = Some(p);
         self.mark_modified("editorPaddingX", None);
         self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
@@ -1467,7 +1467,7 @@ impl SettingsManager {
     }
 
     pub fn set_autocomplete_max_visible(&mut self, max_visible: u32) {
-        let v = std::cmp::max(3, std::cmp::min(20, max_visible));
+        let v = max_visible.clamp(3, 20);
         self.global_settings.autocomplete_max_visible = Some(v);
         self.mark_modified("autocompleteMaxVisible", None);
         self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
@@ -1599,7 +1599,7 @@ mod tests {
     #[test]
     fn test_settings_manager_project_override() {
         let storage = Box::new(InMemorySettingsStorage::new());
-        let mut mgr = SettingsManager::new(
+        let mgr = SettingsManager::new(
             storage,
             Settings {
                 default_thinking_level: Some("medium".to_string()),

@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_empty_input() {
-        let parsed = CliArgs::new();
+        let parsed = CliArgs::default();
         let result = build_initial_message(InitialMessageInput {
             parsed: &parsed,
             file_text: None,
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_with_message() {
-        let mut parsed = CliArgs::new();
+        let mut parsed = CliArgs::default();
         parsed.messages.push("hello".to_string());
 
         let result = build_initial_message(InitialMessageInput {
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_stdin_and_file() {
-        let parsed = CliArgs::new();
+        let parsed = CliArgs::default();
         let result = build_initial_message(InitialMessageInput {
             parsed: &parsed,
             file_text: Some("<file>content</file>".to_string()),
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_order_stdin_file_message() {
-        let mut parsed = CliArgs::new();
+        let mut parsed = CliArgs::default();
         parsed.messages.push("cli message".to_string());
 
         let result = build_initial_message(InitialMessageInput {

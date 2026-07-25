@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Integration tests for pi-agent-core with OpenRouter.
 //!
 //! Verifies end-to-end Agent → pi-ai → OpenRouter connectivity.
@@ -52,6 +53,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
     Arc::new(
         move |model: Model,
               context: Context,
+#[allow(clippy::type_complexity)]
               _thinking_level: Option<ThinkingLevel>,
               _options: pi_agent_core::types::StreamFnOptions|
               -> std::pin::Pin<

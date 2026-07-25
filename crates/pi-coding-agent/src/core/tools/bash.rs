@@ -120,7 +120,7 @@ enum CommandTransport {
 fn resolve_timeout_ms(timeout: Option<u64>) -> Result<Option<u64>, String> {
     match timeout {
         None => Ok(None),
-        Some(t) if t == 0 => {
+        Some(0) => {
             Err("Invalid timeout: must be a positive number of seconds".to_string())
         }
         Some(t) => {
@@ -335,8 +335,8 @@ impl BashOperations for LocalBashOperations {
                 None
             };
 
-            let stderr_handle = if let Some(mut err) = stderr {
-                Some(tokio::spawn(async move {
+            let stderr_handle = stderr.map(|mut err| {
+                tokio::spawn(async move {
                     let mut buf = vec![0u8; 4096];
                     loop {
                         use tokio::io::AsyncReadExt;
@@ -350,10 +350,8 @@ impl BashOperations for LocalBashOperations {
                             Err(_) => break,
                         }
                     }
-                }))
-            } else {
-                None
-            };
+                })
+            });
 
             // Wait for the process with timeout and cancellation support
             let exit_code = if let Some(ms) = timeout_ms {
@@ -768,10 +766,9 @@ pub fn create_bash_tool(
                                             terminate: None,
                                         });
                                     }
-                                    return Err(Box::new(std::io::Error::new(
-                                        std::io::ErrorKind::Other,
-                                        format!("Command failed with exit code {}", code),
-                                    )) as Box<dyn std::error::Error + Send + Sync>);
+                                    return Err(Box::new(std::io::Error::other(
+format!("Command failed with exit code {}", code),
+    )) as Box<dyn std::error::Error + Send + Sync>);
                                 }
                             }
 
@@ -809,10 +806,9 @@ pub fn create_bash_tool(
                                 });
                             }
 
-                            Err(Box::new(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                final_text,
-                            )) as Box<dyn std::error::Error + Send + Sync>)
+                            Err(Box::new(std::io::Error::other(
+final_text,
+    )) as Box<dyn std::error::Error + Send + Sync>)
                         }
                     }
                 })

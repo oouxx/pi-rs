@@ -33,7 +33,7 @@ mod tests {
         // Second call should not panic or re-emit
         warn_deprecation("test warning");
         // Just verify no crash
-        assert!(true);
+        // assert!(true); // intentionally always passes
     }
 
     #[test]

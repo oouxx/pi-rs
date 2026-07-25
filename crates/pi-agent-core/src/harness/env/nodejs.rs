@@ -230,7 +230,7 @@ impl ExecutionEnv for NodeExecutionEnv {
         options: Option<CreateDirOptions>,
     ) -> std::result::Result<(), FileError> {
         let resolved = self.resolve_path(path);
-        let recursive = options.as_ref().map_or(true, |o| o.recursive);
+        let recursive = options.as_ref().map(|o| o.recursive).unwrap_or(true);
         if recursive {
             fs::create_dir_all(&resolved)
                 .await
@@ -249,8 +249,8 @@ impl ExecutionEnv for NodeExecutionEnv {
         options: Option<RemoveOptions>,
     ) -> std::result::Result<(), FileError> {
         let resolved = self.resolve_path(path);
-        let recursive = options.as_ref().map_or(false, |o| o.recursive);
-        let force = options.as_ref().map_or(false, |o| o.force);
+        let recursive = options.as_ref().map(|o| o.recursive).unwrap_or(false);
+        let force = options.as_ref().map(|o| o.force).unwrap_or(false);
         if recursive {
             match fs::remove_dir_all(&resolved).await {
                 Ok(_) => Ok(()),

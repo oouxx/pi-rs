@@ -501,21 +501,46 @@ async fn stream_anthropic_inner(
     let signal = options.and_then(|o| o.signal.clone());
     let _cache_retention = options.and_then(|o| o.cache_retention.as_ref());
 
+    // Allow extensions to modify HTTP request headers
+    let final_headers = if let Some(on_headers) = options.as_ref().and_then(|o| o.on_headers.as_ref()) {
+        let mut header_map = std::collections::HashMap::new();
+        header_map.insert("x-api-key".to_string(), api_key.to_string());
+        header_map.insert("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string());
+        header_map.insert("content-type".to_string(), "application/json".to_string());
+        if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
+            header_map.insert("anthropic-beta".to_string(), FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
+        }
+        if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
+            if compat.send_session_affinity_headers.unwrap_or(false) {
+                header_map.insert("x-session-affinity".to_string(), session_id.to_string());
+            }
+        }
+        on_headers(header_map).await
+    } else {
+        let mut header_map = std::collections::HashMap::new();
+        header_map.insert("x-api-key".to_string(), api_key.to_string());
+        header_map.insert("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string());
+        header_map.insert("content-type".to_string(), "application/json".to_string());
+        if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
+            header_map.insert("anthropic-beta".to_string(), FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
+        }
+        if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
+            if compat.send_session_affinity_headers.unwrap_or(false) {
+                header_map.insert("x-session-affinity".to_string(), session_id.to_string());
+            }
+        }
+        header_map
+    };
+
     let http_client = HttpClient::builder()
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("x-api-key", api_key.parse().unwrap());
-            headers.insert("anthropic-version", ANTHROPIC_VERSION.parse().unwrap());
-            headers.insert("content-type", "application/json".parse().unwrap());
-            if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
-                headers.insert(
-                    "anthropic-beta",
-                    FINE_GRAINED_TOOL_STREAMING_BETA.parse().unwrap(),
-                );
-            }
-            if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
-                if compat.send_session_affinity_headers.unwrap_or(false) {
-                    headers.insert("x-session-affinity", session_id.parse().unwrap());
+            for (key, value) in &final_headers {
+                if let (Ok(k), Ok(v)) = (
+                    reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+                    reqwest::header::HeaderValue::from_str(value),
+                ) {
+                    headers.insert(k, v);
                 }
             }
             headers
@@ -558,11 +583,31 @@ async fn stream_anthropic_inner(
     }
 
     let request_body = Value::Object(body);
+
+    // Allow extensions to modify the request payload
+    let request_body = if let Some(on_payload) = options.and_then(|o| o.on_payload.as_ref()) {
+        match on_payload(request_body).await {
+            Some(modified) => modified,
+            None => return Err("Request cancelled by extension".into()),
+        }
+    } else {
+        request_body
+    };
+
     let response = http_client
         .post(&model.base_url)
         .json(&request_body)
         .send()
         .await?;
+
+    // Notify extensions about the provider response
+    if let Some(on_provider_response) = options.as_ref().and_then(|o| o.on_provider_response.as_ref()) {
+        let status = response.status().as_u16();
+        let resp_headers: std::collections::HashMap<String, String> = response.headers().iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        on_provider_response(status, resp_headers);
+    }
 
     if !response.status().is_success() {
         let status = response.status();

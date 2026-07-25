@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static STDOUT_TAKEN_OVER: AtomicBool = AtomicBool::new(false);
 
+#[allow(dead_code)]
 struct OutputGuardState {
     original_stdout: Box<dyn Write + Send>,
     raw_stdout: Option<std::fs::File>,
@@ -28,6 +29,7 @@ pub struct OutputGuard {
     state: Option<OutputGuardState>,
 }
 
+#[allow(clippy::new_without_default)]
 impl OutputGuard {
     pub fn new() -> Self {
         OutputGuard { state: None }

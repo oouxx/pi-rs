@@ -197,10 +197,9 @@ pub fn create_write_tool(
                                 let parent_str = parent.to_string_lossy().to_string();
                                 if !parent.exists() {
                                     ops.mkdir(&parent_str).await.map_err(|e| {
-                                        Box::new(std::io::Error::new(
-                                            std::io::ErrorKind::Other,
-                                            format!("Error creating directory: {}", e),
-                                        )) as Box<dyn std::error::Error + Send + Sync>
+                                        Box::new(std::io::Error::other(
+format!("Error creating directory: {}", e),
+    )) as Box<dyn std::error::Error + Send + Sync>
                                     })?;
                                 }
                             }
@@ -210,10 +209,9 @@ pub fn create_write_tool(
                             // Write the file contents
                             let byte_count = cnt.len();
                             ops.write_file(&abs_path, &cnt).await.map_err(|e| {
-                                Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    format!("Error writing file: {}", e),
-                                )) as Box<dyn std::error::Error + Send + Sync>
+                                Box::new(std::io::Error::other(
+format!("Error writing file: {}", e),
+    )) as Box<dyn std::error::Error + Send + Sync>
                             })?;
                             throw_if_aborted()?;
 

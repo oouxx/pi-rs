@@ -312,7 +312,7 @@ where
         *self.active_tool_names.write().await = active_tool_names.clone();
         self.emit_own(AgentHarnessOwnEvent::ToolsUpdate {
             tool_names: tools,
-            previous_tool_names: previous_tool_names,
+            previous_tool_names,
             active_tool_names,
             previous_active_tool_names,
             source: "set".into(),
@@ -709,6 +709,11 @@ where
                         max_retry_delay_ms: snapshot.max_retry_delay_ms,
                         metadata: None,
                         tool_choice: None,
+                        on_payload: None,
+                        on_headers: None,
+                        on_provider_response: None,
+
+
                     },
                     reasoning: reasoning.clone(),
                     thinking_budgets: opts.thinking_budgets.clone(),
@@ -836,7 +841,7 @@ where
                                     if let Ok(v) = serde_json::from_value::<serde_json::Value>(res) {
                                         let block = v.get("block").and_then(|b| b.as_bool());
                                         let reason = v.get("reason").and_then(|r| r.as_str().map(String::from));
-                                        last = Some(crate::types::BeforeToolCallResult { block: block.unwrap_or(false), reason });
+                                        last = Some(crate::types::BeforeToolCallResult { block: block.unwrap_or(false), reason, modified_args: None });
                                     }
                                 }
                             }
@@ -882,6 +887,8 @@ where
             })),
             on_payload: None,
             on_response: None,
+            on_headers: None,
+            on_provider_response: None,
             max_consecutive_tool_calls: None,
         };
 
@@ -1047,6 +1054,7 @@ where
         })
     }
 
+    #[allow(clippy::type_complexity)]
     fn create_emit_own_fn(
         &self,
     ) -> Arc<dyn Fn(AgentHarnessOwnEvent<S, P>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>
@@ -1383,7 +1391,7 @@ where
                     None,
                 )
                 .await
-                .map_err(|e| HarnessError::Compaction(e))?;
+                .map_err(HarnessError::Compaction)?;
 
                 {
                     let mut session = self.session.write().await;
@@ -1506,7 +1514,7 @@ where
                     &branch_summary_options,
                 )
                 .await
-                .map_err(|e| HarnessError::BranchSummary(e))?;
+                .map_err(HarnessError::BranchSummary)?;
 
                 summary_text = Some(branch_summary.summary.clone());
                 summary_details = Some(serde_json::json!({
@@ -1574,6 +1582,7 @@ pub struct NavigateTreeOptions {
     pub replace_instructions: bool,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for NavigateTreeOptions {
     fn default() -> Self {
         Self {
@@ -1882,6 +1891,7 @@ mod tests {
     #[test]
     fn test_harness_phase_debug_clone() {
         let phase = AgentHarnessPhase::Turn;
+        #[allow(clippy::clone_on_copy)]
         let cloned = phase.clone();
         assert_eq!(format!("{:?}", phase), format!("{:?}", cloned));
     }

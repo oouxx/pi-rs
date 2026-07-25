@@ -1,7 +1,7 @@
 /// Experimental feature flags for pi-coding-agent.
 ///
 /// Mirrors packages/coding-agent/src/core/experimental.ts
-
+///
 /// Check whether experimental features are enabled.
 ///
 /// Reads the `PI_EXPERIMENTAL` environment variable.

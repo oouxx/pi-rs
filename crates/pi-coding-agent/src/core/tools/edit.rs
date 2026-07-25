@@ -6,9 +6,9 @@ use pi_agent_core::types::{AgentTool, AgentToolResult};
 use serde::{Deserialize, Serialize};
 
 use super::edit_diff::{
-    self, apply_edits_to_normalized_content, compute_edits_diff, detect_line_ending,
+    apply_edits_to_normalized_content, detect_line_ending,
     generate_diff_string, generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom,
-    Edit, EditDiffResult,
+    Edit,
 };
 use super::file_mutation_queue::with_file_mutation_queue;
 use super::path_utils;
@@ -356,10 +356,9 @@ pub fn create_edit_tool(
                                 } else {
                                     e.to_string()
                                 };
-                                Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    format!("Could not edit file: {}. Error code: {}.", fp, err_code),
-                                )) as Box<dyn std::error::Error + Send + Sync>
+                                Box::new(std::io::Error::other(
+format!("Could not edit file: {}. Error code: {}.", fp, err_code),
+    )) as Box<dyn std::error::Error + Send + Sync>
                             })?;
 
                             throw_if_aborted()?;
@@ -391,10 +390,9 @@ pub fn create_edit_tool(
                                 &fp,
                             )
                             .map_err(|e| {
-                                Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    e.to_string(),
-                                )) as Box<dyn std::error::Error + Send + Sync>
+                                Box::new(std::io::Error::other(
+e.to_string(),
+    )) as Box<dyn std::error::Error + Send + Sync>
                             })?;
 
                             throw_if_aborted()?;

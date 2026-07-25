@@ -13,7 +13,7 @@ pub fn normalize_ingested_message(message: &mut Message) {
                 }];
             }
         }
-        Message::Assistant { content, .. } => {
+        Message::Assistant { .. } => {
             // Assistant messages with empty content are valid (tool-use only responses)
             // No normalization needed
         }

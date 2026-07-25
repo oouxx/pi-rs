@@ -49,6 +49,7 @@ pub fn validate_bash_timeout(timeout_seconds: u64) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 pub struct BashExecutor {
     cwd: String,
     max_bytes: usize,

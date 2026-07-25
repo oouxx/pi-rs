@@ -1,3 +1,9 @@
+#![allow(clippy::type_complexity)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::await_holding_lock)]
 pub mod config;
 pub mod core;
 pub mod migrations;

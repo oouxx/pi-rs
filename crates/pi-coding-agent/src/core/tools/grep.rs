@@ -180,7 +180,7 @@ pub fn create_grep_tool(
                 Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>,
             >| {
                 let cwd = cwd.clone();
-                let operations = operations.clone();
+                let _operations = operations.clone();
                 Box::pin(async move {
                     let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
                     let search_path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -388,18 +388,15 @@ fn grep_file(
         if re.is_match(line) {
             *match_count += 1;
             if context_lines > 0 {
-                let start = if i >= context_lines {
-                    i - context_lines
-                } else {
-                    0
-                };
+                let start = i.saturating_sub(context_lines);
                 let end = std::cmp::min(i + context_lines + 1, lines.len());
-                for j in start..end {
-                    let (truncated_line, was_truncated) = truncate::truncate_line(lines[j], Some(GREP_MAX_LINE_LENGTH));
+                for (j, line) in lines[start..end].iter().enumerate() {
+                    let actual_idx = start + j;
+                    let (truncated_line, was_truncated) = truncate::truncate_line(line, Some(GREP_MAX_LINE_LENGTH));
                     if was_truncated {
                         *lines_truncated = true;
                     }
-                    if j == i {
+                    if actual_idx == i {
                         output_lines.push(format!("{}:{}: {}", file_name, j + 1, truncated_line));
                     } else {
                         output_lines.push(format!("{}-{}- {}", file_name, j + 1, truncated_line));

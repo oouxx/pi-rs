@@ -15,6 +15,12 @@ pub enum DefaultProjectTrust {
     Never,
 }
 
+impl Default for DefaultProjectTrust {
+    fn default() -> Self {
+        DefaultProjectTrust::Ask
+    }
+}
+
 impl DefaultProjectTrust {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -24,7 +30,7 @@ impl DefaultProjectTrust {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_str_name(s: &str) -> Self {
         match s {
             "always" => DefaultProjectTrust::Always,
             "never" => DefaultProjectTrust::Never,
@@ -58,6 +64,8 @@ pub struct ResolveProjectTrustedOptions<'a> {
     pub default_project_trust: DefaultProjectTrust,
     /// Context for UI interactions.
     pub project_trust_context: ProjectTrustContext,
+    /// Extension registry for dispatching project_trust event to extensions.
+    pub extension_registry: Option<std::sync::Arc<crate::core::extensions::ExtensionRegistry>>,
 }
 
 /// Resolve whether a project is trusted.
@@ -70,6 +78,35 @@ pub struct ResolveProjectTrustedOptions<'a> {
 /// 5. If policy is "ask" and UI is available, prompt the user
 /// 6. If no UI, return `false` (conservative default)
 pub fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) -> bool {
+    // Check extension trust decision first (synchronous block_on since this fn is sync)
+    if let Some(ref registry) = options.extension_registry {
+        let cwd = options.cwd.to_string();
+        let ext_ctx = crate::core::extensions::ExtensionContext::new(
+            cwd.clone(),
+            false,
+            crate::core::extensions::ExtensionUIContext {
+                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+                set_status: std::sync::Arc::new(|_key, _value| {}),
+                confirm: std::sync::Arc::new(|_title, _msg| false),
+            },
+            crate::core::extensions::RuntimeHandle::noop(),
+        );
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                crate::core::extensions::dispatcher::dispatch_project_trust(
+                    registry, &cwd, &ext_ctx,
+                )
+            )
+        });
+        if let Some(decision) = result {
+            match decision.trusted {
+                crate::core::extensions::ProjectTrustDecision::Yes => return true,
+                crate::core::extensions::ProjectTrustDecision::No => return false,
+                crate::core::extensions::ProjectTrustDecision::Undecided => {} // fall through
+            }
+        }
+    }
+
     // 1. Explicit override
     if let Some(override_val) = options.trust_override {
         return override_val;
@@ -121,6 +158,7 @@ mod tests {
             trust_override: Some(true),
             default_project_trust: DefaultProjectTrust::Never,
             project_trust_context: ctx,
+            extension_registry: None,
         });
         assert!(trusted);
     }
@@ -137,6 +175,7 @@ mod tests {
             trust_override: Some(false),
             default_project_trust: DefaultProjectTrust::Always,
             project_trust_context: ctx,
+            extension_registry: None,
         });
         assert!(!trusted);
     }
@@ -154,6 +193,7 @@ mod tests {
             trust_override: None,
             default_project_trust: DefaultProjectTrust::Ask,
             project_trust_context: ctx,
+            extension_registry: None,
         });
         assert!(trusted);
     }
@@ -177,6 +217,7 @@ mod tests {
             trust_override: None,
             default_project_trust: DefaultProjectTrust::Ask,
             project_trust_context: ctx,
+            extension_registry: None,
         });
         assert!(trusted);
     }
@@ -198,6 +239,7 @@ mod tests {
             trust_override: None,
             default_project_trust: DefaultProjectTrust::Never,
             project_trust_context: ctx,
+            extension_registry: None,
         });
         assert!(!trusted);
     }
@@ -218,6 +260,7 @@ mod tests {
             trust_override: None,
             default_project_trust: DefaultProjectTrust::Ask,
             project_trust_context: ctx,
+            extension_registry: None,
         });
         // No UI + "ask" → conservative: not trusted
         assert!(!trusted);
@@ -225,10 +268,10 @@ mod tests {
 
     #[test]
     fn test_default_project_trust_conversion() {
-        assert_eq!(DefaultProjectTrust::from_str("always"), DefaultProjectTrust::Always);
-        assert_eq!(DefaultProjectTrust::from_str("never"), DefaultProjectTrust::Never);
-        assert_eq!(DefaultProjectTrust::from_str("ask"), DefaultProjectTrust::Ask);
-        assert_eq!(DefaultProjectTrust::from_str("unknown"), DefaultProjectTrust::Ask);
+        assert_eq!(DefaultProjectTrust::from_str_name("always"), DefaultProjectTrust::Always);
+        assert_eq!(DefaultProjectTrust::from_str_name("never"), DefaultProjectTrust::Never);
+        assert_eq!(DefaultProjectTrust::from_str_name("ask"), DefaultProjectTrust::Ask);
+        assert_eq!(DefaultProjectTrust::from_str_name("unknown"), DefaultProjectTrust::Ask);
         assert_eq!(DefaultProjectTrust::Always.as_str(), "always");
         assert_eq!(DefaultProjectTrust::Never.as_str(), "never");
         assert_eq!(DefaultProjectTrust::Ask.as_str(), "ask");

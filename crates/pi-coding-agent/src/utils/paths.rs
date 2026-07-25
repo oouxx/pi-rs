@@ -57,8 +57,8 @@ pub fn normalize_path(input: &str, options: &PathOptions) -> String {
         if normalized == "~" {
             return home;
         }
-        if normalized.starts_with("~/") {
-            return Path::new(&home).join(&normalized[2..]).to_string_lossy().to_string();
+        if let Some(stripped) = normalized.strip_prefix("~/") {
+            return Path::new(&home).join(stripped).to_string_lossy().to_string();
         }
     }
 

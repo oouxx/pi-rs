@@ -8,3 +8,5 @@ pub use api::{
     RegisteredTool, RuntimeHandle, SendMessageOptions, SendUserMessageOptions, ShortcutRegistry,
     ToolCallOutput, ToolDefinition, ToolInfo, ToolRegistry,
 };
+pub use api::ResourcesDiscoverResult;
+pub use api::{ProjectTrustDecision, ProjectTrustResult, UserBashResult};

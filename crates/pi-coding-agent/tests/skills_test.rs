@@ -71,8 +71,7 @@ fn test_load_valid_skill() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("valid-skill").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].name, "valid-skill");
@@ -86,8 +85,7 @@ fn test_load_skill_name_mismatch() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("name-mismatch").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].name, "different-name");
@@ -99,8 +97,7 @@ fn test_load_skill_invalid_name_chars() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("invalid-name-chars").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert!(result.diagnostics.iter().any(|d| diagnostic_message(d).contains("invalid characters")));
@@ -112,8 +109,7 @@ fn test_load_skill_long_name() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("long-name").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert!(result.diagnostics.iter().any(|d| diagnostic_message(d).contains("exceeds 64 characters")));
@@ -125,8 +121,7 @@ fn test_load_skill_missing_description() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("missing-description").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 0);
     assert!(result.diagnostics.iter().any(|d| diagnostic_message(d).contains("description is required")));
@@ -138,8 +133,7 @@ fn test_load_skill_unknown_field() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("unknown-field").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.diagnostics.len(), 0);
@@ -151,8 +145,7 @@ fn test_load_nested_skills() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("nested").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].name, "child-skill");
@@ -170,8 +163,7 @@ fn test_root_skill_preferred() {
                 .to_string_lossy()
                 .to_string(),
         ],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].name, "root-skill-preferred");
@@ -185,8 +177,7 @@ fn test_load_skill_no_frontmatter() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("no-frontmatter").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     // no-frontmatter has no description, so it should be skipped
     assert_eq!(result.skills.len(), 0);
@@ -199,8 +190,7 @@ fn test_load_skill_invalid_yaml() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("invalid-yaml").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     // serde_yaml should detect the invalid YAML and return an error
     assert_eq!(result.skills.len(), 0);
@@ -221,8 +211,7 @@ fn test_load_skill_multiline_description() {
                 .to_string_lossy()
                 .to_string(),
         ],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert!(result.skills[0].description.contains('\n'));
@@ -241,8 +230,7 @@ fn test_load_skill_consecutive_hyphens() {
                 .to_string_lossy()
                 .to_string(),
         ],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert!(result.diagnostics.iter().any(|d| diagnostic_message(d).contains("consecutive hyphens")));
@@ -254,8 +242,7 @@ fn test_load_all_skills_from_fixture_dir() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     // Should load all skills that have descriptions (even with warnings)
     // valid-skill, name-mismatch, invalid-name-chars, long-name, unknown-field,
@@ -270,8 +257,7 @@ fn test_load_skill_nonexistent_dir() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec!["/non/existent/path".to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 0);
     assert!(result.diagnostics.iter().any(|d| diagnostic_message(d).contains("does not exist")));
@@ -288,8 +274,7 @@ fn test_load_skill_disable_model_invocation() {
                 .to_string_lossy()
                 .to_string(),
         ],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].name, "disable-model-invocation");
@@ -302,8 +287,7 @@ fn test_load_skill_default_disable_model_invocation() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("valid-skill").to_string_lossy().to_string()],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
     assert_eq!(result.skills.len(), 1);
     assert!(!result.skills[0].disable_model_invocation);
@@ -411,8 +395,7 @@ fn test_load_from_explicit_skill_paths() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec![fixtures_dir().join("valid-skill").to_string_lossy().to_string()],
-        include_defaults: true,
-        ..Default::default()
+        include_defaults: true
     });
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].name, "valid-skill");
@@ -425,8 +408,7 @@ fn test_load_skill_nonexistent_path() {
         cwd: empty_cwd_dir().to_string_lossy().to_string(),
         agent_dir: Some(empty_agent_dir().to_string_lossy().to_string()),
         skill_paths: vec!["/non/existent/path".to_string()],
-        include_defaults: true,
-        ..Default::default()
+        include_defaults: true
     });
     assert_eq!(result.skills.len(), 0);
     assert!(result.diagnostics.iter().any(|d| diagnostic_message(d).contains("does not exist")));
@@ -448,8 +430,7 @@ fn test_skill_name_collision() {
                 .to_string_lossy()
                 .to_string(),
         ],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
 
     let second = load_skills(&LoadSkillsOptions {
@@ -461,8 +442,7 @@ fn test_skill_name_collision() {
                 .to_string_lossy()
                 .to_string(),
         ],
-        include_defaults: false,
-        ..Default::default()
+        include_defaults: false
     });
 
     // Simulate the collision behavior from loadSkills()

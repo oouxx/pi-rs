@@ -9,8 +9,8 @@ pub fn expand_path(path: &str) -> PathBuf {
         if let Some(home) = dirs::home_dir() {
             if path == "~" {
                 home.to_string_lossy().to_string()
-            } else if path.starts_with("~/") {
-                format!("{}/{}", home.display(), &path[2..])
+            } else if let Some(stripped) = path.strip_prefix("~/") {
+                format!("{}/{}", home.display(), stripped)
             } else {
                 path.to_string()
             }

@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
 
 // ============================================================================
 // Content block types
@@ -92,7 +94,6 @@ pub struct UsageCost {
     #[serde(default)]
     pub total: f64,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Usage {
@@ -575,44 +576,165 @@ pub enum ToolChoiceMode {
 // Stream options
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[allow(clippy::type_complexity)]
 pub struct StreamOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
-    #[serde(skip)]
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<Transport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "cacheRetention")]
     pub cache_retention: Option<CacheRetention>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<std::collections::HashMap<String, String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "timeoutMs")]
     pub timeout_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "websocketConnectTimeoutMs")]
     pub websocket_connect_timeout_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "maxRetries")]
     pub max_retries: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "maxRetryDelayMs")]
     pub max_retry_delay_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Callback invoked before the provider request is sent.
+    /// Receives the request payload and returns the (possibly modified) payload.
+    /// Return `None` to cancel the request.
+    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
+    /// Callback invoked before provider HTTP request headers are sent.
+    /// Receives the current headers map and returns the (possibly modified) headers.
+    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
+    /// Callback invoked after a provider HTTP response is received.
+    /// Receives the HTTP status code and response headers.
+    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
+
     pub tool_choice: Option<ToolChoice>,
 }
+
+impl std::fmt::Debug for StreamOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamOptions")
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("api_key", &self.api_key.as_ref().map(|_| "..."))
+            .field("session_id", &self.session_id)
+            .field("headers", &self.headers)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .field("max_retry_delay_ms", &self.max_retry_delay_ms)
+            .field("metadata", &self.metadata)
+            .field("tool_choice", &self.tool_choice)
+            .field("on_payload", &self.on_payload.as_ref().map(|_| "..."))
+            .finish()
+    }
+}
+
+impl Clone for StreamOptions {
+    fn clone(&self) -> Self {
+        Self {
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            signal: self.signal.clone(),
+            api_key: self.api_key.clone(),
+            transport: self.transport.clone(),
+            cache_retention: self.cache_retention.clone(),
+            session_id: self.session_id.clone(),
+            headers: self.headers.clone(),
+            timeout_ms: self.timeout_ms,
+            websocket_connect_timeout_ms: self.websocket_connect_timeout_ms,
+            max_retries: self.max_retries,
+            max_retry_delay_ms: self.max_retry_delay_ms,
+            metadata: self.metadata.clone(),
+            tool_choice: self.tool_choice.clone(),
+            on_payload: self.on_payload.clone(),
+            on_headers: self.on_headers.clone(),
+            on_provider_response: self.on_provider_response.clone(),
+        }
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for StreamOptions {
+    fn default() -> Self {
+        Self {
+            temperature: None,
+            max_tokens: None,
+            signal: None,
+            api_key: None,
+            transport: None,
+            cache_retention: None,
+            session_id: None,
+            headers: None,
+            timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            max_retries: None,
+            max_retry_delay_ms: None,
+            metadata: None,
+            tool_choice: None,
+            on_payload: None,
+            on_headers: None,
+            on_provider_response: None,
+        }
+    }
+}
+
+impl serde::Serialize for StreamOptions {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("StreamOptions", 14)?;
+        if let Some(ref v) = self.temperature { s.serialize_field("temperature", v)?; }
+        if let Some(ref v) = self.max_tokens { s.serialize_field("maxTokens", v)?; }
+        if let Some(ref v) = self.api_key { s.serialize_field("apiKey", v)?; }
+        if let Some(ref v) = self.transport { s.serialize_field("transport", v)?; }
+        if let Some(ref v) = self.cache_retention { s.serialize_field("cacheRetention", v)?; }
+        if let Some(ref v) = self.session_id { s.serialize_field("sessionId", v)?; }
+        if let Some(ref v) = self.headers { s.serialize_field("headers", v)?; }
+        if let Some(ref v) = self.timeout_ms { s.serialize_field("timeoutMs", v)?; }
+        if let Some(ref v) = self.websocket_connect_timeout_ms { s.serialize_field("websocketConnectTimeoutMs", v)?; }
+        if let Some(ref v) = self.max_retries { s.serialize_field("maxRetries", v)?; }
+        if let Some(ref v) = self.max_retry_delay_ms { s.serialize_field("maxRetryDelayMs", v)?; }
+        if let Some(ref v) = self.metadata { s.serialize_field("metadata", v)?; }
+        if let Some(ref v) = self.tool_choice { s.serialize_field("toolChoice", v)?; }
+        s.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for StreamOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StreamOptionsHelper {
+            temperature: Option<f64>,
+            max_tokens: Option<u64>,
+            api_key: Option<String>,
+            transport: Option<crate::types::Transport>,
+            cache_retention: Option<crate::types::CacheRetention>,
+            session_id: Option<String>,
+            headers: Option<std::collections::HashMap<String, String>>,
+            timeout_ms: Option<u64>,
+            websocket_connect_timeout_ms: Option<u64>,
+            max_retries: Option<u32>,
+            max_retry_delay_ms: Option<u64>,
+            metadata: Option<serde_json::Value>,
+            tool_choice: Option<crate::types::ToolChoice>,
+        }
+        let helper = StreamOptionsHelper::deserialize(deserializer)?;
+        Ok(Self {
+            temperature: helper.temperature,
+            max_tokens: helper.max_tokens,
+            signal: None,
+            api_key: helper.api_key,
+            transport: helper.transport,
+            cache_retention: helper.cache_retention,
+            session_id: helper.session_id,
+            headers: helper.headers,
+            timeout_ms: helper.timeout_ms,
+            websocket_connect_timeout_ms: helper.websocket_connect_timeout_ms,
+            max_retries: helper.max_retries,
+            max_retry_delay_ms: helper.max_retry_delay_ms,
+            metadata: helper.metadata,
+            tool_choice: helper.tool_choice,
+            on_payload: None,
+            on_headers: None,
+            on_provider_response: None,
+        })
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimpleStreamOptions {

@@ -86,7 +86,7 @@ fn is_valid_env_name(name: &str) -> bool {
         && name
             .chars()
             .next()
-            .map_or(false, |c| c.is_alphabetic() || c == '_')
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
 }
 
 fn parse_config_value_reference(config: &str) -> ConfigValueReference {

@@ -265,7 +265,7 @@ pub fn parse_model_pattern(
                 ..result
             };
         }
-        return result;
+        result
     } else if allow_invalid_thinking_level_fallback {
         // Invalid suffix - recurse on prefix and warn
         let result = parse_model_pattern(prefix, available_models, allow_invalid_thinking_level_fallback);
@@ -279,7 +279,7 @@ pub fn parse_model_pattern(
                 )),
             };
         }
-        return result;
+        result
     } else {
         // Strict mode: treat as part of model id and fail
         ParsedModelResult {

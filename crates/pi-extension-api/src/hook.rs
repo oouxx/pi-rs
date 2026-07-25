@@ -254,8 +254,29 @@ pub trait HookHandler: Send + Sync {
     /// 消息结束时触发。
     async fn on_message_end(&self, _message: &Value) {}
 
+    /// 消息结束时触发（modifying 版本）。
+    /// 可以修改消息内容。按 priority 顺序执行。
+    async fn on_message_end_mut(
+        &self,
+        _message: Value,
+    ) -> HookResult<Value> {
+        HookResult::Continue(_message)
+    }
+
+
     /// 工具执行开始时触发。
     async fn on_tool_execution_start(&self, _tool_call_id: &str, _tool_name: &str, _args: &Value) {}
+
+    /// 工具执行更新时触发（高频事件，用于流式输出进度）。
+    async fn on_tool_execution_update(
+        &self,
+        _tool_call_id: &str,
+        _tool_name: &str,
+        _args: &Value,
+        _partial_result: &Value,
+    ) {
+    }
+
 
     /// 工具执行结束时触发。
     async fn on_tool_execution_end(
@@ -279,11 +300,15 @@ pub trait HookHandler: Send + Sync {
     /// 树导航完成时触发。
     async fn on_tree(&self, _new_leaf_id: Option<&str>, _old_leaf_id: Option<&str>) {}
 
-    /// 资源发现时触发。
-    async fn on_resources_discover(&self, _cwd: &str, _reason: &str) {}
+    /// 资源发现时触发。返回扩展提供的额外资源路径。
+    async fn on_resources_discover(&self, _cwd: &str, _reason: &str) -> Option<crate::ResourcesDiscoverResult> {
+        None
+    }
 
-    /// Project trust 变更时触发。
-    async fn on_project_trust(&self, _cwd: &str) {}
+    /// Project trust 变更时触发。返回信任决策。
+    async fn on_project_trust(&self, _cwd: &str) -> Option<crate::ProjectTrustResult> {
+        None
+    }
 
     /// 上下文消息更新时触发。
     async fn on_context(&self, _messages: &[Value]) {}
@@ -295,7 +320,7 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// 用户 bash 执行时触发。
-    async fn on_user_bash(&self, _command: &str, _cwd: &str) {}
+    async fn on_user_bash(&self, _command: &str, _cwd: &str) -> Option<crate::UserBashResult> { None }
 
     // ── Modifying hooks（按 priority 顺序执行，可 Cancel） ──────────
 
@@ -332,22 +357,32 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// Agent 开始前触发。可修改 prompt 和 system_prompt，或取消。
+    /// `_images` 和 `_system_prompt_options` 是只读输入参数。
     async fn before_agent_start(
         &self,
         _prompt: String,
+        _images: Option<Vec<Value>>,
         _system_prompt: String,
-    ) -> HookResult<(String, String)> {
-        HookResult::Continue((_prompt, _system_prompt))
+        _system_prompt_options: Option<Value>,
+    ) -> HookResult<(String, String, Option<Vec<Value>>)> {
+        HookResult::Continue((_prompt, _system_prompt, None))
     }
 
     /// 用户输入时触发。可修改输入文本，或取消。
-    async fn on_input(&self, _text: String, _source: String) -> HookResult<String> {
+    /// `_images` 和 `_streaming_behavior` 是只读输入参数。
+    async fn on_input(
+        &self,
+        _text: String,
+        _images: Option<Vec<Value>>,
+        _source: String,
+        _streaming_behavior: Option<String>,
+    ) -> HookResult<String> {
         HookResult::Continue(_text)
     }
 
     /// Provider 请求前触发。可修改 payload。
-    async fn before_provider_request(&self, _payload: &Value) -> HookResult<()> {
-        HookResult::Continue(())
+    async fn before_provider_request(&self, _payload: Value) -> HookResult<Value> {
+        HookResult::Continue(_payload)
     }
 
     /// Provider 请求头前触发。可修改 headers。
@@ -542,6 +577,24 @@ impl HookRunner {
         futures::future::join_all(futures).await;
     }
 
+    /// Run `on_message_end_mut` handlers in priority order.
+    /// Returns the (possibly modified) message, or Cancel.
+    pub async fn run_on_message_end(
+        &self,
+        message: Value,
+    ) -> HookResult<Value> {
+        let mut current = message;
+        for handler in &self.handlers {
+            match handler.on_message_end_mut(current).await {
+                HookResult::Continue(m) => {
+                    current = m;
+                }
+                HookResult::Cancel(reason) => return HookResult::Cancel(reason),
+            }
+        }
+        HookResult::Continue(current)
+    }
+
     /// Fire `on_tool_execution_start` to all handlers (parallel).
     pub async fn fire_tool_execution_start(
         &self,
@@ -556,6 +609,23 @@ impl HookRunner {
             .collect();
         futures::future::join_all(futures).await;
     }
+
+    /// Fire `on_tool_execution_update` to all handlers (parallel).
+    pub async fn fire_tool_execution_update(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: &Value,
+        partial_result: &Value,
+    ) {
+        let futures: Vec<_> = self
+            .handlers
+            .iter()
+            .map(|h| h.on_tool_execution_update(tool_call_id, tool_name, args, partial_result))
+            .collect();
+        futures::future::join_all(futures).await;
+    }
+
 
     /// Fire `on_tool_execution_end` to all handlers (parallel).
     pub async fn fire_tool_execution_end(
@@ -614,23 +684,36 @@ impl HookRunner {
     }
 
     /// Fire `on_resources_discover` to all handlers (parallel).
-    pub async fn fire_resources_discover(&self, cwd: &str, reason: &str) {
+    pub async fn fire_resources_discover(&self, cwd: &str, reason: &str) -> crate::ResourcesDiscoverResult {
         let futures: Vec<_> = self
             .handlers
             .iter()
             .map(|h| h.on_resources_discover(cwd, reason))
             .collect();
-        futures::future::join_all(futures).await;
+        let results = futures::future::join_all(futures).await;
+        let mut combined = crate::ResourcesDiscoverResult::default();
+        for result in results.into_iter().flatten() {
+            combined.skill_paths.extend(result.skill_paths);
+            combined.prompt_paths.extend(result.prompt_paths);
+            combined.theme_paths.extend(result.theme_paths);
+        }
+        combined
     }
 
     /// Fire `on_project_trust` to all handlers (parallel).
-    pub async fn fire_project_trust(&self, cwd: &str) {
+    pub async fn fire_project_trust(&self, cwd: &str) -> Option<crate::ProjectTrustResult> {
         let futures: Vec<_> = self
             .handlers
             .iter()
             .map(|h| h.on_project_trust(cwd))
             .collect();
-        futures::future::join_all(futures).await;
+        let results = futures::future::join_all(futures).await;
+        for result in results.into_iter().flatten() {
+            if result.trusted != crate::ProjectTrustDecision::Undecided {
+                return Some(result);
+            }
+        }
+        None
     }
 
     /// Fire `on_context` to all handlers (parallel).
@@ -661,14 +744,14 @@ impl HookRunner {
         HookResult::Continue(current)
     }
 
-    /// Fire `on_user_bash` to all handlers (parallel).
-    pub async fn fire_user_bash(&self, command: &str, cwd: &str) {
-        let futures: Vec<_> = self
-            .handlers
-            .iter()
-            .map(|h| h.on_user_bash(command, cwd))
-            .collect();
-        futures::future::join_all(futures).await;
+    /// Fire `on_user_bash` to all handlers (sequential, first-return-wins).
+    pub async fn fire_user_bash(&self, command: &str, cwd: &str) -> Option<crate::UserBashResult> {
+        for handler in &self.handlers {
+            if let Some(result) = handler.on_user_bash(command, cwd).await {
+                return Some(result);
+            }
+        }
+        None
     }
 
     // ── Modifying hook dispatch (sequential, priority-ordered, cancellable) ──
@@ -735,28 +818,40 @@ impl HookRunner {
     pub async fn run_before_agent_start(
         &self,
         prompt: String,
+        images: Option<Vec<Value>>,
         system_prompt: String,
-    ) -> HookResult<(String, String)> {
+        system_prompt_options: Option<Value>,
+    ) -> HookResult<(String, String, Option<Vec<Value>>)> {
         let mut current = (prompt, system_prompt);
+        let mut messages: Option<Vec<Value>> = None;
         for handler in &self.handlers {
             match handler
-                .before_agent_start(current.0.clone(), current.1.clone())
+                .before_agent_start(current.0.clone(), images.clone(), current.1.clone(), system_prompt_options.clone())
                 .await
             {
-                HookResult::Continue((p, s)) => {
+                HookResult::Continue((p, s, msgs)) => {
                     current = (p, s);
+                    if msgs.is_some() {
+                        messages = msgs;
+                    }
                 }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
         }
-        HookResult::Continue(current)
+        HookResult::Continue((current.0, current.1, messages))
     }
 
     /// Run `on_input` handlers in priority order.
-    pub async fn run_on_input(&self, text: String, source: String) -> HookResult<String> {
+    pub async fn run_on_input(
+        &self,
+        text: String,
+        images: Option<Vec<Value>>,
+        source: String,
+        streaming_behavior: Option<String>,
+    ) -> HookResult<String> {
         let mut current = text;
         for handler in &self.handlers {
-            match handler.on_input(current, source.clone()).await {
+            match handler.on_input(current, images.clone(), source.clone(), streaming_behavior.clone()).await {
                 HookResult::Continue(t) => {
                     current = t;
                 }
@@ -767,14 +862,17 @@ impl HookRunner {
     }
 
     /// Run `before_provider_request` handlers in priority order.
-    pub async fn run_before_provider_request(&self, payload: &Value) -> HookResult<()> {
+    pub async fn run_before_provider_request(&self, payload: Value) -> HookResult<Value> {
+        let mut current = payload;
         for handler in &self.handlers {
-            match handler.before_provider_request(payload).await {
-                HookResult::Continue(()) => {}
+            match handler.before_provider_request(current).await {
+                HookResult::Continue(modified) => {
+                    current = modified;
+                }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
         }
-        HookResult::Continue(())
+        HookResult::Continue(current)
     }
 
     /// Run `before_provider_headers` handlers in priority order.

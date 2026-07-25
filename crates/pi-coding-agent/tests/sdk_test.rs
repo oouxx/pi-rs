@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use std::env;
 use std::sync::Arc;
 

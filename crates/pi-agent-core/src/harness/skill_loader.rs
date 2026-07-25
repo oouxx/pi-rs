@@ -503,7 +503,7 @@ async fn load_skill_from_file(
         });
     }
 
-    if description.as_deref().map_or(true, |d| d.trim().is_empty()) {
+                if description.as_deref().map(|d| d.trim().is_empty()).unwrap_or(true) {
         return SkillLoadResult {
             skill: None,
             diagnostics,

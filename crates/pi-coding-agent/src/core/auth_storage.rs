@@ -145,6 +145,7 @@ impl FileAuthStorageBackend {
     }
 }
 
+#[derive(Default)]
 pub struct InMemoryAuthStorageBackend {
     value: Mutex<Option<String>>,
 }

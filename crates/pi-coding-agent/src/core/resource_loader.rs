@@ -15,7 +15,6 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::config;
 use crate::core::diagnostics::{ResourceCollision, ResourceDiagnostic};
@@ -240,7 +239,7 @@ impl DefaultResourceLoader {
         // Check extension-contributed source infos
         for (ext_path, info) in extension_infos {
             let ext_normalized = Path::new(ext_path);
-            if normalized_str.starts_with(&ext_normalized.to_string_lossy().as_ref()) {
+            if normalized_str.starts_with(ext_normalized.to_string_lossy().as_ref()) {
                 return info.clone();
             }
         }
@@ -248,7 +247,7 @@ impl DefaultResourceLoader {
         // Default: derive from path location
         if let Some(agent_dir) = &self.options.agent_dir {
             let agent_path = Path::new(agent_dir);
-            if normalized_str.starts_with(&agent_path.to_string_lossy().as_ref()) {
+            if normalized_str.starts_with(agent_path.to_string_lossy().as_ref()) {
                 return create_source_info(
                     path.to_string(),
                     "local".to_string(),
@@ -260,7 +259,7 @@ impl DefaultResourceLoader {
         }
 
         let cwd_path = Path::new(&self.options.cwd);
-        if normalized_str.starts_with(&cwd_path.to_string_lossy().as_ref()) {
+        if normalized_str.starts_with(cwd_path.to_string_lossy().as_ref()) {
             return create_source_info(
                 path.to_string(),
                 "local".to_string(),

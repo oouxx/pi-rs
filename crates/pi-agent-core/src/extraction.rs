@@ -362,7 +362,7 @@ impl<T: JsonSchema + DeserializeOwned> Extractor<T> {
 
             let result = stream::complete(&self.model, &context, Some(options))
                 .await
-                .map_err(|e| ExtractError::Llm(e))?;
+                .map_err(ExtractError::Llm)?;
 
             match self.parse_tool_call(&result) {
                 Ok(data) => return Ok(data),
@@ -394,7 +394,7 @@ impl<T: JsonSchema + DeserializeOwned> Extractor<T> {
 
             let result = stream::complete(&self.model, &context, Some(options))
                 .await
-                .map_err(|e| ExtractError::Llm(e))?;
+                .map_err(ExtractError::Llm)?;
 
             // Accumulate usage (input/output/cache tokens across retries)
             accumulated_usage.input += result.usage.input;

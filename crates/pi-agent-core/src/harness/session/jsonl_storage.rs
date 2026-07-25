@@ -322,7 +322,7 @@ impl JsonlSessionRepo {
             "--{}--",
             cwd.trim_start_matches('/')
                 .trim_start_matches('\\')
-                .replace(|c| c == '/' || c == '\\' || c == ':', "-")
+                .replace(['/', '\\', ':'], "-")
         )
     }
 

@@ -37,6 +37,11 @@ pub fn build_base_options(
         max_retry_delay_ms: opts.base.max_retry_delay_ms,
         metadata: opts.base.metadata.clone(),
         tool_choice: opts.base.tool_choice.clone(),
+        on_payload: None,
+        on_headers: None,
+        on_provider_response: None,
+
+
     }
 }
 

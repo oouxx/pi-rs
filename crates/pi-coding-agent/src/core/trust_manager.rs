@@ -135,6 +135,7 @@ fn with_trust_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T, String>) -
     let lock_path = path.with_extension("json.lock");
     let lock_file = fs::OpenOptions::new()
         .create(true)
+        .truncate(true)
         .read(true)
         .write(true)
         .open(&lock_path)
@@ -349,8 +350,7 @@ impl ProjectTrustStore {
     /// Get the trust decision for `cwd`, walking up parent directories if needed.
     pub fn get(&self, cwd: &str) -> ProjectTrustDecision {
         self.get_entry(cwd)
-            .map(|e| e.decision)
-            .flatten()
+            .and_then(|e| e.decision)
     }
 
     /// Get the trust entry (path + decision) for `cwd`.

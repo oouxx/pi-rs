@@ -170,7 +170,7 @@ async fn test_runtime_session_mut() {
 
 #[tokio::test]
 async fn test_runtime_new_session() {
-    let (mut runtime, dir) = create_test_runtime().await;
+    let (mut runtime, _dir) = create_test_runtime().await;
     let original_session_id = runtime.session().get_session_id();
 
     // Create a new session
@@ -309,11 +309,11 @@ async fn test_runtime_import_from_jsonl() {
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "cwd": import_mgr.get_cwd(),
         });
-        let mut f = std::fs::File::create(&session_file).unwrap();
+        let mut f = std::fs::File::create(session_file).unwrap();
         writeln!(f, "{}", serde_json::to_string(&header).unwrap()).unwrap();
     }
 
-    std::fs::copy(&session_file, &import_path).unwrap();
+    std::fs::copy(session_file, &import_path).unwrap();
 
     // Import the session
     let result = runtime.import_from_jsonl(
@@ -335,7 +335,7 @@ async fn test_runtime_import_from_jsonl_nonexistent() {
 
 #[tokio::test]
 async fn test_runtime_fork() {
-    let (mut runtime, dir) = create_test_runtime().await;
+    let (mut runtime, _dir) = create_test_runtime().await;
     let original_session_id = runtime.session().get_session_id();
 
     // Add a message so we have something to fork from

@@ -54,7 +54,7 @@ pub fn process_file_arguments(
 
         // Strip leading @ if present (used for @file syntax)
         let file_path = if arg.starts_with('@') {
-            &arg[1..]
+            arg.strip_prefix('@').unwrap_or(arg)
         } else {
             arg
         };

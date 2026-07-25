@@ -273,17 +273,12 @@ pub fn normalize_for_fuzzy_match(text: &str) -> String {
 
     // Smart single quotes → '
     result = result
-        .replace('\u{2018}', "'")
-        .replace('\u{2019}', "'")
-        .replace('\u{201A}', "'")
+        .replace(['\u{2018}', '\u{2019}', '\u{201A}'], "'")
         .replace('\u{201B}', "'");
 
     // Smart double quotes → "
     result = result
-        .replace('\u{201C}', "\"")
-        .replace('\u{201D}', "\"")
-        .replace('\u{201E}', "\"")
-        .replace('\u{201F}', "\"");
+        .replace(['\u{201C}', '\u{201D}', '\u{201E}', '\u{201F}'], "\"");
 
     // Various dashes/hyphens → -
     for ch in [
@@ -589,10 +584,7 @@ pub fn generate_diff_string(
                         } else {
                             ""
                         };
-                        if old_line == old_start && new_line == new_start {
-                            let ln = pad_number(old_line, line_num_width);
-                            output.push(format!(" {} {}", ln, line));
-                        } else if i < context_lines || i >= len - context_lines {
+                        if old_line == old_start && new_line == new_start || i < context_lines || i >= len - context_lines {
                             let ln = pad_number(old_line, line_num_width);
                             output.push(format!(" {} {}", ln, line));
                         } else if i == context_lines {

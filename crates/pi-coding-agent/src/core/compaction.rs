@@ -28,6 +28,7 @@ Format your summary as:
 ## Important Context
 - [Any information needed to continue the work]"#;
 
+#[allow(dead_code)]
 const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = r#"This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 Summarize the prefix to provide context for the retained suffix:
 ## Original Request
@@ -169,7 +170,7 @@ pub fn prepare_compaction(
 
     let first_kept_entry_id = messages
         .get(cut_point.first_kept_entry_index)
-        .and_then(|_| Some(format!("entry-{}", cut_point.first_kept_entry_index)));
+        .map(|_| format!("entry-{}", cut_point.first_kept_entry_index));
 
     CompactionPreparation {
         first_kept_entry_id,
@@ -193,10 +194,10 @@ fn extract_file_operations(
     let mut seen_modified: HashMap<String, bool> = HashMap::new();
 
     for msg in messages {
-        match msg {
-            AgentMessage::ToolResult {
+        if let AgentMessage::ToolResult {
                 tool_name, content, ..
-            } => match tool_name.as_str() {
+            } = msg {
+            match tool_name.as_str() {
                 "read" => {
                     for block in content {
                         if let ContentBlock::Text { text, .. } = block {
@@ -229,8 +230,7 @@ fn extract_file_operations(
                     }
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 
@@ -415,7 +415,7 @@ fn estimate_content_block_tokens(block: &pi_agent_core::pi_ai_types::ContentBloc
 
 /// Calculate the total token count for a list of messages.
 pub fn calculate_context_tokens(messages: &[pi_agent_core::pi_ai_types::Message]) -> u64 {
-    messages.iter().map(|m| estimate_message_tokens(m)).sum()
+    messages.iter().map(estimate_message_tokens).sum()
 }
 
 /// Estimate tokens for AgentMessages (converts to LLM messages first).
@@ -471,7 +471,7 @@ pub fn build_branch_summary_prompt(
     let collected = collect_entries_for_branch_summary(entries, from_id);
     let messages: Vec<pi_agent_core::types::AgentMessage> = collected
         .iter()
-        .filter_map(|e| get_message_from_entry(e))
+        .filter_map(get_message_from_entry)
         .collect();
 
     let llm_messages = crate::core::messages::convert_to_llm(&messages);
@@ -563,7 +563,7 @@ pub fn create_file_ops(read_files: &[String], modified_files: &[String]) -> File
 pub fn extract_file_ops_from_message(
     msg: &pi_agent_core::types::AgentMessage,
 ) -> FileOperations {
-    let (read_files, modified_files) = compute_file_lists(&[msg.clone()]);
+    let (read_files, modified_files) = compute_file_lists(std::slice::from_ref(msg));
     FileOperations {
         read_files,
         modified_files,

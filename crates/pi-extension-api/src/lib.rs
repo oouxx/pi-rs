@@ -104,6 +104,7 @@ pub struct ToolInfo {
 // ============================================================================
 
 /// Context provided to extensions for interacting with the agent.
+#[derive(Clone)]
 pub struct ExtensionContext {
     pub session_id: String,
     pub is_connected: bool,
@@ -383,6 +384,58 @@ impl RuntimeHandle {
         )
     }
 }
+
+// ============================================================================
+// ResourcesDiscoverResult
+// ============================================================================
+
+/// Result from a  event handler.
+/// Extensions return paths to additional resources they provide.
+#[derive(Debug, Clone, Default)]
+pub struct ResourcesDiscoverResult {
+    pub skill_paths: Vec<String>,
+    pub prompt_paths: Vec<String>,
+    pub theme_paths: Vec<String>,
+}
+
+// ============================================================================
+// ProjectTrustResult
+// ============================================================================
+
+/// Result from a  event handler.
+/// Extensions can decide whether a project should be trusted.
+#[derive(Debug, Clone)]
+pub struct ProjectTrustResult {
+    /// Whether the project is trusted.
+    pub trusted: ProjectTrustDecision,
+    /// Whether to remember this decision.
+    pub remember: bool,
+}
+
+/// Trust decision from an extension.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjectTrustDecision {
+    Yes,
+    No,
+    Undecided,
+}
+
+// ============================================================================
+// UserBashResult
+// ============================================================================
+
+/// Result from a `user_bash` event handler.
+/// Extensions can provide custom operations or a full replacement result.
+#[derive(Debug, Clone)]
+pub struct UserBashResult {
+    /// Custom operations to use for execution (e.g., custom exec function).
+    /// If set, the session will use these operations instead of the default bash execution.
+    pub operations: Option<serde_json::Value>,
+    /// Full replacement: extension handled execution, use this result.
+    /// If set, the session will use this result directly.
+    pub result: Option<serde_json::Value>,
+}
+
 
 // ============================================================================
 // EventPublisher

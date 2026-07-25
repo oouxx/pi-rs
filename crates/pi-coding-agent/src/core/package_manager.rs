@@ -143,6 +143,7 @@ impl NpmHelper {
     }
 
     /// Check if a package is installed in the given root.
+    #[allow(dead_code)]
     fn is_package_installed(name: &str, root: &str) -> bool {
         let pkg_path = Path::new(root).join(name);
         pkg_path.join("package.json").exists()
@@ -190,6 +191,7 @@ impl NpmHelper {
     }
 
     /// View package info as JSON.
+    #[allow(dead_code)]
     fn view(package: &str) -> Result<serde_json::Value, String> {
         let output = std::process::Command::new("npm")
             .args(["view", package, "--json"])
@@ -289,6 +291,7 @@ impl DefaultPackageManager {
     }
 
     /// Resolve a single package source to a path.
+    #[allow(dead_code)]
     fn resolve_source(&self, source: &str, local: bool) -> Option<String> {
         // Check cache first
         {
@@ -320,7 +323,7 @@ impl DefaultPackageManager {
 impl PackageManager for DefaultPackageManager {
     fn resolve(
         &self,
-        on_missing: Option<&dyn Fn(&str) -> MissingSourceAction>,
+        _on_missing: Option<&dyn Fn(&str) -> MissingSourceAction>,
     ) -> Result<ResolvedPaths, String> {
         let mut result = ResolvedPaths::default();
 

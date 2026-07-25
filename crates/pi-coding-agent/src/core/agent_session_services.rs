@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
 use crate::core::auth_storage::AuthStorage;
@@ -176,7 +175,7 @@ pub async fn create_agent_session_from_services(
     options: CreateAgentSessionFromServicesOptions,
 ) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
     let services = options.services;
-    let session_manager = options.session_manager;
+    let _session_manager = options.session_manager;
 
     // Resolve model: use provided model, or fall back to the first available
     // model from the registry

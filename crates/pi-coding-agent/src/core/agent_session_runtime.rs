@@ -80,6 +80,7 @@ pub type CreateAgentSessionRuntimeFactory = Box<
 /// - `fork()` — fork from an entry in the current session
 /// - `import_from_jsonl()` — import a session from a JSONL file
 /// - `dispose()` — clean up the current session
+#[allow(clippy::type_complexity)]
 pub struct AgentSessionRuntime {
     session: AgentSession,
     services: AgentSessionServices,
@@ -202,6 +203,7 @@ impl AgentSessionRuntime {
 
     /// Create a noop ExtensionContext for the current cwd.
     /// Used for extension event dispatch during lifecycle operations.
+    #[allow(dead_code)]
     fn noop_ext_ctx(&self) -> ExtensionContext {
         ExtensionContext::new(
             self.cwd().to_string(),

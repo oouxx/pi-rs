@@ -245,6 +245,13 @@ pub struct FileOperations {
 
 impl FileOperations {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for FileOperations {
+    fn default() -> Self {
         Self {
             read: Vec::new(),
             written: Vec::new(),
@@ -607,6 +614,7 @@ pub struct FileInfoType {
     pub path: String,
 }
 
+#[allow(clippy::type_complexity)]
 pub struct ExecutionEnvExecOptions {
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
@@ -1221,13 +1229,11 @@ pub fn merge_headers(
 ) -> Option<HashMap<String, String>> {
     let mut merged: HashMap<String, String> = HashMap::new();
     let mut has_headers = false;
-    for entry in headers {
-        if let Some(h) = entry {
-            for (k, v) in h {
-                merged.insert(k.clone(), v.clone());
-            }
-            has_headers = true;
+    for h in headers.iter().flatten() {
+        for (k, v) in h {
+            merged.insert(k.clone(), v.clone());
         }
+        has_headers = true;
     }
     if has_headers {
         Some(merged)
@@ -1529,6 +1535,6 @@ mod helper_tests {
         let result = apply_stream_options_patch(&base, &patch);
         let headers = result.headers.unwrap();
         assert_eq!(headers.get("X-Add"), Some(&"new".into()));
-        assert!(headers.get("X-Keep").is_none());
+        assert!(!headers.contains_key("X-Keep"));
     }
 }

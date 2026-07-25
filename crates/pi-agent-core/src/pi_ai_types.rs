@@ -112,6 +112,7 @@ pub fn assistant_message(
 }
 
 /// Create an AssistantMessage with an error message.
+#[allow(clippy::too_many_arguments)]
 pub fn assistant_message_error(
     content: Vec<ContentBlock>,
     api: String,

@@ -232,7 +232,7 @@ fn assert_valid_session_id(id: &str) {
 }
 
 #[derive(Debug, Clone)]
-enum FileEntry {
+pub(crate) enum FileEntry {
     Header(SessionHeader),
     Entry(SessionEntry),
     /// Raw JSON that couldn't be parsed as a SessionEntry (e.g. v1 format).
@@ -240,6 +240,7 @@ enum FileEntry {
     RawJson(serde_json::Value),
 }
 
+#[allow(private_interfaces)]
 pub(crate) fn load_entries_from_file(file_path: &Path) -> Vec<FileEntry> {
     if !file_path.exists() {
         return Vec::new();
@@ -347,6 +348,7 @@ pub fn is_valid_session_file(file_path: &Path) -> bool {
 
 /// Migrate a session file from v1 to the current version (v3).
 /// Returns the migrated entries, or the original entries if no migration was needed.
+#[allow(private_interfaces)]
 pub fn migrate_session_file(file_path: &Path) -> Result<Vec<FileEntry>, String> {
     let entries = load_entries_from_file(file_path);
     if entries.is_empty() {
@@ -904,8 +906,7 @@ pub fn build_context_entries(
     context_entries.push((*compaction).clone());
 
     let mut found_first_kept = false;
-    for i in 0..compaction_idx {
-        let entry = &path[i];
+    for entry in &path[..compaction_idx] {
         if entry.id() == first_kept {
             found_first_kept = true;
         }
@@ -1092,7 +1093,7 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn default_session_dir(cwd: &str, agent_dir: &str) -> String {
+    pub fn default_session_dir(_cwd: &str, agent_dir: &str) -> String {
         let path = std::path::Path::new(agent_dir).join("sessions");
         path.to_string_lossy().to_string()
     }
@@ -1366,6 +1367,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(dead_code)]
     fn append_entry(&mut self, entry: SessionEntry) {
         let json = serde_json::to_string(&entry).unwrap_or_default();
         let id = entry.id().to_string();
@@ -1780,7 +1782,7 @@ impl SessionManager {
             return Err(format!("Entry not found: {}", entry_id));
         }
 
-        let cwd = target_cwd.unwrap_or_else(|| self.cwd.as_str());
+        let cwd = target_cwd.unwrap_or(self.cwd.as_str());
         let timestamp = Utc::now().to_rfc3339();
         let file_timestamp = timestamp.replace([':', '.'], "-");
         let new_id = create_session_id();
@@ -2221,6 +2223,7 @@ impl SessionManager {
     }
 }
 
+#[allow(dead_code)]
 impl FileEntry {
     fn id(&self) -> String {
         match self {
@@ -2726,7 +2729,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
         let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
-        let id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "hi"}));
+        let _id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "hi"}));
 
         // Branch from the first message
         let branch_point = mgr.branch(Some(&id1));
@@ -2748,7 +2751,7 @@ mod tests {
     fn test_branch_without_from_id_uses_leaf() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
+        let _id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
         let id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "hi"}));
 
         // Branch from current leaf (id2)
@@ -2762,7 +2765,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
         let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "first"}));
-        let id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "second"}));
+        let _id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "second"}));
 
         assert!(mgr.reset_leaf(&id1));
         assert_eq!(mgr.get_leaf_id(), Some(id1.as_str()));
@@ -2780,7 +2783,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
         let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
-        let id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "world"}));
+        let _id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "world"}));
 
         // Branch with summary from id1
         let summary_id = mgr.branch_with_summary(&id1, "Test summary", None, None);
@@ -2812,10 +2815,10 @@ mod tests {
     fn test_create_branched_session_creates_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, true, None);
-        let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
-        let id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "world"}));
+        let _id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
+        let _id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "world"}));
 
-        let result = mgr.create_branched_session(&id2, None);
+        let result = mgr.create_branched_session(&_id2, None);
         assert!(result.is_ok());
 
         let new_path = result.unwrap();

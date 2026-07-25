@@ -121,6 +121,7 @@ pub type DynTool = AgentTool<serde_json::Value, serde_json::Value>;
 
 pub type AgentToolUpdateCallback<T> = Arc<dyn Fn(AgentToolResult<T>) + Send + Sync>;
 
+#[allow(clippy::type_complexity)]
 pub struct AgentTool<TParams, TDetails>
 where
     TParams: Clone + Send + Sync + 'static,
@@ -231,6 +232,7 @@ impl std::fmt::Debug for AgentState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum AgentEvent {
     AgentStart,
     AgentEnd {
@@ -281,6 +283,9 @@ pub enum QueueMode {
 pub struct BeforeToolCallResult {
     pub block: bool,
     pub reason: Option<String>,
+    /// Modified tool arguments from extension hooks.
+    /// When `Some(args)`, the tool call will use these args instead of the original.
+    pub modified_args: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +349,7 @@ pub type StreamFn = Arc<
 >;
 
 #[derive(Clone, Default)]
+#[allow(clippy::type_complexity)]
 pub struct StreamFnOptions {
     pub api_key: Option<String>,
     pub headers: Option<std::collections::HashMap<String, String>>,
@@ -352,8 +358,14 @@ pub struct StreamFnOptions {
     pub thinking_budgets: Option<crate::pi_ai_types::ThinkingBudgets>,
     pub max_retry_delay_ms: Option<u64>,
     pub transport: Option<String>,
-    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
     pub on_response: Option<Arc<dyn Fn(&crate::pi_ai_types::AssistantMessage) + Send + Sync>>,
+    /// Callback invoked before provider HTTP request headers are sent.
+    /// Receives the current headers map and returns the (possibly modified) headers.
+    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
+    /// Callback invoked after a provider HTTP response is received.
+    /// Receives the HTTP status code and response headers.
+    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
 }
 
 impl std::fmt::Debug for StreamFnOptions {

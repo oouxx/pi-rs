@@ -16,7 +16,7 @@ pub struct InMemorySessionStorage {
 
 impl InMemorySessionStorage {
     pub fn new(options: Option<InMemorySessionStorageOptions>) -> Self {
-        let opts = options.unwrap_or(InMemorySessionStorageOptions::default());
+        let opts = options.unwrap_or_default();
         let mut storage = Self {
             metadata: opts.metadata.unwrap_or(SessionMetadata {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -54,6 +54,7 @@ pub struct InMemorySessionStorageOptions {
     pub metadata: Option<SessionMetadata>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for InMemorySessionStorageOptions {
     fn default() -> Self {
         Self {
@@ -206,6 +207,13 @@ pub struct InMemorySessionRepo {
 
 impl InMemorySessionRepo {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for InMemorySessionRepo {
+    fn default() -> Self {
         Self {
             sessions: HashMap::new(),
         }

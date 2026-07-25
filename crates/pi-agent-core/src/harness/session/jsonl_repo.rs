@@ -11,8 +11,8 @@ use crate::harness::types::{
 
 fn encode_cwd(cwd: &str) -> String {
     let trimmed = cwd
-        .trim_start_matches(|c| c == '/' || c == '\\')
-        .replace(|c: char| c == '/' || c == '\\' || c == ':', "-");
+        .trim_start_matches(['/', '\\'])
+        .replace(['/', '\\', ':'], "-");
     format!("--{}--", trimmed)
 }
 

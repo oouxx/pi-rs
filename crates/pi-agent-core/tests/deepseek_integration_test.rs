@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Integration tests for pi-agent-core with DeepSeek V4 Flash.
 //!
 //! Tests multi-turn conversation and tool calling via the pi-ai streaming pipeline.

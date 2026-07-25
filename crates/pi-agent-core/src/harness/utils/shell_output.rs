@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::harness::types::{ExecutionEnv, ExecutionError, ShellCaptureResult};
 use crate::harness::utils::truncate::DEFAULT_MAX_BYTES;
 
+#[allow(clippy::type_complexity)]
 pub struct ShellCaptureOptions {
     pub max_bytes: Option<u64>,
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
@@ -19,7 +20,7 @@ pub fn sanitize_binary_output(s: &str) -> String {
             if code <= 0x1f {
                 return false;
             }
-            if code >= 0xfff9 && code <= 0xfffb {
+            if (0xfff9..=0xfffb).contains(&code) {
                 return false;
             }
             true

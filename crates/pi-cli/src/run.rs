@@ -58,6 +58,7 @@ pub async fn run(args: &CliArgs) -> i32 {
             trust_override: args.project_trust_override,
             default_project_trust: args.default_project_trust,
             project_trust_context: ProjectTrustContext::new(&cwd, false),
+            extension_registry: None,
         },
     );
     // Subcommand handling (install, remove, list)
@@ -219,9 +220,7 @@ async fn resolve_session_opts(
 ) -> (bool, Option<String>, Option<String>, Option<String>) {
     let persist_session = if args.no_session {
         false
-    } else if args.session.is_some() || args.fork.is_some() {
-        true
-    } else if args.continue_session || args.resume_session {
+    } else if args.session.is_some() || args.fork.is_some() || args.continue_session || args.resume_session {
         true
     } else {
         // Persistent by default in interactive mode

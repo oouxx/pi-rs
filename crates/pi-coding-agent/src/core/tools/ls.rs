@@ -221,10 +221,7 @@ pub fn create_ls_tool(
                     }
 
                     // Check if path exists
-                    let exists = match operations.exists(&absolute_path_str).await {
-                        Ok(e) => e,
-                        Err(_) => false,
-                    };
+                    let exists = operations.exists(&absolute_path_str).await.unwrap_or(false);
                     if !exists {
                         return Ok(AgentToolResult {
                             content: vec![ContentBlock::text(format!(
@@ -237,10 +234,7 @@ pub fn create_ls_tool(
                     }
 
                     // Check if path is a directory
-                    let is_dir = match operations.is_directory(&absolute_path_str).await {
-                        Ok(d) => d,
-                        Err(_) => false,
-                    };
+                    let is_dir = operations.is_directory(&absolute_path_str).await.unwrap_or(false);
                     if !is_dir {
                         return Ok(AgentToolResult {
                             content: vec![ContentBlock::text(format!(
@@ -269,7 +263,7 @@ pub fn create_ls_tool(
 
                     // Sort case-insensitively
                     let mut sorted = entries;
-                    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+                    sorted.sort_by_cached_key(|a| a.to_lowercase());
 
                     // Format entries with directory indicators
                     let mut results: Vec<String> = Vec::new();

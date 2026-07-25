@@ -23,7 +23,7 @@ pub async fn handle_command(
     match command {
         // ── Prompting ─────────────────────────────────────────────────────
         RpcCommand::Prompt {
-            id,
+            id: _,
             message,
             images: _,
             streaming_behavior: _,

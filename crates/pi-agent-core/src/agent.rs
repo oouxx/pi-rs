@@ -79,14 +79,17 @@ type AgentEventListener = Arc<
         + Sync,
 >;
 
+#[allow(clippy::type_complexity)]
 pub struct AgentOptions {
     pub initial_state: Option<AgentState>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
     pub transform_context: Option<TransformContextFn>,
     pub stream_fn: Option<StreamFn>,
     pub get_api_key: Option<GetApiKeyFn>,
-    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
     pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
+    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
+    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
     /// Takes an optional abort signal (no turn context). Matches TS `AgentOptions.prepareNextTurn`.
@@ -103,6 +106,7 @@ pub struct AgentOptions {
     pub max_consecutive_tool_calls: Option<usize>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for AgentOptions {
     fn default() -> Self {
         Self {
@@ -113,6 +117,8 @@ impl Default for AgentOptions {
             get_api_key: None,
             on_payload: None,
             on_response: None,
+            on_headers: None,
+            on_provider_response: None,
             before_tool_call: None,
             after_tool_call: None,
             prepare_next_turn: None,
@@ -155,6 +161,7 @@ impl UnsubscribeHandle {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub struct Agent {
     state: Arc<RwLock<AgentState>>,
     listeners: Arc<RwLock<Vec<AgentEventListener>>>,
@@ -163,8 +170,10 @@ pub struct Agent {
     transform_context: Option<TransformContextFn>,
     stream_fn: StreamFn,
     get_api_key: Option<GetApiKeyFn>,
-    on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
     on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
+    on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
+    on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     before_tool_call: Option<BeforeToolCallFn>,
     after_tool_call: Option<AfterToolCallFn>,
     prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
@@ -268,6 +277,8 @@ impl Agent {
             get_api_key: options.get_api_key,
             on_payload: options.on_payload,
             on_response: options.on_response,
+            on_headers: options.on_headers,
+            on_provider_response: options.on_provider_response,
             before_tool_call: options.before_tool_call,
             after_tool_call: options.after_tool_call,
             prepare_next_turn: options.prepare_next_turn,
@@ -663,6 +674,8 @@ impl Agent {
             after_tool_call: self.after_tool_call.clone(),
             on_payload: self.on_payload.clone(),
             on_response: self.on_response.clone(),
+            on_headers: self.on_headers.clone(),
+            on_provider_response: self.on_provider_response.clone(),
             max_consecutive_tool_calls: self.max_consecutive_tool_calls,
         };
 
@@ -854,14 +867,14 @@ impl Agent {
                         AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
                             s.pending_tool_calls.remove(tool_call_id);
                         }
-                        AgentEvent::TurnEnd { message, .. } => {
-                            if let AgentMessage::Assistant {
+                        AgentEvent::TurnEnd {
+                            message: AgentMessage::Assistant {
                                 error_message: Some(err),
                                 ..
-                            } = message
-                            {
-                                s.error_message = Some(err.clone());
-                            }
+                            },
+                            ..
+                        } => {
+                            s.error_message = Some(err.clone());
                         }
                         AgentEvent::AgentEnd { .. } => {
                             s.is_streaming = false;

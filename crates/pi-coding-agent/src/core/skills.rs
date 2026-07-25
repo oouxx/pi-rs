@@ -151,7 +151,7 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
     // Use serde_yaml for full YAML parsing (matching original TS `parse` from "yaml")
     let frontmatter: SkillFrontmatter = match serde_yaml::from_str(yaml_str) {
         Ok(fm) => fm,
-        Err(e) => {
+        Err(_) => {
             // Return a special marker: description = Some("") signals parse failure
             // so the caller can emit a diagnostic
             return (
@@ -343,11 +343,7 @@ fn load_ignore_rules(dir: &Path) -> IgnoreMatcher {
                     if trimmed.is_empty() || (trimmed.starts_with('#') && !trimmed.starts_with("\\#")) {
                         return None;
                     }
-                    let pattern = if trimmed.starts_with('!') || trimmed.starts_with("\\!") {
-                        trimmed.to_string()
-                    } else {
-                        trimmed.to_string()
-                    };
+                    let pattern = trimmed.to_string();
                     Some(pattern)
                 })
                 .collect();

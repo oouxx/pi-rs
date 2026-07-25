@@ -13,7 +13,7 @@ pub fn strip_json_comments(input: &str) -> String {
     while let Some((_, c)) = chars.next() {
         if c == '"' {
             // Check if escaped
-            let mut backslashes = 0;
+            let _backslashes = 0;
             // Count preceding backslashes in the result
             // (we can't easily check the input because we're consuming chars)
             in_string = !in_string;
@@ -22,7 +22,7 @@ pub fn strip_json_comments(input: &str) -> String {
             // Check for // comment
             if let Some(&(_, '/')) = chars.peek() {
                 // Skip until end of line
-                while let Some((_, next)) = chars.next() {
+                for (_, next) in chars.by_ref() {
                     if next == '\n' {
                         result.push('\n');
                         break;

@@ -24,7 +24,7 @@ pub enum TruncatedBy {
 }
 
 fn utf8_byte_length(s: &str) -> usize {
-    s.as_bytes().len()
+    s.len()
 }
 
 pub fn truncate_head(content: &str, options: TruncationOptions) -> TruncationResult {
@@ -212,6 +212,7 @@ pub struct TruncationOptions {
     pub max_bytes: Option<u64>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for TruncationOptions {
     fn default() -> Self {
         Self {

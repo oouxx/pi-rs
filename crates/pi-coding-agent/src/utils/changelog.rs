@@ -39,7 +39,7 @@ pub fn parse_changelog(path: &str) -> Vec<ChangelogEntry> {
             let minor: i32 = caps[2].parse().unwrap_or(0);
             let patch: i32 = caps[3].parse().unwrap_or(0);
             current = Some((major, minor, patch, String::new()));
-        } else if let Some((maj, min, pat, ref mut acc)) = current {
+        } else if let Some((_maj, _min, _pat, ref mut acc)) = current {
             if !acc.is_empty() {
                 acc.push('\n');
             }

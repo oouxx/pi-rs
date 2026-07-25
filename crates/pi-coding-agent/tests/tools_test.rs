@@ -6,7 +6,6 @@
 //! Run with: cargo test -p pi-coding-agent --test tools_test -- --nocapture
 
 use pi_agent_core::types::AgentTool;
-use tokio::io::AsyncWriteExt;
 
 // ============================================================================
 // Helpers
@@ -34,6 +33,7 @@ fn get_text_output(result: &pi_agent_core::types::AgentToolResult<serde_json::Va
 }
 
 /// Create a 1x1 red 24-bit BMP file bytes.
+#[allow(dead_code)]
 fn create_tiny_bmp_1x1_red_24bpp() -> Vec<u8> {
     let mut buffer = vec![0u8; 58];
     // BMP header
@@ -536,7 +536,7 @@ async fn test_edit_match_against_original() {
             {"oldText": "bar\n", "newText": "BAR\n"}
         ]
     });
-    let result = execute_tool(&tool, "test-call-edit-9", params).await
+    let _result = execute_tool(&tool, "test-call-edit-9", params).await
         .expect("Edit should succeed");
 
     let written = tokio::fs::read_to_string(&file_path).await.unwrap();

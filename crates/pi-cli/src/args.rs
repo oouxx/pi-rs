@@ -8,8 +8,9 @@ use pi_coding_agent::config;
 use pi_coding_agent::core::project_trust::DefaultProjectTrust;
 
 /// Output mode for non-interactive runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputMode {
+    #[default]
     Text,
     Json,
     Rpc,
@@ -17,7 +18,7 @@ pub enum OutputMode {
 }
 
 /// Parsed CLI arguments.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CliArgs {
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -58,44 +59,7 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
-    pub fn new() -> Self {
-        CliArgs {
-            provider: None,
-            model: None,
-            api_key: None,
-            system_prompt: None,
-            append_system_prompt: Vec::new(),
-            thinking: None,
-            continue_session: false,
-            resume_session: false,
-            help: false,
-            version: false,
-            mode: OutputMode::Text,
-            name: None,
-            no_session: false,
-            session: None,
-            session_id: None,
-            fork: None,
-            session_dir: None,
-            list_models: false,
-            tools: Vec::new(),
-            exclude_tools: Vec::new(),
-            no_tools: false,
-            no_builtin_tools: false,
-            extensions: Vec::new(),
-            no_extensions: false,
-            print: false,
-            no_skills: false,
-            verbose: false,
-            project_trust_override: None,
-            messages: Vec::new(),
-            unknown_flags: HashMap::new(),
-            diagnostics: Vec::new(),
-            default_project_trust: DefaultProjectTrust::Ask,
-            subcommand: None,
-            subcommand_args: Vec::new(),
-        }
-    }
+    // Default impl provided by #[derive(Default)]
 
     pub fn should_run(&self) -> bool {
         !self.help && !self.version && !self.list_models
@@ -152,7 +116,7 @@ pub fn print_help() {
 
 /// Parse CLI arguments from raw string slices.
 pub fn parse_args(args: &[String]) -> CliArgs {
-    let mut result = CliArgs::new();
+    let mut result = CliArgs::default();
     let mut i = 0;
 
     while i < args.len() {
@@ -243,7 +207,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--default-trust" => {
                 i += 1;
                 if i < args.len() {
-                    result.default_project_trust = DefaultProjectTrust::from_str(&args[i]);
+                    result.default_project_trust = DefaultProjectTrust::from_str_name(&args[i]);
                 }
             }
 

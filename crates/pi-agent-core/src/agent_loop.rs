@@ -82,8 +82,6 @@ fn validate_tool_arguments(
             }
         }
         serde_json::Value::Object(filtered)
-    } else if args.is_object() {
-        args.clone()
     } else {
         args.clone()
     }
@@ -153,6 +151,13 @@ async fn prepare_tool_call(
                             .unwrap_or("Tool execution was blocked"),
                     ),
                     is_error: true,
+                };
+            }
+            // Apply modified args from extension hooks
+            if let Some(modified_args) = before_result.modified_args {
+                return PreparedOrImmediate::Prepared {
+                    tool_call: prepared_tool_call,
+                    args: modified_args,
                 };
             }
         }
@@ -537,6 +542,7 @@ async fn fail_tool_calls_from_truncated_message(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_tool_calls(
     current_context: &AgentContext,
     assistant_message: &AgentMessage,
@@ -603,6 +609,7 @@ fn extract_tool_calls(message: &AgentMessage) -> Vec<AgentToolCall> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_assistant_response(
     context: &mut AgentContext,
     model: &Model,
@@ -756,6 +763,7 @@ fn agent_message_from_assistant(msg: &AssistantMessage) -> AgentMessage {
 }
 
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct AgentLoopConfig {
     pub model: Model,
     pub reasoning: Option<ThinkingLevel>,
@@ -774,8 +782,10 @@ pub struct AgentLoopConfig {
     pub prepare_next_turn: Option<PrepareNextTurnFn>,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
-    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
     pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
+    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
+    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     pub max_consecutive_tool_calls: Option<usize>,
 }
 
@@ -994,6 +1004,8 @@ async fn run_loop(
                 signal: signal.clone(),
                 on_payload: initial_config.on_payload.clone(),
                 on_response: initial_config.on_response.clone(),
+                on_headers: initial_config.on_headers.clone(),
+                on_provider_response: initial_config.on_provider_response.clone(),
                 ..Default::default()
             };
 
@@ -1195,7 +1207,8 @@ mod tests {
         }
     }
 
-    fn dummy_agent_tool(
+    #[allow(clippy::type_complexity)]
+fn dummy_agent_tool(
         name: &str,
         schema: serde_json::Value,
         prepare: Option<Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>>,
@@ -1575,6 +1588,7 @@ mod tests {
                 Some(BeforeToolCallResult {
                     block: true,
                     reason: Some("not allowed".to_string()),
+                    modified_args: None,
                 })
             })
         });
@@ -2168,6 +2182,8 @@ mod tests {
             after_tool_call: None,
             on_payload: None,
             on_response: None,
+            on_headers: None,
+            on_provider_response: None,
             max_consecutive_tool_calls: None,
         }
     }

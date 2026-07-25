@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use pi_agent_core::types::AgentTool;
-use serde::de::DeserializeOwned;
 
 use crate::core::extensions::ToolDefinition;
 

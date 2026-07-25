@@ -2,14 +2,14 @@ use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
     AfterToolCallFn, AgentEvent, AgentMessage, AgentState, BeforeToolCallFn, ConvertToLlmFn,
-    GetApiKeyFn, QueueMode, StreamFn, TransformContextFn,
+    QueueMode, StreamFn, TransformContextFn,
 };
 use std::sync::Arc;
 
 use crate::core::compaction::CompactionResult;
 use crate::core::compaction::CompactionSettings;
 use crate::core::context_usage::ContextUsage;
-use crate::core::extensions::{ExtensionContext, ExtensionRegistry, HookResult, ToolDefinition};
+use crate::core::extensions::{ExtensionContext, ExtensionRegistry, ToolDefinition};
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
@@ -161,6 +161,7 @@ impl std::fmt::Display for CompactionReason {
 /// Session-specific events that extend the core AgentEvent.
 /// Matches the original TypeScript AgentSessionEvent type.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum AgentSessionEvent {
     // ── Passthrough from AgentEvent (all variants except AgentEnd) ──
     AgentStart,
@@ -269,6 +270,7 @@ impl SessionEventUnsubscribeHandle {
 // AgentSession
 // ============================================================================
 
+#[allow(clippy::type_complexity)]
 pub struct AgentSession {
     agent: Agent,
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
@@ -293,6 +295,10 @@ pub struct AgentSession {
     tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition>,
     /// Loaded resources (skills, prompt templates, context files), matching TS `_resourceLoader`.
     resources: Option<LoadedResources>,
+    /// Extension-contributed resource paths from `resources_discover` event.
+    /// These are collected at session start and can be applied to the resource loader
+    /// on session reload via `extend_resources()`.
+    extension_resource_paths: Option<crate::core::resource_loader::ResourceExtensionPaths>,
     /// Pending bash execution results queued while agent is streaming,
     /// matching TS `_pendingBashMessages`.
     pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
@@ -714,25 +720,57 @@ impl AgentSession {
 
         // Wire the before_provider_request event: extensions can inspect/modify
         // the provider request payload before it is sent.
-        let on_payload: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>> =
+        let on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>> =
             options.extension_registry.as_ref().map(|registry| {
                 let payload_reg = Arc::clone(registry);
                 let ctx_clone = Arc::clone(&shared_ext_ctx);
                 let closure = move |payload: serde_json::Value| {
                     let reg = Arc::clone(&payload_reg);
                     let ctx_ref = Arc::clone(&ctx_clone);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_before_provider_request(
+                            &reg, payload, &ctx_ref,
+                        )
+                        .await
+                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>>
+                };
+                Arc::new(closure) as Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>
+            });
+
+        // Wire the before_provider_headers event: extensions can modify
+        // HTTP request headers before they are sent to the provider.
+        let on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>> =
+            options.extension_registry.as_ref().map(|registry| {
+                let headers_reg = Arc::clone(registry);
+                let ctx_clone = Arc::clone(&shared_ext_ctx);
+                let closure = move |headers: std::collections::HashMap<String, String>| {
+                    let reg = Arc::clone(&headers_reg);
+                    let ctx_ref = Arc::clone(&ctx_clone);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_before_provider_headers(
+                            &reg, headers, &ctx_ref,
+                        ).await
+                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>>
+                };
+                Arc::new(closure) as Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>
+            });
+
+        // Wire the after_provider_response event: extensions can inspect
+        // provider HTTP response status and headers.
+        let on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>> =
+            options.extension_registry.as_ref().map(|registry| {
+                let resp_reg = Arc::clone(registry);
+                let ctx_clone = Arc::clone(&shared_ext_ctx);
+                let closure = move |status: u16, headers: std::collections::HashMap<String, String>| {
+                    let reg = Arc::clone(&resp_reg);
+                    let ctx_ref = Arc::clone(&ctx_clone);
                     tokio::spawn(async move {
-                        let cancelled =
-                            crate::core::extensions::dispatcher::dispatch_before_provider_request(
-                                &reg, &payload, &ctx_ref,
-                            )
-                            .await;
-                        if cancelled {
-                            eprintln!("[pi] Provider request cancelled by extension");
-                        }
+                        crate::core::extensions::dispatcher::dispatch_after_provider_response(
+                            &reg, status, headers, &ctx_ref,
+                        ).await;
                     });
                 };
-                Arc::new(closure) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
+                Arc::new(closure) as Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>
             });
 
         // Wire the API key resolution callback so the agent loop can
@@ -756,6 +794,8 @@ impl AgentSession {
             after_tool_call,
             transform_context,
             on_payload,
+            on_headers,
+            on_provider_response,
             get_api_key,
             ..Default::default()
         };
@@ -764,7 +804,7 @@ impl AgentSession {
         let session_manager = Arc::new(std::sync::Mutex::new(session_manager));
 
         let initial_active_tool_names = options.initial_active_tool_names.unwrap_or_else(|| {
-            vec!["read", "bash", "edit", "write"]
+            ["read", "bash", "edit", "write"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect()
@@ -823,6 +863,7 @@ impl AgentSession {
             tool_registry,
             tool_definitions,
             resources: options.resources,
+            extension_resource_paths: None,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
             _agent_subscription: None,
@@ -842,6 +883,62 @@ impl AgentSession {
             bash_abort: Arc::new(std::sync::Mutex::new(None)),
         };
 
+        // ── Dispatch resources_discover event to extensions ──
+        // Notifies extensions that resources have been loaded, allowing them
+        // to contribute additional resource paths (skillPaths, promptPaths, themePaths).
+        // The returned paths are stored for future use (e.g., when reloading resources).
+        if let Some(ref registry) = session.extension_registry {
+            let ext_ctx = session.ext_ctx.clone();
+            let cwd = session.cwd.clone();
+            let ext_paths = crate::core::extensions::dispatcher::dispatch_resources_discover(
+                registry, &cwd, "session_start", &ext_ctx,
+            ).await;
+            // Store extension-contributed paths for future resource reloads
+            if !ext_paths.skill_paths.is_empty()
+                || !ext_paths.prompt_paths.is_empty()
+                || !ext_paths.theme_paths.is_empty()
+            {
+                // Convert ResourcesDiscoverResult (Vec<String>) to ResourceExtensionPaths (Vec<(String, SourceInfo)>)
+                use crate::core::source_info::{SourceInfo, SourceOrigin, SourceScope};
+                let ext_resource_paths = crate::core::resource_loader::ResourceExtensionPaths {
+                    skill_paths: ext_paths.skill_paths.iter().map(|p| {
+                        (p.clone(), SourceInfo {
+                            path: p.clone(),
+                            source: "extension".to_string(),
+                            scope: SourceScope::Project,
+                            origin: SourceOrigin::Package,
+                            base_dir: None,
+                        })
+                    }).collect(),
+                    prompt_paths: ext_paths.prompt_paths.iter().map(|p| {
+                        (p.clone(), SourceInfo {
+                            path: p.clone(),
+                            source: "extension".to_string(),
+                            scope: SourceScope::Project,
+                            origin: SourceOrigin::Package,
+                            base_dir: None,
+                        })
+                    }).collect(),
+                    theme_paths: ext_paths.theme_paths.iter().map(|p| {
+                        (p.clone(), SourceInfo {
+                            path: p.clone(),
+                            source: "extension".to_string(),
+                            scope: SourceScope::Project,
+                            origin: SourceOrigin::Package,
+                            base_dir: None,
+                        })
+                    }).collect(),
+                };
+                session.extension_resource_paths = Some(ext_resource_paths);
+                eprintln!(
+                    "[pi] Extension-contributed paths: {} skills, {} prompts, {} themes",
+                    ext_paths.skill_paths.len(),
+                    ext_paths.prompt_paths.len(),
+                    ext_paths.theme_paths.len(),
+                );
+            }
+        }
+
         // ── Register internal agent event handler ──
         // Folds persistence, extension dispatch, and session event dispatch
         // into a single subscription, matching TS `_handleAgentEvent`.
@@ -856,6 +953,7 @@ impl AgentSession {
         let _inner_overflow = session.overflow_recovery_attempted.clone();
         let _inner_is_active = session.is_agent_run_active.clone();
         let _inner_idle = session.idle_notify.clone();
+        let inner_ext_ctx = shared_ext_ctx.clone();
 
         let internal_listener: Arc<
             dyn Fn(
@@ -868,7 +966,8 @@ impl AgentSession {
         > = Arc::new(move |event: AgentEvent, _signal| {
             let sm = inner_sm.clone();
             let reg = inner_reg.clone();
-            let cwd = inner_cwd.clone();
+            let ext_ctx = inner_ext_ctx.clone();
+            let _cwd = inner_cwd.clone();
             let listeners = inner_listeners.clone();
             let steering = inner_steering.clone();
             let follow_up = inner_follow_up.clone();
@@ -978,7 +1077,14 @@ impl AgentSession {
                         }
                         AgentEvent::MessageEnd { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
+                            // Fire void hook (notification) to all handlers
                             hr.fire_message_end(&msg_val).await;
+                            // Run modifying hook to allow extensions to modify the message
+                            if let Some(ref registry) = reg {
+                                let _ = crate::core::extensions::dispatcher::dispatch_message_end(
+                                    registry, &msg_val, &ext_ctx,
+                                ).await;
+                            }
                         }
                         AgentEvent::ToolExecutionStart {
                             tool_call_id,
@@ -992,9 +1098,21 @@ impl AgentSession {
                             )
                             .await;
                         }
-                        AgentEvent::ToolExecutionUpdate { .. } => {
-                            // High-frequency; skip to avoid flooding extensions
+                        AgentEvent::ToolExecutionUpdate {
+                            tool_call_id,
+                            tool_name,
+                            args,
+                            partial_result,
+                        } => {
+                            hr.fire_tool_execution_update(
+                                tool_call_id.as_str(),
+                                tool_name.as_str(),
+                                args,
+                                partial_result,
+                            )
+                            .await;
                         }
+
                         AgentEvent::ToolExecutionEnd {
                             tool_call_id,
                             tool_name,
@@ -1016,7 +1134,7 @@ impl AgentSession {
                     AgentEvent::AgentEnd { messages } => {
                         // Compute will_retry from the last assistant message,
                         // matching TS _willRetryAfterAgentEnd().
-                        let will_retry = messages.last().map_or(false, |last| {
+                        let will_retry = messages.last().is_some_and(|last| {
                             if let AgentMessage::Assistant {
                                 stop_reason,
                                 error_message,
@@ -1657,8 +1775,7 @@ impl AgentSession {
         let mut tool_results = 0;
 
         for entry in entries {
-            match entry {
-                crate::core::session_manager::SessionEntry::Message { message, .. } => {
+            if let crate::core::session_manager::SessionEntry::Message { message, .. } = entry {
                     if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
                         match role {
                             "user" => user_messages += 1,
@@ -1682,8 +1799,6 @@ impl AgentSession {
                         }
                     }
                 }
-                _ => {}
-            }
         }
 
         let total_messages = user_messages + assistant_messages + tool_calls + tool_results;
@@ -1748,13 +1863,11 @@ impl AgentSession {
         };
 
         // Check retry
-        if self._is_retryable_error(&msg) {
-            if self._prepare_retry(&msg).await {
+        if self._is_retryable_error(&msg) && self._prepare_retry(&msg).await {
                 // Continue the agent
                 self.agent.continue_run().await.ok();
                 return true;
             }
-        }
 
         // Emit auto_retry_end if retry attempt was active but not retryable
         if let AgentMessage::Assistant {
@@ -1975,17 +2088,29 @@ impl AgentSession {
         // Extensions can cancel the agent start or modify the system prompt.
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
+            // Extract images from content blocks for extension dispatch
+            let images: Vec<ContentBlock> = content.iter()
+                .filter(|b| matches!(b, ContentBlock::Image { .. }))
+                .cloned()
+                .collect();
+            let images_ref = if images.is_empty() { None } else { Some(images.as_slice()) };
             let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
                     system_prompt: &state.system_prompt,
                     messages: &state.messages,
+                    images: images_ref,
+                    system_prompt_options: None,
                     ext_ctx: &self.ext_ctx,
                 },
             )
             .await;
             if result.cancelled {
                 return;
+            }
+            // Apply the modified system prompt from extensions
+            if result.system_prompt != state.system_prompt {
+                self.agent.set_system_prompt(result.system_prompt).await;
             }
         }
 
@@ -2011,6 +2136,7 @@ impl AgentSession {
                     text,
                     source: "interactive",
                     images: None,
+                    streaming_behavior: None,
                     ext_ctx: &self.ext_ctx,
                 },
             )
@@ -2035,6 +2161,8 @@ impl AgentSession {
                     registry,
                     system_prompt: &state.system_prompt,
                     messages: &state.messages,
+                    images: None,
+                    system_prompt_options: None,
                     ext_ctx: &self.ext_ctx,
                 },
             )
@@ -2042,6 +2170,10 @@ impl AgentSession {
             if result.cancelled {
                 *self.is_agent_run_active.lock().unwrap() = false;
                 return;
+            }
+            // Apply the modified system prompt from extensions
+            if result.system_prompt != state.system_prompt {
+                self.agent.set_system_prompt(result.system_prompt).await;
             }
         }
 
@@ -2333,8 +2465,9 @@ impl AgentSession {
         use crate::core::compaction;
 
         // Dispatch session_before_compact to extensions.
+        // If an extension cancels, return early.
         if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_before_compact(
+            let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_compact(
                 registry,
                 if custom_instructions.is_some() {
                     "manual"
@@ -2345,6 +2478,9 @@ impl AgentSession {
                 &self.ext_ctx,
             )
             .await;
+            if cancelled {
+                return Err("Compaction cancelled by extension".to_string());
+            }
         }
 
         let messages = self.agent.state().await.messages;
@@ -2476,9 +2612,16 @@ impl AgentSession {
 
     /// Navigate the session tree, matching the original navigateTree().
     /// `direction` can be "up", "down", "root", or an entry ID.
-    pub fn navigate_tree(&mut self, direction: &str) -> bool {
+    pub async fn navigate_tree(&mut self, direction: &str) -> bool {
+        // Dispatch session_before_tree event to extensions
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_session_before_tree(
+                registry, direction, &self.ext_ctx,
+            ).await;
+        }
+
         let mut mgr = self.session_manager.lock().unwrap();
-        match direction {
+        let result = match direction {
             "up" | "parent" => mgr.navigate_to_parent(),
             "root" => {
                 // Navigate to the first entry (root)
@@ -2493,7 +2636,14 @@ impl AgentSession {
                 // Treat as an entry ID
                 mgr.navigate_to(direction)
             }
+        };
+
+        // Dispatch session_tree event to extensions (fire-and-forget)
+        if let Some(ref registry) = self.extension_registry {
+            registry.hook_runner().fire_tree(None, None).await;
         }
+
+        result
     }
 
     /// Get the session tree, matching the original getTree().
@@ -2655,12 +2805,12 @@ impl AgentSession {
 
     /// Export the session as HTML, matching the original exportHTML().
     /// Returns the HTML content as a string.
-
     // =========================================================================
     // Event Subscription (Session-level)
     // =========================================================================
 
     /// Emit an event to all registered session event listeners.
+    #[allow(clippy::empty_line_after_doc_comments)]
     fn _emit(&self, event: AgentSessionEvent) {
         let listeners = self.event_listeners.lock().unwrap();
         for listener in listeners.iter() {
@@ -3050,13 +3200,17 @@ impl AgentSession {
         }
 
         // Dispatch session_before_switch to extensions
+        // If an extension cancels, return an error.
         if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_before_switch(
+            let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_switch(
                 registry,
                 session_path,
                 &self.ext_ctx,
             )
             .await;
+            if cancelled {
+                return Err("Session switch cancelled by extension".to_string());
+            }
         }
 
         let session_dir = self
@@ -3124,13 +3278,17 @@ impl AgentSession {
     /// events and factory-based session creation instead.
     pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
         // Dispatch session_before_fork to extensions
+        // If an extension cancels, return an error.
         if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_before_fork(
+            let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_fork(
                 registry,
                 entry_id,
                 &self.ext_ctx,
             )
             .await;
+            if cancelled {
+                return Err("Session fork cancelled by extension".to_string());
+            }
         }
 
         // Use create_branched_session to create the fork
@@ -3233,6 +3391,21 @@ impl AgentSession {
         on_chunk: Option<Box<dyn Fn(&str) + Send + Sync>>,
     ) -> Result<crate::core::bash_executor::BashExecutorResult, String> {
         use crate::core::bash_executor::{BashExecutor, BashExecutorOptions};
+
+        // Dispatch user_bash event to extensions
+        // If an extension handles the command, return its result
+        if let Some(ref registry) = self.extension_registry {
+            if let Some(result) = crate::core::extensions::dispatcher::dispatch_user_bash(
+                registry, command, &self.cwd, &self.ext_ctx,
+            ).await {
+                // Extension handled the command; return its result
+                if let Some(ref result_val) = result.result {
+                    if let Ok(parsed) = serde_json::from_value(result_val.clone()) {
+                        return Ok(parsed);
+                    }
+                }
+            }
+        }
 
         // Create abort signal, matching TS `this._bashAbortController = new AbortController()`
         let (tx, rx) = tokio::sync::watch::channel(false);

@@ -339,7 +339,7 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
     );
 
     let archive_path = bin_dir.join(&asset_name);
-    let binary_ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let _binary_ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
     let binary_path = bin_dir.join(binary_filename(config.binary_name));
 
     // Download the archive.
@@ -468,10 +468,7 @@ mod tests {
     fn test_get_tool_path_system_tool_when_in_path() {
         // For a known tool, the function should either find it or return None.
         let path = get_tool_path("fd");
-        match path {
-            Some(p) => assert!(!p.is_empty(), "found path must not be empty"),
-            None => {} // acceptable when tool is not installed
-        }
+        if let Some(p) = path { assert!(!p.is_empty(), "found path must not be empty") } // acceptable when tool is not installed
     }
 
     // -----------------------------------------------------------------------
@@ -612,7 +609,7 @@ mod tests {
     fn test_find_binary_recursively_in_temp() {
         let dir = std::env::temp_dir().join("test_find_binary_recursively");
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir.join("sub")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub").join("fd"), "binary").unwrap();
 
         let found = find_binary_recursively(&dir, "fd");

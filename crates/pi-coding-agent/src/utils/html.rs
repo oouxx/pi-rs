@@ -53,8 +53,7 @@ pub fn decode_html_entity(entity: &str) -> Option<String> {
     }
 
     // Decimal entities: &#NN;
-    if entity.starts_with('#') {
-        let dec_str = &entity[1..];
+    if let Some(dec_str) = entity.strip_prefix('#') {
         let code = dec_str.parse::<u32>().ok()?;
         return decode_code_point(code);
     }

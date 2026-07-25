@@ -266,7 +266,7 @@ impl ModelRegistry {
         if !models_path.exists() {
             return HashMap::new();
         }
-        match std::fs::read_to_string(&models_path) {
+        match std::fs::read_to_string(models_path) {
             Ok(content) => match serde_json::from_str::<ModelsConfig>(&content) {
                 Ok(file) => {
                     let mut provider_configs = HashMap::new();

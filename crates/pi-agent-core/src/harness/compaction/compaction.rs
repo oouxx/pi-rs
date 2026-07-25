@@ -60,7 +60,7 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
 }
 
 pub fn estimate_context_tokens(messages: &[AgentMessage]) -> u64 {
-    messages.iter().map(|m| estimate_tokens(m)).sum()
+    messages.iter().map(estimate_tokens).sum()
 }
 
 pub fn should_compact(
@@ -336,6 +336,7 @@ Format your summary as:
 ///
 /// Calls pi_ai to stream a completion from the specified model, using
 /// the summarization system prompt and the serialized conversation as context.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_summary(
     messages: &[AgentMessage],
     model: &crate::pi_ai_types::Model,
@@ -648,7 +649,7 @@ mod tests {
             create_assistant_message("Hi", create_mock_usage(100, 50)),
         ];
         let total = estimate_context_tokens(&messages);
-        let expected: u64 = messages.iter().map(|m| estimate_tokens(m)).sum();
+        let expected: u64 = messages.iter().map(estimate_tokens).sum();
         assert_eq!(total, expected);
     }
 

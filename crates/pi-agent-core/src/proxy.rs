@@ -151,7 +151,7 @@ pub fn stream_proxy(
         };
 
         let response_result = client
-            .post(&format!("{}/api/stream", options.proxy_url))
+            .post(format!("{}/api/stream", options.proxy_url))
             .headers(headers_map)
             .json(&request_body)
             .send()
@@ -221,8 +221,8 @@ pub fn stream_proxy(
                     buffer = String::new();
 
                     for line in &lines {
-                        if line.starts_with("data: ") {
-                            let data = line[6..].trim().to_string();
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            let data = data.trim().to_string();
                             if data.is_empty() {
                                 continue;
                             }
@@ -256,8 +256,8 @@ pub fn stream_proxy(
         }
 
         // Process any remaining buffer content
-        if buffer.starts_with("data: ") {
-            let data = buffer[6..].trim().to_string();
+        if let Some(data) = buffer.strip_prefix("data: ") {
+            let data = data.trim().to_string();
             if !data.is_empty() {
                 if let Ok(proxy_event) =
                     serde_json::from_str::<ProxyAssistantMessageEvent>(&data)
@@ -415,16 +415,14 @@ pub fn process_proxy_event(
             content_index,
             delta,
         } => {
-            if let Some(ContentBlock::ToolCall { arguments, .. }) =
-                partial.content.get_mut(content_index)
+            if let Some(ContentBlock::ToolCall {
+                arguments: serde_json::Value::Object(map),
+                ..
+            }) = partial.content.get_mut(content_index)
             {
-                if let serde_json::Value::Object(map) = arguments {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&delta) {
-                        if let serde_json::Value::Object(delta_map) = parsed {
-                            for (k, v) in delta_map {
-                                map.insert(k, v);
-                            }
-                        }
+                if let Ok(serde_json::Value::Object(delta_map)) = serde_json::from_str::<serde_json::Value>(&delta) {
+                    for (k, v) in delta_map {
+                        map.insert(k, v);
                     }
                 }
             }
@@ -529,7 +527,7 @@ mod tests {
             &mut partial,
         );
         assert!(matches!(event, Some(AssistantMessageEvent::TextDelta { .. })));
-        if let Some(ContentBlock::Text { text, .. }) = partial.content.get(0) {
+        if let Some(ContentBlock::Text { text, .. }) = partial.content.first() {
             assert_eq!(text, "Hello");
         } else {
             panic!("expected Text block");
@@ -563,7 +561,7 @@ mod tests {
             &mut partial,
         );
         assert!(matches!(event, Some(AssistantMessageEvent::ThinkingDelta { .. })));
-        if let Some(ContentBlock::Thinking { thinking, .. }) = partial.content.get(0) {
+        if let Some(ContentBlock::Thinking { thinking, .. }) = partial.content.first() {
             assert_eq!(thinking, "I'm thinking");
         }
 

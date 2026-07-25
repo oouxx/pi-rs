@@ -25,6 +25,7 @@ pub struct TruncationOptions {
     pub max_bytes: Option<usize>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for TruncationOptions {
     fn default() -> Self {
         Self {

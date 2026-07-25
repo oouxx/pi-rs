@@ -1,10 +1,9 @@
 use pi_agent_core::pi_ai_types::{Model, ThinkingLevel};
 use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 
-use std::sync::Arc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
-use crate::core::extensions::{ExtensionRegistry, HookHandler, ToolDefinition};
+use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
@@ -24,11 +23,18 @@ pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
          _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
          options: pi_agent_core::types::StreamFnOptions| {
             Box::pin(async move {
-                let mut stream_opts = pi_agent_core::pi_ai::types::StreamOptions::default();
-                stream_opts.signal = options.signal;
-                stream_opts.api_key = options.api_key;
-                stream_opts.headers = options.headers;
-                stream_opts.session_id = options.session_id;
+                let stream_opts = pi_agent_core::pi_ai::types::StreamOptions {
+                    signal: options.signal,
+                    api_key: options.api_key,
+                    headers: options.headers,
+                    session_id: options.session_id,
+                    on_payload: options.on_payload,
+                    on_headers: options.on_headers,
+                    on_provider_response: options.on_provider_response,
+                    ..Default::default()
+                };
+
+
 
                 let event_stream =
                     pi_agent_core::pi_ai::stream::stream(&model, &context, Some(stream_opts));
@@ -475,10 +481,10 @@ pub async fn create_agent_session(
 
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    let mut extension_registry = options
+    let extension_registry = options
         .extension_registry
         .take()
-        .unwrap_or_else(ExtensionRegistry::new);
+        .unwrap_or_default();
     // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
     let prompt_guidelines = collect_prompt_guidelines(&extension_registry);
@@ -490,7 +496,7 @@ pub async fn create_agent_session(
             .hook_runner()
             .handlers()
             .iter()
-            .map(|ext: &Box<dyn HookHandler>| ext.name().to_string())
+            .map(|ext| ext.name().to_string())
             .collect()
     } else {
         Vec::new()

@@ -13,9 +13,9 @@ pub const ENV_PI_RS_HOME: &str = "PI_RS_HOME";
 pub const CURRENT_SESSION_VERSION: u32 = 3;
 
 pub fn expand_tilde_path(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&path[2..]);
+            return home.join(stripped);
         }
     }
     PathBuf::from(path)

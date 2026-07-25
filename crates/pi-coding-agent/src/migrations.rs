@@ -2,7 +2,6 @@
 //!
 //! Mirrors packages/coding-agent/src/migrations.ts
 
-use std::path::Path;
 
 use crate::config;
 

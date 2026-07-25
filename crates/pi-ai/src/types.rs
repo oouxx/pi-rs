@@ -924,7 +924,7 @@ mod tests {
         };
         let json = serde_json::to_string(&model).unwrap();
         assert!(json.contains("\"id\":\"claude-sonnet-4-6\""));
-        assert!(json.contains("\"contextWindow\":200_000"));
+        assert!(json.contains("\"contextWindow\":200000"));
     }
 
     // --- Supplementary tests matching TS originals ---
@@ -1135,13 +1135,13 @@ mod tests {
                 {"type": "text", "text": "hello"},
                 {"type": "text", "text": "world"}
             ],
-            "timestamp": 123_456
+            "timestamp": 123456
         }"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         match msg {
             Message::User { content, timestamp } => {
                 assert_eq!(content.len(), 2);
-                assert_eq!(timestamp, 123_456);
+                assert_eq!(timestamp, 123456);
             }
             _ => panic!("expected User"),
         }

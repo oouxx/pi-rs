@@ -1,8 +1,5 @@
 [workspace]
 
-# NOTE: pi-tui is temporarily excluded from the workspace members because its
-# ratatui 0.29 dependency hard-pins unicode-width =0.2.0. Re-add "crates/pi-tui"
-# to members once pi-tui upgrades to ratatui 0.30.
 members = [
     "crates/pi-agent-core",
     "crates/pi-ai",
@@ -10,6 +7,7 @@ members = [
     "crates/pi-coding-agent",
     "crates/pi-extensions",
     "crates/pi-cli",
+    "crates/pi-tui",
 ]
 
 
@@ -32,8 +30,10 @@ pi-agent-core = { path = "crates/pi-agent-core" }
 pi-extension-api = { path = "crates/pi-extension-api" }
 pi-coding-agent = { path = "crates/pi-coding-agent" }
 pi-extensions = { path = "crates/pi-extensions" }
+pi-tui = { path = "crates/pi-tui" }
 
 # Shared external dependencies
+crossterm = { version = "0.28", features = ["event-stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1" }

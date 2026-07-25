@@ -1,5 +1,11 @@
 //! Elm architecture core — Model, Msg, update, view, Cmd.
 
+#![allow(
+    clippy::cast_lossless,
+    unused_assignments,
+    clippy::manual_pattern_char_comparison,
+)]
+
 use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -180,7 +186,7 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(text) = model.completer.selected_insert() {
                     let current = model.input.value().to_string();
-                    if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                    if let Some(pos) = current.rfind(['/', '@']) {
                         let prefix = &current[..=pos];
                         model.input.clear(); model.input.insert_str(&format!("{prefix}{text} "));
                     }
@@ -208,7 +214,7 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 model.input.backspace();
                 if model.completer.trigger.is_some() {
                     let current = model.input.value();
-                    if let Some(pos) = current.rfind(|c: char| c == '/' || c == '@') {
+                    if let Some(pos) = current.rfind(['/', '@']) {
                         model.completer.activate(model.completer.trigger.unwrap(), &current[pos + 1..]);
                     } else { model.completer.deactivate(); }
                 }
@@ -241,7 +247,7 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
 // ============================================================================
 
 pub fn view(model: &Model, frame: &mut Frame) {
-    let area = frame.size(); let t = &model.theme;
+    let area = frame.area(); let t = &model.theme;
     if let AppMode::Editor { editor, title, .. } = &model.mode {
         render_editor(frame, area, editor, title, t); return;
     }
@@ -501,7 +507,7 @@ pub async fn run(mut model: Model, mut terminal: crate::terminal::Terminal, mut 
     loop {
         terminal.ratatui_terminal().draw(|frame| view(&model, frame))?;
         tokio::select! {
-            Some(key) = input_rx.recv() => { let cmds = update(&mut model, Msg::Key(key)); for cmd in cmds { if let Cmd::Quit = cmd { return Ok(()); } } }
+            Some(key) = input_rx.recv() => { let cmds = update(&mut model, Msg::Key(key)); for cmd in cmds { if matches!(cmd, Cmd::Quit) { return Ok(()); } } }
             _ = sleep(Duration::from_millis(50)) => {}
         }
     }

@@ -30,6 +30,8 @@ fs2 = "0.4"
 # limited to Client::builder + get/send/json, which is stable across the bump).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # deno_core removed — extensions are now native Rust crates (see extensions::api)
+pi-tui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
 
 [features]
 # Interactive TUI mode. The pi-tui / crossterm dependencies are currently removed
@@ -37,7 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # upgrades to ratatui 0.30. The interactive mode code stays gated behind
 # `#[cfg(feature = "interactive")]` and is inert until then.
 default = []
-interactive = []
+interactive = ["pi-tui", "crossterm"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

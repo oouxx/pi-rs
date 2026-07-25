@@ -198,6 +198,13 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         session_dir,
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
+        custom_tools: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
+        session_start_event: None,
     };
 
     let (session, _result) = match create_agent_session(sdk_options).await {

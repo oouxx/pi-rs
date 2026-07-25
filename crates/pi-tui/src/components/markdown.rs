@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui_markdown::highlight::{HighlightHooks, TreeSitterHighlighter};
 use ratatui_markdown::markdown::MarkdownRenderer;
-use ratatui_markdown::theme::DefaultTheme;
+use ratatui_markdown::theme::ThemeConfig;
 
 /// Theme configuration for markdown rendering.
 pub struct MarkdownTheme;
@@ -63,7 +63,7 @@ impl Markdown {
         renderer = renderer.with_render_hooks(Box::new(hooks));
 
         let blocks = renderer.parse(&self.text);
-        let theme = DefaultTheme;
+        let theme = ThemeConfig::default();
         let lines = renderer.render(&blocks, &theme);
 
         // Post-process: apply line numbering and styling for code blocks

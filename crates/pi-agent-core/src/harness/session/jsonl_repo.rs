@@ -13,7 +13,7 @@ fn encode_cwd(cwd: &str) -> String {
     let trimmed = cwd
         .trim_start_matches(['/', '\\'])
         .replace(['/', '\\', ':'], "-");
-    format!("--{}--", trimmed)
+    format!("--{trimmed}--")
 }
 
 pub struct JsonlSessionRepo {
@@ -58,7 +58,7 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
         let session_dir = self.session_dir(&options.cwd);
 
         tokio::fs::create_dir_all(&session_dir).await.map_err(|e| {
-            SessionError::Storage(format!("Failed to create session directory: {}", e))
+            SessionError::Storage(format!("Failed to create session directory: {e}"))
         })?;
 
         let file_path = self.create_session_file_path(&options.cwd, &id, &created_at);
@@ -100,13 +100,13 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
 
         let mut entries = tokio::fs::read_dir(sessions_root)
             .await
-            .map_err(|e| SessionError::Storage(format!("Failed to read sessions root: {}", e)))?;
+            .map_err(|e| SessionError::Storage(format!("Failed to read sessions root: {e}")))?;
 
         let mut sessions = Vec::new();
         while let Some(entry) = entries
             .next_entry()
             .await
-            .map_err(|e| SessionError::Storage(format!("Failed to read directory entry: {}", e)))?
+            .map_err(|e| SessionError::Storage(format!("Failed to read directory entry: {e}")))?
         {
             let path = entry.path();
             if !path.is_dir() {
@@ -115,12 +115,12 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
 
             let mut dir_entries = tokio::fs::read_dir(&path)
                 .await
-                .map_err(|e| SessionError::Storage(format!("Failed to read session dir: {}", e)))?;
+                .map_err(|e| SessionError::Storage(format!("Failed to read session dir: {e}")))?;
 
             while let Some(file_entry) = dir_entries
                 .next_entry()
                 .await
-                .map_err(|e| SessionError::Storage(format!("Failed to read dir entry: {}", e)))?
+                .map_err(|e| SessionError::Storage(format!("Failed to read dir entry: {e}")))?
             {
                 let file_path = file_entry.path();
                 if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -152,7 +152,7 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
 
         tokio::fs::remove_file(path)
             .await
-            .map_err(|e| SessionError::Storage(format!("Failed to delete session: {}", e)))?;
+            .map_err(|e| SessionError::Storage(format!("Failed to delete session: {e}")))?;
 
         Ok(())
     }
@@ -172,7 +172,7 @@ impl SessionRepo<SessionMetadata> for JsonlSessionRepo {
         let session_dir = self.session_dir(&options.cwd);
 
         tokio::fs::create_dir_all(&session_dir).await.map_err(|e| {
-            SessionError::Storage(format!("Failed to create session directory: {}", e))
+            SessionError::Storage(format!("Failed to create session directory: {e}"))
         })?;
 
         let file_path = self.create_session_file_path(&options.cwd, &id, &created_at);

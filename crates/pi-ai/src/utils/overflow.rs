@@ -7,8 +7,9 @@ use regex::Regex;
 use crate::types::{AssistantMessage, StopReason};
 
 /// Create a case-insensitive regex, matching the `/i` flag from the original TS patterns.
+#[allow(clippy::unwrap_used)]
 fn re(pattern: &str) -> Regex {
-    Regex::new(&format!("(?i){}", pattern)).unwrap()
+    Regex::new(&format!("(?i){pattern}")).unwrap()
 }
 
 static OVERFLOW_PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
@@ -98,6 +99,7 @@ pub fn get_overflow_patterns() -> Vec<Regex> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::types::{Usage, UsageCost};
 

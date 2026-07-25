@@ -6,7 +6,7 @@
 /// A parsed SSE event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSentEvent {
-    /// The event type field (e.g. "message_start", "content_block_delta").
+    /// The event type field (e.g. "`message_start`", "`content_block_delta`").
     pub event: Option<String>,
     /// The concatenated data field(s).
     pub data: String,
@@ -56,14 +56,8 @@ pub fn decode_sse_line(line: &str, state: &mut SseDecoderState) -> Option<Server
     }
 
     let delimiter_index = line.find(':');
-    let field_name = match delimiter_index {
-        Some(idx) => &line[..idx],
-        None => line,
-    };
-    let mut value = match delimiter_index {
-        Some(idx) => &line[idx + 1..],
-        None => "",
-    };
+    let field_name = delimiter_index.map_or(line, |idx| &line[..idx]);
+    let mut value = delimiter_index.map_or("", |idx| &line[idx + 1..]);
     // Strip a single leading space after the colon (SSE spec)
     if value.starts_with(' ') {
         value = &value[1..];
@@ -95,28 +89,29 @@ fn next_line_break_index(text: &str) -> Option<usize> {
 /// Returns `Some((line, rest))` where `line` does NOT include the line
 /// terminator and `rest` is everything after it (including `\r\n` consumed as one).
 /// Returns `None` if no complete line is available yet.
+#[must_use] 
 pub fn consume_line(text: &str) -> Option<(&str, &str)> {
     let line_break_idx = next_line_break_index(text)?;
 
     let mut next_idx = line_break_idx + 1;
     // Handle \r\n as a single line break
-    let line_len = if text.as_bytes()[line_break_idx] == b'\r'
+    if text.as_bytes()[line_break_idx] == b'\r'
         && next_idx < text.len()
         && text.as_bytes()[next_idx] == b'\n'
     {
         next_idx += 1;
-        line_break_idx
-    } else {
-        line_break_idx
-    };
+    }
+    let line_len = line_break_idx;
+
 
     Some((&text[..line_len], &text[next_idx..]))
 }
 
-/// Parse a full SSE byte stream into a Vec of ServerSentEvents.
+/// Parse a full SSE byte stream into a Vec of `ServerSentEvents`.
 ///
 /// This is a synchronous function that takes the complete response body
 /// as bytes and returns all parsed events. Useful for testing.
+#[must_use] 
 pub fn parse_sse_body(body: &[u8]) -> Vec<ServerSentEvent> {
     let text = String::from_utf8_lossy(body);
     let mut state = SseDecoderState::default();
@@ -147,6 +142,7 @@ pub fn parse_sse_body(body: &[u8]) -> Vec<ServerSentEvent> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     // ============================================================
@@ -228,7 +224,7 @@ mod tests {
         let mut state = SseDecoderState::default();
         let result = decode_sse_line("event", &mut state);
         assert!(result.is_none());
-        assert_eq!(state.event, Some("".to_string()));
+        assert_eq!(state.event, Some(String::new()));
     }
 
     #[test]

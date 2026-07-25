@@ -1,4 +1,12 @@
 #![allow(clippy::type_complexity)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::significant_drop_tightening)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::match_wildcard_for_single_variants)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::too_many_lines)]
 //! Integration tests for pi-agent-core with DeepSeek V4 Flash.
 //!
 //! Tests multi-turn conversation and tool calling via the pi-ai streaming pipeline.
@@ -37,7 +45,7 @@ fn make_model() -> Model {
         thinking_level_map: None,
         input: vec!["text".to_string()],
         cost: ModelCost::default(),
-        context_window: 128000,
+        context_window: 128_000,
         max_tokens: 4096,
         headers: None,
         compat: None,
@@ -776,7 +784,7 @@ async fn test_deepseek_structured_extraction() {
         thinking_level_map: None,
         input: vec!["text".to_string()],
         cost: pi_ai::types::ModelCost::default(),
-        context_window: 128000,
+        context_window: 128_000,
         max_tokens: 1024,
         headers: None,
         compat: None,

@@ -1,7 +1,7 @@
-//! OpenAI Chat Completions API provider.
+//! `OpenAI` Chat Completions API provider.
 //!
-//! Thin wrapper around the OpenAI Chat Completions API using reqwest for HTTP
-//! and SSE streaming. Converts between pi-ai types and OpenAI API format.
+//! Thin wrapper around the `OpenAI` Chat Completions API using reqwest for HTTP
+//! and SSE streaming. Converts between pi-ai types and `OpenAI` API format.
 //!
 //! Ported from `packages/ai/src/providers/openai-completions.ts`.
 
@@ -86,7 +86,7 @@ struct StreamOptionsFlag {
 // Message conversion
 // ============================================================================
 
-/// Convert pi-ai messages to OpenAI API format.
+/// Convert pi-ai messages to `OpenAI` API format.
 fn convert_messages(messages: &[Message]) -> Vec<OpenAIMessage> {
     let mut result = Vec::new();
 
@@ -180,7 +180,7 @@ fn convert_messages(messages: &[Message]) -> Vec<OpenAIMessage> {
     result
 }
 
-/// Convert pi-ai tools to OpenAI tool definitions.
+/// Convert pi-ai tools to `OpenAI` tool definitions.
 fn convert_tools(tools: &[Tool]) -> Vec<OpenAITool> {
     tools
         .iter()
@@ -195,7 +195,7 @@ fn convert_tools(tools: &[Tool]) -> Vec<OpenAITool> {
         .collect()
 }
 
-/// Map OpenAI finish reason to pi-ai StopReason.
+/// Map `OpenAI` finish reason to pi-ai `StopReason`.
 fn map_stop_reason(reason: &str) -> StopReason {
     match reason {
         "stop" => StopReason::Stop,
@@ -210,8 +210,8 @@ fn map_stop_reason(reason: &str) -> StopReason {
 // OpenAI SSE parsing (different format from Anthropic)
 // ============================================================================
 
-/// Parse a single line from the OpenAI SSE stream.
-/// OpenAI SSE format is simpler: each line is `data: <json>`, ending with `data: [DONE]`.
+/// Parse a single line from the `OpenAI` SSE stream.
+/// `OpenAI` SSE format is simpler: each line is `data: <json>`, ending with `data: [DONE]`.
 fn parse_openai_sse_chunk(line: &str) -> Option<Value> {
     let line = line.trim();
     if line.is_empty() || line.starts_with(':') {
@@ -233,7 +233,7 @@ fn parse_openai_sse_chunk(line: &str) -> Option<Value> {
     serde_json::from_str(data).ok()
 }
 
-/// Parse a complete OpenAI SSE response body into JSON values.
+/// Parse a complete `OpenAI` SSE response body into JSON values.
 fn parse_openai_sse_body(body: &[u8]) -> Vec<Value> {
     let text = String::from_utf8_lossy(body);
     let mut events = Vec::new();
@@ -247,28 +247,28 @@ fn parse_openai_sse_body(body: &[u8]) -> Vec<Value> {
     events
 }
 
-/// Parse token usage from an OpenAI chunk.
+/// Parse token usage from an `OpenAI` chunk.
 fn parse_chunk_usage(usage: &Value) -> Usage {
     Usage {
         input: usage
             .get("prompt_tokens")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
         output: usage
             .get("completion_tokens")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
         cache_read: usage
             .get("prompt_tokens_details")
             .and_then(|v| v.get("cached_tokens"))
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
         cache_write: 0,
         total_tokens: usage
             .get("total_tokens")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
-        cost: Default::default(),
+        cost: crate::types::UsageCost::default(),
     }
 }
 
@@ -276,7 +276,8 @@ fn parse_chunk_usage(usage: &Value) -> Usage {
 // StreamOpenAI: main streaming function
 // ============================================================================
 
-/// Stream a completion from the OpenAI Chat Completions API.
+/// Stream a completion from the `OpenAI` Chat Completions API.
+#[must_use] 
 pub fn stream_openai(
     model: &Model,
     context: &Context,
@@ -363,7 +364,7 @@ async fn stream_openai_inner(
     if let Some(t) = temperature {
         body.insert(
             "temperature".to_string(),
-            Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(1))),
+            Value::Number(serde_json::Number::from_f64(t).unwrap_or_else(|| serde_json::Number::from(1))),
         );
     }
     if let Some(ref t) = tools {
@@ -386,7 +387,7 @@ async fn stream_openai_inner(
             "{}/chat/completions",
             model.base_url.trim_end_matches('/')
         ))
-        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -395,7 +396,7 @@ async fn stream_openai_inner(
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API error {}: {}", status, text).into());
+        return Err(format!("OpenAI API error {status}: {text}").into());
     }
 
     let response_bytes = response.bytes().await?;
@@ -465,9 +466,8 @@ async fn stream_openai_inner(
         }
 
         // Parse choices
-        let choices = match chunk.get("choices").and_then(|v| v.as_array()) {
-            Some(c) => c,
-            None => continue,
+        let Some(choices) = chunk.get("choices").and_then(|v| v.as_array()) else {
+            continue;
         };
 
         if choices.is_empty() {
@@ -481,16 +481,15 @@ async fn stream_openai_inner(
                 output.stop_reason = map_stop_reason(reason);
                 if output.stop_reason == StopReason::Error {
                     output.error_message =
-                        Some(format!("Provider returned finish_reason: {}", reason));
+                        Some(format!("Provider returned finish_reason: {reason}"));
                 }
                 has_finish_reason = true;
             }
         }
 
         // Parse delta
-        let delta = match choice.get("delta") {
-            Some(d) => d,
-            None => continue,
+        let Some(delta) = choice.get("delta") else {
+            continue;
         };
 
         // Text content
@@ -511,7 +510,7 @@ async fn stream_openai_inner(
                         text: ref mut t, ..
                     }) = output.content.get_mut(ci)
                     {
-                        *t = text.clone();
+                        t.clone_from(text);
                     }
                     let _ = tx.send(AssistantMessageEvent::TextDelta {
                         content_index: ci,
@@ -549,7 +548,7 @@ async fn stream_openai_inner(
                         let ci = output.content.len();
                         output.content.push(ContentBlock::Thinking {
                             thinking: reasoning.to_string(),
-                            thinking_signature: Some(field.to_string()),
+                            thinking_signature: Some((*field).to_string()),
                             redacted: None,
                         });
                         let _ = tx.send(AssistantMessageEvent::ThinkingStart {
@@ -564,7 +563,7 @@ async fn stream_openai_inner(
         // Tool calls — using dual-map lookup (by index, by id) aligned with TS pi
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tool_calls {
-                let stream_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let stream_index = tc.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
                 let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let tc_function = tc.get("function");
 
@@ -623,7 +622,7 @@ async fn stream_openai_inner(
                         }
                     }
                     let args_val = serde_json::from_str::<Value>(&first_args)
-                        .unwrap_or(Value::Object(Default::default()));
+                        .unwrap_or_else(|_| Value::Object(serde_json::Map::default()));
 
                     output.content.push(ContentBlock::ToolCall {
                         id: tc_id.to_string(),
@@ -704,7 +703,8 @@ async fn stream_openai_inner(
 // streamSimpleOpenAI
 // ============================================================================
 
-/// Stream a completion from OpenAI with simplified options.
+/// Stream a completion from `OpenAI` with simplified options.
+#[must_use] 
 pub fn stream_simple_openai(
     model: &Model,
     context: &Context,
@@ -714,16 +714,16 @@ pub fn stream_simple_openai(
     if let Some(opts) = options {
         full_opts.temperature = opts.base.temperature;
         full_opts.max_tokens = opts.base.max_tokens;
-        full_opts.signal = opts.base.signal.clone();
-        full_opts.api_key = opts.base.api_key.clone();
-        full_opts.transport = opts.base.transport.clone();
-        full_opts.cache_retention = opts.base.cache_retention.clone();
-        full_opts.session_id = opts.base.session_id.clone();
-        full_opts.headers = opts.base.headers.clone();
+        full_opts.signal.clone_from(&opts.base.signal);
+        full_opts.api_key.clone_from(&opts.base.api_key);
+        full_opts.transport.clone_from(&opts.base.transport);
+        full_opts.cache_retention.clone_from(&opts.base.cache_retention);
+        full_opts.session_id.clone_from(&opts.base.session_id);
+        full_opts.headers.clone_from(&opts.base.headers);
         full_opts.timeout_ms = opts.base.timeout_ms;
         full_opts.max_retries = opts.base.max_retries;
         full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
-        full_opts.metadata = opts.base.metadata.clone();
+        full_opts.metadata.clone_from(&opts.base.metadata);
     }
     stream_openai(model, context, Some(&full_opts))
 }
@@ -734,6 +734,7 @@ pub fn stream_simple_openai(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     // ============================================================
     // map_stop_reason tests

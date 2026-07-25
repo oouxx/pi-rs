@@ -28,12 +28,12 @@ static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 pub fn register_session_resource_cleanup(cleanup: CleanupFn) -> Box<dyn Fn() + Send> {
     let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     {
-        let mut cleanups = CLEANUPS.lock().unwrap();
+        let mut cleanups = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cleanups.push((id, cleanup));
     }
     let unregister_id = id;
     Box::new(move || {
-        let mut cleanups = CLEANUPS.lock().unwrap();
+        let mut cleanups = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cleanups.retain(|(cid, _)| *cid != unregister_id);
     })
 }
@@ -42,7 +42,7 @@ pub fn register_session_resource_cleanup(cleanup: CleanupFn) -> Box<dyn Fn() + S
 /// an error string with all collected errors is returned.
 pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String> {
     let cleanups = {
-        let mut c = CLEANUPS.lock().unwrap();
+        let mut c = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::take(&mut *c)
     };
 
@@ -51,13 +51,11 @@ pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String>
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cleanup(session_id))) {
             Ok(()) => {}
             Err(e) => {
-                let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = e.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown error".to_string()
-                };
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| e.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown error".to_string());
                 errors.push(msg);
             }
         }
@@ -75,7 +73,7 @@ pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String>
 
 /// Clear all registered cleanup callbacks without invoking them.
 pub fn clear_cleanups() {
-    let mut cleanups = CLEANUPS.lock().unwrap();
+    let mut cleanups = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cleanups.clear();
 }
 

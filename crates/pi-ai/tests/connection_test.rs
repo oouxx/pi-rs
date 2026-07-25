@@ -1,18 +1,19 @@
 //! Integration tests for real LLM connectivity.
 //!
-//! Tests connectivity to OpenRouter and DeepSeek via the pi-ai streaming pipeline.
+//! Tests connectivity to `OpenRouter` and `DeepSeek` via the pi-ai streaming pipeline.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! API keys are loaded from environment variables via `env_api_keys.rs`:
-//!   - OpenRouter  → `OPENROUTER_API_KEY`
-//!   - DeepSeek    → `DEEPSEEK_API_KEY`
+//!   - `OpenRouter`  → `OPENROUTER_API_KEY`
+//!   - `DeepSeek`    → `DEEPSEEK_API_KEY`
 //!
-//! Run: cargo test --test connection_test -- --ignored --nocapture
+//! Run: cargo test --test `connection_test` -- --ignored --nocapture
 
 use pi_ai::models::get_model;
 use pi_ai::providers::register_builtins::register_built_in_api_providers;
 use pi_ai::stream::stream;
 use pi_ai::types::{ContentBlock, Context, Message, StopReason, StreamOptions};
 
-/// Helper: one-shot streaming call, returns the final AssistantMessage.
+/// Helper: one-shot streaming call, returns the final `AssistantMessage`.
 async fn stream_one(
     model_id: &str,
     provider: &str,
@@ -22,18 +23,17 @@ async fn stream_one(
 
     let model = get_model(provider, model_id).unwrap_or_else(|| {
         panic!(
-            "Model {}/{} not found in generated catalog. Run build.rs first.",
-            provider, model_id
+            "Model {provider}/{model_id} not found in generated catalog. Run build.rs first."
         )
     });
 
     let context = Context {
         system_prompt: Some(format!(
-            r#"You are a terse assistant. Reply in one short sentence. Do NOT use tool calls. Reply directly with plain text.
+            r"You are a terse assistant. Reply in one short sentence. Do NOT use tool calls. Reply directly with plain text.
 
 User: {prompt}
 
-Assistant:"#
+Assistant:"
         )),
         messages: vec![Message::User {
             content: vec![ContentBlock::text("Hi")],
@@ -53,7 +53,7 @@ Assistant:"#
     event_stream
         .result()
         .await
-        .unwrap_or_else(|e| panic!("Stream failed for {}/{}: {}", provider, model_id, e))
+        .unwrap_or_else(|e| panic!("Stream failed for {provider}/{model_id}: {e}"))
 }
 
 // ============================================================================
@@ -75,7 +75,7 @@ async fn test_openrouter_free_model_found_in_catalog() {
 #[ignore = "requires OPENROUTER_API_KEY and network"]
 async fn test_openrouter_free_can_stream() {
     let result = stream_one("openrouter/free", "openrouter", "Say exactly: pong").await;
-    println!("openrouter/free response: {:?}", result);
+    println!("openrouter/free response: {result:?}");
     assert_eq!(
         result.stop_reason,
         StopReason::Stop,
@@ -104,7 +104,7 @@ async fn test_deepseek_v4_flash_model_found_in_catalog() {
 #[ignore = "requires DEEPSEEK_API_KEY and network"]
 async fn test_deepseek_v4_flash_can_stream() {
     let result = stream_one("deepseek-v4-flash", "deepseek", "Say exactly: pong").await;
-    println!("deepseek-v4-flash response: {:?}", result);
+    println!("deepseek-v4-flash response: {result:?}");
     assert_eq!(
         result.stop_reason,
         StopReason::Stop,

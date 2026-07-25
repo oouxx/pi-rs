@@ -175,6 +175,7 @@ struct AnthropicDelta {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct AnthropicUsage {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
@@ -275,23 +276,9 @@ pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<Anth
                 }
 
                 // Handle images
-                let images: Vec<_> = content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Image { data, mime_type } => {
-                            Some(AnthropicContentBlock::Image {
-                                source: AnthropicImageSource {
-                                    source_type: "base64".to_string(),
-                                    media_type: mime_type.clone(),
-                                    data: data.clone(),
-                                },
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
+                let has_images = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
 
-                if !images.is_empty() {
+                if has_images {
                     // For image messages, we need to use content blocks
                     // If there are text blocks, include them alongside images
                     let blocks: Vec<AnthropicContentBlock> = content
@@ -342,7 +329,7 @@ pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<Anth
                             // Thinking blocks are not sent back to the API
                             None
                         }
-                        _ => None,
+                        ContentBlock::Image { .. } => None,
                     })
                     .collect();
 
@@ -403,7 +390,8 @@ pub(crate) fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
 // Stop reason mapping
 // ============================================================================
 
-/// Map Anthropic stop reason to pi-ai StopReason.
+/// Map Anthropic stop reason to pi-ai `StopReason`.
+#[must_use] 
 pub fn map_stop_reason(reason: &str) -> StopReason {
     match reason {
         "end_turn" => StopReason::Stop,
@@ -420,16 +408,16 @@ pub fn map_stop_reason(reason: &str) -> StopReason {
 
 #[allow(dead_code)]
 fn resolve_cache_retention(retention: Option<&CacheRetention>) -> CacheRetention {
-    match retention {
-        Some(r) => r.clone(),
-        None => {
+    retention.map_or_else(
+        || {
             if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
                 CacheRetention::Long
             } else {
                 CacheRetention::Short
             }
-        }
-    }
+        },
+        std::clone::Clone::clone,
+    )
 }
 
 // ============================================================================
@@ -437,6 +425,7 @@ fn resolve_cache_retention(retention: Option<&CacheRetention>) -> CacheRetention
 // ============================================================================
 
 /// Stream a completion from the Anthropic Messages API.
+#[must_use] 
 pub fn stream_anthropic(
     model: &Model,
     context: &Context,
@@ -502,33 +491,22 @@ async fn stream_anthropic_inner(
     let _cache_retention = options.and_then(|o| o.cache_retention.as_ref());
 
     // Allow extensions to modify HTTP request headers
+    let mut header_map = std::collections::HashMap::new();
+    header_map.insert("x-api-key".to_string(), api_key.to_string());
+    header_map.insert("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string());
+    header_map.insert("content-type".to_string(), "application/json".to_string());
+    if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
+        header_map.insert("anthropic-beta".to_string(), FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
+    }
+    if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
+        if compat.send_session_affinity_headers.unwrap_or(false) {
+            header_map.insert("x-session-affinity".to_string(), session_id.to_string());
+        }
+    }
+
     let final_headers = if let Some(on_headers) = options.as_ref().and_then(|o| o.on_headers.as_ref()) {
-        let mut header_map = std::collections::HashMap::new();
-        header_map.insert("x-api-key".to_string(), api_key.to_string());
-        header_map.insert("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string());
-        header_map.insert("content-type".to_string(), "application/json".to_string());
-        if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
-            header_map.insert("anthropic-beta".to_string(), FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
-        }
-        if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
-            if compat.send_session_affinity_headers.unwrap_or(false) {
-                header_map.insert("x-session-affinity".to_string(), session_id.to_string());
-            }
-        }
         on_headers(header_map).await
     } else {
-        let mut header_map = std::collections::HashMap::new();
-        header_map.insert("x-api-key".to_string(), api_key.to_string());
-        header_map.insert("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string());
-        header_map.insert("content-type".to_string(), "application/json".to_string());
-        if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
-            header_map.insert("anthropic-beta".to_string(), FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
-        }
-        if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
-            if compat.send_session_affinity_headers.unwrap_or(false) {
-                header_map.insert("x-session-affinity".to_string(), session_id.to_string());
-            }
-        }
         header_map
     };
 
@@ -562,7 +540,7 @@ async fn stream_anthropic_inner(
     if let Some(t) = temperature {
         body.insert(
             "temperature".to_string(),
-            Value::Number(serde_json::Number::from_f64(t).unwrap()),
+            Value::Number(serde_json::Number::from_f64(t).ok_or_else(|| format!("Invalid temperature: {t}"))?),
         );
     }
 
@@ -612,7 +590,7 @@ async fn stream_anthropic_inner(
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error {}: {}", status, text).into());
+        return Err(format!("Anthropic API error {status}: {text}").into());
     }
 
     let response_bytes = response.bytes().await?;
@@ -860,7 +838,7 @@ async fn stream_anthropic_inner(
                                 partial: output.clone(),
                             });
                         }
-                        _ => {}
+                        ContentBlock::Image { .. } => {}
                     }
                 }
             }
@@ -907,6 +885,7 @@ async fn stream_anthropic_inner(
 // ============================================================================
 
 /// Stream a completion from Anthropic with simplified options.
+#[must_use] 
 pub fn stream_simple_anthropic(
     model: &Model,
     context: &Context,
@@ -916,16 +895,16 @@ pub fn stream_simple_anthropic(
     if let Some(opts) = options {
         full_opts.temperature = opts.base.temperature;
         full_opts.max_tokens = opts.base.max_tokens;
-        full_opts.signal = opts.base.signal.clone();
-        full_opts.api_key = opts.base.api_key.clone();
-        full_opts.transport = opts.base.transport.clone();
-        full_opts.cache_retention = opts.base.cache_retention.clone();
-        full_opts.session_id = opts.base.session_id.clone();
-        full_opts.headers = opts.base.headers.clone();
+        full_opts.signal.clone_from(&opts.base.signal);
+        full_opts.api_key.clone_from(&opts.base.api_key);
+        full_opts.transport.clone_from(&opts.base.transport);
+        full_opts.cache_retention.clone_from(&opts.base.cache_retention);
+        full_opts.session_id.clone_from(&opts.base.session_id);
+        full_opts.headers.clone_from(&opts.base.headers);
         full_opts.timeout_ms = opts.base.timeout_ms;
         full_opts.max_retries = opts.base.max_retries;
         full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
-        full_opts.metadata = opts.base.metadata.clone();
+        full_opts.metadata.clone_from(&opts.base.metadata);
     }
     stream_anthropic(model, context, Some(&full_opts))
 }
@@ -936,6 +915,7 @@ pub fn stream_simple_anthropic(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::types::{ModelCost};
 
@@ -955,7 +935,7 @@ mod tests {
                 cache_read: 0.3,
                 cache_write: 6.0,
             },
-            context_window: 200000,
+            context_window: 200_000,
             max_tokens: 8192,
             headers: None,
             compat: None,

@@ -4,7 +4,7 @@
 //! 管理目标的完整生命周期：创建、暂停、恢复、阻塞、完成。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use async_trait::async_trait;
 use pi_extension_api::{
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 // 类型定义 — 对应 goal-state.ts
 // ============================================================================
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GoalStatus {
     Active,
     Paused,
@@ -28,17 +28,17 @@ pub enum GoalStatus {
 
 impl GoalStatus {
     #[allow(dead_code)]
-    fn as_str(&self) -> &'static str {
+    const fn as_str(&self) -> &'static str {
         match self {
-            GoalStatus::Active => "active",
-            GoalStatus::Paused => "paused",
-            GoalStatus::BudgetLimited => "budget_limited",
-            GoalStatus::Complete => "complete",
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::BudgetLimited => "budget_limited",
+            Self::Complete => "complete",
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalEventKind {
     Active,
     Continuation,
@@ -50,15 +50,15 @@ pub enum GoalEventKind {
 }
 
 impl GoalEventKind {
-    fn as_str(&self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
-            GoalEventKind::Active => "active",
-            GoalEventKind::Continuation => "continuation",
-            GoalEventKind::Paused => "paused",
-            GoalEventKind::Resumed => "resumed",
-            GoalEventKind::Cleared => "cleared",
-            GoalEventKind::BudgetLimited => "budget_limited",
-            GoalEventKind::Complete => "complete",
+            Self::Active => "active",
+            Self::Continuation => "continuation",
+            Self::Paused => "paused",
+            Self::Resumed => "resumed",
+            Self::Cleared => "cleared",
+            Self::BudgetLimited => "budget_limited",
+            Self::Complete => "complete",
         }
     }
 }
@@ -86,18 +86,27 @@ pub struct ParseResult {
     pub error: Option<String>,
 }
 
+#[allow(clippy::expect_used)]
+static TOKEN_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?:^|\s)--tokens(?:=|\s+)(\S+)(?:\s|$)").expect("hardcoded regex is valid")
+});
+
 /// 解析 `--tokens 50k` 语法。
+///
+/// # Panics
+///
+/// Panics if the regex captures are malformed (should never happen for valid input).
+#[must_use]
 pub fn parse_token_budget(input: &str) -> ParseResult {
     let input = input.trim();
     if input.is_empty() {
         return ParseResult { objective: String::new(), token_budget: None, error: None };
     }
-    let re = regex::Regex::new(r"(?:^|\s)--tokens(?:=|\s+)(\S+)(?:\s|$)").unwrap();
-    if let Some(caps) = re.captures(input) {
-        let raw = caps.get(1).unwrap().as_str().trim();
+    if let Some(caps) = TOKEN_REGEX.captures(input) {
+        let raw = caps.get(1).map_or("", |m| m.as_str().trim());
         let suffix = raw.chars().last().map(|c| c.to_ascii_lowercase());
         let numeric = match suffix {
-            Some('k') | Some('m') => &raw[..raw.len() - 1],
+            Some('k' | 'm') => &raw[..raw.len() - 1],
             _ => raw,
         };
         let value: f64 = match numeric.parse() {
@@ -122,19 +131,23 @@ pub fn parse_token_budget(input: &str) -> ParseResult {
             Some('k') => 1_000,
             _ => 1,
         };
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let token_budget = (value * multiplier as f64).round() as u64;
-        let m = caps.get(0).unwrap();
-        let objective = format!("{}{}", &input[..m.start()], &input[m.end()..]).trim().to_string();
+        let m = caps.get(0).map_or(0, |m| m.start());
+        let end = caps.get(0).map_or(0, |m| m.end());
+        let objective = format!("{}{}", &input[..m], &input[end..]).trim().to_string();
         return ParseResult { objective, token_budget: Some(token_budget), error: None };
     }
     ParseResult { objective: input.to_string(), token_budget: None, error: None }
 }
 
 /// 标准化 token 预算。
+#[must_use]
 pub fn normalize_token_budget(value: &Value) -> (Option<u64>, Option<String>) {
     if value.is_null() {
         return (None, None);
     }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let token_budget = value.as_f64().map(|f| f.round() as u64);
     match token_budget {
         Some(b) if b > 0 => (Some(b), None),
@@ -143,6 +156,8 @@ pub fn normalize_token_budget(value: &Value) -> (Option<u64>, Option<String>) {
 }
 
 /// 格式化 token 数量。
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn format_tokens(value: u64) -> String {
     if value >= 1_000_000 {
         format!("{:.1}M", value as f64 / 1_000_000.0)
@@ -154,31 +169,36 @@ pub fn format_tokens(value: u64) -> String {
 }
 
 /// 格式化耗时。
+#[must_use]
 pub fn format_elapsed(seconds: u64) -> String {
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     let secs = seconds % 60;
     if hours > 0 {
-        format!("{}h {}m {}s", hours, minutes, secs)
+        format!("{hours}h {minutes}m {secs}s")
     } else if minutes > 0 {
-        format!("{}m {}s", minutes, secs)
+        format!("{minutes}m {secs}s")
     } else {
-        format!("{}s", secs)
+        format!("{secs}s")
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn current_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 fn create_goal_state(objective: String, token_budget: Option<u64>) -> GoalState {
     let now = current_millis();
     GoalState {
         version: 1,
-        id: format!("goal_{}", now),
+        id: format!("goal_{now}"),
         objective,
         status: GoalStatus::Active,
         token_budget,
@@ -204,7 +224,8 @@ pub struct GoalExtension {
 }
 
 impl GoalExtension {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             goal: Mutex::new(None),
             start_time: AtomicU64::new(0),
@@ -213,13 +234,15 @@ impl GoalExtension {
         }
     }
 
-    fn persist(&self, runtime: &RuntimeHandle, ctx: &ExtensionContext, goal: Option<GoalState>) {
-        if let Some(ref g) = goal {
+    #[allow(clippy::unused_self)]
+    fn persist(&self, runtime: &RuntimeHandle, ctx: &ExtensionContext, goal: Option<&GoalState>) {
+        if let Some(g) = goal {
             let path = format!("{}/goal.json", ctx.session_id);
             (runtime.write_file)(path, serde_json::to_string_pretty(g).unwrap_or_default());
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn emit_goal_event(
         &self,
         runtime: &RuntimeHandle,
@@ -250,24 +273,27 @@ impl GoalExtension {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let remaining = token_budget.map(|b| b.saturating_sub(tokens_used));
-            let msg = if let Some(rem) = remaining {
-                if rem > 0 {
-                    format!(
-                        "Continuation of previous turn. Objective: {}. Remaining tokens: {}.",
-                        objective,
-                        format_tokens(rem)
-                    )
-                } else {
-                    format!(
-                        "Continuation of previous turn. Objective: {}. Token budget exhausted.",
-                        objective
-                    )
-                }
-            } else {
-                format!("Continuation of previous turn. Objective: {}.", objective)
-            };
+            let msg = remaining.map_or_else(
+                || format!("Continuation of previous turn. Objective: {objective}."),
+                |rem| {
+                    if rem > 0 {
+                        format!(
+                            "Continuation of previous turn. Objective: {objective}. Remaining tokens: {}.",
+                            format_tokens(rem)
+                        )
+                    } else {
+                        format!(
+                            "Continuation of previous turn. Objective: {objective}. Token budget exhausted."
+                        )
+                    }
+                },
+            );
             (runtime_clone.send_message)(msg, Some(json!({"triggerTurn": true, "deliverAs": "followUp"})));
         });
+    }
+
+    fn lock_goal(&self) -> std::sync::MutexGuard<'_, Option<GoalState>> {
+        self.goal.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -277,7 +303,7 @@ impl GoalExtension {
 
 #[async_trait]
 impl HookHandler for GoalExtension {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "goal"
     }
 
@@ -357,7 +383,7 @@ impl HookHandler for GoalExtension {
     }
 
     async fn on_turn_end(&self, _message: &Value, _tool_results: &[Value]) {
-        let mut goal = self.goal.lock().unwrap();
+        let mut goal = self.lock_goal();
         if let Some(ref mut g) = *goal {
             if g.status == GoalStatus::Active {
                 let now = current_millis();
@@ -369,7 +395,7 @@ impl HookHandler for GoalExtension {
     }
 
     async fn on_agent_end(&self, _messages: &[Value]) {
-        let goal = self.goal.lock().unwrap();
+        let goal = self.lock_goal();
         if let Some(ref g) = *goal {
             if g.status == GoalStatus::Active {
                 let _snapshot = g.clone();
@@ -390,7 +416,7 @@ impl HookHandler for GoalExtension {
         let runtime = &ctx.runtime;
         match tool_name {
             "get_goal" => {
-                let goal = self.goal.lock().unwrap();
+                let goal = self.lock_goal();
                 Some(ToolCallOutput {
                     content: vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&*goal).unwrap_or_default() })],
                     details: Some(json!({ "goal": *goal })),
@@ -418,7 +444,7 @@ impl HookHandler for GoalExtension {
                     });
                 }
                 let next = create_goal_state(objective, token_budget);
-                self.persist(runtime, ctx, Some(next.clone()));
+                self.persist(runtime, ctx, Some(&next));
                 self.emit_goal_event(runtime, GoalEventKind::Active, &next, Some(SendMessageOptions {
                     trigger_turn: Some(true),
                     deliver_as: None,
@@ -440,20 +466,22 @@ impl HookHandler for GoalExtension {
                         terminate: None,
                     });
                 }
-                let goal = self.goal.lock().unwrap();
-                if goal.is_none() {
-                    return Some(ToolCallOutput {
-                        content: vec![json!({ "type": "text", "text": "No goal is set." })],
-                        details: None,
-                        is_error: true,
-                        terminate: None,
-                    });
-                }
-                let current = goal.as_ref().unwrap().clone();
+                let goal = self.lock_goal();
+                let current = match goal.as_ref() {
+                    Some(g) => g.clone(),
+                    None => {
+                        return Some(ToolCallOutput {
+                            content: vec![json!({ "type": "text", "text": "No goal is set." })],
+                            details: None,
+                            is_error: true,
+                            terminate: None,
+                        });
+                    }
+                };
                 drop(goal);
                 let now = current_millis();
                 let next = GoalState { status: GoalStatus::Complete, updated_at: now, ..current };
-                self.persist(runtime, ctx, Some(next.clone()));
+                self.persist(runtime, ctx, Some(&next));
                 self.emit_goal_event(runtime, GoalEventKind::Complete, &next, None);
                 let remaining = next.token_budget.map(|b| {
                     b.saturating_sub(next.tokens_used)

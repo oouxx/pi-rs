@@ -1,9 +1,10 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 //! E2E tests for pi-ai streaming.
 //!
 //! Tests the `AssistantMessageEventStream` API using mock event streams
 //! that simulate real LLM streaming responses without network calls.
 //!
-//! Run: cargo test -p pi-ai --test streaming_test
+//! Run: cargo test -p pi-ai --test `streaming_test`
 
 use pi_ai::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, ToolCall, Usage,
@@ -127,7 +128,7 @@ async fn test_stream_preserves_final_text_content() {
         accumulated.push_str(delta);
         events.push(AssistantMessageEvent::TextDelta {
             content_index: 0,
-            delta: delta.to_string(),
+            delta: (*delta).to_string(),
             partial: partial_msg(&accumulated),
         });
     }
@@ -165,7 +166,7 @@ async fn test_stream_thinking_then_text() {
             content_index: 0,
             partial: AssistantMessage {
                 content: vec![ContentBlock::Thinking {
-                    thinking: "".into(),
+                    thinking: String::new(),
                     thinking_signature: None,
                     redacted: None,
                 }],
@@ -218,7 +219,7 @@ async fn test_stream_thinking_then_text() {
                         redacted: None,
                     },
                     ContentBlock::Text {
-                        text: "".into(),
+                        text: String::new(),
                         text_signature: None,
                     },
                 ],

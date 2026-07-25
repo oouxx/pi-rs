@@ -1,4 +1,4 @@
-//! String enum helper for JSON Schema, matching Typebox's StringEnum pattern.
+//! String enum helper for JSON Schema, matching Typebox's `StringEnum` pattern.
 //!
 //! Produces `{ type: "string", enum: [...] }` schemas compatible with providers
 //! (like Google's API) that don't support anyOf/const patterns.
@@ -48,6 +48,7 @@ pub fn string_enum<T: AsRef<str>>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

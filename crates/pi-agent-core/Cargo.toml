@@ -30,3 +30,6 @@ extraction = ["dep:schemars"]
 mcp = ["dep:rmcp"]
 
 [dev-dependencies]
+
+[lints]
+workspace = true

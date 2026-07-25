@@ -49,6 +49,7 @@ pub fn get_env_var_name(provider: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -91,8 +92,7 @@ mod tests {
             let var_name = get_env_var_name(provider);
             assert!(
                 var_name.is_some(),
-                "Provider '{}' should have an env var name",
-                provider
+                "Provider '{provider}' should have an env var name"
             );
         }
     }

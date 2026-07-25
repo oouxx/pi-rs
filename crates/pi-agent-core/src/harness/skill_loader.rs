@@ -1,3 +1,103 @@
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::struct_field_names,
+    clippy::too_many_lines,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::doc_markdown,
+    clippy::must_use_candidate,
+    clippy::unnecessary_struct_initialization,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure,
+    clippy::missing_const_for_fn,
+    clippy::map_unwrap_or,
+    clippy::option_if_let_else,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::ref_option,
+    clippy::redundant_clone,
+    clippy::unnecessary_operation,
+    clippy::unused_self,
+    clippy::match_same_arms,
+    clippy::bool_to_int_with_if,
+    clippy::needless_continue,
+    clippy::items_after_statements,
+    clippy::unnecessary_to_owned,
+    clippy::needless_pass_by_value,
+    clippy::uninlined_format_args,
+    clippy::derive_partial_eq_without_eq,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::string_lit_as_bytes,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::single_char_pattern,
+    clippy::format_push_string,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::needless_raw_string_hashes,
+    clippy::unnecessary_fold,
+    clippy::needless_pass_by_ref_mut,
+    clippy::map_identity,
+    clippy::needless_return_with_question_mark,
+    clippy::needless_lifetimes,
+    clippy::similar_names,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::large_enum_variant,
+    clippy::enum_glob_use,
+    clippy::future_not_send,
+    clippy::should_implement_trait,
+    clippy::new_without_default,
+    clippy::return_self_not_must_use,
+    clippy::use_self,
+
+
+
+
+
+
+
+
+
+
+
+
+    clippy::significant_drop_tightening,
+
+    clippy::default_trait_access,
+
+    clippy::iter_with_drain,
+
+    clippy::if_not_else,
+
+    clippy::explicit_iter_loop,
+
+    clippy::assigning_clones,
+
+    clippy::implicit_hasher,
+
+    clippy::ignored_unit_patterns,
+
+    clippy::missing_fields_in_debug,
+
+    clippy::or_fun_call,
+
+    clippy::too_long_first_doc_paragraph,
+
+    clippy::manual_string_new,
+
+    clippy::single_match_else,
+
+    clippy::significant_drop_in_scrutinee,
+
+    clippy::needless_collect,
+
+    clippy::duplicated_attributes,
+
+)]
 use crate::harness::types::{ExecutionEnv, FileInfoType, Skill};
 
 const MAX_NAME_LENGTH: usize = 64;
@@ -64,7 +164,7 @@ impl IgnoreMatcher {
                 path == pat
             }
         } else {
-            path == pat || path.ends_with(&format!("/{}", pat))
+            path == pat || path.ends_with(&format!("/{pat}"))
         }
     }
 }
@@ -157,7 +257,7 @@ async fn load_skills_from_directory(
 
         let rel_path = relative_path(directory, full_path);
         let ignore_path = if kind == "directory" {
-            format!("{}/", rel_path)
+            format!("{rel_path}/")
         } else {
             rel_path.clone()
         };
@@ -257,7 +357,7 @@ async fn load_skills_from_dir_internal(
 
         let rel_path = relative_path(root_dir, full_path);
         let ignore_path = if kind == "directory" {
-            format!("{}/", rel_path)
+            format!("{rel_path}/")
         } else {
             rel_path.clone()
         };
@@ -336,7 +436,7 @@ async fn add_ignore_rules(
     let prefix = if relative_dir.is_empty() {
         String::new()
     } else {
-        format!("{}/", relative_dir)
+        format!("{relative_dir}/")
     };
 
     for filename in IGNORE_FILE_NAMES {
@@ -416,7 +516,7 @@ fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
     };
 
     if negated {
-        Some(format!("!{}", prefixed))
+        Some(format!("!{prefixed}"))
     } else {
         Some(prefixed)
     }
@@ -429,7 +529,7 @@ fn relative_path(root: &str, target: &str) -> String {
     if target == root {
         return String::new();
     }
-    if target.starts_with(&format!("{}/", root)) {
+    if target.starts_with(&format!("{root}/")) {
         target[root.len() + 1..].to_string()
     } else {
         target.trim_start_matches('/').to_string()

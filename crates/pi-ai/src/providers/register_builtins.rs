@@ -64,13 +64,14 @@ fn load_generated_models() {
             }
         }
         Err(e) => {
-            println!("cargo:warning=Failed to parse generated models: {}", e);
+            println!("cargo:warning=Failed to parse generated models: {e}");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::api_registry::get_api_provider;
 

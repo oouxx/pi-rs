@@ -20,8 +20,9 @@ resolver = "2"
 # crates (e.g. reqwest's feature/default-flags matrix) stay per-crate.
 
 [workspace.package]
-version = "1.79.30"
+version = "1.79.31"
 edition = "2021"
+rust-version = "1.80.0"
 license = "MIT"
 authors = ["oouxx"]
 [workspace.dependencies]
@@ -44,3 +45,12 @@ regex = "1"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile = "3"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "warn"       # 生产代码禁止裸 unwrap
+expect_used = "warn"
+todo = "warn"
+dbg_macro = "warn"

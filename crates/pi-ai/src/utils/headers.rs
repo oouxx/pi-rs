@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
-/// Convert a reqwest HeaderMap to a plain HashMap of string key-value pairs.
+/// Convert a reqwest `HeaderMap` to a plain `HashMap` of string key-value pairs.
+#[must_use] 
 pub fn headers_to_record(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    for (key, value) in headers.iter() {
+    for (key, value) in headers {
         if let Ok(v) = value.to_str() {
             result.insert(key.as_str().to_string(), v.to_string());
         }
@@ -13,6 +14,7 @@ pub fn headers_to_record(headers: &reqwest::header::HeaderMap) -> HashMap<String
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 

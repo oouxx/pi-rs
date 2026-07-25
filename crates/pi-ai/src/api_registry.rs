@@ -39,12 +39,12 @@ static REGISTRY: std::sync::LazyLock<RwLock<HashMap<String, RegisteredProvider>>
 
 /// Register an API provider. If a provider with the same API already exists, it is replaced.
 pub fn register_api_provider(provider: ApiProvider, source_id: Option<&str>) {
-    let mut registry = REGISTRY.write().unwrap();
+    let mut registry = REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     registry.insert(
         provider.api.clone(),
         RegisteredProvider {
             provider: Arc::new(provider),
-            source_id: source_id.map(|s| s.to_string()),
+            source_id: source_id.map(std::string::ToString::to_string),
         },
     );
 }
@@ -52,7 +52,7 @@ pub fn register_api_provider(provider: ApiProvider, source_id: Option<&str>) {
 /// Look up a registered API provider by API name.
 /// Returns a cloneable handle — each call copies the Arc, so it's cheap.
 pub fn get_api_provider(api: &str) -> Option<ApiProvider> {
-    let registry = REGISTRY.read().unwrap();
+    let registry = REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     registry.get(api).map(|r| ApiProvider {
         api: r.provider.api.clone(),
         stream: Arc::clone(&r.provider.stream),
@@ -62,7 +62,7 @@ pub fn get_api_provider(api: &str) -> Option<ApiProvider> {
 
 /// Get all registered API providers.
 pub fn get_api_providers() -> Vec<ApiProvider> {
-    let registry = REGISTRY.read().unwrap();
+    let registry = REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     registry
         .values()
         .map(|r| ApiProvider {
@@ -75,12 +75,12 @@ pub fn get_api_providers() -> Vec<ApiProvider> {
 
 /// Unregister all API providers registered under the given source ID.
 pub fn unregister_api_providers(source_id: &str) {
-    let mut registry = REGISTRY.write().unwrap();
+    let mut registry = REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     registry.retain(|_, r| r.source_id.as_deref() != Some(source_id));
 }
 
 /// Clear all registered API providers.
 pub fn clear_api_providers() {
-    let mut registry = REGISTRY.write().unwrap();
+    let mut registry = REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     registry.clear();
 }

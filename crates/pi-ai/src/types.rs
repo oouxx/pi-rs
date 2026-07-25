@@ -6,7 +6,7 @@ use std::sync::Arc;
 // Content block types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
@@ -41,7 +41,7 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text {
+        Self::Text {
             text: text.into(),
             text_signature: None,
         }
@@ -52,7 +52,7 @@ impl ContentBlock {
 // ToolCall (standalone, used in events)
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCall {
     #[serde(rename = "type")]
     pub type_field: String,
@@ -64,6 +64,7 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    #[must_use] 
     pub fn new(id: String, name: String, arguments: serde_json::Value) -> Self {
         Self {
             type_field: "toolCall".to_string(),
@@ -119,7 +120,7 @@ pub struct Usage {
 // Stop reason
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StopReason {
     Stop,
@@ -292,7 +293,7 @@ pub enum AssistantMessageEvent {
 // Diagnostics
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssistantMessageDiagnostic {
     #[serde(rename = "contentIndex")]
     pub content_index: usize,
@@ -300,7 +301,7 @@ pub struct AssistantMessageDiagnostic {
     pub severity: DiagnosticSeverity,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagnosticSeverity {
     Warning,
@@ -335,7 +336,7 @@ pub struct ThinkingBudgets {
     pub high: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CacheRetention {
     None,
@@ -343,7 +344,7 @@ pub enum CacheRetention {
     Long,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
     Sse,
@@ -357,7 +358,7 @@ pub enum Transport {
 // OpenAI completions compatibility
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAICompletionsCompat {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -396,7 +397,7 @@ pub struct OpenAICompletionsCompat {
     pub supports_long_cache_retention: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAIResponsesCompat {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -405,7 +406,7 @@ pub struct OpenAIResponsesCompat {
     pub supports_long_cache_retention: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicMessagesCompat {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -426,7 +427,7 @@ pub struct AnthropicMessagesCompat {
 // Routing types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenRouterRouting {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -457,7 +458,7 @@ pub struct OpenRouterRouting {
     pub preferred_max_latency: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VercelGatewayRouting {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -508,7 +509,7 @@ pub struct Model {
     pub compat: Option<ModelCompat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ModelCompat {
     OpenAICompletions(Box<OpenAICompletionsCompat>),
@@ -520,7 +521,7 @@ pub enum ModelCompat {
 // Tool types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tool {
     pub name: String,
     pub description: String,
@@ -550,7 +551,7 @@ pub struct Context {
 // ============================================================================
 
 /// Controls tool selection behavior for the model.
-/// Matches the OpenAI `tool_choice` parameter format.
+/// Matches the `OpenAI` `tool_choice` parameter format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolChoice {
@@ -618,6 +619,12 @@ impl std::fmt::Debug for StreamOptions {
             .field("max_retry_delay_ms", &self.max_retry_delay_ms)
             .field("metadata", &self.metadata)
             .field("tool_choice", &self.tool_choice)
+            .field("signal", &self.signal.as_ref().map(|_| "..."))
+            .field("transport", &self.transport)
+            .field("cache_retention", &self.cache_retention)
+            .field("websocket_connect_timeout_ms", &self.websocket_connect_timeout_ms)
+            .field("on_headers", &self.on_headers.as_ref().map(|_| "..."))
+            .field("on_provider_response", &self.on_provider_response.as_ref().map(|_| "..."))
             .field("on_payload", &self.on_payload.as_ref().map(|_| "..."))
             .finish()
     }
@@ -782,6 +789,7 @@ pub struct ImagesModel {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -810,14 +818,14 @@ mod tests {
         let usage = Usage::default();
         assert_eq!(usage.input, 0);
         assert_eq!(usage.output, 0);
-        assert_eq!(usage.cost.total, 0.0);
+        assert!((usage.cost.total - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_message_serialization_user() {
         let msg = Message::User {
             content: vec![ContentBlock::text("hi")],
-            timestamp: 123456,
+            timestamp: 123_456,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
@@ -837,7 +845,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
-            timestamp: 123456,
+            timestamp: 123_456,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"assistant\""));
@@ -852,7 +860,7 @@ mod tests {
             content: vec![ContentBlock::text("result")],
             details: Some(serde_json::json!({"status": "ok"})),
             is_error: false,
-            timestamp: 123456,
+            timestamp: 123_456,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"toolResult\""));
@@ -909,14 +917,14 @@ mod tests {
                 cache_read: 0.3,
                 cache_write: 6.0,
             },
-            context_window: 200000,
+            context_window: 200_000,
             max_tokens: 8192,
             headers: None,
             compat: None,
         };
         let json = serde_json::to_string(&model).unwrap();
         assert!(json.contains("\"id\":\"claude-sonnet-4-6\""));
-        assert!(json.contains("\"contextWindow\":200000"));
+        assert!(json.contains("\"contextWindow\":200_000"));
     }
 
     // --- Supplementary tests matching TS originals ---
@@ -1058,10 +1066,10 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
-            timestamp: 1234567890,
+            timestamp: 1_234_567_890,
         };
         let event = AssistantMessageEvent::Start {
-            partial: msg.clone(),
+            partial: msg,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"start\""));
@@ -1087,11 +1095,11 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Error,
             error_message: Some("prompt is too long".into()),
-            timestamp: 1234567890,
+            timestamp: 1_234_567_890,
         };
         let event = AssistantMessageEvent::Error {
             reason: StopReason::Error,
-            error: msg.clone(),
+            error: msg,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -1127,13 +1135,13 @@ mod tests {
                 {"type": "text", "text": "hello"},
                 {"type": "text", "text": "world"}
             ],
-            "timestamp": 123456
+            "timestamp": 123_456
         }"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         match msg {
             Message::User { content, timestamp } => {
                 assert_eq!(content.len(), 2);
-                assert_eq!(timestamp, 123456);
+                assert_eq!(timestamp, 123_456);
             }
             _ => panic!("expected User"),
         }
@@ -1156,8 +1164,8 @@ mod tests {
                 cache_read: 1.25,
                 cache_write: 0.0,
             },
-            context_window: 128000,
-            max_tokens: 16384,
+            context_window: 128_000,
+            max_tokens: 16_384,
             headers: None,
             compat: Some(ModelCompat::OpenAICompletions(Box::new(OpenAICompletionsCompat {
                 supports_store: Some(true),

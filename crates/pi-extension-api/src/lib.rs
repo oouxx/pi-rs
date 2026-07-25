@@ -1,6 +1,6 @@
 //! `HookHandler` trait — Rust 原生扩展接口。
 //!
-//! 基于 ZeroClaw 的 Hook 系统设计。所有扩展实现 `HookHandler` trait，
+//! 基于 `ZeroClaw` 的 Hook 系统设计。所有扩展实现 `HookHandler` trait，
 //! 通过 `ExtensionRegistry` 注册到 agent 运行时。
 
 pub mod hook;
@@ -23,7 +23,7 @@ pub use hook::{
 
 /// Execute callback for a custom tool.
 ///
-/// Takes (tool_call_id, params, signal) and returns a `ToolCallOutput`.
+/// Takes (`tool_call_id`, params, signal) and returns a `ToolCallOutput`.
 pub type ToolExecuteFn = Arc<
     dyn Fn(
             String,
@@ -35,7 +35,7 @@ pub type ToolExecuteFn = Arc<
             + Sync,
 >;
 
-/// Tool definition matching the original TypeScript ToolDefinition interface.
+/// Tool definition matching the original TypeScript `ToolDefinition` interface.
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ToolDefinition {
     pub name: String,
@@ -113,7 +113,8 @@ pub struct ExtensionContext {
 }
 
 impl ExtensionContext {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         session_id: String,
         is_connected: bool,
         ui: ExtensionUIContext,
@@ -207,6 +208,7 @@ pub struct RuntimeHandle {
 
 impl RuntimeHandle {
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         send_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
         send_user_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
@@ -323,7 +325,7 @@ impl RuntimeHandle {
         }
     }
 
-    /// Create a no-op RuntimeHandle for testing.
+    /// Create a no-op `RuntimeHandle` for testing.
     pub fn noop() -> Self {
         Self::new(
             Arc::new(|_, _| {}),
@@ -413,7 +415,7 @@ pub struct ProjectTrustResult {
 }
 
 /// Trust decision from an extension.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectTrustDecision {
     Yes,
     No,
@@ -449,7 +451,8 @@ pub struct EventPublisher {
 }
 
 impl EventPublisher {
-    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<Value>) -> Self {
+    #[must_use]
+    pub const fn new(sender: tokio::sync::mpsc::UnboundedSender<Value>) -> Self {
         Self { sender }
     }
 
@@ -492,6 +495,7 @@ pub struct ExtensionRegistry {
 }
 
 impl ExtensionRegistry {
+#[must_use]
     pub fn new() -> Self {
         Self {
             hook_runner: HookRunner::new(),
@@ -502,7 +506,7 @@ impl ExtensionRegistry {
         }
     }
 
-    /// Register a HookHandler. This collects tools/commands/shortcuts/flags
+    /// Register a `HookHandler`. This collects tools/commands/shortcuts/flags
     /// from the handler immediately.
     pub fn register(&mut self, handler: Box<dyn HookHandler>) {
         // Collect tools
@@ -529,37 +533,44 @@ impl ExtensionRegistry {
         self.hook_runner.register(handler);
     }
 
-    /// Access the HookRunner for event dispatch.
-    pub fn hook_runner(&self) -> &HookRunner {
+    /// Access the `HookRunner` for event dispatch.
+    #[must_use]
+    pub const fn hook_runner(&self) -> &HookRunner {
         &self.hook_runner
     }
 
     /// Check if any handlers are registered.
+    #[must_use]
     pub fn has_handlers(&self) -> bool {
         self.hook_runner.has_handlers()
     }
 
     /// Number of registered handlers.
+    #[must_use]
     pub fn handler_count(&self) -> usize {
         self.hook_runner.handler_count()
     }
 
     /// Get collected tools.
+    #[must_use]
     pub fn tools(&self) -> &[RegisteredTool] {
         &self.tools
     }
 
     /// Get collected commands.
+    #[must_use]
     pub fn commands(&self) -> &[RegisteredCommand] {
         &self.commands
     }
 
     /// Get collected shortcuts.
+    #[must_use]
     pub fn shortcuts(&self) -> &[RegisteredShortcut] {
         &self.shortcuts
     }
 
     /// Get collected flags.
+    #[must_use]
     pub fn flags(&self) -> &[RegisteredFlag] {
         &self.flags
     }
@@ -625,7 +636,7 @@ mod tests {
 
         #[async_trait]
         impl HookHandler for TestHandler {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "test"
             }
         }
@@ -645,7 +656,7 @@ mod tests {
 
         #[async_trait]
         impl HookHandler for ToolHandler {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "tool_handler"
             }
 

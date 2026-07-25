@@ -1,12 +1,13 @@
 //! xAI Grok API provider (OpenAI-compatible).
 //!
-//! xAI's Grok models use the OpenAI Chat Completions API format.
+//! xAI's Grok models use the `OpenAI` Chat Completions API format.
 //! This is a thin wrapper that delegates to the OpenAI-compatible streaming logic.
 
 use crate::types::{Context, Model, SimpleStreamOptions, StreamOptions};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 /// Stream a completion from xAI Grok (OpenAI-compatible API).
+#[must_use] 
 pub fn stream_xai(
     model: &Model,
     context: &Context,
@@ -16,6 +17,7 @@ pub fn stream_xai(
 }
 
 /// Stream a completion from xAI Grok with simplified options.
+#[must_use] 
 pub fn stream_simple_xai(
     model: &Model,
     context: &Context,
@@ -26,13 +28,14 @@ pub fn stream_simple_xai(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
     fn test_xai_module_functions_exist() {
-        let _f1: fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream =
+        let _: fn(&Model, &Context, Option<&StreamOptions>) -> AssistantMessageEventStream =
             stream_xai;
-        let _f2: fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream =
+        let _: fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream =
             stream_simple_xai;
     }
 }

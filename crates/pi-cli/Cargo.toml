@@ -20,3 +20,7 @@ tempfile = { workspace = true }
 [features]
 default = []
 interactive = []
+
+
+[lints]
+workspace = true

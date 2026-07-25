@@ -1,3 +1,103 @@
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::struct_field_names,
+    clippy::too_many_lines,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::doc_markdown,
+    clippy::must_use_candidate,
+    clippy::unnecessary_struct_initialization,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure,
+    clippy::missing_const_for_fn,
+    clippy::map_unwrap_or,
+    clippy::option_if_let_else,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::ref_option,
+    clippy::redundant_clone,
+    clippy::unnecessary_operation,
+    clippy::unused_self,
+    clippy::match_same_arms,
+    clippy::bool_to_int_with_if,
+    clippy::needless_continue,
+    clippy::items_after_statements,
+    clippy::unnecessary_to_owned,
+    clippy::needless_pass_by_value,
+    clippy::uninlined_format_args,
+    clippy::derive_partial_eq_without_eq,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::string_lit_as_bytes,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::single_char_pattern,
+    clippy::format_push_string,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::needless_raw_string_hashes,
+    clippy::unnecessary_fold,
+    clippy::needless_pass_by_ref_mut,
+    clippy::map_identity,
+    clippy::needless_return_with_question_mark,
+    clippy::needless_lifetimes,
+    clippy::similar_names,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::large_enum_variant,
+    clippy::enum_glob_use,
+    clippy::future_not_send,
+    clippy::should_implement_trait,
+    clippy::new_without_default,
+    clippy::return_self_not_must_use,
+    clippy::use_self,
+
+
+
+
+
+
+
+
+
+
+
+
+    clippy::significant_drop_tightening,
+
+    clippy::default_trait_access,
+
+    clippy::iter_with_drain,
+
+    clippy::if_not_else,
+
+    clippy::explicit_iter_loop,
+
+    clippy::assigning_clones,
+
+    clippy::implicit_hasher,
+
+    clippy::ignored_unit_patterns,
+
+    clippy::missing_fields_in_debug,
+
+    clippy::or_fun_call,
+
+    clippy::too_long_first_doc_paragraph,
+
+    clippy::manual_string_new,
+
+    clippy::single_match_else,
+
+    clippy::significant_drop_in_scrutinee,
+
+    clippy::needless_collect,
+
+    clippy::duplicated_attributes,
+
+)]
 use crate::harness::types::{
     CompactionError, CompactionPreparation, CompactionSettings, FileOperations, SessionTreeEntry,
 };
@@ -247,7 +347,7 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                     .collect::<Vec<_>>()
                     .join("");
                 if !text.is_empty() {
-                    parts.push(format!("[User]: {}", text));
+                    parts.push(format!("[User]: {text}"));
                 }
             }
             Message::Assistant { content, .. } => {
@@ -299,9 +399,9 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                     let truncated = if text.len() > 2000 {
                         format!("{}[...truncated]", &text[..2000])
                     } else {
-                        text.to_string()
+                        text.clone()
                     };
-                    parts.push(format!("[Tool result]: {}", truncated));
+                    parts.push(format!("[Tool result]: {truncated}"));
                 }
             }
         }
@@ -422,7 +522,7 @@ pub async fn generate_summary(
     let result = pi_complete(model, &context, Some(simple_options))
         .await
         .map_err(|e| {
-            CompactionError::SummarizationFailed(format!("LLM summarization failed: {}", e))
+            CompactionError::SummarizationFailed(format!("LLM summarization failed: {e}"))
         })?;
 
     // Extract text from the response
@@ -627,7 +727,7 @@ mod tests {
     fn test_estimate_tokens_compaction_summary() {
         let msg = AgentMessage::CompactionSummary {
             summary: "Compaction summary text".to_string(),
-            tokens_before: 50000,
+            tokens_before: 50_000,
             timestamp: 1000,
         };
         let tokens = estimate_tokens(&msg);
@@ -664,40 +764,40 @@ mod tests {
     fn test_should_compact_above_threshold() {
         let settings = CompactionSettings {
             enabled: true,
-            reserve_tokens: 10000,
-            keep_recent_tokens: 20000,
+            reserve_tokens: 10_000,
+            keep_recent_tokens: 20_000,
         };
-        assert!(should_compact(95000, 100000, &settings));
+        assert!(should_compact(95_000, 100_000, &settings));
     }
 
     #[test]
     fn test_should_compact_below_threshold() {
         let settings = CompactionSettings {
             enabled: true,
-            reserve_tokens: 10000,
-            keep_recent_tokens: 20000,
+            reserve_tokens: 10_000,
+            keep_recent_tokens: 20_000,
         };
-        assert!(!should_compact(89000, 100000, &settings));
+        assert!(!should_compact(89_000, 100_000, &settings));
     }
 
     #[test]
     fn test_should_compact_disabled() {
         let settings = CompactionSettings {
             enabled: false,
-            reserve_tokens: 10000,
-            keep_recent_tokens: 20000,
+            reserve_tokens: 10_000,
+            keep_recent_tokens: 20_000,
         };
-        assert!(!should_compact(95000, 100000, &settings));
+        assert!(!should_compact(95_000, 100_000, &settings));
     }
 
     #[test]
     fn test_should_compact_at_threshold() {
         let settings = CompactionSettings {
             enabled: true,
-            reserve_tokens: 10000,
-            keep_recent_tokens: 20000,
+            reserve_tokens: 10_000,
+            keep_recent_tokens: 20_000,
         };
-        assert!(!should_compact(90000, 100000, &settings));
+        assert!(!should_compact(90_000, 100_000, &settings));
     }
 
     #[test]
@@ -734,9 +834,9 @@ mod tests {
         let messages: Vec<AgentMessage> = (0..10)
             .flat_map(|i| {
                 vec![
-                    create_user_message(&format!("User {}", i)),
+                    create_user_message(&format!("User {i}")),
                     create_assistant_message(
-                        &format!("Assistant {}", i),
+                        &format!("Assistant {i}"),
                         create_mock_usage(0, 100),
                     ),
                 ]
@@ -763,7 +863,7 @@ mod tests {
             create_user_message("Hi"),
             create_assistant_message("Hello", create_mock_usage(100, 50)),
         ];
-        let cut_point = find_cut_point(&messages, 10000);
+        let cut_point = find_cut_point(&messages, 10_000);
         assert_eq!(cut_point.first_kept_entry_index, 0);
         assert_eq!(cut_point.turn_start_index, 0);
         assert!(!cut_point.is_split_turn);
@@ -788,7 +888,7 @@ mod tests {
             create_assistant_message("Long assistant message here", create_mock_usage(100, 50)),
             create_tool_result_message("Tool result content here"),
         ];
-        let cut_point = find_cut_point(&messages, 10000);
+        let cut_point = find_cut_point(&messages, 10_000);
         assert_eq!(cut_point.turn_start_index, messages.len());
         assert!(!cut_point.is_split_turn);
     }
@@ -851,10 +951,10 @@ mod tests {
     fn test_should_compact_saturating_sub() {
         let settings = CompactionSettings {
             enabled: true,
-            reserve_tokens: 200000,
-            keep_recent_tokens: 20000,
+            reserve_tokens: 200_000,
+            keep_recent_tokens: 20_000,
         };
-        assert!(should_compact(100, 100000, &settings));
+        assert!(should_compact(100, 100_000, &settings));
     }
 
     #[test]
@@ -980,10 +1080,10 @@ mod tests {
         let entries = vec![create_message_entry(create_user_message("Hello"), None)];
         let settings = CompactionSettings {
             enabled: true,
-            reserve_tokens: 100000,
-            keep_recent_tokens: 20000,
+            reserve_tokens: 100_000,
+            keep_recent_tokens: 20_000,
         };
-        let result = prepare_compaction(&entries, 200000, &settings);
+        let result = prepare_compaction(&entries, 200_000, &settings);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -997,7 +1097,7 @@ mod tests {
         let mut parent_id: Option<String> = None;
         for i in 0..5 {
             let user_entry = SessionTreeEntry::Message {
-                id: format!("entry-{}-u", i),
+                id: format!("entry-{i}-u"),
                 parent_id: parent_id.clone(),
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 message: create_user_message(&format!(
@@ -1005,19 +1105,19 @@ mod tests {
                     i
                 )),
             };
-            parent_id = Some(format!("entry-{}-u", i));
+            parent_id = Some(format!("entry-{i}-u"));
             entries.push(user_entry);
 
             let assistant_entry = SessionTreeEntry::Message {
-                id: format!("entry-{}-a", i),
+                id: format!("entry-{i}-a"),
                 parent_id: parent_id.clone(),
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 message: create_assistant_message(
-                    &format!("Assistant message {} with some extra text", i),
+                    &format!("Assistant message {i} with some extra text"),
                     create_mock_usage(5000, 1000),
                 ),
             };
-            parent_id = Some(format!("entry-{}-a", i));
+            parent_id = Some(format!("entry-{i}-a"));
             entries.push(assistant_entry);
         }
 

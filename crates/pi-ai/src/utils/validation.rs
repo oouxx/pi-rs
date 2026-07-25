@@ -18,9 +18,8 @@ pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Valu
     let schema = &tool.parameters;
 
     // JSON Schema must be an object with "type": "object" and "properties"
-    let schema_obj = match schema {
-        Value::Object(m) => m,
-        _ => return Err(format!("Invalid schema for tool \"{}\"", tool.name)),
+    let Value::Object(schema_obj) = schema else {
+        return Err(format!("Invalid schema for tool \"{}\"", tool.name));
     };
 
     // If schema has no validation constraints, accept as-is
@@ -29,9 +28,8 @@ pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Valu
         return Ok(args);
     }
 
-    let properties = match schema_obj.get("properties") {
-        Some(Value::Object(p)) => p,
-        _ => return Ok(args),
+    let Some(Value::Object(properties)) = schema_obj.get("properties") else {
+        return Ok(args);
     };
 
     let required = match schema_obj.get("required") {
@@ -42,15 +40,12 @@ pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Valu
         _ => Vec::new(),
     };
 
-    let mut coerced_args = match args {
-        Value::Object(m) => m,
-        _ => {
-            return Err(format!(
-                "Expected object arguments for tool \"{}\", got {:?}",
-                tool.name,
-                args_type_name(&args)
-            ));
-        }
+    let Value::Object(mut coerced_args) = args else {
+        return Err(format!(
+            "Expected object arguments for tool \"{}\", got {:?}",
+            tool.name,
+            args_type_name(&args)
+        ));
     };
 
     // Check required fields and coerce values by schema
@@ -66,7 +61,7 @@ pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Valu
 
     let mut errors: Vec<String> = Vec::new();
 
-    for (key, field_schema) in properties.iter() {
+    for (key, field_schema) in properties {
         if let Some(field_schema_obj) = field_schema.as_object() {
             if let Some(field_type) = field_schema_obj.get("type").and_then(Value::as_str) {
                 if let Some(value) = coerced_args.get(key) {
@@ -75,11 +70,11 @@ pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Valu
                             coerced_args.insert(key.clone(), coerced);
                         }
                         Err(e) => {
-                            errors.push(format!("  - {}: {}", key, e));
+                            errors.push(format!("  - {key}: {e}"));
                         }
                     }
                 } else if required.contains(key) {
-                    errors.push(format!("  - {}: is required", key));
+                    errors.push(format!("  - {key}: is required"));
                 }
             }
         }
@@ -113,12 +108,12 @@ fn coerce_and_validate(
         if let Some(s) = coerced.as_str() {
             if let Some(min) = schema.get("minLength").and_then(Value::as_u64) {
                 if (s.len() as u64) < min {
-                    return Err(format!("must be at least {} characters", min));
+                    return Err(format!("must be at least {min} characters"));
                 }
             }
             if let Some(max) = schema.get("maxLength").and_then(Value::as_u64) {
                 if (s.len() as u64) > max {
-                    return Err(format!("must be at most {} characters", max));
+                    return Err(format!("must be at most {max} characters"));
                 }
             }
         }
@@ -129,12 +124,12 @@ fn coerce_and_validate(
         if let Some(n) = coerced.as_f64() {
             if let Some(min) = schema.get("minimum").and_then(Value::as_f64) {
                 if n < min {
-                    return Err(format!("must be >= {}", min));
+                    return Err(format!("must be >= {min}"));
                 }
             }
             if let Some(max) = schema.get("maximum").and_then(Value::as_f64) {
                 if n > max {
-                    return Err(format!("must be <= {}", max));
+                    return Err(format!("must be <= {max}"));
                 }
             }
         }
@@ -182,11 +177,11 @@ fn validate_nested_object(
 
     for key in &required {
         if !coerced.contains_key(key) {
-            return Err(format!("  - {}: is required", key));
+            return Err(format!("  - {key}: is required"));
         }
     }
 
-    for (key, field_schema) in properties.iter() {
+    for (key, field_schema) in properties {
         if let Some(field_schema_obj) = field_schema.as_object() {
             if let Some(field_type) = field_schema_obj.get("type").and_then(Value::as_str) {
                 if let Some(value) = coerced.get(key) {
@@ -212,11 +207,10 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
         "number" => match value {
             Value::Null => Value::Number(0.into()),
             Value::String(s) => {
-                if let Ok(n) = s.parse::<f64>() {
-                        Value::Number(serde_json::Number::from_f64(n).unwrap_or(0.into()))
-                } else {
-                    value.clone()
-                }
+                s.parse::<f64>().ok().map_or_else(
+                    || value.clone(),
+                    |n| Value::Number(serde_json::Number::from_f64(n).unwrap_or_else(|| 0.into())),
+                )
             }
             Value::Bool(b) => {
                 if *b {
@@ -230,11 +224,10 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
         "integer" => match value {
             Value::Null => Value::Number(0.into()),
             Value::String(s) => {
-                if let Ok(n) = s.parse::<i64>() {
-                    Value::Number(n.into())
-                } else {
-                    value.clone()
-                }
+                s.parse::<i64>().ok().map_or_else(
+                    || value.clone(),
+                    |n| Value::Number(n.into()),
+                )
             }
             Value::Bool(b) => {
                 if *b {
@@ -253,15 +246,14 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
                 _ => value.clone(),
             },
             Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    match i {
+                n.as_i64().map_or_else(
+                    || value.clone(),
+                    |i| match i {
                         1 => Value::Bool(true),
                         0 => Value::Bool(false),
                         _ => value.clone(),
-                    }
-                } else {
-                    value.clone()
-                }
+                    },
+                )
             }
             _ => value.clone(),
         },
@@ -283,7 +275,7 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
     }
 }
 
-fn args_type_name(value: &Value) -> &'static str {
+const fn args_type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
@@ -296,6 +288,7 @@ fn args_type_name(value: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::types::ToolCall;
 

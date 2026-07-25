@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Thin wrapper around rig-core providers, implementing pi's AI package (Rust port of @earendil-works/pi-ai)"
+rust-version = "1.80.0"
 
 [dependencies]
 serde = { workspace = true }
@@ -24,3 +25,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

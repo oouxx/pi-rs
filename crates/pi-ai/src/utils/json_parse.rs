@@ -1,8 +1,8 @@
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 const VALID_JSON_ESCAPES: [char; 9] = ['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'];
 
-fn is_control_char(c: char) -> bool {
+const fn is_control_char(c: char) -> bool {
     matches!(c, '\x00'..='\x1F')
 }
 
@@ -18,6 +18,7 @@ fn escape_control_char(c: char) -> String {
 }
 
 /// Repair malformed JSON by escaping control characters and fixing invalid escape sequences.
+#[must_use] 
 pub fn repair_json(json: &str) -> String {
     let mut repaired = String::with_capacity(json.len());
     let chars: Vec<char> = json.chars().collect();
@@ -102,7 +103,7 @@ pub fn parse_json_with_repair<T: serde::de::DeserializeOwned>(json: &str) -> Res
         return Ok(v);
     }
     let repaired = repair_json(json);
-    serde_json::from_str::<T>(&repaired).map_err(|e| format!("JSON parse error: {}", e))
+    serde_json::from_str::<T>(&repaired).map_err(|e| format!("JSON parse error: {e}"))
 }
 
 /// Attempt to clean partial JSON by trimming trailing garbage and closing open structures.
@@ -171,20 +172,18 @@ fn clean_partial_json(s: &str) -> String {
     let mut cleaned = cleaned.trim_end().to_string();
     strip_comma_before_close(&mut cleaned);
 
-    if depth > 0 {
-        // Close open brackets/braces (only for objects and arrays that started)
-        let closes: String = if s.starts_with('{') {
-            "}".repeat(depth as usize)
-        } else if s.starts_with('[') {
-            "]".repeat(depth as usize)
-        } else {
-            String::new()
-        };
-        format!("{}{}", cleaned, closes)
-    } else if depth < 0 {
-        "{}".to_string()
-    } else {
-        cleaned
+    match depth.cmp(&0) {
+        std::cmp::Ordering::Greater => {
+            // Close open brackets/braces (only for objects and arrays that started)
+            let closes: String = match s.chars().next() {
+                Some('{') => "}".repeat(depth as usize),
+                Some('[') => "]".repeat(depth as usize),
+                _ => String::new(),
+            };
+            format!("{cleaned}{closes}")
+        }
+        std::cmp::Ordering::Less => "{}".to_string(),
+        std::cmp::Ordering::Equal => cleaned,
     }
 }
 
@@ -195,7 +194,7 @@ fn strip_comma_before_close(s: &mut String) {
             _ => break,
         };
         let prefix = s[..s.len() - 1].trim_end().to_string();
-        if !matches!(prefix.chars().last(), Some(',') | Some(';')) {
+        if !matches!(prefix.chars().last(), Some(',' | ';')) {
             break;
         }
         *s = format!("{}{}", &prefix[..prefix.len() - 1], last);
@@ -204,10 +203,11 @@ fn strip_comma_before_close(s: &mut String) {
 
 /// Parse potentially incomplete JSON from streaming responses.
 /// Always returns a valid Value, falling back to `Value::Object({})` on failure.
+#[must_use] 
 pub fn parse_streaming_json(partial_json: Option<&str>) -> Value {
     let json = match partial_json {
         Some(s) if !s.trim().is_empty() => s.trim(),
-        _ => return Value::Object(Default::default()),
+        _ => return Value::Object(Map::default()),
     };
 
     // First try direct parse
@@ -228,11 +228,12 @@ pub fn parse_streaming_json(partial_json: Option<&str>) -> Value {
     }
 
     // Ultimate fallback
-    Value::Object(Default::default())
+    Value::Object(Map::default())
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -277,13 +278,13 @@ mod tests {
     #[test]
     fn test_parse_streaming_json_none() {
         let result = parse_streaming_json(None);
-        assert_eq!(result, Value::Object(Default::default()));
+        assert_eq!(result, Value::Object(Map::default()));
     }
 
     #[test]
     fn test_parse_streaming_json_empty() {
         let result = parse_streaming_json(Some(""));
-        assert_eq!(result, Value::Object(Default::default()));
+        assert_eq!(result, Value::Object(Map::default()));
     }
 
     #[test]

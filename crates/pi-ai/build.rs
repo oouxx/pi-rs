@@ -1,6 +1,6 @@
 //! Build-time model generation — ports pi's generate-models.ts and generate-image-models.ts.
 //!
-//! At compile time, fetches available models from OpenRouter and models.dev APIs,
+//! At compile time, fetches available models from `OpenRouter` and models.dev APIs,
 //! processes them, and generates JSON that the main crate embeds at compile time.
 
 use std::collections::HashMap;
@@ -139,6 +139,7 @@ enum BuildModelCompat {
     },
 }
 
+#[allow(clippy::ref_option)]
 fn parse_price(s: &Option<String>) -> f64 {
     s.as_ref()
         .and_then(|v| v.parse::<f64>().ok())
@@ -160,7 +161,7 @@ fn fetch_openrouter_models(client: &reqwest::blocking::Client) -> Vec<OpenRouter
             vec![]
         }
         Err(e) => {
-            println!("cargo:warning=Failed to fetch OpenRouter models: {}", e);
+            println!("cargo:warning=Failed to fetch OpenRouter models: {e}");
             vec![]
         }
     }
@@ -171,7 +172,7 @@ fn fetch_models_dev(client: &reqwest::blocking::Client) -> serde_json::Value {
         Ok(resp) if resp.status().is_success() => {
             let text = resp.text().unwrap_or_default();
             serde_json::from_str(&text).unwrap_or_else(|e| {
-                println!("cargo:warning=models.dev JSON parse error: {}", e);
+                println!("cargo:warning=models.dev JSON parse error: {e}");
                 serde_json::Value::Null
             })
         }
@@ -183,7 +184,7 @@ fn fetch_models_dev(client: &reqwest::blocking::Client) -> serde_json::Value {
             serde_json::Value::Null
         }
         Err(e) => {
-            println!("cargo:warning=Failed to fetch models.dev: {}", e);
+            println!("cargo:warning=Failed to fetch models.dev: {e}");
             serde_json::Value::Null
         }
     }
@@ -208,19 +209,19 @@ fn get_cost(model: &serde_json::Value) -> BuildModelCost {
     BuildModelCost {
         input: cost
             .and_then(|c| c.get("input"))
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
         output: cost
             .and_then(|c| c.get("output"))
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
         cache_read: cost
             .and_then(|c| c.get("cache_read"))
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
         cache_write: cost
             .and_then(|c| c.get("cache_write"))
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
     }
 }
@@ -230,19 +231,17 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
         .filter(|m| {
             m.supported_parameters
                 .as_ref()
-                .map(|p| p.iter().any(|p| p == "tools"))
-                .unwrap_or(false)
+                .is_some_and(|p| p.iter().any(|p| p == "tools"))
         })
         .map(|m| {
             let reasoning = m
                 .supported_parameters
                 .as_ref()
-                .map(|p| p.iter().any(|p| p == "reasoning"))
-                .unwrap_or(false);
+                .is_some_and(|p| p.iter().any(|p| p == "reasoning"));
             let input_modalities =
                 m.architecture
                     .as_ref()
-                    .map_or(vec!["text".to_string()], |arch| {
+                    .map_or_else(|| vec!["text".to_string()], |arch| {
                         let mut inputs = vec!["text".to_string()];
                         if arch.modality.as_deref() == Some("image")
                             || arch
@@ -303,10 +302,7 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
 
 fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     let mut models = Vec::new();
-    let data = match data.as_object() {
-        Some(d) => d,
-        None => return models,
-    };
+    let Some(data) = data.as_object() else { return models; };
 
     for (provider_name, api, base_url, include_deprecated) in [
         (
@@ -391,13 +387,13 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             for (id, m) in items {
                 let tool_call = m
                     .get("tool_call")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
                 if !tool_call {
                     continue;
                 }
                 if !include_deprecated
-                    && m.get("status").and_then(|v| v.as_str()) == Some("deprecated")
+                    && m.get("status").and_then(serde_json::Value::as_str) == Some("deprecated")
                 {
                     continue;
                 }
@@ -410,7 +406,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     id: id.clone(),
                     name: m
                         .get("name")
-                        .and_then(|v| v.as_str())
+                        .and_then(serde_json::Value::as_str)
                         .unwrap_or(id)
                         .to_string(),
                     api: api.into(),
@@ -418,19 +414,19 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     base_url: base_url.into(),
                     reasoning: m
                         .get("reasoning")
-                        .and_then(|v| v.as_bool())
+                        .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false),
                     input: get_input_modalities(m),
                     cost: get_cost(m),
                     context_window: m
                         .get("limit")
                         .and_then(|l| l.get("context"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(serde_json::Value::as_u64)
                         .unwrap_or(4096),
                     max_tokens: m
                         .get("limit")
                         .and_then(|l| l.get("output"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(serde_json::Value::as_u64)
                         .unwrap_or(4096),
                     compat: None,
                 });
@@ -442,7 +438,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
 }
 
 fn main() {
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| { panic!("OUT_DIR not set"); });
 
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -450,7 +446,7 @@ fn main() {
     {
         Ok(c) => c,
         Err(e) => {
-            println!("cargo:warning=HTTP client failed: {}", e);
+            println!("cargo:warning=HTTP client failed: {e}");
             return;
         }
     };
@@ -458,8 +454,8 @@ fn main() {
     let openrouter_raw = fetch_openrouter_models(&client);
     let openrouter_models = process_openrouter_models(openrouter_raw);
     println!(
-        "cargo:warning=OpenRouter: {} tool-capable models",
-        openrouter_models.len()
+        "cargo:warning=OpenRouter: {openrouter_models_len} tool-capable models",
+        openrouter_models_len = openrouter_models.len()
     );
 
     let models_dev = fetch_models_dev(&client);
@@ -469,8 +465,8 @@ fn main() {
         Vec::new()
     };
     println!(
-        "cargo:warning=models.dev: {} models",
-        models_dev_models.len()
+        "cargo:warning=models.dev: {models_dev_models_len} models",
+        models_dev_models_len = models_dev_models.len()
     );
 
     let mut all_models = models_dev_models;
@@ -492,14 +488,14 @@ fn main() {
     }
 
     let json = serde_json::to_string_pretty(&by_provider).unwrap_or_else(|e| {
-        println!("cargo:warning=Serialize failed: {}", e);
+        println!("cargo:warning=Serialize failed: {e}");
         String::new()
     });
-    std::fs::write(format!("{}/models_generated.json", out_dir), &json)
-        .unwrap_or_else(|e| println!("cargo:warning=Write failed: {}", e));
+    std::fs::write(format!("{out_dir}/models_generated.json"), &json)
+        .unwrap_or_else(|e| println!("cargo:warning=Write failed: {e}"));
     println!(
-        "cargo:warning=Generated {} models across {} providers",
-        all_models.len(),
-        by_provider.len()
+        "cargo:warning=Generated {all_models_len} models across {by_provider_len} providers",
+        all_models_len = all_models.len(),
+        by_provider_len = by_provider.len()
     );
 }

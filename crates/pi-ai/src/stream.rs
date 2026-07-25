@@ -27,10 +27,11 @@ fn with_env_api_key(model: &Model, options: Option<StreamOptions>) -> Option<Str
 
 /// Resolve the API provider for a given API, panicking if none registered.
 fn resolve_api_provider(api: &str) -> crate::api_registry::ApiProvider {
-    get_api_provider(api).unwrap_or_else(|| panic!("No API provider registered for api: {}", api))
+    get_api_provider(api).unwrap_or_else(|| panic!("No API provider registered for api: {api}"))
 }
 
 /// Stream a completion from the given model.
+#[must_use] 
 pub fn stream(
     model: &Model,
     context: &Context,
@@ -41,7 +42,7 @@ pub fn stream(
     (provider.stream)(model, context, opts.as_ref())
 }
 
-/// Complete a request and return the final AssistantMessage.
+/// Complete a request and return the final `AssistantMessage`.
 pub async fn complete(
     model: &Model,
     context: &Context,
@@ -51,6 +52,7 @@ pub async fn complete(
 }
 
 /// Stream a completion using simplified options (with reasoning support).
+#[must_use] 
 pub fn stream_simple(
     model: &Model,
     context: &Context,

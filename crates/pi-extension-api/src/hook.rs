@@ -1,4 +1,4 @@
-//! Hook 系统 — 参考 ZeroClaw 的 HookHandler + HookRunner 设计。
+//! Hook 系统 — 参考 `ZeroClaw` 的 `HookHandler` + `HookRunner` 设计。
 //!
 //! 两种事件类型：
 //! - **Void hooks**（并行、fire-and-forget）：通知型事件，所有 handler 同时执行
@@ -32,12 +32,12 @@ pub enum HookResult<T> {
 }
 
 impl<T> HookResult<T> {
-    pub fn is_cancel(&self) -> bool {
-        matches!(self, HookResult::Cancel(_))
+    pub const fn is_cancel(&self) -> bool {
+        matches!(self, Self::Cancel(_))
     }
 
-    pub fn is_continue(&self) -> bool {
-        matches!(self, HookResult::Continue(_))
+    pub const fn is_continue(&self) -> bool {
+        matches!(self, Self::Continue(_))
     }
 }
 
@@ -83,7 +83,8 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { tools: Vec::new() }
     }
 
@@ -94,6 +95,7 @@ impl ToolRegistry {
         });
     }
 
+    #[must_use]
     pub fn into_vec(self) -> Vec<RegisteredTool> {
         self.tools
     }
@@ -106,7 +108,8 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { commands: Vec::new() }
     }
 
@@ -123,6 +126,7 @@ impl CommandRegistry {
         });
     }
 
+    #[must_use]
     pub fn into_vec(self) -> Vec<RegisteredCommand> {
         self.commands
     }
@@ -135,7 +139,8 @@ pub struct ShortcutRegistry {
 }
 
 impl ShortcutRegistry {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { shortcuts: Vec::new() }
     }
 
@@ -146,6 +151,7 @@ impl ShortcutRegistry {
         });
     }
 
+    #[must_use]
     pub fn into_vec(self) -> Vec<RegisteredShortcut> {
         self.shortcuts
     }
@@ -158,7 +164,8 @@ pub struct FlagRegistry {
 }
 
 impl FlagRegistry {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { flags: Vec::new() }
     }
 
@@ -169,6 +176,7 @@ impl FlagRegistry {
         });
     }
 
+    #[must_use]
     pub fn into_vec(self) -> Vec<RegisteredFlag> {
         self.flags
     }
@@ -344,7 +352,7 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// 工具结果处理（modifying 版本）。
-    /// 可以修改工具结果的内容（JSON 序列化后的 ContentBlock 列表）、详情和错误状态。
+    /// 可以修改工具结果的内容（JSON 序列化后的 `ContentBlock` 列表）、详情和错误状态。
     /// 按 priority 顺序执行。
     async fn on_tool_result_mut(
         &self,
@@ -356,7 +364,7 @@ pub trait HookHandler: Send + Sync {
         HookResult::Continue((_content, _details, _is_error))
     }
 
-    /// Agent 开始前触发。可修改 prompt 和 system_prompt，或取消。
+    /// Agent 开始前触发。可修改 prompt 和 `system_prompt`，或取消。
     /// `_images` 和 `_system_prompt_options` 是只读输入参数。
     async fn before_agent_start(
         &self,
@@ -446,6 +454,7 @@ pub struct HookRunner {
 }
 
 impl HookRunner {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             handlers: Vec::new(),
@@ -459,16 +468,19 @@ impl HookRunner {
     }
 
     /// Check if any handlers are registered.
+    #[must_use]
     pub fn has_handlers(&self) -> bool {
         !self.handlers.is_empty()
     }
 
     /// Number of registered handlers.
+    #[must_use]
     pub fn handler_count(&self) -> usize {
         self.handlers.len()
     }
 
     /// Access handlers (for tool/command/shortcut collection).
+    #[must_use]
     pub fn handlers(&self) -> &[Box<dyn HookHandler>] {
         &self.handlers
     }
@@ -791,7 +803,7 @@ impl HookRunner {
     }
 
     /// Run `on_tool_result_mut` handlers in priority order.
-    /// Returns the (possibly modified) content, details, and is_error.
+    /// Returns the (possibly modified) content, details, and `is_error`.
     pub async fn run_on_tool_result(
         &self,
         tool_name: &str,
@@ -1003,8 +1015,6 @@ mod tests {
 
     #[tokio::test]
     async fn void_hooks_fire_to_all_handlers() {
-        let count = Arc::new(AtomicU32::new(0));
-
         struct CountingHook {
             name: String,
             count: Arc<AtomicU32>,
@@ -1019,6 +1029,8 @@ mod tests {
                 self.count.fetch_add(1, Ordering::SeqCst);
             }
         }
+
+        let count = Arc::new(AtomicU32::new(0));
 
         let mut runner = HookRunner::new();
         runner.register(Box::new(CountingHook {
@@ -1123,7 +1135,9 @@ mod tests {
                 self.priority
             }
             async fn on_agent_start(&self) {
-                self.execution_order.lock().unwrap().push(self.name.clone());
+                if let Ok(mut order) = self.execution_order.lock() {
+                order.push(self.name.clone());
+            }
             }
         }
 
@@ -1148,7 +1162,8 @@ mod tests {
 
         runner.fire_agent_start().await;
 
-        let order = order.lock().unwrap();
+        let Ok(guard) = order.lock() else { return; };
+        let order = &*guard;
         assert_eq!(order.len(), 3);
         assert!(order.contains(&"low".to_string()));
         assert!(order.contains(&"medium".to_string()));

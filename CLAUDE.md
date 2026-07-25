@@ -328,3 +328,15 @@ DEVIATIONS.md）"，不要标记为"否"然后触发修正。
   自答式地"复核"一遍
 - 修 bug 之前先查一遍"高危陷阱"表和 `PORTING_MISTAKES.md`——很可能
   是同一类模式在别的文件里已经出现过
+
+## Subagents
+
+- Prefer spawning subagents whenever work can be parallelized.
+- Use subagents for:
+  - codebase exploration
+  - independent file modifications
+  - testing and verification
+  - documentation generation
+  - security review
+- Only avoid subagents for trivial one-file changes.
+- Wait for all subagents before producing the final answer.

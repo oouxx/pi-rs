@@ -28,7 +28,7 @@ impl SelectList {
 
     pub fn selected_index(&self) -> Option<usize> { self.state.selected() }
     pub fn selected_item(&self) -> Option<&str> {
-        self.state.selected().and_then(|i| self.items.get(i)).map(|s| s.as_str())
+        self.state.selected().and_then(|i| self.items.get(i)).map(String::as_str)
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) {

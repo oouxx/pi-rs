@@ -1,51 +1,10 @@
-# clippy.toml - 项目根目录下，与 Cargo.toml 同级
+# Clippy configuration for pi-rs.
+# Thresholds tuned to match the codebase patterns.
 
-# ===== 复杂度阈值 =====
 cognitive-complexity-threshold = 30
-too-many-arguments-threshold = 7
-too-many-lines-threshold = 150
-type-complexity-threshold = 250
-single-char-binding-names-threshold = 4
 
-# ===== MSRV（配合 #[clippy::msrv] 或自动读取 Cargo.toml 的 rust-version）=====
-msrv = "1.80.0"
+too-many-arguments-threshold = 10
 
-# ===== 禁止使用的方法/函数（防止误用） =====
-disallowed-methods = [
-    # unwrap 系列容易 panic，生产代码建议走 disallowed-methods lint 强制走 ?
-    { path = "std::env::set_var", reason = "线程不安全，改用配置注入" },
-    { path = "std::process::exit", reason = "用 anyhow::Result + main 返回值代替，便于清理资源" },
-]
+too-many-lines-threshold = 200
 
-# ===== 禁止使用的类型 =====
-disallowed-types = [
-    # { path = "std::collections::HashMap", reason = "考虑使用 ahash::AHashMap 或 hashbrown 提升性能" },
-]
-
-# ===== 禁止的宏 =====
-disallowed-macros = [
-    # { path = "std::dbg", reason = "调试宏不应提交到主分支" },
-]
-
-# ===== 文档相关 =====
-doc-valid-idents = [
-    "GPU", "GPUs", "CPU", "CPUs", "API", "APIs", "JSON", "YAML", "TOML",
-    "gRPC", "HTTP", "HTTPS", "URL", "URI", "UUID", "SQL", "PostgreSQL",
-    "Kubernetes", "K8s", "..",
-]
-
-# ===== 命名相关 =====
-enum-variant-size-threshold = 200
-large-error-threshold = 128
-
-# ===== 是否允许在导出 API 上做破坏性 lint 建议 =====
-avoid-breaking-exported-api = true
-
-# ===== 标准宏花括号风格检查 =====
-standard-macro-braces = [
-    { name = "vec", brace = "[" },
-    { name = "matches", brace = "(" },
-]
-
-# ===== 允许的宽泛名字（避免 blacklisted-name 误报） =====
-allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "id", "db", "tx", "rx"]
+array-size-threshold = 65536

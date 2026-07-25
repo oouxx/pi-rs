@@ -19,7 +19,7 @@ impl Editor {
         let lines: Vec<String> = if initial.is_empty() {
             vec![String::new()]
         } else {
-            initial.lines().map(|l| l.to_string()).collect()
+            initial.lines().map(ToString::to_string).collect()
         };
         Self {
             lines,

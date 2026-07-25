@@ -1,11 +1,5 @@
 //! Elm architecture core — Model, Msg, update, view, Cmd.
 
-#![allow(
-    clippy::cast_lossless,
-    unused_assignments,
-    clippy::manual_pattern_char_comparison,
-)]
-
 use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};

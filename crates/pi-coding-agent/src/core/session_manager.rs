@@ -2678,7 +2678,6 @@ mod tests {
         assert!(ctx.messages.len() >= 2);
     }
 
-    #[test]
 
     #[test]
     fn test_build_context_single_compaction() {
@@ -2686,7 +2685,7 @@ mod tests {
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
-        let old_msg_id = mgr.append_message(serde_json::json!({
+        let _old_msg_id = mgr.append_message(serde_json::json!({
             "role": "user",
             "content": "Old message 1"
         }));
@@ -2722,7 +2721,7 @@ mod tests {
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
 
-        let msg1 = mgr.append_message(serde_json::json!({
+        let _msg1 = mgr.append_message(serde_json::json!({
             "role": "user",
             "content": "First"
         }));
@@ -2790,7 +2789,7 @@ mod tests {
         // Without compaction, all messages should be present
         assert_eq!(ctx.messages.len(), 4);
     }
-
+    #[test]
     fn test_custom_entry() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =

@@ -22,100 +22,7 @@ fn find_git_paths(cwd: &str) -> Option<GitPaths> {
                 });
             }
 
-    #[test]
-    fn test_resolve_branch_invalid_ref() {
-        // .invalid ref should return None (reftable repo)
-        assert_eq!(
-            resolve_branch_from_head("ref: refs/heads/.invalid"),
-            None
-        );
-    }
 
-    #[test]
-    fn test_resolve_branch_detached() {
-        assert_eq!(
-            resolve_branch_from_head("abc123def"),
-            Some("detached".to_string())
-        );
-    }
-
-    #[test]
-    fn test_find_git_paths_in_temp_repo() {
-        let dir = tempfile::tempdir().unwrap();
-        let git_dir = dir.path().join(".git");
-        std::fs::create_dir_all(&git_dir).unwrap();
-        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main
-").unwrap();
-
-        let paths = find_git_paths(dir.path().to_str().unwrap());
-        assert!(paths.is_some());
-        let paths = paths.unwrap();
-        assert_eq!(paths.repo_dir, dir.path().to_string_lossy().to_string());
-    }
-
-    #[test]
-    fn test_find_git_paths_nonexistent() {
-        let paths = find_git_paths("/nonexistent/path");
-        assert!(paths.is_none());
-    }
-
-    #[test]
-    fn test_read_git_head() {
-        let dir = tempfile::tempdir().unwrap();
-        let head_path = dir.path().join("HEAD");
-        std::fs::write(&head_path, "ref: refs/heads/main
-").unwrap();
-
-        let content = read_git_head(head_path.to_str().unwrap());
-        assert_eq!(content, Some("ref: refs/heads/main".to_string()));
-    }
-
-    #[test]
-    fn test_read_git_head_nonexistent() {
-        let content = read_git_head("/nonexistent/HEAD");
-        assert!(content.is_none());
-    }
-
-    #[test]
-    fn test_get_git_branch_in_repo() {
-        let dir = tempfile::tempdir().unwrap();
-        let git_dir = dir.path().join(".git");
-        std::fs::create_dir_all(&git_dir).unwrap();
-        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main
-").unwrap();
-
-        let provider = FooterDataProvider::new(dir.path().to_str().unwrap());
-        assert_eq!(provider.get_git_branch(), Some("main".to_string()));
-    }
-
-    #[test]
-    fn test_get_git_branch_detached() {
-        let dir = tempfile::tempdir().unwrap();
-        let git_dir = dir.path().join(".git");
-        std::fs::create_dir_all(&git_dir).unwrap();
-        std::fs::write(git_dir.join("HEAD"), "abc123def
-").unwrap();
-
-        let provider = FooterDataProvider::new(dir.path().to_str().unwrap());
-        assert_eq!(provider.get_git_branch(), Some("detached".to_string()));
-    }
-
-    #[test]
-    fn test_clear_extension_statuses() {
-        let mut provider = FooterDataProvider::new("/tmp");
-        provider.set_extension_status("key1", Some("value1"));
-        provider.set_extension_status("key2", Some("value2"));
-        assert_eq!(provider.get_extension_statuses().len(), 2);
-        provider.clear_extension_statuses();
-        assert_eq!(provider.get_extension_statuses().len(), 0);
-    }
-
-    #[test]
-    fn test_dispose() {
-        let provider = FooterDataProvider::new("/tmp");
-        provider.dispose();
-        // dispose just sets a flag, no crash expected
-    }
 
         }
         match dir.parent() {
@@ -212,7 +119,100 @@ impl FooterDataProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_resolve_branch_invalid_ref() {
+        // .invalid ref should return None (reftable repo)
+        assert_eq!(
+            resolve_branch_from_head("ref: refs/heads/.invalid"),
+            None
+        );
+    }
 
+    #[test]
+    fn test_resolve_branch_detached() {
+        assert_eq!(
+            resolve_branch_from_head("abc123def"),
+            Some("detached".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_git_paths_in_temp_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main
+").unwrap();
+
+        let paths = find_git_paths(dir.path().to_str().unwrap());
+        assert!(paths.is_some());
+        let paths = paths.unwrap();
+        assert_eq!(paths.repo_dir, dir.path().to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_find_git_paths_nonexistent() {
+        let paths = find_git_paths("/nonexistent/path");
+        assert!(paths.is_none());
+    }
+
+    #[test]
+    fn test_read_git_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let head_path = dir.path().join("HEAD");
+        std::fs::write(&head_path, "ref: refs/heads/main
+").unwrap();
+
+        let content = read_git_head(head_path.to_str().unwrap());
+        assert_eq!(content, Some("ref: refs/heads/main".to_string()));
+    }
+
+    #[test]
+    fn test_read_git_head_nonexistent() {
+        let content = read_git_head("/nonexistent/HEAD");
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn test_get_git_branch_in_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main
+").unwrap();
+
+        let provider = FooterDataProvider::new(dir.path().to_str().unwrap());
+        assert_eq!(provider.get_git_branch(), Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_get_git_branch_detached() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "abc123def
+").unwrap();
+
+        let provider = FooterDataProvider::new(dir.path().to_str().unwrap());
+        assert_eq!(provider.get_git_branch(), Some("detached".to_string()));
+    }
+
+    #[test]
+    fn test_clear_extension_statuses() {
+        let mut provider = FooterDataProvider::new("/tmp");
+        provider.set_extension_status("key1", Some("value1"));
+        provider.set_extension_status("key2", Some("value2"));
+        assert_eq!(provider.get_extension_statuses().len(), 2);
+        provider.clear_extension_statuses();
+        assert_eq!(provider.get_extension_statuses().len(), 0);
+    }
+
+    #[test]
+    fn test_dispose() {
+        let provider = FooterDataProvider::new("/tmp");
+        provider.dispose();
+        // dispose just sets a flag, no crash expected
+    }
     #[test]
     fn test_no_git_repo() {
         let provider = FooterDataProvider::new("/nonexistent");

@@ -2128,7 +2128,9 @@ mod tests {
             }),
         };
 
+        let slow_started_for_closure = slow_started.clone();
         let slow_release_for_closure = slow_release.clone();
+        let slow_release_for_move = slow_release.clone();
         // Slow tool: hangs until released
         let slow_tool = AgentTool {
             name: "slow_tool".into(),
@@ -2138,8 +2140,8 @@ mod tests {
             execution_mode: None,
             prepare_arguments: None,
             execute: Arc::new(move |_tool_call_id: String, _params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, _on_update: Option<crate::types::AgentToolUpdateCallback<serde_json::Value>>| {
-                let ss = slow_started.clone();
-                let sr = slow_release_for_closure.clone();
+                let ss = slow_started_for_closure.clone();
+                let sr = slow_release_for_move.clone();
                 Box::pin(async move {
                     ss.notify_one();
                     sr.notified().await;

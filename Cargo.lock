@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "pi-agent-core"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "pi-cli"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "base64",
  "colored",
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extension-api"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "async-trait",
  "futures",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extensions"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "async-trait",
  "pi-extension-api",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "pi-tui"
-version = "1.79.31"
+version = "1.79.35"
 dependencies = [
  "chrono",
  "crossterm",

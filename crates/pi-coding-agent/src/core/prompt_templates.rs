@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::core::diagnostics::ResourceDiagnostic;
+use crate::core::source_info::{SourceInfo, create_synthetic_source_info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptTemplate {
@@ -13,6 +14,7 @@ pub struct PromptTemplate {
     pub file_path: String,
     pub source: PromptSource,
     pub append: bool,
+    pub source_info: SourceInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -134,12 +136,21 @@ fn load_prompt_from_file(path: &Path, source: PromptSource) -> Option<PromptTemp
     let description = extract_description(&content).unwrap_or_default();
     let append = content.contains("append: true");
 
+    let source_info = create_synthetic_source_info(
+        path.to_string_lossy().to_string(),
+        "local".to_string(),
+        None,
+        None,
+        None,
+    );
+
     Some(PromptTemplate {
         name: file_name,
         description,
         file_path: path.to_string_lossy().to_string(),
         source,
         append,
+        source_info,
     })
 }
 

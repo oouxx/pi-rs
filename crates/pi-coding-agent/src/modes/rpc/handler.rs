@@ -1,70 +1,13 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::clone_on_ref_ptr,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::use_self,
-    clippy::significant_drop_tightening,
-    clippy::default_trait_access,
-    clippy::iter_with_drain,
-    clippy::if_not_else,
-    clippy::explicit_iter_loop,
-    clippy::assigning_clones,
-    clippy::implicit_hasher,
-    clippy::ignored_unit_patterns,
-    clippy::missing_fields_in_debug,
-    clippy::or_fun_call,
-    clippy::too_long_first_doc_paragraph,
-    clippy::manual_string_new,
-    clippy::single_match_else,
-    clippy::significant_drop_in_scrutinee,
-    clippy::needless_collect,
-    clippy::duplicated_attributes,
-    clippy::similar_names,
-    clippy::needless_raw_string_hashes,
-    clippy::unnested_or_patterns,
-)]
 //! RPC command handler — dispatches RPC commands to AgentSession.
 //!
 //! Mirrors the command handling in packages/coding-agent/src/modes/rpc/rpc-mode.ts
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::agent_session::AgentSession;
 use crate::core::model_registry::ModelRegistry;
-use crate::core::session_manager::SessionEntry;
 
 use super::jsonl::serialize_json_line;
 use super::rpc_types::*;
@@ -80,13 +23,18 @@ pub async fn handle_command(
     match command {
         // ── Prompting ─────────────────────────────────────────────────────
         RpcCommand::Prompt {
-            id: _,
+            id,
             message,
-            images: _,
-            streaming_behavior: _,
+            images,
+            streaming_behavior,
         } => {
-            let event_tx = state.event_tx.clone();
-            let done_tx = state.done_tx.clone();
+            let output_tx = state.output_tx.clone();
+            let cmd_id = id.clone();
+
+            // Use a shared cell so the listener can unsubscribe itself after firing,
+            // preventing duplicate responses when multiple prompt commands are sent.
+            let unsubscribe_handle = Arc::new(tokio::sync::Mutex::new(None::<pi_agent_core::agent::UnsubscribeHandle>));
+            let uh = unsubscribe_handle.clone();
 
             let listener: Arc<
                 dyn Fn(
@@ -96,87 +44,121 @@ pub async fn handle_command(
                     + Send
                     + Sync,
             > = Arc::new(move |event, _signal| {
-                let event_tx = event_tx.clone();
-                let done_tx = done_tx.clone();
+                let output_tx = output_tx.clone();
+                let cmd_id = cmd_id.clone();
+                let uh = uh.clone();
                 Box::pin(async move {
-                    match &event {
-                        pi_agent_core::types::AgentEvent::MessageUpdate {
-                            assistant_message_event,
-                            ..
-                        } => {
-                            if let pi_agent_core::pi_ai_types::AssistantMessageEvent::TextDelta {
-                                delta,
-                                ..
-                            } = assistant_message_event
-                            {
-                                let _ = event_tx.send(serialize_json_line(&RpcOutput::Event {
-                                    event: AgentEvent::MessageUpdate {
-                                        delta: delta.clone(),
-                                    },
-                                }));
-                            }
+                    // Events are forwarded globally via subscribe_session_events in mod.rs.
+                    // This listener only handles the prompt success response.
+                    if matches!(event, pi_agent_core::types::AgentEvent::AgentEnd { .. }) {
+                        // Emit success response for prompt command
+                        // (matching TS preflightResult pattern)
+                        let success = rpc_success(cmd_id, "prompt", None);
+                        let _ = output_tx.send(serialize_json_line(&success));
+                        // Unsubscribe to prevent firing again on subsequent AgentEnd events
+                        if let Some(handle) = uh.lock().await.take() {
+                            handle.unsubscribe().await;
                         }
-                        pi_agent_core::types::AgentEvent::MessageEnd { .. } => {
-                            let _ = event_tx.send(serialize_json_line(&RpcOutput::Event {
-                                event: AgentEvent::MessageEnd,
-                            }));
-                        }
-                        pi_agent_core::types::AgentEvent::ToolExecutionStart {
-                            tool_call_id,
-                            tool_name,
-                            args,
-                            ..
-                        } => {
-                            let _ = event_tx.send(serialize_json_line(&RpcOutput::Event {
-                                event: AgentEvent::ToolExecutionStart {
-                                    tool_call_id: tool_call_id.clone(),
-                                    tool_name: tool_name.clone(),
-                                    args: args.clone(),
-                                },
-                            }));
-                        }
-                        pi_agent_core::types::AgentEvent::ToolExecutionEnd {
-                            tool_call_id,
-                            tool_name,
-                            result,
-                            is_error,
-                            ..
-                        } => {
-                            let _ = event_tx.send(serialize_json_line(&RpcOutput::Event {
-                                event: AgentEvent::ToolExecutionEnd {
-                                    tool_call_id: tool_call_id.clone(),
-                                    tool_name: tool_name.clone(),
-                                    result: result.clone(),
-                                    is_error: *is_error,
-                                },
-                            }));
-                        }
-                        pi_agent_core::types::AgentEvent::AgentEnd { .. } => {
-                            let _ = event_tx.send(serialize_json_line(&RpcOutput::Event {
-                                event: AgentEvent::AgentEnd,
-                            }));
-                            let _ = done_tx.send(false);
-                        }
-                        _ => {}
                     }
                 })
             });
 
-            session.subscribe(listener).await;
-            session.add_user_text(&message).await;
+            // Build PromptOptions matching TS prompt() call
+            let images_content = images.map(|imgs| {
+                imgs.into_iter()
+                    .filter_map(|img| {
+                        let data = img.data?;
+                        let mime_type = img.mime_type.unwrap_or_else(|| "image/png".to_string());
+                        Some(pi_agent_core::pi_ai_types::ContentBlock::Image {
+                            data,
+                            mime_type,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+            let options = crate::core::agent_session::PromptOptions {
+                expand_prompt_templates: None,
+                images: images_content.filter(|v| !v.is_empty()),
+                streaming_behavior,
+                source: Some("rpc".to_string()),
+            };
+
+            // Track whether AgentEnd was received (agent run completed successfully)
+            let agent_end_received = Arc::new(AtomicBool::new(false));
+            let aer = agent_end_received.clone();
+
+            // Wrap the listener to also set the flag on AgentEnd
+            let original_listener = listener;
+            let listener: Arc<
+                dyn Fn(
+                        pi_agent_core::types::AgentEvent,
+                        Option<tokio::sync::watch::Receiver<bool>>,
+                    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            > = Arc::new(move |event, signal| {
+                let aer = aer.clone();
+                let orig = original_listener.clone();
+                Box::pin(async move {
+                    if matches!(event, pi_agent_core::types::AgentEvent::AgentEnd { .. }) {
+                        aer.store(true, Ordering::SeqCst);
+                    }
+                    orig(event, signal).await;
+                })
+            });
+
+            let handle = session.subscribe(listener).await;
+            *unsubscribe_handle.lock().await = Some(handle);
+
+            // Call prompt and let the listener handle events + success response
+            session.prompt(&message, Some(options)).await;
+
+            // After prompt() returns, check if AgentEnd was received.
+            // If not, the agent run failed to start (e.g. agent was already busy),
+            // and the RPC client would hang waiting for a response.
+            // Match TS behavior: session.prompt().catch((e) => output(error(id, "prompt", e.message)))
+            if !agent_end_received.load(Ordering::SeqCst) {
+                let err = rpc_error(id, "prompt", "Agent run failed to start or completed without emitting AgentEnd".to_string());
+                let _ = state.output_tx.send(serialize_json_line(&err));
+            }
 
             None
         }
 
         // ── Streaming Queue ──────────────────────────────────────────────
 
-        RpcCommand::Steer { id, message, .. } => {
-            session.steer(&message, None).await;
+        RpcCommand::Steer { id, message, images } => {
+            let images_content = images.map(|imgs| {
+                imgs.into_iter()
+                    .filter_map(|img| {
+                        let data = img.data?;
+                        let mime_type = img.mime_type.unwrap_or_else(|| "image/png".to_string());
+                        Some(pi_agent_core::pi_ai_types::ContentBlock::Image {
+                            data,
+                            mime_type,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+            session.steer(&message, images_content.filter(|v| !v.is_empty())).await;
             Some(rpc_success(id, "steer", None))
         }
 
-        RpcCommand::FollowUp { id, message, .. } => {
-            session.follow_up(&message, None).await;
+        RpcCommand::FollowUp { id, message, images } => {
+            let images_content = images.map(|imgs| {
+                imgs.into_iter()
+                    .filter_map(|img| {
+                        let data = img.data?;
+                        let mime_type = img.mime_type.unwrap_or_else(|| "image/png".to_string());
+                        Some(pi_agent_core::pi_ai_types::ContentBlock::Image {
+                            data,
+                            mime_type,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+            session.follow_up(&message, images_content.filter(|v| !v.is_empty())).await;
             Some(rpc_success(id, "follow_up", None))
         }
 
@@ -188,20 +170,20 @@ pub async fn handle_command(
         }
 
         RpcCommand::AbortBash { id } => {
-            session.abort().await;
+            session.abort_bash();
             Some(rpc_success(id, "abort_bash", None))
         }
 
         RpcCommand::Bash {
             id,
             command,
-            exclude_from_context: _,
+            exclude_from_context,
         } => {
-            match session.execute_bash(&command, None).await {
+            match session.execute_bash(&command, None, exclude_from_context).await {
                 Ok(result) => Some(rpc_success(
                     id,
                     "bash",
-                    Some(serde_json::json!({"status": "completed", "output": result.output})),
+                    Some(serde_json::to_value(result).unwrap_or_default()),
                 )),
                 Err(e) => Some(rpc_error(id, "bash", e)),
             }
@@ -211,6 +193,10 @@ pub async fn handle_command(
 
         RpcCommand::NewSession { id, parent_session } => {
             session.new_session(parent_session.as_deref()).await;
+            // Note: TS calls rebindSession() after new_session to re-subscribe
+            // events and re-bind extensions. In the current Rust architecture,
+            // extensions are bound at construction time, so rebinding is a no-op.
+            // The session reference remains valid after new_session().
             Some(rpc_success(
                 id,
                 "new_session",
@@ -222,19 +208,35 @@ pub async fn handle_command(
             let model = session.get_model().await;
             let thinking_level = session.get_thinking_level().await;
             let session_file = session.get_session_file().map(|p| p.to_string_lossy().to_string());
+            let is_compacting = session.is_compacting();
+            let steering_mode = session.steering_mode().await;
+            let follow_up_mode = session.follow_up_mode().await;
+            let auto_compaction = session.auto_compaction_enabled();
+            let pending_count = session.pending_message_count();
+            let messages = session.get_messages().await;
+
+            let steering_mode_str = match steering_mode {
+                pi_agent_core::types::QueueMode::All => "all",
+                pi_agent_core::types::QueueMode::OneAtATime => "one-at-a-time",
+            };
+            let follow_up_mode_str = match follow_up_mode {
+                pi_agent_core::types::QueueMode::All => "all",
+                pi_agent_core::types::QueueMode::OneAtATime => "one-at-a-time",
+            };
+
             let state_data = RpcSessionState {
-                model: model.id.clone(),
+                model: model.clone(),
                 thinking_level,
                 is_streaming: session.is_streaming().await,
                 session_id: session.get_session_id(),
                 session_name: session.get_session_name(),
-                message_count: session.get_messages().await.len(),
-                is_compacting: None, // Not yet tracked on AgentSession
-                steering_mode: None, // Not yet implemented
-                follow_up_mode: None, // Not yet implemented
+                message_count: messages.len(),
+                is_compacting: Some(is_compacting),
+                steering_mode: Some(steering_mode_str.to_string()),
+                follow_up_mode: Some(follow_up_mode_str.to_string()),
                 session_file,
-                auto_compaction_enabled: Some(session.get_compaction_settings().compact_on_threshold),
-                pending_message_count: Some(session.get_messages().await.len()),
+                auto_compaction_enabled: Some(auto_compaction),
+                pending_message_count: Some(pending_count),
             };
             Some(rpc_success(
                 id,
@@ -258,7 +260,7 @@ pub async fn handle_command(
                         Ok(_) => Some(rpc_success(
                             id,
                             "set_model",
-                            Some(serde_json::json!({"id": m.id, "provider": m.provider})),
+                            Some(serde_json::to_value(&m).unwrap_or_default()),
                         )),
                         Err(e) => Some(rpc_error(
                             id,
@@ -276,25 +278,22 @@ pub async fn handle_command(
         }
 
         RpcCommand::CycleModel { id } => {
-            let models = model_registry.get_available();
-            if models.is_empty() {
-                return Some(rpc_success(id, "cycle_model", None));
-            }
-            let current_id = session.get_model().await.id;
-            let current_idx = models.iter().position(|m| m.id == current_id).unwrap_or(0);
-            let next_idx = (current_idx + 1) % models.len();
-            let next = &models[next_idx];
-            match session.set_model(next.clone()).await {
-                Ok(_) => Some(rpc_success(
-                    id,
-                    "cycle_model",
-                    Some(serde_json::json!({"model": {"id": next.id, "provider": next.provider}})),
-                )),
-                Err(e) => Some(rpc_error(
-                    id,
-                    "cycle_model",
-                    format!("Auth error: {e}"),
-                )),
+            let result = session.cycle_model("forward").await;
+            match result {
+                Some((model, thinking_level, is_scoped)) => {
+                    Some(rpc_success(
+                        id,
+                        "cycle_model",
+                        Some(serde_json::json!({
+                            "model": model,
+                            "thinkingLevel": thinking_level,
+                            "isScoped": is_scoped,
+                        })),
+                    ))
+                }
+                None => {
+                    Some(rpc_success(id, "cycle_model", None))
+                }
             }
         }
 
@@ -302,7 +301,7 @@ pub async fn handle_command(
             let models = model_registry.get_available();
             let models_json: Vec<serde_json::Value> = models
                 .iter()
-                .map(|m| serde_json::json!({"id": m.id, "provider": m.provider}))
+                .map(|m| serde_json::to_value(m).unwrap_or_default())
                 .collect();
             Some(rpc_success(
                 id,
@@ -315,31 +314,38 @@ pub async fn handle_command(
 
         RpcCommand::SetThinkingLevel { id, level } => {
             session.set_thinking_level(&level).await;
-            Some(rpc_success(id, "set_thinking_level", Some(serde_json::json!({"level": level}))))
+            Some(rpc_success(id, "set_thinking_level", None))
         }
 
         RpcCommand::CycleThinkingLevel { id } => {
-            let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
-            let current = session.get_thinking_level().await;
-            let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
-            let next = levels[(idx + 1) % levels.len()];
-            session.set_thinking_level(next).await;
-            Some(rpc_success(
-                id,
-                "cycle_thinking_level",
-                Some(serde_json::json!({"level": next})),
-            ))
+            let result = session.cycle_thinking_level().await;
+            match result {
+                Some(level) => Some(rpc_success(
+                    id,
+                    "cycle_thinking_level",
+                    Some(serde_json::json!({"level": level})),
+                )),
+                None => Some(rpc_success(id, "cycle_thinking_level", None)),
+            }
         }
 
         // ── Queue Modes ──────────────────────────────────────────────────
 
-        RpcCommand::SetSteeringMode { id, mode: _ } => {
-            // Steering mode is not yet implemented on AgentSession
+        RpcCommand::SetSteeringMode { id, mode } => {
+            let queue_mode = match mode.as_str() {
+                "one-at-a-time" => pi_agent_core::types::QueueMode::OneAtATime,
+                _ => pi_agent_core::types::QueueMode::All,
+            };
+            session.set_steering_mode(queue_mode).await;
             Some(rpc_success(id, "set_steering_mode", None))
         }
 
-        RpcCommand::SetFollowUpMode { id, mode: _ } => {
-            // Follow-up mode is not yet implemented on AgentSession
+        RpcCommand::SetFollowUpMode { id, mode } => {
+            let queue_mode = match mode.as_str() {
+                "one-at-a-time" => pi_agent_core::types::QueueMode::OneAtATime,
+                _ => pi_agent_core::types::QueueMode::All,
+            };
+            session.set_follow_up_mode(queue_mode).await;
             Some(rpc_success(id, "set_follow_up_mode", None))
         }
 
@@ -351,35 +357,33 @@ pub async fn handle_command(
         } => {
             let result = session.compact(custom_instructions.as_deref()).await;
             match result {
-                Ok(summary) => Some(rpc_success(
+                Ok(compact_result) => Some(rpc_success(
                     id,
                     "compact",
-                    Some(serde_json::json!({"compacted": true, "summary": summary})),
+                    Some(serde_json::to_value(compact_result).unwrap_or_default()),
                 )),
-                Err(reason) => Some(rpc_success(
+                Err(reason) => Some(rpc_error(
                     id,
                     "compact",
-                    Some(serde_json::json!({"compacted": false, "reason": reason})),
+                    reason,
                 )),
             }
         }
 
         RpcCommand::SetAutoCompaction { id, enabled } => {
-            let mut settings = session.get_compaction_settings().clone();
-            settings.compact_on_threshold = enabled;
-            session.set_compaction_settings(settings);
-            Some(rpc_success(id, "set_auto_compaction", Some(serde_json::json!({"enabled": enabled}))))
+            session.set_auto_compaction_enabled(enabled);
+            Some(rpc_success(id, "set_auto_compaction", None))
         }
 
         // ── Retry ─────────────────────────────────────────────────────────
 
-        RpcCommand::SetAutoRetry { id, enabled: _ } => {
-            // Auto-retry is not yet implemented on AgentSession
+        RpcCommand::SetAutoRetry { id, enabled } => {
+            session.set_auto_retry_enabled(enabled);
             Some(rpc_success(id, "set_auto_retry", None))
         }
 
         RpcCommand::AbortRetry { id } => {
-            session.abort().await;
+            session.abort_retry();
             Some(rpc_success(id, "abort_retry", None))
         }
 
@@ -399,54 +403,61 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetEntries { id, since } => {
-            let (entry_ids, leaf_id) = {
+            let (entries, leaf_id) = {
                 let mgr = session.get_session_manager();
-                let ids: Vec<String> = mgr.get_entries().iter().map(|e| session_entry_id(e)).collect();
-                (ids, mgr.get_session_id().to_string())
+                let entries: Vec<serde_json::Value> = mgr
+                    .get_entries()
+                    .iter()
+                    .map(|e| serde_json::to_value(e).unwrap_or_default())
+                    .collect();
+                let leaf_id = mgr.get_leaf_id().map(|s| s.to_string());
+                (entries, leaf_id)
             };
-            let all_entries: Vec<serde_json::Value> = entry_ids
-                .iter()
-                .map(|eid| serde_json::json!({"id": eid, "type": "entry"}))
-                .collect();
-            let entries = if let Some(ref since_id) = since {
-                let since_idx = all_entries.iter().position(|e| {
+            let result_entries = if let Some(ref since_id) = since {
+                let since_idx = entries.iter().position(|e| {
                     e.get("id").and_then(|v| v.as_str()) == Some(since_id)
                 });
                 match since_idx {
-                    Some(idx) => all_entries[idx + 1..].to_vec(),
+                    Some(idx) => entries[idx + 1..].to_vec(),
                     None => {
                         return Some(rpc_error(id, "get_entries", format!("Entry not found: {since_id}")));
                     }
                 }
             } else {
-                all_entries
+                entries
             };
             Some(rpc_success(
                 id,
                 "get_entries",
-                Some(serde_json::json!({"entries": entries, "leafId": leaf_id})),
+                Some(serde_json::json!({"entries": result_entries, "leafId": leaf_id})),
             ))
         }
 
         RpcCommand::GetTree { id } => {
-            let (entry_ids, leaf_id) = {
+            let (tree, leaf_id) = {
                 let mgr = session.get_session_manager();
-                let ids: Vec<String> = mgr.get_entries().iter().map(|e| session_entry_id(e)).collect();
-                (ids, mgr.get_session_id().to_string())
+                let tree = mgr.get_tree();
+                let leaf_id = mgr.get_leaf_id().map(|s| s.to_string());
+                (tree, leaf_id)
             };
-            let entries: Vec<serde_json::Value> = entry_ids
-                .iter()
-                .map(|eid| serde_json::json!({"id": eid, "type": "entry"}))
+            // Serialize tree nodes manually since SessionTreeNode doesn't derive Serialize
+            let tree_json: Vec<serde_json::Value> = tree
+                .into_iter()
+                .map(|node| serialize_tree_node(&node))
                 .collect();
             Some(rpc_success(
                 id,
                 "get_tree",
-                Some(serde_json::json!({"tree": entries, "leafId": leaf_id})),
+                Some(serde_json::json!({"tree": tree_json, "leafId": leaf_id})),
             ))
         }
 
         RpcCommand::SetSessionName { id, ref name } => {
-            session.set_session_name(name);
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Some(rpc_error(id, "set_session_name", "Session name cannot be empty".to_string()));
+            }
+            session.set_session_name(trimmed);
             Some(rpc_success(id, "set_session_name", None))
         }
 
@@ -472,10 +483,10 @@ pub async fn handle_command(
 
         RpcCommand::Fork { id, entry_id } => {
             match session.fork_session(&entry_id).await {
-                Ok(path) => Some(rpc_success(
+                Ok(_path) => Some(rpc_success(
                     id,
                     "fork",
-                    Some(serde_json::json!({"path": path, "cancelled": false})),
+                    Some(serde_json::json!({"text": "", "cancelled": false})),
                 )),
                 Err(e) => Some(rpc_error(id, "fork", e)),
             }
@@ -488,10 +499,10 @@ pub async fn handle_command(
             };
             match leaf_id {
                 Some(eid) => match session.fork_session(&eid).await {
-                    Ok(path) => Some(rpc_success(
+                    Ok(_path) => Some(rpc_success(
                         id,
                         "clone",
-                        Some(serde_json::json!({"path": path, "cancelled": false})),
+                        Some(serde_json::json!({"cancelled": false})),
                     )),
                     Err(e) => Some(rpc_error(id, "clone", e)),
                 },
@@ -500,21 +511,17 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetForkMessages { id } => {
-            let messages = session.get_messages().await;
-            let user_messages: Vec<serde_json::Value> = messages
-                .iter()
-                .filter_map(|m| {
-                    if let pi_agent_core::types::AgentMessage::User { .. } = m {
-                        Some(serde_json::to_value(m).unwrap_or_default())
-                    } else {
-                        None
-                    }
+            let messages = session.get_user_messages_for_forking();
+            let result: Vec<serde_json::Value> = messages
+                .into_iter()
+                .map(|(entry_id, text)| {
+                    serde_json::json!({"entryId": entry_id, "text": text})
                 })
                 .collect();
             Some(rpc_success(
                 id,
                 "get_fork_messages",
-                Some(serde_json::json!({"messages": user_messages})),
+                Some(serde_json::json!({"messages": result})),
             ))
         }
 
@@ -529,20 +536,54 @@ pub async fn handle_command(
 
         RpcCommand::GetCommands { id } => {
             // Return available commands (slash commands, skills, prompt templates)
-            // Currently returns built-in slash commands. Extension commands and
-            // skills are not yet registered in the RPC handler.
-            let commands: Vec<serde_json::Value> = vec![
-                serde_json::json!({"name": "new", "description": "Start a new session"}),
-                serde_json::json!({"name": "resume", "description": "Resume a previous session"}),
-                serde_json::json!({"name": "fork", "description": "Fork the session at an entry"}),
-                serde_json::json!({"name": "compact", "description": "Compact the session"}),
-                serde_json::json!({"name": "help", "description": "Show help"}),
-            ];
+            // In the current Rust architecture, extension commands are not yet
+            // queryable through the ExtensionRegistry. Skills and prompt templates
+            // are available through the resource loader.
+            let mut commands: Vec<serde_json::Value> = Vec::new();
+
+            // Add prompt templates
+            for template in session.prompt_templates() {
+                commands.push(serde_json::json!({
+                    "name": template.name,
+                    "description": template.description,
+                    "source": "prompt",
+                    "sourceInfo": template.source_info
+                }));
+            }
+
+            // Add skills from resource loader
+            if let Some(resources) = session.resource_loader() {
+                for skill in &resources.skills {
+                    commands.push(serde_json::json!({
+                        "name": format!("skill:{}", skill.name),
+                        "description": skill.description,
+                        "source": "skill",
+                        "sourceInfo": skill.source_info
+                    }));
+                }
+            }
+
+            // Note: Extension commands are not yet queryable in the Rust architecture.
+            // This is a known deviation from the TS version (see DEVIATIONS.md).
+
             Some(rpc_success(
                 id,
                 "get_commands",
                 Some(serde_json::json!({"commands": commands})),
             ))
+        }
+
+        // ── Export HTML ───────────────────────────────────────────────────
+
+        RpcCommand::ExportHtml { id, output_path } => {
+            match session.export_html_to_file(output_path.as_deref()) {
+                Ok(path) => Some(rpc_success(
+                    id,
+                    "export_html",
+                    Some(serde_json::json!({"path": path})),
+                )),
+                Err(e) => Some(rpc_error(id, "export_html", e)),
+            }
         }
 
         // ── Shutdown ─────────────────────────────────────────────────────
@@ -554,43 +595,46 @@ pub async fn handle_command(
     }
 }
 
-/// Extract the entry ID from any SessionEntry variant.
-fn session_entry_id(entry: &SessionEntry) -> String {
-    match entry {
-        SessionEntry::Message { id, .. } => id.clone(),
-        SessionEntry::ThinkingLevelChange { id, .. } => id.clone(),
-        SessionEntry::ModelChange { id, .. } => id.clone(),
-        SessionEntry::Compaction { id, .. } => id.clone(),
-        SessionEntry::BranchSummary { id, .. } => id.clone(),
-        SessionEntry::Custom { id, .. } => id.clone(),
-        SessionEntry::CustomMessage { id, .. } => id.clone(),
-        SessionEntry::Label { id, .. } => id.clone(),
-        SessionEntry::SessionInfo { id, .. } => id.clone(),
+/// Serialize a SessionTreeNode to a JSON value.
+fn serialize_tree_node(node: &crate::core::session_manager::SessionTreeNode) -> serde_json::Value {
+    let entry = serde_json::to_value(&node.entry).unwrap_or_default();
+    let children: Vec<serde_json::Value> = node
+        .children
+        .iter()
+        .map(serialize_tree_node)
+        .collect();
+    let mut map = serde_json::Map::new();
+    map.insert("entry".to_string(), entry);
+    map.insert("children".to_string(), serde_json::Value::Array(children));
+    if let Some(ref label) = node.label {
+        map.insert("label".to_string(), serde_json::Value::String(label.clone()));
     }
+    if let Some(ref label_ts) = node.label_timestamp {
+        map.insert("labelTimestamp".to_string(), serde_json::Value::String(label_ts.clone()));
+    }
+    serde_json::Value::Object(map)
 }
 
 /// Shared state for the RPC handler.
 pub struct RpcHandlerState {
     pub shutdown_requested: bool,
-    pub event_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    pub error_tx: tokio::sync::mpsc::UnboundedSender<bool>,
-    pub done_tx: tokio::sync::mpsc::UnboundedSender<bool>,
+    pub output_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    /// Pending extension UI requests waiting for client response.
+    /// Maps request ID to a oneshot sender for the response value.
+    pub pending_extension_requests:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
 }
 
 impl RpcHandlerState {
-    pub fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (error_tx, _error_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        (
-            RpcHandlerState {
-                shutdown_requested: false,
-                event_tx,
-                error_tx,
-                done_tx,
-            },
-            event_rx,
-        )
+    pub fn new(
+        output_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Self {
+        RpcHandlerState {
+            shutdown_requested: false,
+            output_tx,
+            pending_extension_requests: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+        }
     }
 }

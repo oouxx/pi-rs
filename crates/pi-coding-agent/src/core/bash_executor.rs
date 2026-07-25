@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::tools::truncate::{self, DEFAULT_MAX_BYTES};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BashExecutorResult {
     pub output: String,
     pub exit_code: Option<i32>,

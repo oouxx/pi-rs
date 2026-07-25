@@ -100,6 +100,7 @@
 )]
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -281,12 +282,25 @@ async fn execute_prepared_tool_call(
     let args_clone = args.clone();
     let emit_clone = emit.clone();
 
+    // Track whether we are still accepting updates (matches TS `acceptingUpdates`)
+    let accepting_updates = Arc::new(AtomicBool::new(true));
+    let au = accepting_updates.clone();
+    // Counter for pending update tasks so we can wait for them after execution
+    let pending_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pc = pending_count.clone();
+
     let on_update: Option<Arc<dyn Fn(AgentToolResult<serde_json::Value>) + Send + Sync>> =
         Some(Arc::new(move |partial_result| {
+            // Ignore updates after tool has settled (matches TS `if (!acceptingUpdates) return;`)
+            if !au.load(Ordering::SeqCst) {
+                return;
+            }
             let emit = emit_clone.clone();
             let tool_call_id = tool_call_id.clone();
             let tool_name = tool_name.clone();
             let args = args_clone.clone();
+            let pc = pc.clone();
+            pc.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(async move {
                 emit(AgentEvent::ToolExecutionUpdate {
                     tool_call_id,
@@ -295,10 +309,11 @@ async fn execute_prepared_tool_call(
                     partial_result: serde_json::to_value(&partial_result).unwrap_or_default(),
                 })
                 .await;
+                pc.fetch_sub(1, Ordering::SeqCst);
             });
         }));
 
-    match (tool.execute)(
+    let result = match (tool.execute)(
         tool_call.id.clone(),
         args.clone(),
         signal.clone(),
@@ -314,7 +329,17 @@ async fn execute_prepared_tool_call(
             result: create_error_tool_result(&e.to_string()),
             is_error: true,
         },
+    };
+
+    // Stop accepting updates after tool execution completes (matches TS)
+    accepting_updates.store(false, Ordering::SeqCst);
+
+    // Wait for any pending update events to complete (matches TS `await Promise.all(updateEvents)`)
+    while pending_count.load(Ordering::SeqCst) > 0 {
+        tokio::task::yield_now().await;
     }
+
+    result
 }
 
 async fn finalize_executed_tool_call(

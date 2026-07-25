@@ -198,7 +198,8 @@ pub struct TokenUsage {
 // ============================================================================
 
 /// Reason for compaction, matching TS `"manual" | "threshold" | "overflow"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CompactionReason {
     Manual,
     Threshold,
@@ -217,12 +218,14 @@ impl std::fmt::Display for CompactionReason {
 
 /// Session-specific events that extend the core AgentEvent.
 /// Matches the original TypeScript AgentSessionEvent type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum AgentSessionEvent {
     // ── Passthrough from AgentEvent (all variants except AgentEnd) ──
     AgentStart,
     TurnStart,
+    #[serde(rename_all = "camelCase")]
     TurnEnd {
         message: AgentMessage,
         tool_results: Vec<AgentMessage>,
@@ -230,6 +233,7 @@ pub enum AgentSessionEvent {
     MessageStart {
         message: AgentMessage,
     },
+    #[serde(rename_all = "camelCase")]
     MessageUpdate {
         message: AgentMessage,
         assistant_message_event: AssistantMessageEvent,
@@ -237,17 +241,20 @@ pub enum AgentSessionEvent {
     MessageEnd {
         message: AgentMessage,
     },
+    #[serde(rename_all = "camelCase")]
     ToolExecutionStart {
         tool_call_id: String,
         tool_name: String,
         args: serde_json::Value,
     },
+    #[serde(rename_all = "camelCase")]
     ToolExecutionUpdate {
         tool_call_id: String,
         tool_name: String,
         args: serde_json::Value,
         partial_result: serde_json::Value,
     },
+    #[serde(rename_all = "camelCase")]
     ToolExecutionEnd {
         tool_call_id: String,
         tool_name: String,
@@ -255,12 +262,14 @@ pub enum AgentSessionEvent {
         is_error: bool,
     },
     // ── AgentEnd with willRetry ──
+    #[serde(rename_all = "camelCase")]
     AgentEnd {
         messages: Vec<AgentMessage>,
         will_retry: bool,
     },
     // ── Session-specific events ──
     AgentSettled,
+    #[serde(rename_all = "camelCase")]
     QueueUpdate {
         steering: Vec<String>,
         follow_up: Vec<String>,
@@ -274,6 +283,7 @@ pub enum AgentSessionEvent {
     SessionInfoChanged {
         name: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     ModelSelect {
         model: String,
         previous_model: Option<String>,
@@ -282,6 +292,7 @@ pub enum AgentSessionEvent {
     ThinkingLevelChanged {
         level: String,
     },
+    #[serde(rename_all = "camelCase")]
     CompactionEnd {
         reason: CompactionReason,
         result: Option<CompactionResult>,
@@ -289,12 +300,14 @@ pub enum AgentSessionEvent {
         will_retry: bool,
         error_message: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     AutoRetryStart {
         attempt: u32,
         max_attempts: u32,
         delay_ms: u64,
         error_message: String,
     },
+    #[serde(rename_all = "camelCase")]
     AutoRetryEnd {
         success: bool,
         attempt: u32,
@@ -2290,14 +2303,8 @@ impl AgentSession {
         self.set_thinking_level(&self._get_thinking_level_for_model_switch(None).await)
             .await;
 
-        // Emit model_select event (matching TS _emitModelSelect)
-        self._emit(AgentSessionEvent::ModelSelect {
-            model: model_id.clone(),
-            previous_model: previous_model.clone(),
-            source: "set".to_string(),
-        });
-
-        // Dispatch model_select to extensions (fire-and-forget)
+        // Dispatch model_select to extensions (matching TS _emitModelSelect)
+        // Note: TS only sends model_select to extension runner, not as session event
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_model_select(
                 crate::core::extensions::dispatcher::DispatchModelSelectParams {
@@ -2471,14 +2478,8 @@ impl AgentSession {
             .await;
         self.set_thinking_level(&tl).await;
 
-        // Emit model_select event (matching TS _emitModelSelect)
-        self._emit(AgentSessionEvent::ModelSelect {
-            model: model_id.clone(),
-            previous_model: previous_model.clone(),
-            source: "cycle".to_string(),
-        });
-
-        // Dispatch model_select to extensions
+        // Dispatch model_select to extensions (matching TS _emitModelSelect)
+        // Note: TS only sends model_select to extension runner, not as session event
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_model_select(
                 crate::core::extensions::dispatcher::DispatchModelSelectParams {
@@ -2518,7 +2519,7 @@ impl AgentSession {
 
     /// Trigger compaction, matching the original compact().
     /// Returns a summary string on success.
-    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<String, String> {
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<crate::core::compaction::CompactionResult, String> {
         use crate::core::compaction;
 
         // Dispatch session_before_compact to extensions.
@@ -2660,7 +2661,13 @@ impl AgentSession {
             .await;
         }
 
-        Ok(summary)
+        Ok(crate::core::compaction::CompactionResult {
+            summary,
+            first_kept_entry_id: cut_point.first_kept_entry_index.to_string(),
+            tokens_before: total_tokens,
+            estimated_tokens_after: None,
+            details: Some(crate::core::compaction::CompactionDetails::default()),
+        })
     }
 
     // =========================================================================
@@ -3446,6 +3453,7 @@ impl AgentSession {
         &self,
         command: &str,
         on_chunk: Option<Box<dyn Fn(&str) + Send + Sync>>,
+        exclude_from_context: Option<bool>,
     ) -> Result<crate::core::bash_executor::BashExecutorResult, String> {
         use crate::core::bash_executor::{BashExecutor, BashExecutorOptions};
 
@@ -3481,6 +3489,17 @@ impl AgentSession {
 
         // Clear abort controller, matching TS `this._bashAbortController = undefined`
         *self.bash_abort.lock().unwrap() = None;
+
+        // Record bash result in session history, matching TS recordBashResult()
+        self.record_bash_result(
+            command,
+            &result.output,
+            result.exit_code,
+            result.cancelled,
+            result.truncated,
+            result.full_output_path.clone(),
+            exclude_from_context,
+        ).await;
 
         Ok(result)
     }

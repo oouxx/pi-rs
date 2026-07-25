@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RpcCommand {
     /// Send a prompt to the agent
+    #[serde(rename_all = "camelCase")]
     Prompt {
         #[serde(default)]
         id: Option<String>,
@@ -56,6 +57,7 @@ pub enum RpcCommand {
     },
 
     /// Execute a bash command via the agent
+    #[serde(rename_all = "camelCase")]
     Bash {
         #[serde(default)]
         id: Option<String>,
@@ -65,6 +67,7 @@ pub enum RpcCommand {
     },
 
     /// Start a new session
+    #[serde(rename_all = "camelCase")]
     NewSession {
         #[serde(default)]
         id: Option<String>,
@@ -161,6 +164,7 @@ pub enum RpcCommand {
     },
 
     /// Compact the session
+    #[serde(rename_all = "camelCase")]
     Compact {
         #[serde(default)]
         id: Option<String>,
@@ -188,6 +192,7 @@ pub enum RpcCommand {
     },
 
     /// Switch to another session file
+    #[serde(rename_all = "camelCase")]
     SwitchSession {
         #[serde(default)]
         id: Option<String>,
@@ -195,6 +200,7 @@ pub enum RpcCommand {
     },
 
     /// Fork the session at an entry
+    #[serde(rename_all = "camelCase")]
     Fork {
         #[serde(default)]
         id: Option<String>,
@@ -225,6 +231,15 @@ pub enum RpcCommand {
         id: Option<String>,
     },
 
+    /// Export session to HTML
+    #[serde(rename_all = "camelCase")]
+    ExportHtml {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        output_path: Option<String>,
+    },
+
     /// Graceful shutdown
     Shutdown {
         #[serde(default)]
@@ -233,11 +248,12 @@ pub enum RpcCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImageRef {
     #[serde(rename = "type")]
     pub image_type: String,
     #[serde(default)]
-    pub media_type: Option<String>,
+    pub mime_type: Option<String>,
     #[serde(default)]
     pub data: Option<String>,
 }
@@ -247,7 +263,7 @@ pub struct ImageRef {
 // ============================================================================
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum RpcOutput {
     /// Command response
     Response {
@@ -261,75 +277,14 @@ pub enum RpcOutput {
         error: Option<String>,
     },
 
-    /// Agent event streamed to the client
-    Event {
-        #[serde(flatten)]
-        event: AgentEvent,
-    },
 
-    /// Extension UI request forwarded to the client
-    ExtensionUiRequest {
-        #[serde(flatten)]
-        request: ExtensionUiRequestData,
-    },
-
-    /// Error from extension execution
-    ExtensionError {
-        extension_path: String,
-        event: String,
-        error: String,
-    },
 }
 
+/// Session state returned by get_state.
 #[derive(Debug, Serialize)]
-pub struct ExtensionUiRequestData {
-    pub r#type: String,
-    pub id: String,
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notify_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_text: Option<String>,
-}
-
-/// Serializable agent event for streaming to RPC clients.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentEvent {
-    MessageStart,
-    MessageUpdate {
-        delta: String,
-    },
-    MessageEnd,
-    ToolExecutionStart {
-        tool_call_id: String,
-        tool_name: String,
-        args: serde_json::Value,
-    },
-    ToolExecutionEnd {
-        tool_call_id: String,
-        tool_name: String,
-        result: serde_json::Value,
-        is_error: bool,
-    },
-    AgentEnd,
-}
-
-#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RpcSessionState {
-    pub model: String,
+    pub model: pi_agent_core::pi_ai_types::Model,
     pub thinking_level: String,
     pub is_streaming: bool,
     pub session_id: String,

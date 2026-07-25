@@ -132,11 +132,15 @@ pub struct FileOperations {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionResult {
     pub summary: String,
     pub first_kept_entry_id: String,
     pub tokens_before: u64,
-    pub details: CompactionDetails,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_after: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<CompactionDetails>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -723,10 +727,11 @@ mod tests {
             summary: "test summary".into(),
             first_kept_entry_id: "entry-5".into(),
             tokens_before: 10000,
-            details: CompactionDetails {
+            estimated_tokens_after: None,
+            details: Some(CompactionDetails {
                 read_files: vec!["/a.rs".into()],
                 modified_files: vec!["/b.rs".into()],
-            },
+            }),
         };
         let json = serialize_compaction_summary(&result).unwrap();
         assert!(json.contains("test summary"));
@@ -739,7 +744,8 @@ mod tests {
             summary: "test".into(),
             first_kept_entry_id: "entry-1".into(),
             tokens_before: 5000,
-            details: CompactionDetails::default(),
+            estimated_tokens_after: None,
+            details: Some(CompactionDetails::default()),
         };
         let path = "/tmp/test_compaction_summary.jsonl";
         let _ = std::fs::remove_file(path);

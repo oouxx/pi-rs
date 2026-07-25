@@ -549,6 +549,7 @@ pub fn load_all_resources(options: &ResourceLoaderOptions) -> LoadedResources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::source_info::create_synthetic_source_info;
     use std::fs;
 
     // -----------------------------------------------------------------------
@@ -857,6 +858,13 @@ mod tests {
                 file_path: "/a.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
+                source_info: create_synthetic_source_info(
+                    "/a.md".to_string(),
+                    "local".to_string(),
+                    Some(SourceScope::Temporary),
+                    Some(SourceOrigin::TopLevel),
+                    None,
+                ),
             },
             PromptTemplate {
                 name: "prompt-b".to_string(),
@@ -864,6 +872,13 @@ mod tests {
                 file_path: "/b.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
+                source_info: create_synthetic_source_info(
+                    "/b.md".to_string(),
+                    "local".to_string(),
+                    Some(SourceScope::Temporary),
+                    Some(SourceOrigin::TopLevel),
+                    None,
+                ),
             },
         ];
 
@@ -881,6 +896,13 @@ mod tests {
                 file_path: "/first.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
+                source_info: create_synthetic_source_info(
+                    "/first.md".to_string(),
+                    "local".to_string(),
+                    Some(SourceScope::Temporary),
+                    Some(SourceOrigin::TopLevel),
+                    None,
+                ),
             },
             PromptTemplate {
                 name: "shared".to_string(),
@@ -888,6 +910,13 @@ mod tests {
                 file_path: "/second.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
+                source_info: create_synthetic_source_info(
+                    "/second.md".to_string(),
+                    "local".to_string(),
+                    Some(SourceScope::Temporary),
+                    Some(SourceOrigin::TopLevel),
+                    None,
+                ),
             },
         ];
 

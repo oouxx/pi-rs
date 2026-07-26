@@ -5,6 +5,7 @@ use crate::core::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSe
 
 use crate::core::extensions::{ExtensionContext, ExtensionUIContext, RuntimeHandle};
 use crate::core::session_manager::SessionManager;
+use crate::core::sdk::{SessionStartEvent, SessionStartReason};
 
 // ============================================================================
 // Errors
@@ -370,14 +371,22 @@ impl AgentSessionRuntime {
         crate::core::session_cwd::assert_session_cwd_exists(&session_manager, self.cwd())
             .map_err(|e| e.to_string())?;
 
+        // Capture previous session file before teardown
+        let previous_session_file = self.session.get_session_file()
+            .map(|p| p.to_string_lossy().to_string());
+
         // Teardown current session, passing the target session file
         let target_file = session_manager.get_session_file()
             .and_then(|p| p.to_str());
         self.teardown_current("resume", target_file).await;
 
-        // Create new runtime via factory
+        // Create new runtime via factory (matching TS which passes
+        // sessionStartEvent with reason "resume" and previousSessionFile)
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
-            session_start_event: None,
+            session_start_event: Some(SessionStartEvent {
+                reason: SessionStartReason::Resume,
+                previous_session_file,
+            }),
             cwd: session_manager.get_cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -425,12 +434,20 @@ impl AgentSessionRuntime {
             new_session_opts,
         );
 
+        // Capture previous session file before teardown (matching TS)
+        let previous_session_file = self.session.get_session_file()
+            .map(|p| p.to_string_lossy().to_string());
+
         // Teardown current session (no target session file for new sessions)
         self.teardown_current("new", None).await;
 
-        // Create new runtime via factory
+        // Create new runtime via factory (matching TS which passes
+        // sessionStartEvent with reason "new" and previousSessionFile)
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
-            session_start_event: None,
+            session_start_event: Some(SessionStartEvent {
+                reason: SessionStartReason::New,
+                previous_session_file,
+            }),
             cwd: self.cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -475,13 +492,26 @@ impl AgentSessionRuntime {
             (Some(entry_id.to_string()), None)
         } else {
             // "before" position: fork before the entry
-            // For user messages, extract the text
+            // TS throws if the entry is not a user message
+            match &entry {
+                crate::core::session_manager::SessionEntry::Message { message, .. } => {
+                    // Check role — TS: if role !== "user", throw
+                    if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+                        return Err("Invalid entry ID for forking".to_string());
+                    }
+                }
+                _ => {
+                    return Err("Invalid entry ID for forking".to_string());
+                }
+            }
             let parent_id = entry.parent_id().map(|s| s.to_string());
-            let text = if let crate::core::session_manager::SessionEntry::Message { message, .. } = &entry {
-                extract_user_message_text(message)
-            } else {
-                None
-            };
+            let text = extract_user_message_text(
+                if let crate::core::session_manager::SessionEntry::Message { message, .. } = &entry {
+                    message
+                } else {
+                    unreachable!() // checked above
+                }
+            );
             (parent_id, text)
         };
 
@@ -553,14 +583,22 @@ impl AgentSessionRuntime {
             }
         };
 
+        // Capture previous session file before teardown (matching TS)
+        let previous_session_file = self.session.get_session_file()
+            .map(|p| p.to_string_lossy().to_string());
+
         // Teardown current session, passing the target session file
         let target_file = session_manager.get_session_file()
             .and_then(|p| p.to_str());
         self.teardown_current("fork", target_file).await;
 
-        // Create new runtime via factory
+        // Create new runtime via factory (matching TS which passes
+        // sessionStartEvent with reason "fork" and previousSessionFile)
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
-            session_start_event: None,
+            session_start_event: Some(SessionStartEvent {
+                reason: SessionStartReason::Fork,
+                previous_session_file,
+            }),
             cwd: session_manager.get_cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -630,14 +668,22 @@ impl AgentSessionRuntime {
         crate::core::session_cwd::assert_session_cwd_exists(&session_manager, self.cwd())
             .map_err(|e| e.to_string())?;
 
+        // Capture previous session file before teardown
+        let previous_session_file = self.session.get_session_file()
+            .map(|p| p.to_string_lossy().to_string());
+
         // Teardown current session, passing the target session file
         let target_file = session_manager.get_session_file()
             .and_then(|p| p.to_str());
         self.teardown_current("resume", target_file).await;
 
-        // Create new runtime via factory
+        // Create new runtime via factory (matching TS which passes
+        // sessionStartEvent with reason "resume" and previousSessionFile)
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
-            session_start_event: None,
+            session_start_event: Some(SessionStartEvent {
+                reason: SessionStartReason::Resume,
+                previous_session_file,
+            }),
             cwd: session_manager.get_cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -699,6 +745,11 @@ pub async fn create_agent_session_runtime(
     factory: CreateAgentSessionRuntimeFactory,
     params: CreateAgentSessionRuntimeParams,
 ) -> AgentSessionRuntime {
+    // Validate session cwd exists (matching TS assertSessionCwdExists)
+    if let Err(e) = crate::core::session_cwd::assert_session_cwd_exists(&params.session_manager, &params.cwd) {
+        // Log warning but continue — the session can still be created
+        eprintln!("[pi] Warning: session cwd does not exist: {}", e);
+    }
     let result = factory(params).await;
     AgentSessionRuntime::new(
         result.session,

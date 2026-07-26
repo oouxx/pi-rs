@@ -3739,180 +3739,6 @@ fn html_escape(s: &str) -> String {
 }
 
 impl AgentSession {
-    // =========================================================================
-    // Session Lifecycle (switch / new / fork / import)
-    //
-    // These methods operate at the session-manager level. For the full
-    // lifecycle management with extension events and factory-based creation,
-    // use AgentSessionRuntime instead.
-    // =========================================================================
-
-    /// Switch to a different session file, matching original switchSession().
-    ///
-    /// Dispatches `session_before_switch` to extensions before the switch.
-    /// When used through AgentSessionRuntime, the Runtime handles extension
-    /// events and factory-based session creation instead.
-    pub async fn switch_session(
-        &mut self,
-        session_path: &str,
-        cwd_override: Option<&str>,
-    ) -> Result<(), String> {
-        use crate::core::session_manager::SessionManager as SM;
-
-        let path = std::path::Path::new(session_path);
-        if !path.exists() {
-            return Err(format!("Session file not found: {}", session_path));
-        }
-        if !crate::core::session_manager::is_valid_session_file(path) {
-            return Err(format!("Invalid session file: {}", session_path));
-        }
-
-        // Dispatch session_before_switch to extensions
-        // If an extension cancels, return an error.
-        if let Some(ref registry) = self.extension_registry {
-            let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_switch(
-                registry,
-                session_path,
-                &self.ext_ctx,
-            )
-            .await;
-            if cancelled {
-                return Err("Session switch cancelled by extension".to_string());
-            }
-        }
-
-        let session_dir = self
-            .session_manager
-            .lock()
-            .unwrap()
-            .get_session_dir()
-            .to_string_lossy()
-            .to_string();
-
-        let effective_cwd = cwd_override.unwrap_or(&self.cwd);
-        let fallback_cwd = self.cwd.clone();
-        let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
-
-        // Check if session cwd exists
-        let session_cwd = new_mgr.get_cwd();
-        let session_file_opt = new_mgr
-            .get_session_file()
-            .map(|p| p.to_string_lossy().to_string());
-        if let Some(ref sf) = session_file_opt {
-            if !session_cwd.is_empty() && !std::path::Path::new(session_cwd).exists() {
-                return Err(format!(
-                    "Stored session working directory does not exist: {}\nSession file: {}\nCurrent working directory: {}",
-                    session_cwd, sf, fallback_cwd
-                ));
-            }
-        }
-
-        // Replace the session manager
-        *self.session_manager.lock().unwrap() = new_mgr;
-
-        // Reload messages from the new session
-        self.load_messages_from_session().await;
-
-        Ok(())
-    }
-
-    /// Create a new session, matching original newSession().
-    pub async fn new_session(&mut self, parent_session: Option<&str>) {
-        use crate::core::session_manager::SessionManager as SM;
-
-        let session_dir = self
-            .session_manager
-            .lock()
-            .unwrap()
-            .get_session_dir()
-            .to_string_lossy()
-            .to_string();
-
-        let new_session_opts =
-            parent_session.map(|p| crate::core::session_manager::NewSessionOptions {
-                id: None,
-                parent_session: Some(p.to_string()),
-            });
-
-        let new_mgr = SM::new(&self.cwd, &session_dir, None, true, new_session_opts);
-        *self.session_manager.lock().unwrap() = new_mgr;
-    }
-
-    /// Fork the session at a specific entry, matching original fork().
-    /// Returns the forked session path on success.
-    ///
-    /// Dispatches `session_before_fork` to extensions before the fork.
-    /// When used through AgentSessionRuntime, the Runtime handles extension
-    /// events and factory-based session creation instead.
-    pub async fn fork_session(&mut self, entry_id: &str) -> Result<String, String> {
-        // Dispatch session_before_fork to extensions
-        // If an extension cancels, return an error.
-        if let Some(ref registry) = self.extension_registry {
-            let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_fork(
-                registry,
-                entry_id,
-                &self.ext_ctx,
-            )
-            .await;
-            if cancelled {
-                return Err("Session fork cancelled by extension".to_string());
-            }
-        }
-
-        // Use create_branched_session to create the fork
-        let branch_path = self
-            .session_manager
-            .lock()
-            .unwrap()
-            .create_branched_session(entry_id, None)?;
-
-        // Switch to the new session
-        self.switch_session(&branch_path, None).await?;
-        Ok(branch_path)
-    }
-
-    /// Import a session from a JSONL file, matching original importFromJsonl().
-    pub async fn import_from_jsonl(
-        &mut self,
-        input_path: &str,
-        cwd_override: Option<&str>,
-    ) -> Result<(), String> {
-        use crate::core::session_manager::SessionManager as SM;
-
-        let path = std::path::Path::new(input_path);
-        if !path.exists() {
-            return Err(format!("File not found: {}", input_path));
-        }
-
-        let session_dir = self
-            .session_manager
-            .lock()
-            .unwrap()
-            .get_session_dir()
-            .to_string_lossy()
-            .to_string();
-
-        let new_mgr = SM::open(input_path, Some(&session_dir), cwd_override);
-
-        let fallback_cwd = self.cwd.clone();
-        let session_cwd = new_mgr.get_cwd();
-        let session_file_opt = new_mgr
-            .get_session_file()
-            .map(|p| p.to_string_lossy().to_string());
-        if let Some(ref sf) = session_file_opt {
-            if !session_cwd.is_empty() && !std::path::Path::new(session_cwd).exists() {
-                return Err(format!(
-                    "Stored session working directory does not exist: {}\nSession file: {}\nCurrent working directory: {}",
-                    session_cwd, sf, fallback_cwd
-                ));
-            }
-        }
-
-        *self.session_manager.lock().unwrap() = new_mgr;
-        self.load_messages_from_session().await;
-
-        Ok(())
-    }
 
     // =========================================================================
     // Extension Message Handling
@@ -4186,39 +4012,84 @@ impl AgentSession {
         }
     }
 
-    /// Subscribe to session-level events (AgentSessionEvent).
-    /// This is the primary way to receive events from the session.
-    /// For raw agent events (AgentEvent), use get_agent().subscribe().
-    /// Dispose the session, dispatching session_shutdown to extensions.
+
+    /// Internal cleanup: abort in-flight operations, disconnect from agent,
+    /// and clear event listeners.
     ///
-    /// Note: When used through AgentSessionRuntime, the session_shutdown event
-    /// is dispatched by the Runtime's teardown_current BEFORE dispose() is
-    /// called, so there is no double-dispatch. When called directly (e.g. from
-    /// RPC handler or interactive mode), this method dispatches the event.
-    pub async fn dispose(&mut self) {
-        // Abort all in-flight operations (matching TS dispose() which calls
-        // abortRetry, abortCompaction, abortBranchSummary, abortBash, agent.abort)
-        // Wrapped to match TS try-catch — dispose must succeed even if an abort throws.
+    /// This does NOT dispatch session_shutdown — that is the responsibility
+    /// of AgentSessionRuntime::teardown_current(). Callers that use AgentSession
+    /// directly (without AgentSessionRuntime) must dispatch session_shutdown
+    /// themselves before calling this method.
+    pub async fn dispose_inner(&mut self) {
+        // Abort all in-flight operations
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.abort_retry();
             self.abort_compaction();
             self.abort_branch_summary();
             self.abort_bash();
         }));
-        // agent.abort() is async, so we can't use catch_unwind; just call it
-        // and ignore errors.
+        // agent.abort() is async, so we can't use catch_unwind
         self.agent.abort().await;
-
-        // Disconnect from agent (matching TS _disconnectFromAgent)
+        // Disconnect from agent
         if let Some(handle) = self._agent_subscription.take() {
             handle.unsubscribe().await;
         }
-        // Clear event listeners (matching TS _eventListeners = [])
+        // Clear event listeners
         self.event_listeners.lock().unwrap().clear();
-        // Clean up session-scoped resources (matching TS cleanupSessionResources)
-        // NOTE: cleanup_session_resources is not called here because pi-ai is not a direct dependency.
-        // NOTE: session_shutdown is NOT dispatched here — it is dispatched by
-        // AgentSessionRuntime::teardown_current() before dispose() is called.
-        // Dispatching it again would be a double-dispatch bug.
+    }
+
+    /// Replace the session manager and reload messages from the new session.
+    /// This is a low-level operation; for full lifecycle management with
+    /// extension events, use AgentSessionRuntime instead.
+    pub fn replace_session_manager(&mut self, new_mgr: SessionManager) {
+        *self.session_manager.lock().unwrap() = new_mgr;
+    }
+
+    /// Create a new session (session manager level), matching the original
+    /// simplified new_session(). For full lifecycle management with extension
+    /// events and factory-based creation, use AgentSessionRuntime::new_session().
+    pub async fn session_mgr_new(&mut self, parent_session: Option<&str>) {
+        use crate::core::session_manager::SessionManager as SM;
+        let session_dir = self.session_manager.lock().unwrap()
+            .get_session_dir().to_string_lossy().to_string();
+        let new_session_opts = parent_session.map(|p| {
+            crate::core::session_manager::NewSessionOptions {
+                id: None,
+                parent_session: Some(p.to_string()),
+            }
+        });
+        let new_mgr = SM::new(&self.cwd, &session_dir, None, true, new_session_opts);
+        *self.session_manager.lock().unwrap() = new_mgr;
+    }
+
+    /// Switch to a different session file (session manager level), matching
+    /// the original simplified switch_session(). For full lifecycle management
+    /// with extension events and factory-based creation, use AgentSessionRuntime::switch_session().
+    pub async fn session_mgr_switch(&mut self, session_path: &str, cwd_override: Option<&str>) -> Result<(), String> {
+        use crate::core::session_manager::SessionManager as SM;
+        let path = std::path::Path::new(session_path);
+        if !path.exists() {
+            return Err(format!("Session file not found: {}", session_path));
+        }
+        if !crate::core::session_manager::is_valid_session_file(path) {
+            return Err(format!("Invalid session file: {}", session_path));
+        }
+        let session_dir = self.session_manager.lock().unwrap()
+            .get_session_dir().to_string_lossy().to_string();
+        let effective_cwd = cwd_override.unwrap_or(&self.cwd);
+        let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
+        *self.session_manager.lock().unwrap() = new_mgr;
+        self.load_messages_from_session().await;
+        Ok(())
+    }
+
+    /// Fork the session at a specific entry (session manager level), matching
+    /// the original simplified fork_session(). For full lifecycle management
+    /// with extension events and factory-based creation, use AgentSessionRuntime::fork().
+    pub async fn session_mgr_fork(&mut self, entry_id: &str) -> Result<String, String> {
+        let branch_path = self.session_manager.lock().unwrap()
+            .create_branched_session(entry_id, None)?;
+        self.session_mgr_switch(&branch_path, None).await?;
+        Ok(branch_path)
     }
 }

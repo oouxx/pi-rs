@@ -152,7 +152,7 @@ pub async fn run_rpc_mode() -> i32 {
         if sig != 0 {
             // Kill tracked detached children (matching TS killTrackedDetachedChildren())
             crate::utils::shell::kill_tracked_detached_children();
-            session.dispose().await;
+            session.dispose_inner().await;
             // Match TS exit codes: SIGHUP → 129, SIGTERM → 143
             return if sig == 2 { 129 } else { 143 };
         }
@@ -224,6 +224,6 @@ pub async fn run_rpc_mode() -> i32 {
         }
     }
 
-    session.dispose().await;
+    session.dispose_inner().await;
     0
 }

@@ -100,7 +100,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                             // Cycle through thinking levels
                         }
                         AgentCmd::NewSession(parent) => {
-                            sess.new_session(parent.as_deref()).await;
+                            sess.session_mgr_new(parent.as_deref()).await;
                         }
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);

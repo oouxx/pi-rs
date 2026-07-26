@@ -283,7 +283,7 @@ impl AgentSessionRuntime {
 
         // Dispose the session (abort controllers, agent subscription, bash cleanup),
         // matching TS teardownCurrent() which calls this.session.dispose().
-        self.session.dispose().await;
+        self.session.dispose_inner().await;
     }
 
     /// Apply a new runtime result, replacing the current session and services.

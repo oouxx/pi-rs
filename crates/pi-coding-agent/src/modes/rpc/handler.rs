@@ -192,7 +192,7 @@ pub async fn handle_command(
         // ── Session ──────────────────────────────────────────────────────
 
         RpcCommand::NewSession { id, parent_session } => {
-            session.new_session(parent_session.as_deref()).await;
+            session.session_mgr_new(parent_session.as_deref()).await;
             // Note: TS calls rebindSession() after new_session to re-subscribe
             // events and re-bind extensions. In the current Rust architecture,
             // extensions are bound at construction time, so rebinding is a no-op.
@@ -475,14 +475,14 @@ pub async fn handle_command(
         // ── Session Lifecycle ─────────────────────────────────────────────
 
         RpcCommand::SwitchSession { id, session_path } => {
-            match session.switch_session(&session_path, None).await {
+            match session.session_mgr_switch(&session_path, None).await {
                 Ok(()) => Some(rpc_success(id, "switch_session", Some(serde_json::json!({"cancelled": false})))),
                 Err(e) => Some(rpc_error(id, "switch_session", e)),
             }
         }
 
         RpcCommand::Fork { id, entry_id } => {
-            match session.fork_session(&entry_id).await {
+            match session.session_mgr_fork(&entry_id).await {
                 Ok(_path) => Some(rpc_success(
                     id,
                     "fork",
@@ -498,7 +498,7 @@ pub async fn handle_command(
                 mgr.get_leaf_id().map(|s| s.to_string())
             };
             match leaf_id {
-                Some(eid) => match session.fork_session(&eid).await {
+                Some(eid) => match session.session_mgr_fork(&eid).await {
                     Ok(_path) => Some(rpc_success(
                         id,
                         "clone",

@@ -1,60 +1,3 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::clone_on_ref_ptr,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::use_self,
-    clippy::significant_drop_tightening,
-    clippy::default_trait_access,
-    clippy::iter_with_drain,
-    clippy::if_not_else,
-    clippy::explicit_iter_loop,
-    clippy::assigning_clones,
-    clippy::implicit_hasher,
-    clippy::ignored_unit_patterns,
-    clippy::missing_fields_in_debug,
-    clippy::or_fun_call,
-    clippy::too_long_first_doc_paragraph,
-    clippy::manual_string_new,
-    clippy::single_match_else,
-    clippy::significant_drop_in_scrutinee,
-    clippy::needless_collect,
-    clippy::duplicated_attributes,
-    clippy::similar_names,
-    clippy::needless_raw_string_hashes,
-    clippy::unnested_or_patterns,
-)]
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -319,7 +262,10 @@ impl ModelRegistry {
         Self::load_models_from_path(models, &models_path)
     }
 
-    fn load_models_from_path(models: &mut Vec<Model>, models_path: &std::path::Path) -> HashMap<String, ProviderConfig> {
+    fn load_models_from_path(
+        models: &mut Vec<Model>,
+        models_path: &std::path::Path,
+    ) -> HashMap<String, ProviderConfig> {
         if !models_path.exists() {
             return HashMap::new();
         }
@@ -430,17 +376,21 @@ impl ModelRegistry {
                         // Apply modelOverrides
                         if let Some(ref overrides) = provider_def.model_overrides {
                             for (model_id, override_def) in overrides {
-                                if let Some(model) = models.iter_mut().find(|m| {
-                                    m.provider == provider_name && m.id == *model_id
-                                }) {
+                                if let Some(model) = models
+                                    .iter_mut()
+                                    .find(|m| m.provider == provider_name && m.id == *model_id)
+                                {
                                     if let Some(ref name) = override_def.name {
                                         model.name = name.clone();
                                     }
                                     if let Some(reasoning) = override_def.reasoning {
                                         model.reasoning = reasoning;
                                     }
-                                    if let Some(ref thinking_level_map) = override_def.thinking_level_map {
-                                        let mut merged = model.thinking_level_map.clone().unwrap_or_default();
+                                    if let Some(ref thinking_level_map) =
+                                        override_def.thinking_level_map
+                                    {
+                                        let mut merged =
+                                            model.thinking_level_map.clone().unwrap_or_default();
                                         for (k, v) in thinking_level_map {
                                             merged.insert(k.clone(), v.clone());
                                         }
@@ -761,14 +711,21 @@ mod tests {
         let registry = ModelRegistry::new_with_models_path(vec![], &models_path);
         let models = registry.get_models();
 
-        assert!(models.len() >= 2, "Expected at least 2 models, got {}", models.len());
+        assert!(
+            models.len() >= 2,
+            "Expected at least 2 models, got {}",
+            models.len()
+        );
 
         let llama = registry.find("ollama", "llama3.2");
         assert!(llama.is_some(), "llama3.2 should be found");
         let llama = llama.unwrap();
         assert_eq!(llama.base_url, "http://localhost:11434/v1");
         assert_eq!(llama.api, "openai-completions");
-        assert!(llama.reasoning, "llama3.2 reasoning should be true (from modelOverrides)");
+        assert!(
+            llama.reasoning,
+            "llama3.2 reasoning should be true (from modelOverrides)"
+        );
 
         let ds = registry.find("ollama", "deepseek-r1:7b");
         assert!(ds.is_some(), "deepseek-r1:7b should be found");
@@ -778,9 +735,15 @@ mod tests {
 
         let json_providers = registry.models_json_providers.read().unwrap();
         let ollama_config = json_providers.get("ollama");
-        assert!(ollama_config.is_some(), "ollama provider config should be stored");
+        assert!(
+            ollama_config.is_some(),
+            "ollama provider config should be stored"
+        );
         let ollama_config = ollama_config.unwrap();
-        assert_eq!(ollama_config.base_url.as_deref(), Some("http://localhost:11434/v1"));
+        assert_eq!(
+            ollama_config.base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
         assert_eq!(ollama_config.api.as_deref(), Some("openai-completions"));
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

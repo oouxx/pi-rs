@@ -1,109 +1,11 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::bool_to_int_with_if,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::single_char_pattern,
-    clippy::format_push_string,
-    clippy::case_sensitive_file_extension_comparisons,
-    clippy::needless_raw_string_hashes,
-    clippy::unnecessary_fold,
-    clippy::needless_pass_by_ref_mut,
-    clippy::map_identity,
-    clippy::needless_return_with_question_mark,
-    clippy::needless_lifetimes,
-    clippy::similar_names,
-    clippy::too_many_arguments,
-    clippy::type_complexity,
-    clippy::large_enum_variant,
-    clippy::enum_glob_use,
-    clippy::future_not_send,
-    clippy::should_implement_trait,
-    clippy::new_without_default,
-    clippy::return_self_not_must_use,
-    clippy::use_self,
-
-
-
-
-
-
-
-
-
-
-
-
-    clippy::significant_drop_tightening,
-
-    clippy::default_trait_access,
-
-    clippy::iter_with_drain,
-
-    clippy::if_not_else,
-
-    clippy::explicit_iter_loop,
-
-    clippy::assigning_clones,
-
-    clippy::implicit_hasher,
-
-    clippy::ignored_unit_patterns,
-
-    clippy::missing_fields_in_debug,
-
-    clippy::or_fun_call,
-
-    clippy::too_long_first_doc_paragraph,
-
-    clippy::manual_string_new,
-
-    clippy::single_match_else,
-
-    clippy::significant_drop_in_scrutinee,
-
-    clippy::needless_collect,
-
-    clippy::duplicated_attributes,
-
-)]
 use std::collections::HashMap;
 
 use futures::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::pi_ai_types::{AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, Usage};
+use crate::pi_ai_types::{
+    AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, Usage,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -246,9 +148,7 @@ pub fn stream_proxy(
         });
 
         let signal = options.signal;
-        let is_aborted = || -> bool {
-            signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false)
-        };
+        let is_aborted = || -> bool { signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false) };
 
         let response_result = client
             .post(format!("{}/api/stream", options.proxy_url))
@@ -274,14 +174,14 @@ pub fn stream_proxy(
         if !response.status().is_success() {
             let status = response.status();
             let error_message = if let Ok(body) = response.text().await {
-                if let Ok(err_data) =
-                    serde_json::from_str::<serde_json::Value>(&body)
-                {
+                if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&body) {
                     err_data
                         .get("error")
                         .and_then(|v| v.as_str())
                         .map(|s| format!("Proxy error: {s}"))
-                        .unwrap_or_else(|| format!("Proxy error: {} {}", status.as_u16(), status.as_str()))
+                        .unwrap_or_else(|| {
+                            format!("Proxy error: {} {}", status.as_u16(), status.as_str())
+                        })
                 } else {
                     format!("Proxy error: {} {}", status.as_u16(), status.as_str())
                 }
@@ -329,8 +229,7 @@ pub fn stream_proxy(
                             if let Ok(proxy_event) =
                                 serde_json::from_str::<ProxyAssistantMessageEvent>(&data)
                             {
-                                if let Some(event) =
-                                    process_proxy_event(proxy_event, &mut partial)
+                                if let Some(event) = process_proxy_event(proxy_event, &mut partial)
                                 {
                                     let _ = tx.send(event);
                                 }
@@ -359,9 +258,7 @@ pub fn stream_proxy(
         if let Some(data) = buffer.strip_prefix("data: ") {
             let data = data.trim().to_string();
             if !data.is_empty() {
-                if let Ok(proxy_event) =
-                    serde_json::from_str::<ProxyAssistantMessageEvent>(&data)
-                {
+                if let Ok(proxy_event) = serde_json::from_str::<ProxyAssistantMessageEvent>(&data) {
                     if let Some(event) = process_proxy_event(proxy_event, &mut partial) {
                         let _ = tx.send(event);
                     }
@@ -520,7 +417,9 @@ pub fn process_proxy_event(
                 ..
             }) = partial.content.get_mut(content_index)
             {
-                if let Ok(serde_json::Value::Object(delta_map)) = serde_json::from_str::<serde_json::Value>(&delta) {
+                if let Ok(serde_json::Value::Object(delta_map)) =
+                    serde_json::from_str::<serde_json::Value>(&delta)
+                {
                     for (k, v) in delta_map {
                         map.insert(k, v);
                     }
@@ -616,7 +515,10 @@ mod tests {
             ProxyAssistantMessageEvent::TextStart { content_index: 0 },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::TextStart { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::TextStart { .. })
+        ));
         assert_eq!(partial.content.len(), 1);
 
         let event = process_proxy_event(
@@ -626,7 +528,10 @@ mod tests {
             },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::TextDelta { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::TextDelta { .. })
+        ));
         if let Some(ContentBlock::Text { text, .. }) = partial.content.first() {
             assert_eq!(text, "Hello");
         } else {
@@ -651,7 +556,10 @@ mod tests {
             ProxyAssistantMessageEvent::ThinkingStart { content_index: 0 },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::ThinkingStart { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::ThinkingStart { .. })
+        ));
 
         let event = process_proxy_event(
             ProxyAssistantMessageEvent::ThinkingDelta {
@@ -660,7 +568,10 @@ mod tests {
             },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::ThinkingDelta { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::ThinkingDelta { .. })
+        ));
         if let Some(ContentBlock::Thinking { thinking, .. }) = partial.content.first() {
             assert_eq!(thinking, "I'm thinking");
         }
@@ -672,7 +583,10 @@ mod tests {
             },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::ThinkingEnd { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::ThinkingEnd { .. })
+        ));
     }
 
     #[test]
@@ -687,7 +601,10 @@ mod tests {
             },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::ToolCallStart { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::ToolCallStart { .. })
+        ));
 
         let event = process_proxy_event(
             ProxyAssistantMessageEvent::ToolCallDelta {
@@ -696,13 +613,19 @@ mod tests {
             },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::ToolCallDelta { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::ToolCallDelta { .. })
+        ));
 
         let event = process_proxy_event(
             ProxyAssistantMessageEvent::ToolCallEnd { content_index: 0 },
             &mut partial,
         );
-        assert!(matches!(event, Some(AssistantMessageEvent::ToolCallEnd { .. })));
+        assert!(matches!(
+            event,
+            Some(AssistantMessageEvent::ToolCallEnd { .. })
+        ));
     }
 
     #[test]

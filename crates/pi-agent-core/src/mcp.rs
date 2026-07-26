@@ -1,103 +1,3 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::bool_to_int_with_if,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::single_char_pattern,
-    clippy::format_push_string,
-    clippy::case_sensitive_file_extension_comparisons,
-    clippy::needless_raw_string_hashes,
-    clippy::unnecessary_fold,
-    clippy::needless_pass_by_ref_mut,
-    clippy::map_identity,
-    clippy::needless_return_with_question_mark,
-    clippy::needless_lifetimes,
-    clippy::similar_names,
-    clippy::too_many_arguments,
-    clippy::type_complexity,
-    clippy::large_enum_variant,
-    clippy::enum_glob_use,
-    clippy::future_not_send,
-    clippy::should_implement_trait,
-    clippy::new_without_default,
-    clippy::return_self_not_must_use,
-    clippy::use_self,
-
-
-
-
-
-
-
-
-
-
-
-
-    clippy::significant_drop_tightening,
-
-    clippy::default_trait_access,
-
-    clippy::iter_with_drain,
-
-    clippy::if_not_else,
-
-    clippy::explicit_iter_loop,
-
-    clippy::assigning_clones,
-
-    clippy::implicit_hasher,
-
-    clippy::ignored_unit_patterns,
-
-    clippy::missing_fields_in_debug,
-
-    clippy::or_fun_call,
-
-    clippy::too_long_first_doc_paragraph,
-
-    clippy::manual_string_new,
-
-    clippy::single_match_else,
-
-    clippy::significant_drop_in_scrutinee,
-
-    clippy::needless_collect,
-
-    clippy::duplicated_attributes,
-
-)]
 //! MCP (Model Context Protocol) integration for pi-agent-core.
 //!
 //! Reads `.mcp.json` config, connects to MCP servers, and exposes their tools
@@ -254,11 +154,7 @@ pub async fn load_mcp_tools_from_config(config: &McpConfig) -> Result<McpTools, 
                 let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
 
                 for tool in &tools {
-                    all_tools.push(wrap_mcp_tool(
-                        name.clone(),
-                        tool,
-                        peer.clone(),
-                    ));
+                    all_tools.push(wrap_mcp_tool(name.clone(), tool, peer.clone()));
                 }
 
                 connections.push(McpServerConnection {
@@ -331,11 +227,7 @@ fn build_stdio_transport(
 // Internal: wrap an MCP tool as DynTool
 // ============================================================
 
-fn wrap_mcp_tool(
-    server_name: String,
-    tool: &rmcp::model::Tool,
-    peer: Peer<RoleClient>,
-) -> DynTool {
+fn wrap_mcp_tool(server_name: String, tool: &rmcp::model::Tool, peer: Peer<RoleClient>) -> DynTool {
     let tool_name = tool.name.to_string();
     let label = if tool.description.is_some() {
         format!("{}@{}", tool_name, server_name)
@@ -361,7 +253,10 @@ fn wrap_mcp_tool(
                 let arguments = params.as_object().cloned();
 
                 let result = peer
-                    .call_tool(CallToolRequestParams::new(name.clone()).with_arguments(arguments.unwrap_or_default()))
+                    .call_tool(
+                        CallToolRequestParams::new(name.clone())
+                            .with_arguments(arguments.unwrap_or_default()),
+                    )
                     .await
                     .map_err(|e| {
                         let err: Box<dyn std::error::Error + Send + Sync> =
@@ -400,16 +295,22 @@ fn convert_mcp_content(result: &rmcp::model::CallToolResult) -> Vec<ContentBlock
                 });
             }
             _other => {
-                blocks.push(ContentBlock::text("(MCP content: non-text/non-image result)"));
+                blocks.push(ContentBlock::text(
+                    "(MCP content: non-text/non-image result)",
+                ));
             }
         }
     }
 
     if blocks.is_empty() {
         if result.is_error.unwrap_or(false) {
-            blocks.push(ContentBlock::text("MCP tool returned an error (no details)"));
+            blocks.push(ContentBlock::text(
+                "MCP tool returned an error (no details)",
+            ));
         } else {
-            blocks.push(ContentBlock::text("Tool completed successfully (no output)"));
+            blocks.push(ContentBlock::text(
+                "Tool completed successfully (no output)",
+            ));
         }
     }
 
@@ -463,7 +364,10 @@ mod tests {
         match server {
             McpServerConfig::Http { url, headers } => {
                 assert_eq!(url, "https://example.com/mcp");
-                assert_eq!(headers.get("Authorization"), Some(&"Bearer token".to_string()));
+                assert_eq!(
+                    headers.get("Authorization"),
+                    Some(&"Bearer token".to_string())
+                );
             }
             _ => panic!("expected Http variant"),
         }

@@ -1,106 +1,6 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::bool_to_int_with_if,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::single_char_pattern,
-    clippy::format_push_string,
-    clippy::case_sensitive_file_extension_comparisons,
-    clippy::needless_raw_string_hashes,
-    clippy::unnecessary_fold,
-    clippy::needless_pass_by_ref_mut,
-    clippy::map_identity,
-    clippy::needless_return_with_question_mark,
-    clippy::needless_lifetimes,
-    clippy::similar_names,
-    clippy::too_many_arguments,
-    clippy::type_complexity,
-    clippy::large_enum_variant,
-    clippy::enum_glob_use,
-    clippy::future_not_send,
-    clippy::should_implement_trait,
-    clippy::new_without_default,
-    clippy::return_self_not_must_use,
-    clippy::use_self,
-
-
-
-
-
-
-
-
-
-
-
-
-    clippy::significant_drop_tightening,
-
-    clippy::default_trait_access,
-
-    clippy::iter_with_drain,
-
-    clippy::if_not_else,
-
-    clippy::explicit_iter_loop,
-
-    clippy::assigning_clones,
-
-    clippy::implicit_hasher,
-
-    clippy::ignored_unit_patterns,
-
-    clippy::missing_fields_in_debug,
-
-    clippy::or_fun_call,
-
-    clippy::too_long_first_doc_paragraph,
-
-    clippy::manual_string_new,
-
-    clippy::single_match_else,
-
-    clippy::significant_drop_in_scrutinee,
-
-    clippy::needless_collect,
-
-    clippy::duplicated_attributes,
-
-)]
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use futures::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -907,10 +807,32 @@ pub struct AgentLoopConfig {
     pub prepare_next_turn: Option<PrepareNextTurnFn>,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
-    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
+    pub on_payload: Option<
+        Arc<
+            dyn Fn(
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
     pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
-    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
-    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
+    pub on_headers: Option<
+        Arc<
+            dyn Fn(
+                    std::collections::HashMap<String, String>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = std::collections::HashMap<String, String>>
+                            + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
+    >,
+    pub on_provider_response:
+        Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     pub max_consecutive_tool_calls: Option<usize>,
 }
 
@@ -1009,15 +931,7 @@ pub fn agent_loop(
             }
         });
 
-        let _ = run_agent_loop(
-            prompts,
-            context,
-            &config,
-            &emit,
-            &signal,
-            &stream_fn,
-        )
-        .await;
+        let _ = run_agent_loop(prompts, context, &config, &emit, &signal, &stream_fn).await;
     });
 
     Box::pin(UnboundedReceiverStream::new(rx))
@@ -1035,7 +949,10 @@ pub fn agent_loop_continue(
     signal: Option<tokio::sync::watch::Receiver<bool>>,
     stream_fn: StreamFn,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    assert!(!context.messages.is_empty(), "Cannot continue: no messages in context");
+    assert!(
+        !context.messages.is_empty(),
+        "Cannot continue: no messages in context"
+    );
     assert_ne!(
         context.messages.last().map(|m| m.role()),
         Some("assistant"),
@@ -1053,14 +970,7 @@ pub fn agent_loop_continue(
             }
         });
 
-        let _ = run_agent_loop_continue(
-            context,
-            &config,
-            &emit,
-            &signal,
-            &stream_fn,
-        )
-        .await;
+        let _ = run_agent_loop_continue(context, &config, &emit, &signal, &stream_fn).await;
     });
 
     Box::pin(UnboundedReceiverStream::new(rx))
@@ -1241,7 +1151,9 @@ async fn run_loop(
             };
 
             if let Some(prepare_next_turn) = &initial_config.prepare_next_turn {
-                if let Some(update) = prepare_next_turn(next_turn_context.clone(), signal.clone()).await {
+                if let Some(update) =
+                    prepare_next_turn(next_turn_context.clone(), signal.clone()).await
+                {
                     if let Some(ctx) = update.context {
                         *current_context = ctx;
                     }
@@ -1333,7 +1245,7 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
-fn dummy_agent_tool(
+    fn dummy_agent_tool(
         name: &str,
         schema: serde_json::Value,
         prepare: Option<Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>>,
@@ -2340,7 +2252,9 @@ fn dummy_agent_tool(
 
         // Should at minimum contain AgentStart and AgentEnd
         assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
     }
 
     #[test]
@@ -2391,6 +2305,8 @@ fn dummy_agent_tool(
         let events: Vec<AgentEvent> = stream.collect().await;
 
         assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
     }
 }

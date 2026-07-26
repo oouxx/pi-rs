@@ -11,6 +11,6 @@ pub use pi_agent_core::pi_ai_types::{
     AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention, ContentBlock, Context,
     ImagesModel, Message, Model, ModelCompat, ModelCost, OpenAICompletionsCompat,
     OpenAIResponsesCompat, OpenRouterRouting, ProviderResponse, SimpleStreamOptions, StopReason,
-    StreamOptions, ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolExecutionMode,
-    Transport, Usage, UsageCost, VercelGatewayRouting, StreamResponse,
+    StreamOptions, StreamResponse, ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool,
+    ToolCall, ToolExecutionMode, Transport, Usage, UsageCost, VercelGatewayRouting,
 };

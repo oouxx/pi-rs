@@ -1,17 +1,3 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::large_futures,
-    clippy::type_complexity,
-    clippy::derivable_impls,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
-    clippy::await_holding_lock,
-    clippy::unwrap_used,
-    clippy::expect_used,
-)]
-
 pub mod config;
 pub mod core;
 pub mod migrations;

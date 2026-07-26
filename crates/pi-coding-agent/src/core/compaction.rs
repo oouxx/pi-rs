@@ -1,60 +1,3 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::clone_on_ref_ptr,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::use_self,
-    clippy::significant_drop_tightening,
-    clippy::default_trait_access,
-    clippy::iter_with_drain,
-    clippy::if_not_else,
-    clippy::explicit_iter_loop,
-    clippy::assigning_clones,
-    clippy::implicit_hasher,
-    clippy::ignored_unit_patterns,
-    clippy::missing_fields_in_debug,
-    clippy::or_fun_call,
-    clippy::too_long_first_doc_paragraph,
-    clippy::manual_string_new,
-    clippy::single_match_else,
-    clippy::significant_drop_in_scrutinee,
-    clippy::needless_collect,
-    clippy::duplicated_attributes,
-    clippy::similar_names,
-    clippy::needless_raw_string_hashes,
-    clippy::unnested_or_patterns,
-)]
 use std::collections::HashMap;
 
 use pi_agent_core::pi_ai_types::{ContentBlock, Message};
@@ -256,8 +199,9 @@ fn extract_file_operations(
 
     for msg in messages {
         if let AgentMessage::ToolResult {
-                tool_name, content, ..
-            } = msg {
+            tool_name, content, ..
+        } = msg
+        {
             match tool_name.as_str() {
                 "read" => {
                     for block in content {
@@ -395,7 +339,8 @@ fn serialize_conversation(messages: &[Message]) -> String {
 }
 
 pub fn serialize_compaction_summary(summary: &CompactionResult) -> Result<String, String> {
-    serde_json::to_string(summary).map_err(|e| format!("Failed to serialize compaction summary: {}", e))
+    serde_json::to_string(summary)
+        .map_err(|e| format!("Failed to serialize compaction summary: {}", e))
 }
 
 pub fn save_compaction_summary(summary: &CompactionResult, file_path: &str) -> Result<(), String> {
@@ -461,12 +406,10 @@ pub fn estimate_message_tokens(msg: &pi_agent_core::pi_ai_types::Message) -> u64
 
 fn estimate_content_block_tokens(block: &pi_agent_core::pi_ai_types::ContentBlock) -> u64 {
     match block {
-        pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
-            estimate_text_tokens(text)
-        }
-        pi_agent_core::pi_ai_types::ContentBlock::ToolCall { name, arguments, .. } => {
-            estimate_text_tokens(name) + estimate_text_tokens(&arguments.to_string())
-        }
+        pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => estimate_text_tokens(text),
+        pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+            name, arguments, ..
+        } => estimate_text_tokens(name) + estimate_text_tokens(&arguments.to_string()),
         pi_agent_core::pi_ai_types::ContentBlock::Image { .. } => 100, // rough estimate per image
         pi_agent_core::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
             estimate_text_tokens(thinking)
@@ -490,7 +433,9 @@ pub fn estimate_agent_messages_tokens(messages: &[pi_agent_core::types::AgentMes
 // ============================================================================
 
 /// Extract an AgentMessage from a session entry, if the entry is a message type.
-pub fn get_message_from_entry(entry: &crate::core::session_manager::SessionEntry) -> Option<pi_agent_core::types::AgentMessage> {
+pub fn get_message_from_entry(
+    entry: &crate::core::session_manager::SessionEntry,
+) -> Option<pi_agent_core::types::AgentMessage> {
     match entry {
         crate::core::session_manager::SessionEntry::Message { message, .. } => {
             serde_json::from_value(message.clone()).ok()
@@ -565,7 +510,8 @@ pub fn compute_file_lists(
     let mut read_files: Vec<String> = Vec::new();
     let mut modified_files: Vec<String> = Vec::new();
     let mut seen_read: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
-    let mut seen_modified: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut seen_modified: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
 
     for msg in messages {
         if let pi_agent_core::types::AgentMessage::ToolResult {
@@ -621,9 +567,7 @@ pub fn create_file_ops(read_files: &[String], modified_files: &[String]) -> File
 }
 
 /// Extract file operations from a single message.
-pub fn extract_file_ops_from_message(
-    msg: &pi_agent_core::types::AgentMessage,
-) -> FileOperations {
+pub fn extract_file_ops_from_message(msg: &pi_agent_core::types::AgentMessage) -> FileOperations {
     let (read_files, modified_files) = compute_file_lists(std::slice::from_ref(msg));
     FileOperations {
         read_files,
@@ -885,265 +829,266 @@ mod tests {
     }
 }
 
-    // ============================================================
-    // prepareCompaction
-    // ============================================================
+// ============================================================
+// prepareCompaction
+// ============================================================
 
-    #[test]
-    fn test_prepare_compaction_basic() {
-        let messages = vec![
-            AgentMessage::User {
-                content: vec![ContentBlock::text("hello")],
-                timestamp: 1,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("hi")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 2,
-            },
-            AgentMessage::User {
-                content: vec![ContentBlock::text("do something")],
-                timestamp: 3,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("done")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 4,
-            },
-        ];
+#[test]
+fn test_prepare_compaction_basic() {
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 1,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("hi")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 2,
+        },
+        AgentMessage::User {
+            content: vec![ContentBlock::text("do something")],
+            timestamp: 3,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("done")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 4,
+        },
+    ];
 
-        let settings = CompactionSettings::default();
-        let prep = prepare_compaction(&messages, 1, settings);
-        assert_eq!(prep.first_kept_entry_id, Some("entry-2".to_string()));
-        assert_eq!(prep.messages_to_summarize.len(), 2);
-        assert!(prep.previous_summary.is_none());
+    let settings = CompactionSettings::default();
+    let prep = prepare_compaction(&messages, 1, settings);
+    assert_eq!(prep.first_kept_entry_id, Some("entry-2".to_string()));
+    assert_eq!(prep.messages_to_summarize.len(), 2);
+    assert!(prep.previous_summary.is_none());
+}
+
+#[test]
+fn test_prepare_compaction_with_previous_summary() {
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("old user msg")],
+            timestamp: 1,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("old assistant msg")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 2,
+        },
+        AgentMessage::CompactionSummary {
+            summary: "Previous summary text".into(),
+            tokens_before: 10000,
+            timestamp: 3,
+        },
+        AgentMessage::User {
+            content: vec![ContentBlock::text("new user msg")],
+            timestamp: 4,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("new assistant msg")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 5,
+        },
+    ];
+
+    let settings = CompactionSettings::default();
+    let prep = prepare_compaction(&messages, 1, settings);
+    assert_eq!(
+        prep.previous_summary,
+        Some("Previous summary text".to_string())
+    );
+    assert!(prep.messages_to_summarize.len() >= 2);
+}
+
+#[test]
+fn test_prepare_compaction_keep_all() {
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 1,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("hi")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 2,
+        },
+    ];
+
+    let settings = CompactionSettings::default();
+    let prep = prepare_compaction(&messages, 5, settings);
+    // With keep_recent_turns=5 and only 2 messages, everything should be kept
+    assert_eq!(prep.first_kept_entry_id, Some("entry-0".to_string()));
+    assert_eq!(prep.messages_to_summarize.len(), 0);
+}
+
+#[test]
+fn test_prepare_compaction_excludes_bash_execution() {
+    // Test that bash execution messages with exclude_from_context=true
+    // are filtered out from messages_to_summarize
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 1,
+        },
+        AgentMessage::BashExecution {
+            command: "echo hello".into(),
+            output: "hello".into(),
+            exit_code: Some(0),
+            timestamp: 2,
+            exclude_from_context: Some(true),
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+        },
+        AgentMessage::User {
+            content: vec![ContentBlock::text("do something")],
+            timestamp: 3,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("done")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 4,
+        },
+    ];
+
+    let settings = CompactionSettings::default();
+    let prep = prepare_compaction(&messages, 1, settings);
+    // With keep_recent_turns=1, the last user+assistant turn is kept (index 2-3),
+    // so messages_to_summarize has messages[0..2] = [User, BashExecution]
+    // BashExecution with exclude_from_context=true is filtered out, leaving 1
+    assert_eq!(prep.messages_to_summarize.len(), 1);
+    // The remaining message should be the user message, not the bash execution
+    match &prep.messages_to_summarize[0] {
+        AgentMessage::User { .. } => {} // expected
+        _ => panic!("Expected User message"),
     }
+}
 
-    #[test]
-    fn test_prepare_compaction_with_previous_summary() {
-        let messages = vec![
-            AgentMessage::User {
-                content: vec![ContentBlock::text("old user msg")],
-                timestamp: 1,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("old assistant msg")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 2,
-            },
-            AgentMessage::CompactionSummary {
-                summary: "Previous summary text".into(),
-                tokens_before: 10000,
-                timestamp: 3,
-            },
-            AgentMessage::User {
-                content: vec![ContentBlock::text("new user msg")],
-                timestamp: 4,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("new assistant msg")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 5,
-            },
-        ];
+// ============================================================
+// findCompactionCutPoint edge cases
+// ============================================================
 
-        let settings = CompactionSettings::default();
-        let prep = prepare_compaction(&messages, 1, settings);
-        assert_eq!(prep.previous_summary, Some("Previous summary text".to_string()));
-        assert!(prep.messages_to_summarize.len() >= 2);
-    }
+#[test]
+fn test_find_compaction_cut_point_keep_all() {
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 1,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("hi")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 2,
+        },
+    ];
 
-    #[test]
-    fn test_prepare_compaction_keep_all() {
-        let messages = vec![
-            AgentMessage::User {
-                content: vec![ContentBlock::text("hello")],
-                timestamp: 1,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("hi")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 2,
-            },
-        ];
+    let cut = find_compaction_cut_point(&messages, 5);
+    assert_eq!(cut.first_kept_entry_index, 0);
+    assert!(!cut.is_split_turn);
+}
 
-        let settings = CompactionSettings::default();
-        let prep = prepare_compaction(&messages, 5, settings);
-        // With keep_recent_turns=5 and only 2 messages, everything should be kept
-        assert_eq!(prep.first_kept_entry_id, Some("entry-0".to_string()));
-        assert_eq!(prep.messages_to_summarize.len(), 0);
-    }
+#[test]
+fn test_find_compaction_cut_point_empty() {
+    let messages: Vec<AgentMessage> = vec![];
+    let cut = find_compaction_cut_point(&messages, 1);
+    assert_eq!(cut.first_kept_entry_index, 0);
+    assert!(!cut.is_split_turn);
+}
 
-    #[test]
-    fn test_prepare_compaction_excludes_bash_execution() {
-        // Test that bash execution messages with exclude_from_context=true
-        // are filtered out from messages_to_summarize
-        let messages = vec![
-            AgentMessage::User {
-                content: vec![ContentBlock::text("hello")],
-                timestamp: 1,
-            },
-            AgentMessage::BashExecution {
-                command: "echo hello".into(),
-                output: "hello".into(),
-                exit_code: Some(0),
-                timestamp: 2,
-                exclude_from_context: Some(true),
-                cancelled: false,
-                truncated: false,
-                full_output_path: None,
-            },
-            AgentMessage::User {
-                content: vec![ContentBlock::text("do something")],
-                timestamp: 3,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("done")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 4,
-            },
-        ];
+#[test]
+fn test_find_compaction_cut_point_with_branch_summary() {
+    let messages = vec![
+        AgentMessage::BranchSummary {
+            summary: "branch summary".into(),
+            from_id: "entry-0".into(),
+            timestamp: 1,
+        },
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 2,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("hi")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 3,
+        },
+        AgentMessage::User {
+            content: vec![ContentBlock::text("do something")],
+            timestamp: 4,
+        },
+        AgentMessage::Assistant {
+            content: vec![ContentBlock::text("done")],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Default::default(),
+            stop_reason: None,
+            error_message: None,
+            timestamp: 5,
+        },
+    ];
 
-        let settings = CompactionSettings::default();
-        let prep = prepare_compaction(&messages, 1, settings);
-        // With keep_recent_turns=1, the last user+assistant turn is kept (index 2-3),
-        // so messages_to_summarize has messages[0..2] = [User, BashExecution]
-        // BashExecution with exclude_from_context=true is filtered out, leaving 1
-        assert_eq!(prep.messages_to_summarize.len(), 1);
-        // The remaining message should be the user message, not the bash execution
-        match &prep.messages_to_summarize[0] {
-            AgentMessage::User { .. } => {} // expected
-            _ => panic!("Expected User message"),
-        }
-    }
+    // keep_recent_turns=1 should keep the last user+assistant pair
+    let cut = find_compaction_cut_point(&messages, 1);
+    assert_eq!(cut.first_kept_entry_index, 3);
+}
 
-    // ============================================================
-    // findCompactionCutPoint edge cases
-    // ============================================================
+// ============================================================
+// estimate_agent_messages_tokens
+// ============================================================
 
-    #[test]
-    fn test_find_compaction_cut_point_keep_all() {
-        let messages = vec![
-            AgentMessage::User {
-                content: vec![ContentBlock::text("hello")],
-                timestamp: 1,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("hi")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 2,
-            },
-        ];
+#[test]
+fn test_estimate_agent_messages_tokens_empty() {
+    let tokens = estimate_agent_messages_tokens(&[]);
+    assert_eq!(tokens, 0);
+}
 
-        let cut = find_compaction_cut_point(&messages, 5);
-        assert_eq!(cut.first_kept_entry_index, 0);
-        assert!(!cut.is_split_turn);
-    }
-
-    #[test]
-    fn test_find_compaction_cut_point_empty() {
-        let messages: Vec<AgentMessage> = vec![];
-        let cut = find_compaction_cut_point(&messages, 1);
-        assert_eq!(cut.first_kept_entry_index, 0);
-        assert!(!cut.is_split_turn);
-    }
-
-    #[test]
-    fn test_find_compaction_cut_point_with_branch_summary() {
-        let messages = vec![
-            AgentMessage::BranchSummary {
-                summary: "branch summary".into(),
-                from_id: "entry-0".into(),
-                timestamp: 1,
-            },
-            AgentMessage::User {
-                content: vec![ContentBlock::text("hello")],
-                timestamp: 2,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("hi")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 3,
-            },
-            AgentMessage::User {
-                content: vec![ContentBlock::text("do something")],
-                timestamp: 4,
-            },
-            AgentMessage::Assistant {
-                content: vec![ContentBlock::text("done")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                usage: Default::default(),
-                stop_reason: None,
-                error_message: None,
-                timestamp: 5,
-            },
-        ];
-
-        // keep_recent_turns=1 should keep the last user+assistant pair
-        let cut = find_compaction_cut_point(&messages, 1);
-        assert_eq!(cut.first_kept_entry_index, 3);
-    }
-
-    // ============================================================
-    // estimate_agent_messages_tokens
-    // ============================================================
-
-    #[test]
-    fn test_estimate_agent_messages_tokens_empty() {
-        let tokens = estimate_agent_messages_tokens(&[]);
-        assert_eq!(tokens, 0);
-    }
-
-    #[test]
-    fn test_estimate_agent_messages_tokens_basic() {
-        let messages = vec![
-            AgentMessage::User {
-                content: vec![ContentBlock::text("hello world")],
-                timestamp: 1,
-            },
-        ];
-        let tokens = estimate_agent_messages_tokens(&messages);
-        assert!(tokens > 0);
-    }
+#[test]
+fn test_estimate_agent_messages_tokens_basic() {
+    let messages = vec![AgentMessage::User {
+        content: vec![ContentBlock::text("hello world")],
+        timestamp: 1,
+    }];
+    let tokens = estimate_agent_messages_tokens(&messages);
+    assert!(tokens > 0);
+}

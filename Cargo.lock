@@ -207,9 +207,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.2.67"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
+checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1402,7 +1402,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pi-agent-core"
-version = "1.79.36"
+version = "1.79.37"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "1.79.36"
+version = "1.79.37"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "pi-cli"
-version = "1.79.36"
+version = "1.79.37"
 dependencies = [
  "base64",
  "colored",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "1.79.36"
+version = "1.79.37"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extension-api"
-version = "1.79.36"
+version = "1.79.37"
 dependencies = [
  "async-trait",
  "futures",
@@ -1493,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extensions"
-version = "1.79.36"
+version = "1.79.37"
 dependencies = [
  "async-trait",
  "pi-extension-api",

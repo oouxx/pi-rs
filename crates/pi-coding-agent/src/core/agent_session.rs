@@ -1,60 +1,3 @@
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::doc_markdown,
-    clippy::must_use_candidate,
-    clippy::unnecessary_struct_initialization,
-    clippy::redundant_closure_for_method_calls,
-    clippy::redundant_closure,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::option_if_let_else,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::ref_option,
-    clippy::redundant_clone,
-    clippy::clone_on_ref_ptr,
-    clippy::unnecessary_operation,
-    clippy::unused_self,
-    clippy::match_same_arms,
-    clippy::needless_continue,
-    clippy::items_after_statements,
-    clippy::unnecessary_to_owned,
-    clippy::needless_pass_by_value,
-    clippy::uninlined_format_args,
-    clippy::derive_partial_eq_without_eq,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::let_underscore_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::string_lit_as_bytes,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::use_self,
-    clippy::significant_drop_tightening,
-    clippy::default_trait_access,
-    clippy::iter_with_drain,
-    clippy::if_not_else,
-    clippy::explicit_iter_loop,
-    clippy::assigning_clones,
-    clippy::implicit_hasher,
-    clippy::ignored_unit_patterns,
-    clippy::missing_fields_in_debug,
-    clippy::or_fun_call,
-    clippy::too_long_first_doc_paragraph,
-    clippy::manual_string_new,
-    clippy::single_match_else,
-    clippy::significant_drop_in_scrutinee,
-    clippy::needless_collect,
-    clippy::duplicated_attributes,
-    clippy::similar_names,
-    clippy::needless_raw_string_hashes,
-    clippy::unnested_or_patterns,
-)]
 use pi_agent_core::agent::Agent;
 use pi_agent_core::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use pi_agent_core::types::{
@@ -317,9 +260,7 @@ pub enum AgentSessionEvent {
 }
 
 /// Listener function for agent session events.
-pub type AgentSessionEventListener = Arc<
-    dyn Fn(AgentSessionEvent) + Send + Sync,
->;
+pub type AgentSessionEventListener = Arc<dyn Fn(AgentSessionEvent) + Send + Sync>;
 
 /// Handle returned by [`AgentSession::subscribe_session_events`].
 /// Call `unsubscribe()` to stop receiving events.
@@ -793,70 +734,121 @@ impl AgentSession {
 
         // Wire the before_provider_request event: extensions can inspect/modify
         // the provider request payload before it is sent.
-        let on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>> =
-            options.extension_registry.as_ref().map(|registry| {
-                let payload_reg = Arc::clone(registry);
-                let ctx_clone = Arc::clone(&shared_ext_ctx);
-                let closure = move |payload: serde_json::Value| {
-                    let reg = Arc::clone(&payload_reg);
-                    let ctx_ref = Arc::clone(&ctx_clone);
-                    Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_before_provider_request(
-                            &reg, payload, &ctx_ref,
-                        )
-                        .await
-                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>>
-                };
-                Arc::new(closure) as Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>
-            });
+        let on_payload: Option<
+            Arc<
+                dyn Fn(
+                        serde_json::Value,
+                    ) -> std::pin::Pin<
+                        Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                    > + Send
+                    + Sync,
+            >,
+        > = options.extension_registry.as_ref().map(|registry| {
+            let payload_reg = Arc::clone(registry);
+            let ctx_clone = Arc::clone(&shared_ext_ctx);
+            let closure = move |payload: serde_json::Value| {
+                let reg = Arc::clone(&payload_reg);
+                let ctx_ref = Arc::clone(&ctx_clone);
+                Box::pin(async move {
+                    crate::core::extensions::dispatcher::dispatch_before_provider_request(
+                        &reg, payload, &ctx_ref,
+                    )
+                    .await
+                })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                    >
+            };
+            Arc::new(closure)
+                as Arc<
+                    dyn Fn(
+                            serde_json::Value,
+                        ) -> std::pin::Pin<
+                            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                        > + Send
+                        + Sync,
+                >
+        });
 
         // Wire the before_provider_headers event: extensions can modify
         // HTTP request headers before they are sent to the provider.
-        let on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>> =
-            options.extension_registry.as_ref().map(|registry| {
-                let headers_reg = Arc::clone(registry);
-                let ctx_clone = Arc::clone(&shared_ext_ctx);
-                let closure = move |headers: std::collections::HashMap<String, String>| {
-                    let reg = Arc::clone(&headers_reg);
-                    let ctx_ref = Arc::clone(&ctx_clone);
-                    Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_before_provider_headers(
-                            &reg, headers, &ctx_ref,
-                        ).await
-                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>>
-                };
-                Arc::new(closure) as Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>
-            });
+        let on_headers: Option<
+            Arc<
+                dyn Fn(
+                        std::collections::HashMap<String, String>,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = std::collections::HashMap<String, String>,
+                                > + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >,
+        > = options.extension_registry.as_ref().map(|registry| {
+            let headers_reg = Arc::clone(registry);
+            let ctx_clone = Arc::clone(&shared_ext_ctx);
+            let closure = move |headers: std::collections::HashMap<String, String>| {
+                let reg = Arc::clone(&headers_reg);
+                let ctx_ref = Arc::clone(&ctx_clone);
+                Box::pin(async move {
+                    crate::core::extensions::dispatcher::dispatch_before_provider_headers(
+                        &reg, headers, &ctx_ref,
+                    )
+                    .await
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = std::collections::HashMap<String, String>,
+                                > + Send,
+                        >,
+                    >
+            };
+            Arc::new(closure)
+                as Arc<
+                    dyn Fn(
+                            std::collections::HashMap<String, String>,
+                        ) -> std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = std::collections::HashMap<String, String>,
+                                    > + Send,
+                            >,
+                        > + Send
+                        + Sync,
+                >
+        });
 
         // Wire the after_provider_response event: extensions can inspect
         // provider HTTP response status and headers.
-        let on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>> =
-            options.extension_registry.as_ref().map(|registry| {
-                let resp_reg = Arc::clone(registry);
-                let ctx_clone = Arc::clone(&shared_ext_ctx);
-                let closure = move |status: u16, headers: std::collections::HashMap<String, String>| {
-                    let reg = Arc::clone(&resp_reg);
-                    let ctx_ref = Arc::clone(&ctx_clone);
-                    tokio::spawn(async move {
-                        crate::core::extensions::dispatcher::dispatch_after_provider_response(
-                            &reg, status, headers, &ctx_ref,
-                        ).await;
-                    });
-                };
-                Arc::new(closure) as Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>
-            });
+        let on_provider_response: Option<
+            Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>,
+        > = options.extension_registry.as_ref().map(|registry| {
+            let resp_reg = Arc::clone(registry);
+            let ctx_clone = Arc::clone(&shared_ext_ctx);
+            let closure = move |status: u16, headers: std::collections::HashMap<String, String>| {
+                let reg = Arc::clone(&resp_reg);
+                let ctx_ref = Arc::clone(&ctx_clone);
+                tokio::spawn(async move {
+                    crate::core::extensions::dispatcher::dispatch_after_provider_response(
+                        &reg, status, headers, &ctx_ref,
+                    )
+                    .await;
+                });
+            };
+            Arc::new(closure)
+                as Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>
+        });
 
         // Wire the API key resolution callback so the agent loop can
         // look up keys from env vars, registered providers, and models.json config.
         let model_registry_for_key = model_registry.clone();
-        let get_api_key: Option<pi_agent_core::types::GetApiKeyFn> = Some(std::sync::Arc::new(
-            move |provider: String| {
+        let get_api_key: Option<pi_agent_core::types::GetApiKeyFn> =
+            Some(std::sync::Arc::new(move |provider: String| {
                 let registry = model_registry_for_key.clone();
-                Box::pin(async move {
-                    registry.get_api_key_for_provider(&provider)
-                })
-            },
-        ));
+                Box::pin(async move { registry.get_api_key_for_provider(&provider) })
+            }));
 
         let agent_options = pi_agent_core::agent::AgentOptions {
             initial_state: Some(initial_state),
@@ -908,7 +900,6 @@ impl AgentSession {
             .extension_registry
             .as_ref()
             .map(std::sync::Arc::clone);
-
 
         let mut session = Self {
             agent,
@@ -965,8 +956,12 @@ impl AgentSession {
             let ext_ctx = session.ext_ctx.clone();
             let cwd = session.cwd.clone();
             let ext_paths = crate::core::extensions::dispatcher::dispatch_resources_discover(
-                registry, &cwd, "session_start", &ext_ctx,
-            ).await;
+                registry,
+                &cwd,
+                "session_start",
+                &ext_ctx,
+            )
+            .await;
             // Store extension-contributed paths for future resource reloads
             if !ext_paths.skill_paths.is_empty()
                 || !ext_paths.prompt_paths.is_empty()
@@ -975,33 +970,54 @@ impl AgentSession {
                 // Convert ResourcesDiscoverResult (Vec<String>) to ResourceExtensionPaths (Vec<(String, SourceInfo)>)
                 use crate::core::source_info::{SourceInfo, SourceOrigin, SourceScope};
                 let ext_resource_paths = crate::core::resource_loader::ResourceExtensionPaths {
-                    skill_paths: ext_paths.skill_paths.iter().map(|p| {
-                        (p.clone(), SourceInfo {
-                            path: p.clone(),
-                            source: "extension".to_string(),
-                            scope: SourceScope::Project,
-                            origin: SourceOrigin::Package,
-                            base_dir: None,
+                    skill_paths: ext_paths
+                        .skill_paths
+                        .iter()
+                        .map(|p| {
+                            (
+                                p.clone(),
+                                SourceInfo {
+                                    path: p.clone(),
+                                    source: "extension".to_string(),
+                                    scope: SourceScope::Project,
+                                    origin: SourceOrigin::Package,
+                                    base_dir: None,
+                                },
+                            )
                         })
-                    }).collect(),
-                    prompt_paths: ext_paths.prompt_paths.iter().map(|p| {
-                        (p.clone(), SourceInfo {
-                            path: p.clone(),
-                            source: "extension".to_string(),
-                            scope: SourceScope::Project,
-                            origin: SourceOrigin::Package,
-                            base_dir: None,
+                        .collect(),
+                    prompt_paths: ext_paths
+                        .prompt_paths
+                        .iter()
+                        .map(|p| {
+                            (
+                                p.clone(),
+                                SourceInfo {
+                                    path: p.clone(),
+                                    source: "extension".to_string(),
+                                    scope: SourceScope::Project,
+                                    origin: SourceOrigin::Package,
+                                    base_dir: None,
+                                },
+                            )
                         })
-                    }).collect(),
-                    theme_paths: ext_paths.theme_paths.iter().map(|p| {
-                        (p.clone(), SourceInfo {
-                            path: p.clone(),
-                            source: "extension".to_string(),
-                            scope: SourceScope::Project,
-                            origin: SourceOrigin::Package,
-                            base_dir: None,
+                        .collect(),
+                    theme_paths: ext_paths
+                        .theme_paths
+                        .iter()
+                        .map(|p| {
+                            (
+                                p.clone(),
+                                SourceInfo {
+                                    path: p.clone(),
+                                    source: "extension".to_string(),
+                                    scope: SourceScope::Project,
+                                    origin: SourceOrigin::Package,
+                                    base_dir: None,
+                                },
+                            )
                         })
-                    }).collect(),
+                        .collect(),
                 };
                 session.extension_resource_paths = Some(ext_resource_paths);
                 eprintln!(
@@ -1030,7 +1046,6 @@ impl AgentSession {
         let inner_ext_ctx = shared_ext_ctx.clone();
         let inner_agent = session.agent.clone();
         let turn_index: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(0));
-
 
         let internal_listener: Arc<
             dyn Fn(
@@ -1089,10 +1104,13 @@ impl AgentSession {
                                     };
                                     (Some(idx), evt)
                                 } else {
-                                    (None, AgentSessionEvent::QueueUpdate {
-                                        steering: steer.clone(),
-                                        follow_up: follow_up.lock().unwrap().clone(),
-                                    })
+                                    (
+                                        None,
+                                        AgentSessionEvent::QueueUpdate {
+                                            steering: steer.clone(),
+                                            follow_up: follow_up.lock().unwrap().clone(),
+                                        },
+                                    )
                                 }
                             };
                             if steer_idx.is_some() {
@@ -1179,22 +1197,39 @@ impl AgentSession {
                             hr.fire_message_end(&msg_val).await;
                             // Run modifying hook to allow extensions to modify the message
                             if let Some(ref registry) = reg {
-                                if let Some(mut replacement_val) = crate::core::extensions::dispatcher::dispatch_message_end(
-                                    registry, &msg_val, &ext_ctx,
-                                ).await {
+                                if let Some(mut replacement_val) =
+                                    crate::core::extensions::dispatcher::dispatch_message_end(
+                                        registry, &msg_val, &ext_ctx,
+                                    )
+                                    .await
+                                {
                                     // Normalize null content to empty array, matching TS behavior:
                                     // extension handlers can return messages with null/missing content;
                                     // normalize so it never enters agent state or session history.
-                                    if let Some(role) = replacement_val.get("role").and_then(|r| r.as_str()) {
-                                        let needs_normalize = matches!(role, "user" | "assistant" | "toolResult" | "custom")
-                                            && replacement_val.get("content").map(|c| c.is_null()).unwrap_or(false);
+                                    if let Some(role) =
+                                        replacement_val.get("role").and_then(|r| r.as_str())
+                                    {
+                                        let needs_normalize = matches!(
+                                            role,
+                                            "user" | "assistant" | "toolResult" | "custom"
+                                        ) && replacement_val
+                                            .get("content")
+                                            .map(|c| c.is_null())
+                                            .unwrap_or(false);
                                         if needs_normalize {
                                             if let Some(obj) = replacement_val.as_object_mut() {
-                                                obj.insert("content".to_string(), serde_json::Value::Array(Vec::new()));
+                                                obj.insert(
+                                                    "content".to_string(),
+                                                    serde_json::Value::Array(Vec::new()),
+                                                );
                                             }
                                         }
                                     }
-                                    if let Ok(replacement_msg) = serde_json::from_value::<pi_agent_core::types::AgentMessage>(replacement_val) {
+                                    if let Ok(replacement_msg) = serde_json::from_value::<
+                                        pi_agent_core::types::AgentMessage,
+                                    >(
+                                        replacement_val
+                                    ) {
                                         agent.replace_last_message(replacement_msg).await;
                                     }
                                 }
@@ -1407,8 +1442,8 @@ impl AgentSession {
                                 details,
                                 ..
                             } => {
-                                let content_json =
-                                    serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
+                                let content_json = serde_json::to_value(content)
+                                    .unwrap_or(serde_json::Value::Null);
                                 if let Ok(mut mgr) = sm.lock() {
                                     mgr.append_custom_message_entry(
                                         custom_type,
@@ -1421,8 +1456,8 @@ impl AgentSession {
                             AgentMessage::User { .. }
                             | AgentMessage::Assistant { .. }
                             | AgentMessage::ToolResult { .. } => {
-                                let msg_value =
-                                    serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
+                                let msg_value = serde_json::to_value(message)
+                                    .unwrap_or(serde_json::Value::Null);
                                 if let Ok(mut mgr) = sm.lock() {
                                     mgr.append_message(msg_value);
                                 }
@@ -1619,7 +1654,9 @@ impl AgentSession {
         let branch_entries = mgr.get_branch(None);
 
         // Find the latest compaction entry
-        let latest_compaction_idx = branch_entries.iter().rposition(|e| matches!(e, SessionEntry::Compaction { .. }));
+        let latest_compaction_idx = branch_entries
+            .iter()
+            .rposition(|e| matches!(e, SessionEntry::Compaction { .. }));
 
         if let Some(compaction_idx) = latest_compaction_idx {
             // Check if there's a valid assistant usage after the compaction boundary
@@ -1631,7 +1668,10 @@ impl AgentSession {
                         // Skip aborted and error messages
                         if stop_reason != Some("aborted") && stop_reason != Some("error") {
                             if let Some(usage) = message.get("usage") {
-                                let total_tokens = usage.get("totalTokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                                let total_tokens = usage
+                                    .get("totalTokens")
+                                    .and_then(|t| t.as_u64())
+                                    .unwrap_or(0);
                                 if total_tokens > 0 {
                                     has_post_compaction_usage = true;
                                     break;
@@ -1919,29 +1959,29 @@ impl AgentSession {
 
         for entry in entries {
             if let crate::core::session_manager::SessionEntry::Message { message, .. } = entry {
-                    if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
-                        match role {
-                            "user" => user_messages += 1,
-                            "assistant" => {
-                                assistant_messages += 1;
-                                // Count tool calls within assistant messages
-                                if let Some(content) = message.get("content") {
-                                    if let Some(blocks) = content.as_array() {
-                                        for block in blocks {
-                                            if block.get("type").and_then(|v| v.as_str())
-                                                == Some("tool_use")
-                                            {
-                                                tool_calls += 1;
-                                            }
+                if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
+                    match role {
+                        "user" => user_messages += 1,
+                        "assistant" => {
+                            assistant_messages += 1;
+                            // Count tool calls within assistant messages
+                            if let Some(content) = message.get("content") {
+                                if let Some(blocks) = content.as_array() {
+                                    for block in blocks {
+                                        if block.get("type").and_then(|v| v.as_str())
+                                            == Some("tool_use")
+                                        {
+                                            tool_calls += 1;
                                         }
                                     }
                                 }
                             }
-                            "tool_result" => tool_results += 1,
-                            _ => {}
                         }
+                        "tool_result" => tool_results += 1,
+                        _ => {}
                     }
                 }
+            }
         }
 
         let total_messages = user_messages + assistant_messages + tool_calls + tool_results;
@@ -2051,7 +2091,10 @@ impl AgentSession {
             eprintln!("[pi] No model selected. Use /model to select a model.");
             return;
         }
-        let auth_result = self.model_registry.get_api_key_and_headers(&state.model).await;
+        let auth_result = self
+            .model_registry
+            .get_api_key_and_headers(&state.model)
+            .await;
         match auth_result {
             Ok(r) if !r.ok => {
                 eprintln!("[pi] No API key configured for provider '{}'. Set the appropriate environment variable or configure it via /login.", state.model.provider);
@@ -2076,11 +2119,8 @@ impl AgentSession {
 
         // Send the prompt with pending next-turn messages injected as context,
         // matching TS prompt() which injects _pendingNextTurnMessages.
-        self.add_user_text_with_options(
-            &expanded_text,
-            current_images,
-            source,
-        ).await;
+        self.add_user_text_with_options(&expanded_text, current_images, source)
+            .await;
 
         // Post-agent-run loop: retry + compaction + queued messages
         // Matches TS _runAgentPrompt() which calls _handlePostAgentRun() in a loop.
@@ -2106,10 +2146,10 @@ impl AgentSession {
 
         // Check retry
         if self._is_retryable_error(&msg) && self._prepare_retry(&msg).await {
-                // Continue the agent
-                self.agent.continue_run().await.ok();
-                return true;
-            }
+            // Continue the agent
+            self.agent.continue_run().await.ok();
+            return true;
+        }
 
         // Emit auto_retry_end if retry attempt was active but not retryable
         if let AgentMessage::Assistant {
@@ -2189,11 +2229,17 @@ impl AgentSession {
         };
 
         // Look up the skill in the resource loader
-        let skills = self.resources.as_ref().map(|r| &r.skills[..]).unwrap_or(&[]);
+        let skills = self
+            .resources
+            .as_ref()
+            .map(|r| &r.skills[..])
+            .unwrap_or(&[]);
         if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
             match std::fs::read_to_string(&skill.file_path) {
                 Ok(content) => {
-                    let body = crate::utils::frontmatter::strip_frontmatter(&content).trim().to_string();
+                    let body = crate::utils::frontmatter::strip_frontmatter(&content)
+                        .trim()
+                        .to_string();
                     let skill_block = format!(
                         r#"<skill name="{}" location="{}">
 References are relative to {}.
@@ -2205,9 +2251,12 @@ References are relative to {}.
                     if args.is_empty() {
                         skill_block
                     } else {
-                        format!("{}
+                        format!(
+                            "{}
 
-{}", skill_block, args)
+{}",
+                            skill_block, args
+                        )
                     }
                 }
                 Err(_) => text.to_string(),
@@ -2219,7 +2268,8 @@ References are relative to {}.
 
     /// Flush pending bash messages into agent state, matching TS _flushPendingBashMessages().
     async fn _flush_pending_bash_messages(&self) {
-        let messages: Vec<serde_json::Value> = std::mem::take(&mut *self.pending_bash_messages.lock().unwrap());
+        let messages: Vec<serde_json::Value> =
+            std::mem::take(&mut *self.pending_bash_messages.lock().unwrap());
         if messages.is_empty() {
             return;
         }
@@ -2332,7 +2382,6 @@ References are relative to {}.
         let max_retries = retry_settings.max_retries.unwrap_or(3);
         let base_delay_ms = retry_settings.base_delay_ms.unwrap_or(2000);
 
-
         let mut retry = self.retry_attempt.lock().unwrap();
         *retry += 1;
 
@@ -2356,7 +2405,6 @@ References are relative to {}.
             delay_ms,
             error_message: error_message.clone(),
         });
-
 
         // Remove error message from agent state (keep in session for history),
         // matching TS _prepareRetry().
@@ -2388,11 +2436,14 @@ References are relative to {}.
         true
     }
 
-
     /// Check if compaction is needed and run it.
     /// Called after agent_end and before prompt submission.
     /// Matches TS _checkCompaction().
-    async fn _check_compaction(&self, assistant_message: &AgentMessage, skip_aborted_check: bool) -> bool {
+    async fn _check_compaction(
+        &self,
+        assistant_message: &AgentMessage,
+        skip_aborted_check: bool,
+    ) -> bool {
         // Check compaction settings
         if !self.compaction_settings.compact_on_threshold {
             return false;
@@ -2407,7 +2458,9 @@ References are relative to {}.
         } = assistant_message
         {
             // Skip if message was aborted (user cancelled) - unless skip_aborted_check is false
-            if skip_aborted_check && stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted) {
+            if skip_aborted_check
+                && stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted)
+            {
                 return false;
             }
 
@@ -2423,14 +2476,20 @@ References are relative to {}.
             // from retriggering compaction on the first prompt after compaction.
             let branch_entries = self.session_manager.lock().unwrap().get_branch(None);
             let latest_compaction_ts = branch_entries.iter().rev().find_map(|e| {
-                if let crate::core::session_manager::SessionEntry::Compaction { timestamp, .. } = e {
+                if let crate::core::session_manager::SessionEntry::Compaction {
+                    timestamp, ..
+                } = e
+                {
                     Some(timestamp.clone())
                 } else {
                     None
                 }
             });
             if let Some(ref compaction_ts) = latest_compaction_ts {
-                if let AgentMessage::Assistant { timestamp: msg_ts, .. } = assistant_message {
+                if let AgentMessage::Assistant {
+                    timestamp: msg_ts, ..
+                } = assistant_message
+                {
                     if *msg_ts as f64 <= compaction_ts.parse::<f64>().unwrap_or(0.0) {
                         return false;
                     }
@@ -2503,7 +2562,6 @@ References are relative to {}.
 
         false
     }
-
 
     /// Run auto-compaction with events.
     /// Matches TS _runAutoCompaction().
@@ -2589,11 +2647,16 @@ References are relative to {}.
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             // Extract images from content blocks for extension dispatch
-            let images: Vec<ContentBlock> = content.iter()
+            let images: Vec<ContentBlock> = content
+                .iter()
                 .filter(|b| matches!(b, ContentBlock::Image { .. }))
                 .cloned()
                 .collect();
-            let images_ref = if images.is_empty() { None } else { Some(images.as_slice()) };
+            let images_ref = if images.is_empty() {
+                None
+            } else {
+                Some(images.as_slice())
+            };
             let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
@@ -2945,13 +3008,15 @@ References are relative to {}.
         let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
         let context_window = state.model.context_window.max(1);
 
-
         compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
     }
 
     /// Trigger compaction, matching the original compact().
     /// Returns a summary string on success.
-    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<crate::core::compaction::CompactionResult, String> {
+    pub async fn compact(
+        &self,
+        custom_instructions: Option<&str>,
+    ) -> Result<crate::core::compaction::CompactionResult, String> {
         use crate::core::compaction;
 
         // Dispatch session_before_compact to extensions.
@@ -2977,7 +3042,6 @@ References are relative to {}.
         let messages = state.messages;
         let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
         let context_window = state.model.context_window.max(1);
-
 
         if !compaction::should_compact(total_tokens, context_window, &self.compaction_settings) {
             return Err("Compaction not needed".to_string());
@@ -3114,8 +3178,11 @@ References are relative to {}.
         // Dispatch session_before_tree event to extensions
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_tree(
-                registry, direction, &self.ext_ctx,
-            ).await;
+                registry,
+                direction,
+                &self.ext_ctx,
+            )
+            .await;
         }
 
         let mut mgr = self.session_manager.lock().unwrap();
@@ -3854,11 +3921,7 @@ impl AgentSession {
     /// Send a user message (for extensions), matching original sendUserMessage().
     /// Send a user message, matching TS sendUserMessage().
     /// Supports `deliverAs` option for streaming behavior.
-    pub async fn send_user_message(
-        &self,
-        content: &str,
-        options: Option<SendUserMessageOptions>,
-    ) {
+    pub async fn send_user_message(&self, content: &str, options: Option<SendUserMessageOptions>) {
         let opts = options.unwrap_or_default();
         self.prompt(
             content,
@@ -3898,8 +3961,13 @@ impl AgentSession {
         // If an extension handles the command, return its result
         if let Some(ref registry) = self.extension_registry {
             if let Some(result) = crate::core::extensions::dispatcher::dispatch_user_bash(
-                registry, command, &self.cwd, &self.ext_ctx,
-            ).await {
+                registry,
+                command,
+                &self.cwd,
+                &self.ext_ctx,
+            )
+            .await
+            {
                 // Extension handled the command; return its result
                 if let Some(ref result_val) = result.result {
                     if let Ok(parsed) = serde_json::from_value(result_val.clone()) {
@@ -3936,7 +4004,8 @@ impl AgentSession {
             result.truncated,
             result.full_output_path.clone(),
             exclude_from_context,
-        ).await;
+        )
+        .await;
 
         Ok(result)
     }
@@ -4017,7 +4086,11 @@ impl AgentSession {
                 QueueMode::All => "all",
                 QueueMode::OneAtATime => "one-at-a-time",
             };
-            let mode = if mode_str == "all" { crate::core::settings_manager::SteeringMode::All } else { crate::core::settings_manager::SteeringMode::OneAtATime };
+            let mode = if mode_str == "all" {
+                crate::core::settings_manager::SteeringMode::All
+            } else {
+                crate::core::settings_manager::SteeringMode::OneAtATime
+            };
             sm.set_steering_mode(mode);
         }
     }
@@ -4031,7 +4104,11 @@ impl AgentSession {
                 QueueMode::All => "all",
                 QueueMode::OneAtATime => "one-at-a-time",
             };
-            let mode = if mode_str == "all" { crate::core::settings_manager::FollowUpMode::All } else { crate::core::settings_manager::FollowUpMode::OneAtATime };
+            let mode = if mode_str == "all" {
+                crate::core::settings_manager::FollowUpMode::All
+            } else {
+                crate::core::settings_manager::FollowUpMode::OneAtATime
+            };
             sm.set_follow_up_mode(mode);
         }
     }
@@ -4079,22 +4156,27 @@ impl AgentSession {
             let follow_up = sm.get_follow_up_mode();
             drop(sm);
             let steering_mode = match steering {
-                crate::core::settings_manager::SteeringMode::All => pi_agent_core::types::QueueMode::All,
-                crate::core::settings_manager::SteeringMode::OneAtATime => pi_agent_core::types::QueueMode::OneAtATime,
+                crate::core::settings_manager::SteeringMode::All => {
+                    pi_agent_core::types::QueueMode::All
+                }
+                crate::core::settings_manager::SteeringMode::OneAtATime => {
+                    pi_agent_core::types::QueueMode::OneAtATime
+                }
             };
             let follow_up_mode = match follow_up {
-                crate::core::settings_manager::FollowUpMode::All => pi_agent_core::types::QueueMode::All,
-                crate::core::settings_manager::FollowUpMode::OneAtATime => pi_agent_core::types::QueueMode::OneAtATime,
+                crate::core::settings_manager::FollowUpMode::All => {
+                    pi_agent_core::types::QueueMode::All
+                }
+                crate::core::settings_manager::FollowUpMode::OneAtATime => {
+                    pi_agent_core::types::QueueMode::OneAtATime
+                }
             };
             self.agent.set_steering_mode(steering_mode).await;
             self.agent.set_follow_up_mode(follow_up_mode).await;
         }
     }
 
-    pub fn subscribe(
-        &self,
-        listener: AgentSessionEventListener,
-    ) -> SessionEventUnsubscribeHandle {
+    pub fn subscribe(&self, listener: AgentSessionEventListener) -> SessionEventUnsubscribeHandle {
         let mut listeners = self.event_listeners.lock().unwrap();
         let index = listeners.len();
         listeners.push(listener);

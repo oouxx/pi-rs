@@ -393,6 +393,7 @@ async fn test_create_agent_session_runtime() {
     let runtime = pi_coding_agent::core::agent_session_runtime::create_agent_session_runtime(
         factory,
         CreateAgentSessionRuntimeParams {
+            session_start_event: None,
             cwd: cwd.clone(),
             agent_dir: cwd.clone(),
             session_manager,

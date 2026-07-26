@@ -181,15 +181,19 @@ pub async fn create_agent_session_services(
 pub async fn create_agent_session_from_services(
     options: CreateAgentSessionFromServicesOptions,
 ) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
-    let services = options.services;
-    let _session_manager = options.session_manager;
+    let cwd = options.services.cwd.clone();
+    let agent_dir = options.services.agent_dir.clone();
+    let auth_storage = options.services.auth_storage;
+    let settings_manager = options.services.settings_manager;
+    let model_registry = options.services.model_registry;
+    let session_manager = options.session_manager;
 
     // Resolve model: use provided model, or fall back to the first available
     // model from the registry
     let model = match options.model {
         Some(m) => m,
         None => {
-            let available = services.model_registry.get_available();
+            let available = model_registry.get_available();
             if available.is_empty() {
                 return Err("No models available. Please configure an API key.".into());
             }
@@ -209,9 +213,14 @@ pub async fn create_agent_session_from_services(
     // Build the options struct and delegate to the single entry point.
     // `create_agent_session` handles extension registry wrapping,
     // prompt_guidelines collection, resource loading, and session assembly.
+    //
+    // NOTE: resource_loader is passed as None because the Rust SDK expects
+    // ResourceLoaderOptions (loading options), not LoadedResources (loaded data).
+    // The services' resources are reloaded from disk inside create_agent_session().
+    // This is a known deviation from TS (see DEVIATIONS.md).
     let sdk_options = crate::core::sdk::CreateAgentSessionOptions {
-        cwd: services.cwd.clone(),
-        agent_dir: Some(services.agent_dir.clone()),
+        cwd,
+        agent_dir: Some(agent_dir),
         model: Some(model),
         thinking_level: Some(thinking_level),
         scoped_models: options.scoped_models,
@@ -232,11 +241,11 @@ pub async fn create_agent_session_from_services(
         session_file: None,
         fork_from: None,
         session_dir: None,
-        auth_storage: None,
-        model_registry: None,
+        auth_storage: Some(auth_storage),
+        model_registry: Some(model_registry),
         resource_loader: None,
-        session_manager: None,
-        settings_manager: None,
+        session_manager: Some(session_manager),
+        settings_manager: Some(settings_manager),
         session_start_event: options.session_start_event,
         custom_tools: options.custom_tools,
     };

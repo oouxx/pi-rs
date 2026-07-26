@@ -48,6 +48,10 @@ pub struct CreateAgentSessionRuntimeParams {
     pub cwd: String,
     pub agent_dir: String,
     pub session_manager: SessionManager,
+    /// Session start event metadata, matching TS `sessionStartEvent`.
+    /// Passed through to create_agent_session() so extensions receive the
+    /// session_start event with the correct reason and previous session file.
+    pub session_start_event: Option<crate::core::sdk::SessionStartEvent>,
 }
 
 /// Factory type for creating a new runtime.
@@ -373,6 +377,7 @@ impl AgentSessionRuntime {
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            session_start_event: None,
             cwd: session_manager.get_cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -425,6 +430,7 @@ impl AgentSessionRuntime {
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            session_start_event: None,
             cwd: self.cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -554,6 +560,7 @@ impl AgentSessionRuntime {
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            session_start_event: None,
             cwd: session_manager.get_cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,
@@ -630,6 +637,7 @@ impl AgentSessionRuntime {
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
+            session_start_event: None,
             cwd: session_manager.get_cwd().to_string(),
             agent_dir: self.services.agent_dir.clone(),
             session_manager,

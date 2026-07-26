@@ -130,6 +130,7 @@ pub struct SendUserMessageOptions {
 }
 
 /// Options for prompt(), matching TS PromptOptions interface.
+#[derive(Default)]
 pub struct PromptOptions {
     /// Whether to expand file-based prompt templates (default: true).
     pub expand_prompt_templates: Option<bool>,
@@ -316,7 +317,9 @@ pub enum AgentSessionEvent {
 }
 
 /// Listener function for agent session events.
-pub type AgentSessionEventListener = Arc<dyn Fn(AgentSessionEvent) + Send + Sync>;
+pub type AgentSessionEventListener = Arc<
+    dyn Fn(AgentSessionEvent) + Send + Sync,
+>;
 
 /// Handle returned by [`AgentSession::subscribe_session_events`].
 /// Call `unsubscribe()` to stop receiving events.
@@ -906,6 +909,7 @@ impl AgentSession {
             .as_ref()
             .map(std::sync::Arc::clone);
 
+
         let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
@@ -1024,6 +1028,9 @@ impl AgentSession {
         let _inner_is_active = session.is_agent_run_active.clone();
         let _inner_idle = session.idle_notify.clone();
         let inner_ext_ctx = shared_ext_ctx.clone();
+        let inner_agent = session.agent.clone();
+        let turn_index: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(0));
+
 
         let internal_listener: Arc<
             dyn Fn(
@@ -1046,6 +1053,9 @@ impl AgentSession {
             let _overflow = _inner_overflow.clone();
             let _is_active = _inner_is_active.clone();
             let _idle = _inner_idle.clone();
+            let agent = inner_agent.clone();
+            let turn_index = turn_index.clone();
+
             Box::pin(async move {
                 // ── 1. Handle queue updates and state resets ──
                 // Reset overflow recovery on any new user message (matching TS)
@@ -1067,39 +1077,54 @@ impl AgentSession {
                             .join("");
                         if !message_text.is_empty() {
                             // Check steering queue first
-                            let mut steer = steering.lock().unwrap();
-                            let steer_idx = steer.iter().position(|m| m == &message_text);
-                            if let Some(idx) = steer_idx {
-                                steer.remove(idx);
-                                // Emit queue update
-                                let follow = follow_up.lock().unwrap();
-                                let evt = AgentSessionEvent::QueueUpdate {
-                                    steering: steer.clone(),
-                                    follow_up: follow.clone(),
-                                };
-                                drop(steer);
-                                drop(follow);
-                                let l = listeners.lock().unwrap();
-                                for listener in l.iter() {
-                                    listener(evt.clone());
-                                }
-                            } else {
-                                drop(steer);
-                                // Check follow-up queue
-                                let mut follow = follow_up.lock().unwrap();
-                                let follow_idx = follow.iter().position(|m| m == &message_text);
-                                if let Some(idx) = follow_idx {
-                                    follow.remove(idx);
-                                    // Emit queue update
-                                    let steer = steering.lock().unwrap();
+                            let (steer_idx, evt) = {
+                                let mut steer = steering.lock().unwrap();
+                                let idx = steer.iter().position(|m| m == &message_text);
+                                if let Some(idx) = idx {
+                                    steer.remove(idx);
+                                    let follow = follow_up.lock().unwrap();
                                     let evt = AgentSessionEvent::QueueUpdate {
                                         steering: steer.clone(),
                                         follow_up: follow.clone(),
                                     };
-                                    drop(steer);
-                                    drop(follow);
+                                    (Some(idx), evt)
+                                } else {
+                                    (None, AgentSessionEvent::QueueUpdate {
+                                        steering: steer.clone(),
+                                        follow_up: follow_up.lock().unwrap().clone(),
+                                    })
+                                }
+                            };
+                            if steer_idx.is_some() {
+                                let batch: Vec<_> = {
                                     let l = listeners.lock().unwrap();
-                                    for listener in l.iter() {
+                                    l.iter().cloned().collect()
+                                };
+                                for listener in batch {
+                                    listener(evt.clone());
+                                }
+                            } else {
+                                // Check follow-up queue
+                                let evt = {
+                                    let mut follow = follow_up.lock().unwrap();
+                                    let follow_idx = follow.iter().position(|m| m == &message_text);
+                                    if let Some(idx) = follow_idx {
+                                        follow.remove(idx);
+                                        let steer = steering.lock().unwrap();
+                                        Some(AgentSessionEvent::QueueUpdate {
+                                            steering: steer.clone(),
+                                            follow_up: follow.clone(),
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(evt) = evt {
+                                    let batch: Vec<_> = {
+                                        let l = listeners.lock().unwrap();
+                                        l.iter().cloned().collect()
+                                    };
+                                    for listener in batch {
                                         listener(evt.clone());
                                     }
                                 }
@@ -1108,12 +1133,12 @@ impl AgentSession {
                     }
                 }
 
-                // ── 2. Emit to extensions ──
                 // ── 2. Emit to extensions via HookRunner ──
                 if let Some(ref registry) = reg {
                     let hr = registry.hook_runner();
                     match &event {
                         AgentEvent::AgentStart => {
+                            *turn_index.lock().unwrap() = 0;
                             hr.fire_agent_start().await;
                         }
                         AgentEvent::AgentEnd { messages } => {
@@ -1124,18 +1149,21 @@ impl AgentSession {
                             hr.fire_agent_end(&msgs).await;
                         }
                         AgentEvent::TurnStart => {
-                            hr.fire_turn_start().await;
+                            let ti = *turn_index.lock().unwrap();
+                            hr.fire_turn_start(ti).await;
                         }
                         AgentEvent::TurnEnd {
                             message,
                             tool_results,
                         } => {
+                            let ti = *turn_index.lock().unwrap();
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             let tr_val: Vec<serde_json::Value> = tool_results
                                 .iter()
                                 .map(|tr| serde_json::to_value(tr).unwrap_or_default())
                                 .collect();
-                            hr.fire_turn_end(&msg_val, &tr_val).await;
+                            hr.fire_turn_end(ti, &msg_val, &tr_val).await;
+                            *turn_index.lock().unwrap() += 1;
                         }
                         AgentEvent::MessageStart { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
@@ -1151,9 +1179,25 @@ impl AgentSession {
                             hr.fire_message_end(&msg_val).await;
                             // Run modifying hook to allow extensions to modify the message
                             if let Some(ref registry) = reg {
-                                let _ = crate::core::extensions::dispatcher::dispatch_message_end(
+                                if let Some(mut replacement_val) = crate::core::extensions::dispatcher::dispatch_message_end(
                                     registry, &msg_val, &ext_ctx,
-                                ).await;
+                                ).await {
+                                    // Normalize null content to empty array, matching TS behavior:
+                                    // extension handlers can return messages with null/missing content;
+                                    // normalize so it never enters agent state or session history.
+                                    if let Some(role) = replacement_val.get("role").and_then(|r| r.as_str()) {
+                                        let needs_normalize = matches!(role, "user" | "assistant" | "toolResult" | "custom")
+                                            && replacement_val.get("content").map(|c| c.is_null()).unwrap_or(false);
+                                        if needs_normalize {
+                                            if let Some(obj) = replacement_val.as_object_mut() {
+                                                obj.insert("content".to_string(), serde_json::Value::Array(Vec::new()));
+                                            }
+                                        }
+                                    }
+                                    if let Ok(replacement_msg) = serde_json::from_value::<pi_agent_core::types::AgentMessage>(replacement_val) {
+                                        agent.replace_last_message(replacement_msg).await;
+                                    }
+                                }
                             }
                         }
                         AgentEvent::ToolExecutionStart {
@@ -1336,51 +1380,80 @@ impl AgentSession {
                     },
                 };
                 {
-                    let l = listeners.lock().unwrap();
-                    for listener in l.iter() {
+                    let batch: Vec<_> = {
+                        let l = listeners.lock().unwrap();
+                        l.iter().cloned().collect::<Vec<_>>()
+                    };
+                    for listener in batch {
                         listener(session_event.clone());
                     }
                 }
 
                 // ── 4. Handle session persistence ──
-                if let AgentEvent::MessageEnd { ref message } = event {
-                    match message {
-                        AgentMessage::Custom {
-                            custom_type,
-                            content,
-                            display,
-                            details,
-                            ..
-                        } => {
-                            let content_json =
-                                serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
-                            if let Ok(mut mgr) = sm.lock() {
-                                mgr.append_custom_message_entry(
-                                    custom_type,
-                                    content_json,
-                                    *display,
-                                    details.clone(),
-                                );
+                // NOTE: We re-read the last message from agent state rather than
+                // using event.message directly. This matches TS _replaceMessageInPlace
+                // semantics: extensions may modify the message in step 2 via
+                // agent.replace_last_message(), and persistence must use the
+                // replacement, not the original event reference.
+                if let AgentEvent::MessageEnd { .. } = event {
+                    let state = agent.state().await;
+                    let persist_msg = state.messages.last().cloned();
+                    if let Some(ref message) = persist_msg {
+                        match message {
+                            AgentMessage::Custom {
+                                custom_type,
+                                content,
+                                display,
+                                details,
+                                ..
+                            } => {
+                                let content_json =
+                                    serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
+                                if let Ok(mut mgr) = sm.lock() {
+                                    mgr.append_custom_message_entry(
+                                        custom_type,
+                                        content_json,
+                                        *display,
+                                        details.clone(),
+                                    );
+                                }
                             }
-                        }
-                        AgentMessage::User { .. }
-                        | AgentMessage::Assistant { .. }
-                        | AgentMessage::ToolResult { .. } => {
-                            let msg_value =
-                                serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
-                            if let Ok(mut mgr) = sm.lock() {
-                                mgr.append_message(msg_value);
+                            AgentMessage::User { .. }
+                            | AgentMessage::Assistant { .. }
+                            | AgentMessage::ToolResult { .. } => {
+                                let msg_value =
+                                    serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
+                                if let Ok(mut mgr) = sm.lock() {
+                                    mgr.append_message(msg_value);
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    }
 
-                    // Track assistant message for auto-compaction
-                    if let AgentMessage::Assistant { stop_reason, .. } = message {
-                        *last_assistant.lock().unwrap() = Some(message.clone());
-                        // Reset overflow recovery on successful assistant response (matching TS)
-                        if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
-                            *_overflow.lock().unwrap() = false;
+                        // Track assistant message for auto-compaction
+                        if let AgentMessage::Assistant { stop_reason, .. } = message {
+                            *last_assistant.lock().unwrap() = Some(message.clone());
+                            // Reset overflow recovery and emit auto_retry_end on successful
+                            // assistant response (matching TS _handleAgentEvent)
+                            if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+                                *_overflow.lock().unwrap() = false;
+                                let retry = *_retry.lock().unwrap();
+                                if retry > 0 {
+                                    let evt = AgentSessionEvent::AutoRetryEnd {
+                                        success: true,
+                                        attempt: retry,
+                                        final_error: None,
+                                    };
+                                    let batch: Vec<_> = {
+                                        let l = listeners.lock().unwrap();
+                                        l.iter().cloned().collect()
+                                    };
+                                    for listener in &batch {
+                                        listener(evt.clone());
+                                    }
+                                    *_retry.lock().unwrap() = 0;
+                                }
+                            }
                         }
                     }
                 }
@@ -1389,7 +1462,6 @@ impl AgentSession {
 
         let _subscription_handle = session.agent.subscribe(internal_listener).await;
         session._agent_subscription = Some(_subscription_handle);
-
 
         session
     }
@@ -1701,6 +1773,7 @@ impl AgentSession {
                 registry,
                 "startup",
                 &self.ext_ctx,
+                None,
             )
             .await;
         }
@@ -1899,16 +1972,115 @@ impl AgentSession {
     ///
     /// After the agent finishes, runs the post-agent-run loop (retry + compaction),
     /// matching TS _runAgentPrompt() + _handlePostAgentRun().
-    pub async fn prompt(&self, text: &str, _options: Option<PromptOptions>) {
+    pub async fn prompt(&self, text: &str, options: Option<PromptOptions>) {
         // Refresh session state before starting the next turn
         if let Err(e) = self.session_manager.lock().unwrap().refresh_config().await {
             eprintln!("[pi] Failed to refresh session state before next turn: {e}");
         }
-        // Extension host commands are no longer needed — the old V8-based
-        // ExtensionRuntime used drain_host_commands() to process pending ops
-        // from the JS thread. Rust native extensions call session methods
-        // directly via the ExtensionContext.
-        self.add_user_text(text).await;
+
+        let opts = options.unwrap_or_default();
+        let expand_templates = opts.expand_prompt_templates.unwrap_or(true);
+        let source = opts.source.as_deref().unwrap_or("interactive");
+
+        // Handle extension commands first (execute immediately, even during streaming),
+        // matching TS prompt() which calls _tryExecuteExtensionCommand(text).
+        if expand_templates && text.starts_with("/") {
+            if self._try_execute_extension_command(text).await {
+                return;
+            }
+        }
+
+        // Emit input event for extension interception (before skill/template expansion),
+        // matching TS prompt() which emits input event before expansion.
+        let (current_text, current_images) = if let Some(ref registry) = self.extension_registry {
+            match crate::core::extensions::dispatcher::dispatch_input(
+                crate::core::extensions::dispatcher::DispatchInputParams {
+                    registry,
+                    text,
+                    source,
+                    images: opts.images.as_deref(),
+                    streaming_behavior: opts.streaming_behavior.as_deref(),
+                    ext_ctx: &self.ext_ctx,
+                },
+            )
+            .await
+            {
+                crate::core::extensions::dispatcher::InputEventResult::Handled => return,
+                crate::core::extensions::dispatcher::InputEventResult::Continue {
+                    text: t,
+                    images,
+                } => (t, images),
+            }
+        } else {
+            (text.to_string(), opts.images.clone())
+        };
+
+        // Expand skill commands (/skill:name args) and prompt templates (/template args),
+        // matching TS _expandSkillCommand() and expandPromptTemplate().
+        let expanded_text = if expand_templates {
+            let mut t = current_text;
+            t = self._expand_skill_command(&t);
+            // Prompt template expansion is not yet implemented in Rust.
+            // TS expandPromptTemplate() expands /template_name args to template content.
+            // t = expand_prompt_template(&t, &self.prompt_templates());
+            t
+        } else {
+            current_text
+        };
+
+        // If streaming, queue via steer() or followUp() based on streamingBehavior option,
+        // matching TS prompt() which checks isStreaming.
+        if self.is_streaming().await {
+            let behavior = opts.streaming_behavior.as_deref().unwrap_or("steer");
+            if behavior == "follow_up" || behavior == "followUp" {
+                self.follow_up(&expanded_text, current_images).await;
+            } else {
+                self.steer(&expanded_text, current_images).await;
+            }
+            return;
+        }
+
+        // Flush any pending bash messages before the new prompt,
+        // matching TS _flushPendingBashMessages().
+        self._flush_pending_bash_messages().await;
+
+        // Validate model and auth before sending,
+        // matching TS prompt() which checks model and auth.
+        let state = self.agent.state().await;
+        if state.model.id.is_empty() {
+            eprintln!("[pi] No model selected. Use /model to select a model.");
+            return;
+        }
+        let auth_result = self.model_registry.get_api_key_and_headers(&state.model).await;
+        match auth_result {
+            Ok(r) if !r.ok => {
+                eprintln!("[pi] No API key configured for provider '{}'. Set the appropriate environment variable or configure it via /login.", state.model.provider);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[pi] Auth check failed: {e}");
+                return;
+            }
+            _ => {}
+        }
+        drop(state);
+
+        // Check if we need to compact before sending (catches aborted responses),
+        // matching TS prompt() which calls _checkCompaction(lastAssistant, false).
+        let msgs = self.agent.messages().await;
+        if let Some(last) = msgs.last() {
+            if matches!(last, AgentMessage::Assistant { .. }) {
+                self._check_compaction(last, false).await;
+            }
+        }
+
+        // Send the prompt with pending next-turn messages injected as context,
+        // matching TS prompt() which injects _pendingNextTurnMessages.
+        self.add_user_text_with_options(
+            &expanded_text,
+            current_images,
+            source,
+        ).await;
 
         // Post-agent-run loop: retry + compaction + queued messages
         // Matches TS _runAgentPrompt() which calls _handlePostAgentRun() in a loop.
@@ -1960,12 +2132,161 @@ impl AgentSession {
         }
 
         // Check compaction
-        if self._check_compaction(&msg).await {
+        if self._check_compaction(&msg, true).await {
             return true;
         }
 
         // Check queued messages
         self.agent.has_queued_messages().await
+    }
+
+    /// Try to execute an extension command, matching TS _tryExecuteExtensionCommand().
+    /// Returns true if the text was handled as an extension command.
+    async fn _try_execute_extension_command(&self, text: &str) -> bool {
+        if !text.starts_with("/") {
+            return false;
+        }
+        let space_idx = text.find(' ');
+        let command_name = if let Some(idx) = space_idx {
+            &text[1..idx]
+        } else {
+            &text[1..]
+        };
+        let args = if let Some(idx) = space_idx {
+            &text[idx + 1..]
+        } else {
+            ""
+        };
+
+        // Look up the command in the extension registry
+        if let Some(ref registry) = self.extension_registry {
+            let commands = registry.commands();
+            if let Some(cmd) = commands.iter().find(|c| c.name == command_name) {
+                (cmd.execute)(args.to_string()).await;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Expand skill commands (/skill:name args) to their full content, matching TS _expandSkillCommand().
+    /// Returns the expanded text, or the original text if not a skill command or skill not found.
+    fn _expand_skill_command(&self, text: &str) -> String {
+        if !text.starts_with("/skill:") {
+            return text.to_string();
+        }
+
+        let space_idx = text.find(' ');
+        let skill_name = if let Some(idx) = space_idx {
+            &text[7..idx]
+        } else {
+            &text[7..]
+        };
+        let args = if let Some(idx) = space_idx {
+            text[idx + 1..].trim()
+        } else {
+            ""
+        };
+
+        // Look up the skill in the resource loader
+        let skills = self.resources.as_ref().map(|r| &r.skills[..]).unwrap_or(&[]);
+        if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
+            match std::fs::read_to_string(&skill.file_path) {
+                Ok(content) => {
+                    let body = crate::utils::frontmatter::strip_frontmatter(&content).trim().to_string();
+                    let skill_block = format!(
+                        r#"<skill name="{}" location="{}">
+References are relative to {}.
+
+{}
+</skill>"#,
+                        skill.name, skill.file_path, skill.base_dir, body
+                    );
+                    if args.is_empty() {
+                        skill_block
+                    } else {
+                        format!("{}
+
+{}", skill_block, args)
+                    }
+                }
+                Err(_) => text.to_string(),
+            }
+        } else {
+            text.to_string()
+        }
+    }
+
+    /// Flush pending bash messages into agent state, matching TS _flushPendingBashMessages().
+    async fn _flush_pending_bash_messages(&self) {
+        let messages: Vec<serde_json::Value> = std::mem::take(&mut *self.pending_bash_messages.lock().unwrap());
+        if messages.is_empty() {
+            return;
+        }
+        for msg_value in &messages {
+            if let Ok(agent_msg) = serde_json::from_value::<AgentMessage>(msg_value.clone()) {
+                let mut state = self.agent.state().await;
+                state.messages.push(agent_msg);
+                // Note: session persistence is handled by the agent event handler
+            }
+        }
+    }
+
+    /// Send a prompt with options and inject pending next-turn messages as context,
+    /// matching TS prompt() which injects _pendingNextTurnMessages alongside the user message.
+    async fn add_user_text_with_options(
+        &self,
+        text: &str,
+        images: Option<Vec<ContentBlock>>,
+        _source: &str,
+    ) {
+        *self.is_agent_run_active.lock().unwrap() = true;
+
+        // Dispatch before_agent_start to extensions before the agent loop starts.
+        // Extensions can cancel the agent start or modify the system prompt.
+        if let Some(ref registry) = self.extension_registry {
+            let state = self.agent.state().await;
+            let images_ref = images.as_deref();
+            let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
+                crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
+                    registry,
+                    system_prompt: &state.system_prompt,
+                    messages: &state.messages,
+                    images: images_ref,
+                    system_prompt_options: None,
+                    ext_ctx: &self.ext_ctx,
+                },
+            )
+            .await;
+            if result.cancelled {
+                *self.is_agent_run_active.lock().unwrap() = false;
+                return;
+            }
+            // Apply the modified system prompt from extensions
+            if result.system_prompt != state.system_prompt {
+                self.agent.set_system_prompt(result.system_prompt).await;
+            }
+        }
+
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let mut content = vec![ContentBlock::text(text)];
+        if let Some(images) = images {
+            content.extend(images);
+        }
+
+        // Build messages array: user message + pending next-turn messages as context
+        let mut messages = vec![AgentMessage::User { content, timestamp }];
+
+        // Inject any pending "nextTurn" messages as context alongside the user message,
+        // matching TS prompt() which injects _pendingNextTurnMessages.
+        let pending = std::mem::take(&mut *self.pending_next_turn_messages.lock().unwrap());
+        messages.extend(pending);
+
+        // User message is persisted by the event subscriber on MessageEnd
+        if let Ok(mut mgr) = self.session_manager.lock() {
+            mgr.set_run_prompt(text);
+        }
+        self.agent.process(messages).await.ok();
     }
 
     /// Check if an assistant message has a retryable error.
@@ -2006,10 +2327,11 @@ impl AgentSession {
             return false;
         }
 
-        // Read retry settings from settings manager
-        // For now, use defaults matching TS: enabled=true, maxRetries=3, baseDelayMs=1000
-        let max_retries = 3u32;
-        let base_delay_ms = 1000u64;
+        // Read retry settings from settings manager, matching TS settingsManager.getRetrySettings()
+        let retry_settings = self.settings_manager.lock().unwrap().get_retry_settings();
+        let max_retries = retry_settings.max_retries.unwrap_or(3);
+        let base_delay_ms = retry_settings.base_delay_ms.unwrap_or(2000);
+
 
         let mut retry = self.retry_attempt.lock().unwrap();
         *retry += 1;
@@ -2035,6 +2357,16 @@ impl AgentSession {
             error_message: error_message.clone(),
         });
 
+
+        // Remove error message from agent state (keep in session for history),
+        // matching TS _prepareRetry().
+        let msgs = self.agent.messages().await;
+        if msgs.last().map(|m| m.role()) == Some("assistant") {
+            let mut truncated = msgs;
+            truncated.pop();
+            self.agent.set_initial_messages(truncated).await;
+        }
+
         // Create abort controller for retry backoff, matching TS `this._retryAbortController = new AbortController()`
         let (tx, mut rx) = tokio::sync::watch::channel(false);
         *self.retry_abort.lock().unwrap() = Some(tx);
@@ -2056,17 +2388,114 @@ impl AgentSession {
         true
     }
 
+
     /// Check if compaction is needed and run it.
     /// Called after agent_end and before prompt submission.
     /// Matches TS _checkCompaction().
-    async fn _check_compaction(&self, assistant_message: &AgentMessage) -> bool {
-        if let AgentMessage::Assistant { stop_reason, .. } = assistant_message {
-            // Skip if message was aborted (user cancelled)
-            if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted) {
+    async fn _check_compaction(&self, assistant_message: &AgentMessage, skip_aborted_check: bool) -> bool {
+        // Check compaction settings
+        if !self.compaction_settings.compact_on_threshold {
+            return false;
+        }
+
+        if let AgentMessage::Assistant {
+            stop_reason,
+            provider,
+            model,
+            error_message,
+            ..
+        } = assistant_message
+        {
+            // Skip if message was aborted (user cancelled) - unless skip_aborted_check is false
+            if skip_aborted_check && stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted) {
                 return false;
+            }
+
+            // Skip overflow check if the message came from a different model.
+            // This handles the case where user switched from a smaller-context model
+            // to a larger-context model - the overflow error from the old model
+            // should not trigger compaction for the new model.
+            let state = self.agent.state().await;
+            let same_model = state.model.provider == *provider && state.model.id == *model;
+
+            // Skip compaction checks if this assistant message is older than the latest
+            // compaction boundary. This prevents a stale pre-compaction usage/error
+            // from retriggering compaction on the first prompt after compaction.
+            let branch_entries = self.session_manager.lock().unwrap().get_branch(None);
+            let latest_compaction_ts = branch_entries.iter().rev().find_map(|e| {
+                if let crate::core::session_manager::SessionEntry::Compaction { timestamp, .. } = e {
+                    Some(timestamp.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(ref compaction_ts) = latest_compaction_ts {
+                if let AgentMessage::Assistant { timestamp: msg_ts, .. } = assistant_message {
+                    if *msg_ts as f64 <= compaction_ts.parse::<f64>().unwrap_or(0.0) {
+                        return false;
+                    }
+                }
+            }
+
+            if same_model {
+                let context_window = state.model.context_window;
+                // Check for context overflow
+                if context_window > 0 {
+                    use pi_agent_core::pi_ai_types::StopReason;
+                    let is_overflow = match stop_reason {
+                        Some(StopReason::Error) => {
+                            if let Some(ref err_msg) = error_message {
+                                let err_lower = err_msg.to_lowercase();
+                                err_lower.contains("context") && err_lower.contains("overflow")
+                                    || err_lower.contains("context_length")
+                                    || err_lower.contains("prompt is too long")
+                                    || err_lower.contains("exceeds.*context.*window")
+                                    || err_lower.contains("maximum.*context.*length")
+                                    || err_lower.contains("token.*count.*exceeds")
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+
+                    if is_overflow {
+                        let will_retry = stop_reason != &Some(StopReason::Stop);
+
+                        if !will_retry {
+                            return self._run_auto_compaction("overflow", false).await;
+                        }
+
+                        if *self.overflow_recovery_attempted.lock().unwrap() {
+                            self._emit(AgentSessionEvent::CompactionEnd {
+                                reason: CompactionReason::Overflow,
+                                result: None,
+                                aborted: false,
+                                will_retry: false,
+                                error_message: Some(
+                                    "Context overflow recovery failed after one compact-and-retry attempt. \
+                                     Try reducing context or switching to a larger-context model."
+                                        .to_string(),
+                                ),
+                            });
+                            return false;
+                        }
+
+                        *self.overflow_recovery_attempted.lock().unwrap() = true;
+                        // Remove the error message from agent state
+                        let msgs = self.agent.messages().await;
+                        if msgs.last().map(|m| m.role()) == Some("assistant") {
+                            let mut truncated = msgs;
+                            truncated.pop();
+                            self.agent.set_initial_messages(truncated).await;
+                        }
+                        return self._run_auto_compaction("overflow", will_retry).await;
+                    }
+                }
             }
         }
 
+        // Threshold-based compaction
         let total_tokens = self.check_auto_compact().await;
         if total_tokens {
             return self._run_auto_compaction("threshold", false).await;
@@ -2074,6 +2503,7 @@ impl AgentSession {
 
         false
     }
+
 
     /// Run auto-compaction with events.
     /// Matches TS _runAutoCompaction().
@@ -2510,9 +2940,11 @@ impl AgentSession {
     pub async fn check_auto_compact(&self) -> bool {
         use crate::core::compaction;
 
-        let messages = self.agent.state().await.messages;
+        let state = self.agent.state().await;
+        let messages = state.messages;
         let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
-        let context_window = 128_000;
+        let context_window = state.model.context_window.max(1);
+
 
         compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
     }
@@ -2541,9 +2973,11 @@ impl AgentSession {
             }
         }
 
-        let messages = self.agent.state().await.messages;
+        let state = self.agent.state().await;
+        let messages = state.messages;
         let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
-        let context_window = 128_000;
+        let context_window = state.model.context_window.max(1);
+
 
         if !compaction::should_compact(total_tokens, context_window, &self.compaction_settings) {
             return Err("Compaction not needed".to_string());
@@ -2876,8 +3310,11 @@ impl AgentSession {
     /// Emit an event to all registered session event listeners.
     #[allow(clippy::empty_line_after_doc_comments)]
     fn _emit(&self, event: AgentSessionEvent) {
-        let listeners = self.event_listeners.lock().unwrap();
-        for listener in listeners.iter() {
+        let batch = {
+            let listeners = self.event_listeners.lock().unwrap();
+            listeners.iter().cloned().collect::<Vec<_>>()
+        };
+        for listener in batch {
             listener(event.clone());
         }
     }
@@ -3654,48 +4091,52 @@ impl AgentSession {
         }
     }
 
-    pub async fn subscribe(
+    pub fn subscribe(
         &self,
-        listener: Arc<
-            dyn Fn(
-                    AgentEvent,
-                    Option<tokio::sync::watch::Receiver<bool>>,
-                )
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                + Send
-                + Sync,
-        >,
-    ) -> pi_agent_core::agent::UnsubscribeHandle {
-        self.agent.subscribe(listener).await
+        listener: AgentSessionEventListener,
+    ) -> SessionEventUnsubscribeHandle {
+        let mut listeners = self.event_listeners.lock().unwrap();
+        let index = listeners.len();
+        listeners.push(listener);
+        SessionEventUnsubscribeHandle {
+            listeners: self.event_listeners.clone(),
+            index,
+        }
     }
 
-    /// Subscribe to raw agent events (AgentEvent).
-    /// For session-level events (AgentSessionEvent), use subscribe_session_events().
-    /// Returns a handle that can be used to unsubscribe the listener.
+    /// Subscribe to session-level events (AgentSessionEvent).
+    /// This is the primary way to receive events from the session.
+    /// For raw agent events (AgentEvent), use get_agent().subscribe().
     /// Dispose the session, dispatching session_shutdown to extensions.
     ///
     /// Note: When used through AgentSessionRuntime, the session_shutdown event
     /// is dispatched by the Runtime's teardown_current BEFORE dispose() is
     /// called, so there is no double-dispatch. When called directly (e.g. from
     /// RPC handler or interactive mode), this method dispatches the event.
-    pub async fn dispose(mut self) {
+    pub async fn dispose(&mut self) {
+        // Abort all in-flight operations (matching TS dispose() which calls
+        // abortRetry, abortCompaction, abortBranchSummary, abortBash, agent.abort)
+        // Wrapped to match TS try-catch — dispose must succeed even if an abort throws.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.abort_retry();
+            self.abort_compaction();
+            self.abort_branch_summary();
+            self.abort_bash();
+        }));
+        // agent.abort() is async, so we can't use catch_unwind; just call it
+        // and ignore errors.
+        self.agent.abort().await;
+
         // Disconnect from agent (matching TS _disconnectFromAgent)
         if let Some(handle) = self._agent_subscription.take() {
             handle.unsubscribe().await;
         }
         // Clear event listeners (matching TS _eventListeners = [])
         self.event_listeners.lock().unwrap().clear();
-        // Dispatch session_shutdown to extensions so they can flush state
-        // and close connections before the session is destroyed.
-        if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_session_shutdown(
-                registry,
-                "quit",
-                &self.ext_ctx,
-            )
-            .await;
-        }
-        // ExtensionRegistry is just a container of trait objects — no V8 thread
-        // to stop. Drop is sufficient for cleanup.
+        // Clean up session-scoped resources (matching TS cleanupSessionResources)
+        // NOTE: cleanup_session_resources is not called here because pi-ai is not a direct dependency.
+        // NOTE: session_shutdown is NOT dispatched here — it is dispatched by
+        // AgentSessionRuntime::teardown_current() before dispose() is called.
+        // Dispatching it again would be a double-dispatch bug.
     }
 }

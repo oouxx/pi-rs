@@ -58,7 +58,7 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
                 }
             } => {}
         }
-        if let Some(session) = signal_session.lock().await.take() {
+        if let Some(mut session) = signal_session.lock().await.take() {
             session.dispose().await;
         }
         std::process::exit(1);
@@ -150,7 +150,7 @@ async fn run_text_mode(
         })
     });
 
-    session.subscribe(listener).await;
+    session.get_agent().subscribe(listener).await;
 
     // Send the first message (with images if provided)
     if images.is_empty() {
@@ -238,7 +238,7 @@ async fn run_json_mode(
         })
     });
 
-    session.subscribe(listener).await;
+    session.get_agent().subscribe(listener).await;
 
     // Send the first message (with images if provided)
     if images.is_empty() {
@@ -300,7 +300,7 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
         })
     });
 
-    session.subscribe(listener).await;
+    session.get_agent().subscribe(listener).await;
     session.add_user_text(message).await;
     session.wait_for_idle().await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

@@ -255,16 +255,16 @@ impl AgentSessionRuntime {
     }
 
     /// Tear down the current session: emit shutdown, invalidate extension
-    /// context, and call before_invalidate.
+    /// context, call before_invalidate, and dispose the session.
     ///
-    /// The old session is NOT disposed here — it will be dropped when `apply()`
-    /// replaces it with the new session. The `session_shutdown` event is
-    /// dispatched so extensions can perform cleanup before the session is
-    /// replaced.
-    async fn teardown_current(&mut self, reason: &str) {
-        // Emit session_shutdown to extensions
+    /// The `session_shutdown` event is dispatched so extensions can perform
+    /// cleanup before the session is replaced. After shutdown handlers finish,
+    /// the session is disposed (abort controllers, agent subscription, bash
+    /// cleanup), matching TS teardownCurrent().
+    async fn teardown_current(&mut self, reason: &str, target_session_file: Option<&str>) {
+        // Emit session_shutdown to extensions (matching TS emitSessionShutdownEvent)
         if let Some(ref registry) = self.session.get_extension_registry() {
-            registry.hook_runner().fire_session_shutdown(reason, None).await;
+            registry.hook_runner().fire_session_shutdown(reason, target_session_file).await;
         }
 
         // Invalidate the extension context so any captured references
@@ -275,6 +275,10 @@ impl AgentSessionRuntime {
         if let Some(ref invalidate) = self.before_session_invalidate {
             invalidate();
         }
+
+        // Dispose the session (abort controllers, agent subscription, bash cleanup),
+        // matching TS teardownCurrent() which calls this.session.dispose().
+        self.session.dispose().await;
     }
 
     /// Apply a new runtime result, replacing the current session and services.
@@ -286,9 +290,24 @@ impl AgentSessionRuntime {
     }
 
     /// Finish session replacement: call rebind_session.
-    async fn finish_session_replacement(&self) {
+    async fn finish_session_replacement(
+        &self,
+        with_session: Option<
+            Box<
+                dyn Fn(
+                        crate::core::agent_session::ReplacedSessionContext,
+                    )
+                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+                >,
+        >,
+    ) {
         if let Some(ref rebind) = self.rebind_session {
             rebind(&self.session).await;
+        }
+        if let Some(ref with_session) = with_session {
+            with_session(self.session.create_replaced_session_context()).await;
         }
     }
 
@@ -305,6 +324,16 @@ impl AgentSessionRuntime {
         &mut self,
         session_path: &str,
         cwd_override: Option<&str>,
+        with_session: Option<
+            Box<
+                dyn Fn(
+                        crate::core::agent_session::ReplacedSessionContext,
+                    )
+                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+                >,
+        >,
     ) -> Result<bool, String> {
         // Validate the target session file exists and is a valid session file
         let path = std::path::Path::new(session_path);
@@ -333,17 +362,14 @@ impl AgentSessionRuntime {
             None,
         );
 
-        // Validate session cwd exists
-        let session_cwd = session_manager.get_cwd().to_string();
-        if !session_cwd.is_empty() && !std::path::Path::new(&session_cwd).exists() {
-            return Err(format!(
-                "Stored session working directory does not exist: {}",
-                session_cwd
-            ));
-        }
+        // Validate session cwd exists (matching TS assertSessionCwdExists)
+        crate::core::session_cwd::assert_session_cwd_exists(&session_manager, self.cwd())
+            .map_err(|e| e.to_string())?;
 
-        // Teardown current session
-        self.teardown_current("resume").await;
+        // Teardown current session, passing the target session file
+        let target_file = session_manager.get_session_file()
+            .and_then(|p| p.to_str());
+        self.teardown_current("resume", target_file).await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -356,8 +382,8 @@ impl AgentSessionRuntime {
         // Apply new state
         self.apply(result);
 
-        // Finish replacement
-        self.finish_session_replacement().await;
+        // Finish replacement with with_session callback
+        self.finish_session_replacement(with_session).await;
 
         Ok(true)
     }
@@ -394,8 +420,8 @@ impl AgentSessionRuntime {
             new_session_opts,
         );
 
-        // Teardown current session
-        self.teardown_current("new").await;
+        // Teardown current session (no target session file for new sessions)
+        self.teardown_current("new", None).await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -409,7 +435,7 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement().await;
+        self.finish_session_replacement(None).await;
 
         Ok(true)
     }
@@ -455,40 +481,76 @@ impl AgentSessionRuntime {
 
         let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
 
-        // Create the forked session
-        let session_manager = if let Some(ref leaf_id) = target_leaf_id {
-            // Create a branched session from the target leaf.
-            // For both persisted and in-memory sessions, we use
-            // create_branched_session which copies entries up to the
-            // target leaf into a new session file.
-            let cwd = self.cwd().to_string();
-            let branch_path = {
-                let mut mgr = self.session.get_session_manager();
-                mgr.create_branched_session(leaf_id, None)?
-            };
-            SessionManager::new(
-                &cwd,
-                &session_dir,
-                Some(&branch_path),
-                true,
-                None,
-            )
+        // Create the forked session, matching TS fork() which has three branches:
+        // 1. Persisted session, no target leaf -> SessionManager.create() + newSession({ parentSession })
+        // 2. Persisted session, with target leaf -> SessionManager.open() + createBranchedSession()
+        // 3. In-memory session -> use this.session.sessionManager directly
+        let is_persisted = self.session.get_session_manager().is_persisted();
+        let session_manager = if is_persisted {
+            let current_session_file = self.session.get_session_file()
+                .map(|p| p.to_string_lossy().to_string())
+                .ok_or_else(|| "Persisted session is missing a session file".to_string())?;
+
+            if let Some(ref leaf_id) = target_leaf_id {
+                // Branch 2: Persisted, with target leaf
+                // Open the current session file and create a branched session
+                let mut mgr = SessionManager::open(&current_session_file, Some(&session_dir), None);
+                let branch_path = mgr.create_branched_session(leaf_id, None)?;
+                SessionManager::new(
+                    self.cwd(),
+                    &session_dir,
+                    Some(&branch_path),
+                    true,
+                    None,
+                )
+            } else {
+                // Branch 1: Persisted, no target leaf
+                // Create a fresh session with parent session reference
+                SessionManager::new(
+                    self.cwd(),
+                    &session_dir,
+                    None,
+                    true,
+                    Some(crate::core::session_manager::NewSessionOptions {
+                        id: None,
+                        parent_session: Some(current_session_file),
+                    }),
+                )
+            }
         } else {
-            // No target leaf: create a fresh session
-            SessionManager::new(
-                self.cwd(),
-                &session_dir,
-                None,
-                true,
-                Some(crate::core::session_manager::NewSessionOptions {
-                    id: None,
-                    parent_session: None,
-                }),
-            )
+            // Branch 3: In-memory session
+            if let Some(ref leaf_id) = target_leaf_id {
+                let branch_path = {
+                    let mut mgr = self.session.get_session_manager();
+                    mgr.create_branched_session(leaf_id, None)?
+                };
+                SessionManager::new(
+                    self.cwd(),
+                    &session_dir,
+                    Some(&branch_path),
+                    false,
+                    None,
+                )
+            } else {
+                let session_file = self.session.get_session_file()
+                    .map(|p| p.to_string_lossy().to_string());
+                SessionManager::new(
+                    self.cwd(),
+                    &session_dir,
+                    None,
+                    false,
+                    Some(crate::core::session_manager::NewSessionOptions {
+                        id: None,
+                        parent_session: session_file,
+                    }),
+                )
+            }
         };
 
-        // Teardown current session
-        self.teardown_current("fork").await;
+        // Teardown current session, passing the target session file
+        let target_file = session_manager.get_session_file()
+            .and_then(|p| p.to_str());
+        self.teardown_current("fork", target_file).await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -502,7 +564,7 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement().await;
+        self.finish_session_replacement(None).await;
 
         Ok((false, selected_text))
     }
@@ -517,9 +579,10 @@ impl AgentSessionRuntime {
         input_path: &str,
         cwd_override: Option<&str>,
     ) -> Result<bool, String> {
-        let resolved_path = std::path::Path::new(input_path);
+        let resolved_path_str = crate::config::resolve_path(input_path);
+        let resolved_path = std::path::Path::new(&resolved_path_str);
         if !resolved_path.exists() {
-            return Err(format!("File not found: {}", input_path));
+            return Err(format!("File not found: {}", resolved_path_str));
         }
 
         let session_dir = self.session.get_session_dir().to_string_lossy().to_string();
@@ -556,17 +619,14 @@ impl AgentSessionRuntime {
             cwd_override,
         );
 
-        // Validate session cwd exists
-        let session_cwd = session_manager.get_cwd().to_string();
-        if !session_cwd.is_empty() && !std::path::Path::new(&session_cwd).exists() {
-            return Err(format!(
-                "Stored session working directory does not exist: {}",
-                session_cwd
-            ));
-        }
+        // Validate session cwd exists (matching TS assertSessionCwdExists)
+        crate::core::session_cwd::assert_session_cwd_exists(&session_manager, self.cwd())
+            .map_err(|e| e.to_string())?;
 
-        // Teardown current session
-        self.teardown_current("resume").await;
+        // Teardown current session, passing the target session file
+        let target_file = session_manager.get_session_file()
+            .and_then(|p| p.to_str());
+        self.teardown_current("resume", target_file).await;
 
         // Create new runtime via factory
         let result = (self.create_runtime)(CreateAgentSessionRuntimeParams {
@@ -580,14 +640,14 @@ impl AgentSessionRuntime {
         self.apply(result);
 
         // Finish replacement
-        self.finish_session_replacement().await;
+        self.finish_session_replacement(None).await;
 
         Ok(true)
     }
 
     /// Dispose the runtime, emitting session_shutdown to extensions.
     pub async fn dispose(mut self) {
-        self.teardown_current("quit").await;
+        self.teardown_current("quit", None).await;
     }
 }
 

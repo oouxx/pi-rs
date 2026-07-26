@@ -266,7 +266,7 @@ async fn test_runtime_switch_session() {
 
 
     // Switch to the other session
-    let result = runtime.switch_session(&other_session_file, None).await;
+    let result = runtime.switch_session(&other_session_file, None, None).await;
     assert!(result.is_ok());
     assert!(result.unwrap());
 
@@ -280,7 +280,7 @@ async fn test_runtime_switch_session_nonexistent() {
     let (mut runtime, _dir) = create_test_runtime().await;
 
     // Switching to a nonexistent file should fail with file-not-found error
-    let result = runtime.switch_session("/nonexistent/session.jsonl", None).await;
+    let result = runtime.switch_session("/nonexistent/session.jsonl", None, None).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not found"));
 }

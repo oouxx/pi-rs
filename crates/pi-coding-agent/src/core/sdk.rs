@@ -518,10 +518,15 @@ pub async fn create_agent_session(
         .as_ref()
         .map(|e| e.reason.to_string())
         .unwrap_or_else(|| "startup".to_string());
+    let previous_session_file = options
+        .session_start_event
+        .as_ref()
+        .and_then(|e| e.previous_session_file.as_deref());
     crate::core::extensions::dispatcher::dispatch_session_start(
         &extension_registry_arc,
         &session_start_reason,
         &ext_ctx,
+        previous_session_file,
     )
     .await;
 

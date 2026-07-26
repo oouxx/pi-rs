@@ -909,6 +909,16 @@ impl Agent {
         self.state.write().await.messages = messages;
     }
 
+    /// Replace the last message in the agent's state in-place.
+    /// Used by AgentSession to apply extension message replacements
+    /// (matching TS `_replaceMessageInPlace`).
+    pub async fn replace_last_message(&self, replacement: AgentMessage) {
+        let mut state = self.state.write().await;
+        if let Some(last) = state.messages.last_mut() {
+            *last = replacement;
+        }
+    }
+    
     pub async fn set_thinking_level(&self, level: ThinkingLevel) {
         self.state.write().await.thinking_level = level;
     }

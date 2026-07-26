@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::core::agent_session::AgentSession;
 use crate::core::auth_storage::AuthStorage;
-use crate::core::extensions::ExtensionRegistry;
+use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::{self, LoadedResources, ResourceLoaderOptions};
 use crate::core::sdk::{CreateAgentSessionResult, NoToolsMode};
@@ -80,11 +80,18 @@ pub struct CreateAgentSessionFromServicesOptions {
     >,
     pub tools: Option<Vec<String>>,
     pub no_tools: Option<NoToolsMode>,
+    /// Optional denylist of tool names to disable. Applies after `tools` when both are provided.
+    pub exclude_tools: Option<Vec<String>>,
+    /// Custom tools to register (in addition to built-in tools).
+    pub custom_tools: Option<Vec<ToolDefinition>>,
     /// Pre-configured extension registry. When set, extensions are injected
     /// by the caller instead of being auto-discovered from disk.
     pub extension_registry: Option<ExtensionRegistry>,
     /// Model fallback message, propagated from model resolution.
     pub fallback_message: Option<String>,
+    /// Session start event metadata for extension runtime startup.
+    /// When set, used instead of the default "startup" reason.
+    pub session_start_event: Option<crate::core::sdk::SessionStartEvent>,
 }
 
 // ============================================================================
@@ -210,7 +217,7 @@ pub async fn create_agent_session_from_services(
         scoped_models: options.scoped_models,
         no_tools: options.no_tools,
         tools: options.tools,
-        exclude_tools: None,
+        exclude_tools: options.exclude_tools,
         custom_prompt: None,
         append_system_prompt: None,
         session_name: None,
@@ -230,8 +237,8 @@ pub async fn create_agent_session_from_services(
         resource_loader: None,
         session_manager: None,
         settings_manager: None,
-        session_start_event: None,
-        custom_tools: None,
+        session_start_event: options.session_start_event,
+        custom_tools: options.custom_tools,
     };
 
     crate::core::sdk::create_agent_session(sdk_options).await

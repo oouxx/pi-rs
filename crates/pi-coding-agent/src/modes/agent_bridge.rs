@@ -63,5 +63,5 @@ pub async fn subscribe_agent(
             })
         });
 
-    session.subscribe(listener).await;
+    session.get_agent().subscribe(listener).await;
 }

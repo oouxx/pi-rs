@@ -274,10 +274,11 @@ pub async fn dispatch_session_start(
     registry: &ExtensionRegistry,
     reason: &str,
     _ext_ctx: &ExtensionContext,
+    previous_session_file: Option<&str>,
 ) {
     registry
         .hook_runner()
-        .fire_session_start(reason, None)
+        .fire_session_start(reason, previous_session_file)
         .await;
 }
 

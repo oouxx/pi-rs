@@ -108,7 +108,7 @@ pub async fn handle_command(
                 })
             });
 
-            let handle = session.subscribe(listener).await;
+            let handle = session.get_agent().subscribe(listener).await;
             *unsubscribe_handle.lock().await = Some(handle);
 
             // Call prompt and let the listener handle events + success response

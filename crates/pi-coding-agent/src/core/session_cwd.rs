@@ -78,6 +78,18 @@ pub fn assert_session_cwd_exists(
     Ok(())
 }
 
+// Implement SessionCwdSource for SessionManager so assert_session_cwd_exists
+// can be used directly with SessionManager references.
+impl SessionCwdSource for crate::core::session_manager::SessionManager {
+    fn get_cwd(&self) -> &str {
+        self.get_cwd()
+    }
+    fn get_session_file(&self) -> Option<&str> {
+        self.get_session_file().and_then(|p| p.to_str())
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,3 +156,4 @@ mod tests {
         assert!(assert_session_cwd_exists(&source, "/fallback").is_ok());
     }
 }
+

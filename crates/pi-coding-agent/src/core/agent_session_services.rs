@@ -180,12 +180,10 @@ pub async fn create_agent_session_services(
 /// is the single session-creation entry point.
 pub async fn create_agent_session_from_services(
     options: CreateAgentSessionFromServicesOptions,
-) -> Result<(AgentSession, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
-    let cwd = options.services.cwd.clone();
-    let agent_dir = options.services.agent_dir.clone();
-    let auth_storage = options.services.auth_storage;
-    let settings_manager = options.services.settings_manager;
-    let model_registry = options.services.model_registry;
+) -> Result<(AgentSession, AgentSessionServices, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
+    let services = options.services;
+    let cwd = services.cwd.clone();
+    let agent_dir = services.agent_dir.clone();
     let session_manager = options.session_manager;
 
     // Resolve model: use provided model, or fall back to the first available
@@ -193,7 +191,7 @@ pub async fn create_agent_session_from_services(
     let model = match options.model {
         Some(m) => m,
         None => {
-            let available = model_registry.get_available();
+            let available = services.model_registry.get_available();
             if available.is_empty() {
                 return Err("No models available. Please configure an API key.".into());
             }
@@ -241,14 +239,15 @@ pub async fn create_agent_session_from_services(
         session_file: None,
         fork_from: None,
         session_dir: None,
-        auth_storage: Some(auth_storage),
-        model_registry: Some(model_registry),
+        auth_storage: None,
+        model_registry: None,
         resource_loader: None,
         session_manager: Some(session_manager),
-        settings_manager: Some(settings_manager),
+        settings_manager: None,
         session_start_event: options.session_start_event,
         custom_tools: options.custom_tools,
     };
 
-    crate::core::sdk::create_agent_session(sdk_options).await
+    let (session, result) = crate::core::sdk::create_agent_session(sdk_options).await?;
+    Ok((session, services, result))
 }

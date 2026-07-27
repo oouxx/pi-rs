@@ -17,7 +17,7 @@ resolver = "2"
 # crates (e.g. reqwest's feature/default-flags matrix) stay per-crate.
 
 [workspace.package]
-version = "1.79.37"
+version = "1.79.38"
 edition = "2021"
 rust-version = "1.80.0"
 license = "MIT"

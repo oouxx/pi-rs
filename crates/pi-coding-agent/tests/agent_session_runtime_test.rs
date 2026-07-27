@@ -44,8 +44,10 @@ async fn create_test_session(
 
     let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
     let available = model_registry.get_available();
-    let model = available.into_iter().next().unwrap_or_else(|| {
-        pi_agent_core::pi_ai_types::Model {
+    let model = available
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| pi_agent_core::pi_ai_types::Model {
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
             api: "test-api".to_string(),
@@ -64,12 +66,12 @@ async fn create_test_session(
             max_tokens: 4096,
             headers: None,
             compat: None,
-        }
-    });
+        });
 
     let extension_registry = Arc::new(ExtensionRegistry::new());
 
-    let settings_manager = pi_coding_agent::core::settings_manager::SettingsManager::create(cwd, None);
+    let settings_manager =
+        pi_coding_agent::core::settings_manager::SettingsManager::create(cwd, None);
     let session_options = AgentSessionConfig {
         cwd: cwd.to_string(),
         model,
@@ -92,19 +94,22 @@ async fn create_test_session(
         resources: None,
     };
 
-    let session = AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
+    let session = AgentSession::new(
+        session_manager,
+        settings_manager,
+        model_registry,
+        session_options,
+    )
+    .await;
     (session, services)
 }
 
 /// Create a runtime factory for testing.
 fn create_test_factory() -> CreateAgentSessionRuntimeFactory {
-    Box::new(|params: CreateAgentSessionRuntimeParams| {
+    Arc::new(|params: CreateAgentSessionRuntimeParams| {
         Box::pin(async move {
-            let (session, services) = create_test_session(
-                &params.cwd,
-                params.session_manager,
-            )
-            .await;
+            let (session, services) =
+                create_test_session(&params.cwd, params.session_manager).await;
             CreateAgentSessionRuntimeResult {
                 session,
                 services,
@@ -122,12 +127,18 @@ async fn create_test_runtime() -> (AgentSessionRuntime, tempfile::TempDir) {
     let session_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&session_dir).unwrap();
 
-    let session_manager = SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
+    let session_manager =
+        SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
     let factory = create_test_factory();
 
     let runtime = AgentSessionRuntime::new(
         create_test_session(&cwd, session_manager).await.0,
-        create_test_session(&cwd, SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None)).await.1,
+        create_test_session(
+            &cwd,
+            SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None),
+        )
+        .await
+        .1,
         factory,
         Vec::new(),
         None,
@@ -248,7 +259,11 @@ async fn test_runtime_switch_session() {
         true,
         None,
     );
-    let other_session_file = other_mgr.get_session_file().unwrap().to_string_lossy().to_string();
+    let other_session_file = other_mgr
+        .get_session_file()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     // Write session header to disk (SessionManager::new() sets the path but
     // doesn't write the file until the first assistant message arrives)
     {
@@ -264,9 +279,10 @@ async fn test_runtime_switch_session() {
         writeln!(f, "{}", serde_json::to_string(&header).unwrap()).unwrap();
     }
 
-
     // Switch to the other session
-    let result = runtime.switch_session(&other_session_file, None, None).await;
+    let result = runtime
+        .switch_session(&other_session_file, None, None)
+        .await;
     assert!(result.is_ok());
     assert!(result.unwrap());
 
@@ -280,7 +296,9 @@ async fn test_runtime_switch_session_nonexistent() {
     let (mut runtime, _dir) = create_test_runtime().await;
 
     // Switching to a nonexistent file should fail with file-not-found error
-    let result = runtime.switch_session("/nonexistent/session.jsonl", None, None).await;
+    let result = runtime
+        .switch_session("/nonexistent/session.jsonl", None, None)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not found"));
 }
@@ -318,10 +336,9 @@ async fn test_runtime_import_from_jsonl() {
     std::fs::copy(session_file, &import_path).unwrap();
 
     // Import the session
-    let result = runtime.import_from_jsonl(
-        &import_path.to_string_lossy(),
-        None,
-    ).await;
+    let result = runtime
+        .import_from_jsonl(&import_path.to_string_lossy(), None)
+        .await;
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
@@ -331,7 +348,9 @@ async fn test_runtime_import_from_jsonl_nonexistent() {
     let (mut runtime, _dir) = create_test_runtime().await;
 
     // Importing a nonexistent file should fail
-    let result = runtime.import_from_jsonl("/nonexistent/session.jsonl", None).await;
+    let result = runtime
+        .import_from_jsonl("/nonexistent/session.jsonl", None)
+        .await;
     assert!(result.is_err());
 }
 
@@ -387,7 +406,8 @@ async fn test_create_agent_session_runtime() {
     let session_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&session_dir).unwrap();
 
-    let session_manager = SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
+    let session_manager =
+        SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
     let factory = create_test_factory();
 
     let runtime = pi_coding_agent::core::agent_session_runtime::create_agent_session_runtime(

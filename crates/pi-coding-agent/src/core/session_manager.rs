@@ -181,7 +181,7 @@ pub struct ModelInfo {
     pub model_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub path: PathBuf,
     pub id: String,

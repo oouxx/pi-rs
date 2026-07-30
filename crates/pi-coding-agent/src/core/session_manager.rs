@@ -2415,6 +2415,32 @@ pub async fn list_sessions_concurrent(
     sessions
 }
 
+
+/// Extract text content from a message's `content` field.
+///
+/// Matches the TS `extractTextContent()` behavior:
+/// - If content is a string, return it directly.
+/// - If content is an array of content blocks, join text from `type: "text"` blocks.
+/// - Otherwise return None.
+fn extract_text_content(message: &serde_json::Value) -> Option<String> {
+    let content = message.get("content")?;
+    if let Some(s) = content.as_str() {
+        if s.is_empty() {
+            return None;
+        }
+        return Some(s.to_string());
+    }
+    if let Some(arr) = content.as_array() {
+        let texts: Vec<String> = arr
+            .iter()
+            .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .collect();
+        return if texts.is_empty() { None } else { Some(texts.join(" ")) };
+    }
+    None
+}
+
 fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
     let entries = load_entries_from_file(file_path);
 
@@ -2444,13 +2470,17 @@ fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
                             .unwrap_or(dt),
                     );
                 }
-                if let Some(text) = message.get("content").and_then(|c| c.as_str()) {
-                    if !text.is_empty() {
-                        all_messages.push(text.to_string());
-                        if first_message.is_empty() {
-                            if message.get("role").and_then(|r| r.as_str()) == Some("user") {
-                                first_message = text.to_string();
-                            }
+                // Match TS: only user and assistant messages contribute to allMessages
+                let role = message.get("role").and_then(|r| r.as_str());
+                let is_user_or_assistant = matches!(role, Some("user") | Some("assistant"));
+
+                if let Some(text) = extract_text_content(message) {
+                    if is_user_or_assistant {
+                        all_messages.push(text.clone());
+                    }
+                    if first_message.is_empty() {
+                        if role == Some("user") {
+                            first_message = text;
                         }
                     }
                 }

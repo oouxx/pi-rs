@@ -21,6 +21,11 @@ pub enum SourceScope {
 #[serde(rename_all = "lowercase")]
 pub enum SourceOrigin {
     Package,
+    /// Serializes as `"top-level"` (with hyphen) to match the TS wire format
+    /// (`SourceOrigin = "package" | "top-level"`). The container-level
+    /// `rename_all = "lowercase"` would produce `"toplevel"` (no hyphen),
+    /// a wire-format mismatch; this per-variant rename overrides it.
+    #[serde(rename = "top-level")]
     TopLevel,
 }
 
@@ -147,6 +152,6 @@ mod tests {
         let s = serde_json::to_string(&SourceScope::Temporary).unwrap_or_default();
         assert_eq!(s, "\"temporary\"");
         let o = serde_json::to_string(&SourceOrigin::TopLevel).unwrap_or_default();
-        assert_eq!(o, "\"toplevel\"");
+        assert_eq!(o, "\"top-level\"");
     }
 }

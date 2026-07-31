@@ -4,6 +4,7 @@
 //! 通过 `ExtensionRegistry` 注册到 agent 运行时。
 
 pub mod hook;
+pub mod source_info;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -13,8 +14,13 @@ use serde_json::Value;
 use serde::{Deserialize, Serialize};
 
 pub use hook::{
-    CommandRegistry, FlagRegistry, HookHandler, HookResult, HookRunner, RegisteredCommand,
-    RegisteredFlag, RegisteredShortcut, RegisteredTool, ShortcutRegistry, ToolRegistry,
+    ArgumentCompletionsFn, AutocompleteItem, CommandRegistry, CommandRegistration,
+    FlagRegistry, HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag,
+    RegisteredShortcut, RegisteredTool, ShortcutRegistry, ToolRegistry,
+};
+pub use source_info::{
+    create_builtin_source_info, create_source_info, create_synthetic_source_info,
+    SourceInfo, SourceOrigin, SourceScope,
 };
 
 // ============================================================================
@@ -506,16 +512,21 @@ impl ExtensionRegistry {
         }
     }
 
-    /// Register a `HookHandler`. This collects tools/commands/shortcuts/flags
-    /// from the handler immediately.
-    pub fn register(&mut self, handler: Box<dyn HookHandler>) {
+    /// Register a `HookHandler` with the given provenance (`source_info`).
+    ///
+    /// `source_info` is stamped onto every tool/command the handler
+    /// registers, mirroring TS where the loader sets `extension.sourceInfo`
+    /// and `registerTool`/`registerCommand` attach it implicitly. Built-in
+    /// extensions pass `create_builtin_source_info(name)`; a future runtime
+    /// loader would pass the extension file's `SourceInfo`.
+    pub fn register(&mut self, handler: Box<dyn HookHandler>, source_info: SourceInfo) {
         // Collect tools
-        let mut tool_reg = ToolRegistry::new();
+        let mut tool_reg = ToolRegistry::new(source_info.clone());
         handler.register_tools(&mut tool_reg);
         self.tools.extend(tool_reg.into_vec());
 
         // Collect commands
-        let mut cmd_reg = CommandRegistry::new();
+        let mut cmd_reg = CommandRegistry::new(source_info.clone());
         handler.register_commands(&mut cmd_reg);
         self.commands.extend(cmd_reg.into_vec());
 
@@ -642,7 +653,7 @@ mod tests {
         }
 
         let mut reg = ExtensionRegistry::new();
-        reg.register(Box::new(TestHandler));
+        reg.register(Box::new(TestHandler), create_builtin_source_info("test"));
 
         assert!(reg.has_handlers());
         assert_eq!(reg.handler_count(), 1);
@@ -670,10 +681,115 @@ mod tests {
         }
 
         let mut reg = ExtensionRegistry::new();
-        reg.register(Box::new(ToolHandler));
+        reg.register(Box::new(ToolHandler), create_builtin_source_info("tool_handler"));
 
         let tools = reg.collect_tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "test_tool");
+    }
+
+    /// `source_info` passed to `ExtensionRegistry::register` is stamped onto
+    /// every registered tool/command automatically (mirrors TS where the
+    /// loader's `extension.sourceInfo` is attached by `registerTool`/
+    /// `registerCommand` implicitly).
+    #[test]
+    fn test_source_info_stamped_onto_tools_and_commands() {
+        use hook::{CommandRegistration, HookHandler, ToolRegistry};
+
+        struct ProvenanceHandler;
+
+        #[async_trait]
+        impl HookHandler for ProvenanceHandler {
+            fn name(&self) -> &'static str {
+                "provenance"
+            }
+            fn register_tools(&self, tools: &mut ToolRegistry) {
+                tools.register("t", ToolDefinition {
+                    name: "t".into(),
+                    description: "t".into(),
+                    ..Default::default()
+                });
+            }
+            fn register_commands(&self, commands: &mut hook::CommandRegistry) {
+                commands.register("c", CommandRegistration {
+                    description: "c".into(),
+                    execute: std::sync::Arc::new(|_| Box::pin(async {})),
+                    get_argument_completions: None,
+                });
+            }
+        }
+
+        let mut reg = ExtensionRegistry::new();
+        let si = create_source_info(
+            "/ext/x.ts".into(),
+            "local".into(),
+            SourceScope::Project,
+            SourceOrigin::Package,
+            Some("/ext".into()),
+        );
+        reg.register(Box::new(ProvenanceHandler), si.clone());
+
+        let tools = reg.tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].source_info, si);
+
+        let cmds = reg.commands();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].source_info, si);
+        assert!(cmds[0].get_argument_completions.is_none());
+    }
+
+    /// `get_argument_completions` callback is carried through registration
+    /// and is invokable (returns `Some` items). Mirrors TS
+    /// `RegisteredCommand.getArgumentCompletions`.
+    #[tokio::test]
+    async fn test_command_argument_completions_callback() {
+        use hook::{CommandRegistry, CommandRegistration, HookHandler};
+
+        struct CompHandler;
+
+        #[async_trait]
+        impl HookHandler for CompHandler {
+            fn name(&self) -> &'static str {
+                "comp"
+            }
+            fn register_commands(&self, commands: &mut CommandRegistry) {
+                let cb: ArgumentCompletionsFn = std::sync::Arc::new(|prefix: String| {
+                    Box::pin(async move {
+                        if prefix.is_empty() {
+                            None
+                        } else {
+                            Some(vec![
+                                AutocompleteItem {
+                                    value: format!("{prefix}-a"),
+                                    label: format!("A for {prefix}"),
+                                    description: None,
+                                },
+                            ])
+                        }
+                    })
+                });
+                commands.register("comp", CommandRegistration {
+                    description: "comp".into(),
+                    execute: std::sync::Arc::new(|_| Box::pin(async {})),
+                    get_argument_completions: Some(cb),
+                });
+            }
+        }
+
+        let mut reg = ExtensionRegistry::new();
+        reg.register(Box::new(CompHandler), create_builtin_source_info("comp"));
+
+        let cmds = reg.commands();
+        assert_eq!(cmds.len(), 1);
+        let Some(completions) = cmds[0].get_argument_completions.as_ref() else {
+            panic!("completions callback should be present");
+        };
+        let items = completions("foo".to_string()).await;
+        assert_eq!(items.as_ref().map(|v| v.len()), Some(1));
+        assert_eq!(items.as_ref().map(|v| v[0].value.as_str()), Some("foo-a"));
+
+        let empty = completions(String::new()).await;
+        assert!(empty.is_none());
     }
 }

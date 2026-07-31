@@ -8,7 +8,7 @@ use std::sync::{LazyLock, Mutex};
 
 use async_trait::async_trait;
 use pi_extension_api::{
-    CommandRegistry, ExtensionContext, HookHandler, RuntimeHandle,
+    CommandRegistry, CommandRegistration, ExtensionContext, HookHandler, RuntimeHandle,
     SendMessageOptions, ToolCallOutput, ToolDefinition, ToolRegistry,
 };
 use serde::{Deserialize, Serialize};
@@ -357,14 +357,17 @@ impl HookHandler for GoalExtension {
     fn register_commands(&self, commands: &mut CommandRegistry) {
         commands.register(
             "goal",
-            "Manage goals: create, pause, resume, complete, or clear.",
-            std::sync::Arc::new(|args: String| {
-                Box::pin(async move {
-                    // Command execution is handled via tool calls in the current architecture.
-                    // The /goal command is processed by the interactive mode handler.
-                    eprintln!("[goal] /goal command received with args: {args}");
-                })
-            }),
+            CommandRegistration {
+                description: "Manage goals: create, pause, resume, complete, or clear.".into(),
+                execute: std::sync::Arc::new(|args: String| {
+                    Box::pin(async move {
+                        // Command execution is handled via tool calls in the current architecture.
+                        // The /goal command is processed by the interactive mode handler.
+                        eprintln!("[goal] /goal command received with args: {args}");
+                    })
+                }),
+                get_argument_completions: None,
+            },
         );
     }
 

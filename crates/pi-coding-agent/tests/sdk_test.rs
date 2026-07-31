@@ -12,13 +12,16 @@ use pi_agent_core::types::{AgentMessage, StreamFn};
 
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
-use pi_extension_api::ExtensionRegistry;
+use pi_extension_api::{create_builtin_source_info, ExtensionRegistry};
 
 /// Create an `ExtensionRegistry` with the goal extension (exercises the
 /// extension-tool path alongside the built-in tools).
 pub fn create_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
-    registry.register(Box::new(pi_extensions::goal::GoalExtension::new()));
+    registry.register(
+        Box::new(pi_extensions::goal::GoalExtension::new()),
+        create_builtin_source_info("goal"),
+    );
     registry
 }
 

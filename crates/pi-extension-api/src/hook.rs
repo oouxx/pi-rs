@@ -8,14 +8,40 @@
 //! 所有方法都有默认空实现，扩展只需实现关心的。
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::{ExtensionContext, ToolCallOutput, ToolDefinition};
+use crate::{ExtensionContext, SourceInfo, ToolCallOutput, ToolDefinition};
 type CommandFn = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// A single autocomplete suggestion for a command argument.
+///
+/// Mirrors TS `AutocompleteItem` (packages/tui/src/autocomplete.ts). Defined
+/// here in `pi-extension-api` (not `pi-tui`, which is a confirmed deviation)
+/// because `RegisteredCommand.get_argument_completions` returns it and the
+/// completion *callback* is an extension-API concern; only the rendering of
+/// completions is TUI-specific.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutocompleteItem {
+    pub value: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Callback producing argument completions for a registered command.
+///
+/// Mirrors TS `getArgumentCompletions?: (argumentPrefix: string) =>
+/// AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>`. Receives
+/// the argument text after the command name and returns `None` (no
+/// completions) or `Some(items)`.
+pub type ArgumentCompletionsFn = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<AutocompleteItem>>> + Send>> + Send + Sync,
+>;
 
 // ============================================================================
 // HookResult
@@ -45,21 +71,41 @@ impl<T> HookResult<T> {
 // Tool/Command/Shortcut registries (moved from lib.rs for co-location)
 // ============================================================================
 
-/// A tool registered by an extension.
+/// A tool registered by an extension. Mirrors TS `RegisteredTool`.
 #[derive(Debug, Clone)]
 pub struct RegisteredTool {
     pub name: String,
     pub definition: ToolDefinition,
+    /// Provenance of the registering extension. Mirrors TS
+    /// `RegisteredTool.sourceInfo`; stamped automatically by the registry
+    /// from the extension's `SourceInfo` (see `ToolRegistry::new`).
+    pub source_info: SourceInfo,
 }
 
-/// A command registered by an extension.
+/// Options for registering a command. Mirrors TS `registerCommand(name, options)`
+/// where `options = { description?, getArgumentCompletions?, handler }`.
+/// Using a struct keeps `register` ≤3 params and is extensible.
 #[derive(Clone)]
-/** A command registered by an extension. */
+pub struct CommandRegistration {
+    pub description: String,
+    pub execute: CommandFn,
+    /// Optional argument-completion callback. Mirrors TS `getArgumentCompletions`.
+    pub get_argument_completions: Option<ArgumentCompletionsFn>,
+}
+
+/// A command registered by an extension. Mirrors TS `RegisteredCommand`.
+#[derive(Clone)]
 pub struct RegisteredCommand {
     pub name: String,
     pub description: String,
     #[allow(dead_code)]
     pub execute: CommandFn,
+    /// Provenance of the registering extension. Mirrors TS
+    /// `RegisteredCommand.sourceInfo`; stamped automatically by the registry.
+    pub source_info: SourceInfo,
+    /// Optional argument-completion callback. Mirrors TS `getArgumentCompletions`.
+    #[allow(dead_code)] // consumed by TUI autocomplete (deviation: not ported yet)
+    pub get_argument_completions: Option<ArgumentCompletionsFn>,
 }
 
 /// A shortcut registered by an extension.
@@ -77,21 +123,31 @@ pub struct RegisteredFlag {
 }
 
 /// Registry for collecting tools from extensions.
-#[derive(Default)]
+///
+/// Carries the registering extension's `SourceInfo` so `register` can stamp it
+/// onto each `RegisteredTool` automatically (mirroring TS, where the loader
+/// sets `extension.sourceInfo` and `registerTool` attaches it implicitly).
 pub struct ToolRegistry {
     tools: Vec<RegisteredTool>,
+    source_info: SourceInfo,
 }
 
 impl ToolRegistry {
+    /// Create a registry bound to the given extension's `SourceInfo`.
+    /// Every `register` call stamps this onto the resulting `RegisteredTool`.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { tools: Vec::new() }
+    pub fn new(source_info: SourceInfo) -> Self {
+        Self {
+            tools: Vec::new(),
+            source_info,
+        }
     }
 
     pub fn register(&mut self, name: &str, definition: ToolDefinition) {
         self.tools.push(RegisteredTool {
             name: name.to_string(),
             definition,
+            source_info: self.source_info.clone(),
         });
     }
 
@@ -102,27 +158,33 @@ impl ToolRegistry {
 }
 
 /// Registry for collecting commands from extensions.
-#[derive(Default)]
+///
+/// Like `ToolRegistry`, carries the extension's `SourceInfo` and stamps it
+/// onto each `RegisteredCommand` automatically.
 pub struct CommandRegistry {
     commands: Vec<RegisteredCommand>,
+    source_info: SourceInfo,
 }
 
 impl CommandRegistry {
+    /// Create a registry bound to the given extension's `SourceInfo`.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { commands: Vec::new() }
+    pub fn new(source_info: SourceInfo) -> Self {
+        Self {
+            commands: Vec::new(),
+            source_info,
+        }
     }
 
-    pub fn register(
-        &mut self,
-        name: &str,
-        description: &str,
-        execute: CommandFn,
-    ) {
+    /// Register a command. `opts` mirrors TS `registerCommand`'s options
+    /// object (`description`, `handler`, `getArgumentCompletions`).
+    pub fn register(&mut self, name: &str, opts: CommandRegistration) {
         self.commands.push(RegisteredCommand {
             name: name.to_string(),
-            description: description.to_string(),
-            execute,
+            description: opts.description,
+            execute: opts.execute,
+            source_info: self.source_info.clone(),
+            get_argument_completions: opts.get_argument_completions,
         });
     }
 
@@ -141,7 +203,9 @@ pub struct ShortcutRegistry {
 impl ShortcutRegistry {
     #[must_use]
     pub const fn new() -> Self {
-        Self { shortcuts: Vec::new() }
+        Self {
+            shortcuts: Vec::new(),
+        }
     }
 
     pub fn register(&mut self, key: &str, description: &str) {

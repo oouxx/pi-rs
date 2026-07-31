@@ -5,7 +5,7 @@
 use colored::*;
 
 use crate::args::{print_help, CliArgs, OutputMode};
-use pi_coding_agent::core::extensions::ExtensionRegistry;
+use pi_coding_agent::core::extensions::{create_builtin_source_info, ExtensionRegistry};
 use pi_coding_agent::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use pi_coding_agent::core::session_manager::SessionManager;
@@ -118,7 +118,10 @@ pub async fn run(args: &CliArgs) -> i32 {
         enable_extensions: !args.no_extensions,
         extension_registry: {
             let mut reg = ExtensionRegistry::new();
-            reg.register(Box::new(pi_extensions::goal::GoalExtension::new()));
+            reg.register(
+                Box::new(pi_extensions::goal::GoalExtension::new()),
+                create_builtin_source_info("goal"),
+            );
             Some(reg)
         },
         persist_session,
@@ -189,7 +192,10 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         enable_extensions: !args.no_extensions,
         extension_registry: {
             let mut reg = ExtensionRegistry::new();
-            reg.register(Box::new(pi_extensions::goal::GoalExtension::new()));
+            reg.register(
+                Box::new(pi_extensions::goal::GoalExtension::new()),
+                create_builtin_source_info("goal"),
+            );
             Some(reg)
         },
         persist_session,

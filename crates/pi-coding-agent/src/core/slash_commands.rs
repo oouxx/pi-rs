@@ -337,6 +337,8 @@ mod tests {
             name: name.into(),
             description: description.into(),
             execute: std::sync::Arc::new(|_| Box::pin(async move {})),
+            source_info: crate::core::source_info::create_builtin_source_info("test"),
+            get_argument_completions: None,
         }
     }
 

@@ -23,4 +23,6 @@ pub use loader::{
     resolve_extension_entries, CacheToken, DiscoveredExtensions, ExtensionCache, PiManifest,
 };
 #[cfg(feature = "js-runtime")]
+pub mod js_shims;
+#[cfg(feature = "js-runtime")]
 pub mod js_adapter;

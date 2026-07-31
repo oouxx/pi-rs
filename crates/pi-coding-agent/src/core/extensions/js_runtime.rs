@@ -58,6 +58,7 @@ use deno_core::OpState;
 use deno_core::ResolutionKind;
 use deno_core::RuntimeOptions;
 use deno_error::JsErrorBox;
+use crate::core::extensions::js_shims;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -830,6 +831,13 @@ impl ModuleLoader for TypescriptModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        // Intercept bare specifiers (typebox, @earendil-works/*) and resolve
+        // them to synthetic pi-shim:// URLs so the load() step can return
+        // embedded JS shims instead of hitting the filesystem.
+        if let Some(shim_path) = js_shims::lookup_shim(specifier) {
+            return ModuleSpecifier::parse(&js_shims::shim_url(shim_path))
+                .map_err(|e| JsErrorBox::generic(format!("invalid shim specifier: {e}")));
+        }
         resolve_import(specifier, referrer).map_err(JsErrorBox::from_err)
     }
 
@@ -839,6 +847,19 @@ impl ModuleLoader for TypescriptModuleLoader {
         _maybe_referrer: Option<&ModuleLoadReferrer>,
         _options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
+        // Shim modules: return embedded JS source directly (no disk read).
+        let url = module_specifier.as_str();
+        if js_shims::is_shim_specifier(url) {
+            let shim_path = &url[js_shims::SHIM_SCHEME.len() + 3..]; // skip "pi-shim://"
+            let source = js_shims::shim_source(shim_path)
+                .unwrap_or("export default {}");
+            return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(source.to_string().into()),
+                module_specifier,
+                None,
+            )));
+        }
         let source_maps = self.source_maps.clone();
         ModuleLoadResponse::Sync(load(source_maps, module_specifier))
     }
@@ -927,6 +948,35 @@ fn load(
     ))
 }
 
+/// JS that sets up Node.js-compatible globals (`process`, `__piHomeDir`, etc.)
+/// so extensions that use `process.cwd()`, `process.env`, etc. as globals (not
+/// via `import`) work without a full Node.js runtime.
+const NODE_GLOBALS_JS: &str = r#"
+(function() {
+  const homeDir = globalThis.__piHomeDir || ".";
+  const cwd = globalThis.__piCwd || ".";
+  const platform = globalThis.__piPlatform || "linux";
+
+  // Minimal `process` global — provides cwd(), env, platform, stdout.write().
+  globalThis.process = globalThis.process || {
+    cwd() { return cwd; },
+    env: globalThis.__piEnv || {},
+    platform,
+    arch: globalThis.__piArch || "arm64",
+    argv: globalThis.__piArgv || [],
+    stdout: { write(s) { /* no-op in extension runtime */ } },
+    stderr: { write(s) { /* no-op in extension runtime */ } },
+    exit(code) { throw new Error("process.exit(" + code + ") is not available in the extension runtime."); },
+  };
+
+  // `globalThis.__dirname` and `__filename` — best-effort (set per-extension
+  // during load_extension via __piExtensionPath).
+  if (!globalThis.__dirname) {
+    globalThis.__dirname = cwd;
+  }
+})();
+"#;
+
 // ============================================================================
 // JsExtensionRuntime
 // ============================================================================
@@ -956,6 +1006,9 @@ impl JsExtensionRuntime {
         runtime
             .execute_script("<pi-bootstrap>", BOOTSTRAP_JS)
             .map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
+        runtime
+            .execute_script("<node-globals>", NODE_GLOBALS_JS)
+            .map_err(|e| anyhow::anyhow!("node globals: {e}"))?;
         Ok(Self { runtime })
     }
 
@@ -1355,4 +1408,284 @@ export default async function(pi) {
             .unwrap_err();
         assert!(err.to_string().contains("not initialized"));
     }
+
+    #[test]
+    fn test_extension_imports_typebox() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "tb.ts",
+            r#"
+import { Type } from "typebox";
+
+const Params = Type.Object({
+  name: Type.String({ description: "The name" }),
+  count: Type.Optional(Type.Number({ description: "Count" })),
+  active: Type.Boolean(),
+  tags: Type.Array(Type.String()),
+});
+
+export default async function(pi) {
+  pi.log("params: " + JSON.stringify(Params));
+  pi.registerTool({
+    name: "tb-tool",
+    description: "typebox tool",
+    parameters: Params,
+    execute: async () => {},
+  });
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+
+        // The log should contain a JSON Schema string.
+        assert_eq!(result.logs.len(), 1);
+        let schema_json = &result.logs[0];
+        // ~kind and ~optional must NOT appear (non-enumerable).
+        assert!(!schema_json.contains("~kind"), "schema should not contain ~kind: {schema_json}");
+        assert!(!schema_json.contains("~optional"), "schema should not contain ~optional: {schema_json}");
+        // Should contain the expected JSON Schema fields.
+        assert!(schema_json.contains("\"type\":\"object\""), "missing type:object: {schema_json}");
+        assert!(schema_json.contains("\"required\""), "missing required array: {schema_json}");
+        assert!(schema_json.contains("\"name\""), "missing name property: {schema_json}");
+        assert!(schema_json.contains("\"type\":\"string\""), "missing string type: {schema_json}");
+        assert!(schema_json.contains("\"type\":\"number\""), "missing number type: {schema_json}");
+        assert!(schema_json.contains("\"type\":\"boolean\""), "missing boolean type: {schema_json}");
+        assert!(schema_json.contains("\"type\":\"array\""), "missing array type: {schema_json}");
+
+        // The tool should be registered with the schema as parameters.
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "tb-tool");
+        let params = result.tools[0].parameters.as_ref().expect("parameters");
+        assert!(params.contains("\"type\":\"object\""));
+        // Required should include "name" and "active" but NOT "count" (optional).
+        assert!(params.contains("\"name\""));
+        assert!(params.contains("\"active\""));
+    }
+
+    #[test]
+    fn test_extension_imports_string_enum() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "se.ts",
+            r#"
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+
+const Params = Type.Object({
+  action: StringEnum(["list", "add", "toggle", "clear"]),
+  text: Type.Optional(Type.String()),
+});
+
+export default async function(pi) {
+  pi.log("schema: " + JSON.stringify(Params));
+  pi.registerTool({
+    name: "se-tool",
+    description: "string enum tool",
+    parameters: Params,
+    execute: async () => {},
+  });
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+
+        assert_eq!(result.logs.len(), 1);
+        let schema_json = &result.logs[0];
+        // StringEnum should produce {type:"string", enum:[...]}.
+        assert!(schema_json.contains("\"enum\""), "missing enum: {schema_json}");
+        assert!(schema_json.contains("\"list\""), "missing list value: {schema_json}");
+        assert!(schema_json.contains("\"clear\""), "missing clear value: {schema_json}");
+        assert!(schema_json.contains("\"type\":\"string\""), "missing string type: {schema_json}");
+        // ~kind / ~unsafe must not appear (non-enumerable).
+        assert!(!schema_json.contains("~kind"), "should not contain ~kind: {schema_json}");
+        assert!(!schema_json.contains("~unsafe"), "should not contain ~unsafe: {schema_json}");
+
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "se-tool");
+    }
+
+    #[test]
+    fn test_extension_imports_pi_coding_agent_constants() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "ca.ts",
+            r#"
+import { VERSION, CONFIG_DIR_NAME, defineTool } from "@earendil-works/pi-coding-agent";
+
+export default async function(pi) {
+  pi.log("version: " + VERSION);
+  pi.log("config: " + CONFIG_DIR_NAME);
+  const tool = defineTool({
+    name: "dt",
+    description: "defined tool",
+    execute: async () => {},
+  });
+  pi.registerTool(tool);
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+
+        assert_eq!(result.logs, vec![
+            "version: 1.79.41".to_string(),
+            "config: .pi".to_string(),
+        ]);
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "dt");
+    }
+
+    #[test]
+    fn test_extension_imports_pi_tui_stub() {
+        // Extensions that import TUI components but never call them at runtime
+        // should load successfully. The stubs throw only on invocation.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "tui.ts",
+            r#"
+import { Text, matchesKey } from "@earendil-works/pi-tui";
+
+export default async function(pi) {
+  // Import succeeds; only calling throws.
+  pi.log("tui imported, typeof Text: " + typeof Text);
+  pi.log("typeof matchesKey: " + typeof matchesKey);
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+
+        assert_eq!(result.logs.len(), 2);
+        assert_eq!(result.logs[0], "tui imported, typeof Text: function");
+        assert_eq!(result.logs[1], "typeof matchesKey: function");
+    }
+
+    #[test]
+    fn test_typebox_literal_and_union() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "lu.ts",
+            r#"
+import { Type } from "typebox";
+
+const Params = Type.Object({
+  mode: Type.Union([Type.Literal("fast"), Type.Literal("slow")]),
+});
+
+export default async function(pi) {
+  pi.log("schema: " + JSON.stringify(Params));
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+
+        assert_eq!(result.logs.len(), 1);
+        let schema_json = &result.logs[0];
+        assert!(schema_json.contains("\"anyOf\""), "missing anyOf: {schema_json}");
+        assert!(schema_json.contains("\"const\":\"fast\""), "missing const fast: {schema_json}");
+        assert!(schema_json.contains("\"const\":\"slow\""), "missing const slow: {schema_json}");
+    }
+
+    #[test]
+    fn test_load_real_todo_extension() {
+        // Load the actual todo.ts extension from the pi source tree.
+        // This exercises typebox + StringEnum + pi-tui imports together.
+        let pi_ext_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../pi/packages/coding-agent/examples/extensions");
+        let todo_path = pi_ext_dir.join("todo.ts");
+        if !todo_path.exists() {
+            eprintln!("Skipping test_load_real_todo_extension: pi source not found at {todo_path:?}");
+            return;
+        }
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        // The todo extension imports from "@earendil-works/pi-tui" at runtime
+        // (Text, matchesKey, truncateToWidth) but only uses them inside
+        // renderCall/renderResult and the /todos command handler, which are
+        // not called during factory load. So it should load successfully.
+        block_on(js.load_extension(&todo_path, &pi_ext_dir)).expect("load_extension");
+        let result = js.take_result();
+
+        // The todo extension registers a "todo" tool and a "todos" command.
+        assert_eq!(result.tools.len(), 1, "expected 1 tool, got {:?}: {:?}", result.tools.len(), result.tools);
+        assert_eq!(result.tools[0].name, "todo");
+        assert!(result.tools[0].parameters.is_some(), "todo tool should have parameters");
+        let params = result.tools[0].parameters.as_ref().expect("parameters");
+        assert!(params.contains("\"enum\""), "todo params should have enum: {params}");
+        assert!(params.contains("\"list\""), "todo params should have list: {params}");
+
+        assert_eq!(result.commands.len(), 1, "expected 1 command: {:?}", result.commands);
+        assert_eq!(result.commands[0].name, "todos");
+
+        // Should have session_start and session_tree event handlers.
+        assert_eq!(result.handlers.len(), 2);
+        assert_eq!(result.handlers[0].event, "session_start");
+        assert_eq!(result.handlers[1].event, "session_tree");
+    }
+
+    #[test]
+    fn test_load_multiple_real_extensions() {
+        let pi_ext_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../pi/packages/coding-agent/examples/extensions");
+        if !pi_ext_dir.exists() {
+            eprintln!("Skipping: pi source not found");
+            return;
+        }
+
+        // Scan all .ts files in the extensions directory.
+        let mut ok_count = 0u32;
+        let mut fail_count = 0u32;
+        let mut entries: Vec<_> = std::fs::read_dir(&pi_ext_dir)
+            .expect("read extensions dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "ts"))
+            .collect();
+        entries.sort();
+        for ext_path in &entries {
+            let name = ext_path.file_name().unwrap().to_string_lossy().to_string();
+            // Skip the doom-overlay (wasm, not supported) and test files.
+            if name.contains("doom") || name.starts_with("test") {
+                continue;
+            }
+            let mut js = match JsExtensionRuntime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("  FAIL {name}: runtime creation failed: {e}");
+                    fail_count += 1;
+                    continue;
+                }
+            };
+            match block_on(js.load_extension(ext_path, &pi_ext_dir)) {
+                Ok(()) => {
+                    let result = js.take_result();
+                    eprintln!("  OK   {name}: {} tools, {} commands, {} handlers",
+                        result.tools.len(), result.commands.len(), result.handlers.len());
+                    ok_count += 1;
+                }
+                Err(e) => {
+                    eprintln!("  FAIL {name}: {e}");
+                    fail_count += 1;
+                }
+            }
+        }
+        eprintln!("Summary: {} OK, {} FAIL out of {}", ok_count, fail_count, ok_count + fail_count);
+        // At least 70% of extensions should load.
+        let total = ok_count + fail_count;
+        assert!(total > 0, "no extensions found to test");
+        assert!(ok_count * 100 / total >= 70, "too many failures: {ok_count} ok / {total} total");
+    }
+
 }

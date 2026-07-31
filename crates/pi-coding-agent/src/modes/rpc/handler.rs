@@ -535,41 +535,42 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetCommands { id } => {
-            // Return available commands (slash commands, skills, prompt templates)
-            // In the current Rust architecture, extension commands are not yet
-            // queryable through the ExtensionRegistry. Skills and prompt templates
-            // are available through the resource loader.
-            let mut commands: Vec<serde_json::Value> = Vec::new();
+            // Build the list of discoverable slash commands (the TS
+            // `getCommands()`), reusing the typed `SlashCommandInfo` so the
+            // wire format stays in sync with `slash-commands.ts`.
+            //
+            // Extension commands are not yet queryable through the Rust
+            // ExtensionRegistry — this is a known, confirmed deviation from
+            // the TS version (see DEVIATIONS.md #5). Skills and prompt
+            // templates are included.
+            let mut commands: Vec<crate::core::slash_commands::SlashCommandInfo> = Vec::new();
 
-            // Add prompt templates
+            // Prompt templates → source = "prompt"
             for template in session.prompt_templates() {
-                commands.push(serde_json::json!({
-                    "name": template.name,
-                    "description": template.description,
-                    "source": "prompt",
-                    "sourceInfo": template.source_info
-                }));
+                commands.push(crate::core::slash_commands::SlashCommandInfo {
+                    name: template.name,
+                    description: Some(template.description),
+                    source: crate::core::slash_commands::SlashCommandSource::Prompt,
+                    source_info: template.source_info,
+                });
             }
 
-            // Add skills from resource loader
+            // Skills → name = "skill:<name>", source = "skill"
             if let Some(resources) = session.resource_loader() {
                 for skill in &resources.skills {
-                    commands.push(serde_json::json!({
-                        "name": format!("skill:{}", skill.name),
-                        "description": skill.description,
-                        "source": "skill",
-                        "sourceInfo": skill.source_info
-                    }));
+                    commands.push(crate::core::slash_commands::SlashCommandInfo {
+                        name: format!("skill:{}", skill.name),
+                        description: Some(skill.description.clone()),
+                        source: crate::core::slash_commands::SlashCommandSource::Skill,
+                        source_info: skill.source_info.clone(),
+                    });
                 }
             }
-
-            // Note: Extension commands are not yet queryable in the Rust architecture.
-            // This is a known deviation from the TS version (see DEVIATIONS.md).
 
             Some(rpc_success(
                 id,
                 "get_commands",
-                Some(serde_json::json!({"commands": commands})),
+                Some(serde_json::json!({ "commands": commands })),
             ))
         }
 

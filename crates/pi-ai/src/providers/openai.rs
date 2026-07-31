@@ -217,14 +217,13 @@ fn parse_openai_sse_chunk(line: &str) -> Option<Value> {
     if line.is_empty() || line.starts_with(':') {
         return None;
     }
-    // Extract data field
-    let data = if let Some(rest) = line.strip_prefix("data: ") {
-        rest
-    } else if let Some(rest) = line.strip_prefix("data:") {
-        rest
-    } else {
-        return None;
-    };
+    // Extract data field. Prefer the `data: ` form (standard SSE) so the
+    // remainder carries no leading space; fall back to `data:` for senders
+    // that omit the space. Behaviour is identical to the previous if/else
+    // chain, expressed with `?` to satisfy clippy::question_mark.
+    let data = line
+        .strip_prefix("data: ")
+        .or_else(|| line.strip_prefix("data:"))?;
 
     if data == "[DONE]" {
         return None; // end of stream marker

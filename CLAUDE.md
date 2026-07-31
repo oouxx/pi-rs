@@ -4,23 +4,6 @@
 
 ## CLAUDE.md 是建议性的，不是强制的
 
-Claude Code 官方文档明确说明：CLAUDE.md 里的规则是 advisory（建议性
-上下文），Claude 会读、通常会照做，但不保证 100% 遵守——尤其是文件
-写得太长时，重要规则会被淹没，Claude 会直接忽略一部分。真正"零例外"
-的规则，要靠 **hooks**（在特定事件触发时自动跑脚本，确定性执行，不
-依赖模型当时的状态）。
-
-本项目已经在 `.claude/hooks/` 下配了三个 hook，对应这份文档里最不能
-妥协的几条：
-
-| Hook                            | 触发时机                                            | 对应 CLAUDE.md 规则                                                                                                |
-| ------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `check-unwrap.sh`               | 每次 Edit/Write 修改 `.rs` 文件后                   | 非测试代码禁止 `.unwrap()`/`.expect()`                                                                             |
-| `block-git-danger.sh`           | 每次执行 Bash 前                                    | 并行 workflow 中禁止 `git stash`/`reset --hard` 等破坏性命令                                                       |
-| `verify-before-stop.sh`         | 每轮对话结束前（仅当本轮改动了 `.rs` 文件时才触发） | `cargo clippy` 零警告 + `cargo test --workspace` 通过才算完成                                                      |
-| `check-contract-table.sh`       | 每次执行 `git commit` 前                            | 公开接口（`pub fn`/`struct`/`enum`/`trait`）有改动时，`CONTRACT_ALIGNMENT.md` 必须同步提交，不能只改代码不改对照表 |
-| `check-contract-consistency.sh` | 每轮对话结束前                                      | `CONTRACT_ALIGNMENT.md` 里"是否一致=否"的行必须引用 `DEVIATIONS.md`，不能留一个没处理完的"否"                      |
-
 **结论：** 这份 CLAUDE.md 里凡是标了"必须""禁止""不可跳过"的规则，
 默认按"建议"对待就已经不够了；如果发现 Claude 反复违反同一条，第一
 反应不是把这句话写得更用力（加粗、加"IMPORTANT"），而是问"这条能不

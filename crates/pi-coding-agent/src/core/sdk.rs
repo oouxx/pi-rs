@@ -183,11 +183,25 @@ pub enum NoToolsMode {
     Builtin,
 }
 
-#[derive(Debug, Clone)]
 pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
     /// Loaded extensions result. Populated when extensions are enabled.
     pub extensions_result: Option<ExtensionsResult>,
+    /// Opaque handle keeping the V8 runtime alive (when `js-runtime` feature
+    /// is enabled and JS extensions were loaded). Dropping this shuts down V8.
+    /// Stored as `Box<dyn Any + Send>` to avoid a hard dependency on
+    /// `js-runtime` types in the struct definition.
+    pub _js_extension_manager: Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl std::fmt::Debug for CreateAgentSessionResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateAgentSessionResult")
+            .field("model_fallback_message", &self.model_fallback_message)
+            .field("extensions_result", &self.extensions_result)
+            .field("_js_extension_manager", &self._js_extension_manager.as_ref().map(|_| "<JsExtensionManager>"))
+            .finish()
+    }
 }
 
 /// Result of loading extensions.
@@ -481,10 +495,49 @@ pub async fn create_agent_session(
 
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    let extension_registry = options
+    let mut extension_registry = options
         .extension_registry
         .take()
         .unwrap_or_default();
+
+    // ── JS/TS extension loading (V8 runtime, feature-gated) ──────────
+    #[cfg(feature = "js-runtime")]
+    let mut js_extension_manager: Option<Box<dyn std::any::Any + Send>> = None;
+    #[cfg(feature = "js-runtime")]
+    let mut js_load_errors: Vec<ExtensionError> = Vec::new();
+
+    #[cfg(feature = "js-runtime")]
+    if options.enable_extensions {
+        match crate::core::extensions::js_adapter::load_js_extensions(
+            &options.extension_paths,
+            &cwd,
+            &agent_dir,
+        )
+        .await
+        {
+            Ok(Some(loaded)) => {
+                for adapter in loaded.adapters {
+                    extension_registry.register(
+                        Box::new(adapter),
+                        crate::core::extensions::create_builtin_source_info("js-extension"),
+                    );
+                }
+                js_extension_manager = Some(Box::new(loaded.manager));
+            }
+            Ok(None) => {
+                // No JS extension files discovered — nothing to do.
+            }
+            Err(errors) => {
+                for e in errors {
+                    js_load_errors.push(ExtensionError {
+                        path: "<js-extension>".to_string(),
+                        error: e,
+                    });
+                }
+            }
+        }
+    }
+
     // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
     let prompt_guidelines = collect_prompt_guidelines(&extension_registry);
@@ -615,10 +668,14 @@ pub async fn create_agent_session(
     }
 
     // Build extensions result from pre-collected names
+    #[cfg(not(feature = "js-runtime"))]
+    let js_load_errors: Vec<ExtensionError> = Vec::new();
+
     let extensions_result = if options.enable_extensions {
+        let mut all_errors = js_load_errors;
         Some(ExtensionsResult {
             extensions: extension_names,
-            errors: Vec::new(),
+            errors: std::mem::take(&mut all_errors),
         })
     } else {
         None
@@ -629,6 +686,12 @@ pub async fn create_agent_session(
         CreateAgentSessionResult {
             model_fallback_message: fallback_message,
             extensions_result,
+            _js_extension_manager: {
+                #[cfg(feature = "js-runtime")]
+                { js_extension_manager }
+                #[cfg(not(feature = "js-runtime"))]
+                { None }
+            },
         },
     ))
 }

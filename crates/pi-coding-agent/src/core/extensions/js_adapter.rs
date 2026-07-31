@@ -38,6 +38,14 @@ use super::js_runtime::ExtensionLoadResult;
 /// runtime task (running on a current-thread `LocalSet`).
 #[derive(Debug)]
 pub enum JsCommand {
+    /// Load a TS/JS extension file and invoke its factory. Returns the
+    /// captured `ExtensionLoadResult` (metadata); JS callbacks stay alive
+    /// in the V8 runtime for later invocation.
+    LoadExtension {
+        path: std::path::PathBuf,
+        cwd: std::path::PathBuf,
+        response_tx: oneshot::Sender<Result<ExtensionLoadResult, String>>,
+    },
     /// Execute a registered tool's JS `execute` callback.
     ExecuteTool {
         tool_name: String,
@@ -535,6 +543,32 @@ impl JsExtensionManager {
         self.cmd_tx.clone()
     }
 
+    /// Load a JS/TS extension file on the V8 thread and return the
+    /// captured registration metadata. The JS callbacks (tool execute,
+    /// event handlers, command handlers) stay alive in the V8 runtime
+    /// for later invocation via `JsCommand`.
+    ///
+    /// Returns `(ExtensionLoadResult, command_sender)` — the sender is
+    /// returned so the caller can create a `JsExtensionAdapter` with it.
+    pub async fn load_extension(
+        &self,
+        path: std::path::PathBuf,
+        cwd: std::path::PathBuf,
+    ) -> Result<ExtensionLoadResult, String> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(JsCommand::LoadExtension {
+                path,
+                cwd,
+                response_tx,
+            })
+            .await
+            .map_err(|_| "V8 runtime channel closed".to_string())?;
+        response_rx
+            .await
+            .map_err(|_| "V8 runtime dropped response".to_string())?
+    }
+
     /// Run the V8 runtime thread: create the runtime, load extensions, and
     /// process commands from the channel.
     fn run_v8_thread(_cmd_tx: mpsc::Sender<JsCommand>, mut cmd_rx: mpsc::Receiver<JsCommand>) {
@@ -556,6 +590,17 @@ impl JsExtensionManager {
             // Process commands from adapters.
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
+                    JsCommand::LoadExtension { path, cwd, response_tx } => {
+                        match js_runtime.load_extension(&path, &cwd).await {
+                            Ok(()) => {
+                                let result = js_runtime.take_result();
+                                let _ = response_tx.send(Ok(result));
+                            }
+                            Err(e) => {
+                                let _ = response_tx.send(Err(format!("{e}")));
+                            }
+                        }
+                    }
                     JsCommand::ExecuteTool {
                         tool_name,
                         tool_call_id,
@@ -720,4 +765,84 @@ mod tests {
         adapter.register_tools(&mut tools);
         assert_eq!(tools.into_vec().len(), 1);
     }
+}
+
+// ============================================================================
+// load_js_extensions — top-level integration: discover + load + adapt
+// ============================================================================
+
+use super::loader::discover_extension_paths;
+use std::path::{Path, PathBuf};
+
+/// Result of loading JS extensions: adapters to register + the manager
+/// (which must be kept alive for the lifetime of the session).
+pub struct JsExtensionsLoaded {
+    /// Adapters ready to be registered into `ExtensionRegistry`.
+    pub adapters: Vec<JsExtensionAdapter>,
+    /// The V8 runtime manager — must be kept alive (dropping it shuts down V8).
+    pub manager: JsExtensionManager,
+}
+
+/// Discover, load, and adapt JS/TS extensions from the configured paths
+/// and extension directories.
+///
+/// This is the live counterpart to the dead `extension_paths` parameter:
+/// it uses `loader::discover_extension_paths` to find extension files,
+/// then loads each one via the V8 runtime and creates a `JsExtensionAdapter`.
+///
+/// Returns `None` if no extension files were discovered (no V8 thread
+/// is spawned in that case).
+///
+/// # Errors
+/// Returns a `Vec<String>` of per-extension load errors (extensions that
+/// failed to load are skipped; successful ones are still returned).
+pub async fn load_js_extensions(
+    extension_paths: &[String],
+    cwd: &str,
+    agent_dir: &str,
+) -> Result<Option<JsExtensionsLoaded>, Vec<String>> {
+    let discovered = discover_extension_paths(extension_paths, cwd, agent_dir);
+    if discovered.paths.is_empty() {
+        return Ok(None);
+    }
+
+    let (manager, cmd_tx) = JsExtensionManager::spawn();
+    let mut adapters = Vec::new();
+    let mut errors = Vec::new();
+
+    for ext_path in &discovered.paths {
+        let path_str = ext_path.to_string_lossy().to_string();
+        match manager
+            .load_extension(ext_path.clone(), PathBuf::from(cwd))
+            .await
+        {
+            Ok(load_result) => {
+                if load_result.tools.is_empty()
+                    && load_result.commands.is_empty()
+                    && load_result.shortcuts.is_empty()
+                    && load_result.flags.is_empty()
+                    && load_result.handlers.is_empty()
+                    && load_result.message_renderers.is_empty()
+                    && load_result.entry_renderers.is_empty()
+                    && load_result.pending_providers.is_empty()
+                {
+                    // Extension loaded but registered nothing — skip.
+                    continue;
+                }
+                let adapter = JsExtensionAdapter::new(&path_str, load_result, cmd_tx.clone());
+                adapters.push(adapter);
+            }
+            Err(e) => {
+                errors.push(format!("Failed to load extension {path_str}: {e}"));
+            }
+        }
+    }
+
+    if adapters.is_empty() && errors.is_empty() {
+        // Nothing loaded; shut down the V8 thread.
+        drop(manager);
+        return Ok(None);
+    }
+
+    Ok(Some(JsExtensionsLoaded { adapters, manager }))
 }

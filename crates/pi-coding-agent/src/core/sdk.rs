@@ -5,6 +5,8 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
+#[cfg(feature = "js-runtime")]
+use crate::core::model_registry::ProviderConfig;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
@@ -495,6 +497,7 @@ pub async fn create_agent_session(
 
 
     // ── Extension registry (Rust native extensions) ───────────────────
+    #[cfg_attr(not(feature = "js-runtime"), allow(unused_mut))]
     let mut extension_registry = options
         .extension_registry
         .take()
@@ -517,6 +520,23 @@ pub async fn create_agent_session(
         {
             Ok(Some(loaded)) => {
                 for adapter in loaded.adapters {
+                    // Flush pre-bind provider registrations (queued via
+                    // `pi.registerProvider` during the factory call) to the
+                    // ModelRegistry, mirroring TS `bindCore()` flushing
+                    // `pendingProviderRegistrations`.
+                    for pending in adapter.pending_providers() {
+                        match serde_json::from_str::<ProviderConfig>(&pending.config_json) {
+                            Ok(config) => {
+                                model_registry.register_provider(&pending.name, config);
+                            }
+                            Err(e) => {
+                                js_load_errors.push(ExtensionError {
+                                    path: pending.extension_path.clone(),
+                                    error: format!("registerProvider config parse error: {e}"),
+                                });
+                            }
+                        }
+                    }
                     // Use the per-extension SourceInfo (derived from the
                     // extension file path) so registered tools/commands carry
                     // accurate provenance, not a generic placeholder.
@@ -657,8 +677,54 @@ pub async fn create_agent_session(
         custom_tools: options.custom_tools,
     };
 
+    // Clone the model registry before it's moved into the session. The clone
+    // shares the `registered_providers` Arc with the original, so the
+    // post-bind `register_provider` closure can reach the live provider map
+    // that the session's model registry uses. (Other fields — models,
+    // models_json_providers — are deep-copied; they are read-only after
+    // construction so that's fine.)
+    #[cfg(feature = "js-runtime")]
+    let model_registry_for_actions = model_registry.clone();
+
     let session =
         AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
+
+    // ── Bind the JS extension runtime core ─────────────────────────────
+    // After all extensions are loaded and the session is created, install
+    // the action-method closures so that post-load action ops (e.g. live
+    // `pi.registerProvider` calls from event handlers) delegate to the host.
+    // Mirrors TS `ExtensionRunner.bindCore()`.
+    #[cfg(feature = "js-runtime")]
+    if let Some(ref manager_any) = js_extension_manager {
+        if let Some(manager) = manager_any
+            .downcast_ref::<crate::core::extensions::js_adapter::JsExtensionManager>()
+        {
+            let registry = model_registry_for_actions.clone();
+            let actions = crate::core::extensions::js_runtime::RuntimeActions {
+                register_provider: Some(std::sync::Arc::new(
+                    move |name: String, config_json: String, _ext_path: String| {
+                        match serde_json::from_str::<ProviderConfig>(&config_json) {
+                            Ok(config) => registry.register_provider(&name, config),
+                            Err(_) => {
+                                eprintln!(
+                                    "[pi] extension registerProvider: failed to parse config for '{name}'"
+                                );
+                            }
+                        }
+                    },
+                )),
+                unregister_provider: Some(std::sync::Arc::new(
+                    move |name: String| {
+                        model_registry_for_actions.unregister_provider(&name);
+                    },
+                )),
+                ..Default::default()
+            };
+            if let Err(e) = manager.bind_core(actions).await {
+                eprintln!("[pi] extension bindCore failed: {e}");
+            }
+        }
+    }
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {

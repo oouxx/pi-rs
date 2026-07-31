@@ -36,7 +36,6 @@ use super::js_runtime::ExtensionLoadResult;
 
 /// A command sent from the adapter (running on any tokio task) to the V8
 /// runtime task (running on a current-thread `LocalSet`).
-#[derive(Debug)]
 pub enum JsCommand {
     /// Load a TS/JS extension file and invoke its factory. Returns the
     /// captured `ExtensionLoadResult` (metadata); JS callbacks stay alive
@@ -64,10 +63,31 @@ pub enum JsCommand {
         command_name: String,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
+    /// Bind the runtime core: install action-method closures so that
+    /// post-load action ops (sendMessage, registerProvider, etc.) delegate
+    /// to the host instead of throwing "not initialized". Mirrors TS
+    /// `ExtensionRunner.bindCore()`.
+    BindCore {
+        actions: super::js_runtime::RuntimeActions,
+        response_tx: oneshot::Sender<Result<(), String>>,
+    },
     /// Shut down the V8 runtime thread. The receiver breaks out of its
     /// command loop on receipt, so shutdown is deterministic even if some
     /// adapter-held sender clones are still alive.
     Shutdown,
+}
+
+impl std::fmt::Debug for JsCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LoadExtension { .. } => write!(f, "JsCommand::LoadExtension"),
+            Self::ExecuteTool { .. } => write!(f, "JsCommand::ExecuteTool"),
+            Self::FireEvent { .. } => write!(f, "JsCommand::FireEvent"),
+            Self::ExecuteCommand { .. } => write!(f, "JsCommand::ExecuteCommand"),
+            Self::BindCore { .. } => write!(f, "JsCommand::BindCore"),
+            Self::Shutdown => write!(f, "JsCommand::Shutdown"),
+        }
+    }
 }
 
 // ============================================================================
@@ -195,6 +215,15 @@ impl JsExtensionAdapter {
     #[must_use]
     pub fn source_info(&self) -> &SourceInfo {
         &self.source_info
+    }
+
+    /// Provider registrations queued via `pi.registerProvider` during the
+    /// extension's factory invocation (pre-bind). The caller flushes these
+    /// to the `ModelRegistry` after loading, mirroring TS
+    /// `pendingProviderRegistrations` consumption in `bindCore()`.
+    #[must_use]
+    pub fn pending_providers(&self) -> &[super::js_runtime::PendingProviderRegistration] {
+        &self.load_result.pending_providers
     }
 
     /// Send a tool execution request to the V8 runtime and await the result.
@@ -620,6 +649,31 @@ impl JsExtensionManager {
         self.cmd_tx.clone()
     }
 
+    /// Bind the runtime core: install `RuntimeActions` closures so that
+    /// post-load action ops (sendMessage, registerProvider, etc.) delegate
+    /// to the host. Mirrors TS `ExtensionRunner.bindCore()`. Must be called
+    /// after all extensions are loaded and after pending provider
+    /// registrations are flushed to the `ModelRegistry`.
+    ///
+    /// # Errors
+    /// Returns a `String` if the V8 runtime thread has already shut down.
+    pub async fn bind_core(
+        &self,
+        actions: super::js_runtime::RuntimeActions,
+    ) -> Result<(), String> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(JsCommand::BindCore {
+                actions,
+                response_tx,
+            })
+            .await
+            .map_err(|_| "V8 runtime channel closed".to_string())?;
+        response_rx
+            .await
+            .map_err(|_| "V8 runtime dropped response".to_string())?
+    }
+
     /// Load a JS/TS extension file on the V8 thread and return the
     /// captured registration metadata. The JS callbacks (tool execute,
     /// event handlers, command handlers) stay alive in the V8 runtime
@@ -729,6 +783,13 @@ impl JsExtensionManager {
                                 }));
                             }
                         }
+                    }
+                    JsCommand::BindCore {
+                        actions,
+                        response_tx,
+                    } => {
+                        js_runtime.bind_core(actions);
+                        let _ = response_tx.send(Ok(()));
                     }
                     JsCommand::Shutdown => break,
                     JsCommand::FireEvent {

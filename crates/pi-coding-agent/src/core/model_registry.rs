@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use pi_agent_core::pi_ai_types::Model;
 
@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 pub struct ModelRegistry {
     models: RwLock<Vec<Model>>,
-    registered_providers: RwLock<HashMap<String, ProviderConfig>>,
+    registered_providers: Arc<RwLock<HashMap<String, ProviderConfig>>>,
     /// Provider configs loaded from models.json (provider-level settings like baseUrl, apiKey, headers, etc.)
     models_json_providers: RwLock<HashMap<String, ProviderConfig>>,
 }
@@ -19,13 +19,13 @@ impl Clone for ModelRegistry {
     fn clone(&self) -> Self {
         Self {
             models: RwLock::new(self.models.read().unwrap().clone()),
-            registered_providers: RwLock::new(self.registered_providers.read().unwrap().clone()),
+            registered_providers: Arc::clone(&self.registered_providers),
             models_json_providers: RwLock::new(self.models_json_providers.read().unwrap().clone()),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ProviderConfig {
     pub name: Option<String>,
     pub base_url: Option<String>,
@@ -58,7 +58,7 @@ impl ModelRegistry {
         let models_json_providers = Self::load_models_from_file(&mut models);
         Self {
             models: RwLock::new(models),
-            registered_providers: RwLock::new(HashMap::new()),
+            registered_providers: Arc::new(RwLock::new(HashMap::new())),
             models_json_providers: RwLock::new(models_json_providers),
         }
     }
@@ -71,7 +71,7 @@ impl ModelRegistry {
         let models_json_providers = Self::load_models_from_path(&mut models, models_path);
         Self {
             models: RwLock::new(models),
-            registered_providers: RwLock::new(HashMap::new()),
+            registered_providers: Arc::new(RwLock::new(HashMap::new())),
             models_json_providers: RwLock::new(models_json_providers),
         }
     }

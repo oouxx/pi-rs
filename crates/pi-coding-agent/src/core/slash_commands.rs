@@ -161,18 +161,15 @@ pub fn builtin_slash_commands() -> Vec<BuiltinSlashCommand> {
 /// A resolved command with its invocation name (may include a `:N` suffix
 /// when multiple extensions register the same command name).
 ///
-/// This mirrors the TS `ResolvedCommand extends RegisteredCommand`. In the
-/// Rust port the extension command registry (`RegisteredCommand`) does not
-/// yet carry `sourceInfo`/`getArgumentCompletions` (see DEVIATIONS.md —
-/// extension system internal deviation), so `source_info` is `Option` here
-/// and currently always `None` for extension-resolved commands.
+/// This mirrors the TS `ResolvedCommand extends RegisteredCommand`. The
+/// `source_info` is carried from the original `RegisteredCommand`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedCommand {
     pub invocation_name: String,
     pub name: String,
     pub description: Option<String>,
-    pub source_info: Option<SourceInfo>,
+    pub source_info: SourceInfo,
 }
 
 /// Resolve extension command name conflicts, matching the TS
@@ -228,9 +225,7 @@ pub fn resolve_extension_commands(
             invocation_name,
             name: cmd.name.clone(),
             description: Some(cmd.description.clone()),
-            // RegisteredCommand in the Rust port does not yet carry sourceInfo
-            // (extension system deviation, see DEVIATIONS.md).
-            source_info: None,
+            source_info: cmd.source_info.clone(),
         });
     }
 
@@ -349,7 +344,10 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].invocation_name, "mycmd");
         assert_eq!(resolved[0].name, "mycmd");
-        assert!(resolved[0].source_info.is_none());
+        assert_eq!(
+            resolved[0].source_info,
+            crate::core::source_info::create_builtin_source_info("test")
+        );
     }
 
     #[test]

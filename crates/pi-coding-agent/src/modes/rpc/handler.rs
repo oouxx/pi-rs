@@ -539,11 +539,25 @@ pub async fn handle_command(
             // `getCommands()`), reusing the typed `SlashCommandInfo` so the
             // wire format stays in sync with `slash-commands.ts`.
             //
-            // Extension commands are not yet queryable through the Rust
-            // ExtensionRegistry — this is a known, confirmed deviation from
-            // the TS version (see DEVIATIONS.md #5). Skills and prompt
-            // templates are included.
+            // Order matches TS: extension commands first, then prompt
+            // templates, then skills.
             let mut commands: Vec<crate::core::slash_commands::SlashCommandInfo> = Vec::new();
+
+            // Extension commands → source = "extension"
+            // Uses resolve_extension_commands to apply the `:N` dedup logic
+            // that TS `getRegisteredCommands()` performs.
+            if let Some(registry) = session.get_extension_registry() {
+                let resolved =
+                    crate::core::slash_commands::resolve_extension_commands(registry.commands());
+                for cmd in resolved {
+                    commands.push(crate::core::slash_commands::SlashCommandInfo {
+                        name: cmd.invocation_name,
+                        description: cmd.description,
+                        source: crate::core::slash_commands::SlashCommandSource::Extension,
+                        source_info: cmd.source_info,
+                    });
+                }
+            }
 
             // Prompt templates → source = "prompt"
             for template in session.prompt_templates() {

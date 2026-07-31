@@ -517,10 +517,11 @@ pub async fn create_agent_session(
         {
             Ok(Some(loaded)) => {
                 for adapter in loaded.adapters {
-                    extension_registry.register(
-                        Box::new(adapter),
-                        crate::core::extensions::create_builtin_source_info("js-extension"),
-                    );
+                    // Use the per-extension SourceInfo (derived from the
+                    // extension file path) so registered tools/commands carry
+                    // accurate provenance, not a generic placeholder.
+                    let source_info = adapter.source_info().clone();
+                    extension_registry.register(Box::new(adapter), source_info);
                 }
                 js_extension_manager = Some(Box::new(loaded.manager));
             }

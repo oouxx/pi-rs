@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use pi_extension_api::{
     create_synthetic_source_info, CommandRegistry, CommandRegistration, ExtensionContext,
-    FlagRegistry, HookHandler, HookResult, RegisteredFlag, RegisteredShortcut, ShortcutRegistry,
+    FlagRegistry, HookHandler, HookResult, ShortcutRegistry,
     SourceInfo, SourceOrigin, SourceScope, ToolCallOutput, ToolDefinition, ToolExecuteFn,
     ToolRegistry,
 };
@@ -64,6 +64,75 @@ pub enum JsCommand {
         command_name: String,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
+    /// Shut down the V8 runtime thread. The receiver breaks out of its
+    /// command loop on receipt, so shutdown is deterministic even if some
+    /// adapter-held sender clones are still alive.
+    Shutdown,
+}
+
+// ============================================================================
+// JsToolResult — deserialization of a JS tool's `AgentToolResult` return value
+// ============================================================================
+
+/// The shape returned by a JS extension tool's `execute()` callback.
+///
+/// This mirrors the TS `AgentToolResult<T>` interface (`content`, `details`,
+/// `terminate`, `addedToolNames`). It is **not** the same as `ToolCallOutput`:
+/// `AgentToolResult` has no `isError` field (errors are signalled by the
+/// callback throwing, which we catch separately). We deserialize with
+/// `#[serde(default)]` so a tool that omits optional fields still parses.
+#[derive(Debug, serde::Deserialize)]
+struct JsToolResult {
+    #[serde(default)]
+    content: Vec<Value>,
+    #[serde(default)]
+    details: Option<Value>,
+    #[serde(default)]
+    terminate: Option<bool>,
+    // `addedToolNames` is intentionally ignored — the Rust extension API has
+    // no equivalent field in `ToolCallOutput`.
+}
+
+impl JsToolResult {
+    /// Convert into the Rust-side `ToolCallOutput`. `is_error` is always
+    /// `false` here — if the JS callback had thrown, the caller handles that
+    /// path before reaching this conversion.
+    fn into_output(self) -> ToolCallOutput {
+        ToolCallOutput {
+            content: self.content,
+            details: self.details,
+            is_error: false,
+            terminate: self.terminate,
+        }
+    }
+}
+
+/// Build a minimal `ExtensionContext`-like JS object and the tool-execute
+/// script.
+///
+/// The original TS `ToolDefinition.execute` takes five arguments:
+/// `(toolCallId, params, signal, onUpdate, ctx)`. We pass `undefined` for
+/// `signal` and `onUpdate` (no abort signalling / streaming updates in the
+/// runtime loader) and a minimal stub `ctx` whose methods are no-ops or safe
+/// defaults. Tools that require real UI interaction or abort signals will
+/// degrade gracefully rather than crash.
+fn build_tool_execute_script(tool_name: &str, tool_call_id: &str, params_json: &str) -> String {
+    // A minimal ctx object. Fields are stubbed to safe defaults; methods that
+    // the runtime cannot honour (abort, shutdown, UI prompts) are no-ops.
+    let ctx = "(() => { const cwd = globalThis.__piCwd || '.'; return {         ui: new Proxy({}, { get: () => () => {} }),         mode: 'fast', hasUI: false, cwd,         sessionManager: new Proxy({}, { get: () => () => {} }),         modelRegistry: new Proxy({}, { get: () => () => {} }),         model: undefined, signal: undefined,         isIdle: () => true, isProjectTrusted: () => false,         abort: () => {}, hasPendingMessages: () => false,         shutdown: () => {}, getContextUsage: () => undefined,         compact: () => {}, getSystemPrompt: () => '',     }; })()";
+    format!(
+        "(async () => {{
+          const fn = globalThis.__pi.__toolExecutors.get({name:?});
+          if (!fn) throw new Error('Tool not found: ' + {name:?});
+          const ctx = {ctx};
+          const result = await fn({call_id:?}, {params}, undefined, undefined, ctx);
+          return result;
+        }})()",
+        name = tool_name,
+        call_id = tool_call_id,
+        params = params_json,
+        ctx = ctx,
+    )
 }
 
 // ============================================================================
@@ -118,6 +187,14 @@ impl JsExtensionAdapter {
             source_info,
             cmd_tx,
         }
+    }
+
+    /// The per-extension `SourceInfo` (derived from the extension file path).
+    /// Used by the integration layer to stamp provenance onto the tools and
+    /// commands this adapter registers, instead of a generic placeholder.
+    #[must_use]
+    pub fn source_info(&self) -> &SourceInfo {
+        &self.source_info
     }
 
     /// Send a tool execution request to the V8 runtime and await the result.
@@ -609,42 +686,51 @@ impl JsExtensionManager {
                     } => {
                         let params_json = serde_json::to_string(&params)
                             .unwrap_or_else(|_| "null".into());
-                        let script = format!(
-                            "(async () => {{
-                              const fn = globalThis.__pi.__toolExecutors.get({name:?});
-                              if (!fn) throw new Error('Tool not found: ' + {name:?});
-                              const result = await fn({params}, {call_id:?});
-                              return result;
-                            }})()",
-                            name = tool_name,
-                            params = params_json,
-                            call_id = tool_call_id,
+                        let script = build_tool_execute_script(
+                            &tool_name,
+                            &tool_call_id,
+                            &params_json,
                         );
-                        match js_runtime.execute_script("<tool-exec>", &script) {
-                            Ok(_) => {
-                                // Run the event loop to let async callbacks complete.
-                                if let Err(e) = js_runtime.run_event_loop()
-                                    .await
+                        // Execute the async JS, pump the event loop, and
+                        // extract the result as a JSON string in one call.
+                        match js_runtime
+                            .execute_async_and_get_json("<tool-exec>", &script)
+                            .await
+                        {
+                            Ok(json_str) => {
+                                let output = match serde_json::from_str::<JsToolResult>(&json_str)
                                 {
-                                    let _ = response_tx.send(Err(format!("V8 event loop: {e}")));
-                                    continue;
-                                }
-                                // TODO: extract the actual result from V8.
-                                // For now, return a success output.
+                                    Ok(result) => result.into_output(),
+                                    // The JS callback returned a value that
+                                    // doesn't match AgentToolResult — wrap the
+                                    // raw JSON as a single text content block
+                                    // so the agent still sees something.
+                                    Err(_) => ToolCallOutput {
+                                        content: vec![Value::String(json_str.clone())],
+                                        details: Some(Value::String(json_str)),
+                                        is_error: false,
+                                        terminate: None,
+                                    },
+                                };
+                                let _ = response_tx.send(Ok(output));
+                            }
+                            Err(e) => {
+                                // The JS callback threw or the event loop
+                                // failed. Surface it as an error tool output so
+                                // the agent can react, mirroring how the TS
+                                // runtime reports tool execution failures.
                                 let _ = response_tx.send(Ok(ToolCallOutput {
-                                    content: vec![Value::String(
-                                        "JS tool executed (result extraction pending)".into(),
-                                    )],
+                                    content: vec![Value::String(format!(
+                                        "JS tool execution error: {e}"
+                                    ))],
                                     details: None,
-                                    is_error: false,
+                                    is_error: true,
                                     terminate: None,
                                 }));
                             }
-                            Err(e) => {
-                                let _ = response_tx.send(Err(format!("V8 execute: {e}")));
-                            }
                         }
                     }
+                    JsCommand::Shutdown => break,
                     JsCommand::FireEvent {
                         event,
                         data_json,
@@ -707,10 +793,19 @@ impl JsExtensionManager {
     }
 
     /// Shut down the V8 runtime (drop the channel sender and join the thread).
+    ///
+    /// Sends an explicit `Shutdown` command so the V8 thread breaks out of
+    /// its command loop deterministically — even if adapter-held sender
+    /// clones are still alive (they would otherwise keep the channel open
+    /// and `recv()` would never observe closure). After sending, we drop our
+    /// own sender and join the thread.
     pub fn shutdown(&mut self) {
-        // Dropping cmd_tx will cause the recv loop to exit.
-        // The thread will exit after processing remaining commands.
-        drop(self.cmd_tx.clone());
+        // Best-effort: send Shutdown. If the channel is already closed (thread
+        // exited), this is a no-op.
+        let _ = self.cmd_tx.try_send(JsCommand::Shutdown);
+        // Release our sender so the channel can drain.
+        let (dummy_tx, _dummy_rx) = mpsc::channel::<JsCommand>(1);
+        let _real_sender = std::mem::replace(&mut self.cmd_tx, dummy_tx);
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
@@ -729,7 +824,7 @@ impl Drop for JsExtensionManager {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use pi_extension_api::{HookRunner, ToolRegistry};
+    use pi_extension_api::ToolRegistry;
 
     #[test]
     fn test_adapter_registration() {
@@ -761,9 +856,145 @@ mod tests {
         let adapter = JsExtensionAdapter::new("/path/to/my-ext.ts", load_result, cmd_tx);
         assert_eq!(adapter.name(), "my-ext");
 
-        let mut tools = ToolRegistry::new(adapter.source_info.clone());
+        let mut tools = ToolRegistry::new(adapter.source_info().clone());
         adapter.register_tools(&mut tools);
         assert_eq!(tools.into_vec().len(), 1);
+    }
+
+    /// Block on a future using a fresh current-thread tokio runtime (the V8
+    /// runtime runs on its own thread with its own runtime; communication is
+    /// via channels, so the test runtime just needs to drive the adapter side).
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime")
+            .block_on(future)
+    }
+
+    /// End-to-end: load an extension whose tool `execute` returns a real
+    /// `AgentToolResult`, then invoke the registered tool's `ToolExecuteFn`
+    /// and verify the extracted `ToolCallOutput`.
+    #[test]
+    fn test_tool_execution_result_extraction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("echo-ext.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.registerTool({
+    name: "echo",
+    description: "echo back the param",
+    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+      const n = (params && params.n) || 0;
+      return {
+        content: [{ type: "text", text: "echo: " + n }],
+        details: { toolCallId, doubled: n * 2 },
+        terminate: false,
+      };
+    },
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result = block_on(manager.load_extension(
+            ext.clone(),
+            dir.path().to_path_buf(),
+        ))
+        .expect("load_extension");
+        assert_eq!(load_result.tools.len(), 1);
+
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let mut tools = ToolRegistry::new(adapter.source_info().clone());
+        adapter.register_tools(&mut tools);
+        let registered = tools.into_vec();
+        assert_eq!(registered.len(), 1);
+        let tool = &registered[0];
+        assert_eq!(tool.name, "echo");
+        let execute = tool.definition.execute.clone().expect("tool has execute fn");
+
+        let output = block_on(execute(
+            "call-1".to_string(),
+            serde_json::json!({ "n": 21 }),
+            None,
+        ))
+        .expect("tool execute");
+        assert!(!output.is_error, "should not be an error");
+        assert!(output.terminate == Some(false));
+        // content is the raw JSON array of TextContent objects.
+        assert_eq!(output.content.len(), 1);
+        assert_eq!(output.content[0]["type"], "text");
+        assert_eq!(output.content[0]["text"], "echo: 21");
+        // details carries the structured object from JS.
+        let details = output.details.expect("details present");
+        assert_eq!(details["toolCallId"], "call-1");
+        assert_eq!(details["doubled"], 42);
+
+        // `manager` drops last (natural reverse-order drop), after `registered`
+        // and `execute` release their cmd_tx clones — so the V8 thread exits
+        // cleanly during shutdown().
+    }
+
+    /// A tool whose `execute` throws should surface as an `is_error` output.
+    #[test]
+    fn test_tool_execution_error_surfaces_as_is_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("boom-ext.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.registerTool({
+    name: "boom",
+    description: "always throws",
+    execute: async () => {
+      throw new Error("kaboom");
+    },
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result = block_on(manager.load_extension(
+            ext.clone(),
+            dir.path().to_path_buf(),
+        ))
+        .expect("load_extension");
+
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+        let mut tools = ToolRegistry::new(adapter.source_info().clone());
+        adapter.register_tools(&mut tools);
+        let registered = tools.into_vec();
+        let execute = registered[0].definition.execute.clone().expect("execute fn");
+
+        let output = block_on(execute("c".to_string(), serde_json::json!({}), None))
+            .expect("execute returns output");
+        assert!(output.is_error, "error must be flagged");
+        assert!(output.content[0].is_string());
+        assert!(output.content[0]
+            .as_str()
+            .unwrap()
+            .contains("kaboom"));
     }
 }
 
@@ -772,7 +1003,7 @@ mod tests {
 // ============================================================================
 
 use super::loader::discover_extension_paths;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Result of loading JS extensions: adapters to register + the manager
 /// (which must be kept alive for the lifetime of the session).

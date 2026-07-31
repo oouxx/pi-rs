@@ -1095,6 +1095,58 @@ impl JsExtensionRuntime {
             .map_err(|e| anyhow::anyhow!("execute_script: {e}"))?;
         Ok(())
     }
+
+    /// Execute an async JS expression, run the event loop to resolve any
+    /// promises, and return the result as a JSON string.
+    ///
+    /// The `code` must be an expression that evaluates to a value (or a
+    /// Promise). The result is stored in `globalThis.__piResult`, the event
+    /// loop is pumped, and then `JSON.stringify(globalThis.__piResult)` is
+    /// returned.
+    ///
+    /// # Errors
+    /// Returns an error if the script throws, the event loop fails, or
+    /// `JSON.stringify` fails (circular references).
+    pub async fn execute_async_and_get_json(
+        &mut self,
+        name: &str,
+        code: &str,
+    ) -> anyhow::Result<String> {
+        // Wrap the code: store result in __piResult, then run event loop.
+        let wrapper = format!(
+            "globalThis.__piResult = undefined;
+             (async () => {{
+               globalThis.__piResult = await ({code});
+             }})()",
+            code = code
+        );
+        self.runtime
+            .execute_script(name.to_string(), wrapper)
+            .map_err(|e| anyhow::anyhow!("execute_script: {e}"))?;
+        self.runtime
+            .run_event_loop(Default::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("V8 event loop: {e}"))?;
+        // Serialize the result to JSON.
+        let json = self
+            .runtime
+            .execute_script(
+                "<pi-result-json>".to_string(),
+                "JSON.stringify(globalThis.__piResult ?? null)".to_string(),
+            )
+            .map_err(|e| anyhow::anyhow!("serialize result: {e}"))?;
+        // Extract the JSON string from the v8::Global<v8::Value> using the
+        // deno_core scope macro (creates a HandleScope + ContextScope) and the
+        // v8 Value::to_rust_string_lossy helper. JSON.stringify always returns
+        // a string (or throws for circular refs, caught above), so no cast is
+        // needed — to_rust_string_lossy handles the toString conversion.
+        let result = {
+            deno_core::scope!(scope, self.runtime);
+            let value = json.open(scope);
+            value.to_rust_string_lossy(scope)
+        };
+        Ok(result)
+    }
 }
 
 // ============================================================================
@@ -1148,6 +1200,43 @@ mod tests {
             .try_take::<ExtensionLoadResult>()
             .unwrap_or_default();
         assert_eq!(result.logs, vec!["hello from v8".to_string()]);
+    }
+
+    #[test]
+    fn test_execute_async_and_get_json_simple() {
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        // A plain value expression (no promise) — should still resolve.
+        let json = block_on(js.execute_async_and_get_json(
+            "<simple>",
+            "({ answer: 42, items: [1, 2, 3], nested: { ok: true } })",
+        ))
+        .expect("execute_async_and_get_json");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse json");
+        assert_eq!(v["answer"], 42);
+        assert_eq!(v["items"][2], 3);
+        assert_eq!(v["nested"]["ok"], true);
+    }
+
+    #[test]
+    fn test_execute_async_and_get_json_async_value() {
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        // An async expression that awaits a resolved promise.
+        let json = block_on(js.execute_async_and_get_json(
+            "<async>",
+            "(async () => { await Promise.resolve(); return { done: true }; })()",
+        ))
+        .expect("execute_async_and_get_json");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse json");
+        assert_eq!(v["done"], true);
+    }
+
+    #[test]
+    fn test_execute_async_and_get_json_null_result() {
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        // A null result should serialize to "null".
+        let json = block_on(js.execute_async_and_get_json("<null>", "null"))
+            .expect("execute_async_and_get_json");
+        assert_eq!(json, "null");
     }
 
     #[test]

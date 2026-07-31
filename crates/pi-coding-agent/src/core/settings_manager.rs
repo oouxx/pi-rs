@@ -1202,6 +1202,19 @@ impl SettingsManager {
         self.persist_scope(SettingsScope::Global);
     }
 
+    /// Get project-scoped packages (mirrors TS `getProjectSettings().packages`).
+    pub fn get_project_packages(&self) -> Vec<PackageSource> {
+        self.project_settings.packages.clone().unwrap_or_default()
+    }
+
+    /// Set project-scoped packages and persist (mirrors TS `setProjectPackages`).
+    pub fn set_project_packages(&mut self, packages: Vec<PackageSource>) {
+        self.project_settings.packages = Some(packages);
+        self.mark_project_modified("packages", None);
+        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.persist_scope(SettingsScope::Project);
+    }
+
     // --- extensions ---
 
     pub fn get_extensions(&self) -> Vec<String> {

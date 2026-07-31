@@ -276,3 +276,20 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 获取命令列表 | Extension commands → prompt templates → skills | Extension commands (`resolve_extension_commands`) → prompt templates → skills | 是 |
 | Extension command source | `source: "extension"` | `SlashCommandSource::Extension` | 是 |
 | 响应格式 | Array of `RpcSlashCommand` | Array of `SlashCommandInfo` (same wire format) | 是 |
+
+### PackageManager — Settings Persistence
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| `installAndPersist(source, {local})` | `await install(source)` → `addSourceToSettings(source, {local})` | `install(source, local)?` → `add_source_to_settings(source, local)` | 是 |
+| `removeAndPersist(source, {local})` | `await remove(source)` → `removeSourceFromSettings(source, {local})` | `remove(source, local)?` → `remove_source_from_settings(source, local)` | 是 |
+| `addSourceToSettings` — new source | Appends `PackageSource.String(normalizedSource)` to `packages` array (global or project scope) | Appends `PackageSource::String(normalized)` to `get_packages()` / `get_project_packages()` → `set_packages()` / `set_project_packages()` | 是 |
+| `addSourceToSettings` — existing match | Updates the matching entry's source string (preserves object fields if `PackageSource::Object`) | Same: finds match via `package_sources_match`, updates `source` field, preserves other fields | 是 |
+| `addSourceToSettings` — no change | Returns `false` when existing source string equals normalized source | Returns `false` when `existing_str == normalized` | 是 |
+| `removeSourceFromSettings` — match | Filters out matching entries, persists, returns `true` | Same: `package_sources_match` filter, `set_packages`/`set_project_packages`, returns `true` | 是 |
+| `removeSourceFromSettings` — no match | Returns `false` | Returns `false` | 是 |
+| `parseSource` | Parses `npm:spec`, git URLs, local paths into typed `ParsedSource` | `parse_source()` — same logic: `npm:` prefix → Npm, git/github/http/https/ssh → Git (simplified), else Local | 是 |
+| Source match key — npm | `npm:{name}` (name extracted from spec via regex) | `npm:{name}` (name extracted via manual `parse_npm_spec`) | 是 |
+| Source match key — git | `git:{host}/{path}` | `git:{host}/{path}` | 是 |
+| Source match key — local | `local:{resolvePath(path)}` vs `local:{resolvePathFromBase(path, baseDir)}` | `local:{resolve_path(path, cwd)}` vs `local:{resolve_path(path, base_dir)}` | 是 |
+| No SettingsManager | N/A (TS always has SettingsManager) | Returns `false` (no-op) when `settings_manager` is `None` | 是（有意偏差：Rust 允许无 SettingsManager 运行） |

@@ -7,9 +7,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+
+use crate::core::settings_manager::{PackageSource, SettingsManager};
+use crate::utils::paths::{is_local_path, resolve_path, PathOptions};
 
 // ============================================================================
 // Types
@@ -80,6 +83,15 @@ pub enum MissingSourceAction {
 /// Progress callback type.
 pub type ProgressCallback = Box<dyn Fn(ProgressEvent) + Send + Sync>;
 
+/// Parsed package source (mirrors TS `ParsedSource`).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum ParsedSource {
+    Npm { spec: String, name: String },
+    Git { host: String, path: String },
+    Local { path: String },
+}
+
 // ============================================================================
 // PackageManager trait
 // ============================================================================
@@ -106,6 +118,12 @@ pub trait PackageManager: Send + Sync {
 
     /// List configured packages.
     fn list_configured_packages(&self) -> Vec<ConfiguredPackage>;
+
+    /// Add a source to settings (persist), mirroring TS `addSourceToSettings`.
+    fn add_source_to_settings(&self, source: &str, local: bool) -> bool;
+
+    /// Remove a source from settings (persist), mirroring TS `removeSourceFromSettings`.
+    fn remove_source_from_settings(&self, source: &str, local: bool) -> bool;
 
     /// Set a progress callback.
     fn set_progress_callback(&self, callback: Option<ProgressCallback>);
@@ -255,6 +273,8 @@ pub struct DefaultPackageManager {
     progress_callback: Mutex<Option<ProgressCallback>>,
     /// Cache of resolved paths (source → path).
     path_cache: Mutex<HashMap<String, String>>,
+    /// Optional settings manager for persistence (mirrors TS `settingsManager`).
+    settings_manager: Option<Arc<Mutex<SettingsManager>>>,
 }
 
 impl DefaultPackageManager {
@@ -265,6 +285,22 @@ impl DefaultPackageManager {
             agent_dir: agent_dir.to_string(),
             progress_callback: Mutex::new(None),
             path_cache: Mutex::new(HashMap::new()),
+            settings_manager: None,
+        }
+    }
+
+    /// Create a new package manager with a settings manager for persistence.
+    pub fn new_with_settings(
+        cwd: &str,
+        agent_dir: &str,
+        sm: Arc<Mutex<SettingsManager>>,
+    ) -> Self {
+        DefaultPackageManager {
+            cwd: cwd.to_string(),
+            agent_dir: agent_dir.to_string(),
+            progress_callback: Mutex::new(None),
+            path_cache: Mutex::new(HashMap::new()),
+            settings_manager: Some(sm),
         }
     }
 
@@ -317,6 +353,170 @@ impl DefaultPackageManager {
         }
 
         None
+    }
+
+    /// Get the base directory for a scope (mirrors TS `getBaseDirForScope`).
+    fn get_base_dir_for_scope(&self, local: bool) -> String {
+        if local {
+            self.cwd.clone()
+        } else {
+            self.agent_dir.clone()
+        }
+    }
+
+    /// Parse a source string into a typed source (mirrors TS `parseSource`).
+    fn parse_source(&self, source: &str) -> ParsedSource {
+        let trimmed = source.trim();
+        if trimmed.starts_with("npm:") {
+            let spec = trimmed.strip_prefix("npm:").unwrap_or("").trim().to_string();
+            let (name, _version) = Self::parse_npm_spec(&spec);
+            return ParsedSource::Npm { spec, name };
+        }
+        if !is_local_path(trimmed) {
+            if let Some(git) = Self::parse_git_url(trimmed) {
+                return git;
+            }
+        }
+        ParsedSource::Local {
+            path: trimmed.to_string(),
+        }
+    }
+
+    /// Parse an npm spec into (name, optional version) (mirrors TS `parseNpmSpec`).
+    ///
+    /// Regex equivalent: `(name)(@version)?` where name may be `@scope/pkg` or `pkg`.
+    fn parse_npm_spec(spec: &str) -> (String, Option<String>) {
+        // Handle scoped packages: @scope/name@version or @scope/name
+        // Handle regular: name@version or name
+        let spec = spec.trim();
+        if spec.is_empty() {
+            return (spec.to_string(), None);
+        }
+
+        // Find the last '@' that is not at position 0 (scoped packages start with @)
+        let at_pos = if let Some(rest) = spec.strip_prefix('@') {
+            rest.find('@').map(|p| p + 1)
+        } else {
+            spec.find('@')
+        };
+
+        match at_pos {
+            Some(pos) => {
+                let name = spec[..pos].to_string();
+                let version = spec[pos + 1..].to_string();
+                if name.is_empty() || version.is_empty() {
+                    return (spec.to_string(), None);
+                }
+                (name, Some(version))
+            }
+            None => (spec.to_string(), None),
+        }
+    }
+
+    /// Parse a git URL into host/path (simplified port of TS `parseGitUrl`).
+    fn parse_git_url(source: &str) -> Option<ParsedSource> {
+        let trimmed = source.trim();
+
+        // github:shorthand → github.com/user/repo
+        if let Some(rest) = trimmed.strip_prefix("github:") {
+            let repo_part = rest.split('#').next().unwrap_or(rest).trim();
+            let segs: Vec<&str> = repo_part.split('/').collect();
+            if segs.len() >= 2 {
+                return Some(ParsedSource::Git {
+                    host: "github.com".to_string(),
+                    path: format!("{}/{}", segs[0], segs[1]),
+                });
+            }
+        }
+
+        let url = if let Some(rest) = trimmed.strip_prefix("git:") {
+            rest.trim().to_string()
+        } else {
+            trimmed.to_string()
+        };
+
+        // SSH scp-like: git@host:path
+        if let Some(rest) = url.strip_prefix("git@") {
+            if let Some(colon_pos) = rest.find(':') {
+                let host = rest[..colon_pos].to_string();
+                let path = rest[colon_pos + 1..].trim_end_matches(".git").to_string();
+                return Some(ParsedSource::Git { host, path });
+            }
+        }
+
+        // http://, https://, ssh://, git:// URLs
+        for prefix in &["https://", "http://", "ssh://", "git://"] {
+            if let Some(rest) = url.strip_prefix(prefix) {
+                let rest = rest.trim_end_matches(".git");
+                if let Some(slash_pos) = rest.find('/') {
+                    let host = rest[..slash_pos].to_string();
+                    let path = rest[slash_pos + 1..].to_string();
+                    let path = path.split(['#', '@']).next().unwrap_or(&path).to_string();
+                    if !host.is_empty() && !path.is_empty() {
+                        return Some(ParsedSource::Git { host, path });
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get a match key for an input source (mirrors TS `getSourceMatchKeyForInput`).
+    fn get_source_match_key_for_input(&self, source: &str) -> String {
+        match self.parse_source(source) {
+            ParsedSource::Npm { name, .. } => format!("npm:{name}"),
+            ParsedSource::Git { host, path } => format!("git:{host}/{path}"),
+            ParsedSource::Local { path } => {
+                let resolved = resolve_path(&path, &self.cwd, &PathOptions::default());
+                format!("local:{resolved}")
+            }
+        }
+    }
+
+    /// Get a match key for a settings entry (mirrors TS `getSourceMatchKeyForSettings`).
+    fn get_source_match_key_for_settings(&self, source: &str, local: bool) -> String {
+        match self.parse_source(source) {
+            ParsedSource::Npm { name, .. } => format!("npm:{name}"),
+            ParsedSource::Git { host, path } => format!("git:{host}/{path}"),
+            ParsedSource::Local { path } => {
+                let base_dir = self.get_base_dir_for_scope(local);
+                let resolved = resolve_path(&path, &base_dir, &PathOptions::default());
+                format!("local:{resolved}")
+            }
+        }
+    }
+
+    /// Get the source string from a PackageSource (mirrors TS `getPackageSourceString`).
+    fn get_package_source_string(pkg: &PackageSource) -> String {
+        match pkg {
+            PackageSource::String(s) => s.clone(),
+            PackageSource::Object { source, .. } => source.clone(),
+        }
+    }
+
+    /// Normalize a source for settings persistence (mirrors TS `normalizePackageSourceForSettings`).
+    fn normalize_package_source_for_settings(&self, source: &str, local: bool) -> String {
+        match self.parse_source(source) {
+            ParsedSource::Local { path } => {
+                let base_dir = self.get_base_dir_for_scope(local);
+                let resolved = resolve_path(&path, &base_dir, &PathOptions::default());
+                let rel = Path::new(&resolved)
+                    .strip_prefix(Path::new(&base_dir))
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| resolved.clone());
+                if rel.is_empty() { ".".to_string() } else { rel }
+            }
+            _ => source.to_string(),
+        }
+    }
+
+    /// Check if an existing package source matches the input source (mirrors TS `packageSourcesMatch`).
+    fn package_sources_match(&self, existing: &PackageSource, input_source: &str, local: bool) -> bool {
+        let existing_str = Self::get_package_source_string(existing);
+        let left = self.get_source_match_key_for_settings(&existing_str, local);
+        let right = self.get_source_match_key_for_input(input_source);
+        left == right
     }
 }
 
@@ -387,7 +587,7 @@ impl PackageManager for DefaultPackageManager {
 
     fn install_and_persist(&self, source: &str, local: bool) -> Result<(), String> {
         self.install(source, local)?;
-        // In the future, persist to settings here
+        self.add_source_to_settings(source, local);
         Ok(())
     }
 
@@ -413,7 +613,7 @@ impl PackageManager for DefaultPackageManager {
 
     fn remove_and_persist(&self, source: &str, local: bool) -> Result<bool, String> {
         self.remove(source, local)?;
-        Ok(true)
+        Ok(self.remove_source_from_settings(source, local))
     }
 
     fn list_configured_packages(&self) -> Vec<ConfiguredPackage> {
@@ -459,6 +659,90 @@ impl PackageManager for DefaultPackageManager {
 
     fn set_progress_callback(&self, callback: Option<ProgressCallback>) {
         *self.progress_callback.lock().unwrap() = callback;
+    }
+
+    fn add_source_to_settings(&self, source: &str, local: bool) -> bool {
+        let Some(sm) = &self.settings_manager else {
+            return false;
+        };
+        let mut sm = sm.lock().unwrap();
+        let current_packages = if local {
+            sm.get_project_packages()
+        } else {
+            sm.get_packages()
+        };
+        let normalized = self.normalize_package_source_for_settings(source, local);
+
+        // Check for existing match
+        if let Some(match_idx) = current_packages
+            .iter()
+            .position(|existing| self.package_sources_match(existing, source, local))
+        {
+            // Update existing entry
+            let mut next_packages = current_packages.clone();
+            let existing = &current_packages[match_idx];
+            let existing_str = Self::get_package_source_string(existing);
+            if existing_str == normalized {
+                return false; // No change needed
+            }
+            match existing {
+                PackageSource::String(_) => {
+                    next_packages[match_idx] = PackageSource::String(normalized);
+                }
+                PackageSource::Object { source: _, autoload, extensions, skills, prompts, themes } => {
+                    next_packages[match_idx] = PackageSource::Object {
+                        source: normalized,
+                        autoload: *autoload,
+                        extensions: extensions.clone(),
+                        skills: skills.clone(),
+                        prompts: prompts.clone(),
+                        themes: themes.clone(),
+                    };
+                }
+            }
+            if local {
+                sm.set_project_packages(next_packages);
+            } else {
+                sm.set_packages(next_packages);
+            }
+            return true;
+        }
+
+        // Append new entry
+        let mut next_packages = current_packages.clone();
+        next_packages.push(PackageSource::String(normalized));
+        if local {
+            sm.set_project_packages(next_packages);
+        } else {
+            sm.set_packages(next_packages);
+        }
+        true
+    }
+
+    fn remove_source_from_settings(&self, source: &str, local: bool) -> bool {
+        let Some(sm) = &self.settings_manager else {
+            return false;
+        };
+        let mut sm = sm.lock().unwrap();
+        let current_packages = if local {
+            sm.get_project_packages()
+        } else {
+            sm.get_packages()
+        };
+        let next_packages: Vec<PackageSource> = current_packages
+            .iter()
+            .filter(|existing| !self.package_sources_match(existing, source, local))
+            .cloned()
+            .collect();
+        let changed = next_packages.len() != current_packages.len();
+        if changed {
+            if local {
+                sm.set_project_packages(next_packages);
+            } else {
+                sm.set_packages(next_packages);
+            }
+        }
+        changed
     }
 }
 
@@ -1040,5 +1324,209 @@ mod tests {
         // Cache is empty, package doesn't exist
         let result = mgr.resolve_source("nonexistent", false);
         assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Source parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_source_npm() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let parsed = mgr.parse_source("npm:@scope/pkg@^1.0");
+        match parsed {
+            ParsedSource::Npm { name, .. } => assert_eq!(name, "@scope/pkg"),
+            _ => panic!("expected Npm variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_npm_no_version() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let parsed = mgr.parse_source("npm:some-package");
+        match parsed {
+            ParsedSource::Npm { name, .. } => assert_eq!(name, "some-package"),
+            _ => panic!("expected Npm variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_local() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let parsed = mgr.parse_source("./my-extension");
+        match parsed {
+            ParsedSource::Local { path } => assert_eq!(path, "./my-extension"),
+            _ => panic!("expected Local variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_github_shorthand() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let parsed = mgr.parse_source("github:user/repo");
+        match parsed {
+            ParsedSource::Git { host, path } => {
+                assert_eq!(host, "github.com");
+                assert_eq!(path, "user/repo");
+            }
+            _ => panic!("expected Git variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_git_https() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let parsed = mgr.parse_source("https://github.com/user/repo.git");
+        match parsed {
+            ParsedSource::Git { host, path } => {
+                assert_eq!(host, "github.com");
+                assert_eq!(path, "user/repo");
+            }
+            _ => panic!("expected Git variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_git_ssh_is_local() {
+        // git@host:path is NOT recognized as git by isLocalPath (no git: prefix),
+        // so it falls through to Local — same as TS behavior.
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let parsed = mgr.parse_source("git@github.com:user/repo.git");
+        match parsed {
+            ParsedSource::Local { path } => {
+                assert_eq!(path, "git@github.com:user/repo.git");
+            }
+            _ => panic!("expected Local variant for git@ syntax"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Source match key tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_match_key_npm() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let key1 = mgr.get_source_match_key_for_input("npm:pkg@1.0");
+        let key2 = mgr.get_source_match_key_for_settings("npm:pkg", false);
+        assert_eq!(key1, key2);
+        assert_eq!(key1, "npm:pkg");
+    }
+
+    #[test]
+    fn test_match_key_github_shorthand_vs_url() {
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let key1 = mgr.get_source_match_key_for_input("github:user/repo");
+        let key2 = mgr.get_source_match_key_for_settings("https://github.com/user/repo.git", false);
+        assert_eq!(key1, key2);
+        assert_eq!(key1, "git:github.com/user/repo");
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings persistence tests
+    // -----------------------------------------------------------------------
+
+    fn make_sm() -> Arc<Mutex<SettingsManager>> {
+        use crate::core::settings_manager::{InMemorySettingsStorage, Settings};
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let sm = SettingsManager::new(storage, Settings::default(), Settings::default());
+        Arc::new(Mutex::new(sm))
+    }
+
+    #[test]
+    fn test_add_source_to_settings_new() {
+        let sm = make_sm();
+        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
+        let added = mgr.add_source_to_settings("npm:my-package", false);
+        assert!(added);
+        let packages = sm.lock().unwrap().get_packages();
+        assert_eq!(packages.len(), 1);
+        match &packages[0] {
+            PackageSource::String(s) => assert_eq!(s, "npm:my-package"),
+            _ => panic!("expected String variant"),
+        }
+    }
+
+    #[test]
+    fn test_add_source_to_settings_update_existing() {
+        let sm = make_sm();
+        // Pre-populate with an old version
+        sm.lock().unwrap().set_packages(vec![PackageSource::String(
+            "npm:my-package@1.0".to_string(),
+        )]);
+        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
+        let added = mgr.add_source_to_settings("npm:my-package@2.0", false);
+        assert!(added);
+        let packages = sm.lock().unwrap().get_packages();
+        assert_eq!(packages.len(), 1);
+        match &packages[0] {
+            PackageSource::String(s) => assert_eq!(s, "npm:my-package@2.0"),
+            _ => panic!("expected String variant"),
+        }
+    }
+
+    #[test]
+    fn test_add_source_to_settings_no_change() {
+        let sm = make_sm();
+        sm.lock().unwrap().set_packages(vec![PackageSource::String(
+            "npm:my-package".to_string(),
+        )]);
+        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
+        let added = mgr.add_source_to_settings("npm:my-package", false);
+        assert!(!added); // No change — same source
+        let packages = sm.lock().unwrap().get_packages();
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn test_add_source_to_settings_project_scope() {
+        let sm = make_sm();
+        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
+        let added = mgr.add_source_to_settings("npm:my-package", true); // local=true → project
+        assert!(added);
+        let project_packages = sm.lock().unwrap().get_project_packages();
+        assert_eq!(project_packages.len(), 1);
+        // Global settings should have no packages (project scope was used)
+        let global_packages = sm.lock().unwrap().get_global_settings().packages.clone().unwrap_or_default();
+        assert!(global_packages.is_empty());
+    }
+
+    #[test]
+    fn test_remove_source_from_settings() {
+        let sm = make_sm();
+        sm.lock().unwrap().set_packages(vec![
+            PackageSource::String("npm:pkg-a".to_string()),
+            PackageSource::String("npm:pkg-b".to_string()),
+        ]);
+        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
+        let removed = mgr.remove_source_from_settings("npm:pkg-a", false);
+        assert!(removed);
+        let packages = sm.lock().unwrap().get_packages();
+        assert_eq!(packages.len(), 1);
+        match &packages[0] {
+            PackageSource::String(s) => assert_eq!(s, "npm:pkg-b"),
+            _ => panic!("expected String variant"),
+        }
+    }
+
+    #[test]
+    fn test_remove_source_from_settings_no_match() {
+        let sm = make_sm();
+        sm.lock().unwrap().set_packages(vec![PackageSource::String(
+            "npm:pkg-a".to_string(),
+        )]);
+        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
+        let removed = mgr.remove_source_from_settings("npm:nonexistent", false);
+        assert!(!removed);
+        let packages = sm.lock().unwrap().get_packages();
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn test_add_source_no_settings_manager() {
+        // Without settings_manager, add_source_to_settings returns false
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/agent");
+        assert!(!mgr.add_source_to_settings("npm:pkg", false));
+        assert!(!mgr.remove_source_from_settings("npm:pkg", false));
     }
 }

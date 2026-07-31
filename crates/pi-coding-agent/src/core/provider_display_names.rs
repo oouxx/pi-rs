@@ -18,7 +18,6 @@ pub static BUILT_IN_PROVIDER_DISPLAY_NAMES: LazyLock<HashMap<&'static str, &'sta
         m.insert("groq", "Groq");
         m.insert("huggingface", "Hugging Face");
         m.insert("kimi-coding", "Kimi For Coding");
-        m.insert("mistral", "Mistral");
         m.insert("minimax", "MiniMax");
         m.insert("minimax-cn", "MiniMax (China)");
         m.insert("moonshotai", "Moonshot AI");
@@ -27,6 +26,7 @@ pub static BUILT_IN_PROVIDER_DISPLAY_NAMES: LazyLock<HashMap<&'static str, &'sta
         m.insert("opencode", "OpenCode Zen");
         m.insert("opencode-go", "OpenCode Go");
         m.insert("openai", "OpenAI");
+        m.insert("ollama", "Ollama");
         m.insert("openrouter", "OpenRouter");
         m.insert("together", "Together AI");
         m.insert("vercel-ai-gateway", "Vercel AI Gateway");

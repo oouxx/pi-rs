@@ -397,10 +397,17 @@ pub async fn create_agent_session(
         .settings_manager
         .take()
         .unwrap_or_else(|| SettingsManager::create(&cwd, Some(&agent_dir)));
-    let model_registry = options
-        .model_registry
-        .take()
-        .unwrap_or_else(|| ModelRegistry::new(ModelRegistry::builtin_models_list()));
+    let model_registry = match options.model_registry.take() {
+        Some(r) => r,
+        None => {
+            // 内置模型 + 本机 Ollama 自动发现（若 Ollama 在运行）。
+            // Ollama 探测失败时返回空 Vec，不影响启动。
+            let mut builtins = ModelRegistry::builtin_models_list();
+            builtins
+                .extend(pi_agent_core::pi_ai::providers::ollama::discover_ollama_models().await);
+            ModelRegistry::new(builtins)
+        }
+    };
 
     let default_provider = settings_manager.get_settings().default_provider.clone();
     let default_model_id = settings_manager.get_settings().default_model.clone();

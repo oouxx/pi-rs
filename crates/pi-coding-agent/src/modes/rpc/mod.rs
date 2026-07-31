@@ -70,7 +70,9 @@ pub async fn run_rpc_mode() -> i32 {
         }
     };
 
-    let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+    let mut rpc_builtins = ModelRegistry::builtin_models_list();
+    rpc_builtins.extend(pi_agent_core::pi_ai::providers::ollama::discover_ollama_models().await);
+    let model_registry = ModelRegistry::new(rpc_builtins);
 
     // ── Single output channel for all stdout writes ────────────────────
     // Both event streaming and synchronous responses go through this channel,

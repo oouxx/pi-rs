@@ -342,12 +342,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
         ),
         ("xai", "openai-completions", "https://api.x.ai/v1", true),
         (
-            "mistral",
-            "mistral-conversations",
-            "https://api.mistral.ai",
-            true,
-        ),
-        (
             "together",
             "openai-completions",
             "https://api.together.xyz/v1",

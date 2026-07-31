@@ -4,7 +4,6 @@ use std::collections::HashMap;
 fn provider_env_keys() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
     map.insert("openai", "OPENAI_API_KEY");
-    map.insert("ollama", "OPENAI_API_KEY");
     map.insert("anthropic", "ANTHROPIC_API_KEY");
     map.insert("google", "GOOGLE_API_KEY");
     map.insert("google-vertex", "GOOGLE_VERTEX_API_KEY");
@@ -14,7 +13,6 @@ fn provider_env_keys() -> HashMap<&'static str, &'static str> {
     map.insert("groq", "GROQ_API_KEY");
     map.insert("cerebras", "CEREBRAS_API_KEY");
     map.insert("openrouter", "OPENROUTER_API_KEY");
-    map.insert("mistral", "MISTRAL_API_KEY");
     map.insert("huggingface", "HF_API_KEY");
     map.insert("together", "TOGETHER_API_KEY");
     map.insert("fireworks", "FIREWORKS_API_KEY");
@@ -77,7 +75,6 @@ mod tests {
             "groq",
             "cerebras",
             "openrouter",
-            "mistral",
             "huggingface",
             "together",
             "fireworks",

@@ -36,15 +36,6 @@ pub fn register_built_in_api_providers() {
         Some("builtin"),
     );
 
-    // Mistral uses OpenAI-compatible format
-    register_api_provider(
-        ApiProvider {
-            api: "mistral-conversations".to_string(),
-            stream: Arc::new(stream_openai),
-            stream_simple: Arc::new(stream_simple_openai),
-        },
-        Some("builtin"),
-    );
 }
 
 /// Clear all providers and re-register the built-in ones.
@@ -91,11 +82,6 @@ mod tests {
         assert!(get_api_provider("openai-completions").is_some());
     }
 
-    #[test]
-    fn test_register_builtins_registers_mistral() {
-        register_built_in_api_providers();
-        assert!(get_api_provider("mistral-conversations").is_some());
-    }
 
     #[test]
     fn test_reset_api_providers() {

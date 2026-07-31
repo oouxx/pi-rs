@@ -2,7 +2,7 @@
 
 统一 LLM API 层，提供流式调用、模型发现、Token 成本跟踪。Rust 复刻自 [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)。
 
-支持 Anthropic Messages、OpenAI Chat Completions、DeepSeek、xAI Grok、Mistral 等多个 provider。
+支持 Anthropic Messages、OpenAI Chat Completions、DeepSeek、xAI Grok、Ollama（本地，自动发现）等多个 provider。
 
 ## 快速开始
 
@@ -50,8 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 | OpenAI | `openai-completions` | GPT 系列模型 |
 | DeepSeek | `openai-completions` | 复用 OpenAI 兼容格式 |
 | xAI Grok | `openai-completions` | 复用 OpenAI 兼容格式 |
-| Mistral | `mistral-conversations` | 复用 OpenAI 兼容格式 |
-| Google | `openai-completions` | Gemini 系列 |
+| Ollama | `openai-completions` | 本地模型，启动时自动发现已 `ollama pull` 的模型 |
+| Google | `google-generative-ai` | Gemini 系列（后端待实现） |
 | Groq | `openai-completions` | 高性能推理 |
 | Cerebras | `openai-completions` | 超快推理 |
 | Together | `openai-completions` | 开源模型托管 |
@@ -123,7 +123,7 @@ pub enum AssistantMessageEvent {
 | Google | `GOOGLE_API_KEY` |
 | Groq | `GROQ_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
-| Mistral | `MISTRAL_API_KEY` |
+| Ollama | 无需 API Key（本地） |
 | Cerebras | `CEREBRAS_API_KEY` |
 | Together | `TOGETHER_API_KEY` |
 | Fireworks | `FIREWORKS_API_KEY` |

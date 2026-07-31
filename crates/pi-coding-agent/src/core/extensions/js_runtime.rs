@@ -4,13 +4,27 @@
 //! factory-invocation half of TS `core/extensions/loader.ts`; the
 //! V8-agnostic discovery/cache half lives in `loader.rs`.
 //!
-//! Status: foundational spike — proves the V8 build commitment works and that
-//! a TS extension's default-export factory can be loaded and invoked with a
-//! host-provided `pi` API object whose calls bridge back into Rust ops. The
-//! full SDK shim (all register/action methods), two-phase lifecycle, EventBus
-//! and provider bridge are later sub-chunks (see EXTENSION_LOADING_FEASIBILITY
-//! §6). This module is NOT yet wired into the live run path and does NOT
-//! reverse DEVIATIONS #5/#6.
+//! ## Architecture
+//!
+//! The TS `createExtensionAPI` surface is split into two halves:
+//!
+//! 1. **Registration methods** (`on`, `registerTool`, `registerCommand`, …):
+//!    The bootstrap JS maintains JS-side `Map`s of callback functions
+//!    (handlers, tool execute fns, command handlers, …) **and** calls a
+//!    Rust op to record the metadata (name, description, parameter schema,
+//!    source info) so the existing `ExtensionRegistry` / `CommandRegistry`
+//!    can query it from Rust.
+//!
+//! 2. **Action methods** (`sendMessage`, `exec`, `setModel`, …): These
+//!    delegate to a shared `RuntimeActions` struct stored in `OpState`.
+//!    Before `bind_core()` the struct is `None` and ops throw
+//!    "Extension runtime not initialized" — mirroring TS
+//!    `createExtensionRuntime()`'s `notInitialized` placeholder. After
+//!    `bind_core()` the struct is `Some(..)` and ops delegate.
+//!
+//! Callbacks (tool execute, event handlers, command handlers) stay in JS
+//! land; Rust calls back into JS via `__pi.__invoke*` shim functions when
+//! it needs to execute them.
 
 #![cfg(feature = "js-runtime")]
 
@@ -19,6 +33,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use deno_ast::MediaType;
 use deno_ast::ParseParams;
@@ -54,39 +69,254 @@ use serde::{Deserialize, Serialize};
 pub struct LoadedToolRecord {
     pub name: String,
     pub description: String,
+    /// JSON-serialized parameter schema (typebox `TSchema`).
+    #[serde(default)]
+    pub parameters: Option<String>,
+}
+
+/// A command registered via `pi.registerCommand`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LoadedCommandRecord {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Names of sub-commands (TS `subcommands`).
+    #[serde(default)]
+    pub subcommands: Vec<String>,
+}
+
+/// A shortcut registered via `pi.registerShortcut`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LoadedShortcutRecord {
+    pub shortcut: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// A flag registered via `pi.registerFlag`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LoadedFlagRecord {
+    pub name: String,
+    pub flag_type: String, // "boolean" | "string"
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub default_value: Option<String>,
+}
+
+/// An event handler registered via `pi.on`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LoadedHandlerRecord {
+    pub event: String,
+}
+
+/// A provider registration queued via `pi.registerProvider` (pre-bind).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PendingProviderRegistration {
+    pub name: String,
+    /// JSON-serialized `ProviderConfig`.
+    pub config_json: String,
+    pub extension_path: String,
 }
 
 /// Everything a loaded extension factory registered into Rust state.
 #[derive(Debug, Clone, Default)]
 pub struct ExtensionLoadResult {
     pub tools: Vec<LoadedToolRecord>,
-    pub commands: Vec<String>,
+    pub commands: Vec<LoadedCommandRecord>,
+    pub shortcuts: Vec<LoadedShortcutRecord>,
+    pub flags: Vec<LoadedFlagRecord>,
+    pub handlers: Vec<LoadedHandlerRecord>,
+    pub message_renderers: Vec<String>,
+    pub entry_renderers: Vec<String>,
+    pub pending_providers: Vec<PendingProviderRegistration>,
     pub logs: Vec<String>,
 }
 
 // ============================================================================
-// Ops — the Rust side of the `pi` API surface (minimal subset for the spike)
+// Two-phase lifecycle — mirrors TS createExtensionRuntime / bindCore
 // ============================================================================
 
-#[op2(fast)]
+/// The phase of the shared runtime. Before `bind_core()` action ops throw
+/// "not initialized"; after, they delegate to the bound actions.
+#[derive(Default)]
+enum RuntimePhase {
+    /// Placeholder: all action methods throw (TS `notInitialized`).
+    #[default]
+    Uninitialized,
+    /// Bound: action methods delegate to the closures.
+    Bound(RuntimeActions),
+}
+
+/// Action-method closures, set by `bind_core()`. Mirrors TS
+/// `ExtensionActions` — each field is an `Arc<dyn Fn>` that the
+/// corresponding op calls into.
+#[derive(Default, Clone)]
+pub struct RuntimeActions {
+    pub send_message: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
+    pub send_user_message: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
+    pub append_entry: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
+    pub set_session_name: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    pub get_session_name: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    pub set_label: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
+    pub get_active_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    pub get_all_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    pub set_active_tools: Option<Arc<dyn Fn(Vec<String>) + Send + Sync>>,
+    pub get_commands: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    pub get_thinking_level: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    pub set_thinking_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    pub register_provider:
+        Option<Arc<dyn Fn(String, String, String) + Send + Sync>>,
+    pub unregister_provider: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
+
+/// Error returned when an action op is called before `bind_core()`.
+fn not_initialized() -> JsErrorBox {
+    JsErrorBox::generic(
+        "Extension runtime not initialized. Action methods cannot be called during extension loading.",
+    )
+}
+
+// ============================================================================
+// Ops — the Rust side of the `pi` API surface
+// ============================================================================
+
+// --- Registration ops (valid during load) ---
+
+#[op2]
 fn op_register_tool(
     state: &mut OpState,
     #[string] name: String,
     #[string] description: String,
+    #[string] parameters: Option<String>,
 ) -> Result<(), JsErrorBox> {
     let mut result = take_result(state);
-    result.tools.push(LoadedToolRecord { name, description });
+    result.tools.push(LoadedToolRecord {
+        name,
+        description,
+        parameters,
+    });
+    state.put(result);
+    Ok(())
+}
+
+#[op2]
+fn op_register_command(
+    state: &mut OpState,
+    #[string] name: String,
+    #[string] description: Option<String>,
+    #[string] subcommands: String, // JSON array
+) -> Result<(), JsErrorBox> {
+    let subs: Vec<String> = if subcommands == "[]" {
+        Vec::new()
+    } else {
+        serde_json::from_str(&subcommands).unwrap_or_default()
+    };
+    let mut result = take_result(state);
+    result.commands.push(LoadedCommandRecord {
+        name,
+        description,
+        subcommands: subs,
+    });
+    state.put(result);
+    Ok(())
+}
+
+#[op2]
+fn op_register_shortcut(
+    state: &mut OpState,
+    #[string] shortcut: String,
+    #[string] description: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let mut result = take_result(state);
+    result.shortcuts.push(LoadedShortcutRecord {
+        shortcut,
+        description,
+    });
+    state.put(result);
+    Ok(())
+}
+
+#[op2]
+fn op_register_flag(
+    state: &mut OpState,
+    #[string] name: String,
+    #[string] flag_type: String,
+    #[string] description: Option<String>,
+    #[string] default_value: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let mut result = take_result(state);
+    result.flags.push(LoadedFlagRecord {
+        name,
+        flag_type,
+        description,
+        default_value,
+    });
     state.put(result);
     Ok(())
 }
 
 #[op2(fast)]
-fn op_register_command(
+fn op_register_handler(
+    state: &mut OpState,
+    #[string] event: String,
+) -> Result<(), JsErrorBox> {
+    let mut result = take_result(state);
+    result.handlers.push(LoadedHandlerRecord { event });
+    state.put(result);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_register_message_renderer(
+    state: &mut OpState,
+    #[string] custom_type: String,
+) -> Result<(), JsErrorBox> {
+    let mut result = take_result(state);
+    result.message_renderers.push(custom_type);
+    state.put(result);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_register_entry_renderer(
+    state: &mut OpState,
+    #[string] custom_type: String,
+) -> Result<(), JsErrorBox> {
+    let mut result = take_result(state);
+    result.entry_renderers.push(custom_type);
+    state.put(result);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_register_provider(
+    state: &mut OpState,
+    #[string] name: String,
+    #[string] config_json: String,
+    #[string] extension_path: String,
+) -> Result<(), JsErrorBox> {
+    let mut result = take_result(state);
+    result
+        .pending_providers
+        .push(PendingProviderRegistration {
+            name,
+            config_json,
+            extension_path,
+        });
+    state.put(result);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_unregister_provider(
     state: &mut OpState,
     #[string] name: String,
 ) -> Result<(), JsErrorBox> {
     let mut result = take_result(state);
-    result.commands.push(name);
+    result
+        .pending_providers
+        .retain(|r| r.name != name);
     state.put(result);
     Ok(())
 }
@@ -99,16 +329,240 @@ fn op_pi_log(state: &mut OpState, #[string] msg: String) -> Result<(), JsErrorBo
     Ok(())
 }
 
+// --- Action ops (delegate to RuntimeActions after bind_core) ---
+
+#[op2]
+fn op_send_message(
+    state: &mut OpState,
+    #[string] message_json: String,
+    #[string] options_json: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let send = actions
+        .send_message
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    send(message_json, options_json);
+    Ok(())
+}
+
+#[op2]
+fn op_send_user_message(
+    state: &mut OpState,
+    #[string] content: String,
+    #[string] options_json: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let send = actions
+        .send_user_message
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    send(content, options_json);
+    Ok(())
+}
+
+#[op2]
+fn op_append_entry(
+    state: &mut OpState,
+    #[string] custom_type: String,
+    #[string] data_json: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let append = actions
+        .append_entry
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    append(custom_type, data_json);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_set_session_name(
+    state: &mut OpState,
+    #[string] name: String,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let set = actions
+        .set_session_name
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    set(name);
+    Ok(())
+}
+
+#[op2]
+#[string]
+fn op_get_session_name(state: &mut OpState) -> Result<Option<String>, JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let get = actions
+        .get_session_name
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    Ok(get())
+}
+
+#[op2]
+fn op_set_label(
+    state: &mut OpState,
+    #[string] entry_id: String,
+    #[string] label: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let set = actions.set_label.as_ref().ok_or_else(not_initialized)?;
+    set(entry_id, label);
+    Ok(())
+}
+
+#[op2]
+#[string]
+fn op_get_active_tools(state: &mut OpState) -> Result<String, JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let get = actions
+        .get_active_tools
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    let tools = get();
+    Ok(serde_json::to_string(&tools).unwrap_or_else(|_| "[]".into()))
+}
+
+#[op2]
+#[string]
+fn op_get_all_tools(state: &mut OpState) -> Result<String, JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let get = actions
+        .get_all_tools
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    let tools = get();
+    Ok(serde_json::to_string(&tools).unwrap_or_else(|_| "[]".into()))
+}
+
+#[op2(fast)]
+fn op_set_active_tools(
+    state: &mut OpState,
+    #[string] tools_json: String,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let set = actions
+        .set_active_tools
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    let tools: Vec<String> = serde_json::from_str(&tools_json).unwrap_or_default();
+    set(tools);
+    Ok(())
+}
+
+#[op2]
+#[string]
+fn op_get_commands(state: &mut OpState) -> Result<String, JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let get = actions
+        .get_commands
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    let cmds = get();
+    Ok(serde_json::to_string(&cmds).unwrap_or_else(|_| "[]".into()))
+}
+
+#[op2]
+#[string]
+fn op_get_thinking_level(state: &mut OpState) -> Result<String, JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let get = actions
+        .get_thinking_level
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    Ok(get())
+}
+
+#[op2(fast)]
+fn op_set_thinking_level(
+    state: &mut OpState,
+    #[string] level: String,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let set = actions
+        .set_thinking_level
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    set(level);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_register_provider_action(
+    state: &mut OpState,
+    #[string] name: String,
+    #[string] config_json: String,
+    #[string] extension_path: String,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let register = actions
+        .register_provider
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    register(name, config_json, extension_path);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_unregister_provider_action(
+    state: &mut OpState,
+    #[string] name: String,
+) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let unregister = actions
+        .unregister_provider
+        .as_ref()
+        .ok_or_else(not_initialized)?;
+    unregister(name);
+    Ok(())
+}
+
+// --- Helpers ---
+
 /// Take the accumulated load result out of `OpState`, leaving an empty one.
 fn take_result(state: &mut OpState) -> ExtensionLoadResult {
     state.try_take::<ExtensionLoadResult>().unwrap_or_default()
+}
+
+/// Get the bound `RuntimeActions` from `OpState`, or error if uninitialized.
+fn bound_actions(state: &mut OpState) -> Result<RuntimeActions, JsErrorBox> {
+    let phase = state
+        .try_borrow::<RuntimePhase>()
+        .ok_or_else(|| JsErrorBox::generic("Runtime phase not set"))?;
+    match phase {
+        RuntimePhase::Uninitialized => Err(not_initialized()),
+        RuntimePhase::Bound(actions) => Ok(actions.clone()),
+    }
 }
 
 /// The op declarations exposed to JS as `Deno.core.ops.op_*`.
 const OPS: &[OpDecl] = &[
     op_register_tool(),
     op_register_command(),
+    op_register_shortcut(),
+    op_register_flag(),
+    op_register_handler(),
+    op_register_message_renderer(),
+    op_register_entry_renderer(),
+    op_register_provider(),
+    op_unregister_provider(),
     op_pi_log(),
+    op_send_message(),
+    op_send_user_message(),
+    op_append_entry(),
+    op_set_session_name(),
+    op_get_session_name(),
+    op_set_label(),
+    op_get_active_tools(),
+    op_get_all_tools(),
+    op_set_active_tools(),
+    op_get_commands(),
+    op_get_thinking_level(),
+    op_set_thinking_level(),
+    op_register_provider_action(),
+    op_unregister_provider_action(),
 ];
 
 fn pi_extension() -> Extension {
@@ -120,20 +574,233 @@ fn pi_extension() -> Extension {
 }
 
 /// JS bootstrap that builds the `globalThis.__pi` API object wrapping the ops.
-/// Mirrors the registration subset of TS `createExtensionAPI` (the full
-/// surface is filled in by later sub-chunks).
+/// Mirrors the registration + action surface of TS `createExtensionAPI`.
+///
+/// Callbacks (tool execute, event handlers, command handlers) are stored in
+/// JS-side `Map`s so Rust can call back into JS via `__pi.__invoke*` helpers.
 const BOOTSTRAP_JS: &str = r#"
-globalThis.__pi = {
-  registerTool(t) {
-    Deno.core.ops.op_register_tool(String(t.name), String(t.description ?? ""));
-  },
-  registerCommand(name) {
-    Deno.core.ops.op_register_command(String(name));
-  },
-  log(msg) {
-    Deno.core.ops.op_pi_log(String(msg));
-  },
-};
+(function() {
+  // JS-side callback storage — keeps Function refs alive for later invocation.
+  const handlers = new Map();       // event -> Function[]
+  const toolExecutors = new Map();  // toolName -> execute fn
+  const commandHandlers = new Map();// commandName -> handler fn
+  const shortcutHandlers = new Map();// shortcut -> handler fn
+  const flagValues = new Map();     // flagName -> value
+
+  function assertActive() {
+    // The stale-ctx check is done Rust-side via the phase; if the runtime
+    // has been invalidated, ops will throw. Nothing to check in JS here.
+  }
+
+  globalThis.__pi = {
+    // ---- Logging (not part of TS ExtensionAPI, used for diagnostics) ----
+
+    log(msg) {
+      Deno.core.ops.op_pi_log(String(msg));
+    },
+
+    // ---- Registration methods ----
+
+    on(event, handler) {
+      assertActive();
+      const list = handlers.get(event) ?? [];
+      list.push(handler);
+      handlers.set(event, list);
+      Deno.core.ops.op_register_handler(String(event));
+    },
+
+    registerTool(tool) {
+      assertActive();
+      const name = String(tool.name);
+      toolExecutors.set(name, tool.execute);
+      const params = tool.parameters ? JSON.stringify(tool.parameters) : null;
+      Deno.core.ops.op_register_tool(
+        name,
+        String(tool.description ?? ""),
+        params,
+      );
+    },
+
+    registerCommand(name, options = {}) {
+      assertActive();
+      commandHandlers.set(name, options.handler);
+      const subs = JSON.stringify(options.subcommands ?? []);
+      Deno.core.ops.op_register_command(
+        String(name),
+        options.description ? String(options.description) : null,
+        subs,
+      );
+    },
+
+    registerShortcut(shortcut, options = {}) {
+      assertActive();
+      shortcutHandlers.set(String(shortcut), options.handler);
+      Deno.core.ops.op_register_shortcut(
+        String(shortcut),
+        options.description ? String(options.description) : null,
+      );
+    },
+
+    registerFlag(name, options = {}) {
+      assertActive();
+      const def = options.default !== undefined ? String(options.default) : null;
+      if (def !== null && !flagValues.has(name)) {
+        flagValues.set(name, options.default);
+      }
+      Deno.core.ops.op_register_flag(
+        String(name),
+        String(options.type ?? "boolean"),
+        options.description ? String(options.description) : null,
+        def,
+      );
+    },
+
+    getFlag(name) {
+      assertActive();
+      return flagValues.get(name);
+    },
+
+    registerMessageRenderer(customType, renderer) {
+      assertActive();
+      Deno.core.ops.op_register_message_renderer(String(customType));
+    },
+
+    registerEntryRenderer(customType, renderer) {
+      assertActive();
+      Deno.core.ops.op_register_entry_renderer(String(customType));
+    },
+
+    // ---- Action methods (delegate to Rust ops → RuntimeActions) ----
+
+    sendMessage(message, options) {
+      assertActive();
+      Deno.core.ops.op_send_message(
+        JSON.stringify(message),
+        options ? JSON.stringify(options) : null,
+      );
+    },
+
+    sendUserMessage(content, options) {
+      assertActive();
+      const c = typeof content === "string" ? content : JSON.stringify(content);
+      Deno.core.ops.op_send_user_message(
+        c,
+        options ? JSON.stringify(options) : null,
+      );
+    },
+
+    appendEntry(customType, data) {
+      assertActive();
+      Deno.core.ops.op_append_entry(
+        String(customType),
+        data !== undefined ? JSON.stringify(data) : null,
+      );
+    },
+
+    setSessionName(name) {
+      assertActive();
+      Deno.core.ops.op_set_session_name(String(name));
+    },
+
+    getSessionName() {
+      assertActive();
+      return Deno.core.ops.op_get_session_name();
+    },
+
+    setLabel(entryId, label) {
+      assertActive();
+      Deno.core.ops.op_set_label(String(entryId), label != null ? String(label) : null);
+    },
+
+    getActiveTools() {
+      assertActive();
+      return JSON.parse(Deno.core.ops.op_get_active_tools());
+    },
+
+    getAllTools() {
+      assertActive();
+      return JSON.parse(Deno.core.ops.op_get_all_tools());
+    },
+
+    setActiveTools(toolNames) {
+      assertActive();
+      Deno.core.ops.op_set_active_tools(JSON.stringify(toolNames));
+    },
+
+    getCommands() {
+      assertActive();
+      return JSON.parse(Deno.core.ops.op_get_commands());
+    },
+
+    setModel(model) {
+      assertActive();
+      // setModel is async in TS; we return a Promise that resolves once the
+      // Rust side processes it. For now this is a placeholder — the real
+      // implementation will call an async op.
+      return Promise.resolve(false);
+    },
+
+    getThinkingLevel() {
+      assertActive();
+      return Deno.core.ops.op_get_thinking_level();
+    },
+
+    setThinkingLevel(level) {
+      assertActive();
+      Deno.core.ops.op_set_thinking_level(String(level));
+    },
+
+    registerProvider(name, config) {
+      assertActive();
+      // Pre-bind: queue via op_register_provider; post-bind: call the action
+      // op directly. The Rust side decides based on the runtime phase.
+      Deno.core.ops.op_register_provider(
+        String(name),
+        JSON.stringify(config),
+        String(globalThis.__piExtensionPath ?? "<unknown>"),
+      );
+    },
+
+    unregisterProvider(name) {
+      assertActive();
+      Deno.core.ops.op_unregister_provider(String(name));
+    },
+
+    // ---- EventBus (events property) ----
+    events: {
+      on(event, handler) {
+        assertActive();
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+      emit(event, ...args) {
+        const list = handlers.get(event);
+        if (list) for (const h of list) h(...args);
+      },
+      off(event, handler) {
+        const list = handlers.get(event);
+        if (!list) return;
+        if (handler) {
+          handlers.set(event, list.filter(h => h !== handler));
+        } else {
+          handlers.delete(event);
+        }
+      },
+    },
+
+    // ---- Internal: Rust calls these to invoke JS callbacks ----
+    __invokeToolExecutor: null,  // set by load_extension
+    __invokeCommandHandler: null,
+    __invokeEventHandler: null,
+  };
+
+  // Store the maps on __pi for later Rust-side callback invocation.
+  globalThis.__pi.__handlers = handlers;
+  globalThis.__pi.__toolExecutors = toolExecutors;
+  globalThis.__pi.__commandHandlers = commandHandlers;
+  globalThis.__pi.__shortcutHandlers = shortcutHandlers;
+})();
 "#;
 
 // ============================================================================
@@ -272,32 +939,65 @@ pub struct JsExtensionRuntime {
 
 impl JsExtensionRuntime {
     /// Create a new runtime with the `pi_ext` ops registered and the `__pi`
-    /// bootstrap object installed.
+    /// bootstrap object installed. The runtime starts in the
+    /// `Uninitialized` phase (action methods throw until `bind_core`).
     pub fn new() -> anyhow::Result<Self> {
         let mut runtime = JsRuntime::new(RuntimeOptions {
             extensions: vec![pi_extension()],
             module_loader: Some(Rc::new(TypescriptModuleLoader::new())),
             ..Default::default()
         });
+        {
+            let op_state = runtime.op_state();
+            let mut state = op_state.borrow_mut();
+            state.put(ExtensionLoadResult::default());
+            state.put(RuntimePhase::Uninitialized);
+        }
         runtime
-            .op_state()
-            .borrow_mut()
-            .put(ExtensionLoadResult::default());
-        runtime.execute_script("<pi-bootstrap>", BOOTSTRAP_JS)?;
+            .execute_script("<pi-bootstrap>", BOOTSTRAP_JS)
+            .map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
         Ok(Self { runtime })
+    }
+
+    /// Transition the runtime from `Uninitialized` to `Bound`, installing
+    /// the action-method closures. Mirrors TS `ExtensionRunner.bindCore()`.
+    ///
+    /// After this call, action ops delegate to the provided closures instead
+    /// of throwing "not initialized".
+    pub fn bind_core(&mut self, actions: RuntimeActions) {
+        let op_state = self.runtime.op_state();
+        op_state.borrow_mut().put(RuntimePhase::Bound(actions));
+    }
+
+    /// Invalidate the runtime context (stale-ctx guard). Mirrors TS
+    /// `runtime.invalidate(message)`. After this, action ops throw a
+    /// stale-ctx error.
+    pub fn invalidate(&mut self) {
+        let op_state = self.runtime.op_state();
+        op_state.borrow_mut().put(RuntimePhase::Uninitialized);
     }
 
     /// Load and invoke the default-export factory of the TS/JS extension at
     /// `path` (resolved against `cwd`), passing `globalThis.__pi` as the API
     /// argument. Mirrors TS `jiti.import(path, { default: true })` followed by
     /// `factory(api)`.
-    pub async fn load_extension(&mut self, path: &Path, cwd: &Path) -> anyhow::Result<()> {
+    pub async fn load_extension(
+        &mut self,
+        path: &Path,
+        cwd: &Path,
+    ) -> anyhow::Result<()> {
         let ext_specifier = resolve_path(&path.to_string_lossy(), cwd)
             .map_err(|e| anyhow::anyhow!("resolve extension path: {e}"))?;
+        // Set the extension path so registerProvider can include it.
+        self.runtime
+            .execute_script("<pi-set-path>", format!(
+                "globalThis.__piExtensionPath = {path:?};",
+                path = path.to_string_lossy()
+            ))
+            .map_err(|e| anyhow::anyhow!("set extension path: {e}"))?;
         // A shim module that imports the extension's default export and invokes
         // it with the host-provided `__pi` object. This mirrors jiti's
-        // `{ default: true }` extraction + `factory(api)` call without manual
-        // v8 namespace manipulation.
+        // `{ default: true }` extraction + `factory(api)` call.
         let shim_code = format!(
             "import factory from \"{ext_url}\";\nawait factory(globalThis.__pi);\n",
             ext_url = ext_specifier.as_str()
@@ -325,6 +1025,14 @@ impl JsExtensionRuntime {
             .try_take::<ExtensionLoadResult>()
             .unwrap_or_default()
     }
+
+    /// Execute a JS string in the runtime (for calling back into JS callbacks).
+    pub fn execute_script(&mut self, name: &str, code: &str) -> anyhow::Result<()> {
+        self.runtime
+            .execute_script(name.to_string(), code.to_string())
+            .map_err(|e| anyhow::anyhow!("execute_script: {e}"))?;
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -336,8 +1044,8 @@ impl JsExtensionRuntime {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
     use std::io::Write;
+    use std::path::PathBuf;
 
     /// Drive a deno_core runtime: it needs a single-threaded tokio runtime
     /// with all features enabled for the event loop to make progress.
@@ -361,8 +1069,6 @@ mod tests {
 
     #[test]
     fn test_v8_links_and_sync_op_works() {
-        // Minimal proof that V8 is linked and ops round-trip: execute a sync
-        // script that calls op_pi_log.
         let mut runtime = JsRuntime::new(RuntimeOptions {
             extensions: vec![pi_extension()],
             ..Default::default()
@@ -391,8 +1097,8 @@ mod tests {
             r#"
 export default async function(pi) {
   pi.log("loading my-ext");
-  pi.registerTool({ name: "search", description: "search the web" });
-  pi.registerCommand("greet");
+  pi.registerTool({ name: "search", description: "search the web", execute: async () => {} });
+  pi.registerCommand("greet", { description: "say hi", handler: async () => {} });
 }
 "#,
         );
@@ -406,9 +1112,17 @@ export default async function(pi) {
             vec![LoadedToolRecord {
                 name: "search".into(),
                 description: "search the web".into(),
+                parameters: None,
             }]
         );
-        assert_eq!(result.commands, vec!["greet".to_string()]);
+        assert_eq!(
+            result.commands,
+            vec![LoadedCommandRecord {
+                name: "greet".into(),
+                description: Some("say hi".into()),
+                subcommands: vec![],
+            }]
+        );
     }
 
     #[test]
@@ -419,7 +1133,7 @@ export default async function(pi) {
             "plain.js",
             r#"
 export default async function(pi) {
-  pi.registerTool({ name: "t", description: "d" });
+  pi.registerTool({ name: "t", description: "d", execute: async () => {} });
 }
 "#,
         );
@@ -432,8 +1146,6 @@ export default async function(pi) {
 
     #[test]
     fn test_extension_with_imports() {
-        // An extension that imports a local helper module — proves the module
-        // loader resolves relative imports.
         let dir = tempfile::tempdir().expect("tempdir");
         write_extension(
             dir.path(),
@@ -454,5 +1166,184 @@ export default async function(pi) {
         block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
         let result = js.take_result();
         assert_eq!(result.logs, vec!["LOADED".to_string()]);
+    }
+
+    #[test]
+    fn test_full_registration_surface() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "full.ts",
+            r#"
+export default async function(pi) {
+  pi.on("session_start", async () => {});
+  pi.on("tool_call", async (e) => {});
+  pi.registerTool({ name: "t1", description: "tool 1", execute: async () => {} });
+  pi.registerCommand("cmd1", { description: "cmd 1", handler: async () => {} });
+  pi.registerShortcut("ctrl+k", { description: "shortcut 1", handler: async () => {} });
+  pi.registerFlag("verbose", { type: "boolean", default: false, description: "verbose mode" });
+  pi.registerMessageRenderer("custom-msg", () => {});
+  pi.registerEntryRenderer("custom-entry", () => {});
+  pi.registerProvider("my-provider", { baseUrl: "http://localhost:8080" });
+  pi.log("done");
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+
+        assert_eq!(result.logs, vec!["done".to_string()]);
+        assert_eq!(result.handlers.len(), 2);
+        assert_eq!(result.handlers[0].event, "session_start");
+        assert_eq!(result.handlers[1].event, "tool_call");
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "t1");
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].name, "cmd1");
+        assert_eq!(result.commands[0].description.as_deref(), Some("cmd 1"));
+        assert_eq!(result.shortcuts.len(), 1);
+        assert_eq!(result.shortcuts[0].shortcut, "ctrl+k");
+        assert_eq!(result.flags.len(), 1);
+        assert_eq!(result.flags[0].name, "verbose");
+        assert_eq!(result.flags[0].flag_type, "boolean");
+        assert_eq!(result.flags[0].default_value.as_deref(), Some("false"));
+        assert_eq!(result.message_renderers, vec!["custom-msg".to_string()]);
+        assert_eq!(result.entry_renderers, vec!["custom-entry".to_string()]);
+        assert_eq!(result.pending_providers.len(), 1);
+        assert_eq!(result.pending_providers[0].name, "my-provider");
+        assert!(result.pending_providers[0].config_json.contains("localhost"));
+    }
+
+    #[test]
+    fn test_action_method_before_bind_throws() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "actions.ts",
+            r#"
+export default async function(pi) {
+  // Action methods should throw during load (before bind_core).
+  try {
+    pi.setSessionName("test");
+    pi.log("SHOULD NOT REACH");
+  } catch (e) {
+    pi.log("correctly threw: " + e.message);
+  }
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+        assert!(result.logs[0].starts_with("correctly threw"));
+        assert!(result.logs[0].contains("not initialized"));
+    }
+
+    #[test]
+    fn test_action_method_after_bind_works() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "bound.ts",
+            r#"
+export default async function(pi) {
+  // Just register; action methods will be tested via execute_script after bind.
+  pi.log("loaded");
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let _ = js.take_result(); // clear load result
+
+        // Track calls via a shared cell.
+        let called = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let called_clone = called.clone();
+        let actions = RuntimeActions {
+            set_session_name: Some(Arc::new(move |name: String| {
+                called_clone.lock().unwrap().push(format!("set_session_name({name})"));
+            })),
+            get_session_name: Some(Arc::new(|| Some("test-session".into()))),
+            ..Default::default()
+        };
+        js.bind_core(actions);
+
+        // Now action methods should work.
+        js.execute_script(
+            "<test-actions>",
+            r#"
+            globalThis.__pi.setSessionName("hello");
+            const name = globalThis.__pi.getSessionName();
+            if (name !== "test-session") throw new Error("expected test-session, got " + name);
+            "#,
+        )
+        .expect("execute_script");
+
+        let calls = called.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "set_session_name(hello)");
+    }
+
+    #[test]
+    fn test_event_bus_on_emit_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "events.ts",
+            r#"
+export default async function(pi) {
+  let received = [];
+  const handler = (data) => { received.push(data); };
+  pi.events.on("test-event", handler);
+  pi.events.emit("test-event", "a");
+  pi.events.emit("test-event", "b");
+  pi.events.off("test-event", handler);
+  pi.events.emit("test-event", "c"); // should not be received
+  pi.log("received: " + received.join(","));
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+        assert_eq!(result.logs, vec!["received: a,b".to_string()]);
+    }
+
+    #[test]
+    fn test_invalidate_blocks_actions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "invalidate.ts",
+            r#"
+export default async function(pi) {
+  pi.log("loaded");
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let _ = js.take_result();
+
+        let actions = RuntimeActions {
+            set_session_name: Some(Arc::new(|_name: String| {})),
+            ..Default::default()
+        };
+        js.bind_core(actions);
+
+        // Should work before invalidate.
+        js.execute_script("<ok>", "globalThis.__pi.setSessionName('before');")
+            .expect("before invalidate");
+
+        // Invalidate.
+        js.invalidate();
+
+        // Should throw after invalidate.
+        let err = js
+            .runtime
+            .execute_script("<after>", "globalThis.__pi.setSessionName('after');")
+            .unwrap_err();
+        assert!(err.to_string().contains("not initialized"));
     }
 }

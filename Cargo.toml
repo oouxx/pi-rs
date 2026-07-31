@@ -43,6 +43,7 @@ regex = "1"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile = "3"
+deno_core = "0.409"
 
 [workspace.lints.clippy]
 all = "warn"

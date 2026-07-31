@@ -2,6 +2,8 @@ pub mod api;
 pub mod dispatcher;
 pub mod types;
 pub mod loader;
+#[cfg(feature = "js-runtime")]
+pub mod js_runtime;
 
 pub use api::{
     ArgumentCompletionsFn, AutocompleteItem, CommandRegistry, CommandRegistration, EventPublisher,

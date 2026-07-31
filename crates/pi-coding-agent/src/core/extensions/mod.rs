@@ -22,3 +22,5 @@ pub use loader::{
     discover_extension_paths, discover_extensions_in_dir, is_extension_file, read_pi_manifest,
     resolve_extension_entries, CacheToken, DiscoveredExtensions, ExtensionCache, PiManifest,
 };
+#[cfg(feature = "js-runtime")]
+pub mod js_adapter;

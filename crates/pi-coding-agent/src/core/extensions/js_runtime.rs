@@ -1026,6 +1026,15 @@ impl JsExtensionRuntime {
             .unwrap_or_default()
     }
 
+    /// Run the V8 event loop to completion (for async JS callbacks).
+    pub async fn run_event_loop(&mut self) -> anyhow::Result<()> {
+        self.runtime
+            .run_event_loop(Default::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("V8 event loop: {e}"))?;
+        Ok(())
+    }
+
     /// Execute a JS string in the runtime (for calling back into JS callbacks).
     pub fn execute_script(&mut self, name: &str, code: &str) -> anyhow::Result<()> {
         self.runtime

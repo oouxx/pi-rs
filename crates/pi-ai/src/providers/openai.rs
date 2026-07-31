@@ -331,10 +331,10 @@ async fn stream_openai_inner(
     api_key: Option<&str>,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // If no API key is provided, use an empty string.
-    // Local providers like Ollama don't require authentication, and the
-    // HTTP request will fail naturally for providers that do require one.
-    let api_key = api_key.unwrap_or("");
+    // api_key 为 None / 空字符串时，不发 Authorization header。
+    // 本地 provider（如 Ollama）不需要鉴权；需要鉴权的 provider 没带 key
+    // 时，缺少 header 会被服务端以 401 拒绝，行为与发空 Bearer 一致。
+    let api_key = api_key.filter(|k| !k.is_empty());
     let max_tokens = options.and_then(|o| o.max_tokens);
     let temperature = options.and_then(|o| o.temperature);
     let signal = options.and_then(|o| o.signal.clone());
@@ -381,16 +381,19 @@ async fn stream_openai_inner(
     }
 
     let request_body = Value::Object(body);
-    let response = http_client
+    let request = http_client
         .post(format!(
             "{}/chat/completions",
             model.base_url.trim_end_matches('/')
         ))
-        .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await?;
+        .json(&request_body);
+    let request = if let Some(key) = api_key {
+        request.header("Authorization", format!("Bearer {key}"))
+    } else {
+        request
+    };
+    let response = request.send().await?;
 
     if !response.status().is_success() {
         let status = response.status();

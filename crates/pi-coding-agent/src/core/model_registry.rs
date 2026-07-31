@@ -26,6 +26,7 @@ impl Clone for ModelRegistry {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub name: Option<String>,
     pub base_url: Option<String>,
@@ -253,6 +254,20 @@ impl ModelRegistry {
     pub fn unregister_provider(&self, provider_name: &str) {
         let mut providers = self.registered_providers.write().unwrap();
         providers.remove(provider_name);
+    }
+
+    /// Get the config for a registered provider (from `register_provider`).
+    #[must_use]
+    pub fn get_provider_config(&self, provider_name: &str) -> Option<ProviderConfig> {
+        let providers = self.registered_providers.read().unwrap();
+        providers.get(provider_name).cloned()
+    }
+
+    /// List all registered provider names (from `register_provider`).
+    #[must_use]
+    pub fn get_registered_providers(&self) -> Vec<String> {
+        let providers = self.registered_providers.read().unwrap();
+        providers.keys().cloned().collect()
     }
 
     /// Load models from models.json (TS-compatible format: { "providers": { "name": { ... } } })

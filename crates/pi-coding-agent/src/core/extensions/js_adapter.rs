@@ -1057,6 +1057,171 @@ export default async function(pi) {
             .unwrap()
             .contains("kaboom"));
     }
+
+    /// End-to-end integration: create a .ts extension that registers a tool,
+    /// a command, and a provider; load it via the V8 runtime; register the
+    /// adapter into an `ExtensionRegistry`; flush pending providers to a
+    /// `ModelRegistry`; bind core; then execute the tool and verify output.
+    ///
+    /// This exercises the full pipeline that `sdk.rs::create_agent_session`
+    /// uses, but in isolation (without creating a full `AgentSession`).
+    #[test]
+    fn test_e2e_extension_full_pipeline() {
+        use crate::core::model_registry::{ModelRegistry, ProviderConfig};
+        use crate::core::slash_commands::resolve_extension_commands;
+        use pi_extension_api::ExtensionRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("full-e2e.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  // Register a tool that echoes params.
+  pi.registerTool({
+    name: "calc",
+    description: "calculate something",
+    execute: async (toolCallId, params) => {
+      const x = (params && params.x) || 0;
+      return {
+        content: [{ type: "text", text: "result: " + (x * 3) }],
+        details: { toolCallId, input: x },
+        terminate: false,
+      };
+    },
+  });
+
+  // Register a command.
+  pi.registerCommand("summarize", {
+    description: "Summarize the conversation",
+    handler: async () => {},
+  });
+
+  // Register a provider (pre-bind, queued as pending).
+  pi.registerProvider("e2e-provider", {
+    baseUrl: "http://e2e.test:9999",
+    apiKey: "secret-key",
+    api: "openai",
+    authHeader: true,
+  });
+
+  pi.log("e2e loaded");
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        // 1. Load the extension via V8.
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result = block_on(manager.load_extension(
+            ext.clone(),
+            dir.path().to_path_buf(),
+        ))
+        .expect("load_extension");
+
+        // 2. Verify captured metadata.
+        assert_eq!(load_result.tools.len(), 1);
+        assert_eq!(load_result.tools[0].name, "calc");
+        assert_eq!(load_result.commands.len(), 1);
+        assert_eq!(load_result.commands[0].name, "summarize");
+        assert_eq!(load_result.pending_providers.len(), 1);
+        assert_eq!(load_result.pending_providers[0].name, "e2e-provider");
+        assert!(load_result.pending_providers[0].config_json.contains("e2e.test"));
+
+        // 3. Create adapter and register into ExtensionRegistry.
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+        let source_info = adapter.source_info().clone();
+
+        // Flush pending providers to a ModelRegistry (mirrors sdk.rs).
+        let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+        for pending in adapter.pending_providers() {
+            let config: ProviderConfig =
+                serde_json::from_str(&pending.config_json).expect("parse provider config");
+            model_registry.register_provider(&pending.name, config);
+        }
+
+        let mut ext_registry = ExtensionRegistry::new();
+        ext_registry.register(Box::new(adapter), source_info);
+
+        // 4. Verify tools are in the registry.
+        let tools = ext_registry.tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].definition.name, "calc");
+
+        // 5. Verify commands are in the registry and resolve correctly.
+        let commands = ext_registry.commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "summarize");
+        let resolved = resolve_extension_commands(commands);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].invocation_name, "summarize");
+        assert_eq!(resolved[0].name, "summarize");
+
+        // 6. Verify the provider was registered in ModelRegistry.
+        let providers = model_registry.get_registered_providers();
+        assert!(providers.contains(&"e2e-provider".to_string()),
+            "e2e-provider should be in registered_providers");
+        let provider_config = model_registry
+            .get_provider_config("e2e-provider")
+            .expect("provider config exists");
+        assert_eq!(provider_config.base_url.as_deref(), Some("http://e2e.test:9999"));
+        assert_eq!(provider_config.api_key.as_deref(), Some("secret-key"));
+        assert_eq!(provider_config.api.as_deref(), Some("openai"));
+        assert_eq!(provider_config.auth_header, Some(true));
+
+        // 7. Clone the registry for the bind_core closures (shares the Arc).
+        let registry_for_register = model_registry.clone();
+        let registry_for_unregister = model_registry.clone();
+
+        // 8. Bind core with register_provider/unregister_provider closures.
+        let actions = super::super::js_runtime::RuntimeActions {
+            register_provider: Some(std::sync::Arc::new(
+                move |name: String, config_json: String, _ext: String| {
+                    if let Ok(config) = serde_json::from_str::<ProviderConfig>(&config_json) {
+                        registry_for_register.register_provider(&name, config);
+                    }
+                },
+            )),
+            unregister_provider: Some(std::sync::Arc::new(
+                move |name: String| {
+                    registry_for_unregister.unregister_provider(&name);
+                },
+            )),
+            ..Default::default()
+        };
+        block_on(manager.bind_core(actions)).expect("bind_core");
+
+        // 9. Execute the tool and verify output.
+        let tool = &tools[0];
+        let execute = tool.definition.execute.clone().expect("execute fn");
+        let output = block_on(execute(
+            "e2e-call-1".to_string(),
+            serde_json::json!({ "x": 7 }),
+            None,
+        ))
+        .expect("tool execute");
+        assert!(!output.is_error);
+        assert_eq!(output.content.len(), 1);
+        assert_eq!(output.content[0]["type"], "text");
+        assert_eq!(output.content[0]["text"], "result: 21");
+        let details = output.details.expect("details present");
+        assert_eq!(details["toolCallId"], "e2e-call-1");
+        assert_eq!(details["input"], 7);
+
+        // 10. Verify the ModelRegistry clone (from the closure) shares the
+        //     same registered_providers map — unregister via the clone
+        //     path would affect the original. Just verify the provider is
+        //     still there (the closure hasn't been called, but the Arc is shared).
+        let providers2 = model_registry.get_registered_providers();
+        assert!(providers2.contains(&"e2e-provider".to_string()));
+    }
 }
 
 // ============================================================================

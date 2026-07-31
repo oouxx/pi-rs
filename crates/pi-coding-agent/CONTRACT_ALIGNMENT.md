@@ -196,7 +196,8 @@ This file documents the alignment between the TypeScript original
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| 获取命令列表 | Includes extension commands, prompt templates, skills | Includes prompt templates and skills, not extension commands | 是（有意偏差，见 DEVIATIONS.md #5） |
+| 获取命令列表 | Includes extension commands, prompt templates, skills | Includes extension commands (`resolve_extension_commands`), prompt templates, skills | 是 |
+| 命令顺序 | Extension → prompt → skill | Extension → prompt → skill | 是 |
 | 响应格式 | Array of command objects | Array of command objects | 是 |
 
 ### ExportHtml
@@ -210,7 +211,8 @@ This file documents the alignment between the TypeScript original
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| 处理扩展 UI 响应 | Handles `extension_ui_response` type on stdin | Handles `extension_ui_response` type on stdin via `pending_extension_requests` | 是（有意偏差，见 DEVIATIONS.md #6） |
+| 处理扩展 UI 响应 | Handles `extension_ui_response` type on stdin | Handles `extension_ui_response` type on stdin via `pending_extension_requests` | 是 |
+| 扩展启用状态 | Extensions enabled in RPC mode | Extensions enabled in RPC mode (`enable_extensions: true`) | 是 |
 
 ## RPC Protocol
 
@@ -224,3 +226,53 @@ This file documents the alignment between the TypeScript original
 | 解析错误 | Invalid JSON → `error(undefined, "parse", "Failed to parse command: ...")` | `rpc_error(None, "parse", "Failed to parse command: {e}")` | 是 |
 | 未知命令 | Unknown command type in `handleCommand()` switch default → `error(command.id, command.type, "Unknown command: ...")` | Parse JSON as generic `Value` first to extract `id`/`type`; on `RpcCommand` deserialization failure → `rpc_error(cmd_id, cmd_type, "Unknown command: {cmd_type}")` | 是 |
 | 扩展 UI 响应 | Checks `parsed.type === "extension_ui_response"` before parsing as `RpcCommand` | Checks `cmd_type == "extension_ui_response"` before parsing as `RpcCommand` | 是 |
+
+## JS Extension Runtime (`#[cfg(feature = "js-runtime")]`)
+
+Public APIs introduced by the V8-based extension loader. These are gated
+behind the `js-runtime` feature and have no TS counterpart as Rust APIs
+(the TS original uses a JS-native extension runner).
+
+### JsExtensionManager
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| `spawn()` | N/A (JS runtime is in-process) | Spawns a dedicated std::thread with a current-thread tokio runtime + LocalSet for V8 (which is `!Send`) | 是（有意偏差，见 DEVIATIONS.md — extension system internal deviation） |
+| `load_extension(path, cwd)` | `jiti.import(path, { default: true })` → `factory(api)` | `JsCommand::LoadExtension` → V8 thread executes shim that imports the default export and invokes `factory(globalThis.__pi)` | 是 |
+| `bind_core(actions)` | `ExtensionRunner.bindCore()` — flushes pending providers, installs live action closures | `JsCommand::BindCore` → V8 thread calls `js_runtime.bind_core(actions)`; pending providers are flushed by the caller (sdk.rs) before sending BindCore | 是 |
+| `shutdown()` | N/A | Sends `JsCommand::Shutdown`, drops real sender, joins thread | 是 |
+
+### JsExtensionAdapter
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| `new(path, load_result, cmd_tx)` | N/A | Creates adapter from captured `ExtensionLoadResult` + V8 channel sender | 是 |
+| `source_info()` | `extension.sourceInfo` | Returns per-extension `SourceInfo` derived from file path | 是 |
+| `pending_providers()` | `runtime.pendingProviderRegistrations` | Returns `&[PendingProviderRegistration]` captured pre-bind | 是 |
+| `register_tools()` | `registerTool(name, ...)` | `register_tools(&mut ToolRegistry)` via `HookHandler` | 是 |
+| `register_commands()` | `registerCommand(name, ...)` | `register_commands(&mut CommandRegistry)` via `HookHandler` | 是 |
+| tool execution | `execute(toolCallId, params, signal, onUpdate, ctx)` | `JsCommand::ExecuteTool` → V8 thread runs `execute_async_and_get_json` with 5-arg signature | 是 |
+| event dispatch | `runtime.emit(event, data)` | `JsCommand::FireEvent` → V8 thread invokes registered JS handlers | 是 |
+
+### ModelRegistry — Provider Registration
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| `register_provider(name, config)` | `modelRegistry.registerProvider(name, config)` — inserts into `registeredProviders` map | `model_registry.register_provider(&name, config)` — inserts into `Arc<RwLock<HashMap>>` | 是 |
+| Clone shares provider map | N/A (single instance) | `ModelRegistry::clone()` shares `registered_providers` via `Arc` (models and models_json_providers are deep-copied — they are read-only after construction) | 是 |
+| Post-bind live registration | `runtime.registerProvider = (name, config) => modelRegistry.registerProvider(...)` | `RuntimeActions.register_provider` closure captures a `ModelRegistry` clone (shares the Arc) → calls `register_provider` | 是 |
+
+### ResolvedCommand
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| `source_info` | `RegisteredCommand.sourceInfo` (always present) | `SourceInfo` (non-optional, carried from `RegisteredCommand`) | 是 |
+| `invocation_name` dedup | `resolveRegisteredCommands()` — `:N` suffix on name collision | `resolve_extension_commands()` — identical dedup logic | 是 |
+
+### GetCommands (updated)
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| 获取命令列表 | Extension commands → prompt templates → skills | Extension commands (`resolve_extension_commands`) → prompt templates → skills | 是 |
+| Extension command source | `source: "extension"` | `SlashCommandSource::Extension` | 是 |
+| 响应格式 | Array of `RpcSlashCommand` | Array of `SlashCommandInfo` (same wire format) | 是 |

@@ -203,3 +203,64 @@
   `extension_paths`/`--extensions` 明确标注为其后果。
 - 若未来采纳方案 A，#5/#6 中"扩展禁用/不可查"的部分将随之闭合，
   届时需把对应行从"已确认保留"改为"已实现"并走阶段三契约对齐。
+
+## 8. SDK shim 实测评估（基于真实 import 扫描）
+
+> 数据源：`packages/coding-agent/examples/extensions/` 下全部 68 个示例扩展
+> 的真实 `import` 语句。把第 5 节"估"的 SDK shim 行数换成"测"。
+
+### 8.1 import 面按运行时成本三分类
+
+| 类别 | 符号数 | shim 成本 | 说明 |
+|------|:--:|:--:|------|
+| **type-only**（`import { type X }`） | 12 | **0** | JS 运行时蒸发，编译期消失，无需 shim |
+| **typebox 提供**（`StringEnum`/`Type`） | 2 | **0** | typebox 是纯 JS npm 包，作为 asset 打包（`rust-embed`），13 处 typebox import 全部免费 |
+| **非-TUI 运行时值**（可做） | 23 | ~750–1150 行 | 见 8.2 |
+| **TUI 组件/渲染**（被 TUI 偏差卡住） | 13 | stub ~55 / 真实=TUI 移植 | TUI 已是"已确认保留"偏差，本回合不复刻 |
+
+type-only 清单（运行时不存在）：`Component`/`Focusable`/`SelectItem`/`SettingItem`/`TUI`（pi-tui）、`BashOperations`/`ExtensionAPI`（pi-coding-agent）、`Api`/`Context`/`Message`/`Model`/`UserMessage`（pi-ai）。
+
+### 8.2 非-TUI 可行 shim 明细（23 个运行时符号）
+
+**pi-tui 纯工具（7）** —— 纯逻辑，JS 重写即可，无需 TUI 移植：
+`Key`/`parseKey`/`matchesKey`/`isKeyRelease`/`CURSOR_MARKER`/`visibleWidth`/`truncateToWidth` → ~100 行 JS
+
+**pi-coding-agent 非-TUI（12）**：
+- 配置类（`CONFIG_DIR_NAME`/`VERSION`）2 行
+- host 桥：`getAgentDir` ~8、`parseFrontmatter` ~25（纯 JS 移植）、`defineTool` ~20
+- 内置工具工厂 `createBashTool`/`createEditTool`/`createReadTool`/`createWriteTool`：4 × ~40 = ~160（每个：构造 `ToolDefinition` + execute 回调调 host op 跑现有内置工具）
+- 数据变换 `convertToLlm`/`serializeConversation` ~80、`withFileMutationQueue` ~30
+→ ~365 行 JS
+
+**pi-ai 非-typebox（4）**：`complete` ~35、`getModel` ~15、`streamSimple` ~50、`registerApiProvider` ~30 → ~130 行 JS
+
+**对应 Rust host op 胶水**：内置工具工厂调现有工具执行器 ~80、pi-ai 桥接到 provider 层 ~150–250、杂项 getter ~40 → **~250–400 行 Rust**
+
+**非-TUI shim 合计：~500–750 JS + ~250–400 Rust ≈ 750–1150 行**
+
+### 8.3 TUI-blocked 明细（13 个运行时符号）
+
+- pi-tui 组件（8）：`Box`/`Container`/`Input`/`Markdown`/`SelectList`/`SettingsList`/`Spacer`/`Text`
+- pi-coding-agent TUI 渲染助手（5）：`BorderedLoader`/`CustomEditor`/`DynamicBorder`/`getMarkdownTheme`/`getSettingsListTheme`
+
+这些渲染到终端，Rust TUI 是**已确认保留的偏差**（本回合不复刻）。两条路：
+- **stub**（非-TUI 模式抛 "TUI unavailable"）：~55 行，让这些扩展在 RPC/CLI 模式下显式不可用
+- **真实实现** = 整个 TUI 移植工程，不在本次范围
+
+### 8.4 对方案 A 总量的修正
+
+| 组件 | 第 5 节估 | 实测修正 |
+|------|:--:|:--:|
+| #4 SDK shim（非-TUI） | 600–1200 JS（气球 2000+） | **~500–750 JS + ~250–400 Rust** |
+| TUI shim | 含在上面 | **stub ~55 / 真实=TUI 移植（独立工程）** |
+
+**方案 A 非-TUI 全量** ≈ 原 Rust 2700–4500 + shim Rust 250–400 + shim JS 500–750
+≈ **~3500–5600 行**，比第 5 节的"~5k"略低且更确定。TUI 扩展要等 TUI 移植，
+与方案 A 本身解耦。
+
+### 8.5 结论
+
+SDK shim 的真实成本被高估了：type-only（12）+ typebox-bundled（2）= 14 个
+符号零成本；非-TUI 运行时 23 个符号约 750–1150 行、边界清晰；剩余 13 个
+TUI 符号被已有的 TUI 偏差卡住，stub 即可，真实成本归到 TUI 移植工程而非
+方案 A。气球风险 100% 集中在 TUI 符号上，而 TUI 本就是偏差。

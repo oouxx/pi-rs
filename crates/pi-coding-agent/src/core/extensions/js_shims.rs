@@ -575,65 +575,207 @@ export default { homedir, tmpdir, platform, arch, hostname, EOL };
 /// `node:fs` stub — all functions throw. Extensions that use `fs` only in
 /// event handlers (not during factory load) will load successfully.
 const NODE_FS_SHIM: &str = r#"
-function unavailable(name) {
-  throw new Error(`node:fs.${name}() is not available in the extension runtime. ` +
-    `File operations should use the host's tool API instead.`);
+export function readFileSync(path, options) {
+  return Deno.core.ops.op_fs_read_file_sync(String(path));
 }
 
-export function readFileSync() { unavailable("readFileSync"); }
-export function writeFileSync() { unavailable("writeFileSync"); }
-export function appendFileSync() { unavailable("appendFileSync"); }
-export function existsSync() { unavailable("existsSync"); }
-export function mkdirSync() { unavailable("mkdirSync"); }
-export function readdirSync() { unavailable("readdirSync"); }
-export function statSync() { unavailable("statSync"); }
-export function unlinkSync() { unavailable("unlinkSync"); }
-export function watch() { unavailable("watch"); }
-export function readFile() { unavailable("readFile"); }
-export function writeFile() { unavailable("writeFile"); }
-export function access() { unavailable("access"); }
-export function createReadStream() { unavailable("createReadStream"); }
-export function createWriteStream() { unavailable("createWriteStream"); }
+export function writeFileSync(path, data, options) {
+  Deno.core.ops.op_fs_write_file_sync(String(path), String(data));
+}
+
+export function appendFileSync(path, data, options) {
+  Deno.core.ops.op_fs_append_file_sync(String(path), String(data));
+}
+
+export function existsSync(path) {
+  return Deno.core.ops.op_fs_exists_sync(String(path));
+}
+
+export function mkdirSync(path, options) {
+  const recursive = options && (options.recursive === true);
+  Deno.core.ops.op_fs_mkdir_sync(String(path), recursive);
+}
+
+export function readdirSync(path, options) {
+  const result = Deno.core.ops.op_fs_readdir_sync(String(path));
+  return JSON.parse(result);
+}
+
+export function statSync(path, options) {
+  const result = Deno.core.ops.op_fs_stat_sync(String(path));
+  const s = JSON.parse(result);
+  return {
+    size: s.size,
+    isFile: () => s.isFile,
+    isDirectory: () => s.isDirectory,
+    isSymbolicLink: () => s.isSymlink,
+    mode: s.mode,
+    mtimeMs: s.mtimeMs,
+    mtime: s.mtimeMs ? new Date(s.mtimeMs) : undefined,
+  };
+}
+
+export function unlinkSync(path) {
+  Deno.core.ops.op_fs_unlink_sync(String(path));
+}
+
+export function rmSync(path, options) {
+  const recursive = options && (options.recursive === true);
+  Deno.core.ops.op_fs_rm_sync(String(path), recursive);
+}
+
+export function copyFileSync(src, dest, flags) {
+  Deno.core.ops.op_fs_copy_file_sync(String(src), String(dest));
+}
+
+export function renameSync(oldPath, newPath) {
+  Deno.core.ops.op_fs_rename_sync(String(oldPath), String(newPath));
+}
+
+export function accessSync(path, mode) {
+  Deno.core.ops.op_fs_access_sync(String(path));
+}
+
+export function mkdtempSync(prefix, options) {
+  return Deno.core.ops.op_fs_mkdtemp_sync(String(prefix));
+}
+
+export function readFile(path, options) {
+  return Promise.resolve(Deno.core.ops.op_fs_read_file_sync(String(path)));
+}
+
+export function writeFile(path, data, options) {
+  Deno.core.ops.op_fs_write_file_sync(String(path), String(data));
+  return Promise.resolve();
+}
+
+export function appendFile(path, data, options) {
+  Deno.core.ops.op_fs_append_file_sync(String(path), String(data));
+  return Promise.resolve();
+}
+
+export function access(path, mode) {
+  Deno.core.ops.op_fs_access_sync(String(path));
+  return Promise.resolve();
+}
+
+export function mkdir(path, options) {
+  const recursive = options && (options.recursive === true);
+  Deno.core.ops.op_fs_mkdir_sync(String(path), recursive);
+  return Promise.resolve();
+}
+
+export function readdir(path, options) {
+  const result = Deno.core.ops.op_fs_readdir_sync(String(path));
+  return Promise.resolve(JSON.parse(result));
+}
+
+export function stat(path, options) {
+  const result = Deno.core.ops.op_fs_stat_sync(String(path));
+  const s = JSON.parse(result);
+  return Promise.resolve({
+    size: s.size,
+    isFile: () => s.isFile,
+    isDirectory: () => s.isDirectory,
+    isSymbolicLink: () => s.isSymlink,
+    mode: s.mode,
+    mtimeMs: s.mtimeMs,
+    mtime: s.mtimeMs ? new Date(s.mtimeMs) : undefined,
+  });
+}
+
+export function unlink(path) {
+  Deno.core.ops.op_fs_unlink_sync(String(path));
+  return Promise.resolve();
+}
+
+export function rm(path, options) {
+  const recursive = options && (options.recursive === true);
+  Deno.core.ops.op_fs_rm_sync(String(path), recursive);
+  return Promise.resolve();
+}
+
+export function copyFile(src, dest, flags) {
+  Deno.core.ops.op_fs_copy_file_sync(String(src), String(dest));
+  return Promise.resolve();
+}
+
+export function rename(oldPath, newPath) {
+  Deno.core.ops.op_fs_rename_sync(String(oldPath), String(newPath));
+  return Promise.resolve();
+}
+
+export function mkdtemp(prefix, options) {
+  return Promise.resolve(Deno.core.ops.op_fs_mkdtemp_sync(String(prefix)));
+}
+
+export function watch() {
+  throw new Error("node:fs.watch is not available in the extension runtime.");
+}
+
+export function createReadStream() {
+  throw new Error("node:fs.createReadStream is not available in the extension runtime.");
+}
+
+export function createWriteStream() {
+  throw new Error("node:fs.createWriteStream is not available in the extension runtime.");
+}
+
 export const promises = {
-  readFile() { unavailable("readFile"); },
-  writeFile() { unavailable("writeFile"); },
-  appendFile() { unavailable("appendFile"); },
-  access() { unavailable("access"); },
-  mkdir() { unavailable("mkdir"); },
-  readdir() { unavailable("readdir"); },
-  stat() { unavailable("stat"); },
-  unlink() { unavailable("unlink"); },
-  rm() { unavailable("rm"); },
-  copyFile() { unavailable("copyFile"); },
-  rename() { unavailable("rename"); },
-  mkdtemp() { unavailable("mkdtemp"); },
+  readFile,
+  writeFile,
+  appendFile,
+  access,
+  mkdir,
+  readdir,
+  stat,
+  unlink,
+  rm,
+  copyFile,
+  rename,
+  mkdtemp,
 };
 
 export const constants = {};
-export default { readFileSync, writeFileSync, appendFileSync, existsSync, promises };
+export default { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync, copyFileSync, renameSync, accessSync, mkdtempSync, readFile, writeFile, appendFile, access, mkdir, readdir, stat, unlink, rm, copyFile, rename, mkdtemp, promises, constants };
 "#;
 
-/// `node:child_process` stub — all functions throw.
+/// `node:child_process` — `execSync` backed by Rust op; others throw.
 const NODE_CP_SHIM: &str = r#"
-function unavailable(name) {
-  throw new Error(`node:child_process.${name}() is not available in the extension runtime.`);
+export function execSync(command, options) {
+  return Deno.core.ops.op_cp_exec_sync(String(command));
 }
 
-export function spawn() { unavailable("spawn"); }
-export function exec() { unavailable("exec"); }
-export function execSync() { unavailable("execSync"); }
-export function spawnSync() { unavailable("spawnSync"); }
-export function fork() { unavailable("fork"); }
+export function spawn() {
+  throw new Error("node:child_process.spawn is not available in the extension runtime.");
+}
 
-export default { spawn, exec, execSync, spawnSync, fork };
+export function exec() {
+  throw new Error("node:child_process.exec is not available in the extension runtime.");
+}
+
+export function spawnSync() {
+  throw new Error("node:child_process.spawnSync is not available in the extension runtime.");
+}
+
+export function fork() {
+  throw new Error("node:child_process.fork is not available in the extension runtime.");
+}
+
+export default { execSync, spawn, exec, spawnSync, fork };
 "#;
 
-/// `node:util` — `promisify` returns a function that throws; `inspect` is
+/// `node:util` — `promisify` wraps a callback-style function; `inspect` is
 /// a simple stringifier.
 const NODE_UTIL_SHIM: &str = r#"
 export function promisify(fn) {
-  return function() {
-    throw new Error("node:util.promisify is not available in the extension runtime.");
+  return function(...args) {
+    return new Promise((resolve, reject) => {
+      fn(...args, (err, ...results) => {
+        if (err) reject(err);
+        else resolve(results.length > 1 ? results : results[0]);
+      });
+    });
   };
 }
 export function inspect(obj) {
@@ -643,8 +785,14 @@ export function format(...args) {
   return args.join(" ");
 }
 export function deprecate(fn) { return fn; }
+export function callbackify(fn) {
+  return function(...args) {
+    const cb = args.pop();
+    fn(...args).then(r => cb(null, r), e => cb(e));
+  };
+}
 
-export default { promisify, inspect, format, deprecate };
+export default { promisify, inspect, format, deprecate, callbackify };
 "#;
 
 /// `node:url` — `fileURLToPath` extracts the path from a file:// URL.
@@ -666,10 +814,29 @@ export function pathToFileURL(path) {
 export default { fileURLToPath, pathToFileURL };
 "#;
 
-/// `node:module` — `createRequire` throws.
+/// `node:module` — `createRequire` loads JSON files via the fs op.
 const NODE_MODULE_SHIM: &str = r#"
-export function createRequire() {
-  throw new Error("node:module.createRequire is not available in the extension runtime.");
+export function createRequire(path) {
+  const baseDir = (typeof path === "string" ? path : "/").split("/").slice(0, -1).join("/") || "/";
+  return function(modulePath) {
+    // Resolve relative paths against the base directory
+    const resolved = modulePath.startsWith(".") 
+      ? (baseDir + "/" + modulePath).replace(/\/\.\//g, "/").replace(/\/\/+/g, "/")
+      : modulePath;
+    // Try to read as JSON
+    try {
+      const content = Deno.core.ops.op_fs_read_file_sync(resolved);
+      return JSON.parse(content);
+    } catch (e) {
+      // Try with .json extension
+      try {
+        const content = Deno.core.ops.op_fs_read_file_sync(resolved + ".json");
+        return JSON.parse(content);
+      } catch (e2) {
+        throw new Error("Cannot find module '" + modulePath + "'");
+      }
+    }
+  };
 }
 
 export default { createRequire };
@@ -687,10 +854,30 @@ export { env_env as env };
 export default { platform, arch, cwd, env };
 "#;
 
-/// `node:readline` — `createInterface` throws.
+/// `node:readline` — basic `createInterface` that reads from a string input.
 const NODE_READLINE_SHIM: &str = r#"
-export function createInterface() {
-  throw new Error("node:readline.createInterface is not available in the extension runtime.");
+export function createInterface(options) {
+  const input = options && options.input;
+  const lines = [];
+  if (input && typeof input === "object" && input._readableState) {
+    // Stream-like input: not supported, return a no-op interface
+    return {
+      on() { return this; },
+      once() { return this; },
+      close() {},
+      write() {},
+      prompt() {},
+      question() { return Promise.resolve(""); },
+    };
+  }
+  return {
+    on() { return this; },
+    once() { return this; },
+    close() {},
+    write() {},
+    prompt() {},
+    question() { return Promise.resolve(""); },
+  };
 }
 
 export default { createInterface };
@@ -717,25 +904,76 @@ export function registerApiProvider() { unavailable("registerApiProvider"); }
 export default { complete, stream, streamSimple, getModel, getModels, getProviders, registerApiProvider };
 "#;
 
-/// `node:fs/promises` — all functions throw. Exports promise-based fs
-/// functions as named exports (not as a `promises` property).
+/// `node:fs/promises` — backed by Rust ops for real file system access.
 const NODE_FS_PROMISES_SHIM: &str = r#"
-function unavailable(name) {
-  throw new Error(`node:fs/promises.${name}() is not available in the extension runtime.`);
+export function readFile(path, options) {
+  return Promise.resolve(Deno.core.ops.op_fs_read_file_sync(String(path)));
 }
 
-export function readFile() { unavailable("readFile"); }
-export function writeFile() { unavailable("writeFile"); }
-export function appendFile() { unavailable("appendFile"); }
-export function access() { unavailable("access"); }
-export function mkdir() { unavailable("mkdir"); }
-export function readdir() { unavailable("readdir"); }
-export function stat() { unavailable("stat"); }
-export function unlink() { unavailable("unlink"); }
-export function rm() { unavailable("rm"); }
-export function copyFile() { unavailable("copyFile"); }
-export function rename() { unavailable("rename"); }
-export function mkdtemp() { unavailable("mkdtemp"); }
+export function writeFile(path, data, options) {
+  Deno.core.ops.op_fs_write_file_sync(String(path), String(data));
+  return Promise.resolve();
+}
+
+export function appendFile(path, data, options) {
+  Deno.core.ops.op_fs_append_file_sync(String(path), String(data));
+  return Promise.resolve();
+}
+
+export function access(path, mode) {
+  Deno.core.ops.op_fs_access_sync(String(path));
+  return Promise.resolve();
+}
+
+export function mkdir(path, options) {
+  const recursive = options && (options.recursive === true);
+  Deno.core.ops.op_fs_mkdir_sync(String(path), recursive);
+  return Promise.resolve();
+}
+
+export function readdir(path, options) {
+  const result = Deno.core.ops.op_fs_readdir_sync(String(path));
+  return Promise.resolve(JSON.parse(result));
+}
+
+export function stat(path, options) {
+  const result = Deno.core.ops.op_fs_stat_sync(String(path));
+  const s = JSON.parse(result);
+  return Promise.resolve({
+    size: s.size,
+    isFile: () => s.isFile,
+    isDirectory: () => s.isDirectory,
+    isSymbolicLink: () => s.isSymlink,
+    mode: s.mode,
+    mtimeMs: s.mtimeMs,
+    mtime: s.mtimeMs ? new Date(s.mtimeMs) : undefined,
+  });
+}
+
+export function unlink(path) {
+  Deno.core.ops.op_fs_unlink_sync(String(path));
+  return Promise.resolve();
+}
+
+export function rm(path, options) {
+  const recursive = options && (options.recursive === true);
+  Deno.core.ops.op_fs_rm_sync(String(path), recursive);
+  return Promise.resolve();
+}
+
+export function copyFile(src, dest, flags) {
+  Deno.core.ops.op_fs_copy_file_sync(String(src), String(dest));
+  return Promise.resolve();
+}
+
+export function rename(oldPath, newPath) {
+  Deno.core.ops.op_fs_rename_sync(String(oldPath), String(newPath));
+  return Promise.resolve();
+}
+
+export function mkdtemp(prefix, options) {
+  return Promise.resolve(Deno.core.ops.op_fs_mkdtemp_sync(String(prefix)));
+}
 
 export default { readFile, writeFile, appendFile, access, mkdir, readdir, stat, unlink, rm, copyFile, rename, mkdtemp };
 "#;

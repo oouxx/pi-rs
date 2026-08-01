@@ -4,6 +4,7 @@
 
 use colored::*;
 
+use pi_coding_agent::core::extensions::load_extension_now;
 use pi_coding_agent::core::package_manager::{is_npm_available, DefaultPackageManager, PackageManager};
 
 /// Supported package commands.
@@ -111,6 +112,11 @@ pub async fn handle_package_command(args: &[String], cwd: &str, agent_dir: &str)
                     println!("{} Installed {source}", "✓".green());
                     if let Err(e) = link_extension_to_agent(source, agent_dir, cwd, !parsed.local) {
                         eprintln!("  {} Warning: could not link extension: {e}", "!".yellow());
+                    }
+                    // Try to load the extension immediately (V8 runtime)
+                    match load_extension_now(source, cwd, agent_dir).await {
+                        Ok(msg) => println!("  {} {msg}", "✓".green()),
+                        Err(e) => eprintln!("  {} Note: {e}", "!".yellow()),
                     }
                     0
                 }

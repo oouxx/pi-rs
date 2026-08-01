@@ -81,7 +81,7 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // RPC mode creates its own session internally
     if args.mode == OutputMode::Rpc {
-        return pi_coding_agent::modes::rpc::run_rpc_mode().await;
+        return pi_coding_agent::modes::rpc::run_rpc_mode(args.extensions.clone()).await;
     }
 
     if !trusted {

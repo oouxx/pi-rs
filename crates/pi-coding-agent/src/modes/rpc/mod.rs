@@ -23,7 +23,7 @@ use super::rpc::rpc_types::*;
 /// - Commands: JSON objects with `type` field on stdin (one per line)
 /// - Responses: JSON objects on stdout with `type: "response"`
 /// - Events: JSON objects on stdout with `type: "event"` streamed as they occur
-pub async fn run_rpc_mode() -> i32 {
+pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
     // ── Build a minimal agent session ──────────────────────────────────
     let agent_dir = crate::config::get_agent_dir();
     let cwd = std::env::current_dir()
@@ -44,7 +44,7 @@ pub async fn run_rpc_mode() -> i32 {
         session_name: None,
         stream_fn: None,
         convert_to_llm: None,
-        extension_paths: Vec::new(),
+        extension_paths,
         enable_extensions: true,
         persist_session: false,
         session_file: None,

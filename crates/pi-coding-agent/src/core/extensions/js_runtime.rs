@@ -520,6 +520,163 @@ fn op_unregister_provider_action(
     Ok(())
 }
 
+// ============================================================================
+// Node.js built-in module ops
+// ============================================================================
+
+#[op2(fast)]
+fn op_fs_exists_sync(#[string] path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
+#[op2]
+#[string]
+fn op_fs_read_file_sync(#[string] path: String) -> Result<String, JsErrorBox> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| JsErrorBox::generic(format!("ENOENT: {e}")))
+}
+
+#[op2(fast)]
+fn op_fs_write_file_sync(
+    #[string] path: String,
+    #[string] data: String,
+) -> Result<(), JsErrorBox> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, &data).map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+}
+
+#[op2(fast)]
+fn op_fs_append_file_sync(
+    #[string] path: String,
+    #[string] data: String,
+) -> Result<(), JsErrorBox> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))?;
+    file.write_all(data.as_bytes())
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+}
+
+#[op2(fast)]
+fn op_fs_mkdir_sync(
+    #[string] path: String,
+    recursive: bool,
+) -> Result<(), JsErrorBox> {
+    if recursive {
+        std::fs::create_dir_all(&path)
+    } else {
+        std::fs::create_dir(&path)
+    }
+    .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+}
+
+#[op2]
+#[string]
+fn op_fs_readdir_sync(#[string] path: String) -> Result<String, JsErrorBox> {
+    let entries: Vec<String> = std::fs::read_dir(&path)
+        .map_err(|e| JsErrorBox::generic(format!("ENOENT: {e}")))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    serde_json::to_string(&entries)
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+}
+
+#[op2]
+#[string]
+fn op_fs_stat_sync(#[string] path: String) -> Result<String, JsErrorBox> {
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| JsErrorBox::generic(format!("ENOENT: {e}")))?;
+    let stat = serde_json::json!({
+        "size": meta.len(),
+        "isFile": meta.is_file(),
+        "isDirectory": meta.is_dir(),
+        "isSymlink": meta.is_symlink(),
+        "mode": 0,
+        "mtimeMs": meta.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as f64),
+    });
+    serde_json::to_string(&stat)
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+}
+
+#[op2(fast)]
+fn op_fs_unlink_sync(#[string] path: String) -> Result<(), JsErrorBox> {
+    std::fs::remove_file(&path)
+        .map_err(|e| JsErrorBox::generic(format!("ENOENT: {e}")))
+}
+
+#[op2(fast)]
+fn op_fs_rm_sync(
+    #[string] path: String,
+    recursive: bool,
+) -> Result<(), JsErrorBox> {
+    let meta = std::fs::metadata(&path);
+    if let Ok(m) = meta {
+        if m.is_dir() && recursive {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        }
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+    } else {
+        Err(JsErrorBox::generic(format!("ENOENT: {path}")))
+    }
+}
+
+#[op2(fast)]
+fn op_fs_copy_file_sync(
+    #[string] src: String,
+    #[string] dest: String,
+) -> Result<(), JsErrorBox> {
+    std::fs::copy(&src, &dest)
+        .map_err(|e| JsErrorBox::generic(format!("ENOENT: {e}")))?;
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_fs_rename_sync(
+    #[string] old: String,
+    #[string] new: String,
+) -> Result<(), JsErrorBox> {
+    std::fs::rename(&old, &new)
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))
+}
+
+#[op2(fast)]
+fn op_fs_access_sync(#[string] path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
+#[op2]
+#[string]
+fn op_fs_mkdtemp_sync(#[string] prefix: String) -> Result<String, JsErrorBox> {
+    let dir = std::env::temp_dir().join(&prefix);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[op2]
+#[string]
+fn op_cp_exec_sync(#[string] command: String) -> Result<String, JsErrorBox> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .output()
+        .map_err(|e| JsErrorBox::generic(format!("EIO: {e}")))?;
+    let result = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let combined = if stderr.is_empty() { result } else { format!("{result}\n{stderr}") };
+    Ok(combined)
+}
+
 // --- Helpers ---
 
 /// Take the accumulated load result out of `OpState`, leaving an empty one.
@@ -564,6 +721,21 @@ const OPS: &[OpDecl] = &[
     op_set_thinking_level(),
     op_register_provider_action(),
     op_unregister_provider_action(),
+    // Node.js built-in module ops
+    op_fs_exists_sync(),
+    op_fs_read_file_sync(),
+    op_fs_write_file_sync(),
+    op_fs_append_file_sync(),
+    op_fs_mkdir_sync(),
+    op_fs_readdir_sync(),
+    op_fs_stat_sync(),
+    op_fs_unlink_sync(),
+    op_fs_rm_sync(),
+    op_fs_copy_file_sync(),
+    op_fs_rename_sync(),
+    op_fs_access_sync(),
+    op_fs_mkdtemp_sync(),
+    op_cp_exec_sync(),
 ];
 
 fn pi_extension() -> Extension {

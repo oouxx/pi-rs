@@ -193,7 +193,7 @@ impl DefaultResourceLoader {
             cwd: self.options.cwd.clone(),
             agent_dir: self.options.agent_dir.clone(),
             skill_paths: paths.to_vec(),
-            include_defaults: false,
+            include_defaults: self.options.include_defaults,
         });
 
         // Attach source info to each skill
@@ -222,7 +222,7 @@ impl DefaultResourceLoader {
             cwd: self.options.cwd.clone(),
             agent_dir: self.options.agent_dir.clone(),
             prompt_paths: paths.to_vec(),
-            include_defaults: false,
+            include_defaults: self.options.include_defaults,
         });
 
         // Deduplicate prompts by name

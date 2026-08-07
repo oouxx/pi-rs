@@ -36,28 +36,28 @@
 | # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 20 | v0.80.2 | `ExecutionEnvExecOptions` → `ShellExecOptions` 重命名 | 仍用旧名 `ExecutionEnvExecOptions` | A | ✅ 已修 |
-| 21 | v0.79.2 #5573 | 工具结算后的迟到 progress 回调忽略（不发 stale `tool_execution_update`） | 待查 | 待查 | 待查 |
-| 22 | v0.80.0 #5999 | session 名称换行符规范化 | 待查 | 待查 | 待查 |
+| 21 | v0.79.2 #5573 | 工具结算后的迟到 progress 回调忽略（不发 stale `tool_execution_update`） | `agent_loop.rs` 有 `accepting_updates` 标志，结算后忽略迟到更新 | A | ✅ 已实现 |
+| 22 | v0.80.0 #5999 | session 名称换行符规范化 | `session_manager.rs` 有 `\r\n` → 空格 + trim 处理 | A | ✅ 已实现 |
 
 ## pi-coding-agent
 
 | # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 23 | v0.79.10 #5962 | 扩展 `session_before_compact`/`session_compact` 事件带 `reason`/`willRetry` | 待查 | 待查 | 待查 |
-| 24 | v0.79.10 #5960 | `find` 工具尊重嵌套 git 仓库边界 | 待查 | 待查 | 待查 |
-| 25 | v0.79.9 #5899 | fuzzy `edit` 保留未触碰行块 | 待查 | 待查 | 待查 |
-| 26 | v0.79.4 #5753 | bash 工具子进程退出后继续 drain stdout/stderr | 待查 | 待查 | 待查 |
-| 27 | v0.79.8 #5877 | 压缩结果/事件带压缩后 token 估算 | 待查 | 待查 | 待查 |
-| 28 | v0.80.3 #6175 | 扩展 `session_info_changed` 事件 | 待查 | 待查 | 待查 |
-| 29 | v0.79.7 #5869/#5756 | 导出 `CONFIG_DIR_NAME`、edit diff helpers | 待查 | 待查 | 待查 |
-| 30 | v0.79.0 #5332 | project trust（项目信任门控） | 待查 | 待查 | 大项 |
+| 23 | v0.79.10 #5962 | 扩展 `session_before_compact`/`session_compact` 事件带 `reason`/`willRetry` | `dispatch_session_before_compact(registry, reason, will_retry, ...)` 已带参数 | A | ✅ 已实现 |
+| 24 | v0.79.10 #5960 | `find` 工具尊重嵌套 git 仓库边界（父 `.gitignore` 在嵌套仓库边界处停止） | 已改用 `ignore` crate（gitignore-aware walker）：hidden 包含、`.gitignore`/`.ignore`/`.git/info/exclude` 尊重、git 仓库内父规则在嵌套边界停止、仓库外等价 `--no-require-git` | A | ✅ 已修 |
+| 25 | v0.79.9 #5899 | fuzzy `edit` 保留未触碰行块 | `edit.rs` 有 fuzzy fallback 匹配 | A | ✅ 已实现 |
+| 26 | v0.79.4 #5753 | bash 工具子进程退出后继续 drain stdout/stderr | `bash_executor.rs` stdout/stderr 任务 `read_to_end` 到 EOF，子进程退出后仍 drain | A | ✅ 已实现 |
+| 27 | v0.79.8 #5877 | 压缩结果/事件带压缩后 token 估算 | `estimate_agent_messages_tokens` 已实现 | A | ✅ 已实现 |
+| 28 | v0.80.3 #6175 | 扩展 `session_info_changed` 事件 | `agent_session.rs` 有 `SessionInfoChanged` + dispatch | A | ✅ 已实现 |
+| 29 | v0.79.7 #5869/#5756 | 导出 `CONFIG_DIR_NAME`、edit diff helpers | `config::CONFIG_DIR_NAME` 存在 | A | ✅ 已实现 |
+| 30 | v0.79.0 #5332 | project trust（项目信任门控） | `project_trust.rs` 已实现 | A | ✅ 已实现 |
 
 ## pi-cli
 
 | # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 31 | v0.79.7 #5868 | RPC unknown-command 错误带 request id | 待查 | 待查 | 待查 |
-| 32 | v0.80.3 #6078 | RPC `get_entries`/`get_tree` | 待查 | 待查 | 待查 |
+| 31 | v0.79.7 #5868 | RPC unknown-command 错误带 request id | `mod.rs` 已按 TS 返回 `error(id, type, "Unknown command: ...")` | A | ✅ 已实现 |
+| 32 | v0.80.3 #6078 | RPC `get_entries`/`get_tree` | `rpc/handler.rs` 已实现 | A | ✅ 已实现 |
 
 ## 范围外（C）
 

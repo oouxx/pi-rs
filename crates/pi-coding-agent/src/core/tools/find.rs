@@ -53,6 +53,19 @@ pub trait FindOperations: Send + Sync {
 // LocalFindOperations
 // ============================================================================
 
+/// Check whether `cwd` is inside a git repository by walking up to the root,
+/// matching the TS find tool's `insideGitRepo` detection.
+fn is_inside_git_repo(cwd: &std::path::Path) -> bool {
+    let mut current = Some(cwd);
+    while let Some(dir) = current {
+        if dir.join(".git").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 pub struct LocalFindOperations;
 
 impl FindOperations for LocalFindOperations {
@@ -80,27 +93,51 @@ impl FindOperations for LocalFindOperations {
             } else {
                 format!("{}/{}", cwd, pattern)
             };
+            let matcher = glob::Pattern::new(&full_pattern)
+                .map_err(|e| format!("Invalid glob pattern: {e}"))?;
+            let match_options = glob::MatchOptions {
+                case_sensitive: true,
+                require_literal_separator: false,
+                require_literal_leading_dot: false,
+            };
 
             let mut results = Vec::new();
-            if let Ok(paths) = glob::glob_with(
-                &full_pattern,
-                glob::MatchOptions {
-                    case_sensitive: true,
-                    require_literal_separator: false,
-                    require_literal_leading_dot: false,
-                },
-            ) {
-                for entry in paths {
-                    if results.len() >= limit {
-                        break;
-                    }
-                    if let Ok(path) = entry {
-                        let path_str = path.to_string_lossy().to_string();
-                        let skip = ignore.iter().any(|ign| path_str.contains(ign));
-                        if !skip {
-                            results.push(path_str);
-                        }
-                    }
+            // Walk with gitignore awareness (ripgrep's ignore crate), matching
+            // the TS find tool's fd-based behavior:
+            // - hidden files are included (fd --hidden);
+            // - .gitignore / .ignore / .git/info/exclude are respected;
+            // - inside a git repo, parent .gitignore rules stop at nested git
+            //   repo boundaries (https://github.com/earendil-works/pi/issues/5960);
+            // - outside a git repo, .gitignore is still respected (fd
+            //   --no-require-git).
+            let inside_git = is_inside_git_repo(std::path::Path::new(&cwd));
+            let walker = ignore::WalkBuilder::new(&cwd)
+                // `hidden(false)` = do NOT ignore hidden files (include them,
+                // matching fd --hidden). The ignore crate's `hidden(true)` is
+                // the default and means "ignore hidden files".
+                .hidden(false)
+                .git_ignore(true)
+                .git_global(true)
+                .git_exclude(true)
+                .require_git(inside_git)
+                .filter_entry(|e| e.file_name() != ".git")
+                .build();
+            for entry in walker {
+                if results.len() >= limit {
+                    break;
+                }
+                let Ok(entry) = entry else { continue };
+                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let path = entry.path();
+                let path_str = path.to_string_lossy().to_string();
+                let skip = ignore.iter().any(|ign| path_str.contains(ign));
+                if skip {
+                    continue;
+                }
+                if matcher.matches_path_with(path, match_options) {
+                    results.push(path_str);
                 }
             }
             Ok(results)
@@ -338,5 +375,68 @@ mod tests {
         assert_eq!(tool.name, "find");
         assert!(!tool.description.is_empty());
         assert!(tool.parameters_schema.is_object());
+    }
+
+    fn glob_in(dir: &std::path::Path, pattern: &str) -> Vec<String> {
+        let ops = LocalFindOperations;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            ops.glob(pattern, dir.to_str().unwrap(), &[], 1000)
+                .await
+                .unwrap()
+        })
+    }
+
+    #[test]
+    fn test_glob_basic_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/c.rs"), "").unwrap();
+
+        let results = glob_in(dir.path(), "**/*.rs");
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|p| p.ends_with("a.rs")));
+        assert!(results.iter().any(|p| p.ends_with("sub/c.rs")));
+    }
+
+    #[test]
+    fn test_glob_respects_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(dir.path().join("keep.txt"), "").unwrap();
+        std::fs::write(dir.path().join("secret.log"), "").unwrap();
+
+        let results = glob_in(dir.path(), "**/*");
+        assert!(results.iter().any(|p| p.ends_with("keep.txt")));
+        assert!(!results.iter().any(|p| p.ends_with("secret.log")));
+    }
+
+    #[test]
+    fn test_glob_includes_hidden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".hidden.txt"), "").unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+
+        let results = glob_in(dir.path(), "**/*.txt");
+        assert!(results.iter().any(|p| p.ends_with(".hidden.txt")));
+        assert!(results.iter().any(|p| p.ends_with("visible.txt")));
+    }
+
+    #[test]
+    fn test_glob_nested_git_boundary() {
+        // Parent .gitignore rules must stop at a nested git repo boundary
+        // (https://github.com/earendil-works/pi/issues/5960).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(dir.path().join("parent.log"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("nested/.git")).unwrap();
+        std::fs::write(dir.path().join("nested/child.log"), "").unwrap();
+
+        let results = glob_in(dir.path(), "**/*.log");
+        assert!(!results.iter().any(|p| p.ends_with("parent.log")));
+        assert!(results.iter().any(|p| p.ends_with("nested/child.log")));
     }
 }

@@ -293,3 +293,13 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | Source match key — git | `git:{host}/{path}` | `git:{host}/{path}` | 是 |
 | Source match key — local | `local:{resolvePath(path)}` vs `local:{resolvePathFromBase(path, baseDir)}` | `local:{resolve_path(path, cwd)}` vs `local:{resolve_path(path, base_dir)}` | 是 |
 | No SettingsManager | N/A (TS always has SettingsManager) | Returns `false` (no-op) when `settings_manager` is `None` | 是（有意偏差：Rust 允许无 SettingsManager 运行） |
+
+## find 工具（`core/tools/find.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 隐藏文件 | fd `--hidden` 包含隐藏文件 | `ignore` walker `hidden(false)` 包含隐藏文件 | 是 | 修复见 PORTING_MISTAKES.md #15 |
+| `.gitignore` 尊重 | fd 尊重 `.gitignore`/`.ignore`/`.git/info/exclude` | `ignore` crate 同样尊重 | 是 | 修复见 PORTING_MISTAKES.md #15 |
+| 嵌套 git 仓库边界 | git 仓库内父 `.gitignore` 规则在嵌套仓库边界停止（#5960） | `require_git(inside_git)` 实现同语义 | 是 | 修复见 PORTING_MISTAKES.md #15 |
+| 仓库外搜索 | fd `--no-require-git`（仍尊重 `.gitignore`） | `require_git(false)` 同语义 | 是 | 修复见 PORTING_MISTAKES.md #15 |
+| 默认忽略 | `**/node_modules/**`、`**/.git/**` | 同左（ignore 列表保留） | 是 | — |

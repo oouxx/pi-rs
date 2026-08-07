@@ -20,6 +20,10 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 glob = "0.3"
+# gitignore-aware directory walking (ripgrep's walker): respects .gitignore /
+# .ignore / .git/info/exclude and stops parent rules at nested git repo
+# boundaries, matching the TS find tool's fd-based behavior (pi#5960).
+ignore = "0.4"
 regex = { workspace = true }
 dirs = "6"
 similar = "2"

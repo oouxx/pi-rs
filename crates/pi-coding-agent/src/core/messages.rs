@@ -168,6 +168,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use pi_agent_core::pi_ai_types::Usage;
 

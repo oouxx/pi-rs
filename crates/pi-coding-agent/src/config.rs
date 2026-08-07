@@ -36,9 +36,10 @@ pub fn get_pi_rs_home() -> PathBuf {
         }
         return expanded;
     }
-    dirs::home_dir()
-        .expect("Could not determine home directory")
-        .join(CONFIG_DIR_NAME)
+    let home = dirs::home_dir()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    home.join(CONFIG_DIR_NAME)
 }
 
 /// Returns the agent configuration directory.
@@ -143,6 +144,7 @@ pub fn normalize_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

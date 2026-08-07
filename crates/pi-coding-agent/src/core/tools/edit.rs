@@ -107,35 +107,19 @@ pub trait EditOperations: Send + Sync {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<Vec<u8>>;
 
     fn write_file(
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<()>;
 
     /// Check if file is readable and writable (throw if not).
     fn access(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<()>;
 }
 
 // ============================================================================
@@ -148,13 +132,7 @@ impl EditOperations for LocalEditOperations {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<Vec<u8>> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read(&path)
@@ -167,12 +145,7 @@ impl EditOperations for LocalEditOperations {
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
@@ -185,12 +158,7 @@ impl EditOperations for LocalEditOperations {
     fn access(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         Box::pin(async move {
             // Check if file exists and is readable
@@ -503,6 +471,7 @@ e.to_string(),
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

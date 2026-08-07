@@ -37,12 +37,7 @@ pub trait FindOperations: Send + Sync {
     fn exists(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Find files matching glob pattern. Returns paths.
     fn glob(
@@ -51,13 +46,7 @@ pub trait FindOperations: Send + Sync {
         cwd: &str,
         ignore: &[String],
         limit: usize,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<Vec<String>>;
 }
 
 // ============================================================================
@@ -70,12 +59,7 @@ impl FindOperations for LocalFindOperations {
     fn exists(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move { Ok(std::path::Path::new(&path).exists()) })
     }
@@ -86,13 +70,7 @@ impl FindOperations for LocalFindOperations {
         cwd: &str,
         ignore: &[String],
         limit: usize,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<Vec<String>> {
         let pattern = pattern.to_string();
         let cwd = cwd.to_string();
         let ignore = ignore.to_vec();
@@ -321,6 +299,7 @@ pub fn create_find_tool(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

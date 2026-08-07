@@ -34,24 +34,13 @@ pub trait ReadOperations: Send + Sync {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<Vec<u8>>;
 
     /// Check if file is readable (throw if not).
     fn access(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<()>;
 }
 
 // ============================================================================
@@ -64,13 +53,7 @@ impl ReadOperations for LocalReadOperations {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<Vec<u8>> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read(&path)
@@ -82,12 +65,7 @@ impl ReadOperations for LocalReadOperations {
     fn access(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::metadata(&path)
@@ -341,6 +319,7 @@ pub fn create_read_tool(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

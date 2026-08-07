@@ -83,7 +83,8 @@ pub fn model_cost(input: f64, output: f64, cache_read: f64, cache_write: f64) ->
         output,
         cache_read,
         cache_write,
-    }
+                tiers: vec![],
+}
 }
 
 /// Create an AssistantMessage without optional fields.

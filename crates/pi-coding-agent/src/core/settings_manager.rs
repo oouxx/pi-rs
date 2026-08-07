@@ -127,40 +127,31 @@ impl Default for SteeringMode {
 }
 
 /// Follow-up mode matching TS `"all" | "one-at-a-time"`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum FollowUpMode {
     #[serde(rename = "all")]
     All,
+    #[default]
     #[serde(rename = "one-at-a-time")]
     OneAtATime,
 }
 
-impl Default for FollowUpMode {
-    fn default() -> Self {
-        FollowUpMode::OneAtATime
-    }
-}
-
 /// Double escape action matching TS `"fork" | "tree" | "none"`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum DoubleEscapeAction {
     #[serde(rename = "fork")]
     Fork,
+    #[default]
     #[serde(rename = "tree")]
     Tree,
     #[serde(rename = "none")]
     None,
 }
 
-impl Default for DoubleEscapeAction {
-    fn default() -> Self {
-        DoubleEscapeAction::Tree
-    }
-}
-
 /// Tree filter mode matching TS.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum TreeFilterMode {
+    #[default]
     #[serde(rename = "default")]
     Default,
     #[serde(rename = "no-tools")]
@@ -173,29 +164,18 @@ pub enum TreeFilterMode {
     All,
 }
 
-impl Default for TreeFilterMode {
-    fn default() -> Self {
-        TreeFilterMode::Default
-    }
-}
-
 /// Output pad matching TS `0 | 1`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum OutputPad {
     #[serde(rename = "0")]
     Zero,
+    #[default]
     #[serde(rename = "1")]
     One,
 }
 
-impl Default for OutputPad {
-    fn default() -> Self {
-        OutputPad::One
-    }
-}
-
 /// Transport setting matching TS `TransportSetting`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum TransportSetting {
     #[serde(rename = "sse")]
     Sse,
@@ -203,14 +183,9 @@ pub enum TransportSetting {
     Websocket,
     #[serde(rename = "websocket-cached")]
     WebsocketCached,
+    #[default]
     #[serde(rename = "auto")]
     Auto,
-}
-
-impl Default for TransportSetting {
-    fn default() -> Self {
-        TransportSetting::Auto
-    }
 }
 
 /// Main Settings struct matching TS `Settings` interface.
@@ -418,11 +393,14 @@ pub enum SettingsScope {
     Project,
 }
 
+/// Lock-scoped settings mutation callback.
+type SettingsLockFn = Box<dyn FnOnce(Option<&str>) -> Option<String> + Send>;
+
 pub trait SettingsStorage: Send + Sync {
     fn with_lock(
         &self,
         scope: SettingsScope,
-        f: Box<dyn FnOnce(Option<&str>) -> Option<String> + Send>,
+        f: SettingsLockFn,
     );
 }
 
@@ -455,10 +433,12 @@ impl SettingsStorage for FileSettingsStorage {
     fn with_lock(
         &self,
         scope: SettingsScope,
-        f: Box<dyn FnOnce(Option<&str>) -> Option<String> + Send>,
+        f: SettingsLockFn,
     ) {
         let path = self.path_for_scope(&scope);
-        let dir = path.parent().unwrap();
+        let dir = path
+            .parent()
+            .unwrap_or_else(|| panic!("settings path has no parent: {}", path.display()));
 
         // Check if file exists before trying to read
         let current = if path.exists() {
@@ -503,14 +483,14 @@ impl SettingsStorage for InMemorySettingsStorage {
     fn with_lock(
         &self,
         scope: SettingsScope,
-        f: Box<dyn FnOnce(Option<&str>) -> Option<String> + Send>,
+        f: SettingsLockFn,
     ) {
         let mutex = match scope {
             SettingsScope::Global => &self.global,
             SettingsScope::Project => &self.project,
         };
 
-        let mut guard = mutex.lock().unwrap();
+        let mut guard = mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_owned = guard.clone();
         let result = f(current_owned.as_deref());
 
@@ -623,13 +603,13 @@ impl SettingsManager {
             storage.with_lock(
                 scope,
                 Box::new(move |current| {
-                    *result_for_closure.lock().unwrap() = current.map(|s| s.to_string());
+                    *result_for_closure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = current.map(|s| s.to_string());
                     None // don't write
                 }),
             );
             // After with_lock returns, the closure (and result_for_closure) has been dropped.
             // result is now the only reference. Use lock().unwrap().take() to get the value.
-            let x = result.lock().unwrap().take(); x
+            let x = result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(); x
         };
 
         match raw_content {
@@ -767,22 +747,24 @@ impl SettingsManager {
                 if let serde_json::Value::Object(ref settings_map) = settings_json {
                     for field in &modified_fields_clone {
                         if let Some(value) = settings_map.get(field) {
-                            // Check if this field has nested modifications
-                            if let Some(nested_modified) = modified_nested_fields_clone.get(field) {
-                                // Nested merge: only overwrite modified sub-keys
-                                if let Some(existing) = merged.get(field) {
-                                    if let serde_json::Value::Object(existing_obj) = existing {
-                                        if let serde_json::Value::Object(settings_obj) = value {
-                                            let mut merged_obj = existing_obj.clone();
-                                            for nested_key in nested_modified {
-                                                if let Some(nv) = settings_obj.get(nested_key) {
-                                                    merged_obj.insert(nested_key.clone(), nv.clone());
-                                                }
-                                            }
-                                            merged.insert(field.clone(), serde_json::Value::Object(merged_obj));
-                                            continue;
+                            // Nested merge: only overwrite modified sub-keys
+                            if let (Some(nested_modified), Some(existing)) = (
+                                modified_nested_fields_clone.get(field),
+                                merged.get(field),
+                            ) {
+                                if let (
+                                    serde_json::Value::Object(existing_obj),
+                                    serde_json::Value::Object(settings_obj),
+                                ) = (existing, value)
+                                {
+                                    let mut merged_obj = existing_obj.clone();
+                                    for nested_key in nested_modified {
+                                        if let Some(nv) = settings_obj.get(nested_key) {
+                                            merged_obj.insert(nested_key.clone(), nv.clone());
                                         }
                                     }
+                                    merged.insert(field.clone(), serde_json::Value::Object(merged_obj));
+                                    continue;
                                 }
                             }
                             merged.insert(field.clone(), value.clone());
@@ -1515,6 +1497,7 @@ impl SettingsManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -159,7 +159,7 @@ pub async fn execute_shell_with_capture(
     let state_stdout = state.clone();
     let state_stderr = state.clone();
 
-    let exec_options = crate::harness::types::ExecutionEnvExecOptions {
+    let exec_options = crate::harness::types::ShellExecOptions {
         cwd: None,
         env: None,
         abort_signal: opts.abort_signal.clone(),

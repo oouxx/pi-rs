@@ -25,10 +25,7 @@ fn find_git_paths(cwd: &str) -> Option<GitPaths> {
 
 
         }
-        match dir.parent() {
-            Some(p) => dir = p,
-            None => return None,
-        }
+        dir = dir.parent()?;
     }
 }
 
@@ -118,6 +115,7 @@ impl FooterDataProvider {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     #[test]
     fn test_resolve_branch_invalid_ref() {

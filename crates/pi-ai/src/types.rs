@@ -109,6 +109,13 @@ pub struct Usage {
     #[serde(rename = "cacheWrite")]
     pub cache_write: u64,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "cacheWrite1h")]
+    pub cache_write_1h: Option<u64>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<u64>,
+    #[serde(default)]
     #[serde(rename = "totalTokens")]
     pub total_tokens: u64,
     #[serde(default)]
@@ -482,6 +489,23 @@ pub struct ModelCost {
     #[serde(default)]
     #[serde(rename = "cacheWrite")]
     pub cache_write: f64,
+    #[serde(default)]
+    pub tiers: Vec<ModelCostTier>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCostTier {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default)]
+    #[serde(rename = "cacheRead")]
+    pub cache_read: f64,
+    #[serde(default)]
+    #[serde(rename = "cacheWrite")]
+    pub cache_write: f64,
+    #[serde(rename = "inputTokensAbove")]
+    pub input_tokens_above: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -916,6 +940,7 @@ mod tests {
                 output: 15.0,
                 cache_read: 0.3,
                 cache_write: 6.0,
+                tiers: vec![],
             },
             context_window: 200_000,
             max_tokens: 8192,
@@ -1036,6 +1061,8 @@ mod tests {
             output: 500,
             cache_read: 200,
             cache_write: 100,
+            cache_write_1h: None,
+            reasoning: None,
             total_tokens: 1800,
             cost: UsageCost {
                 input: 0.003,
@@ -1163,6 +1190,7 @@ mod tests {
                 output: 10.0,
                 cache_read: 1.25,
                 cache_write: 0.0,
+                tiers: vec![],
             },
             context_window: 128_000,
             max_tokens: 16_384,

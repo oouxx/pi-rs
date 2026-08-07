@@ -119,11 +119,21 @@ pub fn stream_proxy(
 
         let client = reqwest::Client::new();
         let mut headers_map = reqwest::header::HeaderMap::new();
-        headers_map.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", options.auth_token))
-                .expect("valid auth header"),
-        );
+        let auth_header =
+            match reqwest::header::HeaderValue::from_str(&format!("Bearer {}", options.auth_token)) {
+                Ok(v) => v,
+                Err(e) => {
+                    let error_message = format!("Invalid auth token: {e}");
+                    partial.stop_reason = StopReason::Error;
+                    partial.error_message = Some(error_message.clone());
+                    let _ = tx.send(AssistantMessageEvent::Error {
+                        reason: StopReason::Error,
+                        error: partial.clone(),
+                    });
+                    return;
+                }
+            };
+        headers_map.insert(reqwest::header::AUTHORIZATION, auth_header);
         headers_map.insert(
             reqwest::header::CONTENT_TYPE,
             reqwest::header::HeaderValue::from_static("application/json"),

@@ -12,6 +12,7 @@ pub fn get_pi_user_agent(version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

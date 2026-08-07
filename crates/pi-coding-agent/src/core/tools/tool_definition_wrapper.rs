@@ -4,6 +4,30 @@ use pi_agent_core::types::AgentTool;
 
 use crate::core::extensions::ToolDefinition;
 
+/// Execute closure for a wrapped tool definition.
+type ToolExecuteFn<TDetails> = Arc<
+    dyn Fn(
+            String,
+            serde_json::Value,
+            Option<tokio::sync::watch::Receiver<bool>>,
+            Option<
+                Arc<
+                    dyn Fn(pi_agent_core::types::AgentToolResult<TDetails>) + Send + Sync,
+                >,
+            >,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            pi_agent_core::types::AgentToolResult<TDetails>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
+>;
+
 /// Wrap a ToolDefinition into an AgentTool for the core runtime.
 ///
 /// When `definition.execute` is set, the AgentTool uses it as the real
@@ -26,31 +50,7 @@ where
             _ => None,
         });
 
-    let execute: Arc<
-        dyn Fn(
-                String,
-                serde_json::Value,
-                Option<tokio::sync::watch::Receiver<bool>>,
-                Option<
-                    Arc<
-                        dyn Fn(
-                                pi_agent_core::types::AgentToolResult<TDetails>,
-                            ) + Send
-                            + Sync,
-                    >,
-                >,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Result<
-                                pi_agent_core::types::AgentToolResult<TDetails>,
-                                Box<dyn std::error::Error + Send + Sync>,
-                            >,
-                        > + Send,
-                >,
-            > + Send
-            + Sync,
-    > = if let Some(ref tool_exec) = definition.execute {
+    let execute: ToolExecuteFn<TDetails> = if let Some(ref tool_exec) = definition.execute {
         let exec = tool_exec.clone();
         Arc::new(move |id, params, signal, _on_update| {
             let exec = exec.clone();
@@ -63,11 +63,15 @@ where
                     .collect();
                 let details: TDetails = output
                     .details
-                    .map(|v| serde_json::from_value(v).unwrap_or_else(|_| {
-                        serde_json::from_value(serde_json::Value::Null).unwrap()
-                    }))
+                    .map(|v| {
+                        serde_json::from_value(v).unwrap_or_else(|e| {
+                            panic!("failed to deserialize tool details: {e}")
+                        })
+                    })
                     .unwrap_or_else(|| {
-                        serde_json::from_value(serde_json::Value::Null).unwrap()
+                        serde_json::from_value(serde_json::Value::Null).unwrap_or_else(|e| {
+                            panic!("failed to deserialize null tool details: {e}")
+                        })
                     });
                 Ok(pi_agent_core::types::AgentToolResult {
                     content,
@@ -130,6 +134,7 @@ pub fn create_tool_definition_from_agent_tool(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

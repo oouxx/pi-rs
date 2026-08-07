@@ -10,7 +10,7 @@ static EMITTED_WARNINGS: std::sync::LazyLock<Mutex<std::collections::HashSet<Str
 /// Emit a deprecation warning to stderr.
 /// Each message is emitted at most once.
 pub fn warn_deprecation(message: &str) {
-    let mut emitted = EMITTED_WARNINGS.lock().unwrap();
+    let mut emitted = EMITTED_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !emitted.insert(message.to_string()) {
         return; // already emitted
     }
@@ -19,11 +19,12 @@ pub fn warn_deprecation(message: &str) {
 
 /// Clear emitted deprecation warnings (for tests).
 pub fn clear_deprecation_warnings() {
-    EMITTED_WARNINGS.lock().unwrap().clear();
+    EMITTED_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -42,7 +43,7 @@ mod tests {
         warn_deprecation("warning 1");
         warn_deprecation("warning 2");
         // Both should be tracked
-        let emitted = EMITTED_WARNINGS.lock().unwrap();
+        let emitted = EMITTED_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(emitted.contains("warning 1"));
         assert!(emitted.contains("warning 2"));
     }

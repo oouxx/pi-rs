@@ -21,6 +21,7 @@ pub fn parse_changelog(path: &str) -> Vec<ChangelogEntry> {
         Err(_) => return Vec::new(),
     };
 
+    #[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
     let version_re = Regex::new(r"^##\s+\[?(\d+)\.(\d+)\.(\d+)\]?").unwrap();
     let mut entries = Vec::new();
     let mut current: Option<(i32, i32, i32, String)> = None;
@@ -99,6 +100,7 @@ pub fn normalize_changelog_links(markdown: &str, version: &str) -> String {
         format!("v{}", version)
     };
 
+    #[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
     let link_re = Regex::new(r"\[([^\]]*)\]\(([^)]*)\)").unwrap();
     link_re
         .replace_all(markdown, |caps: &regex::Captures| {
@@ -136,6 +138,7 @@ pub fn normalize_changelog_links(markdown: &str, version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

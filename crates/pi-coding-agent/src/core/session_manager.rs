@@ -1348,7 +1348,9 @@ impl SessionManager {
             return;
         }
 
-        let session_file = self.session_file.as_ref().unwrap();
+        let Some(session_file) = self.session_file.as_ref() else {
+            return;
+        };
         let has_assistant = self.has_assistant();
         if !has_assistant {
             // Before first assistant message: just track state, don't write yet
@@ -2234,7 +2236,7 @@ impl SessionManager {
         if filter_cwd {
             sessions.retain(|s| s.cwd == resolved_cwd);
         }
-        sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.modified));
         sessions
     }
 
@@ -2265,7 +2267,7 @@ impl SessionManager {
             }
         }
 
-        all_sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+        all_sessions.sort_by_key(|s| std::cmp::Reverse(s.modified));
         all_sessions
     }
 
@@ -2294,7 +2296,7 @@ impl SessionManager {
     /// Called before starting a new agent interaction turn to pick up any
     /// external changes to the session file (e.g. entries appended by another
     /// process or after a compaction/rewrite).
-    pub async fn refresh_config(&mut self) -> Result<(), String> {
+    pub fn refresh_config(&mut self) -> Result<(), String> {
         if self.flushed {
             // The file was rewritten from the in-memory tree, so disk is
             // already in sync — no need to re-read.
@@ -2350,7 +2352,7 @@ fn list_sessions_from_dir(dir: &Path) -> Vec<SessionInfo> {
         }
     }
 
-    sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.modified));
     sessions
 }
 
@@ -2411,7 +2413,7 @@ pub async fn list_sessions_concurrent(
         }
     }
 
-    sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.modified));
     sessions
 }
 
@@ -2478,10 +2480,8 @@ fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
                     if is_user_or_assistant {
                         all_messages.push(text.clone());
                     }
-                    if first_message.is_empty() {
-                        if role == Some("user") {
-                            first_message = text;
-                        }
+                    if first_message.is_empty() && role == Some("user") {
+                        first_message = text;
                     }
                 }
             } else if let SessionEntry::SessionInfo {
@@ -2529,6 +2529,7 @@ fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
 
@@ -2964,7 +2965,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        let result = mgr.refresh_config().await;
+        let result = mgr.refresh_config();
         // Should not fail even with non-existent config file
         assert!(result.is_ok());
     }

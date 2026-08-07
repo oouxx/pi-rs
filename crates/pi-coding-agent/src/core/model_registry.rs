@@ -18,9 +18,9 @@ pub struct ModelRegistry {
 impl Clone for ModelRegistry {
     fn clone(&self) -> Self {
         Self {
-            models: RwLock::new(self.models.read().unwrap().clone()),
+            models: RwLock::new(self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
             registered_providers: Arc::clone(&self.registered_providers),
-            models_json_providers: RwLock::new(self.models_json_providers.read().unwrap().clone()),
+            models_json_providers: RwLock::new(self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
         }
     }
 }
@@ -88,7 +88,7 @@ impl ModelRegistry {
     }
 
     pub fn find(&self, provider: &str, model_id: &str) -> Option<Model> {
-        let models = self.models.read().unwrap();
+        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         models
             .iter()
             .find(|m| m.provider == provider && m.id == model_id)
@@ -96,11 +96,11 @@ impl ModelRegistry {
     }
 
     pub fn get_models(&self) -> Vec<Model> {
-        self.models.read().unwrap().clone()
+        self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     pub fn get_models_for_provider(&self, provider: &str) -> Vec<Model> {
-        let models = self.models.read().unwrap();
+        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         models
             .iter()
             .filter(|m| m.provider == provider)
@@ -109,7 +109,7 @@ impl ModelRegistry {
     }
 
     pub fn get_providers(&self) -> Vec<String> {
-        let models = self.models.read().unwrap();
+        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut providers: Vec<String> = models.iter().map(|m| m.provider.clone()).collect();
         providers.sort();
         providers.dedup();
@@ -117,7 +117,7 @@ impl ModelRegistry {
     }
 
     pub fn get_available(&self) -> Vec<Model> {
-        let models = self.models.read().unwrap();
+        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         models
             .iter()
             .filter(|m| self.has_configured_auth(m))
@@ -130,14 +130,14 @@ impl ModelRegistry {
             return true;
         }
         // Check registered providers (from register_provider calls)
-        let providers = self.registered_providers.read().unwrap();
+        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(&model.provider) {
             if config.api_key.is_some() {
                 return true;
             }
         }
         // Check models.json provider configs
-        let json_providers = self.models_json_providers.read().unwrap();
+        let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(&model.provider) {
             if config.api_key.is_some() {
                 return true;
@@ -153,14 +153,14 @@ impl ModelRegistry {
             || self
                 .registered_providers
                 .read()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&model.provider)
                 .and_then(|c| c.api_key.as_ref())
                 .is_some()
             || self
                 .models_json_providers
                 .read()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&model.provider)
                 .and_then(|c| c.api_key.as_ref())
                 .is_some();
@@ -175,7 +175,7 @@ impl ModelRegistry {
             return Some(key);
         }
         // Check registered providers (from register_provider calls)
-        let providers = self.registered_providers.read().unwrap();
+        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(provider) {
             if let Some(key) = &config.api_key {
                 return Some(key.clone());
@@ -184,7 +184,7 @@ impl ModelRegistry {
         drop(providers);
 
         // Check models.json provider configs
-        let json_providers = self.models_json_providers.read().unwrap();
+        let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(provider) {
             if let Some(key) = &config.api_key {
                 return Some(key.clone());
@@ -200,7 +200,7 @@ impl ModelRegistry {
         let mut headers: HashMap<String, String> = HashMap::new();
 
         // Check registered providers first (higher priority)
-        let providers = self.registered_providers.read().unwrap();
+        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(&model.provider) {
             if api_key.is_none() {
                 api_key = config.api_key.clone();
@@ -212,7 +212,7 @@ impl ModelRegistry {
         drop(providers);
 
         // Then check models.json provider configs (lower priority)
-        let json_providers = self.models_json_providers.read().unwrap();
+        let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(&model.provider) {
             if api_key.is_none() {
                 api_key = config.api_key.clone();
@@ -247,26 +247,26 @@ impl ModelRegistry {
     }
 
     pub fn register_provider(&self, provider_name: &str, config: ProviderConfig) {
-        let mut providers = self.registered_providers.write().unwrap();
+        let mut providers = self.registered_providers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.insert(provider_name.to_string(), config);
     }
 
     pub fn unregister_provider(&self, provider_name: &str) {
-        let mut providers = self.registered_providers.write().unwrap();
+        let mut providers = self.registered_providers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.remove(provider_name);
     }
 
     /// Get the config for a registered provider (from `register_provider`).
     #[must_use]
     pub fn get_provider_config(&self, provider_name: &str) -> Option<ProviderConfig> {
-        let providers = self.registered_providers.read().unwrap();
+        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.get(provider_name).cloned()
     }
 
     /// List all registered provider names (from `register_provider`).
     #[must_use]
     pub fn get_registered_providers(&self) -> Vec<String> {
-        let providers = self.registered_providers.read().unwrap();
+        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.keys().cloned().collect()
     }
 
@@ -372,7 +372,8 @@ impl ModelRegistry {
                                             .as_ref()
                                             .map(|c| c.cache_write)
                                             .unwrap_or(0.0),
-                                    },
+                                                tiers: vec![],
+},
                                     context_window: model_def.context_window.unwrap_or(128000),
                                     max_tokens: model_def.max_tokens.unwrap_or(16384),
                                     headers: model_def.headers.clone(),
@@ -602,7 +603,8 @@ fn get_pi_ai_models() -> Vec<Model> {
                     output: m.cost.output,
                     cache_read: m.cost.cache_read,
                     cache_write: m.cost.cache_write,
-                },
+                            tiers: vec![],
+},
                 context_window: m.context_window,
                 max_tokens: m.max_tokens,
                 headers: m.headers.clone(),
@@ -625,7 +627,8 @@ pub fn builtin_models() -> Vec<Model> {
             output: 0.0,
             cache_read: 0.0,
             cache_write: 0.0,
-        },
+                    tiers: vec![],
+},
         reasoning: false,
         name: String::new(),
         base_url: String::new(),
@@ -638,6 +641,7 @@ pub fn builtin_models() -> Vec<Model> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -748,7 +752,7 @@ mod tests {
         assert_eq!(ds.base_url, "http://localhost:11434/v1");
         assert!(ds.reasoning, "deepseek-r1:7b should have reasoning=true");
 
-        let json_providers = registry.models_json_providers.read().unwrap();
+        let json_providers = registry.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let ollama_config = json_providers.get("ollama");
         assert!(
             ollama_config.is_some(),
@@ -797,7 +801,8 @@ mod tests {
                 output: 0.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
-            },
+                        tiers: vec![],
+},
             reasoning: false,
             name: "GPT-4o".into(),
             base_url: "https://api.openai.com".into(),

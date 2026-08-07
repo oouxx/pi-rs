@@ -335,7 +335,7 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
         "https://github.com/{repo}/releases/download/{prefix}{version}/{asset}",
         repo = config.repo,
         prefix = config.tag_prefix,
-        asset = &asset_name,
+        asset = asset_name,
     );
 
     let archive_path = bin_dir.join(&asset_name);
@@ -414,6 +414,7 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     // -----------------------------------------------------------------------

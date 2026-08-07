@@ -16,6 +16,16 @@ pub mod write;
 use pi_agent_core::types::AgentTool;
 use serde::{Deserialize, Serialize};
 
+/// Async operation result used by the pluggable tool operation traits
+/// (read/ls/grep/find/bash/edit/write).
+pub type AsyncOpResult<T> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<T, Box<dyn std::error::Error + Send + Sync>>,
+            > + Send,
+    >,
+>;
+
 pub use output_accumulator::{OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot};
 pub use truncate::{TruncationOptions, TruncationResult};
 

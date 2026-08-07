@@ -36,13 +36,17 @@ where
     };
 
     // Acquire the permit, ensuring only one operation runs at a time per file
-    let _permit = semaphore.acquire().await.expect("semaphore closed");
+    let _permit = semaphore
+        .acquire()
+        .await
+        .unwrap_or_else(|_| panic!("semaphore closed"));
 
     fn_().await
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -77,7 +81,7 @@ mod tests {
                     prev
                 })
                 .await;
-                results.lock().unwrap().push(val);
+                results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(val);
             }));
         }
 
@@ -85,7 +89,7 @@ mod tests {
             h.await.unwrap();
         }
 
-        let final_results = results.lock().unwrap().clone();
+        let final_results = results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert_eq!(final_results.len(), 5);
         for (i, &val) in final_results.iter().enumerate() {
             assert_eq!(val, i, "expected {} but got {} at position {}", i, val, i);
@@ -139,23 +143,23 @@ mod tests {
 
         let h1 = tokio::spawn(async move {
             with_file_mutation_queue(&target, || async {
-                order1.lock().unwrap().push("target:start");
+                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("target:start");
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                order1.lock().unwrap().push("target:end");
+                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("target:end");
             })
             .await;
         });
 
         let h2 = tokio::spawn(async move {
             with_file_mutation_queue(&symlink, || async {
-                order2.lock().unwrap().push("alias:start");
-                order2.lock().unwrap().push("alias:end");
+                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("alias:start");
+                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("alias:end");
             })
             .await;
         });
 
         let _ = tokio::join!(h1, h2);
-        let final_order = order.lock().unwrap().clone();
+        let final_order = order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert_eq!(
             final_order,
             vec!["target:start", "target:end", "alias:start", "alias:end"]
@@ -214,12 +218,12 @@ mod tests {
         let p1 = path.clone();
         let h1 = tokio::spawn(async move {
             with_file_mutation_queue(&p1, || async {
-                order1.lock().unwrap().push("edit:start");
+                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("edit:start");
                 let content = tokio::fs::read_to_string(&p1).await.unwrap();
                 let new_content = content.replace("original", "edited");
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
                 tokio::fs::write(&p1, &new_content).await.unwrap();
-                order1.lock().unwrap().push("edit:end");
+                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("edit:end");
             })
             .await;
         });
@@ -230,16 +234,16 @@ mod tests {
         let p2 = path.clone();
         let h2 = tokio::spawn(async move {
             with_file_mutation_queue(&p2, || async {
-                order2.lock().unwrap().push("write:start");
+                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("write:start");
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 tokio::fs::write(&p2, "replacement\n").await.unwrap();
-                order2.lock().unwrap().push("write:end");
+                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("write:end");
             })
             .await;
         });
 
         let _ = tokio::join!(h1, h2);
-        let final_order = order.lock().unwrap().clone();
+        let final_order = order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
 
         // Operations on the same file must be serialized
         assert_eq!(final_order.len(), 4);

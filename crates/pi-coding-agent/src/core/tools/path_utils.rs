@@ -6,6 +6,7 @@ const NARROW_NO_BREAK_SPACE: char = '\u{202F}';
 
 fn try_macos_screenshot_path(file_path: &str) -> String {
     // Replace " AM" or " PM" (case-insensitive) with narrow no-break space variant
+    #[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
     let re = regex::Regex::new(r"(?i) (AM|PM)\.").unwrap();
     re.replace_all(file_path, |caps: &regex::Captures| {
         format!("{}{}.", NARROW_NO_BREAK_SPACE, &caps[1])
@@ -84,6 +85,7 @@ pub fn resolve_read_path(path: &str, cwd: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
     use tempfile::TempDir;

@@ -131,8 +131,7 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
     }
 
     // Find the closing ---
-    let end_marker = normalized[3..].find("\n---");
-    if end_marker.is_none() {
+    let Some(end_marker) = normalized[3..].find("\n---") else {
         return (
             SkillFrontmatter {
                 name: None,
@@ -142,9 +141,9 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
             normalized,
             true,
         );
-    }
+    };
 
-    let end_idx = end_marker.unwrap() + 3;
+    let end_idx = end_marker + 3;
     let yaml_str = &normalized[4..end_idx];
     let body = normalized[end_idx + 4..].trim().to_string();
 
@@ -622,6 +621,7 @@ fn escape_xml(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

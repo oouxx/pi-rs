@@ -548,6 +548,7 @@ pub fn load_all_resources(options: &ResourceLoaderOptions) -> LoadedResources {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::core::source_info::create_synthetic_source_info;
     use std::fs;

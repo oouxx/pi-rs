@@ -39,6 +39,7 @@ pub fn format_no_api_key_found_message(provider: &str, docs_path: &str) -> Strin
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

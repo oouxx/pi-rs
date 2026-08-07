@@ -462,7 +462,8 @@ fn get_replacement_line_range(lines: &[LineSpan], replacement: &MatchedEdit) -> 
             break;
         }
     }
-    let start_line = start_line.expect("Replacement range is outside the base content.");
+    let start_line =
+        start_line.unwrap_or_else(|| panic!("Replacement range is outside the base content."));
 
     let mut end_line = start_line;
     while end_line < lines.len() && lines[end_line].end < replacement_end {
@@ -705,7 +706,7 @@ pub fn generate_unified_patch(
         .context_radius(context_lines)
         .header(path, path)
         .to_writer(&mut buf)
-        .expect("writing to vec should not fail");
+        .unwrap_or_else(|e| panic!("writing to vec should not fail: {e}"));
     String::from_utf8(buf).unwrap_or_default()
 }
 
@@ -904,6 +905,7 @@ pub async fn compute_edit_diff(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     // --- detect_line_ending ---

@@ -29,6 +29,16 @@ pub struct PrintModeOptions<'a> {
     pub verbose: bool,
 }
 
+/// Agent event listener used by print-mode output modes.
+type PrintModeListener = Arc<
+    dyn Fn(
+            AgentEvent,
+            Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Run in print mode (single-shot).
 /// Sends prompts to the agent and outputs the result.
 ///
@@ -64,7 +74,11 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
         std::process::exit(1);
     });
 
-    let session = session_for_signal.lock().await.take().unwrap();
+    let session = session_for_signal
+        .lock()
+        .await
+        .take()
+        .unwrap_or_else(|| panic!("session already disposed by signal handler"));
     let images = options.images.unwrap_or(&[]);
 
     let result = match options.mode {
@@ -87,28 +101,16 @@ async fn run_text_mode(
     let has_error = Arc::new(AtomicBool::new(false));
     let err_flag = has_error.clone();
 
-    let listener: Arc<
-        dyn Fn(
-                AgentEvent,
-                Option<tokio::sync::watch::Receiver<bool>>,
-            )
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-            + Send
-            + Sync,
-    > = Arc::new(move |event: AgentEvent, _signal| {
+    let listener: PrintModeListener = Arc::new(move |event: AgentEvent, _signal| {
         let err_flag = err_flag.clone();
         Box::pin(async move {
             match event {
                 AgentEvent::MessageUpdate {
-                    assistant_message_event,
+                    assistant_message_event: AssistantMessageEvent::TextDelta { delta, .. },
                     ..
                 } => {
-                    if let AssistantMessageEvent::TextDelta { delta, .. } =
-                        assistant_message_event
-                    {
-                        print!("{delta}");
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                    }
+                    print!("{delta}");
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
                 AgentEvent::MessageEnd { .. } => {
                     // Final text is already streamed via TextDelta
@@ -193,15 +195,7 @@ async fn run_json_mode(
         serde_json::json!({"type": "start", "message": message})
     );
 
-    let listener: Arc<
-        dyn Fn(
-                AgentEvent,
-                Option<tokio::sync::watch::Receiver<bool>>,
-            )
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-            + Send
-            + Sync,
-    > = Arc::new(move |event: AgentEvent, _signal| {
+    let listener: PrintModeListener = Arc::new(move |event: AgentEvent, _signal| {
         let err_flag = err_flag.clone();
         Box::pin(async move {
             let json = match &event {
@@ -271,31 +265,24 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
     let final_text = Arc::new(std::sync::Mutex::new(String::new()));
     let output_text = final_text.clone();
 
-    let listener: Arc<
-        dyn Fn(
-                AgentEvent,
-                Option<tokio::sync::watch::Receiver<bool>>,
-            )
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-            + Send
-            + Sync,
-    > = Arc::new(move |event: AgentEvent, _signal| {
+    let listener: PrintModeListener = Arc::new(move |event: AgentEvent, _signal| {
         let output_text = output_text.clone();
         Box::pin(async move {
-            if let AgentEvent::MessageEnd { message: msg } = event {
-                if let AgentMessage::Assistant { content, .. } = &msg {
-                    let text: String = content
-                        .iter()
-                        .filter_map(|b| {
-                            if let ContentBlock::Text { text, .. } = b {
-                                Some(text.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    *output_text.lock().unwrap() = text;
-                }
+            if let AgentEvent::MessageEnd {
+                message: AgentMessage::Assistant { content, .. },
+            } = event
+            {
+                let text: String = content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text { text, .. } = b {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                *output_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = text;
             }
         })
     });
@@ -305,7 +292,7 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
     session.wait_for_idle().await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let text = final_text.lock().unwrap().clone();
+    let text = final_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     if !text.is_empty() {
         println!("{text}");
         0
@@ -316,6 +303,7 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     
     #[test]
     fn test_options_default_mode() {

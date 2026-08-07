@@ -1585,7 +1585,7 @@ export default async function(pi) {
         let called_clone = called.clone();
         let actions = RuntimeActions {
             set_session_name: Some(Arc::new(move |name: String| {
-                called_clone.lock().unwrap().push(format!("set_session_name({name})"));
+                called_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("set_session_name({name})"));
             })),
             get_session_name: Some(Arc::new(|| Some("test-session".into()))),
             ..Default::default()
@@ -1603,7 +1603,7 @@ export default async function(pi) {
         )
         .expect("execute_script");
 
-        let calls = called.lock().unwrap();
+        let calls = called.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], "set_session_name(hello)");
     }

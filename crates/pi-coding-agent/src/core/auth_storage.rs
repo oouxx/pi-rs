@@ -133,7 +133,7 @@ impl FileAuthStorageBackend {
     }
 
     fn with_lock_impl<T>(&self, f: &mut dyn FnMut(Option<&str>) -> LockResult<T>) -> T {
-        let _guard = self.mutex.lock().unwrap();
+        let _guard = self.mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_parent_dir();
         self.ensure_file_exists();
         let current = self.read_content();
@@ -158,7 +158,7 @@ impl InMemoryAuthStorageBackend {
     }
 
     fn with_lock_impl<T>(&self, f: &mut dyn FnMut(Option<&str>) -> LockResult<T>) -> T {
-        let mut guard = self.value.lock().unwrap();
+        let mut guard = self.value.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let current: Option<&str> = match guard.as_ref() {
             Some(s) => Some(s.as_str()),
             None => None,
@@ -175,10 +175,13 @@ impl InMemoryAuthStorageBackend {
 // AuthStorage
 // ---------------------------------------------------------------------------
 
+/// Resolver used as a fallback when no stored credential matches.
+type FallbackResolver = Box<dyn Fn(&str) -> Option<String> + Send>;
+
 pub struct AuthStorage {
     data: AuthStorageData,
     runtime_overrides: HashMap<String, String>,
-    fallback_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send>>,
+    fallback_resolver: Option<FallbackResolver>,
     storage: AuthStorageBackend,
     load_error: Option<String>,
     errors: Vec<String>,
@@ -412,6 +415,7 @@ impl AuthStorage {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -86,6 +86,7 @@ pub fn detect_mime_type_from_extension(path: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -577,6 +577,7 @@ pub fn extract_file_ops_from_message(msg: &pi_agent_core::types::AgentMessage) -
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

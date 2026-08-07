@@ -72,6 +72,10 @@ enum AnthropicContentBlock {
     Text { text: String },
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String, signature: String },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -172,6 +176,13 @@ struct AnthropicMessageInfo {
 struct AnthropicDelta {
     #[serde(rename = "stop_reason")]
     stop_reason: Option<String>,
+    #[serde(rename = "stop_details")]
+    stop_details: Option<AnthropicStopDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnthropicStopDetails {
+    pub explanation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +192,19 @@ struct AnthropicUsage {
     output_tokens: Option<u64>,
     cache_read_input_tokens: Option<u64>,
     cache_creation_input_tokens: Option<u64>,
+    cache_creation: Option<AnthropicCacheCreation>,
+    output_tokens_details: Option<AnthropicOutputTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicCacheCreation {
+    #[serde(rename = "ephemeral_1h_input_tokens")]
+    ephemeral_1h_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicOutputTokensDetails {
+    thinking_tokens: Option<u64>,
 }
 
 #[allow(dead_code)]
@@ -253,7 +277,8 @@ fn normalize_tool_call_id(id: &str) -> String {
 }
 
 /// Convert pi-ai messages to Anthropic API message params.
-pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<AnthropicMessageParam> {
+pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<AnthropicMessageParam> {
+    let allow_empty_signature = get_anthropic_compat(model).allow_empty_signature.unwrap_or(false);
     let mut params: Vec<AnthropicMessageParam> = Vec::new();
 
     for msg in messages {
@@ -309,29 +334,71 @@ pub(crate) fn convert_messages(messages: &[Message], _model: &Model) -> Vec<Anth
                 }
             }
             Message::Assistant { content, .. } => {
-                let blocks: Vec<AnthropicContentBlock> = content
-                    .iter()
-                    .filter_map(|b| match b {
+                let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+                for b in content {
+                    match b {
                         ContentBlock::Text { text, .. } => {
-                            Some(AnthropicContentBlock::Text { text: text.clone() })
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            blocks.push(AnthropicContentBlock::Text { text: text.clone() });
+                        }
+                        ContentBlock::Thinking {
+                            thinking,
+                            thinking_signature,
+                            redacted,
+                        } => {
+                            // Redacted thinking: pass the opaque payload back as
+                            // redacted_thinking (mirrors TS convertMessages).
+                            if redacted.unwrap_or(false) {
+                                if let Some(sig) = thinking_signature {
+                                    blocks.push(AnthropicContentBlock::RedactedThinking {
+                                        data: sig.clone(),
+                                    });
+                                }
+                                continue;
+                            }
+                            let has_signature = thinking_signature
+                                .as_deref()
+                                .map(|s| !s.trim().is_empty())
+                                .unwrap_or(false);
+                            if thinking.trim().is_empty() && !has_signature {
+                                continue;
+                            }
+                            // Missing/empty signature (e.g. aborted stream): convert to
+                            // plain text, unless the model is marked to accept empty
+                            // signatures (mirrors TS convertMessages).
+                            if !has_signature {
+                                if allow_empty_signature {
+                                    blocks.push(AnthropicContentBlock::Thinking {
+                                        thinking: thinking.clone(),
+                                        signature: String::new(),
+                                    });
+                                } else {
+                                    blocks.push(AnthropicContentBlock::Text {
+                                        text: thinking.clone(),
+                                    });
+                                }
+                            } else {
+                                blocks.push(AnthropicContentBlock::Thinking {
+                                    thinking: thinking.clone(),
+                                    signature: thinking_signature.clone().unwrap_or_default(),
+                                });
+                            }
                         }
                         ContentBlock::ToolCall {
                             id,
                             name,
                             arguments,
                             ..
-                        } => Some(AnthropicContentBlock::ToolUse {
+                        } => blocks.push(AnthropicContentBlock::ToolUse {
                             id: normalize_tool_call_id(id),
                             name: name.clone(),
                             input: arguments.clone(),
                         }),
-                        ContentBlock::Thinking { .. } => {
-                            // Thinking blocks are not sent back to the API
-                            None
-                        }
-                        ContentBlock::Image { .. } => None,
-                    })
-                    .collect();
+                        ContentBlock::Image { .. } => {}
+                    }
+                }
 
                 if !blocks.is_empty() {
                     params.push(AnthropicMessageParam {
@@ -392,13 +459,33 @@ pub(crate) fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
 
 /// Map Anthropic stop reason to pi-ai `StopReason`.
 #[must_use] 
-pub fn map_stop_reason(reason: &str) -> StopReason {
+/// Map an Anthropic stop reason to a pi stop reason, plus an optional error
+/// message for error-class stops.
+///
+/// Mirrors `mapStopReason` in `packages/ai/src/api/anthropic-messages.ts`:
+/// `refusal` becomes an error carrying the provider's `stop_details.explanation`,
+/// `sensitive` becomes an error, and unknown reasons are surfaced instead of
+/// being silently treated as a normal stop.
+pub fn map_stop_reason(reason: &str, stop_details: Option<&AnthropicStopDetails>) -> (StopReason, Option<String>) {
     match reason {
-        "end_turn" => StopReason::Stop,
-        "max_tokens" => StopReason::Length,
-        "tool_use" => StopReason::ToolUse,
-        "stop_sequence" => StopReason::Stop,
-        _ => StopReason::Stop,
+        "end_turn" => (StopReason::Stop, None),
+        "max_tokens" => (StopReason::Length, None),
+        "tool_use" => (StopReason::ToolUse, None),
+        "refusal" => (
+            StopReason::Error,
+            Some(
+                stop_details
+                    .and_then(|d| d.explanation.clone())
+                    .unwrap_or_else(|| "The model refused to complete the request".to_string()),
+            ),
+        ),
+        "pause_turn" => (StopReason::Stop, None),
+        "stop_sequence" => (StopReason::Stop, None),
+        "sensitive" => (
+            StopReason::Error,
+            Some("Provider stopped with: sensitive".to_string()),
+        ),
+        other => panic!("Unhandled stop reason: {other}"),
     }
 }
 
@@ -657,6 +744,11 @@ async fn stream_anthropic_inner(
                 output.usage.output = message.usage.output_tokens.unwrap_or(0);
                 output.usage.cache_read = message.usage.cache_read_input_tokens.unwrap_or(0);
                 output.usage.cache_write = message.usage.cache_creation_input_tokens.unwrap_or(0);
+                output.usage.cache_write_1h = message
+                    .usage
+                    .cache_creation
+                    .as_ref()
+                    .and_then(|c| c.ephemeral_1h_input_tokens);
                 output.usage.total_tokens = output.usage.input
                     + output.usage.output
                     + output.usage.cache_read
@@ -844,7 +936,11 @@ async fn stream_anthropic_inner(
             }
             AnthropicSseEvent::MessageDelta { delta, usage } => {
                 if let Some(reason) = delta.stop_reason {
-                    output.stop_reason = map_stop_reason(&reason);
+                    let (stop_reason, error_message) = map_stop_reason(&reason, delta.stop_details.as_ref());
+                    output.stop_reason = stop_reason;
+                    if let Some(msg) = error_message {
+                        output.error_message = Some(msg);
+                    }
                 }
                 if let Some(input) = usage.input_tokens {
                     output.usage.input = input;
@@ -857,6 +953,13 @@ async fn stream_anthropic_inner(
                 }
                 if let Some(cache_write) = usage.cache_creation_input_tokens {
                     output.usage.cache_write = cache_write;
+                }
+                if let Some(tokens) = usage
+                    .output_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.thinking_tokens)
+                {
+                    output.usage.reasoning = Some(tokens);
                 }
                 output.usage.total_tokens = output.usage.input
                     + output.usage.output
@@ -934,6 +1037,7 @@ mod tests {
                 output: 15.0,
                 cache_read: 0.3,
                 cache_write: 6.0,
+                tiers: vec![],
             },
             context_window: 200_000,
             max_tokens: 8192,
@@ -968,27 +1072,64 @@ mod tests {
 
     #[test]
     fn test_map_stop_reason_end_turn() {
-        assert_eq!(map_stop_reason("end_turn"), StopReason::Stop);
+        assert_eq!(map_stop_reason("end_turn", None), (StopReason::Stop, None));
     }
 
     #[test]
     fn test_map_stop_reason_max_tokens() {
-        assert_eq!(map_stop_reason("max_tokens"), StopReason::Length);
+        assert_eq!(map_stop_reason("max_tokens", None), (StopReason::Length, None));
     }
 
     #[test]
     fn test_map_stop_reason_tool_use() {
-        assert_eq!(map_stop_reason("tool_use"), StopReason::ToolUse);
+        assert_eq!(map_stop_reason("tool_use", None), (StopReason::ToolUse, None));
     }
 
     #[test]
     fn test_map_stop_reason_stop_sequence() {
-        assert_eq!(map_stop_reason("stop_sequence"), StopReason::Stop);
+        assert_eq!(map_stop_reason("stop_sequence", None), (StopReason::Stop, None));
     }
 
     #[test]
+    fn test_map_stop_reason_refusal_with_explanation() {
+        let details = AnthropicStopDetails {
+            explanation: Some("I cannot help with that".to_string()),
+        };
+        assert_eq!(
+            map_stop_reason("refusal", Some(&details)),
+            (
+                StopReason::Error,
+                Some("I cannot help with that".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn test_map_stop_reason_refusal_without_explanation() {
+        assert_eq!(
+            map_stop_reason("refusal", None),
+            (
+                StopReason::Error,
+                Some("The model refused to complete the request".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn test_map_stop_reason_sensitive() {
+        assert_eq!(
+            map_stop_reason("sensitive", None),
+            (
+                StopReason::Error,
+                Some("Provider stopped with: sensitive".to_string())
+            )
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Unhandled stop reason: unknown_reason")]
     fn test_map_stop_reason_unknown() {
-        assert_eq!(map_stop_reason("unknown_reason"), StopReason::Stop);
+        let _ = map_stop_reason("unknown_reason", None);
     }
 
     // ============================================================

@@ -1,0 +1,17 @@
+# PORTING_MISTAKES.md — pi-ai
+
+对齐检查（v0.79 → v0.80）中修复的回归 bug 归档。根因模式尽量归到
+`PORTING.md` 高危陷阱表已有分类；新出现的模式已同步回该表。
+
+| 位置 | 现象 | 根因模式 | 修复方式 |
+| ---- | ---- | -------- | -------- |
+| `utils/overflow.rs` OVERFLOW_PATTERNS | 括号形式 `maximum context length (262144)` 不判为 overflow（TS v0.79.2 #5677 已支持） | 正则翻译遗漏分支（`of [\d,]+ tokens?` 与 `\s*\([\d,]+\)` 二选一） | 补上 `\s*\([\d,]+\)` 分支，与 TS 正则一致 |
+| `types.rs` `Usage` | 缺 `reasoning`（TS v0.80.3 #6057）与 `cacheWrite1h`（TS v0.79.4 #5738 配套）字段 | 类型定义翻译遗漏新增字段 | 补 `reasoning: Option<u64>`、`cache_write_1h: Option<u64>`（serde default + skip none） |
+| `providers/openai.rs` `parse_chunk_usage` | input 未扣除 cacheRead/cacheWrite；`prompt_cache_hit_tokens` fallback 缺失；`cache_write_tokens` 恒 0；无 `reasoning` | 数值语义翻译不完整（TS 的 `Math.max(0, prompt - cacheRead - cacheWrite)` 与字段 fallback 未逐项翻译） | 按 TS `parseChunkUsage` 逐项对齐，补测试 |
+| `providers/anthropic.rs` `AnthropicUsage` | 未解析 `cache_creation.ephemeral_1h_input_tokens` 与 `output_tokens_details.thinking_tokens` | 流式事件字段翻译遗漏（嵌套对象） | 补嵌套结构体解析，message_start 填 `cache_write_1h`、message_delta 填 `reasoning` |
+| `providers/anthropic.rs` `map_stop_reason` | `refusal`/`sensitive`/未知 stop reason 全部静默映射为 Stop（TS v0.79.2 #5666 要求 error + explanation / throw） | 静默 fallback（CLAUDE.md 高危陷阱：`?? defaultValue` 掩盖异常） | 按 TS `mapStopReason` 对齐：refusal→Error+explanation、sensitive→Error、未知→panic |
+| `providers/anthropic.rs` `convert_messages` | 所有 thinking 块被丢弃，不回放（TS v0.80.6 #6457 要求 redacted 透传、带 signature 保留、空 signature 转纯文本） | 功能翻译遗漏（"Thinking blocks are not sent back" 是旧版行为，v0.80 已改） | 按 TS `convertMessages` 实现 thinking 回放，`allowEmptySignature` 走 compat |
+| `models.rs` `get_supported_thinking_levels` | 无 `thinkingLevelMap` 时 xhigh/max 被错误地视为支持（TS 要求显式声明才支持） | 逻辑翻译错误（`if let Some(map)` 外层判断导致 None 时全放行） | 改为 match `map.get(level)`：None→非 xhigh/max 放行，Some(None)→不支持，Some(Some)→支持 |
+| `models.rs` `calculate_cost` | 无 input-based pricing tiers（TS v0.80.6）与 1h cache write 2x input 定价（TS v0.79.4 #5738） | 功能翻译遗漏 | 按 TS `calculateCost` 实现 tiers 选择 + `cacheWrite1h` 定价 |
+| `models.rs` `EXTENDED_THINKING_LEVELS` | 缺 `max` thinking level（TS v0.80.6） | 常量翻译遗漏 | 补 "max"，xhigh/max 同规则 |
+| `pi-agent-core` `ExecutionEnvExecOptions` | 未按 TS v0.80.2 重命名为 `ShellExecOptions` | 公开 API 重命名未同步 | 全仓重命名 |

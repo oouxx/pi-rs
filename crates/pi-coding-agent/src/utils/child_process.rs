@@ -42,6 +42,7 @@ pub fn wait_for_child_process(mut child: Child) -> Result<Option<i32>, std::io::
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -268,6 +268,7 @@ pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

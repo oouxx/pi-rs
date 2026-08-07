@@ -247,26 +247,52 @@ fn parse_openai_sse_body(body: &[u8]) -> Vec<Value> {
 }
 
 /// Parse token usage from an `OpenAI` chunk.
+///
+/// Mirrors `parseChunkUsage` in `packages/ai/src/api/openai-completions.ts`:
+/// - `input` excludes cache-read and cache-write tokens (clamped at 0);
+/// - cache-read falls back to `prompt_cache_hit_tokens` for OpenRouter-style
+///   providers that do not emit `prompt_tokens_details.cached_tokens`;
+/// - cache-write comes from `prompt_tokens_details.cache_write_tokens`;
+/// - `reasoning` comes from `completion_tokens_details.reasoning_tokens`
+///   (OpenAI `completion_tokens` already includes reasoning tokens).
 fn parse_chunk_usage(usage: &Value) -> Usage {
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let cache_read = usage
+        .get("prompt_tokens_details")
+        .and_then(|v| v.get("cached_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            usage
+                .get("prompt_cache_hit_tokens")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(0);
+    let cache_write = usage
+        .get("prompt_tokens_details")
+        .and_then(|v| v.get("cache_write_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("completion_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let input = prompt_tokens.saturating_sub(cache_read + cache_write);
+    let reasoning = usage
+        .get("completion_tokens_details")
+        .and_then(|v| v.get("reasoning_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     Usage {
-        input: usage
-            .get("prompt_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        output: usage
-            .get("completion_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        cache_read: usage
-            .get("prompt_tokens_details")
-            .and_then(|v| v.get("cached_tokens"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        cache_write: 0,
-        total_tokens: usage
-            .get("total_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
+        input,
+        output,
+        cache_read,
+        cache_write,
+        cache_write_1h: None,
+        reasoning: Some(reasoning),
+        total_tokens: input + output + cache_read + cache_write,
         cost: crate::types::UsageCost::default(),
     }
 }
@@ -898,9 +924,45 @@ mod tests {
             "prompt_tokens_details": {"cached_tokens": 20}
         });
         let usage = parse_chunk_usage(&usage_json);
-        assert_eq!(usage.input, 100);
+        // input excludes cache-read tokens (mirrors TS parseChunkUsage)
+        assert_eq!(usage.input, 80);
         assert_eq!(usage.output, 50);
         assert_eq!(usage.total_tokens, 150);
+        assert_eq!(usage.cache_read, 20);
+        assert_eq!(usage.cache_write, 0);
+        assert_eq!(usage.reasoning, Some(0));
+    }
+
+    #[test]
+    fn test_parse_chunk_usage_cache_write_and_reasoning() {
+        let usage_json = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "prompt_tokens_details": {
+                "cached_tokens": 20,
+                "cache_write_tokens": 10
+            },
+            "completion_tokens_details": {"reasoning_tokens": 30}
+        });
+        let usage = parse_chunk_usage(&usage_json);
+        assert_eq!(usage.input, 70);
+        assert_eq!(usage.cache_read, 20);
+        assert_eq!(usage.cache_write, 10);
+        assert_eq!(usage.reasoning, Some(30));
+        assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn test_parse_chunk_usage_prompt_cache_hit_fallback() {
+        // OpenRouter-style providers emit prompt_cache_hit_tokens instead of
+        // prompt_tokens_details.cached_tokens.
+        let usage_json = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "prompt_cache_hit_tokens": 20
+        });
+        let usage = parse_chunk_usage(&usage_json);
+        assert_eq!(usage.input, 80);
         assert_eq!(usage.cache_read, 20);
     }
 }

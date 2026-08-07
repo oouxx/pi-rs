@@ -656,6 +656,7 @@ pub async fn dispatch_handle_tool_call(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use pi_agent_core::types::{AgentToolCall, BeforeToolCallContext};
 

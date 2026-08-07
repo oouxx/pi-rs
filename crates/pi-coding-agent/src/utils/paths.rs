@@ -119,6 +119,7 @@ pub fn get_cwd_relative_path(file_path: &str, cwd: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

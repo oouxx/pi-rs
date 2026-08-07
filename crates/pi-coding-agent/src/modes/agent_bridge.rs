@@ -22,29 +22,49 @@ pub enum AgentEvent {
 
 /// Subscribe to an AgentSession and forward typed events to the sender.
 /// Call this before starting agent processing.
+/// Agent event listener bridging core events to the mode's event channel.
+type CoreAgentEventListener = Arc<
+    dyn Fn(
+            CoreAgentEvent,
+            Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub async fn subscribe_agent(
     session: &mut AgentSession,
     tx: mpsc::UnboundedSender<AgentEvent>,
 ) {
     let tx_clone = tx.clone();
-    let listener: Arc<dyn Fn(CoreAgentEvent, Option<tokio::sync::watch::Receiver<bool>>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> =
+    let listener: CoreAgentEventListener =
         Arc::new(move |event, _signal| {
             let tx = tx_clone.clone();
             Box::pin(async move {
                 match &event {
-                    CoreAgentEvent::MessageUpdate { assistant_message_event, .. } => {
-                        if let AssistantMessageEvent::TextDelta { delta, .. } = assistant_message_event {
-                            let _ = tx.send(AgentEvent::TextDelta(delta.clone()));
-                        }
+                    CoreAgentEvent::MessageUpdate {
+                        assistant_message_event:
+                            AssistantMessageEvent::TextDelta { delta, .. },
+                        ..
+                    } => {
+                        let _ = tx.send(AgentEvent::TextDelta(delta.clone()));
                     }
-                    CoreAgentEvent::MessageEnd { message: msg } => {
-                        if let pi_agent_core::types::AgentMessage::Assistant { content, .. } = msg {
-                            let text: String = content.iter()
-                                .filter_map(|b| if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = b { Some(text.clone()) } else { None })
-                                .collect();
-                            if !text.is_empty() {
-                                let _ = tx.send(AgentEvent::MessageEnd(text));
-                            }
+                    CoreAgentEvent::MessageEnd {
+                        message:
+                            pi_agent_core::types::AgentMessage::Assistant { content, .. },
+                    } => {
+                        let text: String = content
+                            .iter()
+                            .filter_map(|b| {
+                                if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = b {
+                                    Some(text.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if !text.is_empty() {
+                            let _ = tx.send(AgentEvent::MessageEnd(text));
                         }
                     }
                     CoreAgentEvent::ToolExecutionStart { tool_name, .. } => {

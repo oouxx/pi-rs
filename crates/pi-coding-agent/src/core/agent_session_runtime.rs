@@ -1,6 +1,23 @@
 use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
+/// Callback that rebinds a replaced session to its host (e.g. TUI listeners).
+type RebindSessionFn = Arc<
+    dyn Fn(
+            &AgentSession,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+/// Callback invoked with the replaced session context.
+type WithSessionFn = Box<
+    dyn Fn(
+            crate::core::agent_session::ReplacedSessionContext,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 use crate::core::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
 
 use crate::core::extensions::{ExtensionContext, ExtensionUIContext, RuntimeHandle};
@@ -94,13 +111,7 @@ pub struct AgentSessionRuntime {
     model_fallback_message: Option<String>,
     /// Callback invoked after a session replacement to rebind the new session
     /// to the host (e.g., TUI event listeners).
-    rebind_session: Option<
-        Arc<
-            dyn Fn(&AgentSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                + Send
-                + Sync,
-        >,
-    >,
+    rebind_session: Option<RebindSessionFn>,
     /// Synchronous callback that runs after `session_shutdown` handlers finish
     /// but before the current session is invalidated. Used for host-owned UI
     /// teardown (e.g., detaching extension-provided TUI components).
@@ -172,16 +183,7 @@ impl AgentSessionRuntime {
     /// session to the host (e.g., TUI event listeners).
     pub fn set_rebind_session(
         &mut self,
-        rebind_session: Option<
-            Arc<
-                dyn Fn(
-                        &AgentSession,
-                    )
-                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
+        rebind_session: Option<RebindSessionFn>,
     ) {
         self.rebind_session = rebind_session;
     }
@@ -293,16 +295,7 @@ impl AgentSessionRuntime {
     /// Finish session replacement: call rebind_session.
     async fn finish_session_replacement(
         &self,
-        with_session: Option<
-            Box<
-                dyn Fn(
-                        crate::core::agent_session::ReplacedSessionContext,
-                    )
-                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
+        with_session: Option<WithSessionFn>,
     ) {
         if let Some(ref rebind) = self.rebind_session {
             rebind(&self.session).await;
@@ -325,16 +318,7 @@ impl AgentSessionRuntime {
         &mut self,
         session_path: &str,
         cwd_override: Option<&str>,
-        with_session: Option<
-            Box<
-                dyn Fn(
-                        crate::core::agent_session::ReplacedSessionContext,
-                    )
-                        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
+        with_session: Option<WithSessionFn>,
     ) -> Result<bool, String> {
         // Validate the target session file exists and is a valid session file
         let path = std::path::Path::new(session_path);

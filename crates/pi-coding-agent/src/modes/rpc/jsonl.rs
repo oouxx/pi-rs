@@ -54,6 +54,7 @@ pub fn serialize_json_line(value: &impl serde::Serialize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -72,13 +73,13 @@ mod tests {
         let lines_clone = lines.clone();
 
         let _detach = attach_jsonl_line_reader(reader, move |line| {
-            lines_clone.lock().unwrap().push(line);
+            lines_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(line);
         });
 
         // Give the async task time to read
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let result = lines.lock().unwrap();
+        let result = lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "line1");
         assert_eq!(result[1], "line2");

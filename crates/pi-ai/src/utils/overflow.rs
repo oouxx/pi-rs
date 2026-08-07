@@ -18,7 +18,7 @@ static OVERFLOW_PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock:
         re(r"request_too_large"),
         re(r"input is too long for requested model"),
         re(r"exceeds the context window"),
-        re(r"exceeds (?:the )?(?:model'?s )?maximum context length of [\d,]+ tokens?"),
+        re(r"exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))"),
         re(r"input token count.*exceeds the maximum"),
         re(r"maximum prompt length is \d+"),
         re(r"reduce the length of the messages"),
@@ -133,6 +133,8 @@ mod tests {
                 output,
                 cache_read: 0,
                 cache_write: 0,
+                cache_write_1h: None,
+                reasoning: None,
                 total_tokens: input + output,
                 cost: UsageCost::default(),
             },
@@ -158,6 +160,15 @@ mod tests {
     fn test_openai_litellm_overflow() {
         let msg = make_error_msg(
             "Requested token count exceeds the model's maximum context length of 200,000 tokens",
+        );
+        assert!(is_context_overflow(&msg, None));
+    }
+
+    #[test]
+    fn test_openai_parenthesized_overflow() {
+        // OpenAI-compatible proxies (LiteLLM) report the limit in parentheses.
+        let msg = make_error_msg(
+            "Input length (265330) exceeds model's maximum context length (262144).",
         );
         assert!(is_context_overflow(&msg, None));
     }

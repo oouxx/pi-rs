@@ -85,7 +85,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                                     output: 0.0,
                                     cache_read: 0.0,
                                     cache_write: 0.0,
-                                },
+                                            tiers: vec![],
+},
                             };
                             let _ = sess.set_model(model).await;
                         }

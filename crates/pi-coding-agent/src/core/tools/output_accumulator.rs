@@ -61,21 +61,11 @@ use std::path::PathBuf;
 
 use super::truncate::{self, TruncationResult, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OutputAccumulatorOptions {
     pub max_lines: Option<usize>,
     pub max_bytes: Option<usize>,
     pub temp_file_prefix: Option<String>,
-}
-
-impl Default for OutputAccumulatorOptions {
-    fn default() -> Self {
-        Self {
-            max_lines: None,
-            max_bytes: None,
-            temp_file_prefix: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +421,7 @@ fn decode_utf8_with_pending(data: &[u8]) -> (String, Option<Vec<u8>>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

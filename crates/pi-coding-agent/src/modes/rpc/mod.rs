@@ -180,7 +180,7 @@ pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
         if cmd_type.as_deref() == Some("extension_ui_response") {
             if let Some(ref response_id) = cmd_id {
                 if let Some(val) = parsed_value {
-                    let pending = handler_state.pending_extension_requests.lock().unwrap().remove(response_id);
+                    let pending = handler_state.pending_extension_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(response_id);
                     if let Some(sender) = pending {
                         let _ = sender.send(val);
                     }

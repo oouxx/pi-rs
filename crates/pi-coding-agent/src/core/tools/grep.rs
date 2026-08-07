@@ -42,24 +42,13 @@ pub trait GrepOperations: Send + Sync {
     fn is_directory(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Read file contents.
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<String, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<String>;
 }
 
 // ============================================================================
@@ -72,12 +61,7 @@ impl GrepOperations for LocalGrepOperations {
     fn is_directory(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move {
             let meta = tokio::fs::metadata(&path).await
@@ -89,13 +73,7 @@ impl GrepOperations for LocalGrepOperations {
     fn read_file(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<String, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<String> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read_to_string(&path)
@@ -477,6 +455,7 @@ fn search_directory(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

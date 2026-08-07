@@ -23,6 +23,7 @@ fn is_aborted(signal: &Option<tokio::sync::watch::Receiver<bool>>) -> bool {
 
 enum PreparedOrImmediate {
     Prepared {
+        tool: Arc<crate::types::DynTool>,
         tool_call: AgentToolCall,
         args: serde_json::Value,
     },
@@ -157,6 +158,7 @@ async fn prepare_tool_call(
             // Apply modified args from extension hooks
             if let Some(modified_args) = before_result.modified_args {
                 return PreparedOrImmediate::Prepared {
+                    tool: tool.clone(),
                     tool_call: prepared_tool_call,
                     args: modified_args,
                 };
@@ -165,6 +167,7 @@ async fn prepare_tool_call(
     }
 
     PreparedOrImmediate::Prepared {
+        tool: tool.clone(),
         tool_call: prepared_tool_call,
         args: validated_args,
     }
@@ -341,16 +344,11 @@ async fn execute_tool_calls_sequential(
                 is_error,
             },
             PreparedOrImmediate::Prepared {
+                tool,
                 tool_call: tc,
                 args,
             } => {
-                let tool = current_context
-                    .tools
-                    .as_ref()
-                    .and_then(|tools| tools.iter().find(|t| t.name == tc.name))
-                    .unwrap();
-
-                let executed = execute_prepared_tool_call(tool, &tc, &args, signal, emit).await;
+                let executed = execute_prepared_tool_call(&tool, &tc, &args, signal, emit).await;
                 finalize_executed_tool_call(
                     current_context,
                     assistant_message,
@@ -446,15 +444,11 @@ async fn execute_tool_calls_parallel(
                 entries.push(FinalizedEntry::Done(finalized));
             }
             PreparedOrImmediate::Prepared {
+                tool,
                 tool_call: tc,
                 args,
             } => {
-                let tool = current_context
-                    .tools
-                    .as_ref()
-                    .and_then(|tools| tools.iter().find(|t| t.name == tc.name))
-                    .unwrap()
-                    .clone();
+                let tool = tool.clone();
                 let ctx = current_context.clone();
                 let msg = assistant_message.clone();
                 let after_fn = after_tool_call.clone();
@@ -1266,7 +1260,8 @@ mod tests {
             execution_mode: None,
             prepare_arguments: prepare,
             execute: Arc::new(move |_id, _args, _signal, _on_update| {
-                let mut guard = exec_results.lock().unwrap();
+                let mut guard =
+                    exec_results.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let result = guard.remove(0);
                 Box::pin(async move { result })
             }),
@@ -2195,7 +2190,8 @@ mod tests {
                     output: 0.0,
                     cache_read: 0.0,
                     cache_write: 0.0,
-                },
+                            tiers: vec![],
+},
                 context_window: 100_000,
                 max_tokens: 4096,
                 headers: None,

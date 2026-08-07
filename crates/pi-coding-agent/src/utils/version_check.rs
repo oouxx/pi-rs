@@ -82,6 +82,7 @@ pub async fn get_latest_pi_release(current_version: &str) -> Result<LatestReleas
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

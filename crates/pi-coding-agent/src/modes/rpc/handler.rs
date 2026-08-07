@@ -3,6 +3,16 @@
 //! Mirrors the command handling in packages/coding-agent/src/modes/rpc/rpc-mode.ts
 
 use std::pin::Pin;
+/// Agent event listener used by the RPC handler.
+type RpcAgentEventListener = Arc<
+    dyn Fn(
+            pi_agent_core::types::AgentEvent,
+            Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -36,14 +46,7 @@ pub async fn handle_command(
             let unsubscribe_handle = Arc::new(tokio::sync::Mutex::new(None::<pi_agent_core::agent::UnsubscribeHandle>));
             let uh = unsubscribe_handle.clone();
 
-            let listener: Arc<
-                dyn Fn(
-                        pi_agent_core::types::AgentEvent,
-                        Option<tokio::sync::watch::Receiver<bool>>,
-                    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            > = Arc::new(move |event, _signal| {
+            let listener: RpcAgentEventListener = Arc::new(move |event, _signal| {
                 let output_tx = output_tx.clone();
                 let cmd_id = cmd_id.clone();
                 let uh = uh.clone();
@@ -90,14 +93,7 @@ pub async fn handle_command(
 
             // Wrap the listener to also set the flag on AgentEnd
             let original_listener = listener;
-            let listener: Arc<
-                dyn Fn(
-                        pi_agent_core::types::AgentEvent,
-                        Option<tokio::sync::watch::Receiver<bool>>,
-                    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            > = Arc::new(move |event, signal| {
+            let listener: RpcAgentEventListener = Arc::new(move |event, signal| {
                 let aer = aer.clone();
                 let orig = original_listener.clone();
                 Box::pin(async move {

@@ -104,7 +104,7 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::harness::types::{
-    CreateDirOptions, ExecResult, ExecutionEnv, ExecutionEnvExecOptions, ExecutionError, FileError,
+    CreateDirOptions, ExecResult, ExecutionEnv, ShellExecOptions, ExecutionError, FileError,
     FileInfoType, ReadTextFileOptions, RemoveOptions, TempFileOptions,
 };
 
@@ -405,7 +405,7 @@ impl ExecutionEnv for NodeExecutionEnv {
     async fn exec(
         &self,
         command: &str,
-        options: ExecutionEnvExecOptions,
+        options: ShellExecOptions,
     ) -> std::result::Result<ExecResult, ExecutionError> {
         let cwd = options
             .cwd

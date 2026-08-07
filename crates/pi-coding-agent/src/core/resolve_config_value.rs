@@ -168,6 +168,7 @@ pub fn is_config_value_configured(config: &str) -> bool {
 }
 
 pub fn is_legacy_env_var_name_config_value(config: &str) -> bool {
+    #[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
     let legacy_re = Regex::new(r"^[A-Z_][A-Z0-9_]*$").unwrap();
     legacy_re.is_match(config)
 }
@@ -182,7 +183,7 @@ pub fn resolve_config_value(config: &str) -> Option<String> {
 
 fn execute_command(command_config: &str) -> Option<String> {
     {
-        let cache_guard = COMMAND_RESULT_CACHE.lock().unwrap();
+        let cache_guard = COMMAND_RESULT_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ref cache) = *cache_guard {
             if let Some(cached) = cache.get(command_config) {
                 return cached.clone();
@@ -192,7 +193,7 @@ fn execute_command(command_config: &str) -> Option<String> {
 
     let result = execute_command_uncached(&command_config[1..]);
 
-    let mut cache_guard = COMMAND_RESULT_CACHE.lock().unwrap();
+    let mut cache_guard = COMMAND_RESULT_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let cache = cache_guard.get_or_insert_with(HashMap::new);
     cache.insert(command_config.to_string(), result.clone());
     result
@@ -300,12 +301,13 @@ pub fn resolve_headers_or_throw(
 }
 
 pub fn clear_config_value_cache() {
-    let mut cache_guard = COMMAND_RESULT_CACHE.lock().unwrap();
+    let mut cache_guard = COMMAND_RESULT_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     *cache_guard = None;
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -433,7 +435,7 @@ mod tests {
     #[test]
     fn test_clear_cache() {
         clear_config_value_cache();
-        let cache_guard = COMMAND_RESULT_CACHE.lock().unwrap();
+        let cache_guard = COMMAND_RESULT_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(cache_guard.is_none());
     }
 }

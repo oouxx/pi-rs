@@ -714,8 +714,10 @@ pub struct FileInfoType {
     pub path: String,
 }
 
+/// Options for [`Shell::exec`] (renamed from `ExecutionEnvExecOptions` in
+/// alignment with TS v0.80.2).
 #[allow(clippy::type_complexity)]
-pub struct ExecutionEnvExecOptions {
+pub struct ShellExecOptions {
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
@@ -806,7 +808,7 @@ pub trait ExecutionEnv: Send + Sync {
     async fn exec(
         &self,
         command: &str,
-        options: ExecutionEnvExecOptions,
+        options: ShellExecOptions,
     ) -> std::result::Result<ExecResult, ExecutionError>;
     async fn cleanup(&self);
 }

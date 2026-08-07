@@ -8,17 +8,12 @@ use crate::core::trust_manager::{
 };
 
 /// Default trust policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DefaultProjectTrust {
+    #[default]
     Ask,
     Always,
     Never,
-}
-
-impl Default for DefaultProjectTrust {
-    fn default() -> Self {
-        DefaultProjectTrust::Ask
-    }
 }
 
 impl DefaultProjectTrust {
@@ -143,6 +138,7 @@ pub fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) -> boo
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
 

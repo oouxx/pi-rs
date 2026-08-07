@@ -56,10 +56,8 @@ pub fn parse_package_command(args: &[String]) -> Option<ParsedPackageCommand> {
             "--force" | "-f" => force = true,
             "--all" | "-a" => update_all = true,
             "--help" | "-h" => help = true,
-            s if !s.starts_with('-') => {
-                if source.is_none() {
-                    source = Some(s.to_string());
-                }
+            s if !s.starts_with('-') && source.is_none() => {
+                source = Some(s.to_string());
             }
             _ => {}
         }

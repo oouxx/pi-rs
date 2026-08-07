@@ -86,22 +86,12 @@ pub trait WriteOperations: Send + Sync {
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<()>;
 
     fn mkdir(
         &self,
         dir: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<()>;
 }
 
 // ============================================================================
@@ -115,12 +105,7 @@ impl WriteOperations for LocalWriteOperations {
         &self,
         path: &str,
         content: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
@@ -133,12 +118,7 @@ impl WriteOperations for LocalWriteOperations {
     fn mkdir(
         &self,
         dir: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<()> {
         let dir = dir.to_string();
         Box::pin(async move {
             tokio::fs::create_dir_all(&dir)
@@ -301,6 +281,7 @@ format!("Error writing file: {}", e),
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

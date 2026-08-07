@@ -108,6 +108,7 @@ fn ollama_model(name: &str, v1_base_url: &str) -> Model {
             output: 0.0,
             cache_read: 0.0,
             cache_write: 0.0,
+            tiers: vec![],
         },
         context_window: 8192,
         max_tokens: 4096,
@@ -121,8 +122,13 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    // The two base-url tests mutate the same process env vars, so they must not
+    // run concurrently (Rust runs tests in parallel threads by default).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_ollama_base_url_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // 确保未设环境变量时回退到默认本机端点。
         std::env::remove_var("OLLAMA_BASE_URL");
         std::env::remove_var("OLLAMA_HOST");
@@ -131,6 +137,7 @@ mod tests {
 
     #[test]
     fn test_ollama_base_url_via_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         std::env::set_var("OLLAMA_BASE_URL", "http://192.168.1.10:11434/");
         assert_eq!(ollama_base_url(), "http://192.168.1.10:11434");
         std::env::remove_var("OLLAMA_BASE_URL");

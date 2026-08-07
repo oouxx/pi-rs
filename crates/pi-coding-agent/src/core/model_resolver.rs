@@ -108,6 +108,7 @@ fn is_alias(id: &str) -> bool {
         return true;
     }
     // Check if ID ends with a date pattern (-YYYYMMDD)
+    #[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
     let date_pattern = regex::Regex::new(r"-\d{8}$").unwrap();
     !date_pattern.is_match(id)
 }
@@ -659,6 +660,7 @@ pub fn restore_model_from_session(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::core::model_registry::ModelRegistry;
 

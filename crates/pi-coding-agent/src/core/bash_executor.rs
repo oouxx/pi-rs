@@ -12,8 +12,12 @@ pub struct BashExecutorResult {
     pub full_output_path: Option<String>,
 }
 
+/// Callback invoked with output chunks as they arrive.
+type ChunkCallback = Box<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Default)]
 pub struct BashExecutorOptions {
-    pub on_chunk: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    pub on_chunk: Option<ChunkCallback>,
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
@@ -23,15 +27,6 @@ impl std::fmt::Debug for BashExecutorOptions {
             .field("on_chunk", &self.on_chunk.as_ref().map(|_| "..."))
             .field("signal", &self.signal.is_some())
             .finish()
-    }
-}
-
-impl Default for BashExecutorOptions {
-    fn default() -> Self {
-        Self {
-            on_chunk: None,
-            signal: None,
-        }
     }
 }
 
@@ -203,6 +198,7 @@ impl BashExecutor {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

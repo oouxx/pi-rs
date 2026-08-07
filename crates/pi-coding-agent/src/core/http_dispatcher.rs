@@ -37,6 +37,7 @@ pub fn format_http_idle_timeout_ms(timeout_ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

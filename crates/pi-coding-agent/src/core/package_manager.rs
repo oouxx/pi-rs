@@ -316,7 +316,7 @@ impl DefaultPackageManager {
 
     /// Emit a progress event.
     fn emit_progress(&self, action: &str, source: &str, message: Option<&str>) {
-        if let Some(cb) = self.progress_callback.lock().unwrap().as_ref() {
+        if let Some(cb) = self.progress_callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             cb(ProgressEvent {
                 event_type: "progress".to_string(),
                 action: action.to_string(),
@@ -331,7 +331,7 @@ impl DefaultPackageManager {
     fn resolve_source(&self, source: &str, local: bool) -> Option<String> {
         // Check cache first
         {
-            let cache = self.path_cache.lock().unwrap();
+            let cache = self.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(path) = cache.get(source) {
                 return Some(path.clone());
             }
@@ -347,7 +347,7 @@ impl DefaultPackageManager {
             let pkg_dir = root.join(source);
             if pkg_dir.join("package.json").exists() {
                 let path = pkg_dir.to_string_lossy().to_string();
-                self.path_cache.lock().unwrap().insert(source.to_string(), path.clone());
+                self.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(source.to_string(), path.clone());
                 return Some(path);
             }
         }
@@ -605,7 +605,7 @@ impl PackageManager for DefaultPackageManager {
         }
 
         // Clear cache entry
-        self.path_cache.lock().unwrap().remove(source);
+        self.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(source);
 
         self.emit_progress("remove", source, Some("Removed"));
         Ok(())
@@ -658,14 +658,14 @@ impl PackageManager for DefaultPackageManager {
     }
 
     fn set_progress_callback(&self, callback: Option<ProgressCallback>) {
-        *self.progress_callback.lock().unwrap() = callback;
+        *self.progress_callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
     }
 
     fn add_source_to_settings(&self, source: &str, local: bool) -> bool {
         let Some(sm) = &self.settings_manager else {
             return false;
         };
-        let mut sm = sm.lock().unwrap();
+        let mut sm = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_packages = if local {
             sm.get_project_packages()
         } else {
@@ -723,7 +723,7 @@ impl PackageManager for DefaultPackageManager {
         let Some(sm) = &self.settings_manager else {
             return false;
         };
-        let mut sm = sm.lock().unwrap();
+        let mut sm = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_packages = if local {
             sm.get_project_packages()
         } else {
@@ -762,6 +762,7 @@ pub fn get_npm_root(global: bool) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
     use std::sync::Arc;
@@ -857,14 +858,14 @@ mod tests {
         let events_clone = Arc::clone(&events);
 
         mgr.set_progress_callback(Some(Box::new(move |evt| {
-            events_clone.lock().unwrap().push(evt);
+            events_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(evt);
         })));
 
         // Trigger progress via install (will fail since npm may not be available,
         // but progress should still be emitted before the attempt).
         let _ = mgr.install("test-pkg", false);
 
-        let captured = events.lock().unwrap();
+        let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // At minimum, the "install" action should have been emitted.
         assert!(!captured.is_empty(), "should have at least one progress event");
         assert_eq!(captured[0].action, "install");
@@ -1036,7 +1037,7 @@ mod tests {
 
         let called = std::sync::Mutex::new(Vec::new());
         let on_missing = |source: &str| {
-            called.lock().unwrap().push(source.to_string());
+            called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(source.to_string());
             MissingSourceAction::Skip
         };
 
@@ -1044,7 +1045,7 @@ mod tests {
         // (there are none configured, so it shouldn't be called)
         let result = mgr.resolve(Some(&on_missing)).unwrap();
         assert!(result.extensions.is_empty());
-        assert!(called.lock().unwrap().is_empty());
+        assert!(called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1296,7 +1297,7 @@ mod tests {
         let _ = mgr.remove("test-pkg", false);
 
         // Cache should be cleared
-        let cache = mgr.path_cache.lock().unwrap();
+        let cache = mgr.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(!cache.contains_key("test-pkg"), "cache should be cleared after remove");
     }
 
@@ -1439,7 +1440,7 @@ mod tests {
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package", false);
         assert!(added);
-        let packages = sm.lock().unwrap().get_packages();
+        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
         assert_eq!(packages.len(), 1);
         match &packages[0] {
             PackageSource::String(s) => assert_eq!(s, "npm:my-package"),
@@ -1451,13 +1452,13 @@ mod tests {
     fn test_add_source_to_settings_update_existing() {
         let sm = make_sm();
         // Pre-populate with an old version
-        sm.lock().unwrap().set_packages(vec![PackageSource::String(
+        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![PackageSource::String(
             "npm:my-package@1.0".to_string(),
         )]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package@2.0", false);
         assert!(added);
-        let packages = sm.lock().unwrap().get_packages();
+        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
         assert_eq!(packages.len(), 1);
         match &packages[0] {
             PackageSource::String(s) => assert_eq!(s, "npm:my-package@2.0"),
@@ -1468,13 +1469,13 @@ mod tests {
     #[test]
     fn test_add_source_to_settings_no_change() {
         let sm = make_sm();
-        sm.lock().unwrap().set_packages(vec![PackageSource::String(
+        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![PackageSource::String(
             "npm:my-package".to_string(),
         )]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package", false);
         assert!(!added); // No change — same source
-        let packages = sm.lock().unwrap().get_packages();
+        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
         assert_eq!(packages.len(), 1);
     }
 
@@ -1484,24 +1485,24 @@ mod tests {
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package", true); // local=true → project
         assert!(added);
-        let project_packages = sm.lock().unwrap().get_project_packages();
+        let project_packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_project_packages();
         assert_eq!(project_packages.len(), 1);
         // Global settings should have no packages (project scope was used)
-        let global_packages = sm.lock().unwrap().get_global_settings().packages.clone().unwrap_or_default();
+        let global_packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_global_settings().packages.clone().unwrap_or_default();
         assert!(global_packages.is_empty());
     }
 
     #[test]
     fn test_remove_source_from_settings() {
         let sm = make_sm();
-        sm.lock().unwrap().set_packages(vec![
+        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![
             PackageSource::String("npm:pkg-a".to_string()),
             PackageSource::String("npm:pkg-b".to_string()),
         ]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let removed = mgr.remove_source_from_settings("npm:pkg-a", false);
         assert!(removed);
-        let packages = sm.lock().unwrap().get_packages();
+        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
         assert_eq!(packages.len(), 1);
         match &packages[0] {
             PackageSource::String(s) => assert_eq!(s, "npm:pkg-b"),
@@ -1512,13 +1513,13 @@ mod tests {
     #[test]
     fn test_remove_source_from_settings_no_match() {
         let sm = make_sm();
-        sm.lock().unwrap().set_packages(vec![PackageSource::String(
+        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![PackageSource::String(
             "npm:pkg-a".to_string(),
         )]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let removed = mgr.remove_source_from_settings("npm:nonexistent", false);
         assert!(!removed);
-        let packages = sm.lock().unwrap().get_packages();
+        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
         assert_eq!(packages.len(), 1);
     }
 

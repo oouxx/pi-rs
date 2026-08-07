@@ -132,7 +132,6 @@ fn get_message_from_entry(entry: &SessionTreeEntry) -> Option<AgentMessage> {
             content,
             display,
             details,
-            timestamp: _,
             ..
         } => {
             let custom_content = match content {

@@ -15,9 +15,11 @@ pub struct GitSource {
     pub pinned: bool,
 }
 
+#[allow(clippy::unwrap_used)] // literal patterns, compilation is infallible
 static SCP_LIKE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^git@([^:]+):(.+)$").unwrap());
 
+#[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
 static PROTOCOL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(https?|ssh|git)://").unwrap());
 
@@ -176,6 +178,7 @@ pub fn parse_git_url(source: &str) -> Option<GitSource> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

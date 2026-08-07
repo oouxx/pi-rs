@@ -47,9 +47,12 @@ pub struct BashSpawnContext {
 pub type BashSpawnHook = Arc<dyn Fn(BashSpawnContext) -> BashSpawnContext + Send + Sync>;
 
 /// Options passed to [`BashOperations::exec`].
+/// Callback invoked with raw bytes as they arrive from stdout/stderr.
+type DataCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 pub struct BashExecOptions {
     /// Callback invoked with raw bytes as they arrive from stdout/stderr.
-    pub on_data: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
+    pub on_data: Option<DataCallback>,
     /// Signal receiver for cancellation.
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
     /// Timeout in seconds (optional).
@@ -91,13 +94,7 @@ pub trait BashOperations: Send + Sync {
         command: &str,
         cwd: &str,
         options: BashExecOptions,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<BashExecResult>;
 }
 
 // ============================================================================
@@ -214,13 +211,7 @@ impl BashOperations for LocalBashOperations {
         command: &str,
         cwd: &str,
         options: BashExecOptions,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<BashExecResult> {
         let command = command.to_string();
         let cwd = cwd.to_string();
         let timeout_ms = match resolve_timeout_ms(options.timeout) {
@@ -668,7 +659,7 @@ pub fn create_bash_tool(
                             // deadlock the stdout/stderr reader tasks and hang
                             // the bash tool forever.
                             {
-                                let mut acc = on_data_output.lock().unwrap();
+                                let mut acc = on_data_output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                                 acc.append(data);
                             }
 
@@ -684,7 +675,7 @@ pub fn create_bash_tool(
                                     on_data_last_update.store(now, Ordering::SeqCst);
                                     on_data_dirty.store(false, Ordering::SeqCst);
                                     let snapshot = {
-                                        let acc = on_data_output.lock().unwrap();
+                                        let acc = on_data_output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                                         acc.snapshot(true)
                                     };
                                     if let Some(ref cb) = on_data_cb {
@@ -726,17 +717,17 @@ pub fn create_bash_tool(
 
                     // Finish output accumulation
                     {
-                        let mut acc = output.lock().unwrap();
+                        let mut acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.finish();
                     }
 
                     // Emit final update
                     let snapshot = {
-                        let acc = output.lock().unwrap();
+                        let acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.snapshot(true)
                     };
                     let last_line_bytes = {
-                        let acc = output.lock().unwrap();
+                        let acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.get_last_line_bytes()
                     };
 
@@ -823,6 +814,7 @@ final_text,
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

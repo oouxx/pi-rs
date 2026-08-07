@@ -36,35 +36,19 @@ pub trait LsOperations: Send + Sync {
     fn exists(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Get file or directory metadata. Throws if not found.
     fn is_directory(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Read directory entries.
     fn read_dir(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    >;
+    ) -> crate::core::tools::AsyncOpResult<Vec<String>>;
 }
 
 // ============================================================================
@@ -77,12 +61,7 @@ impl LsOperations for LocalLsOperations {
     fn exists(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move { Ok(std::path::Path::new(&path).exists()) })
     }
@@ -90,12 +69,7 @@ impl LsOperations for LocalLsOperations {
     fn is_directory(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>
-                + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move {
             let meta = tokio::fs::metadata(&path).await
@@ -107,13 +81,7 @@ impl LsOperations for LocalLsOperations {
     fn read_dir(
         &self,
         path: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send,
-        >,
-    > {
+    ) -> crate::core::tools::AsyncOpResult<Vec<String>> {
         let path = path.to_string();
         Box::pin(async move {
             let mut entries = tokio::fs::read_dir(&path).await
@@ -327,6 +295,7 @@ pub fn create_ls_tool(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

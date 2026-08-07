@@ -12,6 +12,7 @@ pub fn are_experimental_features_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// Run tests sequentially in a single test function to avoid env var races.

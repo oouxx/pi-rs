@@ -123,6 +123,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 7 | **no-op / 缺失实现** | TS 方法有真实副作用 | Rust 返回 success 但没调用对应方法（占位忘了补） | 确认每个 handler 真正调用了对应 session 方法 | #6, #7, #8 |
 | 8 | **缺失校验** | TS `name.trim()` 非空等校验 | Rust 直接接受任意输入 | 补齐 TS 的输入校验，返回对应错误 | #13 |
 | 9 | **缺失 enum 变体** | TS union 有 N 个成员 | Rust enum 漏掉某个 variant | 逐个核对 TS union/switch 的所有分支 | #19（`ExportHtml`）、#11/#12（`null` 分支） |
+| 10 | **可选链的"未定义"与"键缺失"语义不同** | `obj?.field?.[key]`：`obj` 为 undefined 与 `obj` 存在但无该 key 是两种结果（如 `getSupportedThinkingLevels` 中 xhigh/max 只在 map 显式声明时支持） | `if let Some(map) = obj.field { ... }` 把"外层为 None"和"键缺失"合并成同一条路径，None 时误放行 | 用 `obj.field.as_ref().and_then(|m| m.get(key))` 得到 `Option<&Option<V>>`，match 三种情况（外层 None / 键→null / 键→值） | pi-ai `get_supported_thinking_levels`（无 thinkingLevelMap 时 xhigh/max 被误判为支持） |
 | 10 | **错误静默吞掉** | TS `.catch()` → `emitError(id, type, msg)` | Rust `.ok()` 丢弃错误，返回 `()` 或假成功 | `match`/`?` 显式传播，失败发 `rpc_error` | #26, #（compact 失败返回 `compacted:false`） |
 | 11 | **多形态内容（string \| array）** | TS `content` 既可是 `string` 也可是 `(Text\|Image)[]` | Rust 只 `as_str()` 处理 string，数组形态返回 `None` | 写 helper 覆盖两种形态，数组形态过滤 `type:"text"` 块 | #68 |
 | 12 | **计数/编号边界** | TS occurrence 从 1 开始、`counts` 只统计特定集合 | Rust 把不该计入的项（如 builtins）也算进计数，编号起点偏移 | 严格复刻 TS 的计数集合与编号起点，必要时 `taken` 集合去重 | #70 |

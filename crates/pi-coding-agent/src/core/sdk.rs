@@ -550,7 +550,9 @@ pub async fn create_agent_session(
                     let source_info = adapter.source_info().clone();
                     extension_registry.register(Box::new(adapter), source_info);
                 }
-                js_extension_manager = Some(Box::new(loaded.manager));
+                // Wrap in Arc so the session's JS invalidator callback can hold
+                // a clone alongside the result handle.
+                js_extension_manager = Some(Box::new(std::sync::Arc::new(loaded.manager)));
             }
             Ok(None) => {
                 // No JS extension files discovered — nothing to do.
@@ -703,7 +705,7 @@ pub async fn create_agent_session(
     #[cfg(feature = "js-runtime")]
     let model_registry_for_actions = model_registry.clone();
 
-    let session =
+    let mut session =
         AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
 
     // ── Bind the JS extension runtime core ─────────────────────────────
@@ -713,9 +715,10 @@ pub async fn create_agent_session(
     // Mirrors TS `ExtensionRunner.bindCore()`.
     #[cfg(feature = "js-runtime")]
     if let Some(ref manager_any) = js_extension_manager {
-        if let Some(manager) = manager_any
-            .downcast_ref::<crate::core::extensions::js_adapter::JsExtensionManager>()
+        if let Some(manager_arc) = manager_any
+            .downcast_ref::<std::sync::Arc<crate::core::extensions::js_adapter::JsExtensionManager>>()
         {
+            let manager = manager_arc.as_ref();
             use crate::core::extensions::action_bus::ExtensionAction;
             use crate::core::extensions::js_runtime::RuntimeActions;
 
@@ -837,6 +840,12 @@ pub async fn create_agent_session(
             if let Err(e) = manager.bind_core(actions).await {
                 eprintln!("[pi] extension bindCore failed: {e}");
             }
+            // Wire session-switch -> runtime invalidation (stale-ctx guard).
+            // Clone the Arc into the 'static closure (the session outlives the
+            // bind_core scope).
+            let manager_arc_owned = manager_arc.clone();
+            let invalidator = std::sync::Arc::new(move || manager_arc_owned.invalidate_sync());
+            session.set_js_invalidator(Some(invalidator));
         }
     }
 

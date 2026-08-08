@@ -335,6 +335,10 @@ pub struct AgentSession {
     extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
     /// Receiver for JS extension write-actions, drained at turn boundaries.
     extension_action_rx: Option<Arc<std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>>>,
+    /// Sync callback that invalidates the JS extension runtime (stale-ctx
+    /// guard) when the session changes (new/fork/switch/reload). Set by the
+    /// SDK from the V8 manager; absent when `js-runtime` is off.
+    js_invalidator: Option<Arc<dyn Fn() + Send + Sync>>,
     // ── Event subscription state ──
     event_listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
     /// Handle to the internal agent event subscription.
@@ -953,6 +957,7 @@ impl AgentSession {
             extension_action_rx: options
                 .extension_action_rx
                 .map(|rx| Arc::new(std::sync::Mutex::new(rx))),
+            js_invalidator: None,
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
             _agent_subscription: None,
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
@@ -2039,6 +2044,13 @@ impl AgentSession {
         guard.thinking_level = self.get_thinking_level().await;
         guard.commands = commands;
         guard.model_id = Some(format!("{}/{}", model.provider, model.id));
+    }
+
+    /// Register a synchronous callback that invalidates the JS extension
+    /// runtime when the session changes (new/fork/switch/reload). The SDK
+    /// wires this to the V8 manager under `js-runtime`.
+    pub fn set_js_invalidator(&mut self, invalidator: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.js_invalidator = invalidator;
     }
 
     /// Apply all queued JS extension write-actions, then refresh the state
@@ -4266,6 +4278,11 @@ impl AgentSession {
         let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
         *self.session_manager.lock().unwrap() = new_mgr;
         self.load_messages_from_session().await;
+        // The session changed: invalidate the JS extension runtime so stale
+        // contexts are detected (assertActive / runtime.invalidate).
+        if let Some(ref invalidate) = self.js_invalidator {
+            invalidate();
+        }
         Ok(())
     }
 

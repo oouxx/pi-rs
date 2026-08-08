@@ -1292,6 +1292,12 @@ impl JsExtensionManager {
             .map_err(|_| "V8 runtime channel closed".to_string())
     }
 
+    /// Synchronous invalidate (best-effort, no await) — usable from a sync
+    /// `Fn()` callback (e.g. the session-switch invalidator).
+    pub fn invalidate_sync(&self) {
+        let _ = self.cmd_tx.try_send(JsCommand::Invalidate);
+    }
+
     /// Shut down the V8 runtime (drop the channel sender and join the thread).
     ///
     /// Sends an explicit `Shutdown` command so the V8 thread breaks out of

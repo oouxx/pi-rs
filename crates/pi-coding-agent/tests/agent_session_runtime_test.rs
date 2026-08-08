@@ -566,3 +566,86 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
         "sendMessage must append a user message"
     );
 }
+
+/// Session switch must trigger the JS-runtime invalidator (stale-ctx guard):
+/// `session_mgr_switch` calls the callback wired by the SDK.
+#[tokio::test]
+async fn test_session_switch_invalidates_js_runtime() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use pi_coding_agent::core::agent_session::AgentSessionConfig;
+    use pi_coding_agent::core::extensions::ExtensionRegistry;
+    use pi_coding_agent::core::model_registry::ModelRegistry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let session_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_manager =
+        SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
+    let settings_manager =
+        pi_coding_agent::core::settings_manager::SettingsManager::create(&cwd, None);
+    let model = pi_agent_core::pi_ai_types::Model {
+        id: "test-model".to_string(),
+        name: "Test Model".to_string(),
+        api: "test-api".to_string(),
+        provider: "test".to_string(),
+        base_url: "http://localhost".to_string(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: Vec::new(),
+        cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+        context_window: 128000,
+        max_tokens: 4096,
+        headers: None,
+        compat: None,
+    };
+    let options = AgentSessionConfig {
+        cwd: cwd.clone(),
+        model,
+        thinking_level: "medium".to_string(),
+        custom_prompt: None,
+        append_system_prompt: None,
+        selected_tools: None,
+        tool_snippets: None,
+        prompt_guidelines: None,
+        context_files: Vec::new(),
+        skills: Vec::new(),
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        initial_active_tool_names: None,
+        allowed_tool_names: None,
+        excluded_tool_names: None,
+        extension_registry: Some(Arc::new(ExtensionRegistry::new())),
+        custom_tools: None,
+        resources: None,
+        extension_state_view: None,
+        extension_action_rx: None,
+    };
+    let mut session =
+        AgentSession::new(session_manager, settings_manager, ModelRegistry::new(ModelRegistry::builtin_models_list()), options).await;
+
+    let invalidated = Arc::new(AtomicUsize::new(0));
+    let inv = invalidated.clone();
+    session.set_js_invalidator(Some(Arc::new(move || {
+        inv.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    // A minimal valid session file for switch_session to load.
+    let target = dir.path().join("target.jsonl");
+    std::fs::write(
+        &target,
+        r#"{"type":"session","version":3,"id":"target-session","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp"}"#,
+    )
+    .unwrap();
+
+    session
+        .session_mgr_switch(&target.to_string_lossy(), None)
+        .await
+        .expect("switch_session");
+    assert_eq!(
+        invalidated.load(Ordering::SeqCst),
+        1,
+        "session switch must invalidate the JS runtime"
+    );
+}

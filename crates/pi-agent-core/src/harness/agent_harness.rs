@@ -809,6 +809,7 @@ where
                         max_retry_delay_ms: snapshot.max_retry_delay_ms,
                         metadata: None,
                         tool_choice: None,
+                        service_tier: None,
                         on_payload: None,
                         on_headers: None,
                         on_provider_response: None,

@@ -551,6 +551,7 @@ pub fn stream_anthropic(
                     usage: Usage::default(),
                     stop_reason: StopReason::Error,
                     error_message: Some(e.to_string()),
+                    raw_stop_reason: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 },
             });
@@ -695,6 +696,7 @@ async fn stream_anthropic_inner(
         usage: Usage::default(),
         stop_reason: StopReason::Stop,
         error_message: None,
+        raw_stop_reason: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     };
 

@@ -30,6 +30,7 @@ fn partial_msg(text: &str) -> AssistantMessage {
         usage: Usage::default(),
         stop_reason: StopReason::Stop,
         error_message: None,
+        raw_stop_reason: None,
         timestamp: 0,
     }
 }
@@ -49,6 +50,7 @@ fn final_msg(text: &str, stop: StopReason) -> AssistantMessage {
         usage: Usage::default(),
         stop_reason: stop,
         error_message: None,
+        raw_stop_reason: None,
         timestamp: 0,
     }
 }
@@ -416,6 +418,7 @@ async fn test_stream_error_returns_error_message() {
         usage: Usage::default(),
         stop_reason: StopReason::Error,
         error_message: Some("API rate limit exceeded".into()),
+        raw_stop_reason: None,
         timestamp: 0,
     };
 

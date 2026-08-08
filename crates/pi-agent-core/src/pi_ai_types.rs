@@ -108,6 +108,7 @@ pub fn assistant_message(
         usage,
         stop_reason,
         error_message: None,
+        raw_stop_reason: None,
         timestamp,
     }
 }
@@ -135,6 +136,7 @@ pub fn assistant_message_error(
         usage,
         stop_reason,
         error_message: Some(error_message),
+        raw_stop_reason: None,
         timestamp,
     }
 }

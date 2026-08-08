@@ -323,3 +323,15 @@ DEVIATIONS.md）"，不要标记为"否"然后触发修正。
   - security review
 - Only avoid subagents for trivial one-file changes.
 - Wait for all subagents before producing the final answer.
+
+# Testing Rules
+
+When adding tests:
+
+- Do not add tests only to increase coverage.
+- Every test must verify a meaningful behavior.
+- Do not test trivial getters/setters.
+- Do not test framework behavior.
+- Do not add tests for code without business logic.
+- Prefer testing edge cases and failure paths.
+- Before adding tests, explain what bug or behavior the test protects against.

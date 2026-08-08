@@ -114,6 +114,7 @@ pub fn stream_proxy(
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
+            raw_stop_reason: None,
             timestamp: chrono::Utc::now().timestamp_millis(),
         };
 
@@ -503,6 +504,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
+            raw_stop_reason: None,
             timestamp: 0,
         }
     }

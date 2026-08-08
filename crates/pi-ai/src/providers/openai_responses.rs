@@ -14,7 +14,8 @@ use serde_json::{json, Value};
 
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, CacheRetention, ContentBlock, Context, Message, Model,
-    SimpleStreamOptions, StopReason, StreamOptions, Tool, Usage,
+    OpenAIResponsesCompat, SessionAffinityFormat, SimpleStreamOptions, StopReason, StreamOptions,
+    Tool, Usage,
 };
 use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::json_parse::parse_streaming_json;
@@ -26,6 +27,82 @@ const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
 
 /// Providers whose tool call ids carry the `callId|itemId` form.
 const OPENAI_TOOL_CALL_PROVIDERS: &[&str] = &["openai", "openai-codex", "opencode"];
+
+// ============================================================================
+// Compat resolution (match TS `getCompat` / `detectSessionAffinityFormat`)
+// ============================================================================
+
+fn detect_session_affinity_format(model: &Model) -> SessionAffinityFormat {
+    if model.provider == "openrouter" || model.base_url.contains("openrouter.ai") {
+        SessionAffinityFormat::Openrouter
+    } else {
+        SessionAffinityFormat::Openai
+    }
+}
+
+fn get_compat(model: &Model) -> OpenAIResponsesCompat {
+    match &model.compat {
+        Some(crate::types::ModelCompat::OpenAIResponses(compat)) => compat.clone(),
+        _ => OpenAIResponsesCompat {
+            supports_developer_role: None,
+            session_affinity_format: None,
+            supports_long_cache_retention: None,
+            supports_strict_mode: None,
+            supports_openai_grammar_tools: None,
+            supports_tool_search: None,
+            supports_explicit_prompt_cache_mode: None,
+        },
+    }
+}
+
+fn compat_supports_developer_role(compat: &OpenAIResponsesCompat) -> bool {
+    compat.supports_developer_role.unwrap_or(true)
+}
+
+fn compat_session_affinity_format(model: &Model, compat: &OpenAIResponsesCompat) -> SessionAffinityFormat {
+    compat
+        .session_affinity_format
+        .clone()
+        .unwrap_or_else(|| detect_session_affinity_format(model))
+}
+
+fn compat_supports_long_cache_retention(compat: &OpenAIResponsesCompat) -> bool {
+    compat.supports_long_cache_retention.unwrap_or(true)
+}
+
+fn compat_supports_strict_mode(compat: &OpenAIResponsesCompat) -> bool {
+    compat.supports_strict_mode.unwrap_or(false)
+}
+
+// ============================================================================
+// Service tier pricing (match TS `getServiceTierCostMultiplier` / `applyServiceTierPricing`)
+// ============================================================================
+
+fn get_service_tier_cost_multiplier(model_id: &str, service_tier: Option<&str>) -> f64 {
+    match service_tier {
+        Some("flex") => 0.5,
+        Some("priority") => {
+            if model_id == "gpt-5.5" {
+                2.5
+            } else {
+                2.0
+            }
+        }
+        _ => 1.0,
+    }
+}
+
+fn apply_service_tier_pricing(usage: &mut Usage, model_id: &str, service_tier: Option<&str>) {
+    let multiplier = get_service_tier_cost_multiplier(model_id, service_tier);
+    if multiplier == 1.0 {
+        return;
+    }
+    usage.cost.input *= multiplier;
+    usage.cost.output *= multiplier;
+    usage.cost.cache_read *= multiplier;
+    usage.cost.cache_write *= multiplier;
+    usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
+}
 
 // ============================================================================
 // Hash helpers (match TS `shortHash` exactly for deterministic ids)
@@ -227,11 +304,13 @@ fn assistant_text_message(
 fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
 
+    let compat = get_compat(model);
     if let Some(sp) = &context.system_prompt {
-        // supportsDeveloperRole defaults to true for reasoning models (the
-        // pi-rs OpenAIResponsesCompat does not yet carry the field; see
-        // ALIGNMENT_GAPS.md #14).
-        let role = if model.reasoning { "developer" } else { "system" };
+        let role = if model.reasoning && compat_supports_developer_role(&compat) {
+            "developer"
+        } else {
+            "system"
+        };
         messages.push(json!({ "role": role, "content": sp }));
     }
 
@@ -401,16 +480,19 @@ fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
 // Tool conversion
 // ============================================================================
 
-fn convert_responses_tools(tools: &[Tool]) -> Vec<Value> {
+fn convert_responses_tools(tools: &[Tool], supports_strict_mode: bool) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
-            json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            })
+            let mut obj = serde_json::Map::new();
+            obj.insert("type".into(), json!("function"));
+            obj.insert("name".into(), json!(tool.name));
+            obj.insert("description".into(), json!(tool.description));
+            obj.insert("parameters".into(), tool.parameters.clone());
+            if supports_strict_mode {
+                obj.insert("strict".into(), json!(false));
+            }
+            Value::Object(obj)
         })
         .collect()
 }
@@ -557,6 +639,7 @@ fn finalize_response(
     output: &mut AssistantMessage,
     model: &Model,
     reasoning_blocks: &mut HashMap<String, usize>,
+    service_tier: Option<&str>,
 ) {
     // Backfill reasoning signatures from the terminal response output
     // (Azure can omit encrypted_content from output_item.done; pi#6409).
@@ -624,6 +707,12 @@ fn finalize_response(
     let incomplete_reason = response
         .pointer("/incomplete_details/reason")
         .and_then(Value::as_str);
+    // rawStopReason: `status` or `status.incompleteReason` (matches TS).
+    output.raw_stop_reason = Some(
+        incomplete_reason
+            .map(|r| format!("{}.{}", status.unwrap_or(""), r))
+            .unwrap_or_else(|| status.unwrap_or("").to_string()),
+    );
     let (stop_reason, error_message) = map_stop_reason(status, incomplete_reason);
     output.stop_reason = stop_reason;
     if let Some(msg) = error_message {
@@ -634,6 +723,10 @@ fn finalize_response(
     {
         output.stop_reason = StopReason::ToolUse;
     }
+    // Service tier pricing (flex/priority multipliers).
+    let response_service_tier = response.get("service_tier").and_then(Value::as_str);
+    let effective_tier = response_service_tier.or(service_tier);
+    apply_service_tier_pricing(&mut output.usage, &model.id, effective_tier);
 }
 
 fn process_responses_stream(
@@ -641,6 +734,7 @@ fn process_responses_stream(
     output: &mut AssistantMessage,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
     model: &Model,
+    service_tier: Option<&str>,
 ) -> Result<(), String> {
     let mut saw_terminal = false;
     let mut output_slots: HashMap<usize, OutputSlot> = HashMap::new();
@@ -877,7 +971,7 @@ fn process_responses_stream(
             "response.completed" | "response.incomplete" => {
                 saw_terminal = true;
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
-                finalize_response(&response, output, model, &mut reasoning_blocks);
+                finalize_response(&response, output, model, &mut reasoning_blocks, service_tier);
             }
             "response.failed" => {
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
@@ -918,12 +1012,13 @@ fn build_request_body(
     context: &Context,
     options: Option<&StreamOptions>,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let compat = get_compat(model);
     let messages = convert_responses_messages(model, context);
     let tools = context
         .tools
         .as_ref()
         .filter(|t| !t.is_empty())
-        .map(|t| convert_responses_tools(t));
+        .map(|t| convert_responses_tools(t, compat_supports_strict_mode(&compat)));
 
     let cache_retention = options
         .and_then(|o| o.cache_retention.clone())
@@ -941,7 +1036,9 @@ fn build_request_body(
             }
         })
     };
-    let prompt_cache_retention = if cache_retention == CacheRetention::Long {
+    let prompt_cache_retention = if cache_retention == CacheRetention::Long
+        && compat_supports_long_cache_retention(&compat)
+    {
         Some("24h")
     } else {
         None
@@ -967,6 +1064,9 @@ fn build_request_body(
     }
     if let Some(t) = options.and_then(|o| o.temperature) {
         body.insert("temperature".to_string(), json!(t));
+    }
+    if let Some(st) = options.and_then(|o| o.service_tier.as_ref()) {
+        body.insert("service_tier".to_string(), json!(st));
     }
     if let Some(ref t) = tools {
         body.insert("tools".to_string(), serde_json::to_value(t)?);
@@ -1023,6 +1123,7 @@ pub fn stream_openai_responses(
                     usage: Usage::default(),
                     stop_reason: StopReason::Error,
                     error_message: Some(e.to_string()),
+                    raw_stop_reason: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 },
             });
@@ -1050,18 +1151,39 @@ async fn stream_openai_responses_inner(
 
     let request_body = build_request_body(model, context, options)?;
     let http_client = HttpClient::new();
-    let request = http_client
+    let mut request = http_client
         .post(format!(
             "{}/responses",
             model.base_url.trim_end_matches('/')
         ))
         .header("Content-Type", "application/json")
         .json(&request_body);
-    let request = if let Some(key) = api_key {
-        request.header("Authorization", format!("Bearer {key}"))
-    } else {
-        request
-    };
+    if let Some(key) = api_key {
+        request = request.header("Authorization", format!("Bearer {key}"));
+    }
+    // Session affinity headers (match TS createClient): openrouter sends
+    // x-session-id; openai sends session_id + x-client-request-id;
+    // openai-nosession sends only x-client-request-id.
+    let cache_retention = options
+        .and_then(|o| o.cache_retention.clone())
+        .unwrap_or(CacheRetention::Short);
+    if cache_retention != CacheRetention::None {
+        if let Some(session_id) = options.and_then(|o| o.session_id.clone()) {
+            let compat = get_compat(model);
+            match compat_session_affinity_format(model, &compat) {
+                SessionAffinityFormat::Openrouter => {
+                    request = request.header("x-session-id", &session_id);
+                }
+                SessionAffinityFormat::Openai => {
+                    request = request.header("session_id", &session_id);
+                    request = request.header("x-client-request-id", &session_id);
+                }
+                SessionAffinityFormat::OpenaiNosession => {
+                    request = request.header("x-client-request-id", &session_id);
+                }
+            }
+        }
+    }
     let response = request.send().await?;
 
     if !response.status().is_success() {
@@ -1084,6 +1206,7 @@ async fn stream_openai_responses_inner(
         usage: Usage::default(),
         stop_reason: StopReason::Stop,
         error_message: None,
+        raw_stop_reason: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     };
 
@@ -1091,7 +1214,8 @@ async fn stream_openai_responses_inner(
         partial: output.clone(),
     });
 
-    process_responses_stream(&events, &mut output, tx, model)?;
+    let service_tier = options.and_then(|o| o.service_tier.as_deref());
+    process_responses_stream(&events, &mut output, tx, model, service_tier)?;
 
     if output.stop_reason == StopReason::Stop {
         output.stop_reason = StopReason::Stop;
@@ -1302,6 +1426,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
+            raw_stop_reason: None,
             timestamp: 0,
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1312,7 +1437,7 @@ mod tests {
             json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "msg_1", "content": [{"type": "output_text", "text": "Hello world"}]}}),
             json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}}),
         ];
-        process_responses_stream(&events, &mut output, &tx, &model).unwrap();
+        process_responses_stream(&events, &mut output, &tx, &model, None).unwrap();
         assert_eq!(output.stop_reason, StopReason::Stop);
         assert_eq!(output.response_id.as_deref(), Some("resp_1"));
         assert_eq!(output.content.len(), 1);
@@ -1335,6 +1460,82 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_session_affinity_format() {
+        let mut model = make_model();
+        assert_eq!(
+            detect_session_affinity_format(&model),
+            SessionAffinityFormat::Openai
+        );
+        model.provider = "openrouter".into();
+        assert_eq!(
+            detect_session_affinity_format(&model),
+            SessionAffinityFormat::Openrouter
+        );
+        model.provider = "openai".into();
+        model.base_url = "https://openrouter.ai/api/v1".into();
+        assert_eq!(
+            detect_session_affinity_format(&model),
+            SessionAffinityFormat::Openrouter
+        );
+    }
+
+    #[test]
+    fn test_service_tier_pricing() {
+        let mut usage = Usage {
+            input: 1000,
+            output: 500,
+            cache_read: 100,
+            cache_write: 50,
+            cache_write_1h: None,
+            reasoning: None,
+            total_tokens: 1650,
+            cost: crate::types::UsageCost {
+                input: 0.001,
+                output: 0.001,
+                cache_read: 0.0001,
+                cache_write: 0.0002,
+                total: 0.0023,
+            },
+        };
+        apply_service_tier_pricing(&mut usage, "gpt-5", Some("flex"));
+        assert!((usage.cost.input - 0.0005).abs() < 1e-9);
+        assert!((usage.cost.total - 0.00115).abs() < 1e-9);
+        // priority on gpt-5.5 is 2.5x
+        let mut usage2 = usage.clone();
+        apply_service_tier_pricing(&mut usage2, "gpt-5.5", Some("priority"));
+        assert!((usage2.cost.input - 0.0005 * 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_finalize_response_raw_stop_reason() {
+        let model = make_model();
+        let mut output = AssistantMessage {
+            content: vec![],
+            api: "openai-responses".into(),
+            provider: "openai".into(),
+            model: "gpt-5".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+        };
+        let mut reasoning_blocks = HashMap::new();
+        let response = json!({
+            "id": "resp_1",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        });
+        finalize_response(&response, &mut output, &model, &mut reasoning_blocks, None);
+        assert_eq!(output.raw_stop_reason.as_deref(), Some("incomplete.max_output_tokens"));
+        assert_eq!(output.stop_reason, StopReason::Length);
+    }
+
+    #[test]
     fn test_process_stream_tool_call() {
         let model = make_model();
         let mut output = AssistantMessage {
@@ -1348,6 +1549,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
+            raw_stop_reason: None,
             timestamp: 0,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1358,7 +1560,7 @@ mod tests {
             json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "function_call", "call_id": "call_1", "id": "fc_1", "name": "read", "arguments": "{\"path\":\"/tmp/a\"}"}}),
             json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}}),
         ];
-        process_responses_stream(&events, &mut output, &tx, &model).unwrap();
+        process_responses_stream(&events, &mut output, &tx, &model, None).unwrap();
         assert_eq!(output.stop_reason, StopReason::ToolUse);
         assert_eq!(output.content.len(), 1);
         match &output.content[0] {

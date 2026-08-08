@@ -211,6 +211,10 @@ pub struct AssistantMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "errorMessage")]
     pub error_message: Option<String>,
+    /// Raw provider stop reason (e.g. `completed`, `incomplete.max_output_tokens`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "rawStopReason")]
+    pub raw_stop_reason: Option<String>,
     pub timestamp: i64,
 }
 
@@ -407,10 +411,38 @@ pub struct OpenAICompletionsCompat {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAIResponsesCompat {
+    /// Whether the provider supports the `developer` role (vs `system`). Default: true.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub send_session_id_header: Option<bool>,
+    pub supports_developer_role: Option<bool>,
+    /// Session-affinity header format. Default: auto-detected from provider/baseUrl.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_affinity_format: Option<SessionAffinityFormat>,
+    /// Whether the provider supports `prompt_cache_retention: "24h"`. Default: true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_long_cache_retention: Option<bool>,
+    /// Whether the provider supports strict JSON-schema function tools. Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_strict_mode: Option<bool>,
+    /// Whether to emit OpenAI custom tools with grammar formats. Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_openai_grammar_tools: Option<bool>,
+    /// Whether the model supports client-executed tool search for deferred tools. Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_tool_search: Option<bool>,
+    /// Whether the provider supports explicit prompt-cache mode. Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_explicit_prompt_cache_mode: Option<bool>,
+}
+
+/// Session-affinity header format for OpenAI Responses providers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SessionAffinityFormat {
+    #[serde(rename = "openai")]
+    Openai,
+    #[serde(rename = "openai-nosession")]
+    OpenaiNosession,
+    #[serde(rename = "openrouter")]
+    Openrouter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -628,6 +660,8 @@ pub struct StreamOptions {
     pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
 
     pub tool_choice: Option<ToolChoice>,
+    /// Service tier for OpenAI Responses (`flex` / `priority`).
+    pub service_tier: Option<String>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -671,6 +705,7 @@ impl Clone for StreamOptions {
             max_retry_delay_ms: self.max_retry_delay_ms,
             metadata: self.metadata.clone(),
             tool_choice: self.tool_choice.clone(),
+            service_tier: self.service_tier.clone(),
             on_payload: self.on_payload.clone(),
             on_headers: self.on_headers.clone(),
             on_provider_response: self.on_provider_response.clone(),
@@ -696,6 +731,7 @@ impl Default for StreamOptions {
             max_retry_delay_ms: None,
             metadata: None,
             tool_choice: None,
+            service_tier: None,
             on_payload: None,
             on_headers: None,
             on_provider_response: None,
@@ -759,6 +795,7 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
             max_retry_delay_ms: helper.max_retry_delay_ms,
             metadata: helper.metadata,
             tool_choice: helper.tool_choice,
+            service_tier: None,
             on_payload: None,
             on_headers: None,
             on_provider_response: None,
@@ -905,6 +942,7 @@ mod tests {
                 usage: Usage::default(),
                 stop_reason: StopReason::Stop,
                 error_message: None,
+                raw_stop_reason: None,
                 timestamp: 0,
             },
         };
@@ -1093,6 +1131,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
+            raw_stop_reason: None,
             timestamp: 1_234_567_890,
         };
         let event = AssistantMessageEvent::Start {
@@ -1122,6 +1161,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::Error,
             error_message: Some("prompt is too long".into()),
+            raw_stop_reason: None,
             timestamp: 1_234_567_890,
         };
         let event = AssistantMessageEvent::Error {

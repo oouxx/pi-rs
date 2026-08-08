@@ -745,6 +745,7 @@ async fn stream_assistant_response(
         usage: Usage::default(),
         stop_reason: StopReason::Error,
         error_message: Some("Stream ended without done/error event".to_string()),
+        raw_stop_reason: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     });
 

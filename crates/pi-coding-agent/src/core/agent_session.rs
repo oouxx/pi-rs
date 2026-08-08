@@ -162,8 +162,11 @@ impl std::fmt::Display for CompactionReason {
 
 /// Session-specific events that extend the core AgentEvent.
 /// Matches the original TypeScript AgentSessionEvent type.
+///
+/// Serialized as a `type`-discriminated union, matching the TS
+/// `AgentSessionEvent` shape on the RPC/JSON wire (`{"type": "message_update", ...}`).
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "type")]
 #[allow(clippy::large_enum_variant)]
 pub enum AgentSessionEvent {
     // ── Passthrough from AgentEvent (all variants except AgentEnd) ──

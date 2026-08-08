@@ -19,6 +19,11 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+tokio-util = { workspace = true }
+# ACP (Agent Client Protocol) — agent-side server for Zed / ACP-compatible editors.
+# The `unstable` feature enables session/model/config-option methods used by
+# modern ACP clients (Zed, JetBrains, etc.).
+agent-client-protocol = { version = "0.10.4", features = ["unstable"] }
 glob = "0.3"
 regex = { workspace = true }
 dirs = "6"

@@ -222,7 +222,7 @@ This file documents the alignment between the TypeScript original
 | 输出格式 | JSONL on stdout | JSONL on stdout (single channel) | 是 |
 | 信号处理 | SIGHUP → exit code 129, SIGTERM → exit code 143 | SIGHUP → exit code 129, SIGTERM → exit code 143 | 是 |
 | 关闭防护 | `shuttingDown` guard | `shutting_down` AtomicBool guard | 是 |
-| 事件流 | Agent events streamed as JSONL | Agent events streamed as JSONL | 是 |
+| 事件流 | Agent events streamed as JSONL, `type`-discriminated union (`{"type":"message_update",...}`), camelCase fields, `partial` stripped from `assistantMessageEvent` (TS `toJsonEvent`) | Agent events streamed as JSONL, `type`-discriminated union, camelCase fields, `partial` stripped via `to_json_event()` | 是 |
 | 解析错误 | Invalid JSON → `error(undefined, "parse", "Failed to parse command: ...")` | `rpc_error(None, "parse", "Failed to parse command: {e}")` | 是 |
 | 未知命令 | Unknown command type in `handleCommand()` switch default → `error(command.id, command.type, "Unknown command: ...")` | Parse JSON as generic `Value` first to extract `id`/`type`; on `RpcCommand` deserialization failure → `rpc_error(cmd_id, cmd_type, "Unknown command: {cmd_type}")` | 是 |
 | 扩展 UI 响应 | Checks `parsed.type === "extension_ui_response"` before parsing as `RpcCommand` | Checks `cmd_type == "extension_ui_response"` before parsing as `RpcCommand` | 是 |
@@ -293,3 +293,20 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | Source match key — git | `git:{host}/{path}` | `git:{host}/{path}` | 是 |
 | Source match key — local | `local:{resolvePath(path)}` vs `local:{resolvePathFromBase(path, baseDir)}` | `local:{resolve_path(path, cwd)}` vs `local:{resolve_path(path, base_dir)}` | 是 |
 | No SettingsManager | N/A (TS always has SettingsManager) | Returns `false` (no-op) when `settings_manager` is `None` | 是（有意偏差：Rust 允许无 SettingsManager 运行） |
+
+## ACP Mode（新增功能，无 TS 对应物）
+
+> ACP mode 是 pi-rs 新增功能（TS 原版无原生 ACP，Zed 里靠第三方 `pi-acp` 适配器）。
+> 行为基准是 ACP 规范（agentclientprotocol.com）与 `pi-acp` 适配器的映射方式。
+
+| 行为场景 | ACP 规范 / pi-acp 行为 | pi-rs ACP 行为 | 是否一致 |
+|---------|----------------------|---------------|--------|
+| initialize | 返回协议版本 + capabilities + agent info | 返回 V1 + loadSession/image/list capabilities + `pi-coding-agent` info | 是 |
+| session/new | 创建会话，返回 sessionId | 创建 AgentSession（无默认模型时回退内置模型），返回 UUID | 是（见 DEVIATIONS.md #11） |
+| session/prompt | 流式 agent_message_chunk / tool_call / tool_call_update，结束返回 stopReason | session task 驱动 prompt，事件经 translate.rs 映射为 ACP 通知，结束返回 EndTurn | 是 |
+| session/cancel | 取消进行中的 turn | 向 session task 发 Cancel，task 内 select! 到后调 abort() | 是 |
+| session/list | 列出会话 | 列出内存 registry 中的会话 | 是 |
+| session/load | 恢复会话 | 按 ID 从 on-disk map（`{sessions_dir}/acp/session-map.json`）查找，重建 AgentSession 并恢复消息；进程内已加载则 no-op | 是 |
+| session/config | 模型/思考级别选择器 | model + thinking_level 两个 select 选项 | 是 |
+| 权限流 | ACP request_permission | 未实现（pi 内部 trust 模型自动决策） | 否（有意偏差，见 DEVIATIONS.md #10） |
+| MCP | ACP mcp/servers | 未实现（capabilities 不声明） | 否（有意偏差，见 DEVIATIONS.md #10） |

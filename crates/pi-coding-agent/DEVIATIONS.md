@@ -14,3 +14,11 @@ This file documents intentional deviations from the TypeScript original
 | 7 | `handler.rs:Prompt` | TS passes `images` and `streamingBehavior` to `session.prompt()`. | Rust passes `images` and `streaming_behavior` through `PromptOptions`. | Functionally equivalent — the Rust `PromptOptions` struct supports both fields. | 已确认保留 |
 | 8 | `handler.rs:Bash` | TS passes `excludeFromContext` to `session.executeBash()`. | Rust passes `exclude_from_context` through `execute_bash()` to `record_bash_result()`. | Implemented: `execute_bash()` now accepts `exclude_from_context: Option<bool>` and calls `record_bash_result()` internally, matching TS behavior. | 已确认保留 |
 | 9 | `agent_session.rs:set_model` / `cycle_model` | TS `_emitModelSelect()` only calls `this._extensionRunner.emit(...)` — model_select is sent to extension runner only, NOT through session's `subscribe` mechanism | Rust was calling `self._emit(AgentSessionEvent::ModelSelect { ... })` which sends model_select to all session subscribers (including RPC mode's event listener) | TS only sends model_select to extension runner, not as a session event. RPC clients should not receive model_select events. Fixed by removing the `_emit` call, keeping only `dispatch_model_select` to extensions. | 已确认保留 |
+
+## ACP Mode（新增功能，非 TS 原版）
+
+| # | 位置（文件:行/函数名） | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
+|---|------------------------|-----------|--------------|---------|---------|
+| 10 | `modes/acp/`（新增） | TS 原版无原生 ACP 支持（Zed 里靠第三方 `pi-acp` Node 适配器桥接 `--mode rpc`） | pi-rs 新增原生 ACP mode（`pi-cli --acp`），直接实现 `agent-client-protocol` 的 `Agent` trait，会话由 session task 持有 | 让 pi-coding-agent 可直接用于 Zed/JetBrains 等 ACP 编辑器，不依赖 Node 适配器。属于原版没有的新功能，非移植偏差 | 已确认保留 |
+| 11 | `modes/acp/session.rs:create` | （无对应 TS 行为） | 无默认模型配置时回退到第一个内置模型，保证 session 可创建（客户端可后续通过 config options 切换模型） | ACP 客户端（Zed）通过 `session/config` 选项选模型，session 创建不应因未配置默认模型而失败 | 已确认保留 |
+| 12 | `modes/acp/agent.rs:load_session` / `session.rs:SessionRegistry` | （无对应 TS 行为） | 跨进程 session 持久化已实现：每个 ACP session 写入独立的 JSONL 文件 + `{sessions_dir}/acp/session-map.json` 记录 sessionId→文件/cwd 映射，`session/load` 可按 ID 在重启后恢复消息。已知约束：session map 假设同一时刻只有一个 ACP 进程写入（无并发锁） | 让 `session/load` / `session/list` 跨进程可用（对应 pi-acp 的 session-map.json 行为） | 已确认保留 |

@@ -84,6 +84,11 @@ pub async fn run(args: &CliArgs) -> i32 {
         return pi_coding_agent::modes::rpc::run_rpc_mode(args.extensions.clone()).await;
     }
 
+    // ACP mode: speak the Agent Client Protocol over stdio (Zed, JetBrains, …)
+    if args.mode == OutputMode::Acp {
+        return pi_coding_agent::modes::acp::run_acp_mode().await;
+    }
+
     if !trusted {
         eprintln!("{} Project not trusted. Use --trust to override.", "Error:".red().bold());
         return EXIT_FAILURE;

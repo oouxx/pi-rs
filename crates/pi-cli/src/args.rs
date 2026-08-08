@@ -15,6 +15,8 @@ pub enum OutputMode {
     Json,
     Rpc,
     Interactive,
+    /// ACP (Agent Client Protocol) server over stdio — for Zed / ACP editors.
+    Acp,
 }
 
 /// Parsed CLI arguments.
@@ -78,7 +80,8 @@ pub fn print_help() {
     println!("OPTIONS:");
     println!("    -p, --print           Print mode (single-shot, output to stdout)");
     println!("    -i, --interactive     Interactive TUI mode");
-    println!("    --mode <MODE>         Output mode: text (default), json, rpc, or interactive/tui");
+    println!("    --mode <MODE>         Output mode: text (default), json, rpc, acp, or interactive/tui");
+    println!("    --acp                 ACP server mode (Agent Client Protocol over stdio)");
     println!("    -m, --model <MODEL>   Model to use (e.g. claude-sonnet-4-6)");
     println!("    -P, --provider <P>    Provider to use");
     println!("    -k, --api-key <KEY>   API key");
@@ -126,6 +129,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--help" | "-h" => result.help = true,
             "--version" | "-v" => result.version = true,
             "--interactive" | "-i" => result.mode = OutputMode::Interactive,
+            "--acp" => result.mode = OutputMode::Acp,
             "--print" | "-p" => result.print = true,
             "--verbose" => result.verbose = true,
             "--list-models" => result.list_models = true,
@@ -144,6 +148,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         "json" => result.mode = OutputMode::Json,
                         "rpc" => result.mode = OutputMode::Rpc,
                         "interactive" | "tui" => result.mode = OutputMode::Interactive,
+                        "acp" => result.mode = OutputMode::Acp,
                         _ => result.mode = OutputMode::Text,
                     }
                 }

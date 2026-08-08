@@ -25,6 +25,7 @@ This file documents bugs found and fixed during the RPC mode alignment check.
 | 19 | `rpc_types.rs` | `RpcCommand` enum was missing `ExportHtml` variant. | Missing variant — TS has `export_html` in `RpcCommand` type. | Added `ExportHtml` variant. |
 | 20 | `mod.rs` | Event channel and direct stdout writes could interleave, corrupting JSONL protocol. | Two writers to stdout — spawned task for events and `print!()` for responses. | Changed to single `mpsc::UnboundedSender<String>` channel for all stdout writes. |
 | 21 | `mod.rs` | Signal handler took ownership of session via `session_for_signal`, then main loop also used session — race condition. | Double-use of session between signal handler and main loop. | Changed to use `AtomicBool` flag for shutdown signaling; main loop handles cleanup. |
+| 22 | `agent_session.rs:AgentSessionEvent` + `mod.rs` | RPC 事件 wire 格式与 TS 不兼容：TS 是 `type` 判别联合（`{"type":"message_update",...}`），Rust 是 serde 外部标签（`{"message_update":{...}}`），且 `message_update` 未剥离 `partial` 快照。pi-acp 等客户端读 `event.type` 会失败。 | 高危陷阱表"长得像但行为不同"：枚举序列化形状（externally-tagged vs internally-tagged）与 TS 判别联合不一致。 | 给 `AgentSessionEvent` 加 `#[serde(tag = "type")]`；RPC 输出路径新增 `to_json_event()`（镜像 TS `modes/json-event.ts`），剥离 `message_update` 的 `partial`。 |
 
 | # | 位置 | 现象 | 根因模式 | 修复方式 |
 |---|------|------|---------|---------|

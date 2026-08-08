@@ -1893,6 +1893,61 @@ export default async function(pi) {
             HookResult::Cancel(reason) => panic!("unexpected cancel: {reason}"),
         }
     }
+
+    /// `pi.exec(command, args)` runs on the dedicated worker thread and
+    /// returns the TS `ExecResult` shape — callable from a tool execute
+    /// without deadlocking the agent loop.
+    #[test]
+    fn test_exec_from_tool_execute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("exec.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.registerTool({
+    name: "run_echo",
+    description: "run echo via pi.exec",
+    execute: async () => {
+      const r = await pi.exec("echo", ["hello-from-exec"]);
+      return {
+        content: [{ type: "text", text: "code=" + r.code + " out=" + r.stdout.trim() }],
+        details: { stderr: r.stderr, killed: r.killed },
+        terminate: false,
+      };
+    },
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+        let mut tools = ToolRegistry::new(adapter.source_info().clone());
+        adapter.register_tools(&mut tools);
+        let registered = tools.into_vec();
+        let execute = registered[0].definition.execute.clone().expect("execute fn");
+        let output = block_on(execute("c".to_string(), serde_json::json!({}), None))
+            .expect("tool execute");
+        if output.is_error {
+            eprintln!("[dbg] exec tool error output: {:?}", output.content);
+        }
+        assert!(!output.is_error);
+        assert_eq!(output.content[0]["text"], "code=0 out=hello-from-exec");
+        let details = output.details.expect("details");
+        assert_eq!(details["killed"], false);
+    }
 }
 
 // ============================================================================

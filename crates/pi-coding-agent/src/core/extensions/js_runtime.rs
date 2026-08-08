@@ -297,6 +297,162 @@ fn op_set_flag_value(
     Ok(())
 }
 
+// ============================================================================
+// exec — `pi.exec(command, args, options)`
+// ============================================================================
+
+/// A request to run a shell command via the exec worker.
+struct ExecRequest {
+    command: String,
+    args: Vec<String>,
+    options_json: Option<String>,
+    reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+}
+
+/// Dedicated exec worker: runs shell commands on its own thread with its own
+/// tokio runtime, independent of the session owner and the V8 thread. This is
+/// what makes a blocking `op_exec` safe — the worker never depends on the
+/// agent loop, so it cannot deadlock even when `pi.exec` is called from a
+/// tool execute or event handler mid-turn.
+struct ExecWorker {
+    tx: Option<tokio::sync::mpsc::UnboundedSender<ExecRequest>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ExecWorker {
+    fn spawn(cwd: String) -> Self {
+        let (tx, mut rx): (tokio::sync::mpsc::UnboundedSender<ExecRequest>, _) =
+            tokio::sync::mpsc::unbounded_channel();
+        let handle = std::thread::Builder::new()
+            .name("pi-exec-worker".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build exec worker runtime");
+                rt.block_on(async move {
+                    while let Some(req) = rx.recv().await {
+                        let result = run_command(&cwd, &req).await;
+                        let _ = req.reply.send(result);
+                    }
+                });
+            })
+            .expect("spawn exec worker");
+        Self {
+            tx: Some(tx),
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for ExecWorker {
+    fn drop(&mut self) {
+        // Drop the sender FIRST so the worker's `rx.recv()` returns None and
+        // its thread can exit; then join. (Fields are dropped after `drop()`,
+        // so joining while `tx` is still alive would deadlock.)
+        self.tx.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Run one command, returning the TS `ExecResult` shape
+/// (`{ stdout, stderr, code, killed }`).
+async fn run_command(cwd: &str, req: &ExecRequest) -> Result<serde_json::Value, String> {
+    let options: serde_json::Value = req
+        .options_json
+        .as_deref()
+        .and_then(|o| serde_json::from_str(o).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let timeout_ms = options.get("timeout").and_then(|t| t.as_u64());
+    let cwd_override = options
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string());
+
+    let mut cmd = tokio::process::Command::new(&req.command);
+    cmd.args(&req.args);
+    cmd.current_dir(cwd_override.as_deref().unwrap_or(cwd));
+
+    let output = if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(std::time::Duration::from_millis(ms), cmd.output()).await {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(format!("spawn failed: {e}")),
+            Err(_) => {
+                return Ok(serde_json::json!({
+                    "stdout": "",
+                    "stderr": "command timed out",
+                    "code": 1,
+                    "killed": true,
+                }));
+            }
+        }
+    } else {
+        cmd.output()
+            .await
+            .map_err(|e| format!("spawn failed: {e}"))?
+    };
+
+    Ok(serde_json::json!({
+        "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
+        "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+        "code": output.status.code().unwrap_or(1),
+        "killed": false,
+    }))
+}
+
+/// Exec context stored in OpState: the session cwd (set on first load) and
+/// the lazily-spawned worker.
+struct ExecContext {
+    cwd: String,
+    worker: Option<ExecWorker>,
+}
+
+#[op2]
+#[string]
+fn op_exec(
+    state: &mut OpState,
+    #[string] command: String,
+    #[string] args_json: String,
+    #[string] options_json: Option<String>,
+) -> Result<String, JsErrorBox> {
+    let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
+    let mut ctx = state
+        .try_borrow_mut::<ExecContext>()
+        .ok_or_else(|| JsErrorBox::generic("exec: session cwd not initialized"))?;
+    if ctx.worker.is_none() {
+        ctx.worker = Some(ExecWorker::spawn(ctx.cwd.clone()));
+    }
+    let worker = ctx
+        .worker
+        .as_ref()
+        .ok_or_else(|| JsErrorBox::generic("exec: worker not available"))?;
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    worker
+        .tx
+        .as_ref()
+        .ok_or_else(|| JsErrorBox::generic("exec: worker channel closed"))?
+        .send(ExecRequest {
+            command,
+            args,
+            options_json,
+            reply: reply_tx,
+        })
+        .map_err(|_| JsErrorBox::generic("exec: worker channel closed"))?;
+    // Block the V8 thread until the worker (on its own thread/runtime)
+    // completes the command. Safe: the worker never depends on the agent
+    // loop or the V8 thread.
+    let result = reply_rx
+        .recv()
+        .map_err(|_| JsErrorBox::generic("exec: worker dropped the reply"))?;
+    match result {
+        Ok(value) => serde_json::to_string(&value)
+            .map_err(|e| JsErrorBox::generic(format!("exec: serialize result: {e}"))),
+        Err(e) => Err(JsErrorBox::generic(format!("exec: {e}"))),
+    }
+}
+
 #[op2(fast)]
 fn op_register_handler(
     state: &mut OpState,
@@ -757,6 +913,7 @@ const OPS: &[OpDecl] = &[
     op_register_flag(),
     op_get_flag_value(),
     op_set_flag_value(),
+    op_exec(),
     op_register_handler(),
     op_register_message_renderer(),
     op_register_entry_renderer(),
@@ -1014,6 +1171,17 @@ const BOOTSTRAP_JS: &str = r#"
       const id = (model && (model.provider + "/" + model.id)) || String(model);
       Deno.core.ops.op_set_model(String(id));
       return Promise.resolve(true);
+    },
+
+    exec(command, args, options) {
+      assertActive();
+      // Runs on a dedicated worker thread; the op blocks until the command
+      // completes and returns the ExecResult object.
+      return JSON.parse(Deno.core.ops.op_exec(
+        String(command),
+        JSON.stringify(args || []),
+        options ? JSON.stringify(options) : null,
+      ));
     },
 
     getThinkingLevel() {
@@ -1343,6 +1511,17 @@ impl JsExtensionRuntime {
                 path = path.to_string_lossy()
             ))
             .map_err(|e| anyhow::anyhow!("set extension path: {e}"))?;
+        // Record the session cwd for `pi.exec` (worker spawned lazily).
+        {
+            let op_state = self.runtime.op_state();
+            let mut state = op_state.borrow_mut();
+            if state.try_borrow::<ExecContext>().is_none() {
+                state.put(ExecContext {
+                    cwd: cwd.to_string_lossy().to_string(),
+                    worker: None,
+                });
+            }
+        }
         // A shim module that imports the extension's default export and invokes
         // it with the host-provided `__pi` object. This mirrors jiti's
         // `{ default: true }` extraction + `factory(api)` call.

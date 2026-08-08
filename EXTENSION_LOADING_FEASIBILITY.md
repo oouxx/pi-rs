@@ -213,8 +213,9 @@
       启动时自动发现；无 TS 的运行时 /reload 命令
 
 已知剩余限制（js-runtime 侧）：
-- `exec` 未实现：同步 op 无法 await session 执行，阻塞会在 turn 内死锁，返回
-  明确错误（需要并发 drain 架构才能支持）
+- `exec` 已实现：独立 exec worker 线程（自带 tokio runtime，不依赖 session
+  owner / V8 线程）+ 同步 op 阻塞等回复，turn 内调用不死锁；支持 timeout/cwd
+  选项，返回 TS ExecResult 形状
 - 写类 action 在 turn 边界生效（非立即）；`setModel` 乐观返回，模型在下次
   drain 应用
 - CLI 扩展 flag → 扩展 `getFlag` 未接线（CLI 只收集 unknown_flags）；扩展自身

@@ -41,6 +41,7 @@
 - 已知未覆盖项（相对 v0.80，已确认为最终范围）：
   - `openai-responses` API 后端：已移植（openai 官方 provider 走 `/v1/responses`）。
   - `azure-openai-responses` / `openai-codex-responses` 后端：**范围外**（用户拍板：主流仅需 anthropic + openai 格式）。
+  - `pi-messages` 后端：已移植（`providers/pi_messages.rs`，Radius gateway 协议；见 DEVIATIONS #7）。
   - v0.80.8 的 `ModelRuntime` / live model catalog refresh：手动刷新已实现（`pi refresh`），自动刷新/可用性检查/credential 同步未做（范围外）。
   - 模型覆盖度：用户确认仅保留 anthropic + openai 主流范围（见 `crates/pi-ai/DEVIATIONS.md` #2，已确认保留）。
 

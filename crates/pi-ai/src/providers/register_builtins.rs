@@ -11,6 +11,7 @@ use crate::api_registry::{clear_api_providers, register_api_provider, ApiProvide
 use crate::providers::anthropic::stream_anthropic;
 use crate::providers::openai::{stream_openai, stream_simple_openai};
 use crate::providers::openai_responses::{stream_openai_responses, stream_simple_openai_responses};
+use crate::providers::pi_messages::{stream_pi_messages, stream_simple_pi_messages};
 use crate::types::Model;
 
 /// Register all built-in API providers and default models.
@@ -42,6 +43,15 @@ pub fn register_built_in_api_providers() {
             api: "openai-responses".to_string(),
             stream: Arc::new(stream_openai_responses),
             stream_simple: Arc::new(stream_simple_openai_responses),
+        },
+        Some("builtin"),
+    );
+
+    register_api_provider(
+        ApiProvider {
+            api: "pi-messages".to_string(),
+            stream: Arc::new(stream_pi_messages),
+            stream_simple: Arc::new(stream_simple_pi_messages),
         },
         Some("builtin"),
     );
@@ -91,6 +101,12 @@ mod tests {
         register_built_in_api_providers();
         assert!(get_api_provider("openai-completions").is_some());
         assert!(get_api_provider("openai-responses").is_some());
+    }
+
+    #[test]
+    fn test_register_builtins_registers_pi_messages() {
+        register_built_in_api_providers();
+        assert!(get_api_provider("pi-messages").is_some());
     }
 
 

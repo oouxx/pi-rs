@@ -105,6 +105,178 @@ fn apply_service_tier_pricing(usage: &mut Usage, model_id: &str, service_tier: O
 }
 
 // ============================================================================
+// Provider retry (match TS `retryProviderRequest` / `isRetryableProviderError`)
+// ============================================================================
+
+const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
+
+struct ProviderHttpError {
+    status: Option<u16>,
+    headers: reqwest::header::HeaderMap,
+    message: String,
+}
+
+fn is_retryable_provider_error(error: &ProviderHttpError) -> bool {
+    if let Some(should_retry) = error.headers.get("x-should-retry").and_then(|v| v.to_str().ok()) {
+        if should_retry == "true" {
+            return true;
+        }
+        if should_retry == "false" {
+            return false;
+        }
+    }
+    match error.status {
+        None => true,
+        Some(408) | Some(409) | Some(429) => true,
+        Some(s) => s >= 500,
+    }
+}
+
+fn validate_server_retry_delay_ms(
+    delay_ms: f64,
+    max_retry_delay_ms: Option<u64>,
+    provider_error_message: &str,
+) -> Result<u64, String> {
+    let max_delay_ms = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
+    if max_delay_ms > 0 && delay_ms > max_delay_ms as f64 {
+        return Err(format!(
+            "Server requested {}s retry delay (max: {}s). {provider_error_message}",
+            (delay_ms / 1000.0).ceil(),
+            (max_delay_ms as f64 / 1000.0).ceil(),
+        ));
+    }
+    Ok(delay_ms as u64)
+}
+
+fn get_retry_delay_ms(
+    error: &ProviderHttpError,
+    retry_index: u32,
+    max_retry_delay_ms: Option<u64>,
+) -> Result<u64, String> {
+    if let Some(v) = error.headers.get("retry-after-ms").and_then(|v| v.to_str().ok()) {
+        if let Ok(value) = v.parse::<f64>() {
+            return validate_server_retry_delay_ms(value, max_retry_delay_ms, &error.message);
+        }
+    }
+    if let Some(v) = error.headers.get("retry-after").and_then(|v| v.to_str().ok()) {
+        let delay_ms = match v.parse::<f64>() {
+            Ok(seconds) => seconds * 1000.0,
+            Err(_) => match chrono::DateTime::parse_from_rfc2822(v) {
+                Ok(dt) => (dt.timestamp_millis() - chrono::Utc::now().timestamp_millis()) as f64,
+                Err(_) => f64::NAN,
+            },
+        };
+        if !delay_ms.is_nan() {
+            return validate_server_retry_delay_ms(delay_ms, max_retry_delay_ms, &error.message);
+        }
+    }
+    let exponential = (0.5 * 2f64.powi(retry_index as i32)).min(8.0) * 1000.0;
+    Ok((exponential * (1.0 - rand::random::<f64>() * 0.25)) as u64)
+}
+
+async fn abortable_sleep(
+    ms: u64,
+    signal: &Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<(), String> {
+    if let Some(rx) = signal {
+        if *rx.borrow() {
+            return Err("Request aborted".into());
+        }
+        let mut rx = rx.clone();
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => {}
+            _ = rx.changed() => {
+                if *rx.borrow() {
+                    return Err("Request aborted".into());
+                }
+            }
+        }
+        Ok(())
+    } else {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        Ok(())
+    }
+}
+
+/// Send the request with retry, mirroring the OpenAI/Anthropic SDK retry policy
+/// (match TS `retryProviderRequest`).
+async fn send_with_retry(
+    request_fn: impl Fn() -> reqwest::RequestBuilder,
+    max_retries: Option<u32>,
+    max_retry_delay_ms: Option<u64>,
+    signal: &Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
+    let max_retries = max_retries.unwrap_or(0);
+    let mut retries_remaining = max_retries;
+    loop {
+        let result = request_fn().send().await;
+        let error = match result {
+            Ok(response) => {
+                if response.status().is_success() {
+                    return Ok(response);
+                }
+                let status = response.status();
+                let headers = response.headers().clone();
+                let text = response.text().await.unwrap_or_default();
+                ProviderHttpError {
+                    status: Some(status.as_u16()),
+                    headers,
+                    message: format!("OpenAI API error {status}: {text}"),
+                }
+            }
+            Err(e) => ProviderHttpError {
+                status: None,
+                headers: reqwest::header::HeaderMap::new(),
+                message: e.to_string(),
+            },
+        };
+        if retries_remaining == 0 || !is_retryable_provider_error(&error) {
+            return Err(error.message.into());
+        }
+        if let Some(rx) = signal {
+            if *rx.borrow() {
+                return Err("Request aborted".into());
+            }
+        }
+        let retry_index = max_retries - retries_remaining;
+        retries_remaining -= 1;
+        let delay = get_retry_delay_ms(&error, retry_index, max_retry_delay_ms)?;
+        abortable_sleep(delay, signal).await?;
+    }
+}
+
+// ============================================================================
+// GitHub Copilot dynamic headers (match TS `buildCopilotDynamicHeaders`)
+// ============================================================================
+
+fn infer_copilot_initiator(messages: &[Message]) -> &'static str {
+    match messages.last() {
+        Some(Message::User { .. }) => "user",
+        _ => "agent",
+    }
+}
+
+fn has_copilot_vision_input(messages: &[Message]) -> bool {
+    messages.iter().any(|msg| match msg {
+        Message::User { content, .. } | Message::ToolResult { content, .. } => {
+            content.iter().any(|b| matches!(b, ContentBlock::Image { .. }))
+        }
+        _ => false,
+    })
+}
+
+fn build_copilot_dynamic_headers(messages: &[Message]) -> Vec<(String, String)> {
+    let mut headers = vec![
+        ("X-Initiator".to_string(), infer_copilot_initiator(messages).to_string()),
+        ("Openai-Intent".to_string(), "conversation-edits".to_string()),
+    ];
+    if has_copilot_vision_input(messages) {
+        headers.push(("Copilot-Vision-Request".to_string(), "true".to_string()));
+    }
+    headers
+}
+
+// ============================================================================
 // Hash helpers (match TS `shortHash` exactly for deterministic ids)
 // ============================================================================
 
@@ -1151,19 +1323,16 @@ async fn stream_openai_responses_inner(
 
     let request_body = build_request_body(model, context, options)?;
     let http_client = HttpClient::new();
-    let mut request = http_client
-        .post(format!(
-            "{}/responses",
-            model.base_url.trim_end_matches('/')
-        ))
-        .header("Content-Type", "application/json")
-        .json(&request_body);
+    let url = format!("{}/responses", model.base_url.trim_end_matches('/'));
+
+    // Build request headers (match TS createClient): auth, session affinity,
+    // and GitHub Copilot dynamic headers.
+    let mut headers: Vec<(String, String)> = vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
     if let Some(key) = api_key {
-        request = request.header("Authorization", format!("Bearer {key}"));
+        headers.push(("Authorization".to_string(), format!("Bearer {key}")));
     }
-    // Session affinity headers (match TS createClient): openrouter sends
-    // x-session-id; openai sends session_id + x-client-request-id;
-    // openai-nosession sends only x-client-request-id.
     let cache_retention = options
         .and_then(|o| o.cache_retention.clone())
         .unwrap_or(CacheRetention::Short);
@@ -1172,25 +1341,36 @@ async fn stream_openai_responses_inner(
             let compat = get_compat(model);
             match compat_session_affinity_format(model, &compat) {
                 SessionAffinityFormat::Openrouter => {
-                    request = request.header("x-session-id", &session_id);
+                    headers.push(("x-session-id".to_string(), session_id));
                 }
                 SessionAffinityFormat::Openai => {
-                    request = request.header("session_id", &session_id);
-                    request = request.header("x-client-request-id", &session_id);
+                    headers.push(("session_id".to_string(), session_id.clone()));
+                    headers.push(("x-client-request-id".to_string(), session_id));
                 }
                 SessionAffinityFormat::OpenaiNosession => {
-                    request = request.header("x-client-request-id", &session_id);
+                    headers.push(("x-client-request-id".to_string(), session_id));
                 }
             }
         }
     }
-    let response = request.send().await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API error {status}: {text}").into());
+    if model.provider == "github-copilot" {
+        headers.extend(build_copilot_dynamic_headers(&context.messages));
     }
+
+    let request_fn = || {
+        let mut req = http_client.post(&url).json(&request_body);
+        for (k, v) in &headers {
+            req = req.header(k, v);
+        }
+        req
+    };
+    let response = send_with_retry(
+        request_fn,
+        options.and_then(|o| o.max_retries),
+        options.and_then(|o| o.max_retry_delay_ms),
+        &signal,
+    )
+    .await?;
 
     let response_bytes = response.bytes().await?;
     let events = parse_responses_sse_body(&response_bytes);
@@ -1533,6 +1713,68 @@ mod tests {
         finalize_response(&response, &mut output, &model, &mut reasoning_blocks, None);
         assert_eq!(output.raw_stop_reason.as_deref(), Some("incomplete.max_output_tokens"));
         assert_eq!(output.stop_reason, StopReason::Length);
+    }
+
+    #[test]
+    fn test_is_retryable_provider_error() {
+        let mk = |status: Option<u16>, headers: reqwest::header::HeaderMap| ProviderHttpError {
+            status,
+            headers,
+            message: "err".into(),
+        };
+        assert!(is_retryable_provider_error(&mk(None, reqwest::header::HeaderMap::new())));
+        assert!(is_retryable_provider_error(&mk(Some(408), reqwest::header::HeaderMap::new())));
+        assert!(is_retryable_provider_error(&mk(Some(409), reqwest::header::HeaderMap::new())));
+        assert!(is_retryable_provider_error(&mk(Some(429), reqwest::header::HeaderMap::new())));
+        assert!(is_retryable_provider_error(&mk(Some(500), reqwest::header::HeaderMap::new())));
+        assert!(!is_retryable_provider_error(&mk(Some(400), reqwest::header::HeaderMap::new())));
+        assert!(!is_retryable_provider_error(&mk(Some(404), reqwest::header::HeaderMap::new())));
+        // x-should-retry header overrides
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("x-should-retry", "true".parse().unwrap());
+        assert!(is_retryable_provider_error(&mk(Some(400), h)));
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("x-should-retry", "false".parse().unwrap());
+        assert!(!is_retryable_provider_error(&mk(Some(500), h)));
+    }
+
+    #[test]
+    fn test_get_retry_delay_exponential() {
+        let err = ProviderHttpError {
+            status: Some(429),
+            headers: reqwest::header::HeaderMap::new(),
+            message: "err".into(),
+        };
+        // retryIndex 0: 0.5s * jitter(0.75..1.0)
+        let d0 = get_retry_delay_ms(&err, 0, None).unwrap();
+        assert!((375..=500).contains(&d0), "d0={d0}");
+        // retryIndex 3: min(0.5*8, 8) = 4s * jitter
+        let d3 = get_retry_delay_ms(&err, 3, None).unwrap();
+        assert!((3000..=4000).contains(&d3), "d3={d3}");
+        // retryIndex 5: capped at 8s
+        let d5 = get_retry_delay_ms(&err, 5, None).unwrap();
+        assert!((6000..=8000).contains(&d5), "d5={d5}");
+    }
+
+    #[test]
+    fn test_get_retry_delay_server_header() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after-ms", "1500".parse().unwrap());
+        let err = ProviderHttpError {
+            status: Some(429),
+            headers,
+            message: "err".into(),
+        };
+        assert_eq!(get_retry_delay_ms(&err, 0, None).unwrap(), 1500);
+        // server delay above max fails immediately
+        let mut headers2 = reqwest::header::HeaderMap::new();
+        headers2.insert("retry-after-ms", "150000".parse().unwrap());
+        let err2 = ProviderHttpError {
+            status: Some(429),
+            headers: headers2,
+            message: "err".into(),
+        };
+        assert!(get_retry_delay_ms(&err2, 0, None).is_err());
     }
 
     #[test]

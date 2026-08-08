@@ -1422,3 +1422,60 @@ async fn test_state_mutations_persist_to_agent() {
     });
     assert!(found, "custom message must be appended to the agent's messages");
 }
+
+/// Regression test: `prompt()` must propagate the "no API key" error instead
+/// of silently returning (TS `prompt()` throws `formatNoApiKeyFoundMessage`).
+/// Without this, ACP/RPC clients only see the misleading "agent run failed to
+/// start or completed without AgentEnd" and never learn the real cause.
+#[tokio::test]
+async fn test_prompt_returns_error_when_no_api_key() {
+    // A model whose provider has no API key in env / auth / models.json.
+    let mut model = make_model();
+    model.provider = "zzz-no-api-key-provider".to_string();
+    model.id = "zzz-no-api-key-model".to_string();
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+        cwd: ".".to_string(),
+        agent_dir: None,
+        model: Some(model),
+        thinking_level: None,
+        scoped_models: None,
+        no_tools: None,
+        tools: None,
+        exclude_tools: None,
+        custom_prompt: None,
+        append_system_prompt: None,
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        custom_tools: None,
+        extension_flags: None,
+        extension_paths: Vec::new(),
+        enable_extensions: true,
+        extension_registry: None,
+        cli_provider: None,
+        cli_model: None,
+        persist_session: true,
+        session_file: None,
+        fork_from: None,
+        session_dir: Some(tmp.path().to_string_lossy().to_string()),
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
+        session_start_event: None,
+    })
+    .await
+    .expect("session creation must succeed");
+
+    let err = session
+        .prompt("hello", None)
+        .await
+        .expect_err("prompt must fail when the model's provider has no API key");
+    assert!(
+        err.contains("No API key found for zzz-no-api-key-provider"),
+        "error must name the provider, got: {err}"
+    );
+}

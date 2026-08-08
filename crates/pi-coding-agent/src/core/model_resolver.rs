@@ -576,19 +576,66 @@ pub fn find_initial_model(
 
     if let (Some(provider), Some(model_id)) = (default_provider, default_model_id) {
         if let Some(model) = model_registry.find(provider, model_id) {
-            return InitialModelResult {
-                model: Some(model),
-                thinking_level: default_thinking_level
-                    .unwrap_or(DEFAULT_THINKING_LEVEL)
-                    .to_string(),
-                fallback_message: None,
-            };
+            // TS requires the saved default to have configured auth before
+            // using it (findInitialModel step 3: `hasConfiguredAuth`).
+            if model_registry.get_api_key_for_provider(provider).is_some() {
+                return InitialModelResult {
+                    model: Some(model),
+                    thinking_level: default_thinking_level
+                        .unwrap_or(DEFAULT_THINKING_LEVEL)
+                        .to_string(),
+                    fallback_message: None,
+                };
+            }
         }
     }
 
-    // No fallback: if no model was configured or found in the registry,
-    // return None so the caller can raise a clear error.
+    // 4. Try first available model with valid API key (matching TS
+    // findInitialModel step 4): prefer the per-provider default model, then
+    // fall back to the first available model whose provider has auth.
+    // `get_api_key_for_provider` mirrors TS `hasConfiguredAuth` (env vars,
+    // registered providers, models.json provider configs).
+    let mut available_models: Vec<Model> = model_registry
+        .get_models()
+        .into_iter()
+        .filter(|m| model_registry.get_api_key_for_provider(&m.provider).is_some())
+        .collect();
+    // Sort for determinism: the registry's model order is HashMap-derived
+    // (random per process), while TS iterates providers in registration
+    // order. Sorting makes the "first available" pick stable.
+    available_models.sort_by(|a, b| {
+        (&a.provider, &a.id).cmp(&(&b.provider, &b.id))
+    });
 
+    if !available_models.is_empty() {
+        // Try to find a default model from known providers (sorted for
+        // determinism, mirroring TS's insertion-order iteration).
+        let mut providers: Vec<&&str> = DEFAULT_MODEL_PER_PROVIDER.keys().collect();
+        providers.sort();
+        for provider in providers {
+            let default_id = DEFAULT_MODEL_PER_PROVIDER[provider];
+            if let Some(match_model) = available_models
+                .iter()
+                .find(|m| m.provider == *provider && m.id == default_id)
+            {
+                return InitialModelResult {
+                    model: Some(match_model.clone()),
+                    thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
+                    fallback_message: None,
+                };
+            }
+        }
+
+        // If no default found, use first available
+        return InitialModelResult {
+            model: available_models.into_iter().next(),
+            thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
+            fallback_message: None,
+        };
+    }
+
+    // 5. No model found: return None so the caller can create a session
+    // without a model (TS behavior) and surface a clear error on prompt.
     InitialModelResult {
         model: None,
         thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
@@ -667,6 +714,113 @@ mod tests {
     fn test_registry() -> ModelRegistry {
         pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         ModelRegistry::new(ModelRegistry::builtin_models_list())
+    }
+
+    /// A registry with two synthetic providers: `test-provider-a` (has an API
+    /// key registered) and `test-provider-b` (no key). Using synthetic names
+    /// and an empty models.json path keeps the test deterministic regardless
+    /// of the host environment's `*_API_KEY` env vars and `~/.pi-rs` config.
+    fn test_registry_with_auth() -> ModelRegistry {
+        use crate::core::model_registry::ProviderConfig;
+        let models = vec![
+            make_test_model("test-provider-a", "model-a"),
+            make_test_model("test-provider-b", "model-b"),
+        ];
+        let registry = ModelRegistry::new_with_models_path(
+            models,
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        registry.register_provider(
+            "test-provider-a",
+            ProviderConfig {
+                name: None,
+                base_url: None,
+                api_key: Some("key-a".to_string()),
+                api: None,
+                headers: None,
+                auth_header: None,
+            },
+        );
+        registry
+    }
+
+    fn make_test_model(provider: &str, id: &str) -> Model {
+        Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            api: "openai-completions".to_string(),
+            provider: provider.to_string(),
+            base_url: String::new(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+            context_window: 128000,
+            max_tokens: 4096,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// TS findInitialModel step 3: the settings default model is only used
+    /// when its provider has configured auth. Without auth it must be
+    /// skipped and the resolver falls back to a configured provider.
+    #[test]
+    fn test_find_initial_model_skips_default_without_auth() {
+        let registry = test_registry_with_auth();
+        // Default model exists but its provider (test-provider-b) has no key.
+        let result = find_initial_model(
+            None,
+            None,
+            &[],
+            false,
+            Some("test-provider-b"),
+            Some("model-b"),
+            None,
+            &registry,
+        );
+        let model = result.model.expect("must fall back to a configured model");
+        assert_eq!(model.provider, "test-provider-a", "must pick the provider with auth");
+    }
+
+    /// TS findInitialModel step 3: a settings default whose provider has auth
+    /// is used directly.
+    #[test]
+    fn test_find_initial_model_uses_default_with_auth() {
+        let registry = test_registry_with_auth();
+        let result = find_initial_model(
+            None,
+            None,
+            &[],
+            false,
+            Some("test-provider-a"),
+            Some("model-a"),
+            None,
+            &registry,
+        );
+        let model = result.model.expect("default with auth must be used");
+        assert_eq!(model.provider, "test-provider-a");
+        assert_eq!(model.id, "model-a");
+    }
+
+    /// TS findInitialModel step 5: no provider has auth → no model.
+    #[test]
+    fn test_find_initial_model_none_when_no_auth() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![make_test_model("test-provider-b", "model-b")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let result = find_initial_model(
+            None,
+            None,
+            &[],
+            false,
+            Some("test-provider-b"),
+            Some("model-b"),
+            None,
+            &registry,
+        );
+        assert!(result.model.is_none(), "no auth anywhere → no model");
     }
 
     fn test_models() -> Vec<Model> {
@@ -775,19 +929,20 @@ mod tests {
 
     #[test]
     fn test_find_initial_model_default() {
-        let registry = test_registry();
+        // The settings default is used when its provider has auth (TS step 3).
+        let registry = test_registry_with_auth();
         let result = find_initial_model(
             None,
             None,
             &[],
             false,
-            Some("openai"),
-            Some("gpt-4o"),
+            Some("test-provider-a"),
+            Some("model-a"),
             None,
             &registry,
         );
         assert!(result.model.is_some());
-        assert_eq!(result.model.unwrap().id, "gpt-4o");
+        assert_eq!(result.model.unwrap().id, "model-a");
     }
 
     #[test]

@@ -458,29 +458,44 @@ pub async fn create_agent_session(
             &model_registry,
         );
 
-        let model = match initial_model.model {
-            Some(m) => m,
-            None => {
-                let default_provider = default_provider.unwrap_or_else(|| "unknown".to_string());
-                let default_model_id = default_model_id.unwrap_or_else(|| "unknown".to_string());
-                return Err(
-                    format!(
-                        "Model '{}' for provider '{}' not found in the registry.                          Check your settings.json and models.json configuration.",
-                        default_model_id, default_provider
-                    )
-                    .into(),
-                );
+        match initial_model.model {
+            Some(m) => {
+                let thinking_level = match initial_model.thinking_level.as_str() {
+                    "high" => "high".to_string(),
+                    "medium" => "medium".to_string(),
+                    "low" => "low".to_string(),
+                    _ => "medium".to_string(),
+                };
+                (m, thinking_level, initial_model.fallback_message)
             }
-        };
-
-        let thinking_level = match initial_model.thinking_level.as_str() {
-            "high" => "high".to_string(),
-            "medium" => "medium".to_string(),
-            "low" => "low".to_string(),
-            _ => "medium".to_string(),
-        };
-
-        (model, thinking_level, initial_model.fallback_message)
+            None => {
+                // TS 原版行为（sdk.ts）：没有任何可用模型时，session 仍创建，
+                // 只是不带模型（model 为空 id），thinkingLevel = "off"，
+                // modelFallbackMessage = formatNoModelsAvailableMessage()。
+                // prompt() 会报"没有选择模型"（formatNoModelSelectedMessage）。
+                let empty_model = Model {
+                    id: String::new(),
+                    name: String::new(),
+                    api: String::new(),
+                    provider: String::new(),
+                    base_url: String::new(),
+                    reasoning: false,
+                    thinking_level_map: None,
+                    input: Vec::new(),
+                    cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                    context_window: 0,
+                    max_tokens: 0,
+                    headers: None,
+                    compat: None,
+                };
+                let fallback_message = Some(
+                    crate::core::auth_guidance::format_no_models_available_message(
+                        &crate::config::get_docs_path().to_string_lossy(),
+                    ),
+                );
+                (empty_model, "off".to_string(), fallback_message)
+            }
+        }
     };
 
     // Resolve session directory: --session-dir overrides default

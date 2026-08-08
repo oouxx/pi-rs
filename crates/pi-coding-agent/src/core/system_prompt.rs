@@ -227,12 +227,7 @@ fn get_readme_path() -> String {
 }
 
 fn get_docs_path() -> String {
-    let agent_dir = config::get_agent_dir();
-    agent_dir
-        .parent()
-        .map(|p| p.join("docs"))
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "docs".to_string())
+    config::get_docs_path().to_string_lossy().to_string()
 }
 
 fn get_examples_path() -> String {

@@ -107,16 +107,24 @@ pub async fn handle_command(
             let handle = session.get_agent().subscribe(listener).await;
             *unsubscribe_handle.lock().await = Some(handle);
 
-            // Call prompt and let the listener handle events + success response
-            session.prompt(&message, Some(options)).await;
-
-            // After prompt() returns, check if AgentEnd was received.
-            // If not, the agent run failed to start (e.g. agent was already busy),
-            // and the RPC client would hang waiting for a response.
-            // Match TS behavior: session.prompt().catch((e) => output(error(id, "prompt", e.message)))
-            if !agent_end_received.load(Ordering::SeqCst) {
-                let err = rpc_error(id, "prompt", "Agent run failed to start or completed without emitting AgentEnd".to_string());
-                let _ = state.output_tx.send(serialize_json_line(&err));
+            // Call prompt and let the listener handle events + success response.
+            // prompt() returns Err when the run cannot start (no model / no API
+            // key) — propagate the real error, matching TS
+            // session.prompt().catch((e) => output(error(id, "prompt", e.message))).
+            match session.prompt(&message, Some(options)).await {
+                Ok(()) => {
+                    // After prompt() returns, check if AgentEnd was received.
+                    // If not, the agent run failed to start (e.g. agent was already busy),
+                    // and the RPC client would hang waiting for a response.
+                    if !agent_end_received.load(Ordering::SeqCst) {
+                        let err = rpc_error(id, "prompt", "Agent run failed to start or completed without emitting AgentEnd".to_string());
+                        let _ = state.output_tx.send(serialize_json_line(&err));
+                    }
+                }
+                Err(e) => {
+                    let err = rpc_error(id, "prompt", e);
+                    let _ = state.output_tx.send(serialize_json_line(&err));
+                }
             }
 
             None

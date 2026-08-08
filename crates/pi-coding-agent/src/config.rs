@@ -110,6 +110,18 @@ pub fn get_custom_themes_dir() -> PathBuf {
     get_agent_dir().join("themes")
 }
 
+/// Returns the docs directory used in user-facing guidance messages
+/// (e.g. "Use /login ... See: {docs}/providers.md").
+///
+/// Mirrors TS `getDocsPath()` (`{packageDir}/docs`); in the Rust port the
+/// docs live next to the agent dir (`{agent_dir.parent()}/docs`).
+pub fn get_docs_path() -> PathBuf {
+    get_agent_dir()
+        .parent()
+        .map(|p| p.join("docs"))
+        .unwrap_or_else(|| PathBuf::from("docs"))
+}
+
 /// Returns the default session directory for the given `cwd`.
 ///
 /// The path is `{sessions_dir}/--encoded-cwd--`.

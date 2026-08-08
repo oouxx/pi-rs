@@ -2065,7 +2065,10 @@ impl AgentSession {
                         let opts = options_json
                             .as_deref()
                             .and_then(|o| serde_json::from_str(o).ok());
-                        self.send_user_message(&content, opts).await;
+                        if let Err(e) = self.send_user_message(&content, opts).await {
+                            // Matches TS sendUserMessage().catch((err) => runner.emitError(...)).
+                            eprintln!("[pi] send_user_message failed: {e}");
+                        }
                     }
                     ExtensionAction::AppendEntry { custom_type, data_json } => {
                         let data = data_json
@@ -2179,7 +2182,13 @@ impl AgentSession {
     ///
     /// After the agent finishes, runs the post-agent-run loop (retry + compaction),
     /// matching TS _runAgentPrompt() + _handlePostAgentRun().
-    pub async fn prompt(&self, text: &str, options: Option<PromptOptions>) {
+    ///
+    /// Returns `Err` when the run cannot start: no model selected or no API key
+    /// configured for the model's provider. This mirrors TS prompt() which throws
+    /// `formatNoModelSelectedMessage()` / `formatNoApiKeyFoundMessage()` — callers
+    /// (RPC/ACP modes) must surface the error to the client instead of reporting a
+    /// generic "run failed" failure.
+    pub async fn prompt(&self, text: &str, options: Option<PromptOptions>) -> Result<(), String> {
         // Refresh session state before starting the next turn
         if let Err(e) = self
             .session_manager
@@ -2199,7 +2208,7 @@ impl AgentSession {
         // Handle extension commands first (execute immediately, even during streaming),
         // matching TS prompt() which calls _tryExecuteExtensionCommand(text).
         if expand_templates && text.starts_with("/") && self._try_execute_extension_command(text).await {
-            return;
+            return Ok(());
         }
 
         // Emit input event for extension interception (before skill/template expansion),
@@ -2217,7 +2226,7 @@ impl AgentSession {
             )
             .await
             {
-                crate::core::extensions::dispatcher::InputEventResult::Handled => return,
+                crate::core::extensions::dispatcher::InputEventResult::Handled => return Ok(()),
                 crate::core::extensions::dispatcher::InputEventResult::Continue {
                     text: t,
                     images,
@@ -2249,7 +2258,7 @@ impl AgentSession {
             } else {
                 self.steer(&expanded_text, current_images).await;
             }
-            return;
+            return Ok(());
         }
 
         // Flush any pending bash messages before the new prompt,
@@ -2260,8 +2269,9 @@ impl AgentSession {
         // matching TS prompt() which checks model and auth.
         let state = self.agent.state().await;
         if state.model.id.is_empty() {
-            eprintln!("[pi] No model selected. Use /model to select a model.");
-            return;
+            return Err(crate::core::auth_guidance::format_no_model_selected_message(
+                &crate::config::get_docs_path().to_string_lossy(),
+            ));
         }
         let auth_result = self
             .model_registry
@@ -2269,12 +2279,13 @@ impl AgentSession {
             .await;
         match auth_result {
             Ok(r) if !r.ok => {
-                eprintln!("[pi] No API key configured for provider '{}'. Set the appropriate environment variable or configure it via /login.", state.model.provider);
-                return;
+                return Err(crate::core::auth_guidance::format_no_api_key_found_message(
+                    &state.model.provider,
+                    &crate::config::get_docs_path().to_string_lossy(),
+                ));
             }
             Err(e) => {
-                eprintln!("[pi] Auth check failed: {e}");
-                return;
+                return Err(format!("Auth check failed: {e}"));
             }
             _ => {}
         }
@@ -2304,6 +2315,7 @@ impl AgentSession {
         // Emit agent_settled after the agent run is fully complete
         // (no retry, compaction, or queued messages pending).
         self._emit_agent_settled().await;
+        Ok(())
     }
 
     /// Handle post-agent-run tasks: retry, compaction, queued messages.
@@ -3931,7 +3943,15 @@ impl AgentSession {
     /// Send a user message (for extensions), matching original sendUserMessage().
     /// Send a user message, matching TS sendUserMessage().
     /// Supports `deliverAs` option for streaming behavior.
-    pub async fn send_user_message(&self, content: &str, options: Option<SendUserMessageOptions>) {
+    ///
+    /// Propagates `prompt()` errors (no model / no API key) so extension
+    /// callers can surface them, matching TS `sendUserMessage()` which lets
+    /// `prompt()` throw and the caller catches it.
+    pub async fn send_user_message(
+        &self,
+        content: &str,
+        options: Option<SendUserMessageOptions>,
+    ) -> Result<(), String> {
         let opts = options.unwrap_or_default();
         self.prompt(
             content,
@@ -3942,7 +3962,7 @@ impl AgentSession {
                 source: Some("extension".to_string()),
             }),
         )
-        .await;
+        .await
     }
 
     // =========================================================================

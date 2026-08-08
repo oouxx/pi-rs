@@ -326,28 +326,9 @@ impl SessionRegistry {
                 extension_flags: None,
             }
         };
-        let (session, result) = match create_agent_session(build_options(None)).await {
-            Ok(r) => r,
-            Err(_) => {
-                // No default model configured (fresh environment): fall back to
-                // the first builtin model so the session can still be created.
-                // The client can switch models later via set_session_model /
-                // session config options.
-                let first = crate::core::model_registry::ModelRegistry::builtin_models_list()
-                    .into_iter()
-                    .next();
-                match first {
-                    Some(m) => create_agent_session(build_options(Some(m)))
-                        .await
-                        .map_err(|e| e.to_string())?,
-                    None => {
-                        return Err(
-                            "no model configured and no builtin models available".to_string()
-                        );
-                    }
-                }
-            }
-        };
+        let (session, result) = create_agent_session(build_options(None))
+            .await
+            .map_err(|e| e.to_string())?;
         // Keep the V8 extension manager alive for the session's lifetime:
         // dropping it shuts down the V8 thread, killing JS extensions.
         let js_manager = result._js_extension_manager;
@@ -484,13 +465,37 @@ impl SessionTask {
         tokio::pin!(prompt_fut);
 
         // Track whether the agent actually ran a turn (mirrors the RPC mode's
-        // AgentEnd check: prompt() returns () even when the run fails to start).
+        // AgentEnd check: prompt() returns Ok even when the run fails to start).
         let mut saw_agent_end = false;
 
         let outcome: Result<(), String> = loop {
             tokio::select! {
-                _ = &mut prompt_fut => {
-                    break Ok(());
+                result = &mut prompt_fut => {
+                    // Drain any events still queued (e.g. AgentEnd) so the
+                    // saw_agent_end check below is accurate: prompt() may
+                    // return before the select! loop has consumed the final
+                    // events (each event waits for a notification ack).
+                    let mut disconnected = false;
+                    while let Ok(event) = event_rx.try_recv() {
+                        if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
+                            saw_agent_end = true;
+                        }
+                        if let Some(notif) = translate_event(&self.session_id, &event) {
+                            let (ack_tx, ack_rx) = oneshot::channel();
+                            if self.notif_tx.send((notif, ack_tx)).is_err() {
+                                disconnected = true;
+                                break;
+                            }
+                            if ack_rx.await.is_err() {
+                                disconnected = true;
+                                break;
+                            }
+                        }
+                    }
+                    if disconnected {
+                        break Err("client disconnected".to_string());
+                    }
+                    break result;
                 }
                 Some(event) = event_rx.recv() => {
                     if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {

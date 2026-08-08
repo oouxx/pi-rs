@@ -53,10 +53,13 @@ pub enum JsCommand {
         response_tx: oneshot::Sender<Result<ToolCallOutput, String>>,
     },
     /// Fire an event to all registered JS handlers for that event name.
+    /// Returns the (JSON array of) handler return values — used by
+    /// result-bearing hooks like `tool_call` (`{block: true}`) and
+    /// `before_agent_start`.
     FireEvent {
         event: String,
         data_json: String,
-        response_tx: oneshot::Sender<Result<(), String>>,
+        response_tx: oneshot::Sender<Result<serde_json::Value, String>>,
     },
     /// Execute a registered command's JS handler.
     ExecuteCommand {
@@ -71,6 +74,9 @@ pub enum JsCommand {
         actions: super::js_runtime::RuntimeActions,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
+    /// Invalidate the runtime context (session changed: new/fork/switch/
+    /// reload). After this, action ops throw a stale-ctx error.
+    Invalidate,
     /// Shut down the V8 runtime thread. The receiver breaks out of its
     /// command loop on receipt, so shutdown is deterministic even if some
     /// adapter-held sender clones are still alive.
@@ -85,6 +91,7 @@ impl std::fmt::Debug for JsCommand {
             Self::FireEvent { .. } => write!(f, "JsCommand::FireEvent"),
             Self::ExecuteCommand { .. } => write!(f, "JsCommand::ExecuteCommand"),
             Self::BindCore { .. } => write!(f, "JsCommand::BindCore"),
+            Self::Invalidate => write!(f, "JsCommand::Invalidate"),
             Self::Shutdown => write!(f, "JsCommand::Shutdown"),
         }
     }
@@ -246,8 +253,12 @@ impl JsExtensionAdapter {
         response_rx.await.map_err(|_| "V8 runtime dropped response".to_string())?
     }
 
-    /// Fire an event to JS handlers.
-    async fn fire_event_via_js(&self, event: &str, data_json: &str) -> Result<(), String> {
+    /// Fire an event to JS handlers and collect their return values.
+    async fn fire_event_via_js(
+        &self,
+        event: &str,
+        data_json: &str,
+    ) -> Result<serde_json::Value, String> {
         let (response_tx, response_rx) = oneshot::channel();
         self.cmd_tx
             .send(JsCommand::FireEvent {
@@ -414,7 +425,8 @@ impl HookHandler for JsExtensionAdapter {
 
     async fn on_session_start(&self, _reason: &str, _previous_session_file: Option<&str>) {
         if self.load_result.handlers.iter().any(|h| h.event == "session_start") {
-            let _ = self.fire_event_via_js("session_start", "{}").await;
+            let data = serde_json::json!({ "reason": _reason, "previousSessionFile": _previous_session_file });
+            let _ = self.fire_event_via_js("session_start", &data.to_string()).await;
         }
     }
 
@@ -425,7 +437,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "session_shutdown")
         {
-            let _ = self.fire_event_via_js("session_shutdown", "{}").await;
+            let data = serde_json::json!({ "reason": _reason, "targetSessionFile": _target_session_file });
+            let _ = self.fire_event_via_js("session_shutdown", &data.to_string()).await;
         }
     }
 
@@ -442,7 +455,8 @@ impl HookHandler for JsExtensionAdapter {
 
     async fn on_agent_end(&self, _messages: &[Value]) {
         if self.load_result.handlers.iter().any(|h| h.event == "agent_end") {
-            let _ = self.fire_event_via_js("agent_end", "{}").await;
+            let data = serde_json::json!({ "messages": _messages });
+            let _ = self.fire_event_via_js("agent_end", &data.to_string()).await;
         }
     }
 
@@ -464,13 +478,15 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "turn_start")
         {
-            let _ = self.fire_event_via_js("turn_start", "{}").await;
+            let data = serde_json::json!({ "turnIndex": _turn_index });
+            let _ = self.fire_event_via_js("turn_start", &data.to_string()).await;
         }
     }
 
     async fn on_turn_end(&self, _turn_index: u32, _message: &Value, _tool_results: &[Value]) {
         if self.load_result.handlers.iter().any(|h| h.event == "turn_end") {
-            let _ = self.fire_event_via_js("turn_end", "{}").await;
+            let data = serde_json::json!({ "turnIndex": _turn_index, "message": _message, "toolResults": _tool_results });
+            let _ = self.fire_event_via_js("turn_end", &data.to_string()).await;
         }
     }
 
@@ -481,7 +497,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "message_start")
         {
-            let _ = self.fire_event_via_js("message_start", "{}").await;
+            let data = serde_json::json!({ "message": _message });
+            let _ = self.fire_event_via_js("message_start", &data.to_string()).await;
         }
     }
 
@@ -492,7 +509,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "message_update")
         {
-            let _ = self.fire_event_via_js("message_update", "{}").await;
+            let data = serde_json::json!({ "message": _message });
+            let _ = self.fire_event_via_js("message_update", &data.to_string()).await;
         }
     }
 
@@ -503,7 +521,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "message_end")
         {
-            let _ = self.fire_event_via_js("message_end", "{}").await;
+            let data = serde_json::json!({ "message": _message });
+            let _ = self.fire_event_via_js("message_end", &data.to_string()).await;
         }
     }
 
@@ -514,13 +533,15 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "model_select")
         {
-            let _ = self.fire_event_via_js("model_select", "{}").await;
+            let data = serde_json::json!({ "model": _model, "previousModel": _previous_model });
+            let _ = self.fire_event_via_js("model_select", &data.to_string()).await;
         }
     }
 
     async fn on_compact(&self, _summary: &str, _tokens_before: u64) {
         if self.load_result.handlers.iter().any(|h| h.event == "session_compact") {
-            let _ = self.fire_event_via_js("session_compact", "{}").await;
+            let data = serde_json::json!({ "summary": _summary, "tokensBefore": _tokens_before });
+            let _ = self.fire_event_via_js("session_compact", &data.to_string()).await;
         }
     }
 
@@ -536,8 +557,13 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_execution_start")
         {
+            let data = serde_json::json!({
+                "toolCallId": _tool_call_id,
+                "toolName": _tool_name,
+                "input": _args,
+            });
             let _ = self
-                .fire_event_via_js("tool_execution_start", "{}")
+                .fire_event_via_js("tool_execution_start", &data.to_string())
                 .await;
         }
     }
@@ -555,8 +581,14 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_execution_end")
         {
+            let data = serde_json::json!({
+                "toolCallId": _tool_call_id,
+                "toolName": _tool_name,
+                "result": _result,
+                "isError": _is_error,
+            });
             let _ = self
-                .fire_event_via_js("tool_execution_end", "{}")
+                .fire_event_via_js("tool_execution_end", &data.to_string())
                 .await;
         }
     }
@@ -572,10 +604,30 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_call")
         {
-            let data = serde_json::json!({ "toolName": tool_name, "args": args });
-            let _ = self
+            let data = serde_json::json!({ "toolName": tool_name, "input": args });
+            if let Ok(results) = self
                 .fire_event_via_js("tool_call", &data.to_string())
-                .await;
+                .await
+            {
+                // TS `tool_call` handlers may return `{block: true, reason}` to
+                // veto the call (e.g. permission-gate extensions).
+                if let Some(blocked) = results.as_array().and_then(|arr| {
+                    arr.iter().find_map(|r| {
+                        let is_block = r
+                            .get("block")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false);
+                        is_block.then_some(
+                            r.get("reason")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("blocked by extension")
+                                .to_string(),
+                        )
+                    })
+                }) {
+                    return HookResult::Cancel(blocked);
+                }
+            }
         }
         HookResult::Continue((tool_name, args))
     }
@@ -592,7 +644,12 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_result")
         {
-            let _ = self.fire_event_via_js("tool_result", "{}").await;
+            let data = serde_json::json!({
+                "toolName": _tool_name,
+                "result": _result,
+                "isError": _is_error,
+            });
+            let _ = self.fire_event_via_js("tool_result", &data.to_string()).await;
         }
         HookResult::Continue(())
     }
@@ -791,6 +848,9 @@ impl JsExtensionManager {
                         js_runtime.bind_core(actions);
                         let _ = response_tx.send(Ok(()));
                     }
+                    JsCommand::Invalidate => {
+                        js_runtime.invalidate();
+                    }
                     JsCommand::Shutdown => break,
                     JsCommand::FireEvent {
                         event,
@@ -800,22 +860,26 @@ impl JsExtensionManager {
                         let script = format!(
                             "(async () => {{
                               const handlers = globalThis.__pi.__handlers.get({event:?}) ?? [];
+                              const results = [];
                               for (const h of handlers) {{
-                                await h({data});
+                                const r = await h({data});
+                                if (r !== undefined) results.push(r);
                               }}
+                              return results;
                             }})()",
                             event = event,
                             data = data_json,
                         );
-                        match js_runtime.execute_script("<event-fire>", &script) {
-                            Ok(_) => {
-                                if let Err(e) = js_runtime.run_event_loop()
-                                    .await
-                                {
-                                    let _ = response_tx.send(Err(format!("V8 event loop: {e}")));
-                                    continue;
-                                }
-                                let _ = response_tx.send(Ok(()));
+                        // Collect handler return values as a JSON array (used
+                        // by result-bearing hooks like `tool_call` -> `{block}`).
+                        match js_runtime
+                            .execute_async_and_get_json("<event-fire>", &script)
+                            .await
+                        {
+                            Ok(json_str) => {
+                                let value = serde_json::from_str(&json_str)
+                                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                                let _ = response_tx.send(Ok(value));
                             }
                             Err(e) => {
                                 let _ = response_tx.send(Err(format!("V8 fire: {e}")));
@@ -851,6 +915,21 @@ impl JsExtensionManager {
                 }
             }
         });
+    }
+
+    /// Invalidate the extension runtime context (stale-ctx guard): after a
+    /// session change (new/fork/switch/reload), extensions that hold stale
+    /// contexts must have their action ops throw. Mirrors TS
+    /// `runtime.invalidate()`. The intended wiring point is
+    /// `AgentSessionRuntime::set_before_session_invalidate`.
+    ///
+    /// # Errors
+    /// Returns a `String` if the V8 runtime thread has already shut down.
+    pub async fn invalidate(&self) -> Result<(), String> {
+        self.cmd_tx
+            .send(JsCommand::Invalidate)
+            .await
+            .map_err(|_| "V8 runtime channel closed".to_string())
     }
 
     /// Shut down the V8 runtime (drop the channel sender and join the thread).
@@ -1221,6 +1300,111 @@ export default async function(pi) {
         //     still there (the closure hasn't been called, but the Arc is shared).
         let providers2 = model_registry.get_registered_providers();
         assert!(providers2.contains(&"e2e-provider".to_string()));
+    }
+
+    /// A `tool_call` handler returning `{block: true, reason}` must veto the
+    /// call via `HookResult::Cancel` — the permission-gate pattern. Previously
+    /// the JS handler's return value was dropped, so blocking never worked.
+    #[test]
+    fn test_before_tool_call_block_interception() {
+        use pi_extension_api::HookResult;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("gate.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("tool_call", async (event) => {
+    const cmd = String((event.input && event.input.command) || "");
+    if (event.toolName === "bash" && cmd.includes("rm -rf")) {
+      return { block: true, reason: "dangerous command blocked" };
+    }
+    return undefined;
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        assert_eq!(load_result.handlers.len(), 1);
+        assert_eq!(load_result.handlers[0].event, "tool_call");
+
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        // Dangerous bash → blocked with the handler's reason.
+        let result = block_on(adapter.before_tool_call(
+            "bash".to_string(),
+            serde_json::json!({ "command": "rm -rf /" }),
+        ));
+        assert!(
+            result.is_cancel(),
+            "dangerous tool_call must be blocked, got {result:?}"
+        );
+        if let HookResult::Cancel(reason) = result {
+            assert_eq!(reason, "dangerous command blocked");
+        }
+
+        // Safe bash → continue.
+        let result = block_on(adapter.before_tool_call(
+            "bash".to_string(),
+            serde_json::json!({ "command": "ls" }),
+        ));
+        assert!(result.is_continue(), "safe tool_call must continue");
+    }
+
+    /// Event handlers must receive the marshalled event payload (not `{}`),
+    /// and their return values must come back through `fire_event_via_js`.
+    #[test]
+    fn test_event_payload_reaches_handler() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("payload.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("tool_call", async (event) => {
+    if (event && event.input) {
+      return { seenCommand: String(event.input.command || "") };
+    }
+    return undefined;
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let results = block_on(adapter.fire_event_via_js(
+            "tool_call",
+            r#"{"toolName":"bash","input":{"command":"ls -la"}}"#,
+        ))
+        .expect("fire_event_via_js");
+        let arr = results.as_array().expect("results must be an array");
+        assert_eq!(arr.len(), 1, "one handler registered");
+        assert_eq!(arr[0]["seenCommand"], "ls -la", "handler must see the payload");
     }
 }
 

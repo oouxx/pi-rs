@@ -186,8 +186,10 @@
       drain；`exec` 未接，见下文）
 - [x] `ExtensionRuntime` 两阶段（占位 → bind_core，含
       `pendingProviderRegistrations` 队列与 flush）
-- [~] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）
-      —— JS 侧 assertActive 存在但 Rust 侧无 Invalidated phase
+- [x] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）
+      —— 机制已实现（`RuntimePhase::Invalidated` + `JsExtensionManager::invalidate()`），
+      session 切换接线点预留为 `AgentSessionRuntime::set_before_session_invalidate`
+      （当前真实模式不用 AgentSessionRuntime，接线留作后续）
 - [x] 清单发现：`package.json` 的 `pi.extensions`、`.ts/.js` 判定、
       `agent_dir/extensions` 扫描
 - [x] cwd 失效缓存 + `clearExtensionCache()`（generation 计数）
@@ -204,12 +206,12 @@
 已知剩余限制（js-runtime 侧）：
 - `exec` 未实现：同步 op 无法 await session 执行，阻塞会在 turn 内死锁，返回
   明确错误（需要并发 drain 架构才能支持）
-- `before_tool_call`（`tool_call` hook）返回值被丢弃：JS handler 的 `{block:true}`
-  权限拦截不生效（FireEvent 不接收返回值）
-- 事件 payload 多为 `{}`：`message_update`/`tool_execution_end` 等 hook 拿不到
-  真实事件数据
-- `registerMarkdownTransformer` 缺失；`setModel` 为乐观返回（模型在下次 turn
-  boundary 应用）
+- 写类 action 在 turn 边界生效（非立即）；`setModel` 乐观返回，模型在下次
+  drain 应用
+- CLI 扩展 flag → 扩展 `getFlag` 未接线（CLI 只收集 unknown_flags）；扩展自身
+  注册的默认值经 JS map 可读
+- `registerMarkdownTransformer` 已占位（no-op，TUI 未移植）
+- session 切换 → `invalidate()` 的接线待做（机制已就绪，见上）
 
 ## 7. 与已有偏差记录的关系
 

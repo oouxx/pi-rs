@@ -173,7 +173,7 @@ impl SessionRegistry {
         let _ = std::fs::create_dir_all(&acp_dir);
         let _ = std::fs::File::create(&session_file);
 
-        let (session, mcp_connections) = self
+        let (session, mcp_connections, js_manager) = self
             .build_session(cwd, Some(&session_file_str), &session_dir_str, mcp_servers)
             .await?;
 
@@ -184,6 +184,7 @@ impl SessionRegistry {
             notif_tx,
             session_id: session_id.clone(),
             mcp_connections,
+            _js_manager: js_manager,
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -236,7 +237,7 @@ impl SessionRegistry {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| self.base_dir.join("acp").to_string_lossy().to_string());
 
-        let (session, mcp_connections) = self
+        let (session, mcp_connections, js_manager) = self
             .build_session(&persisted.cwd, Some(&persisted.session_file), &session_dir, mcp_servers)
             .await?;
 
@@ -247,6 +248,7 @@ impl SessionRegistry {
             notif_tx,
             session_id: session_id.clone(),
             mcp_connections,
+            _js_manager: js_manager,
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -270,7 +272,14 @@ impl SessionRegistry {
         session_file: Option<&str>,
         session_dir: &str,
         mcp_servers: &[acp::McpServer],
-    ) -> Result<(AgentSession, Vec<McpConnection>), String> {
+    ) -> Result<
+        (
+            AgentSession,
+            Vec<McpConnection>,
+            Option<Box<dyn std::any::Any + Send>>,
+        ),
+        String,
+    > {
         let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
         let custom_tools = if mcp_tools.is_empty() {
             None
@@ -316,7 +325,7 @@ impl SessionRegistry {
                 custom_tools: custom_tools.clone(),
             }
         };
-        let (session, _result) = match create_agent_session(build_options(None)).await {
+        let (session, result) = match create_agent_session(build_options(None)).await {
             Ok(r) => r,
             Err(_) => {
                 // No default model configured (fresh environment): fall back to
@@ -338,7 +347,10 @@ impl SessionRegistry {
                 }
             }
         };
-        Ok((session, mcp_connections))
+        // Keep the V8 extension manager alive for the session's lifetime:
+        // dropping it shuts down the V8 thread, killing JS extensions.
+        let js_manager = result._js_extension_manager;
+        Ok((session, mcp_connections, js_manager))
     }
 
     /// Look up a session handle by ID.
@@ -410,6 +422,10 @@ struct SessionTask {
     /// tool-execute closures (which capture a peer handle) stay valid.
     #[allow(dead_code)]
     mcp_connections: Vec<McpConnection>,
+    /// V8 JS-extension manager; kept alive so JS extensions work for the
+    /// session's lifetime (dropping it shuts down the V8 thread).
+    #[allow(dead_code)]
+    _js_manager: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl SessionTask {

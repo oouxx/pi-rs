@@ -147,6 +147,9 @@ enum RuntimePhase {
     Uninitialized,
     /// Bound: action methods delegate to the closures.
     Bound(RuntimeActions),
+    /// Session changed (newSession/fork/switch/reload): action methods throw a
+    /// stale-ctx error (TS `assertActive` / `runtime.invalidate`).
+    Invalidated,
 }
 
 /// Action-method closures, set by `bind_core()`. Mirrors TS
@@ -706,6 +709,10 @@ fn bound_actions(state: &mut OpState) -> Result<RuntimeActions, JsErrorBox> {
     match phase {
         RuntimePhase::Uninitialized => Err(not_initialized()),
         RuntimePhase::Bound(actions) => Ok(actions.clone()),
+        RuntimePhase::Invalidated => Err(JsErrorBox::generic(
+            "Extension runtime invalidated: session was changed (new/fork/switch/reload). \
+             Reload extensions to continue.",
+        )),
     }
 }
 
@@ -851,6 +858,13 @@ const BOOTSTRAP_JS: &str = r#"
     registerMessageRenderer(customType, renderer) {
       assertActive();
       Deno.core.ops.op_register_message_renderer(String(customType));
+    },
+
+    // Markdown transformer: captured so the extension loads successfully;
+    // the TUI (which would consume transformers) is not ported (confirmed
+    // deviation), so the transformer is a no-op.
+    registerMarkdownTransformer(transformer) {
+      assertActive();
     },
 
     registerEntryRenderer(customType, renderer) {
@@ -1216,7 +1230,7 @@ impl JsExtensionRuntime {
     /// stale-ctx error.
     pub fn invalidate(&mut self) {
         let op_state = self.runtime.op_state();
-        op_state.borrow_mut().put(RuntimePhase::Uninitialized);
+        op_state.borrow_mut().put(RuntimePhase::Invalidated);
     }
 
     /// Load and invoke the default-export factory of the TS/JS extension at
@@ -1679,12 +1693,15 @@ export default async function(pi) {
         // Invalidate.
         js.invalidate();
 
-        // Should throw after invalidate.
+        // Should throw after invalidate (stale-ctx error, not "not initialized").
         let err = js
             .runtime
             .execute_script("<after>", "globalThis.__pi.setSessionName('after');")
             .unwrap_err();
-        assert!(err.to_string().contains("not initialized"));
+        assert!(
+            err.to_string().contains("invalidated"),
+            "expected stale-ctx error, got: {err}"
+        );
     }
 
     #[test]

@@ -812,6 +812,7 @@ where
                         service_tier: None,
                         reasoning_effort: None,
                         thinking_budgets: None,
+                        debug: None,
                         on_payload: None,
                         on_headers: None,
                         on_provider_response: None,
@@ -820,6 +821,7 @@ where
                     },
                     reasoning: reasoning.clone(),
                     thinking_budgets: opts.thinking_budgets.clone(),
+                    debug: None,
                 };
 
                 let event_stream = pi_ai::stream::stream_simple(&model, &ctx, Some(simple_opts));

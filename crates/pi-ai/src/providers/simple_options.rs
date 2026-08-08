@@ -38,6 +38,7 @@ pub fn build_base_options(
         service_tier: opts.base.service_tier.clone(),
         reasoning_effort: opts.reasoning.clone(),
         thinking_budgets: opts.thinking_budgets.clone(),
+        debug: opts.debug,
         on_payload: None,
         on_headers: None,
         on_provider_response: None,

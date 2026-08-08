@@ -15,8 +15,10 @@ use serde_json::Value;
 
 use crate::types::{
     AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention,
-    ContentBlock, Context, DiagnosticSeverity, Model, SimpleStreamOptions, StopReason,
-    StreamOptions, ToolCall, Usage,
+    ContentBlock, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, ToolCall, Usage,
+};
+use crate::utils::diagnostics::{
+    append_assistant_message_diagnostic, create_assistant_message_diagnostic,
 };
 use crate::utils::event_stream::AssistantMessageEventStream;
 
@@ -121,6 +123,26 @@ fn reason_to_stop_reason(reason: &str) -> StopReason {
 }
 
 // ============================================================================
+// Response error (match TS `PiMessagesResponseError`)
+// ============================================================================
+
+/// Error with structured diagnostic details for non-2xx pi-messages responses.
+#[derive(Debug)]
+pub struct PiMessagesResponseError {
+    message: String,
+    pub code: Option<String>,
+    pub diagnostic_details: serde_json::Map<String, serde_json::Value>,
+}
+
+impl std::fmt::Display for PiMessagesResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PiMessagesResponseError {}
+
+// ============================================================================
 // Event conversion (match TS `createEventConverter`)
 // ============================================================================
 
@@ -154,17 +176,20 @@ impl PiMessagesConverter {
 
     fn append_rewrite_diagnostic(&mut self, rewrite: Option<&PiMessagesRewriteImpact>) {
         if let Some(rewrite) = rewrite {
-            // pi-rs uses the simplified diagnostic shape (contentIndex /
-            // diagnostic / severity); the rewrite impact is serialized into
-            // the diagnostic text (DEVIATIONS: TS stores
-            // { type: "pi_messages_rewrite", timestamp, details }).
-            let text = serde_json::to_string(rewrite).unwrap_or_default();
-            let diagnostics = self.partial.diagnostics.get_or_insert_with(Vec::new);
-            diagnostics.push(AssistantMessageDiagnostic {
-                content_index: 0,
-                diagnostic: format!("pi_messages_rewrite: {text}"),
-                severity: DiagnosticSeverity::Warning,
-            });
+            // Match TS `appendRewriteDiagnostic`:
+            // { type: "pi_messages_rewrite", timestamp, details: { ...rewrite } }
+            let details = serde_json::to_value(rewrite)
+                .ok()
+                .and_then(|v| v.as_object().cloned());
+            append_assistant_message_diagnostic(
+                &mut self.partial,
+                AssistantMessageDiagnostic {
+                    type_field: "pi_messages_rewrite".to_string(),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    error: None,
+                    details,
+                },
+            );
         }
     }
 
@@ -192,7 +217,9 @@ impl PiMessagesConverter {
                 }
             }
             PiMessagesEvent::TextDelta { content_index, delta } => {
-                if let Some(ContentBlock::Text { text, .. }) = self.partial.content.get_mut(content_index) {
+                if let Some(ContentBlock::Text { text, .. }) =
+                    self.partial.content.get_mut(content_index)
+                {
                     text.push_str(&delta);
                 }
                 AssistantMessageEvent::TextDelta {
@@ -206,8 +233,11 @@ impl PiMessagesConverter {
                 content,
                 content_signature,
             } => {
-                if let Some(ContentBlock::Text { text, text_signature, .. }) =
-                    self.partial.content.get_mut(content_index)
+                if let Some(ContentBlock::Text {
+                    text,
+                    text_signature,
+                    ..
+                }) = self.partial.content.get_mut(content_index)
                 {
                     *text = content.clone();
                     *text_signature = content_signature.clone();
@@ -222,8 +252,8 @@ impl PiMessagesConverter {
                 self.set_content_slot(
                     content_index,
                     ContentBlock::Thinking {
-                    thinking: String::new(),
-                    thinking_signature: None,
+                        thinking: String::new(),
+                        thinking_signature: None,
                         redacted: None,
                     },
                 );
@@ -275,8 +305,8 @@ impl PiMessagesConverter {
                 self.set_content_slot(
                     content_index,
                     ContentBlock::ToolCall {
-                    id: id.clone(),
-                    name: tool_name.clone(),
+                        id: id.clone(),
+                        name: tool_name.clone(),
                         arguments: serde_json::json!({}),
                         thought_signature: None,
                     },
@@ -380,6 +410,7 @@ fn parse_pi_messages_event(raw: &str) -> Option<PiMessagesEvent> {
     serde_json::from_str(data).ok()
 }
 
+#[cfg(test)]
 fn read_pi_messages_events(body: &[u8]) -> Vec<PiMessagesEvent> {
     let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
     let mut events = Vec::new();
@@ -391,8 +422,64 @@ fn read_pi_messages_events(body: &[u8]) -> Vec<PiMessagesEvent> {
     events
 }
 
+/// Stream pi-messages events from a reqwest body stream, parsing incrementally
+/// as chunks arrive (match TS `readPiMessagesEvents`). Emits events until a
+/// terminal `done`/`error` arrives or the stream ends; returns whether a
+/// terminal event was seen.
+async fn read_pi_messages_events_stream(
+    stream: impl futures::Stream<Item = Result<Vec<u8>, reqwest::Error>>,
+    tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
+    converter: &mut PiMessagesConverter,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+
+    let mut buffer = String::new();
+    let mut terminal = false;
+    futures::pin_mut!(stream);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer = buffer.replace("\r\n", "\n");
+
+        let mut split = buffer.find("\n\n");
+        while let Some(idx) = split {
+            let raw = buffer[..idx].to_string();
+            buffer = buffer[idx + 2..].to_string();
+            if let Some(event) = parse_pi_messages_event(&raw) {
+                let converted = converter.convert(event);
+                let is_terminal = matches!(
+                    converted,
+                    AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+                );
+                let _ = tx.send(converted);
+                if is_terminal {
+                    terminal = true;
+                    break;
+                }
+            }
+            split = buffer.find("\n\n");
+        }
+        if terminal {
+            break;
+        }
+    }
+
+    // Flush any trailing un-terminated chunk.
+    if !terminal && !buffer.trim().is_empty() {
+        if let Some(event) = parse_pi_messages_event(buffer.trim()) {
+            let converted = converter.convert(event);
+            terminal = matches!(
+                converted,
+                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+            );
+            let _ = tx.send(converted);
+        }
+    }
+    Ok(terminal)
+}
+
 // ============================================================================
-// Error handling (match TS `PiMessagesResponseError`)
+// Error handling (match TS `parsePiMessagesErrorBody` / `formatPiMessagesResponseError`)
 // ============================================================================
 
 fn parse_pi_messages_error_body(body: &str) -> Option<Value> {
@@ -424,6 +511,55 @@ fn format_pi_messages_response_error(
     format!("{status} {status_text}: {suffix}{code_suffix}")
 }
 
+fn truncate_diagnostic_string(value: &str) -> String {
+    const MAX_LENGTH: usize = 8192;
+    if value.len() > MAX_LENGTH {
+        format!("{}…", &value[..MAX_LENGTH])
+    } else {
+        value.to_string()
+    }
+}
+
+/// Build a `PiMessagesResponseError` with structured diagnostic details
+/// (match TS `createPiMessagesResponseError`).
+fn create_pi_messages_response_error(
+    model: &Model,
+    url: &str,
+    status: u16,
+    status_text: &str,
+    body: &str,
+) -> PiMessagesResponseError {
+    let error_body = parse_pi_messages_error_body(body);
+    let code = error_body
+        .as_ref()
+        .and_then(|b| b.get("error"))
+        .and_then(|e| e.get("code"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut details = serde_json::Map::new();
+    details.insert("version".into(), json!(1));
+    details.insert("provider".into(), json!(model.provider));
+    details.insert("model".into(), json!(model.id));
+    details.insert("url".into(), json!(url));
+    details.insert("status".into(), json!(status));
+    details.insert("statusText".into(), json!(status_text));
+    if let Some(eb) = error_body.as_ref() {
+        if let Some(error) = eb.get("error") {
+            details.insert("error".into(), error.clone());
+        }
+    } else {
+        details.insert("body".into(), json!(truncate_diagnostic_string(body)));
+    }
+    details.insert(
+        "timestampMs".into(),
+        json!(chrono::Utc::now().timestamp_millis()),
+    );
+    PiMessagesResponseError {
+        message: format_pi_messages_response_error(status, status_text, body, error_body.as_ref()),
+        code,
+        diagnostic_details: details,
+    }
+}
 
 // ============================================================================
 // Options
@@ -470,32 +606,46 @@ pub fn stream_pi_messages(
         )
         .await;
         if let Err(e) = result {
-            let reason = if owned_options
+            let aborted = owned_options
                 .as_ref()
                 .and_then(|o| o.signal.as_ref())
                 .map(|s| *s.borrow())
-                .unwrap_or(false)
-            {
+                .unwrap_or(false);
+            let reason = if aborted {
                 StopReason::Aborted
             } else {
                 StopReason::Error
             };
+            let mut error_message = AssistantMessage {
+                content: vec![],
+                api: model.api.clone(),
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: reason.clone(),
+                error_message: Some(e.to_string()),
+                raw_stop_reason: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            };
+            // Match TS `createErrorEvent`: attach a structured diagnostic for
+            // PiMessagesResponseError failures.
+            if !aborted {
+                let error: &(dyn std::error::Error + Send + Sync + 'static) = e.as_ref();
+                if let Some(pme) = error.downcast_ref::<PiMessagesResponseError>() {
+                    let diagnostic = create_assistant_message_diagnostic(
+                        "pi_messages_response_failure",
+                        Some(error),
+                        Some(pme.diagnostic_details.clone()),
+                    );
+                    append_assistant_message_diagnostic(&mut error_message, diagnostic);
+                }
+            }
             let _ = tx.send(AssistantMessageEvent::Error {
-                reason: reason.clone(),
-                error: AssistantMessage {
-                    content: vec![],
-                    api: model.api.clone(),
-                    provider: model.provider.clone(),
-                    model: model.id.clone(),
-                    response_model: None,
-                    response_id: None,
-                    diagnostics: None,
-                    usage: Usage::default(),
-                    stop_reason: reason,
-                    error_message: Some(e.to_string()),
-                    raw_stop_reason: None,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                },
+                reason,
+                error: error_message,
             });
         }
     });
@@ -516,10 +666,10 @@ async fn stream_pi_messages_inner(
     };
     let signal = options.and_then(|o| o.signal.clone());
 
-    let url = format!(
-        "{}/messages",
-        model.base_url.trim_end_matches('/')
-    );
+    let mut url = format!("{}/messages", model.base_url.trim_end_matches('/'));
+    if options.and_then(|o| o.debug).unwrap_or(false) {
+        url.push_str("?debug=1");
+    }
     let payload = json!({
         "model": model.id,
         "context": context,
@@ -554,38 +704,27 @@ async fn stream_pi_messages_inner(
     }
     let response = request.send().await?;
     let status = response.status();
-    let status_text = status
-        .canonical_reason()
-        .unwrap_or("")
-        .to_string();
-    let response_bytes = response.bytes().await?;
+    let status_text = status.canonical_reason().unwrap_or("").to_string();
 
     if !status.is_success() {
-        let body = String::from_utf8_lossy(&response_bytes).to_string();
-        let error_body = parse_pi_messages_error_body(&body);
-        let message =
-            format_pi_messages_response_error(status.as_u16(), &status_text, &body, error_body.as_ref());
-        return Err(message.into());
+        let body = response.text().await.unwrap_or_default();
+        return Err(Box::new(create_pi_messages_response_error(
+            model,
+            &url,
+            status.as_u16(),
+            &status_text,
+            &body,
+        )));
     }
-    if response_bytes.is_empty() {
+    if response.content_length() == Some(0) {
         return Err(format!("{} response has no body", model.provider).into());
     }
 
-    let events = read_pi_messages_events(&response_bytes);
+    // Stream the SSE body incrementally (match TS `readPiMessagesEvents`).
     let mut converter = PiMessagesConverter::new(model);
-    let mut terminal = false;
-    for event in events {
-        let converted = converter.convert(event);
-        let is_terminal = matches!(
-            converted,
-            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
-        );
-        let _ = tx.send(converted);
-        if is_terminal {
-            terminal = true;
-            break;
-        }
-    }
+    use futures::StreamExt;
+    let bytes_stream = response.bytes_stream().map(|item| item.map(|b| b.to_vec()));
+    let terminal = read_pi_messages_events_stream(bytes_stream, tx, &mut converter).await?;
     if !terminal {
         return Err(format!("{} stream ended without a terminal event", model.provider).into());
     }
@@ -616,6 +755,7 @@ pub fn stream_simple_pi_messages(
         full_opts.metadata.clone_from(&opts.base.metadata);
         full_opts.reasoning_effort.clone_from(&opts.reasoning);
         full_opts.thinking_budgets.clone_from(&opts.thinking_budgets);
+        full_opts.debug = opts.debug;
     }
     stream_pi_messages(model, context, Some(&full_opts))
 }
@@ -818,8 +958,10 @@ mod tests {
                 assert_eq!(error.error_message.as_deref(), Some("upstream failed"));
                 assert_eq!(error.response_id.as_deref(), Some("resp_2"));
                 let diags = error.diagnostics.unwrap();
-                assert!(diags[0].diagnostic.starts_with("pi_messages_rewrite:"));
-                assert!(diags[0].diagnostic.contains("policy-1"));
+                // Structured diagnostic shape (match TS).
+                assert_eq!(diags[0].type_field, "pi_messages_rewrite");
+                let details = diags[0].details.as_ref().unwrap();
+                assert_eq!(details["policyId"], "policy-1");
             }
             _ => panic!("expected error"),
         }
@@ -834,6 +976,31 @@ mod tests {
         assert!(message.contains("E123"));
         // Non-object error field is not parsed.
         assert!(parse_pi_messages_error_body(r#"{"error":"boom"}"#).is_none());
+    }
+
+    #[test]
+    fn test_create_response_error_diagnostic_details() {
+        let model = make_model();
+        let err = create_pi_messages_response_error(
+            &model,
+            "https://gateway.example/messages",
+            502,
+            "Bad Gateway",
+            r#"{"error":{"message":"upstream failed","code":"E_UPSTREAM"}}"#,
+        );
+        assert_eq!(err.to_string(), "502 Bad Gateway: upstream failed (E_UPSTREAM)");
+        assert_eq!(err.code.as_deref(), Some("E_UPSTREAM"));
+        let details = &err.diagnostic_details;
+        assert_eq!(details["version"], 1);
+        assert_eq!(details["provider"], "radius");
+        assert_eq!(details["model"], "radius-model");
+        assert_eq!(details["status"], 502);
+        assert!(details.contains_key("error"));
+        assert!(!details.contains_key("body"));
+        // Non-JSON bodies attach the truncated body instead.
+        let err = create_pi_messages_response_error(&model, "u", 500, "Internal Server Error", "oops");
+        assert!(err.diagnostic_details.contains_key("body"));
+        assert!(!err.diagnostic_details.contains_key("error"));
     }
 
     #[tokio::test]
@@ -871,6 +1038,7 @@ mod tests {
         };
         let opts = StreamOptions {
             api_key: Some("test-key".into()),
+            debug: Some(true),
             ..Default::default()
         };
         let mut stream = stream_pi_messages(&model, &context, Some(&opts));
@@ -894,7 +1062,10 @@ mod tests {
                 _ => kinds.push("other"),
             }
         }
-        assert_eq!(kinds, vec!["start", "text_start", "text_delta", "text_delta", "done"]);
+        assert_eq!(
+            kinds,
+            vec!["start", "text_start", "text_delta", "text_delta", "done"]
+        );
         let message = final_message.expect("terminal done event");
         assert_eq!(message.stop_reason, StopReason::Stop);
         assert_eq!(message.content.len(), 1);
@@ -906,8 +1077,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stream_pi_messages_http_error() {
-        // Mock backend returning a structured error body.
+    async fn test_stream_pi_messages_http_error_with_diagnostic() {
+        // Mock backend returning a structured error body; the error event must
+        // carry a `pi_messages_response_failure` diagnostic.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -939,14 +1111,23 @@ mod tests {
         let mut stream = stream_pi_messages(&model, &context, Some(&opts));
 
         use futures::StreamExt;
-        let mut error_message: Option<String> = None;
+        let mut error_event: Option<AssistantMessage> = None;
         while let Some(ev) = stream.next().await {
             if let AssistantMessageEvent::Error { error, .. } = ev {
-                error_message = error.error_message;
+                error_event = Some(error);
             }
         }
-        let msg = error_message.expect("error event with message");
+        let error = error_event.expect("error event");
+        let msg = error.error_message.as_deref().expect("error message");
         assert!(msg.contains("upstream failed"), "got: {msg}");
         assert!(msg.contains("E_UPSTREAM"), "got: {msg}");
+        // Structured diagnostic attached (match TS createErrorEvent).
+        let diags = error.diagnostics.as_ref().expect("diagnostics");
+        assert_eq!(diags[0].type_field, "pi_messages_response_failure");
+        let details = diags[0].details.as_ref().unwrap();
+        assert_eq!(details["status"], 502);
+        assert_eq!(details["error"]["code"], "E_UPSTREAM");
+        let error_info = diags[0].error.as_ref().unwrap();
+        assert!(error_info.message.contains("upstream failed"));
     }
 }

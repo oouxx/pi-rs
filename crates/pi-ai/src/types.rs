@@ -305,19 +305,30 @@ pub enum AssistantMessageEvent {
 // Diagnostics
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AssistantMessageDiagnostic {
-    #[serde(rename = "contentIndex")]
-    pub content_index: usize,
-    pub diagnostic: String,
-    pub severity: DiagnosticSeverity,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticErrorInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum DiagnosticSeverity {
-    Warning,
-    Error,
+/// Structured diagnostic attached to an assistant message
+/// (match TS `utils/diagnostics.ts`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantMessageDiagnostic {
+    #[serde(rename = "type")]
+    pub type_field: String,
+    pub timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<DiagnosticErrorInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 // ============================================================================
@@ -734,6 +745,9 @@ pub struct StreamOptions {
     pub reasoning_effort: Option<String>,
     /// Per-level thinking token budgets for vLLM `thinking_token_budget`.
     pub thinking_budgets: Option<ThinkingBudgets>,
+    /// Ask the backend for debug metadata (e.g. routing response headers);
+    /// pi-messages appends `?debug=1` (match TS `PiMessagesOptions.debug`).
+    pub debug: Option<bool>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -786,6 +800,7 @@ impl Clone for StreamOptions {
             service_tier: self.service_tier.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             thinking_budgets: self.thinking_budgets.clone(),
+            debug: self.debug,
             on_payload: self.on_payload.clone(),
             on_headers: self.on_headers.clone(),
             on_provider_response: self.on_provider_response.clone(),
@@ -814,6 +829,7 @@ impl Default for StreamOptions {
             service_tier: None,
             reasoning_effort: None,
             thinking_budgets: None,
+            debug: None,
             on_payload: None,
             on_headers: None,
             on_provider_response: None,
@@ -906,6 +922,7 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
             service_tier: None,
             reasoning_effort: None,
             thinking_budgets: None,
+            debug: None,
             on_payload: None,
             on_headers: None,
             on_provider_response: None,
@@ -922,6 +939,8 @@ pub struct SimpleStreamOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "thinkingBudgets")]
     pub thinking_budgets: Option<ThinkingBudgets>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<bool>,
 }
 
 // ============================================================================

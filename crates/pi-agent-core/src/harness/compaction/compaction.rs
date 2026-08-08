@@ -488,6 +488,7 @@ pub async fn generate_summary(
         },
         reasoning,
         thinking_budgets: None,
+        debug: None,
     };
 
     // Call pi_ai complete_simple (matches TS: completeSimple with reasoning support)

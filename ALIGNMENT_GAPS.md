@@ -20,15 +20,15 @@
 | 7 | v0.80.6 #6457 | Anthropic thinking 块回放：redacted → `redacted_thinking` 透传；带 signature → 保留 thinking；空 signature → 转纯文本（或 allowEmptySignature 保留） | `convert_messages` 丢弃所有 thinking 块 | A | ✅ 已修 |
 | 8 | v0.80.6 | `max` thinking level（EXTENDED_THINKING_LEVELS 含 "max"，xhigh/max 需 map 显式声明） | `EXTENDED_THINKING_LEVELS` 缺 "max" | A | ✅ 已修 |
 | 9 | v0.80.6 | input-based pricing tiers（`model.cost.tiers`） | `ModelCost` 缺 `tiers` | A | ✅ 已修 |
-| 10 | v0.80.2 | `ApiKeyCredential` discriminator `type: "api_key"` + auth.json `env` 覆盖 | pi-ai 无 credential 系统（coding-agent 有 `auth_storage.rs`） | B | 待确认 |
-| 11 | v0.80.2 #6020 | openai-completions 运行时 `detectCompat` fallback（无显式 compat 的模型按 baseUrl 推断） | pi-rs 无 detectCompat | B | 待确认 |
-| 12 | v0.79.9 #5673 | `chat_template_kwargs` thinking（vLLM/HF chat-template 模型） | pi-rs 无 | B | 待确认 |
+| 10 | v0.80.2 | `ApiKeyCredential` discriminator `type: "api_key"` + auth.json `env` 覆盖 | `AuthCredential::ApiKey` 增加可选 `env` 映射（`key?: string` + `env?: ProviderEnv`，序列化/反序列化保留）；`get_api_key` 解析时 credential `env` 覆盖进程环境（对齐 TS `overlayEnvAuthContext`，`resolve_config_value_with_env`） | A | ✅ 已修 |
+| 11 | v0.80.2 #6020 | openai-completions 运行时 `detectCompat` fallback（无显式 compat 的模型按 baseUrl 推断） | `detect_compat`/`get_compat` 完整移植（zai/together/moonshot/openrouter/cloudflare/nvidia/ant-ling 等探测 + thinkingFormat/maxTokensField/sessionAffinity 推断），并接入请求构建：system/developer 角色、store、max_tokens vs max_completion_tokens、stream_options 条件、reasoning 参数、prompt cache、session affinity headers、kimi deferred tools、zai_tool_stream、empty tools for tool history、anthropic cache control | A | ✅ 已修 |
+| 12 | v0.79.9 #5673 | `chat_template_kwargs` thinking（vLLM/HF chat-template 模型） | `chat_template_kwargs`/`chat_template_args` compat 字段 + `build_chat_template_values`/`resolve_chat_template_kwarg_value`（`$var: thinking.enabled`、`omitWhenOff`、thinkingLevelMap 映射），chat-template/qwen-chat-template/baseten thinking 分支（含 thinking_token_budget） | A | ✅ 已修 |
 | 13 | v0.79.10 #5114 | OpenAI-compatible 流式保留 reasoning_details（先于 tool call delta 到达） | 已核对：openai.rs 流式按 `reasoning_content`/`reasoning`/`reasoning_text` 处理 reasoning 块，但原实现遍历**全部**非空字段重复追加（如 chutes.ai 同时返回 reasoning_content 与 reasoning 相同内容会重复）；已改为仅取**第一个**非空字段（对齐 TS openai-completions），并补 opencode-go `reasoning`→`reasoning_content` signature 映射 | A | ✅ 已修 |
 | 14 | v0.80.7 #6496 | `compat.sessionAffinityFormat`（替代 `sendSessionIdHeader`，breaking） | `OpenAIResponsesCompat` 已更新为 v0.80.7 字段（sessionAffinityFormat/supportsDeveloperRole/supportsStrictMode 等），provider 已按格式发 session affinity headers | B | ✅ 已修 |
 | 15 | v0.80.0+ | `openai-responses` API 后端（openai 官方 provider 用 `/v1/responses`） | 已实现 `openai_responses.rs`（消息/工具转换 + SSE 流式 + 事件序列），openai 模型已切到 `openai-responses`；简化项见 DEVIATIONS.md #5 | B | ✅ 已修（含简化偏差） |
 | 16 | v0.80.8 | `ModelRuntime` / live model catalog refresh | 未实现 | B | 大项，待排期 |
 | 17 | v0.80.3/8/9/10 | 模型元数据：Claude Sonnet 5、Grok 4.5、Kimi K3、默认 gpt-5.5、openrouter/fusion、context window 272k 等 | 模型覆盖度受限 | D | DEVIATIONS #2（待确认） |
-| 18 | v0.79.5 #5790 | 全局 `httpProxy` 设置 | pi-rs 无 | B | 待确认 |
+| 18 | v0.79.5 #5790 | 全局 `httpProxy` 设置 | `apply_http_proxy_settings`：全局设置 httpProxy → HTTP_PROXY/HTTPS_PROXY 环境变量（`??=` 语义，仅未设置时写入；reqwest 自动读取），在 `create_agent_session_services` 应用 | A | ✅ 已修 |
 | 19 | v0.79.5 #5798 | Vercel AI Gateway attribution headers | 无 Vercel provider | D | DEVIATIONS #2 |
 
 ## pi-agent-core

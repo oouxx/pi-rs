@@ -810,6 +810,8 @@ where
                         metadata: None,
                         tool_choice: None,
                         service_tier: None,
+                        reasoning_effort: None,
+                        thinking_budgets: None,
                         on_payload: None,
                         on_headers: None,
                         on_provider_response: None,

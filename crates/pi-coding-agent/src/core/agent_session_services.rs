@@ -125,6 +125,13 @@ pub async fn create_agent_session_services(
         .settings_manager
         .unwrap_or_else(|| SettingsManager::create(&cwd, Some(&agent_dir)));
 
+    // Global `httpProxy` setting → HTTP_PROXY/HTTPS_PROXY env vars (match TS
+    // main.ts `applyHttpProxySettings`); reqwest picks these up when no
+    // explicit proxy is configured.
+    crate::core::http_dispatcher::apply_http_proxy_settings(
+        settings_manager.get_global_settings().http_proxy.as_deref(),
+    );
+
     let model_registry = options
         .model_registry
         .unwrap_or_else(|| ModelRegistry::new(vec![]));

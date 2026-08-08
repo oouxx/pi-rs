@@ -57,8 +57,16 @@ impl OAuthProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthCredential {
+    /// Stored api-key credential. `key` may use `${ENV}` templates; `env`
+    /// holds provider-scoped env/config values that override the ambient
+    /// process environment during resolution (match TS `ApiKeyCredential`).
     #[serde(rename = "api_key")]
-    ApiKey { key: String },
+    ApiKey {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+    },
     #[serde(rename = "oauth")]
     OAuth {
         #[serde(flatten)]
@@ -386,8 +394,15 @@ impl AuthStorage {
 
         let cred = self.data.get(provider_id);
 
-        if let Some(AuthCredential::ApiKey { key }) = cred {
-            return resolve_config_value::resolve_config_value(key);
+        if let Some(AuthCredential::ApiKey {
+            key: Some(k),
+            env,
+        }) = cred
+        {
+            // Provider-scoped env values stored in the credential override
+            // the ambient process environment during `${ENV}` resolution
+            // (match TS `overlayEnvAuthContext`).
+            return resolve_config_value::resolve_config_value_with_env(k, env.as_ref());
         }
 
         if let Some(AuthCredential::OAuth { credentials }) = cred {
@@ -424,7 +439,8 @@ mod tests {
         storage.set(
             "anthropic",
             AuthCredential::ApiKey {
-                key: "sk-test".into(),
+                key: Some("sk-test".into()),
+                env: None,
             },
         );
         let cred = storage.get("anthropic");
@@ -438,7 +454,8 @@ mod tests {
         storage.set(
             "openai",
             AuthCredential::ApiKey {
-                key: "sk-test".into(),
+                key: Some("sk-test".into()),
+                env: None,
             },
         );
         assert!(storage.has("openai"));
@@ -449,8 +466,8 @@ mod tests {
     #[test]
     fn test_list() {
         let mut storage = AuthStorage::in_memory(AuthStorageData::new());
-        storage.set("a", AuthCredential::ApiKey { key: "k1".into() });
-        storage.set("b", AuthCredential::ApiKey { key: "k2".into() });
+        storage.set("a", AuthCredential::ApiKey { key: Some("k1".into()), env: None });
+        storage.set("b", AuthCredential::ApiKey { key: Some("k2".into()), env: None });
         let providers = storage.list();
         assert_eq!(providers.len(), 2);
         assert!(providers.contains(&"a".to_string()));
@@ -470,7 +487,8 @@ mod tests {
         storage.set(
             "anthropic",
             AuthCredential::ApiKey {
-                key: "sk-abc".into(),
+                key: Some("sk-abc".into()),
+                env: None,
             },
         );
         let status = storage.get_auth_status("anthropic");
@@ -488,5 +506,73 @@ mod tests {
     fn test_drain_errors() {
         let mut storage = AuthStorage::in_memory(AuthStorageData::new());
         assert!(storage.drain_errors().is_empty());
+    }
+
+    #[test]
+    fn test_api_key_env_override_wins_over_process_env() {
+        // A stored credential's `env` map overrides the ambient process env
+        // during `${ENV}` template resolution (match TS `ApiKeyCredential.env`).
+        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: Some("sk-${ANTHROPIC_API_KEY}".into()),
+                env: Some({
+                    let mut m = HashMap::new();
+                    m.insert("ANTHROPIC_API_KEY".to_string(), "from-credential".to_string());
+                    m
+                }),
+            },
+        );
+        let key = futures::executor::block_on(storage.get_api_key("anthropic", true)).unwrap();
+        assert_eq!(key, "sk-from-credential");
+    }
+
+    #[test]
+    fn test_api_key_env_serialization_roundtrip() {
+        // auth.json entries carrying `env` must deserialize (and round-trip)
+        // without dropping the provider-scoped values.
+        let mut data = AuthStorageData::new();
+        data.insert(
+            "cloudflare".to_string(),
+            AuthCredential::ApiKey {
+                key: Some("cf-${CLOUDFLARE_ACCOUNT_ID}".into()),
+                env: Some({
+                    let mut m = HashMap::new();
+                    m.insert("CLOUDFLARE_ACCOUNT_ID".to_string(), "acct-1".to_string());
+                    m
+                }),
+            },
+        );
+        let json = serde_json::to_string(&data).unwrap();
+        let parsed: AuthStorageData = serde_json::from_str(&json).unwrap();
+        match parsed.get("cloudflare") {
+            Some(AuthCredential::ApiKey { key, env }) => {
+                assert_eq!(key.as_deref(), Some("cf-${CLOUDFLARE_ACCOUNT_ID}"));
+                assert_eq!(
+                    env.as_ref().and_then(|m| m.get("CLOUDFLARE_ACCOUNT_ID")).map(String::as_str),
+                    Some("acct-1")
+                );
+            }
+            _ => panic!("expected api_key credential"),
+        }
+    }
+
+    #[test]
+    fn test_api_key_without_key_falls_back_to_ambient_env() {
+        // TS `credential?.key` is optional: a stored entry without a key falls
+        // through to ambient env resolution.
+        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: None,
+                env: None,
+            },
+        );
+        std::env::set_var("ANTHROPIC_API_KEY", "ambient-key");
+        let key = futures::executor::block_on(storage.get_api_key("anthropic", false)).unwrap();
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        assert_eq!(key, "ambient-key");
     }
 }

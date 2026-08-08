@@ -7,13 +7,253 @@
 
 use reqwest::Client as HttpClient;
 use serde::Serialize;
+use serde_json::json;
 use serde_json::Value;
 
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, Message, Model,
+    AssistantMessage, AssistantMessageEvent, CacheRetention, ContentBlock, Context, Message, Model,
     SimpleStreamOptions, StopReason, StreamOptions, Tool, Usage,
 };
 use crate::utils::event_stream::AssistantMessageEventStream;
+
+// ============================================================================
+// OpenAI-completions compat resolution (match TS `detectCompat` / `getCompat`)
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct ResolvedOpenAICompletionsCompat {
+    pub supports_store: bool,
+    pub supports_developer_role: bool,
+    pub supports_reasoning_effort: bool,
+    pub supports_usage_in_streaming: bool,
+    pub supports_finish_reason: bool,
+    pub max_tokens_field: String,
+    pub requires_tool_result_name: bool,
+    pub requires_assistant_after_tool_result: bool,
+    pub requires_thinking_as_text: bool,
+    pub requires_reasoning_content_on_assistant_messages: bool,
+    pub thinking_format: String,
+    pub open_router_routing: Option<crate::types::OpenRouterRouting>,
+    pub vercel_gateway_routing: Option<crate::types::VercelGatewayRouting>,
+    pub chat_template_kwargs: serde_json::Map<String, serde_json::Value>,
+    pub chat_template_args: serde_json::Map<String, serde_json::Value>,
+    pub zai_tool_stream: bool,
+    pub supports_thinking_token_budget: bool,
+    pub supports_strict_mode: bool,
+    pub supports_openai_grammar_tools: bool,
+    pub cache_control_format: Option<String>,
+    pub send_session_affinity_headers: bool,
+    pub deferred_tools_mode: Option<String>,
+    pub session_affinity_format: String,
+    pub supports_long_cache_retention: bool,
+}
+
+/// Auto-detect compatibility settings from provider name and baseUrl
+/// (match TS `detectCompat`). Explicit `model.compat` overrides these.
+fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
+    let provider = &model.provider;
+    let base_url = &model.base_url;
+
+    let is_zai = provider == "zai"
+        || provider == "zai-coding-cn"
+        || base_url.contains("api.z.ai")
+        || base_url.contains("open.bigmodel.cn");
+    let is_together = provider == "together"
+        || base_url.contains("api.together.ai")
+        || base_url.contains("api.together.xyz");
+    let is_moonshot =
+        provider == "moonshotai" || provider == "moonshotai-cn" || base_url.contains("api.moonshot.");
+    let is_openrouter = provider == "openrouter" || base_url.contains("openrouter.ai");
+    let is_cloudflare_workers_ai =
+        provider == "cloudflare-workers-ai" || base_url.contains("api.cloudflare.com");
+    let is_cloudflare_ai_gateway =
+        provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
+    let is_nvidia = provider == "nvidia" || base_url.contains("integrate.api.nvidia.com");
+    let is_ant_ling = provider == "ant-ling" || base_url.contains("api.ant-ling.com");
+
+    let is_non_standard = is_nvidia
+        || provider == "cerebras"
+        || base_url.contains("cerebras.ai")
+        || provider == "xai"
+        || base_url.contains("api.x.ai")
+        || is_together
+        || base_url.contains("chutes.ai")
+        || base_url.contains("deepseek.com")
+        || is_zai
+        || is_moonshot
+        || provider == "opencode"
+        || base_url.contains("opencode.ai")
+        || is_cloudflare_workers_ai
+        || is_cloudflare_ai_gateway
+        || is_ant_ling;
+
+    let use_max_tokens = base_url.contains("chutes.ai")
+        || is_moonshot
+        || is_cloudflare_ai_gateway
+        || is_together
+        || is_nvidia
+        || is_ant_ling
+        || is_zai;
+
+    let is_grok = provider == "xai" || base_url.contains("api.x.ai");
+    let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
+    let is_openrouter_developer_role_model =
+        is_openrouter && (model.id.starts_with("anthropic/") || model.id.starts_with("openai/"));
+    let cache_control_format = if provider == "openrouter" && model.id.starts_with("anthropic/") {
+        Some("anthropic".to_string())
+    } else {
+        None
+    };
+
+    let thinking_format = if is_deepseek {
+        "deepseek"
+    } else if is_zai {
+        "zai"
+    } else if is_together {
+        "together"
+    } else if is_ant_ling {
+        "ant-ling"
+    } else if is_openrouter {
+        "openrouter"
+    } else {
+        "openai"
+    };
+
+    ResolvedOpenAICompletionsCompat {
+        supports_store: !is_non_standard,
+        supports_developer_role: is_openrouter_developer_role_model || (!is_non_standard && !is_openrouter),
+        supports_reasoning_effort: !is_grok
+            && !is_zai
+            && !is_moonshot
+            && !is_together
+            && !is_cloudflare_ai_gateway
+            && !is_nvidia
+            && !is_ant_ling,
+        supports_usage_in_streaming: true,
+        supports_finish_reason: true,
+        max_tokens_field: if use_max_tokens {
+            "max_tokens".to_string()
+        } else {
+            "max_completion_tokens".to_string()
+        },
+        requires_tool_result_name: false,
+        requires_assistant_after_tool_result: false,
+        requires_thinking_as_text: false,
+        requires_reasoning_content_on_assistant_messages: is_deepseek,
+        thinking_format: thinking_format.to_string(),
+        open_router_routing: None,
+        vercel_gateway_routing: None,
+        chat_template_kwargs: serde_json::Map::new(),
+        chat_template_args: serde_json::Map::new(),
+        zai_tool_stream: false,
+        supports_thinking_token_budget: false,
+        supports_strict_mode: !is_moonshot && !is_together && !is_cloudflare_ai_gateway && !is_nvidia,
+        supports_openai_grammar_tools: false,
+        cache_control_format,
+        send_session_affinity_headers: false,
+        deferred_tools_mode: None,
+        session_affinity_format: if is_openrouter {
+            "openrouter".to_string()
+        } else {
+            "openai".to_string()
+        },
+        supports_long_cache_retention: !(is_together
+            || is_cloudflare_workers_ai
+            || is_cloudflare_ai_gateway
+            || is_nvidia
+            || is_ant_ling),
+    }
+}
+
+/// Get resolved compatibility settings for a model: auto-detect from
+/// provider/URL, then override with explicit `model.compat`
+/// (match TS `getCompat`).
+fn get_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
+    let detected = detect_compat(model);
+    let Some(compat) = (match &model.compat {
+        Some(crate::types::ModelCompat::OpenAICompletions(c)) => Some(c.as_ref()),
+        _ => None,
+    }) else {
+        return detected;
+    };
+
+    ResolvedOpenAICompletionsCompat {
+        supports_store: compat.supports_store.unwrap_or(detected.supports_store),
+        supports_developer_role: compat
+            .supports_developer_role
+            .unwrap_or(detected.supports_developer_role),
+        supports_reasoning_effort: compat
+            .supports_reasoning_effort
+            .unwrap_or(detected.supports_reasoning_effort),
+        supports_usage_in_streaming: compat
+            .supports_usage_in_streaming
+            .unwrap_or(detected.supports_usage_in_streaming),
+        supports_finish_reason: compat
+            .supports_finish_reason
+            .unwrap_or(detected.supports_finish_reason),
+        max_tokens_field: compat
+            .max_tokens_field
+            .clone()
+            .unwrap_or(detected.max_tokens_field),
+        requires_tool_result_name: compat
+            .requires_tool_result_name
+            .unwrap_or(detected.requires_tool_result_name),
+        requires_assistant_after_tool_result: compat
+            .requires_assistant_after_tool_result
+            .unwrap_or(detected.requires_assistant_after_tool_result),
+        requires_thinking_as_text: compat
+            .requires_thinking_as_text
+            .unwrap_or(detected.requires_thinking_as_text),
+        requires_reasoning_content_on_assistant_messages: compat
+            .requires_reasoning_content_on_assistant_messages
+            .unwrap_or(detected.requires_reasoning_content_on_assistant_messages),
+        thinking_format: compat
+            .thinking_format
+            .clone()
+            .unwrap_or(detected.thinking_format),
+        open_router_routing: compat.open_router_routing.clone().or(detected.open_router_routing),
+        vercel_gateway_routing: compat
+            .vercel_gateway_routing
+            .clone()
+            .or(detected.vercel_gateway_routing),
+        chat_template_kwargs: compat
+            .chat_template_kwargs
+            .clone()
+            .unwrap_or(detected.chat_template_kwargs),
+        chat_template_args: compat
+            .chat_template_args
+            .clone()
+            .unwrap_or(detected.chat_template_args),
+        zai_tool_stream: compat.zai_tool_stream.unwrap_or(detected.zai_tool_stream),
+        supports_thinking_token_budget: compat
+            .supports_thinking_token_budget
+            .unwrap_or(detected.supports_thinking_token_budget),
+        supports_strict_mode: compat
+            .supports_strict_mode
+            .unwrap_or(detected.supports_strict_mode),
+        supports_openai_grammar_tools: compat
+            .supports_openai_grammar_tools
+            .unwrap_or(detected.supports_openai_grammar_tools),
+        cache_control_format: compat
+            .cache_control_format
+            .clone()
+            .or(detected.cache_control_format),
+        send_session_affinity_headers: compat
+            .send_session_affinity_headers
+            .unwrap_or(detected.send_session_affinity_headers),
+        deferred_tools_mode: compat
+            .deferred_tools_mode
+            .clone()
+            .or(detected.deferred_tools_mode),
+        session_affinity_format: compat
+            .session_affinity_format
+            .clone()
+            .unwrap_or(detected.session_affinity_format),
+        supports_long_cache_retention: compat
+            .supports_long_cache_retention
+            .unwrap_or(detected.supports_long_cache_retention),
+    }
+}
 
 // ============================================================================
 // OpenAI API types (request/response)
@@ -83,17 +323,43 @@ struct StreamOptionsFlag {
 }
 
 // ============================================================================
-// Message conversion
+// Message conversion (match TS `convertMessages`)
 // ============================================================================
 
-/// Convert pi-ai messages to `OpenAI` API format.
-fn convert_messages(messages: &[Message]) -> Vec<OpenAIMessage> {
-    let mut result = Vec::new();
+/// Convert pi-ai messages to the OpenAI Chat Completions API format.
+fn convert_messages(
+    model: &Model,
+    context: &Context,
+    compat: &ResolvedOpenAICompletionsCompat,
+    grammar_properties: &std::collections::HashMap<String, String>,
+) -> Vec<Value> {
+    let mut params: Vec<Value> = Vec::new();
 
-    for msg in messages {
+    if let Some(sp) = &context.system_prompt {
+        let role = if model.reasoning && compat.supports_developer_role {
+            "developer"
+        } else {
+            "system"
+        };
+        params.push(json!({ "role": role, "content": sp }));
+    }
+
+    let mut last_role: Option<String> = None;
+
+    let mut i = 0usize;
+    while i < context.messages.len() {
+        let msg = &context.messages[i];
         match msg {
             Message::User { content, .. } => {
-                let text = content
+                if compat.requires_assistant_after_tool_result
+                    && last_role.as_deref() == Some("toolResult")
+                {
+                    params.push(json!({
+                        "role": "assistant",
+                        "content": "I have processed the tool results.",
+                    }));
+                }
+                let text: String = content
                     .iter()
                     .filter_map(|b| match b {
                         ContentBlock::Text { text, .. } => Some(text.clone()),
@@ -101,26 +367,112 @@ fn convert_messages(messages: &[Message]) -> Vec<OpenAIMessage> {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                if !text.trim().is_empty() {
-                    result.push(OpenAIMessage {
-                        role: "user".to_string(),
-                        content: Some(text),
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
+                let images: Vec<&ContentBlock> = content
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::Image { .. }))
+                    .collect();
+                if images.is_empty() {
+                    if !text.trim().is_empty() {
+                        params.push(json!({ "role": "user", "content": text }));
+                    }
+                } else {
+                    let mut parts: Vec<Value> = Vec::new();
+                    if !text.trim().is_empty() {
+                        parts.push(json!({ "type": "text", "text": text }));
+                    }
+                    for b in images {
+                        if let ContentBlock::Image { data, mime_type } = b {
+                            parts.push(json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{mime_type};base64,{data}") },
+                            }));
+                        }
+                    }
+                    if !parts.is_empty() {
+                        params.push(json!({ "role": "user", "content": parts }));
+                    }
                 }
+                last_role = Some("user".to_string());
             }
             Message::Assistant { content, .. } => {
-                let text = content
+                let text_parts: Vec<Value> = content
                     .iter()
                     .filter_map(|b| match b {
-                        ContentBlock::Text { text, .. } => Some(text.clone()),
+                        ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
+                            Some(json!({ "type": "text", "text": text }))
+                        }
                         _ => None,
                     })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .collect();
+                let assistant_text: String = text_parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                    .collect();
+                let thinking_blocks: Vec<&ContentBlock> = content
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty()))
+                    .collect();
 
-                let tool_calls: Vec<OpenAIToolCall> = content
+                let mut msg_obj = serde_json::Map::new();
+                msg_obj.insert("role".into(), json!("assistant"));
+                msg_obj.insert(
+                    "content".into(),
+                    if compat.requires_assistant_after_tool_result {
+                        json!("")
+                    } else {
+                        Value::Null
+                    },
+                );
+
+                if !thinking_blocks.is_empty() {
+                    if compat.requires_thinking_as_text {
+                        let thinking_text: String = thinking_blocks
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        let mut parts = vec![json!({ "type": "text", "text": thinking_text })];
+                        parts.extend(text_parts);
+                        msg_obj.insert("content".into(), json!(parts));
+                    } else {
+                        // Always send assistant content as a plain string
+                        // (OpenAI Chat Completions standard format).
+                        if !assistant_text.is_empty() {
+                            msg_obj.insert("content".into(), json!(assistant_text));
+                        }
+                        // Use the signature from the first thinking block if available
+                        // (llama.cpp server + gpt-oss).
+                        let mut signature = match thinking_blocks[0] {
+                            ContentBlock::Thinking {
+                                thinking_signature, ..
+                            } => thinking_signature.clone(),
+                            _ => None,
+                        };
+                        if model.provider == "opencode-go" && signature.as_deref() == Some("reasoning") {
+                            signature = Some("reasoning_content".to_string());
+                        }
+                        if let Some(sig) = signature {
+                            if !sig.is_empty() {
+                                let joined: String = thinking_blocks
+                                    .iter()
+                                    .filter_map(|b| match b {
+                                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                msg_obj.insert(sig, json!(joined));
+                            }
+                        }
+                    }
+                } else if !assistant_text.is_empty() {
+                    msg_obj.insert("content".into(), json!(assistant_text));
+                }
+
+                let tool_calls: Vec<Value> = content
                     .iter()
                     .filter_map(|b| match b {
                         ContentBlock::ToolCall {
@@ -128,81 +480,255 @@ fn convert_messages(messages: &[Message]) -> Vec<OpenAIMessage> {
                             name,
                             arguments,
                             ..
-                        } => Some(OpenAIToolCall {
-                            id: id.clone(),
-                            tc_type: "function".to_string(),
-                            function: OpenAIFunctionCall {
-                                name: name.clone(),
-                                arguments: arguments.to_string(),
-                            },
-                        }),
+                        } => {
+                            let custom_property = grammar_properties.get(name);
+                            if let Some(property) = custom_property {
+                                let input = match super::openai_responses::get_grammar_tool_input(
+                                    name, arguments, property,
+                                ) {
+                                    Ok(input) => input,
+                                    Err(e) => {
+                                        eprintln!("[pi-ai] {e}");
+                                        String::new()
+                                    }
+                                };
+                                Some(json!({
+                                    "id": id,
+                                    "type": "custom",
+                                    "custom": { "name": name, "input": input },
+                                }))
+                            } else {
+                                Some(json!({
+                                    "id": id,
+                                    "type": "function",
+                                    "function": { "name": name, "arguments": arguments.to_string() },
+                                }))
+                            }
+                        }
                         _ => None,
                     })
                     .collect();
+                if !tool_calls.is_empty() {
+                    msg_obj.insert("tool_calls".into(), json!(tool_calls));
+                    let reasoning_details: Vec<Value> = content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolCall {
+                                thought_signature: Some(sig),
+                                ..
+                            } => serde_json::from_str::<Value>(sig).ok(),
+                            _ => None,
+                        })
+                        .collect();
+                    if !reasoning_details.is_empty() {
+                        msg_obj.insert("reasoning_details".into(), json!(reasoning_details));
+                    }
+                }
 
-                if !text.is_empty() || !tool_calls.is_empty() {
-                    result.push(OpenAIMessage {
-                        role: "assistant".to_string(),
-                        content: if text.is_empty() { None } else { Some(text) },
-                        tool_calls: if tool_calls.is_empty() {
-                            None
-                        } else {
-                            Some(tool_calls)
-                        },
-                        tool_call_id: None,
-                    });
+                if compat.requires_reasoning_content_on_assistant_messages
+                    && model.reasoning
+                    && !msg_obj.contains_key("reasoning_content")
+                {
+                    msg_obj.insert("reasoning_content".into(), json!(""));
+                }
+
+                let has_content = match msg_obj.get("content") {
+                    Some(Value::Null) => false,
+                    Some(Value::String(s)) => !s.is_empty(),
+                    Some(Value::Array(a)) => !a.is_empty(),
+                    _ => false,
+                };
+                if !has_content && !msg_obj.contains_key("tool_calls") {
+                    last_role = Some("assistant".to_string());
+                    i += 1;
+                    continue;
+                }
+                params.push(Value::Object(msg_obj));
+                last_role = Some("assistant".to_string());
+            }
+            Message::ToolResult { .. } => {
+                // Group consecutive tool results: extract text/images, emit one
+                // `tool` message per result, then a single user image message
+                // (match TS convertMessages).
+                let mut image_blocks: Vec<Value> = Vec::new();
+                let mut deferred_names: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut j = i;
+                while j < context.messages.len() {
+                    if !matches!(context.messages[j], Message::ToolResult { .. }) {
+                        break;
+                    }
+                    let Message::ToolResult {
+                        tool_call_id,
+                        tool_name,
+                        content,
+                        added_tool_names,
+                        ..
+                    } = &context.messages[j]
+                    else {
+                        break;
+                    };
+                    let text_result: String = content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let has_images = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+                    let has_text = !text_result.is_empty();
+                    let tool_result_text = if has_text {
+                        text_result
+                    } else if has_images {
+                        "(see attached image)".to_string()
+                    } else {
+                        "(no tool output)".to_string()
+                    };
+                    let mut tool_msg = serde_json::Map::new();
+                    tool_msg.insert("role".into(), json!("tool"));
+                    tool_msg.insert("content".into(), json!(tool_result_text));
+                    tool_msg.insert("tool_call_id".into(), json!(tool_call_id));
+                    if compat.requires_tool_result_name {
+                        tool_msg.insert("name".into(), json!(tool_name));
+                    }
+                    params.push(Value::Object(tool_msg));
+
+                    if compat.deferred_tools_mode.as_deref() == Some("kimi") {
+                        if let Some(names) = added_tool_names {
+                            for name in names {
+                                deferred_names.insert(name.clone());
+                            }
+                        }
+                    }
+
+                    if model.input.iter().any(|t| t == "image") {
+                        for b in content {
+                            if let ContentBlock::Image { data, mime_type } = b {
+                                image_blocks.push(json!({
+                                    "type": "image_url",
+                                    "image_url": { "url": format!("data:{mime_type};base64,{data}") },
+                                }));
+                            }
+                        }
+                    }
+                    j += 1;
+                }
+                i = j - 1;
+
+                if !image_blocks.is_empty() {
+                    if compat.requires_assistant_after_tool_result {
+                        params.push(json!({
+                            "role": "assistant",
+                            "content": "I have processed the tool results.",
+                        }));
+                    }
+                    let mut parts = vec![json!({
+                        "type": "text",
+                        "text": "Attached image(s) from tool result:",
+                    })];
+                    parts.extend(image_blocks);
+                    params.push(json!({ "role": "user", "content": parts }));
+                    last_role = Some("user".to_string());
+                } else {
+                    last_role = Some("toolResult".to_string());
+                }
+
+                if !deferred_names.is_empty() && compat.deferred_tools_mode.as_deref() == Some("kimi") {
+                    let deferred_tools: Vec<Tool> = context
+                        .tools
+                        .as_ref()
+                        .map(|tools| {
+                            tools
+                                .iter()
+                                .filter(|t| deferred_names.contains(&t.name))
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !deferred_tools.is_empty() {
+                        // Kimi accepts a system message with tools but omits the
+                        // standard content field.
+                        let mut kimi = serde_json::Map::new();
+                        kimi.insert("role".into(), json!("system"));
+                        kimi.insert("tools".into(), json!(convert_tools(&deferred_tools, compat)));
+                        params.push(Value::Object(kimi));
+                    }
                 }
             }
-            Message::ToolResult {
-                tool_call_id,
-                content,
-                ..
-            } => {
-                let text = content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                result.push(OpenAIMessage {
-                    role: "tool".to_string(),
-                    content: Some(text),
-                    tool_calls: None,
-                    tool_call_id: Some(tool_call_id.clone()),
-                });
-            }
         }
+        i += 1;
     }
 
+    params
+}
+
+/// Convert pi-ai tools to `OpenAI` tool definitions (match TS `convertTools`).
+fn convert_tools(tools: &[Tool], compat: &ResolvedOpenAICompletionsCompat) -> Vec<Value> {
+    let mut result = Vec::new();
+    for tool in tools {
+        if let Ok(Some(grammar)) =
+            super::openai_responses::resolve_grammar_constrained_sampling(
+                tool,
+                compat.supports_openai_grammar_tools,
+            )
+        {
+            result.push(json!({
+                "type": "custom",
+                "custom": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "format": {
+                        "type": "grammar",
+                        "grammar": {
+                            "syntax": grammar.format,
+                            "definition": grammar.definition,
+                        },
+                    },
+                },
+            }));
+            continue;
+        }
+        let strict = match super::openai_responses::resolve_json_schema_strict_sampling(
+            tool,
+            compat.supports_strict_mode,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[pi-ai] {e}");
+                None
+            }
+        };
+        let mut function = serde_json::Map::new();
+        function.insert("name".into(), json!(tool.name));
+        function.insert("description".into(), json!(tool.description));
+        function.insert("parameters".into(), tool.parameters.clone());
+        if compat.supports_strict_mode {
+            function.insert("strict".into(), json!(strict.unwrap_or(false)));
+        }
+        result.push(json!({
+            "type": "function",
+            "function": function,
+        }));
+    }
     result
 }
 
-/// Convert pi-ai tools to `OpenAI` tool definitions.
-fn convert_tools(tools: &[Tool]) -> Vec<OpenAITool> {
-    tools
-        .iter()
-        .map(|t| OpenAITool {
-            tool_type: "function".to_string(),
-            function: OpenAIFunctionDef {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: t.parameters.clone(),
-            },
-        })
-        .collect()
-}
-
 /// Map `OpenAI` finish reason to pi-ai `StopReason`.
-fn map_stop_reason(reason: &str) -> StopReason {
+fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
     match reason {
-        "stop" => StopReason::Stop,
-        "length" => StopReason::Length,
-        "tool_calls" => StopReason::ToolUse,
-        "content_filter" => StopReason::Error,
-        _ => StopReason::Stop,
+        "stop" | "end" => (StopReason::Stop, None),
+        "length" => (StopReason::Length, None),
+        "function_call" | "tool_calls" => (StopReason::ToolUse, None),
+        "content_filter" => (
+            StopReason::Error,
+            Some("Provider finish_reason: content_filter".to_string()),
+        ),
+        "network_error" => (
+            StopReason::Error,
+            Some("Provider finish_reason: network_error".to_string()),
+        ),
+        other => (StopReason::Error, Some(format!("Provider finish_reason: {other}"))),
     }
 }
 
@@ -351,6 +877,405 @@ pub fn stream_openai(
     AssistantMessageEventStream::from_receiver(rx)
 }
 
+/// Whether the conversation contains tool calls/results (match TS `hasToolHistory`).
+fn has_tool_history(messages: &[Message]) -> bool {
+    for msg in messages {
+        if matches!(msg, Message::ToolResult { .. }) {
+            return true;
+        }
+        if let Message::Assistant { content, .. } = msg {
+            if content.iter().any(|b| matches!(b, ContentBlock::ToolCall { .. })) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Tool names added by tool results (kimi deferred tools; match TS `getDeferredToolNames`).
+fn get_deferred_tool_names(messages: &[Message]) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for msg in messages {
+        if let Message::ToolResult {
+            added_tool_names: Some(added),
+            ..
+        } = msg
+        {
+            for name in added {
+                names.insert(name.clone());
+            }
+        }
+    }
+    names
+}
+
+fn clamp_openai_prompt_cache_key(key: Option<&str>) -> Option<String> {
+    let key = key?;
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() > 64 {
+        Some(chars[..64].iter().collect())
+    } else {
+        Some(key.to_string())
+    }
+}
+
+/// Anthropic-style cache control for openrouter anthropic models
+/// (match TS `getCompatCacheControl`).
+fn get_compat_cache_control(
+    compat: &ResolvedOpenAICompletionsCompat,
+    cache_retention: &CacheRetention,
+) -> Option<serde_json::Value> {
+    if compat.cache_control_format.as_deref() != Some("anthropic")
+        || *cache_retention == CacheRetention::None
+    {
+        return None;
+    }
+    let ttl = if *cache_retention == CacheRetention::Long && compat.supports_long_cache_retention {
+        Some("1h")
+    } else {
+        None
+    };
+    Some(match ttl {
+        Some(t) => json!({ "type": "ephemeral", "ttl": t }),
+        None => json!({ "type": "ephemeral" }),
+    })
+}
+
+fn add_cache_control_to_message(message: &mut Value, cache_control: &Value) -> bool {
+    if let Some(content) = message.get_mut("content") {
+        match content {
+            Value::String(s) => {
+                if s.is_empty() {
+                    return false;
+                }
+                *content = json!([{ "type": "text", "text": s, "cache_control": cache_control }]);
+                return true;
+            }
+            Value::Array(parts) => {
+                for part in parts.iter_mut().rev() {
+                    if part.get("type").and_then(Value::as_str) == Some("text") {
+                        if let Some(obj) = part.as_object_mut() {
+                            obj.insert("cache_control".into(), cache_control.clone());
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Apply Anthropic-style `cache_control` to the system prompt, the last tool
+/// definition, and the last conversation message (match TS `applyAnthropicCacheControl`).
+fn apply_anthropic_cache_control(
+    messages: &mut [Value],
+    tools: &mut Option<Vec<Value>>,
+    cache_control: &Value,
+) {
+    // System/developer prompt (first match wins).
+    for message in messages.iter_mut() {
+        let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+        if role == "system" || role == "developer" {
+            add_cache_control_to_message(message, cache_control);
+            break;
+        }
+    }
+    // Last tool definition.
+    if let Some(tools) = tools.as_mut() {
+        if let Some(last) = tools.last_mut() {
+            if let Some(obj) = last.as_object_mut() {
+                obj.insert("cache_control".into(), cache_control.clone());
+            }
+        }
+    }
+    // Last user/assistant/tool message.
+    for message in messages.iter_mut().rev() {
+        let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+        if (role == "user" || role == "assistant" || role == "tool")
+            && add_cache_control_to_message(message, cache_control)
+        {
+            break;
+        }
+    }
+}
+
+/// Resolve a chat-template kwarg value, supporting `$var`/`omitWhenOff`
+/// placeholders (match TS `resolveChatTemplateKwargValue`).
+fn resolve_chat_template_kwarg_value(
+    model: &Model,
+    options: Option<&StreamOptions>,
+    value: &Value,
+) -> Option<Value> {
+    let reasoning_effort = options.and_then(|o| o.reasoning_effort.clone());
+    match value {
+        Value::Object(obj) => {
+            if reasoning_effort.is_none()
+                && obj.get("omitWhenOff").and_then(Value::as_bool).unwrap_or(false)
+            {
+                return None;
+            }
+            if obj.get("$var").and_then(Value::as_str) == Some("thinking.enabled") {
+                return Some(Value::Bool(reasoning_effort.is_some()));
+            }
+            let mapped = match &reasoning_effort {
+                Some(level) => model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| m.get(level).and_then(Option::as_deref))
+                    .map(str::to_string),
+                None => model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| m.get("off").and_then(Option::as_deref))
+                    .map(str::to_string),
+            };
+            match mapped {
+                Some(v) => Some(Value::String(v)),
+                None => reasoning_effort.map(Value::String),
+            }
+        }
+        _ => Some(value.clone()),
+    }
+}
+
+/// Build `chat_template_kwargs` from compat values (match TS `buildChatTemplateValues`).
+fn build_chat_template_values(
+    model: &Model,
+    options: Option<&StreamOptions>,
+    values: &serde_json::Map<String, Value>,
+) -> Option<serde_json::Map<String, Value>> {
+    let mut resolved = serde_json::Map::new();
+    for (key, value) in values {
+        if let Some(r) = resolve_chat_template_kwarg_value(model, options, value) {
+            resolved.insert(key.clone(), r);
+        }
+    }
+    if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    }
+}
+
+/// Map a reasoning level through the model's `thinkingLevelMap`
+/// (match TS `model.thinkingLevelMap?.[level] ?? level` semantics).
+fn resolve_effort(model: &Model, level: &str) -> Option<String> {
+    match model.thinking_level_map.as_ref().and_then(|m| m.get(level)) {
+        Some(Some(v)) => Some(v.clone()),
+        // Explicitly disabled (null) → no effort field.
+        Some(None) => None,
+        None => Some(level.to_string()),
+    }
+}
+
+/// Apply provider-specific thinking/reasoning request params
+/// (match TS `buildParams` thinkingFormat branches).
+fn apply_thinking_params(
+    model: &Model,
+    options: Option<&StreamOptions>,
+    compat: &ResolvedOpenAICompletionsCompat,
+    body: &mut serde_json::Map<String, Value>,
+) {
+    let reasoning_effort = options.and_then(|o| o.reasoning_effort.clone());
+    let supports_reasoning_effort = compat.supports_reasoning_effort;
+    match compat.thinking_format.as_str() {
+        "zai" if model.reasoning => {
+            body.insert(
+                "thinking".into(),
+                if reasoning_effort.is_some() {
+                    json!({ "type": "enabled", "clear_thinking": false })
+                } else {
+                    json!({ "type": "disabled" })
+                },
+            );
+            if let Some(level) = reasoning_effort.as_deref() {
+                if supports_reasoning_effort {
+                    if let Some(e) = resolve_effort(model, level) {
+                        body.insert("reasoning_effort".into(), Value::String(e));
+                    }
+                }
+            }
+        }
+        "qwen" if model.reasoning => {
+            body.insert(
+                "enable_thinking".into(),
+                Value::Bool(reasoning_effort.is_some()),
+            );
+            if let Some(level) = reasoning_effort.as_deref() {
+                if supports_reasoning_effort {
+                    if let Some(e) = resolve_effort(model, level) {
+                        body.insert("reasoning_effort".into(), Value::String(e));
+                    }
+                }
+            }
+        }
+        "qwen-chat-template" if model.reasoning => {
+            body.insert(
+                "chat_template_kwargs".into(),
+                json!({
+                    "enable_thinking": reasoning_effort.is_some(),
+                    "preserve_thinking": true,
+                }),
+            );
+        }
+        "chat-template" if model.reasoning => {
+            if let Some(kwargs) = build_chat_template_values(model, options, &compat.chat_template_kwargs) {
+                body.insert("chat_template_kwargs".into(), Value::Object(kwargs));
+            }
+        }
+        "baseten" if model.reasoning => {
+            if let Some(args) = build_chat_template_values(model, options, &compat.chat_template_args) {
+                body.insert("chat_template_args".into(), Value::Object(args));
+            }
+            if supports_reasoning_effort {
+                let requested = reasoning_effort.as_deref();
+                let effort = match requested {
+                    Some(level) => resolve_effort(model, level),
+                    None => model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|m| m.get("off").and_then(Option::as_deref))
+                        .map(str::to_string),
+                };
+                if let Some(e) = effort {
+                    body.insert("reasoning_effort".into(), Value::String(e));
+                }
+            }
+        }
+        "deepseek" if model.reasoning => {
+            if reasoning_effort.is_some() {
+                body.insert("thinking".into(), json!({ "type": "enabled" }));
+            } else if model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|m| m.get("off").and_then(Option::as_deref))
+                .is_some()
+            {
+                body.insert("thinking".into(), json!({ "type": "disabled" }));
+            }
+            if let Some(level) = reasoning_effort.as_deref() {
+                if supports_reasoning_effort {
+                    let effort = resolve_effort(model, level).unwrap_or_else(|| level.to_string());
+                    body.insert("reasoning_effort".into(), Value::String(effort));
+                }
+            }
+        }
+        "openrouter" if model.reasoning => {
+            if reasoning_effort.is_some() {
+                let effort = resolve_effort(model, reasoning_effort.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|| reasoning_effort.clone().unwrap_or_default());
+                body.insert("reasoning".into(), json!({ "effort": effort }));
+            } else if model.thinking_level_map.as_ref().and_then(|m| m.get("off").and_then(Option::as_deref)).is_some() {
+                let off = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| m.get("off").and_then(Option::as_deref))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "none".to_string());
+                body.insert("reasoning".into(), json!({ "effort": off }));
+            }
+        }
+        "ant-ling" if model.reasoning && reasoning_effort.is_some() => {
+            if let Some(e) = resolve_effort(model, reasoning_effort.as_deref().unwrap_or("")) {
+                body.insert("reasoning".into(), json!({ "effort": e }));
+            }
+        }
+        "together" if model.reasoning => {
+            body.insert(
+                "reasoning".into(),
+                json!({ "enabled": reasoning_effort.is_some() }),
+            );
+            if let Some(level) = reasoning_effort.as_deref() {
+                if supports_reasoning_effort {
+                    let effort = resolve_effort(model, level).unwrap_or_else(|| level.to_string());
+                    body.insert("reasoning_effort".into(), Value::String(effort));
+                }
+            }
+        }
+        "string-thinking" if model.reasoning => {
+            if reasoning_effort.is_some() {
+                let level = reasoning_effort.as_deref().unwrap_or("");
+                let effort = resolve_effort(model, level).unwrap_or_else(|| level.to_string());
+                body.insert("thinking".into(), Value::String(effort));
+            } else if model.thinking_level_map.as_ref().and_then(|m| m.get("off").and_then(Option::as_deref)).is_some() {
+                let off = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| m.get("off").and_then(Option::as_deref))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "none".to_string());
+                body.insert("thinking".into(), Value::String(off));
+            }
+        }
+        _ => {
+            // OpenAI-style reasoning_effort.
+            if let Some(level) = reasoning_effort.as_deref() {
+                if model.reasoning && supports_reasoning_effort {
+                    if let Some(e) = resolve_effort(model, level) {
+                        body.insert("reasoning_effort".into(), Value::String(e));
+                    }
+                }
+            } else if model.reasoning && supports_reasoning_effort {
+                if let Some(off) = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| m.get("off").and_then(Option::as_deref))
+                {
+                    body.insert("reasoning_effort".into(), Value::String(off.to_string()));
+                }
+            }
+        }
+    }
+
+    // vLLM caps reasoning with a top-level thinking_token_budget
+    // (match TS buildParams).
+    if compat.supports_thinking_token_budget
+        && reasoning_effort.is_some()
+        && model.reasoning
+    {
+        let level = if reasoning_effort.as_deref() == Some("xhigh")
+            || reasoning_effort.as_deref() == Some("max")
+        {
+            "high"
+        } else {
+            reasoning_effort.as_deref().unwrap_or("")
+        };
+        let budget_value = |default: u64| -> Option<u64> {
+            options
+                .and_then(|o| o.thinking_budgets.as_ref())
+                .and_then(|b| match level {
+                    "minimal" => b.minimal,
+                    "low" => b.low,
+                    "medium" => b.medium,
+                    "high" => b.high,
+                    _ => None,
+                })
+                .or(Some(default))
+        };
+        let budget_floor = match level {
+            "minimal" => budget_value(1024),
+            "low" => budget_value(2048),
+            "medium" => budget_value(8192),
+            "high" => budget_value(16384),
+            _ => None,
+        };
+        let ceiling = body
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| body.get("max_completion_tokens").and_then(Value::as_u64))
+            .or(Some(model.max_tokens));
+        if let (Some(floor), Some(ceiling)) = (budget_floor, ceiling) {
+            let budget = floor.min(ceiling.saturating_sub(1024));
+            if budget > 0 {
+                body.insert("thinking_token_budget".into(), Value::Number(budget.into()));
+            }
+        }
+    }
+}
+
 async fn stream_openai_inner(
     model: &Model,
     context: &Context,
@@ -367,25 +1292,95 @@ async fn stream_openai_inner(
     let signal = options.and_then(|o| o.signal.clone());
 
     let http_client = HttpClient::new();
+    let compat = get_compat(model);
 
-    let messages = convert_messages(&context.messages);
-    let tools = context
+    let grammar_properties = super::openai_responses::grammar_tool_input_properties(
+        context,
+        compat.supports_openai_grammar_tools,
+    );
+    let mut messages = convert_messages(model, context, &compat, &grammar_properties);
+
+    // Cache retention (match TS `resolveCacheRetention`).
+    let cache_retention = options
+        .and_then(|o| o.cache_retention.clone())
+        .unwrap_or_else(|| {
+            if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
+                CacheRetention::Long
+            } else {
+                CacheRetention::Short
+            }
+        });
+    let prompt_cache_key = if (model.base_url.contains("api.openai.com")
+        && cache_retention != CacheRetention::None)
+        || (cache_retention == CacheRetention::Long && compat.supports_long_cache_retention)
+    {
+        clamp_openai_prompt_cache_key(options.and_then(|o| o.session_id.as_deref()))
+    } else {
+        None
+    };
+    let prompt_cache_retention = if cache_retention == CacheRetention::Long
+        && compat.supports_long_cache_retention
+    {
+        Some("24h")
+    } else {
+        None
+    };
+
+    // Tools: kimi deferred tools are excluded from the active tool set; some
+    // providers require a tools param when the conversation has tool history.
+    let deferred_tool_names = if compat.deferred_tools_mode.as_deref() == Some("kimi") {
+        get_deferred_tool_names(&context.messages)
+    } else {
+        std::collections::HashSet::new()
+    };
+    let active_tools: Vec<Tool> = context
         .tools
         .as_ref()
-        .filter(|t| !t.is_empty())
-        .map(|t| convert_tools(t));
+        .map(|tools| {
+            tools
+                .iter()
+                .filter(|t| !deferred_tool_names.contains(&t.name))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut tools = if active_tools.is_empty() {
+        if has_tool_history(&context.messages) {
+            Some(Vec::new())
+        } else {
+            None
+        }
+    } else {
+        Some(convert_tools(&active_tools, &compat))
+    };
+
+    // Anthropic-style cache control on messages/tools.
+    if let Some(cache_control) = get_compat_cache_control(&compat, &cache_retention) {
+        apply_anthropic_cache_control(&mut messages, &mut tools, &cache_control);
+    }
 
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
     body.insert("messages".to_string(), serde_json::to_value(&messages)?);
     body.insert("stream".to_string(), Value::Bool(true));
-    body.insert(
-        "stream_options".to_string(),
-        serde_json::json!({"include_usage": true}),
-    );
+    if let Some(key) = prompt_cache_key {
+        body.insert("prompt_cache_key".to_string(), Value::String(key));
+    }
+    if let Some(ret) = prompt_cache_retention {
+        body.insert("prompt_cache_retention".to_string(), Value::String(ret.to_string()));
+    }
+    if compat.supports_usage_in_streaming {
+        body.insert(
+            "stream_options".to_string(),
+            serde_json::json!({"include_usage": true}),
+        );
+    }
+    if compat.supports_store {
+        body.insert("store".to_string(), Value::Bool(false));
+    }
 
     if let Some(mt) = max_tokens {
-        body.insert("max_tokens".to_string(), Value::Number(mt.into()));
+        body.insert(compat.max_tokens_field.clone(), Value::Number(mt.into()));
     }
     if let Some(t) = temperature {
         body.insert(
@@ -397,9 +1392,19 @@ async fn stream_openai_inner(
     }
     if let Some(ref t) = tools {
         body.insert("tools".to_string(), serde_json::to_value(t)?);
+        if compat.zai_tool_stream {
+            body.insert("tool_stream".to_string(), Value::Bool(true));
+        }
     }
     if let Some(ref tc) = options.and_then(|o| o.tool_choice.as_ref()) {
         body.insert("tool_choice".to_string(), serde_json::to_value(tc)?);
+    }
+
+    apply_thinking_params(model, options, &compat, &mut body);
+
+    // OpenRouter provider routing preferences.
+    if let Some(routing) = &compat.open_router_routing {
+        body.insert("provider".to_string(), serde_json::to_value(routing)?);
     }
 
     // Check abort signal
@@ -410,18 +1415,35 @@ async fn stream_openai_inner(
     }
 
     let request_body = Value::Object(body);
-    let request = http_client
+    let mut headers: Vec<(String, String)> = vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    if let Some(key) = api_key {
+        headers.push(("Authorization".to_string(), format!("Bearer {key}")));
+    }
+    // Session-affinity headers (match TS createClient).
+    if let Some(session_id) = options.and_then(|o| o.session_id.clone()) {
+        if compat.send_session_affinity_headers {
+            if compat.session_affinity_format == "openrouter" {
+                headers.push(("x-session-id".to_string(), session_id));
+            } else {
+                if compat.session_affinity_format == "openai" {
+                    headers.push(("session_id".to_string(), session_id.clone()));
+                }
+                headers.push(("x-client-request-id".to_string(), session_id.clone()));
+                headers.push(("x-session-affinity".to_string(), session_id));
+            }
+        }
+    }
+    let mut request = http_client
         .post(format!(
             "{}/chat/completions",
             model.base_url.trim_end_matches('/')
         ))
-        .header("Content-Type", "application/json")
         .json(&request_body);
-    let request = if let Some(key) = api_key {
-        request.header("Authorization", format!("Bearer {key}"))
-    } else {
-        request
-    };
+    for (k, v) in &headers {
+        request = request.header(k, v);
+    }
     let response = request.send().await?;
 
     if !response.status().is_success() {
@@ -485,10 +1507,18 @@ async fn stream_openai_inner(
             }
         }
 
-        // Capture response ID and model
+        // Capture response ID and model (routed model surfaces on responseModel
+        // when it differs from the requested id — match TS openai-completions).
         if output.response_id.is_none() {
             if let Some(id) = chunk.get("id").and_then(|v| v.as_str()) {
                 output.response_id = Some(id.to_string());
+            }
+        }
+        if output.response_model.is_none() {
+            if let Some(m) = chunk.get("model").and_then(|v| v.as_str()) {
+                if !m.is_empty() && m != model.id {
+                    output.response_model = Some(m.to_string());
+                }
             }
         }
 
@@ -510,10 +1540,10 @@ async fn stream_openai_inner(
         // Check finish reason
         if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
             if !reason.is_empty() {
-                output.stop_reason = map_stop_reason(reason);
-                if output.stop_reason == StopReason::Error {
-                    output.error_message =
-                        Some(format!("Provider returned finish_reason: {reason}"));
+                let (stop_reason, error_message) = map_stop_reason(reason);
+                output.stop_reason = stop_reason;
+                if let Some(msg) = error_message {
+                    output.error_message = Some(msg);
                 }
                 has_finish_reason = true;
             }
@@ -774,6 +1804,8 @@ pub fn stream_simple_openai(
         full_opts.max_retries = opts.base.max_retries;
         full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
         full_opts.metadata.clone_from(&opts.base.metadata);
+        full_opts.reasoning_effort.clone_from(&opts.reasoning);
+        full_opts.thinking_budgets.clone_from(&opts.thinking_budgets);
     }
     stream_openai(model, context, Some(&full_opts))
 }
@@ -792,99 +1824,269 @@ mod tests {
 
     #[test]
     fn test_map_stop_reason_stop() {
-        assert_eq!(map_stop_reason("stop"), StopReason::Stop);
+        assert_eq!(map_stop_reason("stop"), (StopReason::Stop, None));
+        assert_eq!(map_stop_reason("end"), (StopReason::Stop, None));
     }
 
     #[test]
     fn test_map_stop_reason_length() {
-        assert_eq!(map_stop_reason("length"), StopReason::Length);
+        assert_eq!(map_stop_reason("length"), (StopReason::Length, None));
     }
 
     #[test]
     fn test_map_stop_reason_tool_calls() {
-        assert_eq!(map_stop_reason("tool_calls"), StopReason::ToolUse);
+        assert_eq!(map_stop_reason("tool_calls"), (StopReason::ToolUse, None));
+        assert_eq!(map_stop_reason("function_call"), (StopReason::ToolUse, None));
     }
 
     #[test]
     fn test_map_stop_reason_content_filter() {
-        assert_eq!(map_stop_reason("content_filter"), StopReason::Error);
+        assert_eq!(
+            map_stop_reason("content_filter"),
+            (
+                StopReason::Error,
+                Some("Provider finish_reason: content_filter".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn test_map_stop_reason_network_error() {
+        assert_eq!(
+            map_stop_reason("network_error"),
+            (
+                StopReason::Error,
+                Some("Provider finish_reason: network_error".to_string())
+            )
+        );
     }
 
     #[test]
     fn test_map_stop_reason_unknown() {
-        assert_eq!(map_stop_reason("unknown"), StopReason::Stop);
+        assert_eq!(
+            map_stop_reason("unknown"),
+            (
+                StopReason::Error,
+                Some("Provider finish_reason: unknown".to_string())
+            )
+        );
     }
 
     // ============================================================
     // convert_messages tests
     // ============================================================
 
+    fn make_test_model() -> Model {
+        Model {
+            id: "gpt-4o".into(),
+            name: "GPT-4o".into(),
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".into()],
+            cost: crate::types::ModelCost {
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.1,
+                cache_write: 0.2,
+                tiers: vec![],
+            },
+            context_window: 128_000,
+            max_tokens: 16_384,
+            headers: None,
+            compat: None,
+        }
+    }
+
     #[test]
     fn test_convert_messages_user() {
-        let messages = vec![Message::User {
-            content: vec![ContentBlock::text("Hello")],
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages);
+        let model = make_test_model();
+        let compat = get_compat(&model);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::User {
+                content: vec![ContentBlock::text("Hello")],
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "user");
-        assert_eq!(converted[0].content, Some("Hello".to_string()));
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[0]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_convert_messages_system_prompt_uses_developer_role_for_reasoning() {
+        let mut model = make_test_model();
+        model.reasoning = true;
+        let compat = get_compat(&model);
+        let context = Context {
+            system_prompt: Some("You are helpful".into()),
+            messages: vec![Message::User {
+                content: vec![ContentBlock::text("Hi")],
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0]["role"], "developer");
+        assert_eq!(converted[0]["content"], "You are helpful");
     }
 
     #[test]
     fn test_convert_messages_assistant_with_tool_calls() {
-        let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::ToolCall {
-                id: "call_1".into(),
-                name: "get_weather".into(),
-                arguments: serde_json::json!({"city": "NYC"}),
-                thought_signature: None,
+        let model = make_test_model();
+        let compat = get_compat(&model);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::Assistant {
+                content: vec![ContentBlock::ToolCall {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    arguments: serde_json::json!({"city": "NYC"}),
+                    thought_signature: None,
+                }],
+                api: "openai-completions".into(),
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::ToolUse,
+                error_message: None,
+                timestamp: 1000,
             }],
-            api: "openai-completions".into(),
-            provider: "openai".into(),
-            model: "gpt-4o".into(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: Usage::default(),
-            stop_reason: StopReason::ToolUse,
-            error_message: None,
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages);
+            tools: None,
+        };
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "assistant");
-        assert!(converted[0].tool_calls.is_some());
-        let tcs = converted[0].tool_calls.as_ref().unwrap();
+        assert_eq!(converted[0]["role"], "assistant");
+        let tcs = converted[0]["tool_calls"].as_array().unwrap();
         assert_eq!(tcs.len(), 1);
-        assert_eq!(tcs[0].function.name, "get_weather");
+        assert_eq!(tcs[0]["function"]["name"], "get_weather");
+        assert_eq!(tcs[0]["function"]["arguments"], "{\"city\":\"NYC\"}");
+    }
+
+    #[test]
+    fn test_convert_messages_thinking_uses_signature_field() {
+        let mut model = make_test_model();
+        model.provider = "deepseek".into();
+        let compat = get_compat(&model);
+        assert!(compat.requires_reasoning_content_on_assistant_messages);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::Assistant {
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "reasoning text".into(),
+                        thinking_signature: Some("reasoning_content".into()),
+                        redacted: None,
+                    },
+                    ContentBlock::text("answer"),
+                ],
+                api: "openai-completions".into(),
+                provider: "deepseek".into(),
+                model: "deepseek-r1".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "answer");
+        assert_eq!(converted[0]["reasoning_content"], "reasoning text");
     }
 
     #[test]
     fn test_convert_messages_tool_result() {
-        let messages = vec![Message::ToolResult {
-            tool_call_id: "call_1".into(),
-            tool_name: "get_weather".into(),
-            content: vec![ContentBlock::text("72F sunny")],
-            details: None,
-            is_error: false,
-            added_tool_names: None,
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages);
+        let model = make_test_model();
+        let compat = get_compat(&model);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::ToolResult {
+                tool_call_id: "call_1".into(),
+                tool_name: "get_weather".into(),
+                content: vec![ContentBlock::text("72F sunny")],
+                details: None,
+                is_error: false,
+                added_tool_names: None,
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "tool");
-        assert_eq!(converted[0].tool_call_id, Some("call_1".to_string()));
+        assert_eq!(converted[0]["role"], "tool");
+        assert_eq!(converted[0]["tool_call_id"], "call_1");
     }
 
     #[test]
     fn test_convert_messages_empty_user() {
-        let messages = vec![Message::User {
-            content: vec![ContentBlock::text("")],
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages);
+        let model = make_test_model();
+        let compat = get_compat(&model);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::User {
+                content: vec![ContentBlock::text("")],
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
         assert_eq!(converted.len(), 0);
+    }
+
+    #[test]
+    fn test_detect_compat_max_tokens_field() {
+        // Together/baseUrl detection drives max_tokens vs max_completion_tokens.
+        let mut model = make_test_model();
+        model.provider = "together".into();
+        let compat = get_compat(&model);
+        assert_eq!(compat.max_tokens_field, "max_tokens");
+        model.provider = "openai".into();
+        model.base_url = "https://api.openai.com/v1".into();
+        let compat = get_compat(&model);
+        assert_eq!(compat.max_tokens_field, "max_completion_tokens");
+    }
+
+    #[test]
+    fn test_detect_compat_openrouter_session_affinity() {
+        let mut model = make_test_model();
+        model.provider = "openrouter".into();
+        model.base_url = "https://openrouter.ai/api/v1".into();
+        let compat = get_compat(&model);
+        assert_eq!(compat.session_affinity_format, "openrouter");
+        // Anthropic models via openrouter use anthropic cache-control format.
+        model.id = "anthropic/claude-3.5-sonnet".into();
+        let compat = get_compat(&model);
+        assert_eq!(compat.cache_control_format.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn test_get_compat_explicit_overrides_detected() {
+        let mut model = make_test_model();
+        model.provider = "together".into();
+        model.compat = Some(crate::types::ModelCompat::OpenAICompletions(Box::new(
+            crate::types::OpenAICompletionsCompat {
+                max_tokens_field: Some("max_completion_tokens".into()),
+                ..Default::default()
+            },
+        )));
+        let compat = get_compat(&model);
+        assert_eq!(compat.max_tokens_field, "max_completion_tokens");
+        // Other detected values still apply.
+        assert_eq!(compat.session_affinity_format, "openai");
     }
 
     // ============================================================
@@ -893,16 +2095,124 @@ mod tests {
 
     #[test]
     fn test_convert_tools() {
+        let model = make_test_model();
+        let compat = get_compat(&model);
         let tools = vec![Tool {
             name: "read".into(),
             description: "Read a file".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools);
+        let converted = convert_tools(&tools, &compat);
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].tool_type, "function");
-        assert_eq!(converted[0].function.name, "read");
+        assert_eq!(converted[0]["type"], "function");
+        assert_eq!(converted[0]["function"]["name"], "read");
+    }
+
+    // ============================================================
+    // chat-template kwargs / thinking params tests (#12)
+    // ============================================================
+
+    #[test]
+    fn test_chat_template_kwargs_thinking() {
+        // vLLM/HF chat-template models (#12): `chat_template_kwargs` with a
+        // `$var: "thinking.enabled"` placeholder resolves to the reasoning
+        // effort presence, and `omitWhenOff` drops the kwarg when off.
+        let model = make_test_model();
+        let kwargs = serde_json::json!({
+            "enable_thinking": { "$var": "thinking.enabled" },
+            "preserve_thinking": true,
+            "effort_hint": { "omitWhenOff": true },
+        });
+        let values = kwargs.as_object().unwrap().clone();
+
+        // reasoning effort present → enable_thinking=true, effort_hint included.
+        let opts = StreamOptions {
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let resolved = build_chat_template_values(&model, Some(&opts), &values).unwrap();
+        assert_eq!(resolved["enable_thinking"], true);
+        assert_eq!(resolved["preserve_thinking"], true);
+        assert!(resolved.contains_key("effort_hint"));
+
+        // reasoning effort off → enable_thinking=false, effort_hint omitted.
+        let opts = StreamOptions::default();
+        let resolved = build_chat_template_values(&model, Some(&opts), &values).unwrap();
+        assert_eq!(resolved["enable_thinking"], false);
+        assert!(!resolved.contains_key("effort_hint"));
+    }
+
+    #[test]
+    fn test_thinking_params_chat_template_format() {
+        // compat.thinkingFormat="chat-template" emits chat_template_kwargs.
+        let mut model = make_test_model();
+        model.reasoning = true;
+        model.compat = Some(crate::types::ModelCompat::OpenAICompletions(Box::new(
+            crate::types::OpenAICompletionsCompat {
+                thinking_format: Some("chat-template".into()),
+                chat_template_kwargs: Some({
+                    let mut m = serde_json::Map::new();
+                    m.insert(
+                        "enable_thinking".into(),
+                        serde_json::json!({ "$var": "thinking.enabled" }),
+                    );
+                    m
+                }),
+                ..Default::default()
+            },
+        )));
+        let compat = get_compat(&model);
+        let mut body = serde_json::Map::new();
+        let opts = StreamOptions {
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        apply_thinking_params(&model, Some(&opts), &compat, &mut body);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+    }
+
+    #[test]
+    fn test_thinking_params_openai_reasoning_effort() {
+        // Default "openai" format emits reasoning_effort, mapped through the
+        // model's thinking level map.
+        let mut model = make_test_model();
+        model.reasoning = true;
+        let mut map = std::collections::HashMap::new();
+        map.insert("high".to_string(), Some("reasoning_high".to_string()));
+        map.insert("off".to_string(), Some("none".to_string()));
+        model.thinking_level_map = Some(map);
+        let compat = get_compat(&model);
+        let mut body = serde_json::Map::new();
+        let opts = StreamOptions {
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        apply_thinking_params(&model, Some(&opts), &compat, &mut body);
+        assert_eq!(body["reasoning_effort"], "reasoning_high");
+
+        // Off (no effort) emits the mapped "off" value.
+        let mut body = serde_json::Map::new();
+        apply_thinking_params(&model, None, &compat, &mut body);
+        assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn test_thinking_params_zai_format() {
+        let mut model = make_test_model();
+        model.reasoning = true;
+        model.provider = "zai".into();
+        let compat = get_compat(&model);
+        assert_eq!(compat.thinking_format, "zai");
+        let mut body = serde_json::Map::new();
+        let opts = StreamOptions {
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        apply_thinking_params(&model, Some(&opts), &compat, &mut body);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        // zai doesn't support reasoning_effort per detectCompat.
+        assert!(!body.contains_key("reasoning_effort"));
     }
 
     // ============================================================

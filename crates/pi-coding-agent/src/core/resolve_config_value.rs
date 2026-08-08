@@ -100,6 +100,20 @@ fn resolve_env_value(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// Resolve a `${ENV}` reference preferring the given provider-scoped env
+/// overrides (stored credential `env`) over the ambient process environment.
+fn resolve_env_value_with(
+    name: &str,
+    overrides: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    if let Some(map) = overrides {
+        if let Some(v) = map.get(name) {
+            return Some(v.clone());
+        }
+    }
+    std::env::var(name).ok()
+}
+
 fn get_template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
     let mut names = Vec::new();
     for part in parts {
@@ -113,17 +127,38 @@ fn get_template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
 }
 
 fn resolve_template(parts: &[TemplatePart]) -> Option<String> {
+    resolve_template_with(parts, None)
+}
+
+fn resolve_template_with(
+    parts: &[TemplatePart],
+    overrides: Option<&HashMap<String, String>>,
+) -> Option<String> {
     let mut resolved = String::new();
     for part in parts {
         match part {
             TemplatePart::Literal(s) => resolved.push_str(s),
             TemplatePart::Env(name) => {
-                let val = resolve_env_value(name)?;
+                let val = resolve_env_value_with(name, overrides)?;
                 resolved.push_str(&val);
             }
         }
     }
     Some(resolved)
+}
+
+/// Like `resolve_config_value`, but `${ENV}` references prefer the given
+/// provider-scoped overrides (e.g. a stored credential's `env` map) over the
+/// ambient process environment.
+pub fn resolve_config_value_with_env(
+    config: &str,
+    overrides: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    let reference = parse_config_value_reference(config);
+    match reference {
+        ConfigValueReference::Command(cmd) => execute_command(&cmd),
+        ConfigValueReference::Template(parts) => resolve_template_with(&parts, overrides),
+    }
 }
 
 pub fn get_config_value_env_var_name(config: &str) -> Option<String> {

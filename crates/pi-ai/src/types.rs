@@ -407,6 +407,22 @@ pub struct OpenAICompletionsCompat {
     pub send_session_affinity_headers: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_long_cache_retention: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_finish_reason: Option<bool>,
+    /// vLLM/HF chat-template thinking kwargs (match TS `chatTemplateKwargs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Baseten chat-template args (match TS `chatTemplateArgs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_args: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_thinking_token_budget: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_openai_grammar_tools: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_tools_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_affinity_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -713,6 +729,11 @@ pub struct StreamOptions {
     pub tool_choice: Option<ToolChoice>,
     /// Service tier for OpenAI Responses (`flex` / `priority`).
     pub service_tier: Option<String>,
+    /// Reasoning effort level (`minimal`/`low`/`medium`/`high`/`off`/...) passed
+    /// through to providers that support `reasoning_effort`.
+    pub reasoning_effort: Option<String>,
+    /// Per-level thinking token budgets for vLLM `thinking_token_budget`.
+    pub thinking_budgets: Option<ThinkingBudgets>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -763,6 +784,8 @@ impl Clone for StreamOptions {
             metadata: self.metadata.clone(),
             tool_choice: self.tool_choice.clone(),
             service_tier: self.service_tier.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+            thinking_budgets: self.thinking_budgets.clone(),
             on_payload: self.on_payload.clone(),
             on_headers: self.on_headers.clone(),
             on_provider_response: self.on_provider_response.clone(),
@@ -789,6 +812,8 @@ impl Default for StreamOptions {
             metadata: None,
             tool_choice: None,
             service_tier: None,
+            reasoning_effort: None,
+            thinking_budgets: None,
             on_payload: None,
             on_headers: None,
             on_provider_response: None,
@@ -879,6 +904,8 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
             metadata: helper.metadata,
             tool_choice: helper.tool_choice,
             service_tier: None,
+            reasoning_effort: None,
+            thinking_budgets: None,
             on_payload: None,
             on_headers: None,
             on_provider_response: None,

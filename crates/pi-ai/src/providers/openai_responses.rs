@@ -799,10 +799,10 @@ fn convert_responses_messages(
 // ============================================================================
 
 #[derive(Debug, Clone)]
-struct GrammarConstrainedSampling {
-    format: &'static str,
-    definition: String,
-    input_property: String,
+pub(crate) struct GrammarConstrainedSampling {
+    pub(crate) format: &'static str,
+    pub(crate) definition: String,
+    pub(crate) input_property: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -812,7 +812,7 @@ struct GrammarToolInputJsonBuffer {
     closed: bool,
 }
 
-fn get_grammar_tool_input(
+pub(crate) fn get_grammar_tool_input(
     tool_name: &str,
     arguments: &serde_json::Value,
     input_property: &str,
@@ -903,7 +903,7 @@ fn infer_grammar_input_property(tool: &Tool) -> Result<String, String> {
     Ok(input_property.to_string())
 }
 
-fn resolve_json_schema_strict_sampling(
+pub(crate) fn resolve_json_schema_strict_sampling(
     tool: &Tool,
     supports_strict_mode: bool,
 ) -> Result<Option<bool>, String> {
@@ -925,7 +925,7 @@ fn resolve_json_schema_strict_sampling(
     }
 }
 
-fn resolve_grammar_constrained_sampling(
+pub(crate) fn resolve_grammar_constrained_sampling(
     tool: &Tool,
     supports_openai_grammar_tools: bool,
 ) -> Result<Option<GrammarConstrainedSampling>, String> {
@@ -972,7 +972,7 @@ fn resolve_grammar_constrained_sampling(
 
 /// Map of grammar-constrained tool name -> input property (match TS
 /// `createGrammarToolInputProperties`).
-fn grammar_tool_input_properties(
+pub(crate) fn grammar_tool_input_properties(
     context: &Context,
     supports_openai_grammar_tools: bool,
 ) -> std::collections::HashMap<String, String> {

@@ -1,3 +1,4 @@
+pub mod action_bus;
 pub mod api;
 pub mod dispatcher;
 pub mod types;

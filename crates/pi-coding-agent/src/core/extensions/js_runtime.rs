@@ -161,11 +161,15 @@ pub struct RuntimeActions {
     pub get_session_name: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     pub set_label: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
     pub get_active_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
-    pub get_all_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    /// Serialized `ToolInfo` objects, matching TS `getAllTools()`.
+    pub get_all_tools: Option<Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>>,
     pub set_active_tools: Option<Arc<dyn Fn(Vec<String>) + Send + Sync>>,
-    pub get_commands: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    /// Serialized `SlashCommandInfo` objects, matching TS `getCommands()`.
+    pub get_commands: Option<Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>>,
     pub get_thinking_level: Option<Arc<dyn Fn() -> String + Send + Sync>>,
     pub set_thinking_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// `provider/model` string, resolved + applied at the next drain point.
+    pub set_model: Option<Arc<dyn Fn(String) + Send + Sync>>,
     pub register_provider:
         Option<Arc<dyn Fn(String, String, String) + Send + Sync>>,
     pub unregister_provider: Option<Arc<dyn Fn(String) + Send + Sync>>,
@@ -491,6 +495,16 @@ fn op_set_thinking_level(
 }
 
 #[op2(fast)]
+fn op_set_model(state: &mut OpState, #[string] model_id: String) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let set = actions.set_model.as_ref().ok_or_else(not_initialized)?;
+    // Fire-and-forget: the model is resolved + applied at the session's next
+    // drain point (turn boundary). The JS side resolves optimistically.
+    set(model_id);
+    Ok(())
+}
+
+#[op2(fast)]
 fn op_register_provider_action(
     state: &mut OpState,
     #[string] name: String,
@@ -719,6 +733,7 @@ const OPS: &[OpDecl] = &[
     op_get_commands(),
     op_get_thinking_level(),
     op_set_thinking_level(),
+    op_set_model(),
     op_register_provider_action(),
     op_unregister_provider_action(),
     // Node.js built-in module ops
@@ -907,10 +922,12 @@ const BOOTSTRAP_JS: &str = r#"
 
     setModel(model) {
       assertActive();
-      // setModel is async in TS; we return a Promise that resolves once the
-      // Rust side processes it. For now this is a placeholder — the real
-      // implementation will call an async op.
-      return Promise.resolve(false);
+      // Fire-and-forget: the op queues the model change; the session applies
+      // it at the next turn boundary. The promise resolves optimistically —
+      // the actual result (auth check) surfaces via getModel/state reads.
+      const id = (model && (model.provider + "/" + model.id)) || String(model);
+      Deno.core.ops.op_set_model(String(id));
+      return Promise.resolve(true);
     },
 
     getThinkingLevel() {

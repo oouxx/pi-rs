@@ -1175,7 +1175,7 @@ async fn test_state_mutations_persist_to_agent() {
     model.reasoning = true;
     model.thinking_level_map = Some(HashMap::new());
 
-    let (mut session, _result) = create_agent_session(CreateAgentSessionOptions {
+    let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
         agent_dir: None,
         model: Some(model),

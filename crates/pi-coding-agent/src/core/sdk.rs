@@ -660,6 +660,14 @@ pub async fn create_agent_session(
     let allowed_tool_names = options.tools.clone();
     let excluded_tool_names = options.exclude_tools.clone();
 
+    // Extension action bus: JS extension read-actions read the shared state
+    // snapshot; write-actions are queued and drained by the session at turn
+    // boundaries. Always created (negligible cost) so the config fields are
+    // unconditionally populated; only used when `js-runtime` is enabled.
+    #[cfg_attr(not(feature = "js-runtime"), allow(unused_variables))]
+    let (extension_action_sender, extension_action_rx, extension_state_view) =
+        crate::core::extensions::action_bus::ExtensionActionSender::new();
+
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
         model,
@@ -682,6 +690,8 @@ pub async fn create_agent_session(
         extension_registry: Some(extension_registry_arc),
         resources: Some(resources),
         custom_tools: options.custom_tools,
+        extension_state_view: Some(extension_state_view),
+        extension_action_rx: Some(extension_action_rx),
     };
 
     // Clone the model registry before it's moved into the session. The clone
@@ -706,8 +716,106 @@ pub async fn create_agent_session(
         if let Some(manager) = manager_any
             .downcast_ref::<crate::core::extensions::js_adapter::JsExtensionManager>()
         {
+            use crate::core::extensions::action_bus::ExtensionAction;
+            use crate::core::extensions::js_runtime::RuntimeActions;
+
             let registry = model_registry_for_actions.clone();
-            let actions = crate::core::extensions::js_runtime::RuntimeActions {
+
+            // Read-actions read the shared state snapshot (refreshed by the
+            // session at drain points); write-actions enqueue onto the bus.
+            let state_view = extension_action_sender.state();
+            let actions = RuntimeActions {
+                get_session_name: Some(std::sync::Arc::new({
+                    let state = state_view.clone();
+                    move || state.lock().unwrap().session_name.clone()
+                })),
+                get_active_tools: Some(std::sync::Arc::new({
+                    let state = state_view.clone();
+                    move || state.lock().unwrap().active_tools.clone()
+                })),
+                get_all_tools: Some(std::sync::Arc::new({
+                    let state = state_view.clone();
+                    move || state.lock().unwrap().all_tools.clone()
+                })),
+                get_commands: Some(std::sync::Arc::new({
+                    let state = state_view.clone();
+                    move || state.lock().unwrap().commands.clone()
+                })),
+                get_thinking_level: Some(std::sync::Arc::new({
+                    let state = state_view.clone();
+                    move || state.lock().unwrap().thinking_level.clone()
+                })),
+
+                send_message: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |message_json: String, options_json: Option<String>| {
+                        // message_json is the full CustomMessage object;
+                        // extract customType + content for the action.
+                        let (custom_type, content) = serde_json::from_str::<serde_json::Value>(
+                            &message_json,
+                        )
+                        .ok()
+                        .map(|v| {
+                            (
+                                v.get("customType")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                v.get("content")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            )
+                        })
+                        .unwrap_or_default();
+                        sender.send(ExtensionAction::SendMessage {
+                            custom_type,
+                            content,
+                            options_json,
+                        });
+                    }
+                })),
+                send_user_message: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |content: String, options_json: Option<String>| {
+                        sender.send(ExtensionAction::SendUserMessage {
+                            content,
+                            options_json,
+                        });
+                    }
+                })),
+                append_entry: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |custom_type: String, data_json: Option<String>| {
+                        sender.send(ExtensionAction::AppendEntry {
+                            custom_type,
+                            data_json,
+                        });
+                    }
+                })),
+                set_session_name: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |name: String| sender.send(ExtensionAction::SetSessionName(name))
+                })),
+                set_label: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |entry_id: String, label: Option<String>| {
+                        sender.send(ExtensionAction::SetLabel { entry_id, label });
+                    }
+                })),
+                set_active_tools: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |tools: Vec<String>| sender.send(ExtensionAction::SetActiveTools(tools))
+                })),
+                set_thinking_level: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |level: String| sender.send(ExtensionAction::SetThinkingLevel(level))
+                })),
+                set_model: Some(std::sync::Arc::new({
+                    let sender = extension_action_sender.clone();
+                    move |model_id: String| sender.send(ExtensionAction::SetModel(model_id))
+                })),
+
                 register_provider: Some(std::sync::Arc::new(
                     move |name: String, config_json: String, _ext_path: String| {
                         match serde_json::from_str::<ProviderConfig>(&config_json) {
@@ -725,7 +833,6 @@ pub async fn create_agent_session(
                         model_registry_for_actions.unregister_provider(&name);
                     },
                 )),
-                ..Default::default()
             };
             if let Err(e) = manager.bind_core(actions).await {
                 eprintln!("[pi] extension bindCore failed: {e}");

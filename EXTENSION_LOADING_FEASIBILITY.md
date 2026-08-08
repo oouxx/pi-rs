@@ -178,22 +178,38 @@
 
 （即无论选哪个运行时模型，下面这些 gap 都要补，源自 TS 侧契约）
 
-- [ ] `ExtensionFactory` default-export 调用入口
-- [ ] `createExtensionAPI` 桥：`on` + 7 个 register + N 个 action + `events`
-- [ ] `ExtensionRuntime` 两阶段（占位 → bind_core，含
+> 状态标记（2026-08-08 更新）：[x] 已实现；[~] 部分实现/有已知限制；[ ] 未实现
+
+- [x] `ExtensionFactory` default-export 调用入口
+- [x] `createExtensionAPI` 桥：`on` + 7 个 register + N 个 action + `events`
+      （action 已通过 `ExtensionActionBus` 接通：读类读共享快照，写类在 turn 边界
+      drain；`exec` 未接，见下文）
+- [x] `ExtensionRuntime` 两阶段（占位 → bind_core，含
       `pendingProviderRegistrations` 队列与 flush）
-- [ ] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）
-- [ ] 清单发现：`package.json` 的 `pi.extensions`、`.ts/.js` 判定、
+- [~] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）
+      —— JS 侧 assertActive 存在但 Rust 侧无 Invalidated phase
+- [x] 清单发现：`package.json` 的 `pi.extensions`、`.ts/.js` 判定、
       `agent_dir/extensions` 扫描
-- [ ] cwd 失效缓存 + `clearExtensionCache()`（generation 计数）
-- [ ] `sourceInfo` 传播到 `RegisteredCommand/RegisteredTool/RegisteredShortcut`
-- [ ] virtual modules：typebox + pi-agent-core + pi-tui + pi-ai(/compat) +
+- [x] cwd 失效缓存 + `clearExtensionCache()`（generation 计数）
+- [x] `sourceInfo` 传播到 `RegisteredCommand/RegisteredTool/RegisteredShortcut`
+- [x] virtual modules：typebox + pi-agent-core + pi-tui + pi-ai(/compat) +
       pi-coding-agent 的 JS shim
-- [ ] `registerProvider`/`unregisterProvider` 在扩展 API 表面暴露并
+- [x] `registerProvider`/`unregisterProvider` 在扩展 API 表面暴露并
       接到 `ModelRegistry::register_provider`
-- [ ] `EventBus`（`on/emit/off`）补齐，对接现有 `EventPublisher`
-- [ ] `extension_paths`/`--extensions`/`enable_extensions` 从死参数转 live
-- [ ] `pi install` 装完后触发加载（闭环 package_manager → loader）
+- [x] `EventBus`（`on/emit/off`）补齐，对接现有 `EventPublisher`
+- [x] `extension_paths`/`--extensions`/`enable_extensions` 从死参数转 live
+- [~] `pi install` 装完后触发加载（闭环 package_manager → loader）——下次会话
+      启动时自动发现；无 TS 的运行时 /reload 命令
+
+已知剩余限制（js-runtime 侧）：
+- `exec` 未实现：同步 op 无法 await session 执行，阻塞会在 turn 内死锁，返回
+  明确错误（需要并发 drain 架构才能支持）
+- `before_tool_call`（`tool_call` hook）返回值被丢弃：JS handler 的 `{block:true}`
+  权限拦截不生效（FireEvent 不接收返回值）
+- 事件 payload 多为 `{}`：`message_update`/`tool_execution_end` 等 hook 拿不到
+  真实事件数据
+- `registerMarkdownTransformer` 缺失；`setModel` 为乐观返回（模型在下次 turn
+  boundary 应用）
 
 ## 7. 与已有偏差记录的关系
 

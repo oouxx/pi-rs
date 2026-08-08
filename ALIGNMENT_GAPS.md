@@ -25,7 +25,7 @@
 | 12 | v0.79.9 #5673 | `chat_template_kwargs` thinking（vLLM/HF chat-template 模型） | pi-rs 无 | B | 待确认 |
 | 13 | v0.79.10 #5114 | OpenAI-compatible 流式保留 reasoning_details（先于 tool call delta 到达） | openai.rs 有 reasoning_content 处理，需核对细节 | 待查 | 待查 |
 | 14 | v0.80.7 #6496 | `compat.sessionAffinityFormat`（替代 `sendSessionIdHeader`，breaking） | `OpenAIResponsesCompat` 仍是 `sendSessionIdHeader` | B | responses 未实现，暂缓 |
-| 15 | v0.80.0+ | `openai-responses` API 后端（openai 官方 provider 用 `/v1/responses`） | 未实现，openai 模型走 `openai-completions` | B | 大项，待排期 |
+| 15 | v0.80.0+ | `openai-responses` API 后端（openai 官方 provider 用 `/v1/responses`） | 已实现 `openai_responses.rs`（消息/工具转换 + SSE 流式 + 事件序列），openai 模型已切到 `openai-responses`；简化项见 DEVIATIONS.md #5 | B | ✅ 已修（含简化偏差） |
 | 16 | v0.80.8 | `ModelRuntime` / live model catalog refresh | 未实现 | B | 大项，待排期 |
 | 17 | v0.80.3/8/9/10 | 模型元数据：Claude Sonnet 5、Grok 4.5、Kimi K3、默认 gpt-5.5、openrouter/fusion、context window 272k 等 | 模型覆盖度受限 | D | DEVIATIONS #2（待确认） |
 | 18 | v0.79.5 #5790 | 全局 `httpProxy` 设置 | pi-rs 无 | B | 待确认 |

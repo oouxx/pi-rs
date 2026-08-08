@@ -45,3 +45,22 @@
 | `detectCompat` fallback | v0.80.2 恢复运行时推断 | 未实现 | 否 | 未登记偏差，见 ALIGNMENT_GAPS.md #11 |
 | `chat_template_kwargs` thinking | v0.79.9 引入 | 未实现 | 否 | 未登记偏差，见 ALIGNMENT_GAPS.md #12 |
 | 模型覆盖度 | 全 provider + 手工补充模型 | 13 provider，元数据不全 | 否 | 见 DEVIATIONS.md #2（待确认） |
+
+## OpenAI Responses provider（`providers/openai_responses.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 请求端点 | `POST {baseUrl}/responses` | 同左 | 是 | — |
+| 请求体 | `{model, input, stream, store:false, prompt_cache_key, max_output_tokens, temperature, tools, reasoning, include}` | 同左（`max_output_tokens` 下限 16、`prompt_cache_key` 截断 64） | 是 | — |
+| system prompt 角色 | reasoning 模型 → `developer`，否则 `system` | 同左 | 是 | — |
+| 消息转换 | `convertResponsesMessages`（input_text/input_image/message/function_call/function_call_output） | 同左 | 是 | — |
+| tool-call id 归一化 | `normalizeIdPart` + `fc_` 前缀 + `shortHash` | 同左（`short_hash` 与 TS 算法一致，base36） | 是 | — |
+| text signature | `encodeTextSignatureV1`/`parseTextSignature`（`{v:1,id,phase}`） | 同左 | 是 | — |
+| reasoning 回放 | thinking block 带 signature → 透传 reasoning item | 同左 | 是 | — |
+| 流式事件序列 | `response.output_item.added` → `thinking_start`/`text_start`/`toolcall_start`；delta 事件 → `*_delta`；`output_item.done` → `*_end`；`response.completed` → usage/stop-reason | 同左 | 是 | — |
+| usage 解析 | input 减 cached+write、reasoning 从 `output_tokens_details` | 同左 | 是 | — |
+| stop reason 映射 | completed→stop、incomplete+max_output_tokens→length、failed/cancelled→error、有 toolCall 且 stop→toolUse | 同左 | 是 | — |
+| grammar 约束采样 | `custom_tool_call` + grammar JSON buffer | 按普通 function_call 处理 | 否 | 见 DEVIATIONS.md #5（简化） |
+| deferred tools | `tool_search_call`/`tool_search_output` | 未实现 | 否 | 见 DEVIATIONS.md #5（简化） |
+| service tier 定价 | flex/priority 倍率 | 未实现 | 否 | 见 DEVIATIONS.md #5（简化） |
+| `rawStopReason` | 输出字段 | 未实现 | 否 | 见 DEVIATIONS.md #5（简化） |

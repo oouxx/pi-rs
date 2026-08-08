@@ -312,7 +312,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
         ),
         (
             "openai",
-            "openai-completions",
+            "openai-responses",
             "https://api.openai.com/v1",
             true,
         ),

@@ -13,3 +13,4 @@
 
 > 备注：#2 属于"未完成"而非"有意偏差"。补齐时按原版逻辑逐项移植，并
 > 在补完后把对应条目状态改为"已确认保留"或删除。
+| 5 | `openai-responses` 后端 `providers/openai_responses.rs` | 原版 `openai-responses.ts` + `openai-responses-shared.ts` 含：grammar 约束采样（`custom_tool_call` + grammar JSON buffer）、deferred tools（`tool_search_call`/`tool_search_output`）、service tier 定价（flex/priority 倍率）、GitHub Copilot 动态 headers、provider retry、`rawStopReason` 字段、`sessionAffinityFormat`/`supportsDeveloperRole` 等 compat 字段 | 已实现核心：消息/工具转换（含 tool-call id 归一化、text signature、reasoning 回放）、SSE 流式解析（thinking/text/toolcall 事件序列）、usage/stop-reason 映射、`stream`/`stream_simple`。简化项：无 grammar 约束采样（`custom_tool_call` 按普通 function_call 处理）、无 deferred tools、无 service tier 定价、无 Copilot headers、无 retry、无 `rawStopReason`、compat 用默认值（supportsDeveloperRole=true、supportsStrictMode=false） | 核心行为（请求/响应格式、事件序列、usage/stop-reason）与原版一致；简化项均为 pi-rs 尚未移植的周边能力（grammar 采样、deferred tools 依赖扩展系统动态工具加载，属后续工作）。`sessionAffinityFormat` 见 ALIGNMENT_GAPS.md #14 | 待确认 |

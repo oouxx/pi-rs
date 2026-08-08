@@ -1545,6 +1545,7 @@ async fn stream_openai_inner(
             if !reason.is_empty() {
                 let (stop_reason, error_message) = map_stop_reason(reason);
                 output.stop_reason = stop_reason;
+                output.raw_stop_reason = Some(reason.to_string());
                 if let Some(msg) = error_message {
                     output.error_message = Some(msg);
                 }

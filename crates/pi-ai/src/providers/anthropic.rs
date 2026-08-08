@@ -7,7 +7,7 @@
 
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::types::{
     AnthropicMessagesCompat, AssistantMessage, AssistantMessageEvent, CacheRetention, ContentBlock,
@@ -68,9 +68,19 @@ enum AnthropicContent {
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "cache_control")]
+        cache_control: Option<AnthropicCacheControl>,
+    },
     #[serde(rename = "image")]
-    Image { source: AnthropicImageSource },
+    Image {
+        source: AnthropicImageSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "cache_control")]
+        cache_control: Option<AnthropicCacheControl>,
+    },
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
     #[serde(rename = "redacted_thinking")]
@@ -88,6 +98,9 @@ enum AnthropicContentBlock {
         content: String,
         #[serde(rename = "is_error", skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "cache_control")]
+        cache_control: Option<AnthropicCacheControl>,
     },
 }
 
@@ -100,12 +113,49 @@ struct AnthropicImageSource {
     data: String,
 }
 
+/// Anthropic prompt-caching cache_control (match TS `CacheControlEphemeral`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    cache_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<String>,
+}
+
+/// Resolve the anthropic prompt-caching cache_control from the retention
+/// setting (match TS `getCacheControl`): `none` → no cache control; `long`
+/// with `supportsLongCacheRetention` adds `ttl: "1h"`.
+fn get_cache_control(
+    model: &Model,
+    options: Option<&StreamOptions>,
+) -> Option<AnthropicCacheControl> {
+    let retention = options.and_then(|o| o.cache_retention.as_ref());
+    if matches!(retention, Some(CacheRetention::None)) {
+        return None;
+    }
+    let long = retention == Some(&CacheRetention::Long)
+        || (retention.is_none() && std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long"));
+    let ttl = if long && get_anthropic_compat(model).supports_long_cache_retention.unwrap_or(false) {
+        Some("1h".to_string())
+    } else {
+        None
+    };
+    Some(AnthropicCacheControl {
+        cache_type: "ephemeral".to_string(),
+        ttl,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "cache_control")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 #[allow(dead_code)]
@@ -276,7 +326,11 @@ fn normalize_tool_call_id(id: &str) -> String {
 }
 
 /// Convert pi-ai messages to Anthropic API message params.
-pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<AnthropicMessageParam> {
+pub(crate) fn convert_messages(
+    messages: &[Message],
+    model: &Model,
+    cache_control: Option<&AnthropicCacheControl>,
+) -> Vec<AnthropicMessageParam> {
     let allow_empty_signature = get_anthropic_compat(model)
         .allow_empty_signature
         .unwrap_or(false);
@@ -313,7 +367,10 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
                         .iter()
                         .filter_map(|b| match b {
                             ContentBlock::Text { text, .. } => {
-                                Some(AnthropicContentBlock::Text { text: text.clone() })
+                                Some(AnthropicContentBlock::Text {
+                                    text: text.clone(),
+                                    cache_control: None,
+                                })
                             }
                             ContentBlock::Image { data, mime_type } => {
                                 Some(AnthropicContentBlock::Image {
@@ -322,6 +379,7 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
                                         media_type: mime_type.clone(),
                                         data: data.clone(),
                                     },
+                                    cache_control: None,
                                 })
                             }
                             _ => None,
@@ -344,7 +402,10 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
                             if text.trim().is_empty() {
                                 continue;
                             }
-                            blocks.push(AnthropicContentBlock::Text { text: text.clone() });
+                            blocks.push(AnthropicContentBlock::Text {
+                                text: text.clone(),
+                                cache_control: None,
+                            });
                         }
                         ContentBlock::Thinking {
                             thinking,
@@ -380,6 +441,7 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
                                 } else {
                                     blocks.push(AnthropicContentBlock::Text {
                                         text: thinking.clone(),
+                                        cache_control: None,
                                     });
                                 }
                             } else {
@@ -431,8 +493,37 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
                         tool_use_id: normalize_tool_call_id(tool_call_id),
                         content: text,
                         is_error: if *is_error { Some(true) } else { None },
+                        cache_control: None,
                     }]),
                 });
+            }
+        }
+    }
+
+    // Add cache_control to the last user message to cache conversation history
+    // (match TS convertMessages).
+    if let Some(cc) = cache_control {
+        if let Some(last) = params.last_mut() {
+            if last.role == "user" {
+                match &mut last.content {
+                    AnthropicContent::String(s) => {
+                        let s = s.clone();
+                        last.content = AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
+                            text: s,
+                            cache_control: Some(cc.clone()),
+                        }]);
+                    }
+                    AnthropicContent::Blocks(blocks) => {
+                        if let Some(
+                            AnthropicContentBlock::Text { cache_control: c, .. }
+                            | AnthropicContentBlock::Image { cache_control: c, .. }
+                            | AnthropicContentBlock::ToolResult { cache_control: c, .. },
+                        ) = blocks.last_mut()
+                        {
+                            *c = Some(cc.clone());
+                        }
+                    }
+                }
             }
         }
     }
@@ -445,13 +536,23 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
 // ============================================================================
 
 /// Convert pi-ai tools to Anthropic API tool definitions.
-pub(crate) fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
+pub(crate) fn convert_tools(
+    tools: &[Tool],
+    cache_control: Option<&AnthropicCacheControl>,
+) -> Vec<AnthropicTool> {
+    let count = tools.len();
     tools
         .iter()
-        .map(|t| AnthropicTool {
+        .enumerate()
+        .map(|(index, t)| AnthropicTool {
             name: t.name.clone(),
             description: t.description.clone(),
             input_schema: t.parameters.clone(),
+            cache_control: if index == count - 1 {
+                cache_control.cloned()
+            } else {
+                None
+            },
         })
         .collect()
 }
@@ -592,10 +693,23 @@ async fn stream_anthropic_inner(
         ANTHROPIC_VERSION.to_string(),
     );
     header_map.insert("content-type".to_string(), "application/json".to_string());
-    if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
+    // Fine-grained tool streaming beta: only when tools are present AND the
+    // provider does not support eager tool input streaming (match TS
+    // `shouldUseFineGrainedToolStreamingBeta`).
+    let has_tools = context.tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+    let mut beta_features: Vec<String> = Vec::new();
+    if has_tools && !compat.supports_eager_tool_input_streaming.unwrap_or(true) {
+        beta_features.push(FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
+    }
+    // Interleaved thinking beta for non-adaptive thinking models
+    // (match TS createClient `needsInterleavedBeta`).
+    if compat.force_adaptive_thinking != Some(true) {
+        beta_features.push(INTERLEAVED_THINKING_BETA.to_string());
+    }
+    if !beta_features.is_empty() {
         header_map.insert(
             "anthropic-beta".to_string(),
-            FINE_GRAINED_TOOL_STREAMING_BETA.to_string(),
+            beta_features.join(","),
         );
     }
     if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
@@ -627,7 +741,8 @@ async fn stream_anthropic_inner(
         .build()?;
 
     // Build request body
-    let messages = convert_messages(&context.messages, model);
+    let cache_control = get_cache_control(model, options);
+    let messages = convert_messages(&context.messages, model, cache_control.as_ref());
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
     body.insert("messages".to_string(), serde_json::to_value(&messages)?);
@@ -635,7 +750,14 @@ async fn stream_anthropic_inner(
     body.insert("stream".to_string(), Value::Bool(true));
 
     if let Some(ref sp) = context.system_prompt {
-        body.insert("system".to_string(), Value::String(sp.clone()));
+        // System prompt with anthropic cache_control (match TS buildParams).
+        let mut system_text = serde_json::Map::new();
+        system_text.insert("type".into(), json!("text"));
+        system_text.insert("text".into(), json!(sp));
+        if let Some(cc) = &cache_control {
+            system_text.insert("cache_control".into(), serde_json::to_value(cc)?);
+        }
+        body.insert("system".to_string(), json!([system_text]));
     }
 
     if let Some(t) = temperature {
@@ -650,10 +772,83 @@ async fn stream_anthropic_inner(
 
     if let Some(ref tools) = context.tools {
         if !tools.is_empty() {
+            // cache_control on the last tool (match TS convertTools) only when
+            // the provider supports it.
+            let tools_cache_control = if compat.supports_cache_control_on_tools.unwrap_or(false) {
+                cache_control.as_ref()
+            } else {
+                None
+            };
             body.insert(
                 "tools".to_string(),
-                serde_json::to_value(convert_tools(tools))?,
+                serde_json::to_value(convert_tools(tools, tools_cache_control))?,
             );
+        }
+    }
+
+    // Configure thinking mode: adaptive, budget-based, or explicitly disabled
+    // (match TS buildParams). pi-rs maps the reasoning effort level to the
+    // TS `thinkingEnabled` semantics: presence enables thinking, "off" disables.
+    if model.reasoning {
+        let effort = options.and_then(|o| o.reasoning_effort.clone());
+        match effort.as_deref() {
+            Some("off") => {
+                if model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| m.get("off").and_then(Option::as_deref))
+                    .is_some()
+                {
+                    body.insert("thinking".into(), json!({ "type": "disabled" }));
+                }
+            }
+            Some(level) => {
+                if compat.force_adaptive_thinking == Some(true) {
+                    body.insert(
+                        "thinking".into(),
+                        json!({ "type": "adaptive", "display": "summarized" }),
+                    );
+                    body.insert("output_config".into(), json!({ "effort": level }));
+                } else {
+                    body.insert(
+                        "thinking".into(),
+                        json!({
+                            "type": "enabled",
+                            "budget_tokens": 1024,
+                            "display": "summarized",
+                        }),
+                    );
+                }
+            }
+            None => {}
+        }
+    }
+
+    // tool_choice (match TS buildParams).
+    if let Some(tc) = options.and_then(|o| o.tool_choice.as_ref()) {
+        match tc {
+            crate::types::ToolChoice::Mode(m) => {
+                let type_str = match m {
+                    crate::types::ToolChoiceMode::Auto => "auto",
+                    crate::types::ToolChoiceMode::None => "none",
+                    crate::types::ToolChoiceMode::Required => "any",
+                };
+                body.insert("tool_choice".into(), json!({ "type": type_str }));
+            }
+            crate::types::ToolChoice::Specific { function, .. } => {
+                let name = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                body.insert("tool_choice".into(), json!({ "type": "tool", "name": name }));
+            }
+        }
+    }
+
+    // metadata.user_id (match TS buildParams).
+    if let Some(meta) = options.and_then(|o| o.metadata.as_ref()) {
+        if let Some(uid) = meta.get("user_id").and_then(Value::as_str) {
+            body.insert("metadata".into(), json!({ "user_id": uid }));
         }
     }
 
@@ -967,6 +1162,7 @@ async fn stream_anthropic_inner(
                     let (stop_reason, error_message) =
                         map_stop_reason(&reason, delta.stop_details.as_ref());
                     output.stop_reason = stop_reason;
+                    output.raw_stop_reason = Some(reason.clone());
                     if let Some(msg) = error_message {
                         output.error_message = Some(msg);
                     }
@@ -1183,7 +1379,7 @@ mod tests {
             content: vec![ContentBlock::text("Hello")],
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -1204,7 +1400,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
     }
@@ -1221,7 +1417,7 @@ mod tests {
             added_tool_names: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -1265,7 +1461,7 @@ mod tests {
                 timestamp: 1000,
             },
         ];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         assert_eq!(converted.len(), 3);
         assert_eq!(converted[0].role, "user");
         assert_eq!(converted[1].role, "assistant");
@@ -1295,7 +1491,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
         // Thinking blocks should be filtered out from the API request
@@ -1308,7 +1504,7 @@ mod tests {
             content: vec![ContentBlock::text("")],
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         // Empty user messages should be skipped
         assert_eq!(converted.len(), 0);
     }
@@ -1334,7 +1530,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model);
+        let converted = convert_messages(&messages, &model, None);
         assert_eq!(converted.len(), 1);
         if let AnthropicContent::Blocks(blocks) = &converted[0].content {
             if let AnthropicContentBlock::ToolUse { id, .. } = &blocks[0] {
@@ -1355,7 +1551,7 @@ mod tests {
 
     #[test]
     fn test_convert_tools_empty() {
-        let converted = convert_tools(&[]);
+        let converted = convert_tools(&[], None);
         assert!(converted.is_empty());
     }
 
@@ -1367,10 +1563,75 @@ mod tests {
             parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools);
+        let converted = convert_tools(&tools, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].name, "read");
         assert_eq!(converted[0].description, "Read a file");
+    }
+
+    #[test]
+    fn test_convert_tools_cache_control_on_last_tool() {
+        // cache_control only lands on the last tool definition (match TS).
+        let tools = vec![
+            Tool {
+                name: "read".into(),
+                description: "Read a file".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+                constrained_sampling: None,
+            },
+            Tool {
+                name: "grep".into(),
+                description: "Search".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+                constrained_sampling: None,
+            },
+        ];
+        let cc = AnthropicCacheControl {
+            cache_type: "ephemeral".to_string(),
+            ttl: None,
+        };
+        let converted = convert_tools(&tools, Some(&cc));
+        assert!(converted[0].cache_control.is_none());
+        assert!(converted[1].cache_control.is_some());
+    }
+
+    #[test]
+    fn test_convert_messages_cache_control_on_last_user_message() {
+        // Last user message string content becomes a text block carrying
+        // cache_control (match TS convertMessages).
+        let model = make_test_model();
+        let messages = vec![
+            Message::User {
+                content: vec![ContentBlock::text("First")],
+                timestamp: 0,
+            },
+            Message::User {
+                content: vec![ContentBlock::text("Second")],
+                timestamp: 0,
+            },
+        ];
+        let cc = AnthropicCacheControl {
+            cache_type: "ephemeral".to_string(),
+            ttl: Some("1h".to_string()),
+        };
+        let converted = convert_messages(&messages, &model, Some(&cc));
+        assert_eq!(converted.len(), 2);
+        match &converted[1].content {
+            AnthropicContent::Blocks(blocks) => match &blocks[0] {
+                AnthropicContentBlock::Text {
+                    text,
+                    cache_control,
+                } => {
+                    assert_eq!(text, "Second");
+                    assert!(cache_control.is_some());
+                }
+                _ => panic!("expected text block"),
+            },
+            _ => panic!("expected blocks"),
+        }
+        // Without cache control the plain string form is preserved.
+        let converted = convert_messages(&messages, &model, None);
+        assert!(matches!(converted[1].content, AnthropicContent::String(_)));
     }
 
     // ============================================================

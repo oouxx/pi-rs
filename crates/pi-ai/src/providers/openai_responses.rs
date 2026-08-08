@@ -509,7 +509,7 @@ fn convert_responses_messages(
     context: &Context,
     deferred_tools: &std::collections::HashMap<String, Tool>,
     compat: &OpenAIResponsesCompat,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
     let mut messages: Vec<Value> = Vec::new();
 
     // Map of grammar-constrained tool name -> input property.
@@ -528,6 +528,35 @@ fn convert_responses_messages(
 
     let supports_images = model.input.iter().any(|i| i == "image");
     let mut msg_index = 0usize;
+
+    // Match TS `transformMessages`: tool-call ids are only normalized for
+    // messages from a *different* model (isSameModel). The mapping is used to
+    // normalize matching toolResult ids. Same-model messages keep raw ids.
+    let mut tool_call_id_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for msg in &context.messages {
+        if let Message::Assistant {
+            content,
+            provider,
+            api,
+            model: msg_model,
+            ..
+        } = msg
+        {
+            let is_same_model =
+                msg_model == &model.id && provider == &model.provider && api == &model.api;
+            if !is_same_model {
+                for b in content {
+                    if let ContentBlock::ToolCall { id, .. } = b {
+                        let normalized = normalize_tool_call_id(id, model, provider, api);
+                        if normalized != *id {
+                            tool_call_id_map.insert(id.clone(), normalized);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     for msg in &context.messages {
         match msg {
@@ -632,28 +661,28 @@ fn convert_responses_messages(
                             arguments,
                             ..
                         } => {
-                            let normalized = normalize_tool_call_id(id, model, provider, api);
+                            // Use the pre-pass mapping (only populated for
+                            // different-model messages), otherwise the raw id.
+                            let used_id = tool_call_id_map
+                                .get(id)
+                                .cloned()
+                                .unwrap_or_else(|| id.clone());
                             let (call_id, item_id_raw) =
-                                normalized.split_once('|').unwrap_or((&normalized, ""));
+                                used_id.split_once('|').unwrap_or((&used_id, ""));
                             let mut item_id: Option<String> = Some(item_id_raw.to_string());
                             let custom_input_property = grammar_tool_input_properties.get(name);
                             // Drop non-fc_* ids and foreign fc_* ids (unless the
                             // tool is grammar-constrained, which keeps its id).
-                            if custom_input_property.is_none()
-                                && ((is_same_model && !item_id_raw.starts_with("fc_"))
-                                    || (!is_same_model && item_id_raw.starts_with("fc_")))
+                            // Match TS: drop iff `(!isSameModel && fc_)` OR
+                            // `(!grammar && !fc_)`.
+                            if (!is_same_model && item_id_raw.starts_with("fc_"))
+                                || (custom_input_property.is_none()
+                                    && !item_id_raw.starts_with("fc_"))
                             {
                                 item_id = None;
                             }
                             if let Some(property) = custom_input_property {
-                                let input = match get_grammar_tool_input(name, arguments, property)
-                                {
-                                    Ok(i) => i,
-                                    Err(e) => {
-                                        eprintln!("[pi-ai] {e}");
-                                        String::new()
-                                    }
-                                };
+                                let input = get_grammar_tool_input(name, arguments, property)?;
                                 let mut obj = serde_json::Map::new();
                                 obj.insert("type".into(), json!("custom_tool_call"));
                                 obj.insert("call_id".into(), json!(call_id));
@@ -692,13 +721,11 @@ fn convert_responses_messages(
                 added_tool_names,
                 ..
             } => {
-                let normalized =
-                    normalize_tool_call_id(tool_call_id, model, &model.provider, &model.api);
-                let call_id = normalized
-                    .split('|')
-                    .next()
-                    .unwrap_or(&normalized)
-                    .to_string();
+                let used_id = tool_call_id_map
+                    .get(tool_call_id)
+                    .cloned()
+                    .unwrap_or_else(|| tool_call_id.clone());
+                let call_id = used_id.split('|').next().unwrap_or(&used_id).to_string();
                 let output = convert_tool_result_output(model, content);
                 if grammar_tool_input_properties.contains_key(tool_name) {
                     messages.push(json!({
@@ -732,7 +759,7 @@ fn convert_responses_messages(
                     let names: Vec<String> = deferred.iter().map(|t| t.name.clone()).collect();
                     let search_call_id = format!(
                         "pi_tool_load_{}",
-                        short_hash(&format!("{tool_call_id}:{}", names.join(",")))
+                        short_hash(&format!("{used_id}:{}", names.join(",")))
                     );
                     messages.push(json!({
                         "type": "tool_search_call",
@@ -750,6 +777,7 @@ fn convert_responses_messages(
                             &deferred,
                             compat_supports_strict_mode(compat),
                             supports_openai_grammar_tools,
+                            true,
                         )
                         .unwrap_or_default(),
                     }));
@@ -759,7 +787,7 @@ fn convert_responses_messages(
         msg_index += 1;
     }
 
-    messages
+    Ok(messages)
 }
 
 // ============================================================================
@@ -1058,6 +1086,7 @@ fn convert_responses_tools(
     tools: &[Tool],
     supports_strict_mode: bool,
     supports_openai_grammar_tools: bool,
+    defer_loading: bool,
 ) -> Result<Vec<Value>, String> {
     let mut result = Vec::new();
     for tool in tools {
@@ -1065,16 +1094,22 @@ fn convert_responses_tools(
         if let Some(grammar) =
             resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)?
         {
-            result.push(json!({
-                "type": "custom",
-                "name": tool.name,
-                "description": tool.description,
-                "format": {
+            let mut obj = serde_json::Map::new();
+            obj.insert("type".into(), json!("custom"));
+            obj.insert("name".into(), json!(tool.name));
+            obj.insert("description".into(), json!(tool.description));
+            obj.insert(
+                "format".into(),
+                json!({
                     "type": grammar.format,
                     "syntax": grammar.format,
                     "definition": grammar.definition,
-                },
-            }));
+                }),
+            );
+            if defer_loading {
+                obj.insert("defer_loading".into(), json!(true));
+            }
+            result.push(Value::Object(obj));
             continue;
         }
         let strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)?;
@@ -1083,6 +1118,9 @@ fn convert_responses_tools(
         obj.insert("name".into(), json!(tool.name));
         obj.insert("description".into(), json!(tool.description));
         obj.insert("parameters".into(), tool.parameters.clone());
+        if defer_loading {
+            obj.insert("defer_loading".into(), json!(true));
+        }
         if let Some(s) = strict {
             obj.insert("strict".into(), json!(s));
         } else if supports_strict_mode {
@@ -1873,7 +1911,7 @@ fn build_request_body(
     let compat = get_compat(model);
     let supports_tool_search = compat.supports_tool_search.unwrap_or(false);
     let (immediate_tools, deferred_tools) = split_deferred_tools(context, supports_tool_search);
-    let messages = convert_responses_messages(model, context, &deferred_tools, &compat);
+    let messages = convert_responses_messages(model, context, &deferred_tools, &compat)?;
     let tools = if immediate_tools.is_empty() {
         None
     } else {
@@ -1881,6 +1919,7 @@ fn build_request_body(
             &immediate_tools,
             compat_supports_strict_mode(&compat),
             compat.supports_openai_grammar_tools.unwrap_or(false),
+            false,
         )?)
     };
 
@@ -2221,7 +2260,7 @@ mod tests {
             &context,
             &std::collections::HashMap::new(),
             &get_compat(&model),
-        );
+        ).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "developer");
         assert_eq!(items[0]["content"], "You are helpful");
@@ -2254,7 +2293,7 @@ mod tests {
             &context,
             &std::collections::HashMap::new(),
             &get_compat(&model),
-        );
+        ).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "message");
         assert_eq!(items[0]["role"], "assistant");
@@ -2283,7 +2322,7 @@ mod tests {
             &context,
             &std::collections::HashMap::new(),
             &get_compat(&model),
-        );
+        ).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
@@ -2297,6 +2336,109 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["type"], "response.created");
         assert_eq!(events[1]["type"], "response.completed");
+    }
+
+    #[test]
+    fn test_convert_messages_grammar_custom_tool_call() {
+        // Mirrors TS `constrained-sampling.test.ts` "replays grammar calls as
+        // custom Responses items": a grammar-constrained tool call replays as
+        // `custom_tool_call` (input extracted under the grammar property), and
+        // invalid arguments must propagate an error instead of being silently
+        // swallowed.
+        let mut model = make_model();
+        model.compat = Some(crate::types::ModelCompat::OpenAIResponses(
+            crate::types::OpenAIResponsesCompat {
+                supports_developer_role: None,
+                session_affinity_format: None,
+                supports_long_cache_retention: None,
+                supports_strict_mode: None,
+                supports_openai_grammar_tools: Some(true),
+                supports_tool_search: None,
+                supports_explicit_prompt_cache_mode: None,
+            },
+        ));
+        let tool = Tool {
+            name: "sample_tool".into(),
+            description: "Sample tool".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "required": ["payload"],
+                "properties": { "payload": { "type": "string" } }
+            }),
+            constrained_sampling: Some(crate::types::ConstrainedSamplingConfig::Grammar {
+                variants: crate::types::GrammarVariants {
+                    openai_lark: Some("start: /[a-z]+/".into()),
+                    openai_regex: None,
+                },
+            }),
+        };
+        let make_context = |arguments: serde_json::Value| Context {
+            system_prompt: None,
+            messages: vec![
+                Message::Assistant {
+                    content: vec![ContentBlock::ToolCall {
+                        id: "call_1|ctc_1".into(),
+                        name: "sample_tool".into(),
+                        arguments,
+                        thought_signature: None,
+                    }],
+                    api: "openai-responses".into(),
+                    provider: "openai".into(),
+                    model: "gpt-5".into(),
+                    response_model: None,
+                    response_id: None,
+                    diagnostics: None,
+                    usage: Usage::default(),
+                    stop_reason: StopReason::Stop,
+                    error_message: None,
+                    timestamp: 0,
+                },
+                Message::ToolResult {
+                    tool_call_id: "call_1|ctc_1".into(),
+                    tool_name: "sample_tool".into(),
+                    content: vec![ContentBlock::text("done")],
+                    details: None,
+                    is_error: false,
+                    added_tool_names: None,
+                    timestamp: 0,
+                },
+            ],
+            tools: Some(vec![tool.clone()]),
+        };
+
+        // Invalid grammar input must error (match TS throw), not send empty input.
+        for invalid in [serde_json::json!({}), serde_json::json!({ "payload": 42 })] {
+            let ctx = make_context(invalid);
+            let err = convert_responses_messages(
+                &model,
+                &ctx,
+                &std::collections::HashMap::new(),
+                &get_compat(&model),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("requires argument \"payload\" to be a string"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // Valid input replays as a custom_tool_call + custom_tool_call_output.
+        let ctx = make_context(serde_json::json!({ "payload": "abc" }));
+        let items = convert_responses_messages(
+            &model,
+            &ctx,
+            &std::collections::HashMap::new(),
+            &get_compat(&model),
+        )
+        .unwrap();
+        assert!(items.iter().any(|i| i.get("type") == Some(&json!("custom_tool_call"))
+            && i.get("call_id") == Some(&json!("call_1"))
+            && i.get("id") == Some(&json!("ctc_1"))
+            && i.get("name") == Some(&json!("sample_tool"))
+            && i.get("input") == Some(&json!("abc"))));
+        assert!(items.iter().any(|i| i.get("type") == Some(&json!("custom_tool_call_output"))
+            && i.get("call_id") == Some(&json!("call_1"))
+            && i.get("output") == Some(&json!("done"))));
     }
 
     #[test]

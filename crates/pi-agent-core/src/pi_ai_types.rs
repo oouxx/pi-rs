@@ -9,7 +9,8 @@ pub use pi_ai::types::{
     CacheRetention, ContentBlock, Context, ImagesModel, Message, Model, ModelCompat, ModelCost,
     OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting, ProviderResponse,
     SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets, ThinkingLevel,
-    ThinkingLevelMap, Tool, ToolCall, Transport, Usage, UsageCost, VercelGatewayRouting,
+    ThinkingLevelMap, Tool, ToolCall, ToolChoice, ToolChoiceMode, Transport, Usage, UsageCost,
+    VercelGatewayRouting,
 };
 
 pub use pi_ai::models::{

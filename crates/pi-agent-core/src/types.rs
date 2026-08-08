@@ -361,6 +361,17 @@ pub struct StreamFnOptions {
     pub thinking_budgets: Option<crate::pi_ai_types::ThinkingBudgets>,
     pub max_retry_delay_ms: Option<u64>,
     pub transport: Option<String>,
+    /// Pass-through of `StreamOptions` fields (match TS `SimpleStreamOptions`
+    /// spread into the LLM call).
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub timeout_ms: Option<u64>,
+    pub websocket_connect_timeout_ms: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub cache_retention: Option<crate::pi_ai_types::CacheRetention>,
+    pub tool_choice: Option<crate::pi_ai_types::ToolChoice>,
+    pub service_tier: Option<String>,
+    pub metadata: Option<serde_json::Value>,
     pub on_payload: Option<
         Arc<
             dyn Fn(

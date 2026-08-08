@@ -794,6 +794,17 @@ pub struct AgentLoopConfig {
     pub thinking_budgets: Option<crate::pi_ai_types::ThinkingBudgets>,
     pub transport: Option<String>,
     pub max_retry_delay_ms: Option<u64>,
+    /// Pass-through of `SimpleStreamOptions` fields (match TS
+    /// `AgentLoopConfig extends SimpleStreamOptions`).
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub timeout_ms: Option<u64>,
+    pub websocket_connect_timeout_ms: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub cache_retention: Option<crate::pi_ai_types::CacheRetention>,
+    pub tool_choice: Option<crate::pi_ai_types::ToolChoice>,
+    pub service_tier: Option<String>,
+    pub metadata: Option<serde_json::Value>,
     pub tool_execution: ToolExecutionMode,
     pub convert_to_llm: ConvertToLlmFn,
     pub transform_context: Option<TransformContextFn>,
@@ -1034,6 +1045,15 @@ async fn run_loop(
                 transport: initial_config.transport.clone(),
                 max_retry_delay_ms: initial_config.max_retry_delay_ms,
                 signal: signal.clone(),
+                temperature: initial_config.temperature,
+                max_tokens: initial_config.max_tokens,
+                timeout_ms: initial_config.timeout_ms,
+                websocket_connect_timeout_ms: initial_config.websocket_connect_timeout_ms,
+                max_retries: initial_config.max_retries,
+                cache_retention: initial_config.cache_retention.clone(),
+                tool_choice: initial_config.tool_choice.clone(),
+                service_tier: initial_config.service_tier.clone(),
+                metadata: initial_config.metadata.clone(),
                 on_payload: initial_config.on_payload.clone(),
                 on_response: initial_config.on_response.clone(),
                 on_headers: initial_config.on_headers.clone(),
@@ -1204,6 +1224,7 @@ async fn run_loop(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::pi_ai_types::{ContentBlock, StopReason, ToolExecutionMode, Usage};
     use crate::types::{
@@ -1217,6 +1238,23 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             arguments: args,
+        }
+    }
+
+    fn dummy_assistant_message_llm() -> crate::pi_ai_types::AssistantMessage {
+        crate::pi_ai_types::AssistantMessage {
+            content: vec![],
+            api: "test-api".to_string(),
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 1000,
         }
     }
 
@@ -1289,6 +1327,117 @@ mod tests {
         }
         assert_eq!(result.details, serde_json::json!({}));
         assert!(result.terminate.is_none());
+    }
+
+    // ============================================================
+    // SimpleStreamOptions passthrough to the stream function
+    // ============================================================
+    #[tokio::test]
+    async fn test_simple_stream_options_passthrough() {
+        // `AgentLoopConfig extends SimpleStreamOptions` in TS: temperature /
+        // maxTokens / cacheRetention / toolChoice / serviceTier / metadata /
+        // timeouts / maxRetries must reach the stream function untouched.
+        use futures::stream;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<StreamFnOptions>));
+        let captured2 = captured.clone();
+        let stream_fn: StreamFn = Arc::new(move |_model, _ctx, _thinking, opts| {
+            *captured2.lock().unwrap() = Some(opts);
+            Box::pin(async {
+                let events: Box<dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent> + Send + Unpin> =
+                    Box::new(stream::iter([crate::pi_ai_types::AssistantMessageEvent::Done {
+                        reason: crate::pi_ai_types::StopReason::Stop,
+                        message: dummy_assistant_message_llm(),
+                    }]));
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(events)
+            })
+        });
+        let convert_to_llm: ConvertToLlmFn = Arc::new(crate::harness::messages::convert_to_llm);
+        let tool_execution = crate::pi_ai_types::ToolExecutionMode::Parallel;
+        let config = AgentLoopConfig {
+            model: Model {
+                id: "test".into(),
+                name: "test".into(),
+                api: "test".into(),
+                provider: "test".into(),
+                base_url: "https://test.com".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec![],
+                cost: crate::pi_ai_types::ModelCost {
+                    input: 0.0,
+                    output: 0.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                    tiers: vec![],
+                },
+                context_window: 0,
+                max_tokens: 0,
+                headers: None,
+                compat: None,
+            },
+            reasoning: Some("high".to_string()),
+            api_key: Some("test-key".into()),
+            session_id: Some("sess-1".into()),
+            thinking_budgets: None,
+            transport: Some("auto".into()),
+            max_retry_delay_ms: Some(1000),
+            temperature: Some(0.7),
+            max_tokens: Some(2048),
+            timeout_ms: Some(30_000),
+            websocket_connect_timeout_ms: Some(15_000),
+            max_retries: Some(2),
+            cache_retention: Some(crate::pi_ai_types::CacheRetention::Long),
+            tool_choice: Some(crate::pi_ai_types::ToolChoice::Mode(
+                crate::pi_ai_types::ToolChoiceMode::Auto,
+            )),
+            service_tier: Some("flex".into()),
+            metadata: Some(serde_json::json!({ "user_id": "u1" })),
+            tool_execution,
+            convert_to_llm,
+            transform_context: None,
+            get_api_key: None,
+            get_steering_messages: None,
+            get_follow_up_messages: None,
+            should_stop_after_turn: None,
+            prepare_next_turn: None,
+            before_tool_call: None,
+            after_tool_call: None,
+            on_payload: None,
+            on_response: None,
+            on_headers: None,
+            on_provider_response: None,
+            max_consecutive_tool_calls: None,
+        };
+
+        run_agent_loop(
+            vec![],
+            dummy_context(vec![]),
+            &config,
+            &dummy_event_sink(),
+            &None,
+            &stream_fn,
+        )
+        .await
+        .unwrap();
+
+        let opts = captured.lock().unwrap().clone().expect("stream fn called");
+        assert_eq!(opts.temperature, Some(0.7));
+        assert_eq!(opts.max_tokens, Some(2048));
+        assert_eq!(opts.timeout_ms, Some(30_000));
+        assert_eq!(opts.websocket_connect_timeout_ms, Some(15_000));
+        assert_eq!(opts.max_retries, Some(2));
+        assert_eq!(
+            opts.cache_retention,
+            Some(crate::pi_ai_types::CacheRetention::Long)
+        );
+        assert!(matches!(
+            opts.tool_choice,
+            Some(crate::pi_ai_types::ToolChoice::Mode(
+                crate::pi_ai_types::ToolChoiceMode::Auto
+            ))
+        ));
+        assert_eq!(opts.service_tier.as_deref(), Some("flex"));
+        assert_eq!(opts.metadata.as_ref().and_then(|m| m.get("user_id")), Some(&serde_json::json!("u1")));
     }
 
     // ============================================================
@@ -2207,6 +2356,15 @@ mod tests {
             thinking_budgets: None,
             transport: None,
             max_retry_delay_ms: None,
+            temperature: None,
+            max_tokens: None,
+            timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            max_retries: None,
+            cache_retention: None,
+            tool_choice: None,
+            service_tier: None,
+            metadata: None,
             tool_execution: ToolExecutionMode::Parallel,
             convert_to_llm: Arc::new(|_msgs| vec![]),
             transform_context: None,

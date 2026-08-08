@@ -23,7 +23,7 @@
 | 10 | v0.80.2 | `ApiKeyCredential` discriminator `type: "api_key"` + auth.json `env` 覆盖 | pi-ai 无 credential 系统（coding-agent 有 `auth_storage.rs`） | B | 待确认 |
 | 11 | v0.80.2 #6020 | openai-completions 运行时 `detectCompat` fallback（无显式 compat 的模型按 baseUrl 推断） | pi-rs 无 detectCompat | B | 待确认 |
 | 12 | v0.79.9 #5673 | `chat_template_kwargs` thinking（vLLM/HF chat-template 模型） | pi-rs 无 | B | 待确认 |
-| 13 | v0.79.10 #5114 | OpenAI-compatible 流式保留 reasoning_details（先于 tool call delta 到达） | openai.rs 有 reasoning_content 处理，需核对细节 | 待查 | 待查 |
+| 13 | v0.79.10 #5114 | OpenAI-compatible 流式保留 reasoning_details（先于 tool call delta 到达） | 已核对：openai.rs 流式按 `reasoning_content`/`reasoning`/`reasoning_text` 处理 reasoning 块，但原实现遍历**全部**非空字段重复追加（如 chutes.ai 同时返回 reasoning_content 与 reasoning 相同内容会重复）；已改为仅取**第一个**非空字段（对齐 TS openai-completions），并补 opencode-go `reasoning`→`reasoning_content` signature 映射 | A | ✅ 已修 |
 | 14 | v0.80.7 #6496 | `compat.sessionAffinityFormat`（替代 `sendSessionIdHeader`，breaking） | `OpenAIResponsesCompat` 已更新为 v0.80.7 字段（sessionAffinityFormat/supportsDeveloperRole/supportsStrictMode 等），provider 已按格式发 session affinity headers | B | ✅ 已修 |
 | 15 | v0.80.0+ | `openai-responses` API 后端（openai 官方 provider 用 `/v1/responses`） | 已实现 `openai_responses.rs`（消息/工具转换 + SSE 流式 + 事件序列），openai 模型已切到 `openai-responses`；简化项见 DEVIATIONS.md #5 | B | ✅ 已修（含简化偏差） |
 | 16 | v0.80.8 | `ModelRuntime` / live model catalog refresh | 未实现 | B | 大项，待排期 |

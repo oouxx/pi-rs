@@ -304,6 +304,7 @@ fn create_tool_result_message(finalized: &FinalizedToolCallOutcome) -> AgentMess
         content,
         details: finalized.result.details.clone(),
         is_error: finalized.is_error,
+        added_tool_names: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -661,6 +662,7 @@ async fn stream_assistant_response(
                     name: t.name.clone(),
                     description: t.description.clone(),
                     parameters: t.parameters_schema.clone(),
+                    constrained_sampling: None,
                 })
                 .collect()
         }),
@@ -1261,8 +1263,9 @@ mod tests {
             execution_mode: None,
             prepare_arguments: prepare,
             execute: Arc::new(move |_id, _args, _signal, _on_update| {
-                let mut guard =
-                    exec_results.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = exec_results
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let result = guard.remove(0);
                 Box::pin(async move { result })
             }),
@@ -2191,8 +2194,8 @@ mod tests {
                     output: 0.0,
                     cache_read: 0.0,
                     cache_write: 0.0,
-                            tiers: vec![],
-},
+                    tiers: vec![],
+                },
                 context_window: 100_000,
                 max_tokens: 4096,
                 headers: None,

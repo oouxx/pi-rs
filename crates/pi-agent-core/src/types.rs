@@ -34,6 +34,9 @@ pub enum AgentMessage {
         content: Vec<ContentBlock>,
         details: serde_json::Value,
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "addedToolNames")]
+        added_tool_names: Option<Vec<String>>,
         timestamp: i64,
     },
     #[serde(rename = "bashExecution")]

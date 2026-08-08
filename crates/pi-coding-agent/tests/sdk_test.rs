@@ -91,8 +91,8 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                         output: model.cost.output,
                         cache_read: model.cost.cache_read,
                         cache_write: model.cost.cache_write,
-                                tiers: vec![],
-},
+                        tiers: vec![],
+                    },
                     context_window: model.context_window,
                     max_tokens: model.max_tokens,
                     headers: model.headers,
@@ -137,6 +137,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 content,
                                 details,
                                 is_error,
+                                added_tool_names,
                                 timestamp,
                             } => pi_agent_core::pi_ai::types::Message::ToolResult {
                                 tool_call_id: tool_call_id.clone(),
@@ -144,6 +145,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 content: content.clone(),
                                 details: details.clone(),
                                 is_error: *is_error,
+                                added_tool_names: added_tool_names.clone(),
                                 timestamp: *timestamp,
                             },
                         })
@@ -156,6 +158,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 name: t.name.clone(),
                                 description: t.description.clone(),
                                 parameters: t.parameters.clone(),
+                                constrained_sampling: None,
                             })
                             .collect()
                     }),
@@ -653,8 +656,15 @@ async fn test_invoke_agent() {
                         ContentBlock::Text { text, .. } => {
                             println!("[dbg]     [{j}] Text: {text}");
                         }
-                        ContentBlock::ToolCall { id, name, arguments, .. } => {
-                            println!("[dbg]     [{j}] ToolCall: id={id} name={name} args={arguments}");
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
+                            println!(
+                                "[dbg]     [{j}] ToolCall: id={id} name={name} args={arguments}"
+                            );
                         }
                         ContentBlock::Thinking { thinking, .. } => {
                             println!("[dbg]     [{j}] Thinking: {thinking}");
@@ -665,7 +675,13 @@ async fn test_invoke_agent() {
                     }
                 }
             }
-            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                is_error,
+                ..
+            } => {
                 let text = content
                     .iter()
                     .filter_map(|b| match b {
@@ -676,8 +692,15 @@ async fn test_invoke_agent() {
                     .join("");
                 println!("[dbg]   [{i}] ToolResult: tool={tool_name} id={tool_call_id} is_error={is_error} text={text}");
             }
-            AgentMessage::BashExecution { command, output, exit_code, .. } => {
-                println!("[dbg]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}");
+            AgentMessage::BashExecution {
+                command,
+                output,
+                exit_code,
+                ..
+            } => {
+                println!(
+                    "[dbg]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}"
+                );
             }
             _ => {
                 println!("[dbg]   [{i}] Other: {msg:?}");
@@ -687,13 +710,20 @@ async fn test_invoke_agent() {
 
     // Verify that the LLM made at least one tool call (bash with ls)
     let has_tool_call = messages.iter().any(|m| match m {
-        AgentMessage::Assistant { content, .. } => content.iter().any(|b| matches!(b, ContentBlock::ToolCall { .. })),
+        AgentMessage::Assistant { content, .. } => content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolCall { .. })),
         _ => false,
     });
-    assert!(has_tool_call, "Expected at least one tool call in assistant messages");
+    assert!(
+        has_tool_call,
+        "Expected at least one tool call in assistant messages"
+    );
 
     // Verify that at least one tool result came back
-    let has_tool_result = messages.iter().any(|m| matches!(m, AgentMessage::ToolResult { .. }));
+    let has_tool_result = messages
+        .iter()
+        .any(|m| matches!(m, AgentMessage::ToolResult { .. }));
     assert!(has_tool_result, "Expected at least one tool result");
 }
 
@@ -723,8 +753,8 @@ fn make_mock_multi_turn_stream_fn() -> StreamFn {
         > {
             Box::pin(async move {
                 use pi_agent_core::pi_ai_types::{
-                    assistant_message, text_block, tool_call_block, AssistantMessageEvent,
-                    Message, StreamResponse, StopReason, Usage,
+                    assistant_message, text_block, tool_call_block, AssistantMessageEvent, Message,
+                    StopReason, StreamResponse, Usage,
                 };
 
                 let api = model.api.clone();
@@ -857,7 +887,12 @@ async fn test_multi_turn_tool_communication() {
         cli_provider: None,
         cli_model: None,
         persist_session: false,
-        session_file: Some(tmp.path().join("test-session.jsonl").to_string_lossy().to_string()),
+        session_file: Some(
+            tmp.path()
+                .join("test-session.jsonl")
+                .to_string_lossy()
+                .to_string(),
+        ),
         fork_from: None,
         session_dir: None,
         auth_storage: None,
@@ -874,12 +909,10 @@ async fn test_multi_turn_tool_communication() {
     println!("[test] === Turn 1: create file ===");
     let turn1_messages = session
         .get_agent()
-        .prompt(PromptInput::Text(
-            &format!(
-                "在目录 {} 下创建一个名为 test.txt 的文件，内容为 hello world，使用 bash 的 echo 命令",
-                cwd
-            ),
-        ))
+        .prompt(PromptInput::Text(&format!(
+            "在目录 {} 下创建一个名为 test.txt 的文件，内容为 hello world，使用 bash 的 echo 命令",
+            cwd
+        )))
         .await
         .expect("turn 1 prompt failed");
 
@@ -893,8 +926,15 @@ async fn test_multi_turn_tool_communication() {
                         ContentBlock::Text { text, .. } => {
                             println!("[test]   [{i}] Assistant Text: {text}");
                         }
-                        ContentBlock::ToolCall { id, name, arguments, .. } => {
-                            println!("[test]   [{i}] ToolCall: id={id} name={name} args={arguments}");
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
+                            println!(
+                                "[test]   [{i}] ToolCall: id={id} name={name} args={arguments}"
+                            );
                         }
                         ContentBlock::Thinking { thinking, .. } => {
                             println!("[test]   [{i}] Thinking: {thinking}");
@@ -903,7 +943,13 @@ async fn test_multi_turn_tool_communication() {
                     }
                 }
             }
-            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                is_error,
+                ..
+            } => {
                 let text = content
                     .iter()
                     .filter_map(|b| match b {
@@ -914,7 +960,12 @@ async fn test_multi_turn_tool_communication() {
                     .join("");
                 println!("[test]   [{i}] ToolResult: tool={tool_name} id={tool_call_id} is_error={is_error} text={text}");
             }
-            AgentMessage::BashExecution { command, output, exit_code, .. } => {
+            AgentMessage::BashExecution {
+                command,
+                output,
+                exit_code,
+                ..
+            } => {
                 println!("[test]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}");
             }
             _ => {
@@ -962,19 +1013,48 @@ async fn test_multi_turn_tool_communication() {
     println!("[test] === Turn 2: read file ===");
     // Show the messages already in agent state before turn 2.
     let pre_messages = session.get_agent().messages().await;
-    println!("[test] Pre-turn-2 agent state messages ({})", pre_messages.len());
+    println!(
+        "[test] Pre-turn-2 agent state messages ({})",
+        pre_messages.len()
+    );
     for (i, msg) in pre_messages.iter().enumerate() {
         match msg {
             AgentMessage::User { content, .. } => {
-                let texts: Vec<&str> = content.iter().filter_map(|b| match b { ContentBlock::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
+                let texts: Vec<&str> = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
                 println!("[test]   pre[{i}] User: {:?}", texts);
             }
-            AgentMessage::Assistant { content, stop_reason, .. } => {
-                let texts: Vec<&str> = content.iter().filter_map(|b| match b { ContentBlock::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
-                println!("[test]   pre[{i}] Assistant: {:?} stop={:?}", texts, stop_reason);
+            AgentMessage::Assistant {
+                content,
+                stop_reason,
+                ..
+            } => {
+                let texts: Vec<&str> = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                println!(
+                    "[test]   pre[{i}] Assistant: {:?} stop={:?}",
+                    texts, stop_reason
+                );
             }
-            AgentMessage::ToolResult { tool_name, is_error, .. } => {
-                println!("[test]   pre[{i}] ToolResult: tool={} is_error={}", tool_name, is_error);
+            AgentMessage::ToolResult {
+                tool_name,
+                is_error,
+                ..
+            } => {
+                println!(
+                    "[test]   pre[{i}] ToolResult: tool={} is_error={}",
+                    tool_name, is_error
+                );
             }
             _ => {
                 println!("[test]   pre[{i}] Other: {:?}", std::mem::discriminant(msg));
@@ -997,8 +1077,15 @@ async fn test_multi_turn_tool_communication() {
                         ContentBlock::Text { text, .. } => {
                             println!("[test]   [{i}] Assistant Text: {text}");
                         }
-                        ContentBlock::ToolCall { id, name, arguments, .. } => {
-                            println!("[test]   [{i}] ToolCall: id={id} name={name} args={arguments}");
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
+                            println!(
+                                "[test]   [{i}] ToolCall: id={id} name={name} args={arguments}"
+                            );
                         }
                         ContentBlock::Thinking { thinking, .. } => {
                             println!("[test]   [{i}] Thinking: {thinking}");
@@ -1007,7 +1094,13 @@ async fn test_multi_turn_tool_communication() {
                     }
                 }
             }
-            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                is_error,
+                ..
+            } => {
                 let text = content
                     .iter()
                     .filter_map(|b| match b {
@@ -1018,7 +1111,12 @@ async fn test_multi_turn_tool_communication() {
                     .join("");
                 println!("[test]   [{i}] ToolResult: tool={tool_name} id={tool_call_id} is_error={is_error} text={text}");
             }
-            AgentMessage::BashExecution { command, output, exit_code, .. } => {
+            AgentMessage::BashExecution {
+                command,
+                output,
+                exit_code,
+                ..
+            } => {
                 println!("[test]   [{i}] BashExecution: cmd={command} exit={exit_code:?} output={output}");
             }
             _ => {
@@ -1078,7 +1176,10 @@ async fn test_multi_turn_tool_communication() {
 
     // ── Verify agent state has all messages ────────────────────────────
     let all_messages = session.get_agent().messages().await;
-    println!("[test] Total messages in agent state: {}", all_messages.len());
+    println!(
+        "[test] Total messages in agent state: {}",
+        all_messages.len()
+    );
     assert!(
         all_messages.len() >= 4,
         "Agent state should have at least 4 messages (2 user + 2 assistant), got {}",
@@ -1096,11 +1197,33 @@ async fn test_multi_turn_tool_communication() {
         if let Some(header_line) = file_lines.first() {
             if let Ok(header) = serde_json::from_str::<serde_json::Value>(header_line) {
                 println!("[test]   Header:");
-                println!("[test]     type:      {}", header.get("type").and_then(|v| v.as_str()).unwrap_or("?"));
-                println!("[test]     version:   {}", header.get("version").and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or("?".to_string()));
-                println!("[test]     id:        {}", header.get("id").and_then(|v| v.as_str()).unwrap_or("?"));
-                println!("[test]     timestamp: {}", header.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?"));
-                println!("[test]     cwd:       {}", header.get("cwd").and_then(|v| v.as_str()).unwrap_or("?"));
+                println!(
+                    "[test]     type:      {}",
+                    header.get("type").and_then(|v| v.as_str()).unwrap_or("?")
+                );
+                println!(
+                    "[test]     version:   {}",
+                    header
+                        .get("version")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v.to_string())
+                        .unwrap_or("?".to_string())
+                );
+                println!(
+                    "[test]     id:        {}",
+                    header.get("id").and_then(|v| v.as_str()).unwrap_or("?")
+                );
+                println!(
+                    "[test]     timestamp: {}",
+                    header
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                );
+                println!(
+                    "[test]     cwd:       {}",
+                    header.get("cwd").and_then(|v| v.as_str()).unwrap_or("?")
+                );
             }
         }
 
@@ -1122,10 +1245,15 @@ async fn test_multi_turn_tool_communication() {
                             "assistant" => {
                                 assistant_count += 1;
                                 // Check for tool calls inside content blocks
-                                if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
+                                if let Some(content) = msg.get("content").and_then(|v| v.as_array())
+                                {
                                     for block in content {
-                                        if block.get("type").and_then(|v| v.as_str()) == Some("toolCall") {
-                                            if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                        if block.get("type").and_then(|v| v.as_str())
+                                            == Some("toolCall")
+                                        {
+                                            if let Some(name) =
+                                                block.get("name").and_then(|v| v.as_str())
+                                            {
                                                 match name {
                                                     "bash" => bash_count += 1,
                                                     "read" => read_count += 1,
@@ -1149,16 +1277,33 @@ async fn test_multi_turn_tool_communication() {
         }
         println!("[test]   Entries: user={user_count} assistant={assistant_count} tool_result={tool_result_count}");
         println!("[test]   Tool calls: bash={bash_count} read={read_count}");
-        println!("[test]   Total entries (excl. header): {}", file_lines.len() - 1);
+        println!(
+            "[test]   Total entries (excl. header): {}",
+            file_lines.len() - 1
+        );
 
         // Verify both tools were used
-        assert!(bash_count >= 1, "Session should contain at least one bash tool call");
-        assert!(read_count >= 1, "Session should contain at least one read tool call");
-        assert!(user_count >= 2, "Session should contain at least 2 user messages");
-        assert!(assistant_count >= 2, "Session should contain at least 2 assistant messages");
+        assert!(
+            bash_count >= 1,
+            "Session should contain at least one bash tool call"
+        );
+        assert!(
+            read_count >= 1,
+            "Session should contain at least one read tool call"
+        );
+        assert!(
+            user_count >= 2,
+            "Session should contain at least 2 user messages"
+        );
+        assert!(
+            assistant_count >= 2,
+            "Session should contain at least 2 assistant messages"
+        );
         println!("[test] === Session analysis complete ===");
     } else {
-        println!("[test] WARNING: session file not found at {}", session_path.display());
+        println!(
+            "[test] WARNING: session file not found at {}",
+            session_path.display()
+        );
     }
-
 }

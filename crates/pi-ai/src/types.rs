@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-
 // ============================================================================
 // Content block types
 // ============================================================================
@@ -64,7 +63,7 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    #[must_use] 
+    #[must_use]
     pub fn new(id: String, name: String, arguments: serde_json::Value) -> Self {
         Self {
             type_field: "toolCall".to_string(),
@@ -121,7 +120,6 @@ pub struct Usage {
     #[serde(default)]
     pub cost: UsageCost,
 }
-
 
 // ============================================================================
 // Stop reason
@@ -183,6 +181,9 @@ pub enum Message {
         details: Option<serde_json::Value>,
         #[serde(rename = "isError")]
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "addedToolNames")]
+        added_tool_names: Option<Vec<String>>,
         timestamp: i64,
     },
 }
@@ -577,11 +578,39 @@ pub enum ModelCompat {
 // Tool types
 // ============================================================================
 
+/// Grammar format variants for constrained sampling.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarVariants {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_lark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_regex: Option<String>,
+}
+
+/// Optional provider-side constrained sampling config for a tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConstrainedSamplingConfig {
+    JsonSchema { strict: JsonSchemaStrict },
+    Grammar { variants: GrammarVariants },
+}
+
+/// Strictness preference for JSON-schema constrained sampling.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum JsonSchemaStrict {
+    Prefer,
+    Require,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constrained_sampling: Option<ConstrainedSamplingConfig>,
 }
 
 // ============================================================================
@@ -651,13 +680,35 @@ pub struct StreamOptions {
     /// Callback invoked before the provider request is sent.
     /// Receives the request payload and returns the (possibly modified) payload.
     /// Return `None` to cancel the request.
-    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
+    pub on_payload: Option<
+        Arc<
+            dyn Fn(
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
     /// Callback invoked before provider HTTP request headers are sent.
     /// Receives the current headers map and returns the (possibly modified) headers.
-    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
+    pub on_headers: Option<
+        Arc<
+            dyn Fn(
+                    std::collections::HashMap<String, String>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = std::collections::HashMap<String, String>>
+                            + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
+    >,
     /// Callback invoked after a provider HTTP response is received.
     /// Receives the HTTP status code and response headers.
-    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
+    pub on_provider_response:
+        Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
 
     pub tool_choice: Option<ToolChoice>,
     /// Service tier for OpenAI Responses (`flex` / `priority`).
@@ -680,9 +731,15 @@ impl std::fmt::Debug for StreamOptions {
             .field("signal", &self.signal.as_ref().map(|_| "..."))
             .field("transport", &self.transport)
             .field("cache_retention", &self.cache_retention)
-            .field("websocket_connect_timeout_ms", &self.websocket_connect_timeout_ms)
+            .field(
+                "websocket_connect_timeout_ms",
+                &self.websocket_connect_timeout_ms,
+            )
             .field("on_headers", &self.on_headers.as_ref().map(|_| "..."))
-            .field("on_provider_response", &self.on_provider_response.as_ref().map(|_| "..."))
+            .field(
+                "on_provider_response",
+                &self.on_provider_response.as_ref().map(|_| "..."),
+            )
             .field("on_payload", &self.on_payload.as_ref().map(|_| "..."))
             .finish()
     }
@@ -743,19 +800,45 @@ impl serde::Serialize for StreamOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut s = serializer.serialize_struct("StreamOptions", 14)?;
-        if let Some(ref v) = self.temperature { s.serialize_field("temperature", v)?; }
-        if let Some(ref v) = self.max_tokens { s.serialize_field("maxTokens", v)?; }
-        if let Some(ref v) = self.api_key { s.serialize_field("apiKey", v)?; }
-        if let Some(ref v) = self.transport { s.serialize_field("transport", v)?; }
-        if let Some(ref v) = self.cache_retention { s.serialize_field("cacheRetention", v)?; }
-        if let Some(ref v) = self.session_id { s.serialize_field("sessionId", v)?; }
-        if let Some(ref v) = self.headers { s.serialize_field("headers", v)?; }
-        if let Some(ref v) = self.timeout_ms { s.serialize_field("timeoutMs", v)?; }
-        if let Some(ref v) = self.websocket_connect_timeout_ms { s.serialize_field("websocketConnectTimeoutMs", v)?; }
-        if let Some(ref v) = self.max_retries { s.serialize_field("maxRetries", v)?; }
-        if let Some(ref v) = self.max_retry_delay_ms { s.serialize_field("maxRetryDelayMs", v)?; }
-        if let Some(ref v) = self.metadata { s.serialize_field("metadata", v)?; }
-        if let Some(ref v) = self.tool_choice { s.serialize_field("toolChoice", v)?; }
+        if let Some(ref v) = self.temperature {
+            s.serialize_field("temperature", v)?;
+        }
+        if let Some(ref v) = self.max_tokens {
+            s.serialize_field("maxTokens", v)?;
+        }
+        if let Some(ref v) = self.api_key {
+            s.serialize_field("apiKey", v)?;
+        }
+        if let Some(ref v) = self.transport {
+            s.serialize_field("transport", v)?;
+        }
+        if let Some(ref v) = self.cache_retention {
+            s.serialize_field("cacheRetention", v)?;
+        }
+        if let Some(ref v) = self.session_id {
+            s.serialize_field("sessionId", v)?;
+        }
+        if let Some(ref v) = self.headers {
+            s.serialize_field("headers", v)?;
+        }
+        if let Some(ref v) = self.timeout_ms {
+            s.serialize_field("timeoutMs", v)?;
+        }
+        if let Some(ref v) = self.websocket_connect_timeout_ms {
+            s.serialize_field("websocketConnectTimeoutMs", v)?;
+        }
+        if let Some(ref v) = self.max_retries {
+            s.serialize_field("maxRetries", v)?;
+        }
+        if let Some(ref v) = self.max_retry_delay_ms {
+            s.serialize_field("maxRetryDelayMs", v)?;
+        }
+        if let Some(ref v) = self.metadata {
+            s.serialize_field("metadata", v)?;
+        }
+        if let Some(ref v) = self.tool_choice {
+            s.serialize_field("toolChoice", v)?;
+        }
         s.end()
     }
 }
@@ -802,7 +885,6 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
         })
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimpleStreamOptions {
@@ -921,6 +1003,7 @@ mod tests {
             content: vec![ContentBlock::text("result")],
             details: Some(serde_json::json!({"status": "ok"})),
             is_error: false,
+            added_tool_names: None,
             timestamp: 123_456,
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1134,9 +1217,7 @@ mod tests {
             raw_stop_reason: None,
             timestamp: 1_234_567_890,
         };
-        let event = AssistantMessageEvent::Start {
-            partial: msg,
-        };
+        let event = AssistantMessageEvent::Start { partial: msg };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"start\""));
         let parsed: AssistantMessageEvent = serde_json::from_str(&json).unwrap();
@@ -1235,11 +1316,13 @@ mod tests {
             context_window: 128_000,
             max_tokens: 16_384,
             headers: None,
-            compat: Some(ModelCompat::OpenAICompletions(Box::new(OpenAICompletionsCompat {
-                supports_store: Some(true),
-                max_tokens_field: Some("max_completion_tokens".into()),
-                ..Default::default()
-            }))),
+            compat: Some(ModelCompat::OpenAICompletions(Box::new(
+                OpenAICompletionsCompat {
+                    supports_store: Some(true),
+                    max_tokens_field: Some("max_completion_tokens".into()),
+                    ..Default::default()
+                },
+            ))),
         };
         let json = serde_json::to_string(&model).unwrap();
         assert!(json.contains("\"supportsStore\":true"));
@@ -1266,6 +1349,7 @@ mod tests {
                 name: "echo".into(),
                 description: "Echoes input".into(),
                 parameters: serde_json::json!({"type": "object", "properties": {}}),
+                constrained_sampling: None,
             }]),
         };
         let json = serde_json::to_string(&ctx).unwrap();

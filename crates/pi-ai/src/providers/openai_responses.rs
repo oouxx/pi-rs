@@ -59,7 +59,10 @@ fn compat_supports_developer_role(compat: &OpenAIResponsesCompat) -> bool {
     compat.supports_developer_role.unwrap_or(true)
 }
 
-fn compat_session_affinity_format(model: &Model, compat: &OpenAIResponsesCompat) -> SessionAffinityFormat {
+fn compat_session_affinity_format(
+    model: &Model,
+    compat: &OpenAIResponsesCompat,
+) -> SessionAffinityFormat {
     compat
         .session_affinity_format
         .clone()
@@ -101,7 +104,8 @@ fn apply_service_tier_pricing(usage: &mut Usage, model_id: &str, service_tier: O
     usage.cost.output *= multiplier;
     usage.cost.cache_read *= multiplier;
     usage.cost.cache_write *= multiplier;
-    usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
+    usage.cost.total =
+        usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
 }
 
 // ============================================================================
@@ -117,7 +121,11 @@ struct ProviderHttpError {
 }
 
 fn is_retryable_provider_error(error: &ProviderHttpError) -> bool {
-    if let Some(should_retry) = error.headers.get("x-should-retry").and_then(|v| v.to_str().ok()) {
+    if let Some(should_retry) = error
+        .headers
+        .get("x-should-retry")
+        .and_then(|v| v.to_str().ok())
+    {
         if should_retry == "true" {
             return true;
         }
@@ -153,12 +161,20 @@ fn get_retry_delay_ms(
     retry_index: u32,
     max_retry_delay_ms: Option<u64>,
 ) -> Result<u64, String> {
-    if let Some(v) = error.headers.get("retry-after-ms").and_then(|v| v.to_str().ok()) {
+    if let Some(v) = error
+        .headers
+        .get("retry-after-ms")
+        .and_then(|v| v.to_str().ok())
+    {
         if let Ok(value) = v.parse::<f64>() {
             return validate_server_retry_delay_ms(value, max_retry_delay_ms, &error.message);
         }
     }
-    if let Some(v) = error.headers.get("retry-after").and_then(|v| v.to_str().ok()) {
+    if let Some(v) = error
+        .headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+    {
         let delay_ms = match v.parse::<f64>() {
             Ok(seconds) => seconds * 1000.0,
             Err(_) => match chrono::DateTime::parse_from_rfc2822(v) {
@@ -258,17 +274,23 @@ fn infer_copilot_initiator(messages: &[Message]) -> &'static str {
 
 fn has_copilot_vision_input(messages: &[Message]) -> bool {
     messages.iter().any(|msg| match msg {
-        Message::User { content, .. } | Message::ToolResult { content, .. } => {
-            content.iter().any(|b| matches!(b, ContentBlock::Image { .. }))
-        }
+        Message::User { content, .. } | Message::ToolResult { content, .. } => content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
         _ => false,
     })
 }
 
 fn build_copilot_dynamic_headers(messages: &[Message]) -> Vec<(String, String)> {
     let mut headers = vec![
-        ("X-Initiator".to_string(), infer_copilot_initiator(messages).to_string()),
-        ("Openai-Intent".to_string(), "conversation-edits".to_string()),
+        (
+            "X-Initiator".to_string(),
+            infer_copilot_initiator(messages).to_string(),
+        ),
+        (
+            "Openai-Intent".to_string(),
+            "conversation-edits".to_string(),
+        ),
     ];
     if has_copilot_vision_input(messages) {
         headers.push(("Copilot-Vision-Request".to_string(), "true".to_string()));
@@ -315,7 +337,13 @@ fn short_hash(s: &str) -> String {
 fn normalize_id_part(part: &str) -> String {
     let sanitized: String = part
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let truncated: String = if sanitized.len() > 64 {
         sanitized.chars().take(64).collect()
@@ -405,7 +433,10 @@ fn convert_tool_result_output(model: &Model, content: &[ContentBlock]) -> Value 
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let images: Vec<&ContentBlock> = content.iter().filter(|b| matches!(b, ContentBlock::Image { .. })).collect();
+    let images: Vec<&ContentBlock> = content
+        .iter()
+        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .collect();
     let has_text = !text_result.is_empty();
 
     if images.is_empty() || !model.input.iter().any(|i| i == "image") {
@@ -473,12 +504,21 @@ fn assistant_text_message(
 }
 
 /// Convert pi-ai messages to Responses API `input` items.
-fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
+fn convert_responses_messages(
+    model: &Model,
+    context: &Context,
+    deferred_tools: &std::collections::HashMap<String, Tool>,
+    compat: &OpenAIResponsesCompat,
+) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
 
-    let compat = get_compat(model);
+    // Map of grammar-constrained tool name -> input property.
+    let supports_openai_grammar_tools = compat.supports_openai_grammar_tools.unwrap_or(false);
+    let grammar_tool_input_properties =
+        grammar_tool_input_properties(context, supports_openai_grammar_tools);
+
     if let Some(sp) = &context.system_prompt {
-        let role = if model.reasoning && compat_supports_developer_role(&compat) {
+        let role = if model.reasoning && compat_supports_developer_role(compat) {
             "developer"
         } else {
             "system"
@@ -498,7 +538,8 @@ fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
                     match b {
                         ContentBlock::Text { text, .. } => {
                             items.push(json!({ "type": "input_text", "text": text }));
-                            previous_was_placeholder = text == "(image omitted: model does not support images)";
+                            previous_was_placeholder =
+                                text == "(image omitted: model does not support images)";
                         }
                         ContentBlock::Image { data, mime_type } => {
                             if !supports_images {
@@ -595,25 +636,47 @@ fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
                             let (call_id, item_id_raw) =
                                 normalized.split_once('|').unwrap_or((&normalized, ""));
                             let mut item_id: Option<String> = Some(item_id_raw.to_string());
-                            // Without grammar tools (customInputProperty is always
-                            // undefined here), drop non-fc_* ids and foreign fc_* ids.
-                            if (is_same_model && !item_id_raw.starts_with("fc_"))
-                                || (!is_same_model && item_id_raw.starts_with("fc_"))
+                            let custom_input_property = grammar_tool_input_properties.get(name);
+                            // Drop non-fc_* ids and foreign fc_* ids (unless the
+                            // tool is grammar-constrained, which keeps its id).
+                            if custom_input_property.is_none()
+                                && ((is_same_model && !item_id_raw.starts_with("fc_"))
+                                    || (!is_same_model && item_id_raw.starts_with("fc_")))
                             {
                                 item_id = None;
                             }
-                            let mut obj = serde_json::Map::new();
-                            obj.insert("type".into(), json!("function_call"));
-                            obj.insert("call_id".into(), json!(call_id));
-                            obj.insert("name".into(), json!(name));
-                            obj.insert(
-                                "arguments".into(),
-                                json!(serde_json::to_string(arguments).unwrap_or_default()),
-                            );
-                            if let Some(iid) = item_id {
-                                obj.insert("id".into(), json!(iid));
+                            if let Some(property) = custom_input_property {
+                                let input = match get_grammar_tool_input(name, arguments, property)
+                                {
+                                    Ok(i) => i,
+                                    Err(e) => {
+                                        eprintln!("[pi-ai] {e}");
+                                        String::new()
+                                    }
+                                };
+                                let mut obj = serde_json::Map::new();
+                                obj.insert("type".into(), json!("custom_tool_call"));
+                                obj.insert("call_id".into(), json!(call_id));
+                                obj.insert("name".into(), json!(name));
+                                obj.insert("input".into(), json!(input));
+                                if let Some(iid) = item_id {
+                                    obj.insert("id".into(), json!(iid));
+                                }
+                                output.push(Value::Object(obj));
+                            } else {
+                                let mut obj = serde_json::Map::new();
+                                obj.insert("type".into(), json!("function_call"));
+                                obj.insert("call_id".into(), json!(call_id));
+                                obj.insert("name".into(), json!(name));
+                                obj.insert(
+                                    "arguments".into(),
+                                    json!(serde_json::to_string(arguments).unwrap_or_default()),
+                                );
+                                if let Some(iid) = item_id {
+                                    obj.insert("id".into(), json!(iid));
+                                }
+                                output.push(Value::Object(obj));
                             }
-                            output.push(Value::Object(obj));
                         }
                         _ => {}
                     }
@@ -624,22 +687,73 @@ fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
             }
             Message::ToolResult {
                 tool_call_id,
+                tool_name,
                 content,
+                added_tool_names,
                 ..
             } => {
-                let normalized = normalize_tool_call_id(
-                    tool_call_id,
-                    model,
-                    &model.provider,
-                    &model.api,
-                );
-                let call_id = normalized.split('|').next().unwrap_or(&normalized).to_string();
+                let normalized =
+                    normalize_tool_call_id(tool_call_id, model, &model.provider, &model.api);
+                let call_id = normalized
+                    .split('|')
+                    .next()
+                    .unwrap_or(&normalized)
+                    .to_string();
                 let output = convert_tool_result_output(model, content);
-                messages.push(json!({
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output,
-                }));
+                if grammar_tool_input_properties.contains_key(tool_name) {
+                    messages.push(json!({
+                        "type": "custom_tool_call_output",
+                        "call_id": call_id,
+                        "output": output,
+                    }));
+                } else {
+                    messages.push(json!({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output,
+                    }));
+                }
+
+                // Deferred tools: emit tool_search_call + tool_search_output for
+                // tools added by this tool result (match TS convertResponsesMessages).
+                let mut loaded_tool_names: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut deferred: Vec<Tool> = Vec::new();
+                if let Some(names) = added_tool_names {
+                    for name in names {
+                        if let Some(tool) = deferred_tools.get(name) {
+                            if loaded_tool_names.insert(name.clone()) {
+                                deferred.push(tool.clone());
+                            }
+                        }
+                    }
+                }
+                if !deferred.is_empty() {
+                    let names: Vec<String> = deferred.iter().map(|t| t.name.clone()).collect();
+                    let search_call_id = format!(
+                        "pi_tool_load_{}",
+                        short_hash(&format!("{tool_call_id}:{}", names.join(",")))
+                    );
+                    messages.push(json!({
+                        "type": "tool_search_call",
+                        "call_id": search_call_id,
+                        "execution": "client",
+                        "status": "completed",
+                        "arguments": { "query": names.join(" "), "limit": names.len() },
+                    }));
+                    messages.push(json!({
+                        "type": "tool_search_output",
+                        "call_id": search_call_id,
+                        "execution": "client",
+                        "status": "completed",
+                        "tools": convert_responses_tools(
+                            &deferred,
+                            compat_supports_strict_mode(compat),
+                            supports_openai_grammar_tools,
+                        )
+                        .unwrap_or_default(),
+                    }));
+                }
             }
         }
         msg_index += 1;
@@ -652,21 +766,331 @@ fn convert_responses_messages(model: &Model, context: &Context) -> Vec<Value> {
 // Tool conversion
 // ============================================================================
 
-fn convert_responses_tools(tools: &[Tool], supports_strict_mode: bool) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("type".into(), json!("function"));
-            obj.insert("name".into(), json!(tool.name));
-            obj.insert("description".into(), json!(tool.description));
-            obj.insert("parameters".into(), tool.parameters.clone());
-            if supports_strict_mode {
-                obj.insert("strict".into(), json!(false));
+// ============================================================================
+// Constrained sampling (match TS `constrained-sampling.ts`)
+// ============================================================================
+
+#[derive(Debug, Clone)]
+struct GrammarConstrainedSampling {
+    format: &'static str,
+    definition: String,
+    input_property: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GrammarToolInputJsonBuffer {
+    input: String,
+    started: bool,
+    closed: bool,
+}
+
+fn get_grammar_tool_input(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    input_property: &str,
+) -> Result<String, String> {
+    match arguments.get(input_property).and_then(Value::as_str) {
+        Some(s) => Ok(s.to_string()),
+        None => Err(format!(
+            "Grammar tool call \"{tool_name}\" requires argument \"{input_property}\" to be a string."
+        )),
+    }
+}
+
+fn append_grammar_tool_input_json_delta(
+    buffer: &mut GrammarToolInputJsonBuffer,
+    input_property: &str,
+    next_input: &str,
+    close: bool,
+) -> Result<Option<String>, String> {
+    if buffer.closed {
+        if close && next_input == buffer.input {
+            return Ok(None);
+        }
+        return Err(format!(
+            "grammar tool input for property \"{input_property}\" changed after it was closed"
+        ));
+    }
+    if !next_input.starts_with(&buffer.input) {
+        return Err(format!(
+            "grammar tool input for property \"{input_property}\" changed non-monotonically"
+        ));
+    }
+
+    let input_delta = &next_input[buffer.input.len()..];
+    if !close && input_delta.is_empty() {
+        return Ok(None);
+    }
+
+    let mut delta = String::new();
+    if !buffer.started {
+        delta.push('{');
+        delta.push_str(&format!("\"{input_property}\":\""));
+        buffer.started = true;
+    }
+    // JSON-escape the delta without surrounding quotes (TS uses JSON.stringify(...).slice(1,-1))
+    let escaped = serde_json::to_string(input_delta).unwrap_or_default();
+    delta.push_str(&escaped[1..escaped.len().saturating_sub(1)]);
+    buffer.input = next_input.to_string();
+
+    if close {
+        delta.push_str("\"}");
+        buffer.closed = true;
+    }
+    Ok(Some(delta))
+}
+
+fn infer_grammar_input_property(tool: &Tool) -> Result<String, String> {
+    let schema = &tool.parameters;
+    if schema.get("type").and_then(Value::as_str) != Some("object") {
+        return Err("grammar constrained sampling requires an object parameter schema".into());
+    }
+    let required = schema.get("required").and_then(Value::as_array);
+    let Some(required) = required else {
+        return Err(
+            "grammar constrained sampling requires exactly one required string property".into(),
+        );
+    };
+    if required.len() != 1 {
+        return Err(
+            "grammar constrained sampling requires exactly one required string property".into(),
+        );
+    }
+    let Some(input_property) = required[0].as_str() else {
+        return Err(
+            "grammar constrained sampling requires exactly one required string property".into(),
+        );
+    };
+    let props = schema.get("properties").and_then(Value::as_object);
+    let Some(prop) = props.and_then(|p| p.get(input_property)) else {
+        return Err(format!(
+            "grammar constrained sampling requires a properties entry for {input_property}"
+        ));
+    };
+    if prop.get("type").and_then(Value::as_str) != Some("string") {
+        return Err(format!(
+            "grammar constrained sampling property {input_property} must have type string"
+        ));
+    }
+    Ok(input_property.to_string())
+}
+
+fn resolve_json_schema_strict_sampling(
+    tool: &Tool,
+    supports_strict_mode: bool,
+) -> Result<Option<bool>, String> {
+    let Some(config) = &tool.constrained_sampling else {
+        return Ok(None);
+    };
+    let crate::types::ConstrainedSamplingConfig::JsonSchema { strict } = config else {
+        return Ok(None);
+    };
+    if supports_strict_mode {
+        return Ok(Some(true));
+    }
+    match strict {
+        crate::types::JsonSchemaStrict::Require => Err(format!(
+            "Tool \"{}\" requires JSON-schema constrained sampling, but strict tools are unsupported.",
+            tool.name
+        )),
+        crate::types::JsonSchemaStrict::Prefer => Ok(None),
+    }
+}
+
+fn resolve_grammar_constrained_sampling(
+    tool: &Tool,
+    supports_openai_grammar_tools: bool,
+) -> Result<Option<GrammarConstrainedSampling>, String> {
+    let Some(config) = &tool.constrained_sampling else {
+        return Ok(None);
+    };
+    let crate::types::ConstrainedSamplingConfig::Grammar { variants } = config else {
+        return Ok(None);
+    };
+    if !supports_openai_grammar_tools {
+        return Ok(None);
+    }
+    let lark = variants
+        .openai_lark
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let regex = variants
+        .openai_regex
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let (format, definition) = match (lark, regex) {
+        (Some(l), _) => ("lark", l.to_string()),
+        (None, Some(r)) => ("regex", r.to_string()),
+        (None, None) => {
+            return Err(format!(
+                "Tool \"{}\" cannot use grammar constrained sampling: no supported grammar variant was provided.",
+                tool.name
+            ));
+        }
+    };
+    let input_property = infer_grammar_input_property(tool)?;
+    Ok(Some(GrammarConstrainedSampling {
+        format,
+        definition,
+        input_property,
+    }))
+}
+
+// ============================================================================
+// Deferred tools (match TS `splitDeferredTools`)
+// ============================================================================
+
+/// Map of grammar-constrained tool name -> input property (match TS
+/// `createGrammarToolInputProperties`).
+fn grammar_tool_input_properties(
+    context: &Context,
+    supports_openai_grammar_tools: bool,
+) -> std::collections::HashMap<String, String> {
+    let mut properties: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if let Some(tools) = &context.tools {
+        for tool in tools {
+            if let Ok(Some(grammar)) =
+                resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)
+            {
+                properties.insert(tool.name.clone(), grammar.input_property);
             }
-            Value::Object(obj)
-        })
-        .collect()
+        }
+    }
+    properties
+}
+
+/// Per-streaming-slot scratch state for a grammar-constrained custom tool call
+/// (match TS `StreamingToolCall.customInput`).
+struct CustomToolCallStream {
+    property: String,
+    buffer: GrammarToolInputJsonBuffer,
+}
+
+/// Read the current input value out of a custom tool call's arguments
+/// (match TS `getCustomToolCallInput`).
+fn get_custom_tool_call_input(arguments: &serde_json::Value, property: &str) -> String {
+    if property.is_empty() {
+        return String::new();
+    }
+    arguments
+        .get(property)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
+/// Append a JSON delta to a custom tool call's buffered input and update the
+/// block's arguments in place (match TS `appendCustomToolCallInput`).
+fn append_custom_tool_call_input(
+    slot: &mut CustomToolCallStream,
+    arguments: &mut serde_json::Value,
+    next_input: String,
+    close: bool,
+) -> Result<Option<String>, String> {
+    let delta =
+        append_grammar_tool_input_json_delta(&mut slot.buffer, &slot.property, &next_input, close)?;
+    let property = slot.property.clone();
+    if let Value::Object(map) = arguments {
+        map.insert(property, Value::String(next_input));
+    }
+    Ok(delta)
+}
+
+fn split_deferred_tools(
+    context: &Context,
+    enabled: bool,
+) -> (Vec<Tool>, std::collections::HashMap<String, Tool>) {
+    let mut unique_tools: std::collections::HashMap<String, Tool> =
+        std::collections::HashMap::new();
+    if let Some(tools) = &context.tools {
+        for tool in tools {
+            unique_tools.insert(tool.name.clone(), tool.clone());
+        }
+    }
+    if !enabled {
+        return (
+            unique_tools.into_values().collect(),
+            std::collections::HashMap::new(),
+        );
+    }
+
+    let mut deferred_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for message in &context.messages {
+        match message {
+            Message::Assistant { content, .. } => {
+                for block in content {
+                    if let ContentBlock::ToolCall { name, .. } = block {
+                        used_names.insert(name.clone());
+                    }
+                }
+            }
+            Message::ToolResult {
+                added_tool_names: Some(names),
+                ..
+            } => {
+                for name in names {
+                    if !used_names.contains(name) {
+                        deferred_names.insert(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut immediate: Vec<Tool> = Vec::new();
+    let mut deferred: std::collections::HashMap<String, Tool> = std::collections::HashMap::new();
+    for (name, tool) in unique_tools {
+        if deferred_names.contains(&name) {
+            deferred.insert(name, tool);
+        } else {
+            immediate.push(tool);
+        }
+    }
+    (immediate, deferred)
+}
+
+fn convert_responses_tools(
+    tools: &[Tool],
+    supports_strict_mode: bool,
+    supports_openai_grammar_tools: bool,
+) -> Result<Vec<Value>, String> {
+    let mut result = Vec::new();
+    for tool in tools {
+        // Grammar-constrained tools become custom tools with a grammar format.
+        if let Some(grammar) =
+            resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)?
+        {
+            result.push(json!({
+                "type": "custom",
+                "name": tool.name,
+                "description": tool.description,
+                "format": {
+                    "type": grammar.format,
+                    "syntax": grammar.format,
+                    "definition": grammar.definition,
+                },
+            }));
+            continue;
+        }
+        let strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)?;
+        let mut obj = serde_json::Map::new();
+        obj.insert("type".into(), json!("function"));
+        obj.insert("name".into(), json!(tool.name));
+        obj.insert("description".into(), json!(tool.description));
+        obj.insert("parameters".into(), tool.parameters.clone());
+        if let Some(s) = strict {
+            obj.insert("strict".into(), json!(s));
+        } else if supports_strict_mode {
+            obj.insert("strict".into(), json!(false));
+        }
+        result.push(Value::Object(obj));
+    }
+    Ok(result)
 }
 
 // ============================================================================
@@ -697,11 +1121,16 @@ fn parse_responses_sse_body(body: &[u8]) -> Vec<Value> {
 // ============================================================================
 
 enum OutputSlot {
-    Thinking { content_index: usize },
-    Text { content_index: usize },
+    Thinking {
+        content_index: usize,
+    },
+    Text {
+        content_index: usize,
+    },
     ToolCall {
         content_index: usize,
         partial_json: Option<String>,
+        custom_input: Option<CustomToolCallStream>,
     },
 }
 
@@ -723,6 +1152,7 @@ fn create_slot(
     item: &Value,
     output: &mut AssistantMessage,
     output_slots: &mut HashMap<usize, OutputSlot>,
+    grammar_properties: &std::collections::HashMap<String, String>,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
 ) {
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
@@ -749,7 +1179,7 @@ fn create_slot(
                 partial: output.clone(),
             });
         }
-        "function_call" | "custom_tool_call" => {
+        "function_call" => {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
             let name = item.get("name").and_then(Value::as_str).unwrap_or("");
@@ -771,6 +1201,46 @@ fn create_slot(
                 OutputSlot::ToolCall {
                     content_index,
                     partial_json: Some(arguments.to_string()),
+                    custom_input: None,
+                },
+            );
+            let _ = tx.send(AssistantMessageEvent::ToolCallStart {
+                content_index,
+                partial: output.clone(),
+            });
+        }
+        "custom_tool_call" => {
+            let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
+            let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+            let input = item.get("input").and_then(Value::as_str).unwrap_or("");
+            let property = grammar_properties
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "input".to_string());
+            let mut arguments_map = serde_json::Map::new();
+            arguments_map.insert(property.clone(), Value::String(input.to_string()));
+            let block = crate::types::ToolCall::new(
+                format!("{call_id}|{item_id}"),
+                name.to_string(),
+                Value::Object(arguments_map),
+            );
+            output.content.push(ContentBlock::ToolCall {
+                id: block.id.clone(),
+                name: block.name.clone(),
+                arguments: block.arguments.clone(),
+                thought_signature: None,
+            });
+            let content_index = output.content.len() - 1;
+            output_slots.insert(
+                output_index,
+                OutputSlot::ToolCall {
+                    content_index,
+                    partial_json: None,
+                    custom_input: Some(CustomToolCallStream {
+                        property,
+                        buffer: GrammarToolInputJsonBuffer::default(),
+                    }),
                 },
             );
             let _ = tx.send(AssistantMessageEvent::ToolCallStart {
@@ -782,7 +1252,10 @@ fn create_slot(
     }
 }
 
-fn map_stop_reason(status: Option<&str>, incomplete_reason: Option<&str>) -> (StopReason, Option<String>) {
+fn map_stop_reason(
+    status: Option<&str>,
+    incomplete_reason: Option<&str>,
+) -> (StopReason, Option<String>) {
     match status {
         None => (StopReason::Stop, None),
         Some("completed") => (StopReason::Stop, None),
@@ -795,7 +1268,9 @@ fn map_stop_reason(status: Option<&str>, incomplete_reason: Option<&str>) -> (St
                     Some(
                         incomplete_reason
                             .map(|r| format!("Response incomplete: {r}"))
-                            .unwrap_or_else(|| "Response incomplete without a provider reason".to_string()),
+                            .unwrap_or_else(|| {
+                                "Response incomplete without a provider reason".to_string()
+                            }),
                     ),
                 )
             }
@@ -856,8 +1331,14 @@ fn finalize_response(
             .pointer("/input_tokens_details/cache_write_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        let input_tokens = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let output_tokens = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let input_tokens = usage
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let output_tokens = usage
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let reasoning = usage
             .pointer("/output_tokens_details/reasoning_tokens")
             .and_then(Value::as_u64)
@@ -869,7 +1350,10 @@ fn finalize_response(
             cache_write: cache_write_tokens,
             cache_write_1h: None,
             reasoning: Some(reasoning),
-            total_tokens: usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
+            total_tokens: usage
+                .get("total_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
             cost: crate::types::UsageCost::default(),
         };
     }
@@ -890,7 +1374,10 @@ fn finalize_response(
     if let Some(msg) = error_message {
         output.error_message = Some(msg);
     }
-    if output.content.iter().any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+    if output
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
         && output.stop_reason == StopReason::Stop
     {
         output.stop_reason = StopReason::ToolUse;
@@ -907,6 +1394,7 @@ fn process_responses_stream(
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
     model: &Model,
     service_tier: Option<&str>,
+    grammar_properties: &std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
     let mut saw_terminal = false;
     let mut output_slots: HashMap<usize, OutputSlot> = HashMap::new();
@@ -921,15 +1409,30 @@ fn process_responses_stream(
                 }
             }
             "response.output_item.added" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
-                create_slot(output_index, &item, output, &mut output_slots, tx);
+                create_slot(
+                    output_index,
+                    &item,
+                    output,
+                    &mut output_slots,
+                    grammar_properties,
+                    tx,
+                );
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
                 if let Some(content_index) = get_slot(&output_slots, output_index, "thinking") {
-                    if let ContentBlock::Thinking { thinking, .. } = &mut output.content[content_index] {
+                    if let ContentBlock::Thinking { thinking, .. } =
+                        &mut output.content[content_index]
+                    {
                         thinking.push_str(delta);
                     }
                     let _ = tx.send(AssistantMessageEvent::ThinkingDelta {
@@ -940,9 +1443,14 @@ fn process_responses_stream(
                 }
             }
             "response.reasoning_summary_part.done" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 if let Some(content_index) = get_slot(&output_slots, output_index, "thinking") {
-                    if let ContentBlock::Thinking { thinking, .. } = &mut output.content[content_index] {
+                    if let ContentBlock::Thinking { thinking, .. } =
+                        &mut output.content[content_index]
+                    {
                         thinking.push_str("\n\n");
                     }
                     let _ = tx.send(AssistantMessageEvent::ThinkingDelta {
@@ -953,7 +1461,10 @@ fn process_responses_stream(
                 }
             }
             "response.output_text.delta" | "response.refusal.delta" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
                 if let Some(content_index) = get_slot(&output_slots, output_index, "text") {
                     if let ContentBlock::Text { text, .. } = &mut output.content[content_index] {
@@ -967,7 +1478,10 @@ fn process_responses_stream(
                 }
             }
             "response.function_call_arguments.delta" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
                 if let Some(content_index) = get_slot(&output_slots, output_index, "toolCall") {
                     if let Some(OutputSlot::ToolCall {
@@ -977,15 +1491,18 @@ fn process_responses_stream(
                     {
                         pj.push_str(delta);
                     }
-                    if let ContentBlock::ToolCall { arguments, .. } = &mut output.content[content_index] {
-                        *arguments = parse_streaming_json(
-                            output_slots
-                                .get(&output_index)
-                                .and_then(|s| match s {
-                                    OutputSlot::ToolCall { partial_json, .. } => partial_json.as_deref(),
+                    if let ContentBlock::ToolCall { arguments, .. } =
+                        &mut output.content[content_index]
+                    {
+                        *arguments =
+                            parse_streaming_json(output_slots.get(&output_index).and_then(|s| {
+                                match s {
+                                    OutputSlot::ToolCall { partial_json, .. } => {
+                                        partial_json.as_deref()
+                                    }
                                     _ => None,
-                                }),
-                        );
+                                }
+                            }));
                     }
                     let _ = tx.send(AssistantMessageEvent::ToolCallDelta {
                         content_index,
@@ -995,7 +1512,10 @@ fn process_responses_stream(
                 }
             }
             "response.function_call_arguments.done" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let arguments = event.get("arguments").and_then(Value::as_str).unwrap_or("");
                 if let Some(content_index) = get_slot(&output_slots, output_index, "toolCall") {
                     let previous = output_slots
@@ -1010,7 +1530,10 @@ fn process_responses_stream(
                     {
                         *partial_json = Some(arguments.to_string());
                     }
-                    if let ContentBlock::ToolCall { arguments: args, .. } = &mut output.content[content_index] {
+                    if let ContentBlock::ToolCall {
+                        arguments: args, ..
+                    } = &mut output.content[content_index]
+                    {
                         *args = parse_streaming_json(Some(arguments));
                     }
                     if arguments.starts_with(&previous) {
@@ -1025,13 +1548,88 @@ fn process_responses_stream(
                     }
                 }
             }
+            "response.custom_tool_call_input.delta" => {
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let delta = event
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let mut emitted: Option<(usize, String)> = None;
+                if let Some(OutputSlot::ToolCall {
+                    content_index,
+                    custom_input: Some(ci),
+                    ..
+                }) = output_slots.get_mut(&output_index)
+                {
+                    let cidx = *content_index;
+                    if let ContentBlock::ToolCall { arguments, .. } = &mut output.content[cidx] {
+                        let current = get_custom_tool_call_input(arguments, &ci.property);
+                        let next_input = format!("{current}{delta}");
+                        if let Ok(Some(d)) =
+                            append_custom_tool_call_input(ci, arguments, next_input, false)
+                        {
+                            emitted = Some((cidx, d));
+                        }
+                    }
+                }
+                if let Some((content_index, d)) = emitted {
+                    let _ = tx.send(AssistantMessageEvent::ToolCallDelta {
+                        content_index,
+                        delta: d,
+                        partial: output.clone(),
+                    });
+                }
+            }
+            "response.custom_tool_call_input.done" => {
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let input = event
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let mut emitted: Option<(usize, String)> = None;
+                if let Some(OutputSlot::ToolCall {
+                    content_index,
+                    custom_input: Some(ci),
+                    ..
+                }) = output_slots.get_mut(&output_index)
+                {
+                    let cidx = *content_index;
+                    if let ContentBlock::ToolCall { arguments, .. } = &mut output.content[cidx] {
+                        if let Ok(Some(d)) =
+                            append_custom_tool_call_input(ci, arguments, input, true)
+                        {
+                            emitted = Some((cidx, d));
+                        }
+                    }
+                }
+                if let Some((content_index, d)) = emitted {
+                    let _ = tx.send(AssistantMessageEvent::ToolCallDelta {
+                        content_index,
+                        delta: d,
+                        partial: output.clone(),
+                    });
+                }
+            }
             "response.output_item.done" => {
-                let output_index = event.get("output_index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
                 match item_type {
                     "reasoning" => {
-                        if let Some(content_index) = get_slot(&output_slots, output_index, "thinking") {
+                        if let Some(content_index) =
+                            get_slot(&output_slots, output_index, "thinking")
+                        {
                             let summary_text = item
                                 .get("summary")
                                 .and_then(Value::as_array)
@@ -1052,8 +1650,11 @@ fn process_responses_stream(
                                         .join("\n\n")
                                 })
                                 .unwrap_or_default();
-                            if let ContentBlock::Thinking { thinking, thinking_signature, .. } =
-                                &mut output.content[content_index]
+                            if let ContentBlock::Thinking {
+                                thinking,
+                                thinking_signature,
+                                ..
+                            } = &mut output.content[content_index]
                             {
                                 if !summary_text.is_empty() || !content_text.is_empty() {
                                     *thinking = summary_text + &content_text;
@@ -1083,7 +1684,8 @@ fn process_responses_stream(
                                 .map(|arr| {
                                     arr.iter()
                                         .filter_map(|c| {
-                                            let t = c.get("type").and_then(Value::as_str).unwrap_or("");
+                                            let t =
+                                                c.get("type").and_then(Value::as_str).unwrap_or("");
                                             if t == "output_text" {
                                                 c.get("text").and_then(Value::as_str)
                                             } else if t == "refusal" {
@@ -1098,8 +1700,11 @@ fn process_responses_stream(
                                 .unwrap_or_default();
                             let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
                             let phase = item.get("phase").and_then(Value::as_str);
-                            if let ContentBlock::Text { text: tb, text_signature, .. } =
-                                &mut output.content[content_index]
+                            if let ContentBlock::Text {
+                                text: tb,
+                                text_signature,
+                                ..
+                            } = &mut output.content[content_index]
                             {
                                 *tb = text.clone();
                                 *text_signature = Some(encode_text_signature_v1(item_id, phase));
@@ -1112,10 +1717,16 @@ fn process_responses_stream(
                             output_slots.remove(&output_index);
                         }
                     }
-                    "function_call" | "custom_tool_call" => {
-                        if let Some(content_index) = get_slot(&output_slots, output_index, "toolCall") {
-                            let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("");
-                            if let ContentBlock::ToolCall { arguments: args, .. } = &mut output.content[content_index] {
+                    "function_call" => {
+                        if let Some(content_index) =
+                            get_slot(&output_slots, output_index, "toolCall")
+                        {
+                            let arguments =
+                                item.get("arguments").and_then(Value::as_str).unwrap_or("");
+                            if let ContentBlock::ToolCall {
+                                arguments: args, ..
+                            } = &mut output.content[content_index]
+                            {
                                 *args = parse_streaming_json(Some(arguments));
                             }
                             if let Some(OutputSlot::ToolCall { partial_json, .. }) =
@@ -1124,9 +1735,16 @@ fn process_responses_stream(
                                 *partial_json = None;
                             }
                             let tool_call = match &output.content[content_index] {
-                                ContentBlock::ToolCall { id, name, arguments, .. } => {
-                                    crate::types::ToolCall::new(id.clone(), name.clone(), arguments.clone())
-                                }
+                                ContentBlock::ToolCall {
+                                    id,
+                                    name,
+                                    arguments,
+                                    ..
+                                } => crate::types::ToolCall::new(
+                                    id.clone(),
+                                    name.clone(),
+                                    arguments.clone(),
+                                ),
                                 _ => continue,
                             };
                             let _ = tx.send(AssistantMessageEvent::ToolCallEnd {
@@ -1137,21 +1755,89 @@ fn process_responses_stream(
                             output_slots.remove(&output_index);
                         }
                     }
+                    "custom_tool_call" => {
+                        if let Some(content_index) =
+                            get_slot(&output_slots, output_index, "toolCall")
+                        {
+                            let mut has_custom_input = false;
+                            if let Some(OutputSlot::ToolCall {
+                                custom_input: Some(ci),
+                                ..
+                            }) = output_slots.get_mut(&output_index)
+                            {
+                                has_custom_input = true;
+                                if let ContentBlock::ToolCall { arguments, .. } =
+                                    &mut output.content[content_index]
+                                {
+                                    let input = item
+                                        .get("input")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| {
+                                            get_custom_tool_call_input(arguments, &ci.property)
+                                        });
+                                    let _ =
+                                        append_custom_tool_call_input(ci, arguments, input, true);
+                                }
+                            }
+                            if has_custom_input {
+                                if let Some(OutputSlot::ToolCall { custom_input, .. }) =
+                                    output_slots.get_mut(&output_index)
+                                {
+                                    *custom_input = None;
+                                }
+                                let tool_call = match &output.content[content_index] {
+                                    ContentBlock::ToolCall {
+                                        id,
+                                        name,
+                                        arguments,
+                                        ..
+                                    } => crate::types::ToolCall::new(
+                                        id.clone(),
+                                        name.clone(),
+                                        arguments.clone(),
+                                    ),
+                                    _ => continue,
+                                };
+                                let _ = tx.send(AssistantMessageEvent::ToolCallEnd {
+                                    content_index,
+                                    tool_call,
+                                    partial: output.clone(),
+                                });
+                                output_slots.remove(&output_index);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
             "response.completed" | "response.incomplete" => {
                 saw_terminal = true;
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
-                finalize_response(&response, output, model, &mut reasoning_blocks, service_tier);
+                finalize_response(
+                    &response,
+                    output,
+                    model,
+                    &mut reasoning_blocks,
+                    service_tier,
+                );
             }
             "response.failed" => {
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
                 let error = response.get("error").cloned().unwrap_or(Value::Null);
-                let details = response.get("incomplete_details").cloned().unwrap_or(Value::Null);
+                let details = response
+                    .get("incomplete_details")
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let msg = if !error.is_null() {
-                    let code = error.get("code").and_then(Value::as_str).unwrap_or("unknown");
-                    let message = error.get("message").and_then(Value::as_str).unwrap_or("no message");
+                    let code = error
+                        .get("code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let message = error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("no message");
                     format!("{code}: {message}")
                 } else if let Some(reason) = details.get("reason").and_then(Value::as_str) {
                     format!("incomplete: {reason}")
@@ -1185,12 +1871,18 @@ fn build_request_body(
     options: Option<&StreamOptions>,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     let compat = get_compat(model);
-    let messages = convert_responses_messages(model, context);
-    let tools = context
-        .tools
-        .as_ref()
-        .filter(|t| !t.is_empty())
-        .map(|t| convert_responses_tools(t, compat_supports_strict_mode(&compat)));
+    let supports_tool_search = compat.supports_tool_search.unwrap_or(false);
+    let (immediate_tools, deferred_tools) = split_deferred_tools(context, supports_tool_search);
+    let messages = convert_responses_messages(model, context, &deferred_tools, &compat);
+    let tools = if immediate_tools.is_empty() {
+        None
+    } else {
+        Some(convert_responses_tools(
+            &immediate_tools,
+            compat_supports_strict_mode(&compat),
+            compat.supports_openai_grammar_tools.unwrap_or(false),
+        )?)
+    };
 
     let cache_retention = options
         .and_then(|o| o.cache_retention.clone())
@@ -1250,7 +1942,10 @@ fn build_request_body(
     if model.reasoning {
         let reasoning = json!({ "effort": "medium", "summary": "auto" });
         body.insert("reasoning".to_string(), reasoning);
-        body.insert("include".to_string(), json!(["reasoning.encrypted_content"]));
+        body.insert(
+            "include".to_string(),
+            json!(["reasoning.encrypted_content"]),
+        );
     }
 
     Ok(Value::Object(body))
@@ -1327,9 +2022,8 @@ async fn stream_openai_responses_inner(
 
     // Build request headers (match TS createClient): auth, session affinity,
     // and GitHub Copilot dynamic headers.
-    let mut headers: Vec<(String, String)> = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-    ];
+    let mut headers: Vec<(String, String)> =
+        vec![("Content-Type".to_string(), "application/json".to_string())];
     if let Some(key) = api_key {
         headers.push(("Authorization".to_string(), format!("Bearer {key}")));
     }
@@ -1395,7 +2089,17 @@ async fn stream_openai_responses_inner(
     });
 
     let service_tier = options.and_then(|o| o.service_tier.as_deref());
-    process_responses_stream(&events, &mut output, tx, model, service_tier)?;
+    let compat = get_compat(model);
+    let supports_grammar = compat.supports_openai_grammar_tools.unwrap_or(false);
+    let grammar_properties = grammar_tool_input_properties(context, supports_grammar);
+    process_responses_stream(
+        &events,
+        &mut output,
+        tx,
+        model,
+        service_tier,
+        &grammar_properties,
+    )?;
 
     if output.stop_reason == StopReason::Stop {
         output.stop_reason = StopReason::Stop;
@@ -1422,7 +2126,9 @@ pub fn stream_simple_openai_responses(
         full_opts.signal.clone_from(&opts.base.signal);
         full_opts.api_key.clone_from(&opts.base.api_key);
         full_opts.transport.clone_from(&opts.base.transport);
-        full_opts.cache_retention.clone_from(&opts.base.cache_retention);
+        full_opts
+            .cache_retention
+            .clone_from(&opts.base.cache_retention);
         full_opts.session_id.clone_from(&opts.base.session_id);
         full_opts.headers.clone_from(&opts.base.headers);
         full_opts.timeout_ms = opts.base.timeout_ms;
@@ -1488,12 +2194,14 @@ mod tests {
     fn test_normalize_tool_call_id() {
         let model = make_model();
         // openai provider: split callId|itemId, ensure fc_ prefix
-        let normalized = normalize_tool_call_id("call_1|item_1", &model, "openai", "openai-responses");
+        let normalized =
+            normalize_tool_call_id("call_1|item_1", &model, "openai", "openai-responses");
         assert_eq!(normalized, "call_1|fc_item_1");
         // non-openai provider: plain normalize
         let mut m2 = make_model();
         m2.provider = "deepseek".into();
-        let normalized2 = normalize_tool_call_id("call_1|item_1", &m2, "deepseek", "openai-completions");
+        let normalized2 =
+            normalize_tool_call_id("call_1|item_1", &m2, "deepseek", "openai-completions");
         assert_eq!(normalized2, "call_1_item_1");
     }
 
@@ -1508,7 +2216,12 @@ mod tests {
             }],
             tools: None,
         };
-        let items = convert_responses_messages(&model, &context);
+        let items = convert_responses_messages(
+            &model,
+            &context,
+            &std::collections::HashMap::new(),
+            &get_compat(&model),
+        );
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "developer");
         assert_eq!(items[0]["content"], "You are helpful");
@@ -1536,7 +2249,12 @@ mod tests {
             }],
             tools: None,
         };
-        let items = convert_responses_messages(&model, &context);
+        let items = convert_responses_messages(
+            &model,
+            &context,
+            &std::collections::HashMap::new(),
+            &get_compat(&model),
+        );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "message");
         assert_eq!(items[0]["role"], "assistant");
@@ -1555,11 +2273,17 @@ mod tests {
                 content: vec![ContentBlock::text("file contents")],
                 details: None,
                 is_error: false,
+                added_tool_names: None,
                 timestamp: 0,
             }],
             tools: None,
         };
-        let items = convert_responses_messages(&model, &context);
+        let items = convert_responses_messages(
+            &model,
+            &context,
+            &std::collections::HashMap::new(),
+            &get_compat(&model),
+        );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
@@ -1577,7 +2301,10 @@ mod tests {
 
     #[test]
     fn test_map_stop_reason() {
-        assert_eq!(map_stop_reason(Some("completed"), None), (StopReason::Stop, None));
+        assert_eq!(
+            map_stop_reason(Some("completed"), None),
+            (StopReason::Stop, None)
+        );
         assert_eq!(
             map_stop_reason(Some("incomplete"), Some("max_output_tokens")),
             (StopReason::Length, None)
@@ -1589,7 +2316,10 @@ mod tests {
                 Some("Response incomplete: content_filter".to_string())
             )
         );
-        assert_eq!(map_stop_reason(Some("failed"), None), (StopReason::Error, None));
+        assert_eq!(
+            map_stop_reason(Some("failed"), None),
+            (StopReason::Error, None)
+        );
     }
 
     #[test]
@@ -1617,7 +2347,15 @@ mod tests {
             json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "msg_1", "content": [{"type": "output_text", "text": "Hello world"}]}}),
             json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}}),
         ];
-        process_responses_stream(&events, &mut output, &tx, &model, None).unwrap();
+        process_responses_stream(
+            &events,
+            &mut output,
+            &tx,
+            &model,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(output.stop_reason, StopReason::Stop);
         assert_eq!(output.response_id.as_deref(), Some("resp_1"));
         assert_eq!(output.content.len(), 1);
@@ -1636,7 +2374,98 @@ mod tests {
                 _ => "other",
             });
         }
-        assert_eq!(kinds, vec!["text_start", "text_delta", "text_delta", "text_end"]);
+        assert_eq!(
+            kinds,
+            vec!["text_start", "text_delta", "text_delta", "text_end"]
+        );
+    }
+
+    #[test]
+    fn test_process_stream_custom_tool_call_input() {
+        // Mirrors TS `constrained-sampling.test.ts` "streams custom Responses
+        // tool calls as string arguments": a grammar-constrained custom tool
+        // call streams its input as JSON deltas, which must be rebuilt
+        // append-only (via GrammarToolInputJsonBuffer) and applied to the
+        // block's arguments under the grammar property.
+        let model = make_model();
+        let mut output = AssistantMessage {
+            content: vec![],
+            api: "openai-responses".into(),
+            provider: "openai".into(),
+            model: "gpt-5".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut grammar = std::collections::HashMap::new();
+        grammar.insert("sample_tool".to_string(), "payload".to_string());
+        let events = vec![
+            json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "custom_tool_call", "call_id": "call_1", "id": "ctc_1", "name": "sample_tool", "input": ""}}),
+            json!({"type": "response.custom_tool_call_input.delta", "output_index": 0, "item_id": "ctc_1", "delta": "ab"}),
+            json!({"type": "response.custom_tool_call_input.done", "output_index": 0, "item_id": "ctc_1", "input": "abc"}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "custom_tool_call", "call_id": "call_1", "id": "ctc_1", "name": "sample_tool", "input": "abc"}}),
+            json!({"type": "response.completed", "response": {"status": "completed", "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}}),
+        ];
+        process_responses_stream(&events, &mut output, &tx, &model, None, &grammar).unwrap();
+        assert_eq!(output.stop_reason, StopReason::ToolUse);
+        assert_eq!(output.content.len(), 1);
+        match &output.content[0] {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
+                assert_eq!(id, "call_1|ctc_1");
+                assert_eq!(name, "sample_tool");
+                assert_eq!(arguments, &json!({ "payload": "abc" }));
+            }
+            _ => panic!("expected tool call block"),
+        }
+        // The two toolcall deltas (delta then done) must rebuild `{"payload":"abc"}`.
+        let mut delta_json = String::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AssistantMessageEvent::ToolCallDelta { delta, .. } = ev {
+                delta_json.push_str(&delta);
+            }
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&delta_json).unwrap(),
+            json!({ "payload": "abc" })
+        );
+    }
+
+    #[test]
+    fn test_grammar_input_delta_append_only() {
+        // Mirrors TS "keeps grammar input JSON deltas append-only": escaped
+        // JSON fragments must be reconstructed exactly, and once closed the
+        // buffer rejects further changes.
+        let mut buffer = GrammarToolInputJsonBuffer::default();
+        let first = append_grammar_tool_input_json_delta(&mut buffer, "payload", "a\"", false)
+            .unwrap()
+            .unwrap();
+        let second = append_grammar_tool_input_json_delta(&mut buffer, "payload", "a\"\nb", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&format!("{first}{second}")).unwrap(),
+            json!({ "payload": "a\"\nb" })
+        );
+        // Closing with the same input yields no further delta.
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "payload", "a\"\nb", true).unwrap(),
+            None
+        );
+        // A post-close change is rejected.
+        assert!(
+            append_grammar_tool_input_json_delta(&mut buffer, "payload", "changed", true).is_err()
+        );
     }
 
     #[test]
@@ -1711,7 +2540,10 @@ mod tests {
             "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
         });
         finalize_response(&response, &mut output, &model, &mut reasoning_blocks, None);
-        assert_eq!(output.raw_stop_reason.as_deref(), Some("incomplete.max_output_tokens"));
+        assert_eq!(
+            output.raw_stop_reason.as_deref(),
+            Some("incomplete.max_output_tokens")
+        );
         assert_eq!(output.stop_reason, StopReason::Length);
     }
 
@@ -1722,13 +2554,34 @@ mod tests {
             headers,
             message: "err".into(),
         };
-        assert!(is_retryable_provider_error(&mk(None, reqwest::header::HeaderMap::new())));
-        assert!(is_retryable_provider_error(&mk(Some(408), reqwest::header::HeaderMap::new())));
-        assert!(is_retryable_provider_error(&mk(Some(409), reqwest::header::HeaderMap::new())));
-        assert!(is_retryable_provider_error(&mk(Some(429), reqwest::header::HeaderMap::new())));
-        assert!(is_retryable_provider_error(&mk(Some(500), reqwest::header::HeaderMap::new())));
-        assert!(!is_retryable_provider_error(&mk(Some(400), reqwest::header::HeaderMap::new())));
-        assert!(!is_retryable_provider_error(&mk(Some(404), reqwest::header::HeaderMap::new())));
+        assert!(is_retryable_provider_error(&mk(
+            None,
+            reqwest::header::HeaderMap::new()
+        )));
+        assert!(is_retryable_provider_error(&mk(
+            Some(408),
+            reqwest::header::HeaderMap::new()
+        )));
+        assert!(is_retryable_provider_error(&mk(
+            Some(409),
+            reqwest::header::HeaderMap::new()
+        )));
+        assert!(is_retryable_provider_error(&mk(
+            Some(429),
+            reqwest::header::HeaderMap::new()
+        )));
+        assert!(is_retryable_provider_error(&mk(
+            Some(500),
+            reqwest::header::HeaderMap::new()
+        )));
+        assert!(!is_retryable_provider_error(&mk(
+            Some(400),
+            reqwest::header::HeaderMap::new()
+        )));
+        assert!(!is_retryable_provider_error(&mk(
+            Some(404),
+            reqwest::header::HeaderMap::new()
+        )));
         // x-should-retry header overrides
         let mut h = reqwest::header::HeaderMap::new();
         h.insert("x-should-retry", "true".parse().unwrap());
@@ -1802,11 +2655,24 @@ mod tests {
             json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "function_call", "call_id": "call_1", "id": "fc_1", "name": "read", "arguments": "{\"path\":\"/tmp/a\"}"}}),
             json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}}),
         ];
-        process_responses_stream(&events, &mut output, &tx, &model, None).unwrap();
+        process_responses_stream(
+            &events,
+            &mut output,
+            &tx,
+            &model,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(output.stop_reason, StopReason::ToolUse);
         assert_eq!(output.content.len(), 1);
         match &output.content[0] {
-            ContentBlock::ToolCall { id, name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
                 assert_eq!(id, "call_1|fc_1");
                 assert_eq!(name, "read");
                 assert_eq!(arguments["path"], "/tmp/a");

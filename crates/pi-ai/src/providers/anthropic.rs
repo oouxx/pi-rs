@@ -278,7 +278,9 @@ fn normalize_tool_call_id(id: &str) -> String {
 
 /// Convert pi-ai messages to Anthropic API message params.
 pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<AnthropicMessageParam> {
-    let allow_empty_signature = get_anthropic_compat(model).allow_empty_signature.unwrap_or(false);
+    let allow_empty_signature = get_anthropic_compat(model)
+        .allow_empty_signature
+        .unwrap_or(false);
     let mut params: Vec<AnthropicMessageParam> = Vec::new();
 
     for msg in messages {
@@ -301,7 +303,9 @@ pub(crate) fn convert_messages(messages: &[Message], model: &Model) -> Vec<Anthr
                 }
 
                 // Handle images
-                let has_images = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+                let has_images = content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Image { .. }));
 
                 if has_images {
                     // For image messages, we need to use content blocks
@@ -458,7 +462,7 @@ pub(crate) fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
 // ============================================================================
 
 /// Map Anthropic stop reason to pi-ai `StopReason`.
-#[must_use] 
+#[must_use]
 /// Map an Anthropic stop reason to a pi stop reason, plus an optional error
 /// message for error-class stops.
 ///
@@ -466,7 +470,10 @@ pub(crate) fn convert_tools(tools: &[Tool]) -> Vec<AnthropicTool> {
 /// `refusal` becomes an error carrying the provider's `stop_details.explanation`,
 /// `sensitive` becomes an error, and unknown reasons are surfaced instead of
 /// being silently treated as a normal stop.
-pub fn map_stop_reason(reason: &str, stop_details: Option<&AnthropicStopDetails>) -> (StopReason, Option<String>) {
+pub fn map_stop_reason(
+    reason: &str,
+    stop_details: Option<&AnthropicStopDetails>,
+) -> (StopReason, Option<String>) {
     match reason {
         "end_turn" => (StopReason::Stop, None),
         "max_tokens" => (StopReason::Length, None),
@@ -512,7 +519,7 @@ fn resolve_cache_retention(retention: Option<&CacheRetention>) -> CacheRetention
 // ============================================================================
 
 /// Stream a completion from the Anthropic Messages API.
-#[must_use] 
+#[must_use]
 pub fn stream_anthropic(
     model: &Model,
     context: &Context,
@@ -581,10 +588,16 @@ async fn stream_anthropic_inner(
     // Allow extensions to modify HTTP request headers
     let mut header_map = std::collections::HashMap::new();
     header_map.insert("x-api-key".to_string(), api_key.to_string());
-    header_map.insert("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string());
+    header_map.insert(
+        "anthropic-version".to_string(),
+        ANTHROPIC_VERSION.to_string(),
+    );
     header_map.insert("content-type".to_string(), "application/json".to_string());
     if compat.supports_eager_tool_input_streaming.unwrap_or(true) {
-        header_map.insert("anthropic-beta".to_string(), FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
+        header_map.insert(
+            "anthropic-beta".to_string(),
+            FINE_GRAINED_TOOL_STREAMING_BETA.to_string(),
+        );
     }
     if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
         if compat.send_session_affinity_headers.unwrap_or(false) {
@@ -592,11 +605,12 @@ async fn stream_anthropic_inner(
         }
     }
 
-    let final_headers = if let Some(on_headers) = options.as_ref().and_then(|o| o.on_headers.as_ref()) {
-        on_headers(header_map).await
-    } else {
-        header_map
-    };
+    let final_headers =
+        if let Some(on_headers) = options.as_ref().and_then(|o| o.on_headers.as_ref()) {
+            on_headers(header_map).await
+        } else {
+            header_map
+        };
 
     let http_client = HttpClient::builder()
         .default_headers({
@@ -628,7 +642,10 @@ async fn stream_anthropic_inner(
     if let Some(t) = temperature {
         body.insert(
             "temperature".to_string(),
-            Value::Number(serde_json::Number::from_f64(t).ok_or_else(|| format!("Invalid temperature: {t}"))?),
+            Value::Number(
+                serde_json::Number::from_f64(t)
+                    .ok_or_else(|| format!("Invalid temperature: {t}"))?,
+            ),
         );
     }
 
@@ -667,9 +684,14 @@ async fn stream_anthropic_inner(
         .await?;
 
     // Notify extensions about the provider response
-    if let Some(on_provider_response) = options.as_ref().and_then(|o| o.on_provider_response.as_ref()) {
+    if let Some(on_provider_response) = options
+        .as_ref()
+        .and_then(|o| o.on_provider_response.as_ref())
+    {
         let status = response.status().as_u16();
-        let resp_headers: std::collections::HashMap<String, String> = response.headers().iter()
+        let resp_headers: std::collections::HashMap<String, String> = response
+            .headers()
+            .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         on_provider_response(status, resp_headers);
@@ -938,7 +960,8 @@ async fn stream_anthropic_inner(
             }
             AnthropicSseEvent::MessageDelta { delta, usage } => {
                 if let Some(reason) = delta.stop_reason {
-                    let (stop_reason, error_message) = map_stop_reason(&reason, delta.stop_details.as_ref());
+                    let (stop_reason, error_message) =
+                        map_stop_reason(&reason, delta.stop_details.as_ref());
                     output.stop_reason = stop_reason;
                     if let Some(msg) = error_message {
                         output.error_message = Some(msg);
@@ -990,7 +1013,7 @@ async fn stream_anthropic_inner(
 // ============================================================================
 
 /// Stream a completion from Anthropic with simplified options.
-#[must_use] 
+#[must_use]
 pub fn stream_simple_anthropic(
     model: &Model,
     context: &Context,
@@ -1003,7 +1026,9 @@ pub fn stream_simple_anthropic(
         full_opts.signal.clone_from(&opts.base.signal);
         full_opts.api_key.clone_from(&opts.base.api_key);
         full_opts.transport.clone_from(&opts.base.transport);
-        full_opts.cache_retention.clone_from(&opts.base.cache_retention);
+        full_opts
+            .cache_retention
+            .clone_from(&opts.base.cache_retention);
         full_opts.session_id.clone_from(&opts.base.session_id);
         full_opts.headers.clone_from(&opts.base.headers);
         full_opts.timeout_ms = opts.base.timeout_ms;
@@ -1022,7 +1047,7 @@ pub fn stream_simple_anthropic(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::types::{ModelCost};
+    use crate::types::ModelCost;
 
     fn make_test_model() -> Model {
         Model {
@@ -1079,17 +1104,26 @@ mod tests {
 
     #[test]
     fn test_map_stop_reason_max_tokens() {
-        assert_eq!(map_stop_reason("max_tokens", None), (StopReason::Length, None));
+        assert_eq!(
+            map_stop_reason("max_tokens", None),
+            (StopReason::Length, None)
+        );
     }
 
     #[test]
     fn test_map_stop_reason_tool_use() {
-        assert_eq!(map_stop_reason("tool_use", None), (StopReason::ToolUse, None));
+        assert_eq!(
+            map_stop_reason("tool_use", None),
+            (StopReason::ToolUse, None)
+        );
     }
 
     #[test]
     fn test_map_stop_reason_stop_sequence() {
-        assert_eq!(map_stop_reason("stop_sequence", None), (StopReason::Stop, None));
+        assert_eq!(
+            map_stop_reason("stop_sequence", None),
+            (StopReason::Stop, None)
+        );
     }
 
     #[test]
@@ -1180,6 +1214,7 @@ mod tests {
             content: vec![ContentBlock::text("file contents")],
             details: None,
             is_error: false,
+            added_tool_names: None,
             timestamp: 1000,
         }];
         let converted = convert_messages(&messages, &model);
@@ -1222,6 +1257,7 @@ mod tests {
                 content: vec![ContentBlock::text("72F sunny")],
                 details: None,
                 is_error: false,
+                added_tool_names: None,
                 timestamp: 1000,
             },
         ];
@@ -1325,6 +1361,7 @@ mod tests {
             name: "read".into(),
             description: "Read a file".into(),
             parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            constrained_sampling: None,
         }];
         let converted = convert_tools(&tools);
         assert_eq!(converted.len(), 1);

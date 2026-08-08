@@ -302,7 +302,7 @@ fn parse_chunk_usage(usage: &Value) -> Usage {
 // ============================================================================
 
 /// Stream a completion from the `OpenAI` Chat Completions API.
-#[must_use] 
+#[must_use]
 pub fn stream_openai(
     model: &Model,
     context: &Context,
@@ -390,7 +390,9 @@ async fn stream_openai_inner(
     if let Some(t) = temperature {
         body.insert(
             "temperature".to_string(),
-            Value::Number(serde_json::Number::from_f64(t).unwrap_or_else(|| serde_json::Number::from(1))),
+            Value::Number(
+                serde_json::Number::from_f64(t).unwrap_or_else(|| serde_json::Number::from(1)),
+            ),
         );
     }
     if let Some(ref t) = tools {
@@ -551,41 +553,54 @@ async fn stream_openai_inner(
             }
         }
 
-        // Reasoning/thinking content
-        for field in &["reasoning_content", "reasoning", "reasoning_text"] {
-            if let Some(reasoning) = delta.get(field).and_then(|v| v.as_str()) {
-                if !reasoning.is_empty() {
-                    // For simplicity, treat reasoning as thinking blocks
-                    // Find or create a thinking block
-                    let thinking_idx = output
-                        .content
-                        .iter()
-                        .position(|b| matches!(b, ContentBlock::Thinking { .. }));
-                    if let Some(ti) = thinking_idx {
-                        if let Some(ContentBlock::Thinking {
-                            thinking: ref mut t,
-                            ..
-                        }) = output.content.get_mut(ti)
-                        {
-                            t.push_str(reasoning);
-                            let _ = tx.send(AssistantMessageEvent::ThinkingDelta {
-                                content_index: ti,
-                                delta: reasoning.to_string(),
-                                partial: output.clone(),
-                            });
-                        }
-                    } else {
-                        let ci = output.content.len();
-                        output.content.push(ContentBlock::Thinking {
-                            thinking: reasoning.to_string(),
-                            thinking_signature: Some((*field).to_string()),
-                            redacted: None,
-                        });
-                        let _ = tx.send(AssistantMessageEvent::ThinkingStart {
-                            content_index: ci,
+        // Reasoning/thinking content. Some endpoints return reasoning in
+        // reasoning_content (llama.cpp), or reasoning (other OpenAI-compatible
+        // endpoints). Use the FIRST non-empty reasoning field to avoid
+        // duplication (e.g. chutes.ai returns both reasoning_content and
+        // reasoning with the same content) — match TS openai-completions.
+        let reasoning_field = ["reasoning_content", "reasoning", "reasoning_text"]
+            .iter()
+            .find(|f| delta.get(**f).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+            .copied();
+        if let Some(field) = reasoning_field {
+            let reasoning = delta.get(field).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if !reasoning.is_empty() {
+                // opencode-go maps the `reasoning` field to a
+                // `reasoning_content` signature (match TS).
+                let thinking_signature = if model.provider == "opencode-go" && field == "reasoning" {
+                    "reasoning_content"
+                } else {
+                    field
+                };
+                // For simplicity, treat reasoning as thinking blocks
+                // Find or create a thinking block
+                let thinking_idx = output
+                    .content
+                    .iter()
+                    .position(|b| matches!(b, ContentBlock::Thinking { .. }));
+                if let Some(ti) = thinking_idx {
+                    if let Some(ContentBlock::Thinking {
+                        thinking: ref mut t, ..
+                    }) = output.content.get_mut(ti)
+                    {
+                        t.push_str(&reasoning);
+                        let _ = tx.send(AssistantMessageEvent::ThinkingDelta {
+                            content_index: ti,
+                            delta: reasoning.clone(),
                             partial: output.clone(),
                         });
                     }
+                } else {
+                    let ci = output.content.len();
+                    output.content.push(ContentBlock::Thinking {
+                        thinking: reasoning.clone(),
+                        thinking_signature: Some(thinking_signature.to_string()),
+                        redacted: None,
+                    });
+                    let _ = tx.send(AssistantMessageEvent::ThinkingStart {
+                        content_index: ci,
+                        partial: output.clone(),
+                    });
                 }
             }
         }
@@ -593,7 +608,10 @@ async fn stream_openai_inner(
         // Tool calls — using dual-map lookup (by index, by id) aligned with TS pi
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tool_calls {
-                let stream_index = tc.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+                let stream_index = tc
+                    .get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let tc_function = tc.get("function");
 
@@ -734,7 +752,7 @@ async fn stream_openai_inner(
 // ============================================================================
 
 /// Stream a completion from `OpenAI` with simplified options.
-#[must_use] 
+#[must_use]
 pub fn stream_simple_openai(
     model: &Model,
     context: &Context,
@@ -747,7 +765,9 @@ pub fn stream_simple_openai(
         full_opts.signal.clone_from(&opts.base.signal);
         full_opts.api_key.clone_from(&opts.base.api_key);
         full_opts.transport.clone_from(&opts.base.transport);
-        full_opts.cache_retention.clone_from(&opts.base.cache_retention);
+        full_opts
+            .cache_retention
+            .clone_from(&opts.base.cache_retention);
         full_opts.session_id.clone_from(&opts.base.session_id);
         full_opts.headers.clone_from(&opts.base.headers);
         full_opts.timeout_ms = opts.base.timeout_ms;
@@ -848,6 +868,7 @@ mod tests {
             content: vec![ContentBlock::text("72F sunny")],
             details: None,
             is_error: false,
+            added_tool_names: None,
             timestamp: 1000,
         }];
         let converted = convert_messages(&messages);
@@ -876,6 +897,7 @@ mod tests {
             name: "read".into(),
             description: "Read a file".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            constrained_sampling: None,
         }];
         let converted = convert_tools(&tools);
         assert_eq!(converted.len(), 1);

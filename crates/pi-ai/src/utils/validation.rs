@@ -206,12 +206,10 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
     match expected_type {
         "number" => match value {
             Value::Null => Value::Number(0.into()),
-            Value::String(s) => {
-                s.parse::<f64>().ok().map_or_else(
-                    || value.clone(),
-                    |n| Value::Number(serde_json::Number::from_f64(n).unwrap_or_else(|| 0.into())),
-                )
-            }
+            Value::String(s) => s.parse::<f64>().ok().map_or_else(
+                || value.clone(),
+                |n| Value::Number(serde_json::Number::from_f64(n).unwrap_or_else(|| 0.into())),
+            ),
             Value::Bool(b) => {
                 if *b {
                     Value::Number(1.into())
@@ -223,12 +221,10 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
         },
         "integer" => match value {
             Value::Null => Value::Number(0.into()),
-            Value::String(s) => {
-                s.parse::<i64>().ok().map_or_else(
-                    || value.clone(),
-                    |n| Value::Number(n.into()),
-                )
-            }
+            Value::String(s) => s
+                .parse::<i64>()
+                .ok()
+                .map_or_else(|| value.clone(), |n| Value::Number(n.into())),
             Value::Bool(b) => {
                 if *b {
                     Value::Number(1.into())
@@ -245,16 +241,14 @@ fn coerce_primitive(value: &Value, expected_type: &str) -> Value {
                 "false" => Value::Bool(false),
                 _ => value.clone(),
             },
-            Value::Number(n) => {
-                n.as_i64().map_or_else(
-                    || value.clone(),
-                    |i| match i {
-                        1 => Value::Bool(true),
-                        0 => Value::Bool(false),
-                        _ => value.clone(),
-                    },
-                )
-            }
+            Value::Number(n) => n.as_i64().map_or_else(
+                || value.clone(),
+                |i| match i {
+                    1 => Value::Bool(true),
+                    0 => Value::Bool(false),
+                    _ => value.clone(),
+                },
+            ),
             _ => value.clone(),
         },
         "string" => match value {
@@ -297,6 +291,7 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             parameters: schema,
+            constrained_sampling: None,
         }
     }
 

@@ -53,50 +53,22 @@
     clippy::new_without_default,
     clippy::return_self_not_must_use,
     clippy::use_self,
-
-
-
-
-
-
-
-
-
-
-
-
     clippy::significant_drop_tightening,
-
     clippy::default_trait_access,
-
     clippy::iter_with_drain,
-
     clippy::if_not_else,
-
     clippy::explicit_iter_loop,
-
     clippy::assigning_clones,
-
     clippy::implicit_hasher,
-
     clippy::ignored_unit_patterns,
-
     clippy::missing_fields_in_debug,
-
     clippy::or_fun_call,
-
     clippy::too_long_first_doc_paragraph,
-
     clippy::manual_string_new,
-
     clippy::single_match_else,
-
     clippy::significant_drop_in_scrutinee,
-
     clippy::needless_collect,
-
-    clippy::duplicated_attributes,
-
+    clippy::duplicated_attributes
 )]
 use crate::harness::compaction::compaction::{estimate_tokens, serialize_conversation};
 use crate::harness::messages::{
@@ -406,6 +378,7 @@ mod tests {
             }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
+            added_tool_names: None,
             timestamp: 1000,
         }
     }

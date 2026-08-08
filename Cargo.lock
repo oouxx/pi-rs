@@ -2323,7 +2323,6 @@ dependencies = [
  "pi-ai",
  "regex",
  "reqwest 0.12.28",
- "rmcp",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -2385,6 +2384,7 @@ dependencies = [
  "pi-extensions",
  "regex",
  "reqwest 0.12.28",
+ "rmcp",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3032,6 +3032,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "which 8.0.5",
 ]
 
 [[package]]
@@ -4453,7 +4454,7 @@ dependencies = [
  "miniz_oxide",
  "paste",
  "temporal_capi",
- "which",
+ "which 6.0.3",
 ]
 
 [[package]]
@@ -4645,6 +4646,15 @@ dependencies = [
  "home",
  "rustix 0.38.44",
  "winsafe",
+]
+
+[[package]]
+name = "which"
+version = "8.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f3ef584124b911bcc3875c2f1472e80f24361ceb789bd1c62b3e9a3df9ff43c"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

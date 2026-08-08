@@ -240,9 +240,9 @@ switch_session/get_messages/get_commands）**pi-rs 的 RPC 模式全部已实现
 }
 ```
 
-**已知限制（见 DEVIATIONS.md #10/#12）：**
+**已知限制（见 DEVIATIONS.md #10/#12/#13）：**
 
 - 权限流（request_permission）未实现——pi 内部 trust 模型自动决策
-- MCP 未实现——capabilities 不声明，客户端优雅降级
+- MCP 已实现（`mcp` feature 默认开启）：ACP `session/new`/`session/load` 的 `mcpServers`（stdio + streamable-HTTP）会连接并注入工具，调用转发回服务器。SSE 传输未实现（capabilities 声明 sse=false）；工具集在 session 创建时固定，本版本 ACP 规范 `prompt` 不再携带 mcpServers
 - session/load 已实现跨进程持久化：每个 ACP session 写入 `{sessions_dir}/acp/{id}.jsonl` + `session-map.json`（sessionId→文件/cwd 映射），重启后可按 ID 恢复。已知约束：同一时刻只有一个 ACP 进程写入 session map（无并发锁）
-- prompt 的图片内容已提取但未接入（text-only）
+- prompt 图片已接入：ACP `prompt` 的 `ContentBlock::Image` 提取后经 `PromptOptions.images` 传给 pi 的 `prompt()`（同 RPC 模式路径）

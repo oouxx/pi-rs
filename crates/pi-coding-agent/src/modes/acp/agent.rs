@@ -73,7 +73,10 @@ impl acp::Agent for PiAcpAgent {
         let capabilities = acp::AgentCapabilities::new()
             .load_session(true)
             .prompt_capabilities(acp::PromptCapabilities::new().image(true))
-            .mcp_capabilities(acp::McpCapabilities::new())
+            // stdio MCP is always supported; streamable-HTTP only with the
+            // `mcp` feature (which pulls the rmcp reqwest transport). SSE is
+            // not implemented.
+            .mcp_capabilities(acp::McpCapabilities::new().http(cfg!(feature = "mcp")))
             .session_capabilities(
                 acp::SessionCapabilities::new().list(acp::SessionListCapabilities::new()),
             );
@@ -100,7 +103,7 @@ impl acp::Agent for PiAcpAgent {
         let cwd = args.cwd.to_string_lossy().to_string();
         let mut reg = self.registry.lock().await;
         let session_id = reg
-            .create(&cwd, self.notif_tx.clone(), &self.spawn)
+            .create(&cwd, &args.mcp_servers, self.notif_tx.clone(), &self.spawn)
             .await
             .map_err(internal_err)?;
         Ok(acp::NewSessionResponse::new(session_id))
@@ -114,7 +117,7 @@ impl acp::Agent for PiAcpAgent {
         // across process restarts: sessions are recorded in the on-disk ACP
         // session map under `{sessions_dir}/acp/`.
         let mut reg = self.registry.lock().await;
-        reg.load(&args.session_id, self.notif_tx.clone(), &self.spawn)
+        reg.load(&args.session_id, &args.mcp_servers, self.notif_tx.clone(), &self.spawn)
             .await
             .map_err(invalid_params_err)?;
         Ok(acp::LoadSessionResponse::new())
@@ -130,12 +133,10 @@ impl acp::Agent for PiAcpAgent {
         handle
             .send(SessionCommand::Prompt {
                 text,
+                images,
                 reply: reply_tx,
             })
             .map_err(|_| internal_err("session closed"))?;
-        // Images are accepted by the session but not yet wired through ACP
-        // (pi's prompt() takes images via PromptOptions); text-only for now.
-        let _ = images;
         reply_rx
             .await
             .map_err(|_| internal_err("session closed"))?
@@ -266,4 +267,37 @@ async fn resolve_model(
     registry
         .find(provider, model_id)
         .ok_or_else(|| invalid_params_err("unknown model"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_prompt_keeps_text_and_images() {
+        let prompt = vec![
+            acp::ContentBlock::Text(acp::TextContent::new("look at this")),
+            acp::ContentBlock::Image(acp::ImageContent::new("base64data", "image/png")),
+            acp::ContentBlock::Text(acp::TextContent::new("second")),
+        ];
+        let (text, images) = extract_prompt(&prompt);
+        assert_eq!(text, "look at this\nsecond");
+        assert_eq!(images.len(), 1);
+        match &images[0] {
+            pi_agent_core::pi_ai_types::ContentBlock::Image { data, mime_type } => {
+                assert_eq!(data, "base64data");
+                assert_eq!(mime_type, "image/png");
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_prompt_skips_non_text_non_image() {
+        // An audio block (unsupported) is ignored; text is still collected.
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new("hi"))];
+        let (text, images) = extract_prompt(&prompt);
+        assert_eq!(text, "hi");
+        assert!(images.is_empty());
+    }
 }

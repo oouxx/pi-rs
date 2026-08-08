@@ -21,11 +21,48 @@ use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
 use super::translate::translate_event;
 
+/// MCP connection handle. A no-op (unit) type when the `mcp` feature is off,
+/// so session/registry code stays feature-agnostic.
+#[cfg(feature = "mcp")]
+pub use crate::core::mcp::McpConnection;
+#[cfg(not(feature = "mcp"))]
+pub type McpConnection = ();
+
+/// Connect to the given MCP servers and build pi tool definitions for their
+/// tools. Returns `(tool_definitions, connections)`: the definitions go into
+/// the session's `custom_tools`, and the connections are kept alive for the
+/// session's lifetime.
+#[cfg(feature = "mcp")]
+async fn connect_mcp_servers(
+    mcp_servers: &[acp::McpServer],
+) -> Result<(Vec<crate::core::extensions::ToolDefinition>, Vec<McpConnection>), String> {
+    let mut connections = Vec::new();
+    for config in mcp_servers {
+        match crate::core::mcp::McpConnection::connect(config).await {
+            Ok(conn) => connections.push(conn),
+            Err(e) => eprintln!("[pi] ACP: MCP server connect failed: {e}"),
+        }
+    }
+    let mut tool_defs = Vec::new();
+    for conn in &connections {
+        tool_defs.extend(conn.tool_definitions());
+    }
+    Ok((tool_defs, connections))
+}
+
+#[cfg(not(feature = "mcp"))]
+async fn connect_mcp_servers(
+    _mcp_servers: &[acp::McpServer],
+) -> Result<(Vec<crate::core::extensions::ToolDefinition>, Vec<McpConnection>), String> {
+    Ok((Vec::new(), Vec::new()))
+}
+
 /// A command sent to a session task.
 #[allow(clippy::large_enum_variant)]
 pub enum SessionCommand {
     Prompt {
         text: String,
+        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
         reply: oneshot::Sender<Result<acp::PromptResponse, String>>,
     },
     Cancel,
@@ -119,6 +156,7 @@ impl SessionRegistry {
     pub async fn create(
         &mut self,
         cwd: &str,
+        mcp_servers: &[acp::McpServer],
         notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
     ) -> Result<acp::SessionId, String> {
@@ -135,8 +173,8 @@ impl SessionRegistry {
         let _ = std::fs::create_dir_all(&acp_dir);
         let _ = std::fs::File::create(&session_file);
 
-        let session = self
-            .build_session(cwd, Some(&session_file_str), &session_dir_str)
+        let (session, mcp_connections) = self
+            .build_session(cwd, Some(&session_file_str), &session_dir_str, mcp_servers)
             .await?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -145,6 +183,7 @@ impl SessionRegistry {
             cmd_rx,
             notif_tx,
             session_id: session_id.clone(),
+            mcp_connections,
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -174,6 +213,7 @@ impl SessionRegistry {
     pub async fn load(
         &mut self,
         session_id: &acp::SessionId,
+        mcp_servers: &[acp::McpServer],
         notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
     ) -> Result<(), String> {
@@ -196,8 +236,8 @@ impl SessionRegistry {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| self.base_dir.join("acp").to_string_lossy().to_string());
 
-        let session = self
-            .build_session(&persisted.cwd, Some(&persisted.session_file), &session_dir)
+        let (session, mcp_connections) = self
+            .build_session(&persisted.cwd, Some(&persisted.session_file), &session_dir, mcp_servers)
             .await?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -206,6 +246,7 @@ impl SessionRegistry {
             cmd_rx,
             notif_tx,
             session_id: session_id.clone(),
+            mcp_connections,
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -221,17 +262,30 @@ impl SessionRegistry {
 
     /// Build a pi `AgentSession` for the given cwd, optionally backed by an
     /// existing or new session file. When `session_file` points to an existing
-    /// file the session's messages are restored.
+    /// file the session's messages are restored. MCP servers are connected and
+    /// their tools injected as `custom_tools`.
     async fn build_session(
         &self,
         cwd: &str,
         session_file: Option<&str>,
         session_dir: &str,
-    ) -> Result<AgentSession, String> {
+        mcp_servers: &[acp::McpServer],
+    ) -> Result<(AgentSession, Vec<McpConnection>), String> {
+        let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
+        let custom_tools = if mcp_tools.is_empty() {
+            None
+        } else {
+            Some(mcp_tools)
+        };
         let agent_dir = crate::config::get_agent_dir();
-        let build_options = |model: Option<pi_agent_core::pi_ai_types::Model>| {
+        let (cwd_owned, session_file_owned, session_dir_owned) = (
+            cwd.to_string(),
+            session_file.map(|s| s.to_string()),
+            session_dir.to_string(),
+        );
+        let build_options = move |model: Option<pi_agent_core::pi_ai_types::Model>| {
             CreateAgentSessionOptions {
-                cwd: cwd.to_string(),
+                cwd: cwd_owned.clone(),
                 agent_dir: Some(agent_dir.to_string_lossy().to_string()),
                 model,
                 thinking_level: None,
@@ -247,9 +301,9 @@ impl SessionRegistry {
                 extension_paths: vec![],
                 enable_extensions: true,
                 persist_session: true,
-                session_file: session_file.map(|s| s.to_string()),
+                session_file: session_file_owned.clone(),
                 fork_from: None,
-                session_dir: Some(session_dir.to_string()),
+                session_dir: Some(session_dir_owned.clone()),
                 extension_registry: None,
                 cli_provider: None,
                 cli_model: None,
@@ -259,7 +313,7 @@ impl SessionRegistry {
                 session_manager: None,
                 settings_manager: None,
                 session_start_event: None,
-                custom_tools: None,
+                custom_tools: custom_tools.clone(),
             }
         };
         let (session, _result) = match create_agent_session(build_options(None)).await {
@@ -284,7 +338,7 @@ impl SessionRegistry {
                 }
             }
         };
-        Ok(session)
+        Ok((session, mcp_connections))
     }
 
     /// Look up a session handle by ID.
@@ -352,14 +406,18 @@ struct SessionTask {
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
     notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     session_id: acp::SessionId,
+    /// Connected MCP servers; kept alive for the session's lifetime so their
+    /// tool-execute closures (which capture a peer handle) stay valid.
+    #[allow(dead_code)]
+    mcp_connections: Vec<McpConnection>,
 }
 
 impl SessionTask {
     async fn run(mut self) {
         while let Some(cmd) = self.cmd_rx.recv().await {
             match cmd {
-                SessionCommand::Prompt { text, reply } => {
-                    self.run_prompt(text, reply).await;
+                SessionCommand::Prompt { text, images, reply } => {
+                    self.run_prompt(text, images, reply).await;
                 }
                 SessionCommand::Cancel => {
                     self.session.abort().await;
@@ -383,10 +441,12 @@ impl SessionTask {
 
     /// Run one prompt turn: stream pi events as ACP notifications, then reply
     /// with the stop reason. `session/cancel` is handled inline so it can
-    /// interrupt the running turn.
+    /// interrupt the running turn. `images` are passed through to pi's
+    /// `prompt()` (ContentBlock::Image), matching the RPC mode.
     async fn run_prompt(
         &mut self,
         text: String,
+        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
         reply: oneshot::Sender<Result<acp::PromptResponse, String>>,
     ) {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<crate::core::agent_session::AgentSessionEvent>();
@@ -397,7 +457,13 @@ impl SessionTask {
         });
         let handle = self.session.subscribe_session_events(listener);
 
-        let prompt_fut = self.session.prompt(&text, None);
+        let prompt_options = crate::core::agent_session::PromptOptions {
+            expand_prompt_templates: None,
+            images: (!images.is_empty()).then_some(images),
+            streaming_behavior: None,
+            source: Some("acp".to_string()),
+        };
+        let prompt_fut = self.session.prompt(&text, Some(prompt_options));
         tokio::pin!(prompt_fut);
 
         // Track whether the agent actually ran a turn (mirrors the RPC mode's
@@ -544,7 +610,7 @@ mod tests {
         let sid;
         {
             let mut reg = SessionRegistry::with_base_dir(base_path.clone());
-            sid = reg.create("/tmp", notif_tx(), &spawn).await.expect("create");
+            sid = reg.create("/tmp", &[], notif_tx(), &spawn).await.expect("create");
             let acp_dir = base_path.join("acp");
             assert!(
                 acp_dir.join(format!("{}.jsonl", sid.0)).exists(),
@@ -569,11 +635,11 @@ mod tests {
         assert_eq!(reg.list()[0].session_id, sid);
 
         // Loading by ID resumes it.
-        reg.load(&sid, notif_tx(), &spawn).await.expect("load cross-process");
+        reg.load(&sid, &[], notif_tx(), &spawn).await.expect("load cross-process");
         assert!(reg.get(&sid).is_some(), "session should be loaded after restart");
 
         // Loading again is a no-op (already running in memory).
-        reg.load(&sid, notif_tx(), &spawn).await.expect("re-load is a no-op");
+        reg.load(&sid, &[], notif_tx(), &spawn).await.expect("re-load is a no-op");
     }
 
     /// `session/load` of an unknown ID (never created, or from an unrelated
@@ -584,7 +650,7 @@ mod tests {
         let spawn = noop_spawn();
         let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
         let unknown = acp::SessionId::new(Uuid::new_v4().to_string());
-        let err = reg.load(&unknown, notif_tx(), &spawn).await.unwrap_err();
+        let err = reg.load(&unknown, &[], notif_tx(), &spawn).await.unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
     }
 }

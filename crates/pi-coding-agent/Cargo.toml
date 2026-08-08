@@ -39,14 +39,25 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 deno_core = { workspace = true, optional = true }
 deno_ast = { version = "0.53", optional = true, features = ["transpiling"] }
 deno_error = { version = "0.7", optional = true }
+# MCP (Model Context Protocol) client — lets ACP sessions call external MCP
+# servers' tools (stdio + streamable HTTP). Default-on.
+rmcp = { version = "1.8", optional = true, default-features = false, features = [
+  "client",
+  "transport-child-process",
+  "which-command",
+  "transport-streamable-http-client-reqwest",
+] }
 
 [features]
 # Interactive TUI mode. The pi-tui / crossterm dependencies are currently removed
 # because pi-tui's ratatui 0.29 hard-pins unicode-width =0.2.0. Re-add once pi-tui
 # upgrades to ratatui 0.30. The interactive mode code stays gated behind
 # `#[cfg(feature = "interactive")]` and is inert until then.
-default = []
+default = ["mcp"]
 interactive = []
+# MCP (Model Context Protocol) client support (stdio + streamable HTTP).
+# Default-on. Disabling removes the rmcp dependency and the ACP MCP wiring.
+mcp = ["dep:rmcp"]
 # Embeds V8 (via deno_core) + swc (via deno_ast) to load TS/JS extensions
 # at runtime, mirroring TS loader.ts. Heavy build dependency — opt-in.
 js-runtime = ["dep:deno_core", "dep:deno_ast", "dep:deno_error"]

@@ -100,6 +100,9 @@ pub struct CreateAgentSessionOptions {
     pub stream_fn: Option<StreamFn>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
     pub custom_tools: Option<Vec<ToolDefinition>>,
+    /// CLI-passed extension flag values (e.g. `--my-flag value`). Sent to the
+    /// JS extension runtime so `pi.getFlag()` sees them.
+    pub extension_flags: Option<std::collections::HashMap<String, String>>,
     /// Additional paths to extension files/directories.
     /// Extensions will also be auto-discovered from:
     ///   - {cwd}/.pi/extensions/
@@ -160,6 +163,7 @@ impl Default for CreateAgentSessionOptions {
             stream_fn: None,
             convert_to_llm: None,
             custom_tools: None,
+            extension_flags: None,
             extension_paths: Vec::new(),
             enable_extensions: true,
             extension_registry: None,
@@ -518,10 +522,13 @@ pub async fn create_agent_session(
 
     #[cfg(feature = "js-runtime")]
     if options.enable_extensions {
+        let default_flags = std::collections::HashMap::new();
+        let extension_flags = options.extension_flags.as_ref().unwrap_or(&default_flags);
         match crate::core::extensions::js_adapter::load_js_extensions(
             &options.extension_paths,
             &cwd,
             &agent_dir,
+            extension_flags,
         )
         .await
         {
@@ -705,6 +712,7 @@ pub async fn create_agent_session(
     #[cfg(feature = "js-runtime")]
     let model_registry_for_actions = model_registry.clone();
 
+    #[cfg_attr(not(feature = "js-runtime"), allow(unused_mut))]
     let mut session =
         AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
 
@@ -846,6 +854,7 @@ pub async fn create_agent_session(
             let manager_arc_owned = manager_arc.clone();
             let invalidator = std::sync::Arc::new(move || manager_arc_owned.invalidate_sync());
             session.set_js_invalidator(Some(invalidator));
+
         }
     }
 

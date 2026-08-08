@@ -323,6 +323,7 @@ impl SessionRegistry {
                 settings_manager: None,
                 session_start_event: None,
                 custom_tools: custom_tools.clone(),
+                extension_flags: None,
             }
         };
         let (session, result) = match create_agent_session(build_options(None)).await {

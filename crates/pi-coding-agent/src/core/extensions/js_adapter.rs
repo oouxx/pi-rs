@@ -74,6 +74,11 @@ pub enum JsCommand {
         actions: super::js_runtime::RuntimeActions,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
+    /// Set an extension flag value (CLI-passed flags override defaults).
+    SetFlagValue {
+        name: String,
+        value: String,
+    },
     /// Invalidate the runtime context (session changed: new/fork/switch/
     /// reload). After this, action ops throw a stale-ctx error.
     Invalidate,
@@ -91,6 +96,7 @@ impl std::fmt::Debug for JsCommand {
             Self::FireEvent { .. } => write!(f, "JsCommand::FireEvent"),
             Self::ExecuteCommand { .. } => write!(f, "JsCommand::ExecuteCommand"),
             Self::BindCore { .. } => write!(f, "JsCommand::BindCore"),
+            Self::SetFlagValue { .. } => write!(f, "JsCommand::SetFlagValue"),
             Self::Invalidate => write!(f, "JsCommand::Invalidate"),
             Self::Shutdown => write!(f, "JsCommand::Shutdown"),
         }
@@ -1207,6 +1213,9 @@ impl JsExtensionManager {
                         js_runtime.bind_core(actions);
                         let _ = response_tx.send(Ok(()));
                     }
+                    JsCommand::SetFlagValue { name, value } => {
+                        js_runtime.set_flag_value(&name, &value);
+                    }
                     JsCommand::Invalidate => {
                         js_runtime.invalidate();
                     }
@@ -1296,6 +1305,20 @@ impl JsExtensionManager {
     /// `Fn()` callback (e.g. the session-switch invalidator).
     pub fn invalidate_sync(&self) {
         let _ = self.cmd_tx.try_send(JsCommand::Invalidate);
+    }
+
+    /// Set an extension flag value (CLI-passed flags override defaults).
+    ///
+    /// # Errors
+    /// Returns a `String` if the V8 runtime thread has already shut down.
+    pub async fn set_flag_value(&self, name: &str, value: &str) -> Result<(), String> {
+        self.cmd_tx
+            .send(JsCommand::SetFlagValue {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+            .await
+            .map_err(|_| "V8 runtime channel closed".to_string())
     }
 
     /// Shut down the V8 runtime (drop the channel sender and join the thread).
@@ -1905,6 +1928,7 @@ pub async fn load_js_extensions(
     extension_paths: &[String],
     cwd: &str,
     agent_dir: &str,
+    flags: &std::collections::HashMap<String, String>,
 ) -> Result<Option<JsExtensionsLoaded>, Vec<String>> {
     let discovered = discover_extension_paths(extension_paths, cwd, agent_dir);
     if discovered.paths.is_empty() {
@@ -1915,6 +1939,15 @@ pub async fn load_js_extensions(
     let mut adapters = Vec::new();
     let mut errors = Vec::new();
 
+    // Apply CLI-passed flag values BEFORE loading any extension, so the
+    // factory's `pi.getFlag()` reads them (registerFlag defaults never
+    // override an existing value).
+    for (name, value) in flags {
+        if let Err(e) = manager.set_flag_value(name, value).await {
+            errors.push(format!("set_flag_value({name}) failed: {e}"));
+        }
+    }
+
     for ext_path in &discovered.paths {
         let path_str = ext_path.to_string_lossy().to_string();
         match manager
@@ -1922,6 +1955,11 @@ pub async fn load_js_extensions(
             .await
         {
             Ok(load_result) => {
+                // Surface `pi.log()` output captured during the factory call
+                // (mirrors TS, where pi.log prints to the console).
+                for log in &load_result.logs {
+                    eprintln!("[pi] extension: {log}");
+                }
                 if load_result.tools.is_empty()
                     && load_result.commands.is_empty()
                     && load_result.shortcuts.is_empty()

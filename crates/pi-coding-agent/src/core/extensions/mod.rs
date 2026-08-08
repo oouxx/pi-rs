@@ -43,7 +43,8 @@ pub async fn load_extension_now(
     agent_dir: &str,
 ) -> Result<String, String> {
     let extension_paths = vec![source.to_string()];
-    match js_adapter::load_js_extensions(&extension_paths, cwd, agent_dir).await {
+    let no_flags = std::collections::HashMap::new();
+    match js_adapter::load_js_extensions(&extension_paths, cwd, agent_dir, &no_flags).await {
         Ok(Some(loaded)) => {
             let count = loaded.adapters.len();
             // Keep the manager alive briefly to ensure V8 shutdown is clean

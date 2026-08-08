@@ -255,12 +255,45 @@ fn op_register_flag(
 ) -> Result<(), JsErrorBox> {
     let mut result = take_result(state);
     result.flags.push(LoadedFlagRecord {
-        name,
+        name: name.clone(),
         flag_type,
         description,
-        default_value,
+        default_value: default_value.clone(),
     });
+    // Seed the flag-value store with the default so getFlag() works without
+    // an explicit CLI value.
+    if let Some(ref d) = default_value {
+        let mut flags = state
+            .try_borrow_mut::<std::collections::HashMap<String, String>>()
+            .cloned()
+            .unwrap_or_default();
+        flags.entry(name).or_insert_with(|| d.clone());
+        state.put(flags);
+    }
     state.put(result);
+    Ok(())
+}
+
+#[op2]
+#[string]
+fn op_get_flag_value(state: &mut OpState, #[string] name: String) -> Option<String> {
+    state
+        .try_borrow::<std::collections::HashMap<String, String>>()
+        .and_then(|m| m.get(&name).cloned())
+}
+
+#[op2(fast)]
+fn op_set_flag_value(
+    state: &mut OpState,
+    #[string] name: String,
+    #[string] value: String,
+) -> Result<(), JsErrorBox> {
+    let mut flags = state
+        .try_borrow_mut::<std::collections::HashMap<String, String>>()
+        .cloned()
+        .unwrap_or_default();
+    flags.insert(name, value);
+    state.put(flags);
     Ok(())
 }
 
@@ -722,6 +755,8 @@ const OPS: &[OpDecl] = &[
     op_register_command(),
     op_register_shortcut(),
     op_register_flag(),
+    op_get_flag_value(),
+    op_set_flag_value(),
     op_register_handler(),
     op_register_message_renderer(),
     op_register_entry_renderer(),
@@ -886,7 +921,10 @@ const BOOTSTRAP_JS: &str = r#"
 
     getFlag(name) {
       assertActive();
-      return flagValues.get(name);
+      const v = Deno.core.ops.op_get_flag_value(String(name));
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return (v === null || v === undefined) ? undefined : v;
     },
 
     registerMessageRenderer(customType, renderer) {
@@ -1243,6 +1281,9 @@ impl JsExtensionRuntime {
             let mut state = op_state.borrow_mut();
             state.put(ExtensionLoadResult::default());
             state.put(RuntimePhase::Uninitialized);
+            // Flag-value store (seeded with registerFlag defaults; updated by
+            // CLI-passed values via `op_set_flag_value`).
+            state.put(std::collections::HashMap::<String, String>::new());
         }
         runtime
             .execute_script("<pi-bootstrap>", BOOTSTRAP_JS)
@@ -1269,6 +1310,19 @@ impl JsExtensionRuntime {
     pub fn invalidate(&mut self) {
         let op_state = self.runtime.op_state();
         op_state.borrow_mut().put(RuntimePhase::Invalidated);
+    }
+
+    /// Set an extension flag value (CLI-passed flags override the default
+    /// seeded by `registerFlag`).
+    pub fn set_flag_value(&mut self, name: &str, value: &str) {
+        let op_state = self.runtime.op_state();
+        let mut state = op_state.borrow_mut();
+        let mut flags = state
+            .try_borrow_mut::<std::collections::HashMap<String, String>>()
+            .cloned()
+            .unwrap_or_default();
+        flags.insert(name.to_string(), value.to_string());
+        state.put(flags);
     }
 
     /// Load and invoke the default-export factory of the TS/JS extension at
@@ -1739,6 +1793,33 @@ export default async function(pi) {
         assert!(
             err.to_string().contains("invalidated"),
             "expected stale-ctx error, got: {err}"
+        );
+    }
+
+    /// `registerFlag` seeds the Rust flag-value store with its default, and
+    /// `op_set_flag_value` (CLI-passed) overrides it — `getFlag` reflects the
+    /// override (and converts "true"/"false" to booleans).
+    #[test]
+    fn test_flag_default_and_cli_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "flags.ts",
+            r#"
+export default async function(pi) {
+  pi.registerFlag("verbose", { type: "boolean", default: false, description: "verbose" });
+  pi.log("flag-default=" + pi.getFlag("verbose"));
+  Deno.core.ops.op_set_flag_value("verbose", "true");
+  pi.log("flag-after=" + pi.getFlag("verbose"));
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+        assert_eq!(
+            result.logs,
+            vec!["flag-default=false".to_string(), "flag-after=true".to_string()]
         );
     }
 

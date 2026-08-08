@@ -246,6 +246,7 @@ pub async fn create_agent_session_from_services(
         settings_manager: None,
         session_start_event: options.session_start_event,
         custom_tools: options.custom_tools,
+        extension_flags: None,
     };
 
     let (session, result) = crate::core::sdk::create_agent_session(sdk_options).await?;

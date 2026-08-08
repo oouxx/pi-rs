@@ -41,7 +41,10 @@ fn to_json_event(event: &AgentSessionEvent) -> serde_json::Value {
 /// - Commands: JSON objects with `type` field on stdin (one per line)
 /// - Responses: JSON objects on stdout with `type: "response"`
 /// - Events: JSON objects on stdout with `type: "event"` streamed as they occur
-pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
+pub async fn run_rpc_mode(
+    extension_paths: Vec<String>,
+    extension_flags: std::collections::HashMap<String, String>,
+) -> i32 {
     // ── Build a minimal agent session ──────────────────────────────────
     let agent_dir = crate::config::get_agent_dir();
     let cwd = std::env::current_dir()
@@ -63,6 +66,7 @@ pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
         stream_fn: None,
         convert_to_llm: None,
         extension_paths,
+        extension_flags: Some(extension_flags),
         enable_extensions: true,
         persist_session: false,
         session_file: None,

@@ -1159,3 +1159,112 @@ async fn test_multi_turn_tool_communication() {
     }
 
 }
+
+/// Regression test: `set_model` / `set_thinking_level` / `set_active_tools_by_name`
+/// / `send_custom_message` must write through to the agent's **shared** state
+/// (previously they mutated the `Agent::state()` snapshot clone, so the
+/// changes were silently lost — see PORTING_MISTAKES.md).
+#[tokio::test]
+async fn test_state_mutations_persist_to_agent() {
+    use std::collections::HashMap;
+    use pi_coding_agent::core::model_registry::ProviderConfig;
+    use pi_coding_agent::core::agent_session::CustomMessageOptions;
+
+    // Thinking-capable model so set_thinking_level("high") is a real change.
+    let mut model = make_model();
+    model.reasoning = true;
+    model.thinking_level_map = Some(HashMap::new());
+
+    let (mut session, _result) = create_agent_session(CreateAgentSessionOptions {
+        cwd: ".".to_string(),
+        agent_dir: None,
+        model: Some(model),
+        thinking_level: None,
+        scoped_models: None,
+        no_tools: None,
+        tools: None,
+        exclude_tools: None,
+        custom_prompt: None,
+        append_system_prompt: None,
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        custom_tools: None,
+        extension_paths: Vec::new(),
+        enable_extensions: true,
+        extension_registry: None,
+        cli_provider: None,
+        cli_model: None,
+        persist_session: true,
+        session_file: None,
+        fork_from: None,
+        session_dir: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
+        session_start_event: None,
+    })
+    .await
+    .expect("create_agent_session failed");
+
+    // ── set_model: register a keyed provider so the auth pre-check passes ──
+    session.get_model_registry().register_provider(
+        "openrouter",
+        ProviderConfig {
+            name: None,
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            api_key: Some("test-key".to_string()),
+            api: Some("openai-completions".to_string()),
+            headers: None,
+            auth_header: None,
+        },
+    );
+    let mut new_model = make_model();
+    new_model.reasoning = true;
+    new_model.thinking_level_map = Some(HashMap::new());
+    new_model.id = "new-model-id".to_string();
+    new_model.name = "New Model".to_string();
+    session
+        .set_model(new_model)
+        .await
+        .expect("set_model should succeed with a keyed provider");
+    assert_eq!(
+        session.get_model().await.id,
+        "new-model-id",
+        "set_model must update the agent's shared model state"
+    );
+
+    // ── set_thinking_level ──
+    session.set_thinking_level("high").await;
+    assert_eq!(
+        session.get_thinking_level().await,
+        "high",
+        "set_thinking_level must update the agent's shared thinking level"
+    );
+
+    // ── set_active_tools_by_name ──
+    session.set_active_tools_by_name(&["read".to_string()]).await;
+    let active = session.get_active_tool_names().await;
+    assert_eq!(active, vec!["read"], "active tools must reflect the change");
+
+    // ── send_custom_message (triggerTurn=false appends to messages) ──
+    session
+        .send_custom_message(
+            "test-type",
+            "custom payload text",
+            Some(CustomMessageOptions {
+                trigger_turn: false,
+                deliver_as: None,
+            }),
+        )
+        .await;
+    let messages = session.get_agent().messages().await;
+    let found = messages.iter().any(|m| {
+        matches!(m, pi_agent_core::types::AgentMessage::User { content, .. } if content.iter().any(|c| {
+            matches!(c, ContentBlock::Text { text, .. } if text == "custom payload text")
+        }))
+    });
+    assert!(found, "custom message must be appended to the agent's messages");
+}

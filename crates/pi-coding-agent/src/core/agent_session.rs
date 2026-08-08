@@ -1942,8 +1942,8 @@ impl AgentSession {
             .iter()
             .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
             .collect();
-        let mut state = self.agent.state().await;
-        state.tools = selected;
+        // Write through the shared state — `state()` returns a clone.
+        self.agent.update_state(|s| s.tools = selected).await;
     }
 
     // =========================================================================
@@ -2278,8 +2278,10 @@ References are relative to {}.
         }
         for msg_value in &messages {
             if let Ok(agent_msg) = serde_json::from_value::<AgentMessage>(msg_value.clone()) {
-                let mut state = self.agent.state().await;
-                state.messages.push(agent_msg);
+                // Write through the shared state — `state()` returns a clone.
+                self.agent
+                    .update_state(|s| s.messages.push(agent_msg))
+                    .await;
                 // Note: session persistence is handled by the agent event handler
             }
         }
@@ -2774,15 +2776,15 @@ References are relative to {}.
 
         let model_id = model.id.clone();
         let model_provider = model.provider.clone();
-        let mut state = self.agent.state().await;
+        let state = self.agent.state().await;
         let previous_model_id = state.model.id.clone();
         let previous_model = if previous_model_id.is_empty() {
             None
         } else {
             Some(previous_model_id.clone())
         };
-        state.model = model;
-        drop(state);
+        // Write through the shared state — `state()` returns a clone.
+        self.agent.set_model(model).await;
 
         // Persist to session (matching TS sessionManager.appendModelChange)
         self.session_manager
@@ -2850,9 +2852,8 @@ References are relative to {}.
         drop(state);
 
         if is_changing {
-            let mut state = self.agent.state().await;
-            state.thinking_level = effective.clone();
-            drop(state);
+            // Write through the shared state — `state()` returns a clone.
+            self.agent.set_thinking_level(effective.clone()).await;
 
             // Persist to session (matching TS sessionManager.appendThinkingLevelChange)
             self.session_manager
@@ -2947,15 +2948,15 @@ References are relative to {}.
         let model_provider = model.provider.clone();
 
         // Set model on agent state (matching TS _cycleScopedModel)
-        let mut state = self.agent.state().await;
+        let state = self.agent.state().await;
         let previous_model_id = state.model.id.clone();
         let previous_model = if previous_model_id.is_empty() {
             None
         } else {
             Some(previous_model_id.clone())
         };
-        state.model = model.clone();
-        drop(state);
+        // Write through the shared state — `state()` returns a clone.
+        self.agent.set_model(model.clone()).await;
 
         // Persist to session (matching TS sessionManager.appendModelChange)
         self.session_manager
@@ -3272,10 +3273,11 @@ References are relative to {}.
         if opts.trigger_turn {
             self.agent.process(vec![message]).await.ok();
         } else {
-            // Just append to messages and emit events
-            let mut state = self.agent.state().await;
-            state.messages.push(message);
-            drop(state);
+            // Just append to messages and emit events. Write through the
+            // shared state — `state()` returns a clone.
+            self.agent
+                .update_state(|s| s.messages.push(message))
+                .await;
         }
     }
 
@@ -3875,8 +3877,10 @@ impl AgentSession {
             self.pending_bash_messages.lock().unwrap().push(value);
         } else {
             // Add to agent state immediately
-            let mut state = self.agent.state().await;
-            state.messages.push(bash_message);
+            // Write through the shared state — `state()` returns a clone.
+            self.agent
+                .update_state(|s| s.messages.push(bash_message))
+                .await;
             // Note: session persistence is handled by the agent event handler
         }
     }

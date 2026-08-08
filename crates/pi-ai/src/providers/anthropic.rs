@@ -15,7 +15,6 @@ use crate::types::{
     Usage,
 };
 use crate::utils::event_stream::AssistantMessageEventStream;
-use crate::utils::sse::parse_sse_body;
 
 // ============================================================================
 // Constants
@@ -703,8 +702,11 @@ async fn stream_anthropic_inner(
         return Err(format!("Anthropic API error {status}: {text}").into());
     }
 
-    let response_bytes = response.bytes().await?;
-    let sse_events = parse_sse_body(&response_bytes);
+    // Stream the SSE body incrementally (match TS `iterateSseMessages`).
+    let events = crate::utils::sse::sse_events_stream(
+        response.bytes_stream().map(|item| item.map(|b| b.to_vec())),
+    );
+    futures::pin_mut!(events);
 
     // Initialize output
     let mut output = AssistantMessage {
@@ -736,7 +738,9 @@ async fn stream_anthropic_inner(
 
     let mut blocks: Vec<BlockInfo> = Vec::new();
 
-    for sse in &sse_events {
+    use futures::StreamExt;
+    while let Some(sse) = events.next().await {
+        let sse = sse?;
         // Check for abort
         if let Some(ref rx) = signal {
             if *rx.borrow() {

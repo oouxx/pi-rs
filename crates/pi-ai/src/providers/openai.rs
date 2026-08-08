@@ -738,6 +738,7 @@ fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
 
 /// Parse a single line from the `OpenAI` SSE stream.
 /// `OpenAI` SSE format is simpler: each line is `data: <json>`, ending with `data: [DONE]`.
+#[cfg(test)]
 fn parse_openai_sse_chunk(line: &str) -> Option<Value> {
     let line = line.trim();
     if line.is_empty() || line.starts_with(':') {
@@ -758,18 +759,12 @@ fn parse_openai_sse_chunk(line: &str) -> Option<Value> {
     serde_json::from_str(data).ok()
 }
 
-/// Parse a complete `OpenAI` SSE response body into JSON values.
-fn parse_openai_sse_body(body: &[u8]) -> Vec<Value> {
-    let text = String::from_utf8_lossy(body);
-    let mut events = Vec::new();
-
-    for line in text.lines() {
-        if let Some(event) = parse_openai_sse_chunk(line) {
-            events.push(event);
-        }
+/// Parse a streamed SSE event (already `data:`-decoded) into a chunk value.
+fn parse_openai_sse_event(event: &crate::utils::sse::ServerSentEvent) -> Option<Value> {
+    if event.data.is_empty() || event.data == "[DONE]" {
+        return None;
     }
-
-    events
+    serde_json::from_str(&event.data).ok()
 }
 
 /// Parse token usage from an `OpenAI` chunk.
@@ -1452,8 +1447,11 @@ async fn stream_openai_inner(
         return Err(format!("OpenAI API error {status}: {text}").into());
     }
 
-    let response_bytes = response.bytes().await?;
-    let chunks = parse_openai_sse_body(&response_bytes);
+    // Stream the SSE body incrementally (match TS openai-completions streaming).
+    let events = crate::utils::sse::sse_events_stream(
+        response.bytes_stream().map(|item| item.map(|b| b.to_vec())),
+    );
+    futures::pin_mut!(events);
 
     // Initialize output
     let mut output = AssistantMessage {
@@ -1493,7 +1491,12 @@ async fn stream_openai_inner(
     let mut tool_call_blocks_by_id: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
-    for chunk in &chunks {
+    use futures::StreamExt;
+    while let Some(event) = events.next().await {
+        let event = event?;
+        let Some(chunk) = parse_openai_sse_event(&event) else {
+            continue;
+        };
         // Check abort
         if let Some(ref rx) = signal {
             if *rx.borrow() {

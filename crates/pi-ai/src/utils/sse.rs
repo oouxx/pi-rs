@@ -140,6 +140,82 @@ pub fn parse_sse_body(body: &[u8]) -> Vec<ServerSentEvent> {
     events
 }
 
+
+/// A `Stream` of SSE events decoded incrementally from a reqwest byte stream.
+///
+/// Matches the TS providers' streaming reads: bytes are decoded as they
+/// arrive (via `consume_line` / `decode_sse_line`) instead of buffering the
+/// whole response body. Each yielded item is one complete SSE event; a
+/// transport error yields `Err`.
+pub fn sse_events_stream<S>(
+    stream: S,
+) -> impl futures::Stream<Item = Result<ServerSentEvent, String>>
+where
+    S: futures::Stream<Item = Result<Vec<u8>, reqwest::Error>>,
+{
+    SseEventsStream {
+        stream: Box::pin(stream),
+        state: SseDecoderState::default(),
+        buffer: String::new(),
+        finished: false,
+    }
+}
+
+struct SseEventsStream<S> {
+    stream: std::pin::Pin<Box<S>>,
+    state: SseDecoderState,
+    buffer: String,
+    finished: bool,
+}
+
+impl<S> futures::Stream for SseEventsStream<S>
+where
+    S: futures::Stream<Item = Result<Vec<u8>, reqwest::Error>>,
+{
+    type Item = Result<ServerSentEvent, String>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            // Decode complete lines buffered so far.
+            while let Some((line, rest)) = consume_line(&this.buffer) {
+                let (line, rest) = (line.to_string(), rest.to_string());
+                this.buffer = rest;
+                if let Some(event) = decode_sse_line(&line, &mut this.state) {
+                    return std::task::Poll::Ready(Some(Ok(event)));
+                }
+            }
+            if this.finished {
+                // Flush a trailing partial event (no terminating blank line).
+                if !this.buffer.trim().is_empty() {
+                    if let Some(event) = decode_sse_line(this.buffer.trim(), &mut this.state) {
+                        this.buffer.clear();
+                        return std::task::Poll::Ready(Some(Ok(event)));
+                    }
+                }
+                this.buffer.clear();
+                return std::task::Poll::Ready(None);
+            }
+            match this.stream.as_mut().poll_next(cx) {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(Some(Ok(chunk))) => {
+                    this.buffer.push_str(&String::from_utf8_lossy(&chunk));
+                }
+                std::task::Poll::Ready(Some(Err(e))) => {
+                    this.finished = true;
+                    return std::task::Poll::Ready(Some(Err(e.to_string())));
+                }
+                std::task::Poll::Ready(None) => {
+                    this.finished = true;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

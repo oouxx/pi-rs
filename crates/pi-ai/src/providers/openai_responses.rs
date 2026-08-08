@@ -1135,6 +1135,7 @@ fn convert_responses_tools(
 // SSE parsing
 // ============================================================================
 
+#[cfg(test)]
 fn parse_responses_sse_chunk(line: &str) -> Option<Value> {
     let line = line.trim();
     if line.is_empty() || line.starts_with(':') {
@@ -1149,6 +1150,7 @@ fn parse_responses_sse_chunk(line: &str) -> Option<Value> {
     serde_json::from_str(data).ok()
 }
 
+#[cfg(test)]
 fn parse_responses_sse_body(body: &[u8]) -> Vec<Value> {
     let text = String::from_utf8_lossy(body);
     text.lines().filter_map(parse_responses_sse_chunk).collect()
@@ -1426,19 +1428,27 @@ fn finalize_response(
     apply_service_tier_pricing(&mut output.usage, &model.id, effective_tier);
 }
 
-fn process_responses_stream(
-    events: &[Value],
+async fn process_responses_stream<S>(
+    events: S,
     output: &mut AssistantMessage,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
     model: &Model,
     service_tier: Option<&str>,
     grammar_properties: &std::collections::HashMap<String, String>,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    S: futures::Stream<Item = Result<Option<Value>, String>> + Unpin,
+{
+    use futures::StreamExt;
     let mut saw_terminal = false;
     let mut output_slots: HashMap<usize, OutputSlot> = HashMap::new();
     let mut reasoning_blocks: HashMap<String, usize> = HashMap::new();
 
-    for event in events {
+    let mut events = events;
+    while let Some(item) = events.next().await {
+        let Some(event) = item? else {
+            continue;
+        };
         let t = event.get("type").and_then(Value::as_str).unwrap_or("");
         match t {
             "response.created" => {
@@ -2105,8 +2115,23 @@ async fn stream_openai_responses_inner(
     )
     .await?;
 
-    let response_bytes = response.bytes().await?;
-    let events = parse_responses_sse_body(&response_bytes);
+    // Stream the SSE body incrementally (match TS `processResponsesStream`).
+    use futures::StreamExt as _;
+    let events = crate::utils::sse::sse_events_stream(
+        response.bytes_stream().map(|item| item.map(|b| b.to_vec())),
+    )
+    .map(|item| match item {
+        Ok(e) => {
+            if e.data.is_empty() || e.data == "[DONE]" {
+                Ok(None)
+            } else {
+                serde_json::from_str::<Value>(&e.data)
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            }
+        }
+        Err(e) => Err(e),
+    });
 
     let mut output = AssistantMessage {
         content: vec![],
@@ -2132,13 +2157,14 @@ async fn stream_openai_responses_inner(
     let supports_grammar = compat.supports_openai_grammar_tools.unwrap_or(false);
     let grammar_properties = grammar_tool_input_properties(context, supports_grammar);
     process_responses_stream(
-        &events,
+        events,
         &mut output,
         tx,
         model,
         service_tier,
         &grammar_properties,
-    )?;
+    )
+    .await?;
 
     if output.stop_reason == StopReason::Stop {
         output.stop_reason = StopReason::Stop;
@@ -2464,8 +2490,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_process_stream_text() {
+    #[tokio::test]
+    async fn test_process_stream_text() {
         let model = make_model();
         let mut output = AssistantMessage {
             content: vec![],
@@ -2490,13 +2516,14 @@ mod tests {
             json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}}),
         ];
         process_responses_stream(
-            &events,
+            futures::stream::iter(events.into_iter().map(|v| Ok(Some(v)))),
             &mut output,
             &tx,
             &model,
             None,
             &std::collections::HashMap::new(),
         )
+        .await
         .unwrap();
         assert_eq!(output.stop_reason, StopReason::Stop);
         assert_eq!(output.response_id.as_deref(), Some("resp_1"));
@@ -2522,8 +2549,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_process_stream_custom_tool_call_input() {
+    #[tokio::test]
+    async fn test_process_stream_custom_tool_call_input() {
         // Mirrors TS `constrained-sampling.test.ts` "streams custom Responses
         // tool calls as string arguments": a grammar-constrained custom tool
         // call streams its input as JSON deltas, which must be rebuilt
@@ -2554,7 +2581,16 @@ mod tests {
             json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "custom_tool_call", "call_id": "call_1", "id": "ctc_1", "name": "sample_tool", "input": "abc"}}),
             json!({"type": "response.completed", "response": {"status": "completed", "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}}),
         ];
-        process_responses_stream(&events, &mut output, &tx, &model, None, &grammar).unwrap();
+        process_responses_stream(
+            futures::stream::iter(events.into_iter().map(|v| Ok(Some(v)))),
+            &mut output,
+            &tx,
+            &model,
+            None,
+            &grammar,
+        )
+        .await
+        .unwrap();
         assert_eq!(output.stop_reason, StopReason::ToolUse);
         assert_eq!(output.content.len(), 1);
         match &output.content[0] {
@@ -2772,8 +2808,8 @@ mod tests {
         assert!(get_retry_delay_ms(&err2, 0, None).is_err());
     }
 
-    #[test]
-    fn test_process_stream_tool_call() {
+    #[tokio::test]
+    async fn test_process_stream_tool_call() {
         let model = make_model();
         let mut output = AssistantMessage {
             content: vec![],
@@ -2798,13 +2834,14 @@ mod tests {
             json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}}),
         ];
         process_responses_stream(
-            &events,
+            futures::stream::iter(events.into_iter().map(|v| Ok(Some(v)))),
             &mut output,
             &tx,
             &model,
             None,
             &std::collections::HashMap::new(),
         )
+        .await
         .unwrap();
         assert_eq!(output.stop_reason, StopReason::ToolUse);
         assert_eq!(output.content.len(), 1);

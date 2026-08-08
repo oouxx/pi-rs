@@ -26,10 +26,10 @@
 | 13 | v0.79.10 #5114 | OpenAI-compatible 流式保留 reasoning_details（先于 tool call delta 到达） | 已核对：openai.rs 流式按 `reasoning_content`/`reasoning`/`reasoning_text` 处理 reasoning 块，但原实现遍历**全部**非空字段重复追加（如 chutes.ai 同时返回 reasoning_content 与 reasoning 相同内容会重复）；已改为仅取**第一个**非空字段（对齐 TS openai-completions），并补 opencode-go `reasoning`→`reasoning_content` signature 映射 | A | ✅ 已修 |
 | 14 | v0.80.7 #6496 | `compat.sessionAffinityFormat`（替代 `sendSessionIdHeader`，breaking） | `OpenAIResponsesCompat` 已更新为 v0.80.7 字段（sessionAffinityFormat/supportsDeveloperRole/supportsStrictMode 等），provider 已按格式发 session affinity headers | B | ✅ 已修 |
 | 15 | v0.80.0+ | `openai-responses` API 后端（openai 官方 provider 用 `/v1/responses`） | 已实现 `openai_responses.rs`（消息/工具转换 + SSE 流式 + 事件序列），openai 模型已切到 `openai-responses`；简化项见 DEVIATIONS.md #5 | B | ✅ 已修（含简化偏差） |
-| 16 | v0.80.8 | `ModelRuntime` / live model catalog refresh | 已实现**有界子集**：`pi refresh [--force|--offline|--catalog-url]` 手动刷新命令 + `remote_catalog.rs`（拉取 `pi.dev/api/models/providers/{provider}`、解析 array/`{models:[...]}`/keyed-object 三种格式、`ModelRegistry::upsert_models` 合并、models-store.json 缓存、fresh 窗口/304/404/失败保留缓存、`--offline` 离线恢复）。未实现：启动/后台自动刷新、provider 可用性检查、credential 同步（ModelRuntime 其余部分） | B | ✅ 部分完成（手动刷新可用；自动刷新待排期） |
-| 17 | v0.80.3/8/9/10 | 模型元数据：Claude Sonnet 5、Grok 4.5、Kimi K3、默认 gpt-5.5、openrouter/fusion、context window 272k 等 | 模型覆盖度受限 | D | DEVIATIONS #2（待确认） |
+| 16 | v0.80.8 | `ModelRuntime` / live model catalog refresh | 已实现**有界子集**：`pi refresh [--force|--offline|--catalog-url]` 手动刷新命令 + `remote_catalog.rs`（拉取 `pi.dev/api/models/providers/{provider}`、解析 array/`{models:[...]}`/keyed-object 三种格式、`ModelRegistry::upsert_models` 合并、models-store.json 缓存、fresh 窗口/304/404/失败保留缓存、`--offline` 离线恢复）。未实现：启动/后台自动刷新、provider 可用性检查、credential 同步 | B | ✅ 部分完成（手动刷新可用；自动刷新部分经用户确认暂不做，见 pi-coding-agent DEVIATIONS #10） |
+| 17 | v0.80.3/8/9/10 | 模型元数据：Claude Sonnet 5、Grok 4.5、Kimi K3、默认 gpt-5.5、openrouter/fusion、context window 272k 等 | 模型覆盖度受限 | D | 已确认保留（用户拍板：主流仅需 anthropic + openai 格式，不扩展其他 provider，见 DEVIATIONS #2） |
 | 18 | v0.79.5 #5790 | 全局 `httpProxy` 设置 | `apply_http_proxy_settings`：全局设置 httpProxy → HTTP_PROXY/HTTPS_PROXY 环境变量（`??=` 语义，仅未设置时写入；reqwest 自动读取），在 `create_agent_session_services` 应用 | A | ✅ 已修 |
-| 19 | v0.79.5 #5798 | Vercel AI Gateway attribution headers | 无 Vercel provider | D | DEVIATIONS #2 |
+| 19 | v0.79.5 #5798 | Vercel AI Gateway attribution headers | 无 Vercel provider | D | 已确认保留（同 #17，用户拍板不扩展 provider，见 DEVIATIONS #2） |
 
 ## pi-agent-core
 

@@ -38,10 +38,10 @@
 ## 对齐状态
 
 - 已确认偏差：见各 crate 的 `DEVIATIONS.md`（`crates/pi-ai/DEVIATIONS.md`、`crates/pi-coding-agent/DEVIATIONS.md`）。
-- 已知未覆盖项（相对 v0.80，尚未登记为已确认偏差）：
-  - `openai-responses` API 后端未移植：v0.80 中 openai 官方 provider 已使用 Responses API（`/v1/responses`），pi-rs 目前将 openai 模型路由到 `openai-completions`（`/chat/completions`）。
-  - `azure-openai-responses` / `openai-codex-responses` 后端未移植。
-  - v0.80.8 的 `ModelRuntime` / live model catalog refresh 未移植。
-  - 模型覆盖度缺口见 `crates/pi-ai/DEVIATIONS.md` #2（待确认）。
+- 已知未覆盖项（相对 v0.80，已确认为最终范围）：
+  - `openai-responses` API 后端：已移植（openai 官方 provider 走 `/v1/responses`）。
+  - `azure-openai-responses` / `openai-codex-responses` 后端：**范围外**（用户拍板：主流仅需 anthropic + openai 格式）。
+  - v0.80.8 的 `ModelRuntime` / live model catalog refresh：手动刷新已实现（`pi refresh`），自动刷新/可用性检查/credential 同步未做（范围外）。
+  - 模型覆盖度：用户确认仅保留 anthropic + openai 主流范围（见 `crates/pi-ai/DEVIATIONS.md` #2，已确认保留）。
 
 > 本文件是里程碑基准，不是偏差日志。发现行为不一致时仍按 CLAUDE.md 阶段四流程处理：先查 `DEVIATIONS.md`，未登记再分类处理。

@@ -569,10 +569,10 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
     );
 }
 
-/// Session switch must trigger the JS-runtime invalidator (stale-ctx guard):
+/// Session switch must trigger the extension-runtime invalidator (stale-ctx guard):
 /// `session_mgr_switch` calls the callback wired by the SDK.
 #[tokio::test]
-async fn test_session_switch_invalidates_js_runtime() {
+async fn test_session_switch_invalidates_extension_runtime() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use pi_coding_agent::core::agent_session::AgentSessionConfig;
     use pi_coding_agent::core::extensions::ExtensionRegistry;

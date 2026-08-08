@@ -1,4 +1,4 @@
-.PHONY: build run run-tui test test-all fmt lint check clean help version release-patch release-minor release-major
+.PHONY: build run run-tui test test-all fmt lint check clean help version release-patch release-minor release-major fetch-bun build-sdk
 
 APP_NAME := pi
 VERSION := $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
@@ -21,6 +21,14 @@ run-tui:
 	cargo run -p pi-tui -- $(ARGS)
 
 # ─── Quality ──────────────────────────────────────────
+
+# 下载 Bun 运行时二进制到 assets/runtime/（bun-runtime feature 需要）
+fetch-bun:
+	cargo run -p xtask -- fetch-bun
+
+# 打包真实 TS SDK 纯函数到 assets/sdk/（替换手写 shim；需要同级 pi 仓库 + bun）
+build-sdk:
+	cargo run -p xtask -- build-sdk
 
 test:
 	cargo test -p pi-ai -p pi-agent-core -p pi-coding-agent -p pi-cli -p pi-extension-api -p pi-extensions
@@ -95,6 +103,8 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  build           dev build"
+	@echo "  fetch-bun       download Bun runtime binary to assets/runtime/ (for bun-runtime feature)"
+	@echo "  build-sdk       bundle real TS SDK pure functions to assets/sdk/ (needs sibling pi repo + bun)"
 	@echo "  release         release build"
 	@echo ""
 	@echo "Run:"

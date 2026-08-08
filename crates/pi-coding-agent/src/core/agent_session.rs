@@ -404,7 +404,7 @@ pub struct AgentSession {
     extension_action_rx: Option<Arc<std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>>>,
     /// Sync callback that invalidates the JS extension runtime (stale-ctx
     /// guard) when the session changes (new/fork/switch/reload). Set by the
-    /// SDK from the V8 manager; absent when `js-runtime` is off.
+    /// SDK from the extension runtime; absent when no runtime feature is on.
     js_invalidator: Option<Arc<dyn Fn() + Send + Sync>>,
     // ── Event subscription state ──
     event_listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
@@ -2024,7 +2024,7 @@ impl AgentSession {
 
     /// Register a synchronous callback that invalidates the JS extension
     /// runtime when the session changes (new/fork/switch/reload). The SDK
-    /// wires this to the V8 manager under `js-runtime`.
+    /// wires this to the extension runtime (e.g. the Bun runner).
     pub fn set_js_invalidator(&mut self, invalidator: Option<Arc<dyn Fn() + Send + Sync>>) {
         self.js_invalidator = invalidator;
     }

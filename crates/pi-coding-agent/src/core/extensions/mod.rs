@@ -3,8 +3,8 @@ pub mod api;
 pub mod dispatcher;
 pub mod types;
 pub mod loader;
-#[cfg(feature = "js-runtime")]
-pub mod js_runtime;
+#[cfg(feature = "bun-runtime")]
+pub mod bun;
 
 pub use api::{
     ArgumentCompletionsFn, AutocompleteItem, CommandRegistry, CommandRegistration, EventPublisher,
@@ -17,26 +17,22 @@ pub use api::{create_builtin_source_info, create_source_info, create_synthetic_s
 pub use api::ResourcesDiscoverResult;
 pub use api::{ProjectTrustDecision, ProjectTrustResult, UserBashResult};
 
-// Loader (V8-agnostic discovery + cache). The factory-invocation half is
-// deferred to a future JS-runtime chunk; see EXTENSION_LOADING_FEASIBILITY.md.
+// Loader (runtime-agnostic discovery + cache). The factory-invocation half
+// lives in `bun/` (方案 A, Bun subprocess).
 pub use loader::{
     discover_extension_paths, discover_extensions_in_dir, is_extension_file, read_pi_manifest,
     resolve_extension_entries, CacheToken, DiscoveredExtensions, ExtensionCache, PiManifest,
 };
-#[cfg(feature = "js-runtime")]
-pub mod js_shims;
-#[cfg(feature = "js-runtime")]
-pub mod js_adapter;
 
 /// Try to load a JS/TS extension immediately after installation.
 ///
-/// When the `js-runtime` feature is enabled, this discovers and loads the
+/// When the `bun-runtime` feature is enabled, this discovers and loads the
 /// extension at the given path, returning a human-readable result message.
-/// When `js-runtime` is not enabled, returns an error explaining that JS
-/// extensions require the js-runtime feature.
+/// When the `bun-runtime` feature is not enabled, returns an error explaining
+/// that JS extensions require it.
 ///
 /// Used by the CLI's `pi install` command to provide immediate feedback.
-#[cfg(feature = "js-runtime")]
+#[cfg(feature = "bun-runtime")]
 pub async fn load_extension_now(
     source: &str,
     cwd: &str,
@@ -44,28 +40,23 @@ pub async fn load_extension_now(
 ) -> Result<String, String> {
     let extension_paths = vec![source.to_string()];
     let no_flags = std::collections::HashMap::new();
-    match js_adapter::load_js_extensions(&extension_paths, cwd, agent_dir, &no_flags).await {
+    match bun::load_bun_extensions(&extension_paths, cwd, agent_dir, &no_flags).await {
         Ok(Some(loaded)) => {
             let count = loaded.adapters.len();
-            // Keep the manager alive briefly to ensure V8 shutdown is clean
-            drop(loaded.manager);
+            drop(loaded.runner);
             Ok(format!("Loaded {count} extension(s)"))
         }
-        Ok(None) => {
-            Err("No extension files found at the installed path".to_string())
-        }
-        Err(errors) => {
-            Err(format!("Failed to load extension: {}", errors.join("; ")))
-        }
+        Ok(None) => Err("No extension files found at the installed path".to_string()),
+        Err(errors) => Err(format!("Failed to load extension: {}", errors.join("; "))),
     }
 }
 
-/// Non-V8 fallback: JS extensions cannot be loaded without the js-runtime feature.
-#[cfg(not(feature = "js-runtime"))]
+/// Fallback: JS extensions cannot be loaded without the `bun-runtime` feature.
+#[cfg(not(feature = "bun-runtime"))]
 pub async fn load_extension_now(
     _source: &str,
     _cwd: &str,
     _agent_dir: &str,
 ) -> Result<String, String> {
-    Err("JS extension loading requires building with the `js-runtime` feature".to_string())
+    Err("JS extension loading requires building with the `bun-runtime` feature".to_string())
 }

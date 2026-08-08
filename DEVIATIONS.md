@@ -44,14 +44,26 @@
 | `ExtensionEvent` / `ExtensionAPI` → `HookHandler` / `HookRunner` | TS 使用 `ExtensionEvent` enum + `ExtensionAPI` trait 的事件分发机制，通过 `event_from_agent_event()` 转换层将 `AgentEvent` 映射为扩展事件 | Rust 使用 `HookHandler` trait（所有方法有默认空实现）+ `HookRunner`（按 priority 排序分发），void hooks 并行 fire-and-forget，modifying hooks 顺序执行可 Cancel。参考 ZeroClaw 的 Hook 系统设计 | 消除 `ExtensionEvent` enum 的转换层开销，简化扩展实现（只需实现关心的方法）。事件语义等价：`on_session_start` ≈ `session_start` event，`before_tool_call` ≈ `tool_call` event 等 | 已确认保留 |
 | `export_html()` 主题支持 | TS 使用 `settingsManager.getTheme()` + `createToolHtmlRenderer()` + `exportSessionToHtml()` 生成带主题和工具渲染的 HTML | Rust 使用内联 CSS 生成简化版 HTML，不支持主题切换和工具自定义渲染 | 主题系统和工具 HTML 渲染器是 TUI 层功能，不在 pi-coding-agent 当前范围内。基础 HTML 导出功能已实现 | 已确认保留 |
 
-## V8 扩展加载器 — JS 依赖 shim（新增）
+## Bun 子进程扩展运行时（方案 A，`bun-runtime` feature）
+
+> 2026-08-09：V8 手写 shim 方案（`js-runtime`，deno_core + js_shims）已整体删除，
+> 只保留 Bun 子进程方案。原 V8 方案的偏差条目（typebox/pi-ai/pi-tui/pi-coding-agent/
+> node builtins/AbortController shim 等）随代码一并移除，不再适用。
+
+
+> 与 V8 手写 shim 路径（`js-runtime`）**互斥**：启用 `bun-runtime` 时扩展
+> 跑在真实 Bun 子进程里（真实 node_modules 解析 + 真实 Node API），不再需要
+> Node 内置模块 shim。SDK 包（`@earendil-works/pi-*`、typebox）仍由宿主在
+> 临时工作区提供 JS shim（`bun/shims/`），但面是有限的、文档化的；Node 内置
+> 模块与第三方依赖由 Bun 原生解决——这是与 V8 方案的本质区别。
 
 | 位置（文件:行/函数名） | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
 | ---------------------- | ---------- | -------------- | -------- | -------- |
-| `js_shims.rs` — typebox shim | 扩展通过 `import { Type } from "typebox"` 使用完整 typebox 库（v1.1.38，含 Memory/Create/Settings 等内部机制） | 提供最小化 typebox shim，仅实现扩展实际使用的 9 个 `Type.*` 方法（String/Number/Boolean/Object/Array/Optional/Literal/Union/Unsafe），`~kind`/`~optional` 标记为 non-enumerable（与 typebox 默认 `enumerableKind: false` 一致），`JSON.stringify` 产出干净的 JSON Schema | V8 运行时无 `node_modules`，无法加载完整 typebox 包。扩展仅使用上述 9 个方法，shim 行为与原版在 JSON Schema 输出上完全一致 | 已确认保留 |
-| `js_shims.rs` — @earendil-works/pi-ai shim | 扩展通过 `import { StringEnum } from "@earendil-works/pi-ai"` 使用 typebox-helpers 中的 StringEnum 函数 | 提供等价的 StringEnum 实现，委托 typebox shim 的 `Type.Unsafe` 产出 `{type:"string", enum:[...], ...options}` | 同上，V8 运行时无 node_modules。同时 re-export `Type` 供 `import { Type } from "@earendil-works/pi-ai"` 的扩展使用 | 已确认保留 |
-| `js_shims.rs` — @earendil-works/pi-tui shim | 扩展通过 `import { Box, Text, matchesKey, ... } from "@earendil-works/pi-tui"` 使用 TUI 组件 | 所有导出为 stub：组件类构造时抛出 "TUI unavailable"，工具函数调用时抛出。仅 import 不调用时扩展可正常加载 | TUI 渲染层不复刻（见上方 TUI 偏差条目）。扩展在 `ctx.mode === "tui"` 条件下才调用 TUI 组件，非 TUI 模式下 import 但不调用 | 已确认保留 |
-| `js_shims.rs` — @earendil-works/pi-coding-agent shim | 扩展通过 `import { VERSION, CONFIG_DIR_NAME, defineTool, getAgentDir, ... } from "@earendil-works/pi-coding-agent"` 使用 coding-agent 的公开 API | 提供常量（VERSION/CONFIG_DIR_NAME 等）、简单工具函数（defineTool/parseFrontmatter/getAgentDir/truncateHead 等）的等价实现；复杂工具工厂（createBashTool/createReadTool 等）为抛出 stub | V8 运行时无法提供 Rust 实现的工具工厂。需要调用工具工厂的扩展（5/68）在 factory load 阶段失败，属预期行为 | 已确认保留 |
-| `js_shims.rs` — Node.js built-in shims | 扩展通过 `import * as fs from "node:fs"` / `import { homedir } from "os"` 等使用 Node.js 内置模块 | 提供 `node:fs`/`fs`/`node:path`/`path`/`node:os`/`os`/`node:child_process`/`child_process`/`node:util`/`util`/`node:url`/`url`/`node:module`/`node:readline`/`node:process`/`process`/`node:fs/promises`/`fs/promises` 的 stub。`node:path` 提供等价的字符串操作实现；`node:os` 提供基于 Rust 传入全局的 homedir/tmpdir/platform；其余模块函数调用时抛出 | V8 运行时非 Node.js 环境，无法提供真实 fs/child_process 等。扩展在 event handler 中使用这些模块（非 factory load 阶段），import 可解析但调用时抛出 | 已确认保留 |
-| `js_runtime.rs` — Node.js globals | 扩展直接使用 `process.cwd()`、`process.env`、`process.stdout.write()` 等 Node.js 全局变量 | 在 V8 runtime bootstrap 中注入 `process` 全局对象，提供 `cwd()`/`env`/`platform`/`stdout.write()` 等最小实现 | V8 运行时非 Node.js 环境，但扩展代码中直接引用 `process` 全局（非 import），需要提供以避免 ReferenceError | 已确认保留 |
-| `js_runtime.rs` — 5 个扩展加载失败（预期） | TS 原版可加载全部 68 个示例扩展 | 63/68（93%）可成功加载。5 个失败：`bash-spawn-hook.ts`、`built-in-tool-renderer.ts`、`minimal-mode.ts`、`ssh.ts`（均在 factory load 阶段调用 `createBashTool`/`createReadTool` 等工具工厂，需要 Rust 工具的 JS 等价实现）；`preset.ts`（在 factory load 阶段调用 `Key.ctrlShift` TUI 匹配器） | 工具工厂需要完整 Rust 工具的 JS 桥接（超出当前范围）；TUI Key 匹配器需要 TUI 层实现（已确认偏差）。这 5 个扩展的失败是上述两条已确认偏差的直接后果 | 已确认保留 |
+| `bun/mod.rs` — Bun 二进制嵌入 | TS 原版 `pi` 是 `bun build --compile` 产物，Bun 内嵌 | `assets/runtime/bun-{os}-{arch}`（xtask `fetch-bun` 下载）经 `include_bytes!` 嵌入，运行时解压到 `{agent_dir}/runtime/bun` 后 spawn | 用户环境无需安装 Node/Bun；与 TS 原版架构同构（原版就是 Bun 跑扩展） | 已确认保留 |
+| `bun/mod.rs` — 扩展工作区 | jiti 从扩展所在 node_modules 解析依赖 | 临时工作区 `{agent_dir}/runtime/ws-{pid}-{nanos}/`：node_modules 放 SDK shim，扩展目录 symlink 为 `ext/`，Bun 按 node_modules 规则解析 | 扩展的 peerDependencies（`@earendil-works/pi-*`）由宿主提供（TS 原版用 virtualModules/aliases 同理）；扩展自身 node_modules（第三方依赖）经 symlink 仍可解析 | 已确认保留 |
+| `bun/mod.rs` — SDK shim（`bun/shims/`） | 扩展 import 真实 SDK 包 | 提供 `@earendil-works/pi-ai`（StringEnum/isContextOverflow/isRetryableAssistantError/Type）、`@earendil-works/pi-coding-agent`（defineTool/VERSION/CONFIG_DIR_NAME/getAgentDir）、`@earendil-works/pi-tui`（stripTerminalSequences 真实实现，组件 stub）、`typebox`（Type.* 工厂）的 JS shim | SDK 面有限且文档化；Node 内置模块与第三方依赖由 Bun 原生解决，不再手写 Node shim。真实 SDK dist 的打包（需 TS 仓库构建管线 + 模型数据）是后续项 | 已确认保留 |
+| `bun/mod.rs` — stdio JSON-RPC | TS 扩展与宿主同进程（virtualModules + 回调） | 宿主 ↔ Bun 子进程走 stdio JSON-RPC（newline-delimited）：注册/工具执行/事件触发/命令执行/action 方法（sendMessage/exec/getCommands/...）全部 RPC 往返。宿主请求 id 从 `HOST_ID_BASE` 起、Bun 侧从 1 起，两侧永不冲突 | 子进程架构的必然通信方式；协议一次性定义，之后不再补丁 | 已确认保留 |
+| `bun/mod.rs` — action 方法 | 扩展调用 `pi.sendMessage`/`pi.exec`/`pi.getCommands`/`pi.setModel` 等 | Bun→宿主请求由 `read_stdout` 分发到 `bind_actions()` 安装的闭包（读类读共享状态快照、写类入 action bus、`exec` 宿主跑 shell、`registerProvider` 接 ModelRegistry），session 创建后绑定（镜像 TS `bindCore()`） | 与 V8 时代 `RuntimeActions` 同构；已实测 `getCommands`/`exec` 返回正确结果 | 已确认保留 |
+| `bun/mod.rs` — 工具工厂（createBashTool 等） | 扩展可调用 SDK 工具工厂 | `createBashTool`/`createReadTool`/`createWriteTool`/`createEditTool` 返回 ToolDefinition，其 execute 经 `pi.__runBuiltinTool` RPC 到宿主跑**真实内置工具**（read/bash/edit/write） | 已实测 createBashTool 的 execute 返回真实 bash 输出 | 已确认保留 |
+| `bun/mod.rs` — pi-ai 桥接 | 扩展调用 `complete`/`streamSimple`/`getModel`/`registerApiProvider` | 经 `pi.__piAiComplete` 等 RPC 到宿主：宿主从 ModelRegistry 解析模型并跑 `pi_ai::stream::complete`；`getModel` 读共享状态快照的 model_id | 与宿主 provider 层桥接 | 已确认保留 |
+| `assets/sdk/` — 真实 SDK bundle | 扩展 import 真实 SDK 包 | `xtask build-sdk` 用 Bun 从 TS 仓库源码打包真实纯函数到 `assets/sdk/`（pi-ai-bundle.js / pi-coding-agent-bundle.js / pi-tui-bundle.js + 真实 typebox 包），运行时经 rust-embed 写入工作区 node_modules。wrapper（`sdk_wrappers/`）叠加 RPC 桥接（complete/getModel/registerApiProvider/工具工厂）与 TUI 组件 stub | 纯函数（StringEnum/isContextOverflow/uuidv7/parseFrontmatter/convertToLlm/serializeConversation/withFileMutationQueue/stripTerminalSequences/visibleWidth/...）来自真实 TS 源码转译，不再手写；桥接函数与 TUI stub 是宿主边界 | 已确认保留 |

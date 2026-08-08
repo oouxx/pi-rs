@@ -329,9 +329,9 @@ impl SessionRegistry {
         let (session, result) = create_agent_session(build_options(None))
             .await
             .map_err(|e| e.to_string())?;
-        // Keep the V8 extension manager alive for the session's lifetime:
-        // dropping it shuts down the V8 thread, killing JS extensions.
-        let js_manager = result._js_extension_manager;
+        // Keep the Bun extension runner alive for the session's lifetime:
+        // dropping it kills the Bun child process(es).
+        let js_manager = result._bun_extension_manager;
         Ok((session, mcp_connections, js_manager))
     }
 

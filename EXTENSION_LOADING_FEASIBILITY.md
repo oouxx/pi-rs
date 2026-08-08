@@ -1,5 +1,17 @@
 # 运行时扩展加载 — 可行性评估
 
+> **状态（2026-08-09）：方案 A（Bun 子进程）已实现，V8 手写 shim 方案已删除。**
+> 本文档保留为历史评估记录。当前实现见：
+> - `crates/pi-coding-agent/src/core/extensions/bun/`（Bun runner + bootstrap + SDK shims）
+> - `crates/xtask/src/fetch_bun.rs`（下载 Bun 二进制到 `assets/runtime/`）
+> - feature：`bun-runtime`（pi-coding-agent / pi-cli）
+>
+> 结论回顾：方案 A 是唯一能"完整支持所有 extension 且不再打补丁"的路线——
+> 扩展跑在真实 Bun 里（真实 node_modules 解析 + 真实 Node API），SDK 面
+> 有限且文档化；Node 内置模块与第三方依赖由 Bun 原生解决。
+
+# 运行时扩展加载 — 可行性评估
+
 > 阶段一（架构分析）产出。本文档只做方案评估，不改代码。
 > 对应 TS 源：`packages/coding-agent/src/core/extensions/{loader,runner,types,index}.ts`
 > 对应 Rust 现状：`crates/pi-extension-api/src/{lib,hook}.rs`、

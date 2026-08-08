@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::CONFIG_DIR_NAME;
 use crate::core::settings_manager::{PackageSource, SettingsManager};
 use crate::utils::paths::{is_local_path, resolve_path, PathOptions};
 
@@ -518,6 +519,80 @@ impl DefaultPackageManager {
         let right = self.get_source_match_key_for_input(input_source);
         left == right
     }
+
+    /// Clone (or update) a git source into the managed git directory.
+    ///
+    /// Mirrors TS `installGit`: clone into `{root}/git/{host}/{path}`; if the
+    /// target already exists, fetch + reset to origin (simplified — TS also
+    /// handles refs and update markers). After cloning, runs `npm install` in
+    /// the target if it has a package.json.
+    fn install_git(&self, host: &str, path: &str, local: bool) -> Result<(), String> {
+        let root = if local {
+            Path::new(&self.cwd).join(CONFIG_DIR_NAME).join("git")
+        } else {
+            Path::new(&self.agent_dir).join("git")
+        };
+        let target_dir = root.join(host).join(path);
+        let repo = format!("https://{host}/{path}.git");
+
+        if target_dir.exists() {
+            // Update: fetch + hard reset to origin (TS `ensureGitRef` for the
+            // default branch case).
+            let fetch = std::process::Command::new("git")
+                .args(["-C", target_dir.to_string_lossy().as_ref(), "fetch", "origin"])
+                .output()
+                .map_err(|e| format!("git fetch failed: {e}"))?;
+            if !fetch.status.success() {
+                return Err(format!(
+                    "git fetch error: {}",
+                    String::from_utf8_lossy(&fetch.stderr)
+                ));
+            }
+            let reset = std::process::Command::new("git")
+                .args(["-C", target_dir.to_string_lossy().as_ref(), "reset", "--hard", "origin/HEAD"])
+                .output()
+                .map_err(|e| format!("git reset failed: {e}"))?;
+            if !reset.status.success() {
+                return Err(format!(
+                    "git reset error: {}",
+                    String::from_utf8_lossy(&reset.stderr)
+                ));
+            }
+        } else {
+            if let Some(parent) = target_dir.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create {parent:?}: {e}"))?;
+            }
+            let clone = std::process::Command::new("git")
+                .args(["clone", &repo, target_dir.to_string_lossy().as_ref()])
+                .output()
+                .map_err(|e| format!("git clone failed: {e}"))?;
+            if !clone.status.success() {
+                return Err(format!(
+                    "git clone error: {}",
+                    String::from_utf8_lossy(&clone.stderr)
+                ));
+            }
+        }
+
+        // Install dependencies if the repo has a package.json (TS
+        // `getGitDependencyInstallArgs`).
+        if target_dir.join("package.json").exists() && NpmHelper::is_available() {
+            let install = std::process::Command::new("npm")
+                .args(["install", "--prefix", target_dir.to_string_lossy().as_ref(), "--legacy-peer-deps"])
+                .output()
+                .map_err(|e| format!("npm install failed: {e}"))?;
+            if !install.status.success() {
+                return Err(format!(
+                    "npm install error: {}",
+                    String::from_utf8_lossy(&install.stderr)
+                ));
+            }
+        }
+
+        self.emit_progress("install", &format!("git:{host}/{path}"), Some("Installed"));
+        Ok(())
+    }
 }
 
 impl PackageManager for DefaultPackageManager {
@@ -569,20 +644,38 @@ impl PackageManager for DefaultPackageManager {
     }
 
     fn install(&self, source: &str, local: bool) -> Result<(), String> {
-        if !NpmHelper::is_available() {
-            return Err("npm is not available. Install Node.js to use package management.".into());
-        }
-
+        // Dispatch on parsed source type, mirroring TS `install()`:
+        // npm → npm install; git → git clone; local → validate existence only.
+        // Progress is emitted up front (TS `withProgress` emits start before
+        // the operation), so callers see the attempt even on failure.
         self.emit_progress("install", source, Some("Installing..."));
-
-        if local {
-            NpmHelper::install(source, &self.cwd, false)?;
-        } else {
-            NpmHelper::install(source, &self.cwd, true)?;
+        let parsed = self.parse_source(source);
+        match parsed {
+            ParsedSource::Npm { spec, .. } => {
+                if !NpmHelper::is_available() {
+                    return Err("npm is not available. Install Node.js to use package management.".into());
+                }
+                if local {
+                    NpmHelper::install(&spec, &self.cwd, false)?;
+                } else {
+                    NpmHelper::install(&spec, &self.cwd, true)?;
+                }
+                self.emit_progress("install", source, Some("Installed"));
+                Ok(())
+            }
+            ParsedSource::Git { host, path } => self.install_git(&host, &path, local),
+            ParsedSource::Local { path } => {
+                // TS: local install only validates that the path exists — it
+                // does not copy or npm-install anything. The extension is
+                // loaded from the path itself (via settings `packages`).
+                let resolved = resolve_path(&path, &self.cwd, &PathOptions::default());
+                if !Path::new(&resolved).exists() {
+                    return Err(format!("Path does not exist: {resolved}"));
+                }
+                self.emit_progress("install", source, Some("Installed"));
+                Ok(())
+            }
         }
-
-        self.emit_progress("install", source, Some("Installed"));
-        Ok(())
     }
 
     fn install_and_persist(&self, source: &str, local: bool) -> Result<(), String> {
@@ -1299,6 +1392,53 @@ mod tests {
         // Cache should be cleared
         let cache = mgr.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(!cache.contains_key("test-pkg"), "cache should be cleared after remove");
+    }
+
+    // -----------------------------------------------------------------------
+    // install dispatch (mirrors TS `install`)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_install_bare_name_is_local_path_error() {
+        // A bare name is parsed as a Local path (TS `parseSource` fallback);
+        // install must NOT pass it to npm — it errors with "Path does not
+        // exist" (TS behavior). Regression: the old code passed any source
+        // straight to `npm install`.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
+        let err = mgr.install("some-random-pkg", false).unwrap_err();
+        assert!(
+            err.contains("Path does not exist"),
+            "expected 'Path does not exist', got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_install_local_path_validates_existence() {
+        // An existing local path installs as a no-op (TS validates only).
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("my-ext");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("package.json"), r#"{"name":"my-ext"}"#).unwrap();
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
+        assert!(mgr.install(pkg.to_str().unwrap(), false).is_ok());
+    }
+
+    #[test]
+    fn test_install_npm_source_emits_progress_before_attempt() {
+        // npm install may fail (npm unavailable / package missing), but the
+        // progress event must be emitted up front (TS `withProgress` start).
+        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+        mgr.set_progress_callback(Some(Box::new(move |evt| {
+            events_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(evt);
+        })));
+        let _ = mgr.install("npm:test-pkg", false);
+        let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!captured.is_empty(), "should have at least one progress event");
+        assert_eq!(captured[0].action, "install");
+        assert_eq!(captured[0].source, "npm:test-pkg");
     }
 
     // -----------------------------------------------------------------------

@@ -2,8 +2,7 @@
 //!
 //! These tests cover ToolDefinition serialization/deserialization.
 //! Tests for the old load_extensions/LoadedExtension/ToolInfo system
-//! were removed in Phase 6.6 cleanup (those types were dead code
-//! replaced by the embedded deno_core JS runtime).
+//! were removed in Phase 6.6 cleanup (those types were dead code).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

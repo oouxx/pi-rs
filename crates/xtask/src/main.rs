@@ -18,12 +18,19 @@ fn main() -> anyhow::Result<()> {
             let out = pi_ai_data_dir()?.join("models_generated.json");
             generate_models::run(&out, check_only)
         }
+        Some("fetch-bun") => {
+            let check_only = args.iter().any(|a| a == "--check");
+            fetch_bun::run(check_only)
+        }
+        Some("build-sdk") => build_sdk::run(),
         Some(other) => anyhow::bail!("unknown subcommand: {other}"),
         None => {
             eprintln!("usage: cargo run -p xtask -- <subcommand>");
             eprintln!();
             eprintln!("subcommands:");
             eprintln!("  generate-models [--check]  fetch providers/models and write crates/pi-ai/data/models_generated.json");
+            eprintln!("  fetch-bun [--check]        download Bun runtime binary to assets/runtime/");
+            eprintln!("  build-sdk                  bundle real TS SDK pure functions to assets/sdk/ (needs sibling `pi` repo + bun)");
             Ok(())
         }
     }
@@ -43,3 +50,5 @@ fn pi_ai_data_dir() -> anyhow::Result<PathBuf> {
 }
 
 mod generate_models;
+mod fetch_bun;
+mod build_sdk;

@@ -1,14 +1,13 @@
-//! Extension discovery + module cache — the V8-agnostic half of TS
+//! Extension discovery + module cache — the runtime-agnostic half of TS
 //! `core/extensions/loader.ts`.
 //!
 //! This module ports the pieces of `loader.ts` that need **no JavaScript
 //! runtime**: manifest parsing, entry-point resolution, directory scanning,
 //! and the cwd-invalidating module cache. The factory-invocation half
 //! (`loadExtensionModule` / `loadExtension` / `createExtensionAPI`) requires
-//! an embedded JS runtime (deno_core / rquickjs) and is deliberately *not*
-//! stubbed here — see `EXTENSION_LOADING_FEASIBILITY.md` §6 for the remaining
-//! sub-items. Anything in this file is reusable regardless of which runtime
-//! backend is later chosen.
+//! an embedded JS runtime and is deliberately *not* stubbed here — the
+//! factory-invocation half lives in `bun/` (方案 A, Bun subprocess). Anything
+//! in this file is reusable regardless of which runtime backend is chosen.
 //!
 //! TS source: `packages/coding-agent/src/core/extensions/loader.ts`.
 //! The functions below mirror the named TS functions 1:1 in behavior; error
@@ -142,13 +141,18 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
 
-        // Use `entry.file_type()` first (no symlink follow); fall back to
-        // metadata so symlinks-to-files/dirs are classified by their target,
-        // matching TS `isSymbolicLink()` inclusion in both branches.
-        let ftype = entry
-            .file_type()
-            .ok()
-            .or_else(|| std::fs::metadata(&entry_path).ok().map(|m| m.file_type()));
+        // `entry.file_type()` reports the link itself for symlinks (no follow),
+        // so a symlink-to-dir would be classified as neither dir nor file and
+        // silently skipped. TS checks `isFile() || isSymbolicLink()` and
+        // `isDirectory() || isSymbolicLink()`, i.e. a symlink is classified by
+        // what it points at — follow it via `metadata()` when `file_type()`
+        // reports a symlink.
+        let ftype = match entry.file_type().ok() {
+            Some(t) if t.is_symlink() => {
+                std::fs::metadata(&entry_path).ok().map(|m| m.file_type())
+            }
+            other => other,
+        };
 
         let is_dir = ftype.as_ref().is_some_and(|t| t.is_dir());
         let is_file = ftype.as_ref().is_some_and(|t| t.is_file());
@@ -191,7 +195,7 @@ pub struct DiscoveredExtensions {
 ///
 /// Mirrors the path-collection portion of TS
 /// `discoverAndLoadExtensions(configuredPaths, cwd, agentDir)`. The actual
-/// module loading (jiti import + factory call) is V8-dependent and lives in
+/// module loading (jiti import + factory call) is runtime-dependent and lives in
 /// a future chunk; this function only resolves *which files* to load.
 ///
 /// Discovery order (matches TS):
@@ -221,9 +225,17 @@ pub fn discover_extension_paths(
     let mut all_paths: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
+    // 去重键用 canonicalize 后的路径：`pi install` 会把扩展 symlink 进
+    // `agent_dir/extensions/`，同一扩展会以 symlink 路径 + 真实路径各出现
+    // 一次，词法去重漏掉。canonicalize 解析 symlink 后两者相等。
+    // 不存在的路径（保留用于报错）canonicalize 失败，退回词法路径。
+    let dedup_key = |p: &PathBuf| -> PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())
+    };
+
     let add_paths = |paths: &[PathBuf], all: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
         for p in paths {
-            if seen.insert(p.clone()) {
+            if seen.insert(dedup_key(p)) {
                 all.push(p.clone());
             }
         }
@@ -263,7 +275,7 @@ pub fn discover_extension_paths(
 }
 
 // ============================================================================
-// ExtensionCache — cwd-invalidating module cache (V8-agnostic structure)
+// ExtensionCache — cwd-invalidating module cache (runtime-agnostic structure)
 // ============================================================================
 
 /// A snapshot of the cache's cwd + generation at the time a load batch began.
@@ -281,7 +293,7 @@ pub struct CacheToken {
 /// Mirrors the TS module-level `extensionCache` / `extensionCacheCwd` /
 /// `extensionCacheGeneration` triple. Generic over the cached value (`V`)
 /// so the invalidation logic is reusable regardless of the runtime backend:
-/// a future deno_core chunk instantiates `ExtensionCache<ExtensionFactory>`,
+/// a future runtime chunk instantiates `ExtensionCache<ExtensionFactory>`,
 /// while tests can use `ExtensionCache<()>`.
 ///
 /// Invalidation rules (matching TS):
@@ -539,6 +551,45 @@ mod tests {
         assert!(found.is_empty(), "found {found:?}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_discover_symlinked_subdir_with_index() {
+        // `pi install` symlinks installed packages into the extensions dir;
+        // a symlink-to-dir must be discovered like a real dir (TS checks
+        // `isDirectory() || isSymbolicLink()`). Regression test: the old code
+        // classified symlinks as neither dir nor file and skipped them.
+        let target = make_temp_dir(&[("pkg/index.ts", "")]);
+        let ext_dir = make_temp_dir(&[]);
+        let link = ext_dir.path().join("installed.pkg");
+        std::os::unix::fs::symlink(target.path().join("pkg"), &link).expect("symlink");
+        let found = discover_extensions_in_dir(ext_dir.path());
+        assert_eq!(found, vec![link.join("index.ts")], "found {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_discover_symlinked_ts_file() {
+        // A symlink-to-file with a .ts name must be discovered (TS checks
+        // `isFile() || isSymbolicLink()`).
+        let target = make_temp_dir(&[("real.ts", "")]);
+        let ext_dir = make_temp_dir(&[]);
+        let link = ext_dir.path().join("linked.ts");
+        std::os::unix::fs::symlink(target.path().join("real.ts"), &link).expect("symlink");
+        let found = discover_extensions_in_dir(ext_dir.path());
+        assert_eq!(found, vec![link], "found {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_discover_symlink_to_nonexistent_target_skipped() {
+        // A dangling symlink (target removed) must be skipped, not crash.
+        let ext_dir = make_temp_dir(&[]);
+        let link = ext_dir.path().join("dangling.pkg");
+        std::os::unix::fs::symlink("/nonexistent/target", &link).expect("symlink");
+        let found = discover_extensions_in_dir(ext_dir.path());
+        assert!(found.is_empty(), "found {found:?}");
+    }
+
     // ---- discover_extension_paths ----
 
     #[test]
@@ -590,6 +641,26 @@ mod tests {
         let abs = dir.path().join("x.ts").to_string_lossy().to_string();
         // pass the same path twice as configured
         let result = discover_extension_paths(&[abs.clone(), abs], &cwd, &cwd);
+        assert_eq!(result.paths.len(), 1, "dedup failed: {:?}", result.paths);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_discover_paths_dedups_symlink_and_real_path() {
+        // `pi install` symlinks the extension into agent_dir/extensions/;
+        // the same extension then appears via the symlink path AND the
+        // configured real path. Dedup must canonicalize so they collapse to
+        // one entry. Regression: lexical dedup kept both → double load.
+        let dir = make_temp_dir(&[("pkg/index.ts", "")]);
+        let ext_dir = make_temp_dir(&[]);
+        let link = ext_dir.path().join("installed.pkg");
+        std::os::unix::fs::symlink(dir.path().join("pkg"), &link).expect("symlink");
+
+        let cwd = dir.path().to_string_lossy().to_string();
+        let agent_dir = ext_dir.path().to_string_lossy().to_string();
+        // configured path = the real path; discovery also finds the symlink
+        let real = dir.path().join("pkg").join("index.ts").to_string_lossy().to_string();
+        let result = discover_extension_paths(&[real], &cwd, &agent_dir);
         assert_eq!(result.paths.len(), 1, "dedup failed: {:?}", result.paths);
     }
 

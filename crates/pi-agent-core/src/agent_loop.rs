@@ -405,7 +405,7 @@ async fn execute_tool_calls_parallel(
     emit: &AgentEventSink,
 ) -> ExecutedToolCallBatch {
     enum FinalizedEntry {
-        Done(FinalizedToolCallOutcome),
+        Done(Box<FinalizedToolCallOutcome>),
         Lazy(std::pin::Pin<Box<dyn std::future::Future<Output = FinalizedToolCallOutcome> + Send>>),
     }
 
@@ -442,7 +442,7 @@ async fn execute_tool_calls_parallel(
                     is_error: finalized.is_error,
                 })
                 .await;
-                entries.push(FinalizedEntry::Done(finalized));
+                entries.push(FinalizedEntry::Done(Box::new(finalized)));
             }
             PreparedOrImmediate::Prepared {
                 tool,
@@ -476,7 +476,7 @@ async fn execute_tool_calls_parallel(
     for entry in entries {
         match entry {
             FinalizedEntry::Done(f) => {
-                ordered_finalized.push(f);
+                ordered_finalized.push(*f);
             }
             FinalizedEntry::Lazy(fut) => {
                 let finalized = fut.await;

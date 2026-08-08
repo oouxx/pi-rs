@@ -8,6 +8,8 @@ description = "Coding agent CLI with read/bash/edit/write tools and session mana
 
 [dependencies]
 pi-agent-core = { workspace = true }
+pi-ai = { workspace = true }
+rust-embed = "8"
 pi-extension-api = { workspace = true }
 pi-extensions = { workspace = true }
 serde = { workspace = true }
@@ -38,11 +40,6 @@ fs2 = "0.4"
 # reqwest bumped 0.11 -> 0.12 to align with pi-ai / pi-agent-core (usage is
 # limited to Client::builder + get/send/json, which is stable across the bump).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# JS/TS runtime for loading pi extensions at runtime (V8 + swc transpile).
-# Feature-gated so the default build stays light; see EXTENSION_LOADING_FEASIBILITY.md.
-deno_core = { workspace = true, optional = true }
-deno_ast = { version = "0.53", optional = true, features = ["transpiling"] }
-deno_error = { version = "0.7", optional = true }
 # MCP (Model Context Protocol) client — lets ACP sessions call external MCP
 # servers' tools (stdio + streamable HTTP). Default-on.
 rmcp = { version = "1.8", optional = true, default-features = false, features = [
@@ -62,9 +59,11 @@ interactive = []
 # MCP (Model Context Protocol) client support (stdio + streamable HTTP).
 # Default-on. Disabling removes the rmcp dependency and the ACP MCP wiring.
 mcp = ["dep:rmcp"]
-# Embeds V8 (via deno_core) + swc (via deno_ast) to load TS/JS extensions
-# at runtime, mirroring TS loader.ts. Heavy build dependency — opt-in.
-js-runtime = ["dep:deno_core", "dep:deno_ast", "dep:deno_error"]
+# Bun subprocess extension runtime (方案 A): embeds the Bun binary
+# (assets/runtime/, fetched by `cargo run -p xtask -- fetch-bun`) and spawns
+# it to run extensions in real Bun — real node_modules resolution + real
+# Node APIs, no hand-written Node shims. Opt-in (61MB embedded binary).
+bun-runtime = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

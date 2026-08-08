@@ -20,9 +20,9 @@ tempfile = { workspace = true }
 [features]
 default = []
 interactive = []
-# Enable JS/TS extension loading (embeds V8 via pi-coding-agent's js-runtime
-# feature). Heavy build dependency — opt-in.
-js-runtime = ["pi-coding-agent/js-runtime"]
+# Bun subprocess extension runtime (方案 A): embeds the Bun binary and spawns
+# it to run extensions in real Bun. Opt-in (61MB embedded binary).
+bun-runtime = ["pi-coding-agent/bun-runtime"]
 
 
 [lints]

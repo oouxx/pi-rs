@@ -9,6 +9,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
+zip = "2"
 
 [[bin]]
 name = "xtask"

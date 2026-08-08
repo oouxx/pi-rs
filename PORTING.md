@@ -134,6 +134,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 17 | **数据结构 in-place 语义** | TS 对象引用被原地替换，后续读取已是新值 | Rust `Vec` 替换元素后，旧引用仍指向旧对象 | 替换后**重新读取**，不要复用旧引用 | #62 |
 | 18 | **缺失前置检查 / 逻辑分支** | TS 在发送前/出错时做前置检查（context overflow 检测、pre-prompt compaction、retry 前清理） | Rust 漏掉该分支，错误直达或被忽略 | 逐个对照 TS 的 if/前置 guard，补齐对应检查与处理 | #44, #45 |
 | 19 | **快照克隆被当作共享状态写入** | TS `this.session.model = x` 直接改共享对象 | 调用某个 `state()`/`getState()` 返回**克隆快照**（如 `Arc<RwLock<T>>` 的 `read().await.clone()`），在其上赋值/`push` 后丢弃——编译通过、行为静默丢失 | 写状态必须用真正的 setter 或 `update_state(&mut)` 写锁；任何 `let mut state = x.state().await` 后出现赋值/push 都要怀疑是克隆丢写 | #75（`set_model`/`set_thinking_level`/`set_active_tools_by_name`/`send_custom_message`/`_flush_pending_bash_messages`/`cycle_model`/`record_bash_result` 共 7 处） |
+| 20 | **symlink 按目标类型分类** | TS `entry.isDirectory() \|\| entry.isSymbolicLink()`：symlink 按**指向的目标**分类（目录/文件） | Rust `entry.file_type()` 对 symlink 返回 link 自身（`is_dir=false, is_file=false`），若用 `.or_else(metadata)` 兜底，只在 `file_type()` **失败**时触发，symlink 场景永远不触发 → 目录扫描静默跳过 symlink | 当 `file_type()` 报告 `is_symlink()` 时显式 `std::fs::metadata()` 跟随目标分类；悬空 symlink 按不存在处理 | PORTING_MISTAKES（`discover_extensions_in_dir`，`pi install` 的 symlink 扩展启动时不被发现） |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。

@@ -6,6 +6,7 @@ use colored::*;
 
 use pi_coding_agent::core::extensions::load_extension_now;
 use pi_coding_agent::core::package_manager::{is_npm_available, DefaultPackageManager, PackageManager};
+use pi_coding_agent::core::settings_manager::SettingsManager;
 
 /// Supported package commands.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +44,7 @@ pub fn parse_package_command(args: &[String]) -> Option<ParsedPackageCommand> {
     };
 
     let mut source: Option<String> = None;
-    let mut local = true; // default to local (project-level) install
+    let mut local = false; // default to user/global scope (mirrors TS `let local = false`)
     let mut force = false;
     let mut update_all = false;
     let mut help = false;
@@ -102,17 +103,34 @@ pub async fn handle_package_command(args: &[String], cwd: &str, agent_dir: &str)
                 return 1;
             }
 
-            let pm = DefaultPackageManager::new(cwd, agent_dir);
+            // install_and_persist mirrors TS `installAndPersist`: install +
+            // add the source to settings.json `packages`. The settings
+            // manager is wired so persistence actually writes (TS creates
+            // the package manager with a settingsManager).
+            let sm = SettingsManager::create(cwd, Some(agent_dir));
+            let pm = DefaultPackageManager::new_with_settings(
+                cwd,
+                agent_dir,
+                std::sync::Arc::new(std::sync::Mutex::new(sm)),
+            );
 
             println!("Installing {source}...");
-            match pm.install(source, parsed.local) {
+            match pm.install_and_persist(source, parsed.local) {
                 Ok(()) => {
                     println!("{} Installed {source}", "✓".green());
+                    // Resolve the installed package dir (npm → node_modules,
+                    // git → managed git dir, local → the path itself) so the
+                    // immediate-load step can load the actual extension files.
+                    let installed_dir = resolve_installed_package_dir(source, agent_dir, cwd, !parsed.local);
                     if let Err(e) = link_extension_to_agent(source, agent_dir, cwd, !parsed.local) {
                         eprintln!("  {} Warning: could not link extension: {e}", "!".yellow());
                     }
                     // Try to load the extension immediately (V8 runtime)
-                    match load_extension_now(source, cwd, agent_dir).await {
+                    let load_source = installed_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| source.to_string());
+                    match load_extension_now(&load_source, cwd, agent_dir).await {
                         Ok(msg) => println!("  {} {msg}", "✓".green()),
                         Err(e) => eprintln!("  {} Note: {e}", "!".yellow()),
                     }
@@ -198,26 +216,70 @@ pub async fn handle_package_command(args: &[String], cwd: &str, agent_dir: &str)
     }
 }
 
+/// Resolve the installed package directory for a source, by source type
+/// (mirroring `parseSource`): npm → node_modules, git → managed git dir,
+/// local → the path itself.
+fn resolve_installed_package_dir(
+    source: &str,
+    agent_dir: &str,
+    cwd: &str,
+    global: bool,
+) -> Option<std::path::PathBuf> {
+    let pkg_name = source.trim_start_matches("npm:").trim_start_matches("https://");
+    let pkg_dir = if source.starts_with("npm:") {
+        if global {
+            // Find global npm root
+            let global_root = std::process::Command::new("npm")
+                .args(["root", "-g"])
+                .output()
+                .ok()?;
+            let root = String::from_utf8_lossy(&global_root.stdout).trim().to_string();
+            std::path::Path::new(&root).join(pkg_name)
+        } else {
+            std::path::Path::new(cwd).join("node_modules").join(pkg_name)
+        }
+    } else if source.starts_with("git:")
+        || source.starts_with("github:")
+        || source.starts_with("https://")
+        || source.starts_with("http://")
+        || source.starts_with("ssh://")
+    {
+        // Git source: installed into the managed git dir.
+        let host_path = pkg_name
+            .trim_start_matches("git:")
+            .trim_start_matches("github:")
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_start_matches("ssh://")
+            .trim_end_matches(".git");
+        let (host, path) = match host_path.split_once('/') {
+            Some((h, p)) => (h, p),
+            None => (host_path, ""),
+        };
+        let root = if global {
+            std::path::Path::new(agent_dir).join("git")
+        } else {
+            std::path::Path::new(cwd).join(".pi-rs").join("git")
+        };
+        root.join(host).join(path)
+    } else {
+        // Local path source: the path itself.
+        std::path::Path::new(pkg_name).to_path_buf()
+    };
+
+    if pkg_dir.join("package.json").exists() {
+        Some(pkg_dir)
+    } else {
+        None
+    }
+}
+
 /// After installing a package, link it to the agent's extensions directory
 /// so the RPC sidecar can discover it automatically.
 fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: bool) -> Result<(), String> {
-    // Find the installed package path
+    let pkg_dir = resolve_installed_package_dir(source, agent_dir, cwd, global)
+        .ok_or_else(|| format!("Package not found for {source}"))?;
     let pkg_name = source.trim_start_matches("npm:").trim_start_matches("https://");
-    let pkg_dir = if global {
-        // Find global npm root
-        let global_root = std::process::Command::new("npm")
-            .args(["root", "-g"])
-            .output()
-            .map_err(|e| format!("npm root -g failed: {e}"))?;
-        let root = String::from_utf8_lossy(&global_root.stdout).trim().to_string();
-        std::path::Path::new(&root).join(pkg_name)
-    } else {
-        std::path::Path::new(cwd).join("node_modules").join(pkg_name)
-    };
-
-    if !pkg_dir.join("package.json").exists() {
-        return Err(format!("Package not found at {}", pkg_dir.display()));
-    }
 
     // Check if it has a pi manifest with extensions
     let pkg_json = std::fs::read_to_string(pkg_dir.join("package.json"))

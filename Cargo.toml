@@ -45,7 +45,6 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["compat"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile = "3"
-deno_core = "0.409"
 
 [workspace.lints.clippy]
 all = "warn"

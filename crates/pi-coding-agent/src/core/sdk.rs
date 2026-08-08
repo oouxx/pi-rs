@@ -5,7 +5,7 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
-#[cfg(feature = "js-runtime")]
+#[cfg(feature = "bun-runtime")]
 use crate::core::model_registry::ProviderConfig;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
@@ -193,11 +193,10 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
     /// Loaded extensions result. Populated when extensions are enabled.
     pub extensions_result: Option<ExtensionsResult>,
-    /// Opaque handle keeping the V8 runtime alive (when `js-runtime` feature
-    /// is enabled and JS extensions were loaded). Dropping this shuts down V8.
-    /// Stored as `Box<dyn Any + Send>` to avoid a hard dependency on
-    /// `js-runtime` types in the struct definition.
-    pub _js_extension_manager: Option<Box<dyn std::any::Any + Send>>,
+    /// Opaque handle keeping the Bun subprocess runner alive (when
+    /// `bun-runtime` feature is enabled and Bun extensions were loaded).
+    /// Dropping this kills the Bun child process(es).
+    pub _bun_extension_manager: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl std::fmt::Debug for CreateAgentSessionResult {
@@ -205,7 +204,7 @@ impl std::fmt::Debug for CreateAgentSessionResult {
         f.debug_struct("CreateAgentSessionResult")
             .field("model_fallback_message", &self.model_fallback_message)
             .field("extensions_result", &self.extensions_result)
-            .field("_js_extension_manager", &self._js_extension_manager.as_ref().map(|_| "<JsExtensionManager>"))
+            .field("_bun_extension_manager", &self._bun_extension_manager.as_ref().map(|_| "<BunExtensionRunner>"))
             .finish()
     }
 }
@@ -523,23 +522,25 @@ pub async fn create_agent_session(
 
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    #[cfg_attr(not(feature = "js-runtime"), allow(unused_mut))]
+    #[cfg_attr(not(feature = "bun-runtime"), allow(unused_mut))]
     let mut extension_registry = options
         .extension_registry
         .take()
         .unwrap_or_default();
 
-    // ── JS/TS extension loading (V8 runtime, feature-gated) ──────────
-    #[cfg(feature = "js-runtime")]
-    let mut js_extension_manager: Option<Box<dyn std::any::Any + Send>> = None;
-    #[cfg(feature = "js-runtime")]
-    let mut js_load_errors: Vec<ExtensionError> = Vec::new();
+    // ── JS/TS extension loading (Bun subprocess runtime, feature-gated) ──
+    // 方案 A：扩展跑在真实 Bun 里（真实 node_modules + Node API），
+    // 与 V8 手写 shim 路径互斥——启用 bun-runtime 时优先用 Bun。
+    #[cfg(feature = "bun-runtime")]
+    let mut bun_extension_manager: Option<Box<dyn std::any::Any + Send>> = None;
+    #[cfg(feature = "bun-runtime")]
+    let mut bun_load_errors: Vec<ExtensionError> = Vec::new();
 
-    #[cfg(feature = "js-runtime")]
+    #[cfg(feature = "bun-runtime")]
     if options.enable_extensions {
         let default_flags = std::collections::HashMap::new();
         let extension_flags = options.extension_flags.as_ref().unwrap_or(&default_flags);
-        match crate::core::extensions::js_adapter::load_js_extensions(
+        match crate::core::extensions::bun::load_bun_extensions(
             &options.extension_paths,
             &cwd,
             &agent_dir,
@@ -549,40 +550,29 @@ pub async fn create_agent_session(
         {
             Ok(Some(loaded)) => {
                 for adapter in loaded.adapters {
-                    // Flush pre-bind provider registrations (queued via
-                    // `pi.registerProvider` during the factory call) to the
-                    // ModelRegistry, mirroring TS `bindCore()` flushing
-                    // `pendingProviderRegistrations`.
                     for pending in adapter.pending_providers() {
                         match serde_json::from_str::<ProviderConfig>(&pending.config_json) {
                             Ok(config) => {
                                 model_registry.register_provider(&pending.name, config);
                             }
                             Err(e) => {
-                                js_load_errors.push(ExtensionError {
+                                bun_load_errors.push(ExtensionError {
                                     path: pending.extension_path.clone(),
                                     error: format!("registerProvider config parse error: {e}"),
                                 });
                             }
                         }
                     }
-                    // Use the per-extension SourceInfo (derived from the
-                    // extension file path) so registered tools/commands carry
-                    // accurate provenance, not a generic placeholder.
                     let source_info = adapter.source_info().clone();
                     extension_registry.register(Box::new(adapter), source_info);
                 }
-                // Wrap in Arc so the session's JS invalidator callback can hold
-                // a clone alongside the result handle.
-                js_extension_manager = Some(Box::new(std::sync::Arc::new(loaded.manager)));
+                bun_extension_manager = Some(Box::new(loaded.runner));
             }
-            Ok(None) => {
-                // No JS extension files discovered — nothing to do.
-            }
+            Ok(None) => {}
             Err(errors) => {
                 for e in errors {
-                    js_load_errors.push(ExtensionError {
-                        path: "<js-extension>".to_string(),
+                    bun_load_errors.push(ExtensionError {
+                        path: "<bun-extension>".to_string(),
                         error: e,
                     });
                 }
@@ -687,8 +677,7 @@ pub async fn create_agent_session(
     // Extension action bus: JS extension read-actions read the shared state
     // snapshot; write-actions are queued and drained by the session at turn
     // boundaries. Always created (negligible cost) so the config fields are
-    // unconditionally populated; only used when `js-runtime` is enabled.
-    #[cfg_attr(not(feature = "js-runtime"), allow(unused_variables))]
+    // unconditionally populated.
     let (extension_action_sender, extension_action_rx, extension_state_view) =
         crate::core::extensions::action_bus::ExtensionActionSender::new();
 
@@ -720,37 +709,29 @@ pub async fn create_agent_session(
 
     // Clone the model registry before it's moved into the session. The clone
     // shares the `registered_providers` Arc with the original, so the
-    // post-bind `register_provider` closure can reach the live provider map
-    // that the session's model registry uses. (Other fields — models,
-    // models_json_providers — are deep-copied; they are read-only after
-    // construction so that's fine.)
-    #[cfg(feature = "js-runtime")]
+    // post-bind `register_provider` closure can reach the live provider map.
+    #[cfg(feature = "bun-runtime")]
     let model_registry_for_actions = model_registry.clone();
 
-    #[cfg_attr(not(feature = "js-runtime"), allow(unused_mut))]
-    let mut session =
+    let session =
         AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
 
-    // ── Bind the JS extension runtime core ─────────────────────────────
+    // ── Bind the Bun extension runtime actions ─────────────────────────
     // After all extensions are loaded and the session is created, install
-    // the action-method closures so that post-load action ops (e.g. live
-    // `pi.registerProvider` calls from event handlers) delegate to the host.
-    // Mirrors TS `ExtensionRunner.bindCore()`.
-    #[cfg(feature = "js-runtime")]
-    if let Some(ref manager_any) = js_extension_manager {
-        if let Some(manager_arc) = manager_any
-            .downcast_ref::<std::sync::Arc<crate::core::extensions::js_adapter::JsExtensionManager>>()
+    // the action-method closures so that Bun→host action requests
+    // (sendMessage/exec/getCommands/...) delegate to the host. Mirrors TS
+    // `ExtensionRunner.bindCore()`.
+    #[cfg(feature = "bun-runtime")]
+    if let Some(ref manager_any) = bun_extension_manager {
+        if let Some(runner_arc) = manager_any
+            .downcast_ref::<std::sync::Arc<crate::core::extensions::bun::BunExtensionRunner>>()
         {
-            let manager = manager_arc.as_ref();
             use crate::core::extensions::action_bus::ExtensionAction;
-            use crate::core::extensions::js_runtime::RuntimeActions;
+            use crate::core::extensions::bun::BunRuntimeActions;
 
             let registry = model_registry_for_actions.clone();
-
-            // Read-actions read the shared state snapshot (refreshed by the
-            // session at drain points); write-actions enqueue onto the bus.
             let state_view = extension_action_sender.state();
-            let actions = RuntimeActions {
+            let actions = BunRuntimeActions {
                 get_session_name: Some(std::sync::Arc::new({
                     let state = state_view.clone();
                     move || state.lock().unwrap().session_name.clone()
@@ -771,12 +752,13 @@ pub async fn create_agent_session(
                     let state = state_view.clone();
                     move || state.lock().unwrap().thinking_level.clone()
                 })),
-
+                get_model: Some(std::sync::Arc::new({
+                    let state = state_view.clone();
+                    move || state.lock().unwrap().model_id.clone()
+                })),
                 send_message: Some(std::sync::Arc::new({
                     let sender = extension_action_sender.clone();
                     move |message_json: String, options_json: Option<String>| {
-                        // message_json is the full CustomMessage object;
-                        // extract customType + content for the action.
                         let (custom_type, content) = serde_json::from_str::<serde_json::Value>(
                             &message_json,
                         )
@@ -841,7 +823,6 @@ pub async fn create_agent_session(
                     let sender = extension_action_sender.clone();
                     move |model_id: String| sender.send(ExtensionAction::SetModel(model_id))
                 })),
-
                 register_provider: Some(std::sync::Arc::new(
                     move |name: String, config_json: String, _ext_path: String| {
                         match serde_json::from_str::<ProviderConfig>(&config_json) {
@@ -854,22 +835,81 @@ pub async fn create_agent_session(
                         }
                     },
                 )),
-                unregister_provider: Some(std::sync::Arc::new(
+                unregister_provider: Some(std::sync::Arc::new({
+                    let registry = model_registry_for_actions.clone();
                     move |name: String| {
-                        model_registry_for_actions.unregister_provider(&name);
-                    },
-                )),
+                        registry.unregister_provider(&name);
+                    }
+                })),
+                // 工具工厂桥接：createBashTool 等的 execute 经 RPC 到这里，
+                // 跑宿主真实内置工具（read/bash/edit/write）。
+                run_builtin_tool: Some(std::sync::Arc::new({
+                    let builtin_tools = crate::core::tools::create_coding_tools(&cwd, None);
+                    move |name: String, params: serde_json::Value| {
+                        let tools = builtin_tools.clone();
+                        Box::pin(async move {
+                            let tool = tools
+                                .iter()
+                                .find(|t| t.name == name)
+                                .ok_or_else(|| format!("builtin tool not found: {name}"))?;
+                            let result = (tool.execute)(
+                                "builtin-tool-call".to_string(),
+                                params,
+                                None,
+                                None,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                            serde_json::to_value(result).map_err(|e| e.to_string())
+                        })
+                    }
+                })),
+                // pi-ai `complete`/`streamSimple` 桥接：宿主解析模型并跑补全。
+                pi_ai_complete: Some(std::sync::Arc::new({
+                    let registry = model_registry_for_actions.clone();
+                    let _ = &registry;
+                    move |request: serde_json::Value| {
+                        let registry = registry.clone();
+                        Box::pin(async move {
+                            let model_spec = request
+                                .get("model")
+                                .ok_or("pi-ai complete: missing model")?;
+                            let provider = model_spec
+                                .get("provider")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let model_id = model_spec
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let model = registry
+                                .find(provider, model_id)
+                                .or_else(|| {
+                                    registry
+                                        .get_models()
+                                        .into_iter()
+                                        .find(|m| m.id == model_id)
+                                })
+                                .ok_or_else(|| {
+                                    format!("pi-ai complete: model not found: {provider}/{model_id}")
+                                })?;
+                            let context: pi_ai::types::Context = serde_json::from_value(
+                                request.get("context").cloned().unwrap_or(serde_json::json!({ "messages": [] })),
+                            )
+                            .map_err(|e| format!("pi-ai complete: bad context: {e}"))?;
+                            let options: Option<pi_ai::types::StreamOptions> = request
+                                .get("options")
+                                .cloned()
+                                .and_then(|o| serde_json::from_value(o).ok());
+                            let result = pi_ai::stream::complete(&model, &context, options)
+                                .await
+                                .map_err(|e| format!("pi-ai complete failed: {e}"))?;
+                            serde_json::to_value(result).map_err(|e| e.to_string())
+                        })
+                    }
+                })),
             };
-            if let Err(e) = manager.bind_core(actions).await {
-                eprintln!("[pi] extension bindCore failed: {e}");
-            }
-            // Wire session-switch -> runtime invalidation (stale-ctx guard).
-            // Clone the Arc into the 'static closure (the session outlives the
-            // bind_core scope).
-            let manager_arc_owned = manager_arc.clone();
-            let invalidator = std::sync::Arc::new(move || manager_arc_owned.invalidate_sync());
-            session.set_js_invalidator(Some(invalidator));
-
+            runner_arc.bind_actions(actions).await;
         }
     }
 
@@ -882,11 +922,11 @@ pub async fn create_agent_session(
     }
 
     // Build extensions result from pre-collected names
-    #[cfg(not(feature = "js-runtime"))]
-    let js_load_errors: Vec<ExtensionError> = Vec::new();
+    #[cfg(not(feature = "bun-runtime"))]
+    let bun_load_errors: Vec<ExtensionError> = Vec::new();
 
     let extensions_result = if options.enable_extensions {
-        let mut all_errors = js_load_errors;
+        let mut all_errors = bun_load_errors;
         Some(ExtensionsResult {
             extensions: extension_names,
             errors: std::mem::take(&mut all_errors),
@@ -900,10 +940,10 @@ pub async fn create_agent_session(
         CreateAgentSessionResult {
             model_fallback_message: fallback_message,
             extensions_result,
-            _js_extension_manager: {
-                #[cfg(feature = "js-runtime")]
-                { js_extension_manager }
-                #[cfg(not(feature = "js-runtime"))]
+            _bun_extension_manager: {
+                #[cfg(feature = "bun-runtime")]
+                { bun_extension_manager }
+                #[cfg(not(feature = "bun-runtime"))]
                 { None }
             },
         },

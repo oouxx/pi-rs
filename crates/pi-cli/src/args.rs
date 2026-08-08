@@ -273,7 +273,13 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             }
 
             // Check for subcommands
-            s if s == "install" || s == "remove" || s == "update" || s == "list" || s == "config" => {
+            s if s == "install"
+                || s == "remove"
+                || s == "update"
+                || s == "list"
+                || s == "config"
+                || s == "refresh" =>
+            {
                 result.subcommand = Some(s.to_string());
                 // Collect remaining args as subcommand args
                 while i + 1 < args.len() {

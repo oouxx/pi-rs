@@ -297,11 +297,92 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
         "config" => {
             handle_config_command(args, &cwd, &agent_dir.to_string_lossy()).await
         }
+        "refresh" => {
+            handle_refresh_command(args, &cwd, &agent_dir).await
+        }
         _ => {
             eprintln!("{} Unknown subcommand: {cmd}", "Error:".red().bold());
             EXIT_FAILURE
         }
     }
+}
+
+/// Handle the `refresh` subcommand: manually refresh the remote model catalog
+/// (bounded subset of TS `ModelRuntime.refresh` / `remote-catalog-provider`).
+/// Fetches the latest per-provider models from the catalog service, merges
+/// them into the registry, and persists `models-store.json`.
+///
+/// Usage: `pi refresh [--force] [--catalog-url <url>] [--offline]`
+async fn handle_refresh_command(args: &[String], cwd: &str, agent_dir: &std::path::Path) -> i32 {
+    use pi_coding_agent::core::model_registry::ModelRegistry;
+    use pi_coding_agent::core::remote_catalog;
+
+    let mut force = false;
+    let mut offline = false;
+    let mut catalog_base_url = remote_catalog::DEFAULT_CATALOG_BASE_URL.to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--force" | "-f" => force = true,
+            "--offline" => offline = true,
+            "--catalog-url" => {
+                i += 1;
+                if i < args.len() {
+                    catalog_base_url = args[i].clone();
+                }
+            }
+            other => {
+                eprintln!("{} Unknown refresh option: {other}", "Error:".red().bold());
+                return EXIT_FAILURE;
+            }
+        }
+        i += 1;
+    }
+
+    let registry = ModelRegistry::new(pi_coding_agent::core::model_registry::builtin_models());
+    let store_path = agent_dir.join("models-store.json");
+
+    if offline {
+        // Restore cached catalogs without any network access.
+        let store = remote_catalog::load_models_store(&store_path);
+        let mut restored = 0;
+        for (provider, entry) in &store {
+            if !entry.models.is_empty() {
+                restored += registry.upsert_models(provider, &entry.models);
+            }
+        }
+        println!("Restored {restored} cached models from {}", store_path.display());
+        return EXIT_SUCCESS;
+    }
+
+    println!(
+        "Refreshing model catalogs from {} (force: {})…",
+        catalog_base_url, force
+    );
+    let summary = remote_catalog::refresh_remote_catalog(
+        &registry,
+        &catalog_base_url,
+        &store_path,
+        force,
+    )
+    .await;
+
+    println!(
+        "Checked {} providers: {} updated ({} models added/changed), {} failed",
+        summary.providers_checked,
+        summary.providers_updated,
+        summary.models_added_or_updated,
+        summary.providers_failed
+    );
+    for e in &summary.errors {
+        eprintln!("  {e}");
+    }
+    if summary.providers_failed > 0 {
+        eprintln!("{} Some catalog refreshes failed; cached catalogs were kept.", "Warning:".yellow().bold());
+    }
+
+    let _ = cwd;
+    EXIT_SUCCESS
 }
 
 /// Handle the `config` subcommand: show or set configuration values.

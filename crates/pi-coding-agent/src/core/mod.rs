@@ -22,6 +22,7 @@ pub mod prompt_templates;
 pub mod project_trust;
 pub mod provider_attribution;
 pub mod provider_display_names;
+pub mod remote_catalog;
 pub mod resolve_config_value;
 pub mod resource_loader;
 pub mod sdk;

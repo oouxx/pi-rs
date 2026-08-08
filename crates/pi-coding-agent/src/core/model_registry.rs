@@ -99,6 +99,34 @@ impl ModelRegistry {
         self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
+    /// Merge remote-catalog models for a provider into the registry: replace
+    /// same-id models, append new ones (match TS `mergeModels`).
+    pub fn upsert_models(&self, provider: &str, models: &[Model]) -> usize {
+        let mut models_lock = self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut changed = 0;
+        for model in models {
+            if model.provider != provider {
+                continue;
+            }
+            let existing = models_lock
+                .iter_mut()
+                .find(|m| m.provider == provider && m.id == model.id);
+            match existing {
+                Some(m) => {
+                    if *m != *model {
+                        *m = model.clone();
+                        changed += 1;
+                    }
+                }
+                None => {
+                    models_lock.push(model.clone());
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
     pub fn get_models_for_provider(&self, provider: &str) -> Vec<Model> {
         let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         models

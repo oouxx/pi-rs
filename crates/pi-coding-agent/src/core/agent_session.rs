@@ -2303,7 +2303,7 @@ impl AgentSession {
         // Send the prompt with pending next-turn messages injected as context,
         // matching TS prompt() which injects _pendingNextTurnMessages.
         self.add_user_text_with_options(&expanded_text, current_images, source)
-            .await;
+            .await?;
 
         // Post-agent-run loop: retry + compaction + queued messages
         // Matches TS _runAgentPrompt() which calls _handlePostAgentRun() in a loop.
@@ -2475,7 +2475,7 @@ References are relative to {}.
         text: &str,
         images: Option<Vec<ContentBlock>>,
         _source: &str,
-    ) {
+    ) -> Result<(), String> {
         *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
@@ -2496,7 +2496,7 @@ References are relative to {}.
             .await;
             if result.cancelled {
                 *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
-                return;
+                return Ok(());
             }
             // Apply the modified system prompt from extensions
             if result.system_prompt != state.system_prompt {
@@ -2522,7 +2522,15 @@ References are relative to {}.
         if let Ok(mut mgr) = self.session_manager.lock() {
             mgr.set_run_prompt(text);
         }
-        self.agent.process(messages).await.ok();
+        // Propagate agent-loop start failures (e.g. agent already busy) instead
+        // of swallowing them: TS _runAgentPrompt() lets `agent.prompt()` throw,
+        // and the ACP/RPC layer must surface the real error rather than report
+        // a generic "run failed" (no AgentEnd) failure.
+        self.agent
+            .process(messages)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Check if an assistant message has a retryable error.

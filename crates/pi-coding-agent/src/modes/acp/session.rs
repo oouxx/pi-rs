@@ -543,7 +543,15 @@ impl SessionTask {
 
         // Model selector — list all available models, current one selected.
         let model = self.session.get_model().await;
-        let current_model_id = format!("{}/{}", model.provider, model.id);
+        // A session without a model (empty id) must not advertise a bogus
+        // `provider/` current value — Zed can't resolve it and may report
+        // "no language model configured". Use an empty current value so the
+        // client shows "no model selected" and the user can pick one.
+        let current_model_id = if model.id.is_empty() {
+            String::new()
+        } else {
+            format!("{}/{}", model.provider, model.id)
+        };
         let model_options: Vec<acp::SessionConfigSelectOption> = self
             .session
             .get_model_registry()

@@ -108,6 +108,24 @@ pub fn translate_event(
             acp::SessionUpdate::SessionInfoUpdate(update)
         }
 
+        // ── Assistant errors ─────────────────────────────────────────────
+        // ACP has no error stop reason, so surface the failure as a message
+        // chunk — otherwise the client UI shows an empty turn with no
+        // explanation (e.g. an LLM 402/insufficient-balance error).
+        AgentSessionEvent::MessageEnd { message } => {
+            if let pi_agent_core::types::AgentMessage::Assistant {
+                error_message: Some(err),
+                ..
+            } = message
+            {
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::Text(acp::TextContent::new(format!("⚠️ {err}"))),
+                ))
+            } else {
+                return None;
+            }
+        }
+
         // Turn lifecycle / compaction / queue events have no ACP wire
         // equivalent — the prompt response itself signals turn completion.
         _ => return None,
@@ -253,5 +271,54 @@ mod tests {
         ] {
             assert!(translate_event(&sid, &event).is_none(), "unexpected translation");
         }
+    }
+
+    /// An assistant message that ended with an error must be surfaced to the
+    /// client as a message chunk — otherwise the UI shows an empty turn with
+    /// no explanation (e.g. LLM 402 insufficient-balance).
+    #[test]
+    fn assistant_error_message_is_translated() {
+        let sid = acp::SessionId::new("s1");
+        let event = AgentSessionEvent::MessageEnd {
+            message: pi_agent_core::types::AgentMessage::Assistant {
+                content: vec![],
+                api: "openai-completions".into(),
+                provider: "deepseek".into(),
+                model: "deepseek-v4-pro".into(),
+                usage: pi_agent_core::pi_ai_types::Usage::default(),
+                stop_reason: Some(pi_agent_core::pi_ai_types::StopReason::Error),
+                error_message: Some("OpenAI API error 402 Payment Required".into()),
+                timestamp: 0,
+            },
+        };
+        let notif = translate_event(&sid, &event).expect("error must be translated");
+        match notif.update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => {
+                    assert!(t.text.contains("402"), "error text must be surfaced");
+                }
+                _ => panic!("expected text content"),
+            },
+            other => panic!("expected agent_message_chunk, got {other:?}"),
+        }
+    }
+
+    /// A normal (non-error) assistant message end has no ACP wire equivalent.
+    #[test]
+    fn normal_message_end_is_not_translated() {
+        let sid = acp::SessionId::new("s1");
+        let event = AgentSessionEvent::MessageEnd {
+            message: pi_agent_core::types::AgentMessage::Assistant {
+                content: vec![],
+                api: "openai-completions".into(),
+                provider: "deepseek".into(),
+                model: "deepseek-v4-pro".into(),
+                usage: pi_agent_core::pi_ai_types::Usage::default(),
+                stop_reason: Some(pi_agent_core::pi_ai_types::StopReason::Stop),
+                error_message: None,
+                timestamp: 0,
+            },
+        };
+        assert!(translate_event(&sid, &event).is_none());
     }
 }

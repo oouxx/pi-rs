@@ -184,6 +184,15 @@
 - [x] `createExtensionAPI` 桥：`on` + 7 个 register + N 个 action + `events`
       （action 已通过 `ExtensionActionBus` 接通：读类读共享快照，写类在 turn 边界
       drain；`exec` 未接，见下文）
+- [x] 事件 `ctx` 参数：`(event, ctx)` 对齐 TS —— `__pi.createCtx()` 提供完整
+      `ExtensionContext` 表面（ui/mode/hasUI/cwd/isIdle/...），事件 handler 与
+      tool execute 均传入
+- [x] HookHandler 全事件面：adapter 补齐 resources_discover/project_trust/
+      user_bash/context(+mut)/tool_result_mut/before_agent_start/input/
+      before_provider_request/headers/after_provider_response/
+      before_session_switch/fork/compact/tree/session_info_changed/
+      thinking_level_select/session_tree 等全部钩子（result-bearing 钩子解析
+      JS 返回值并应用）
 - [x] `ExtensionRuntime` 两阶段（占位 → bind_core，含
       `pendingProviderRegistrations` 队列与 flush）
 - [x] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）

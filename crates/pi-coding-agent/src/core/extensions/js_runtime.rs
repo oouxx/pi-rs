@@ -787,6 +787,40 @@ const BOOTSTRAP_JS: &str = r#"
     // has been invalidated, ops will throw. Nothing to check in JS here.
   }
 
+  // Builds the `ExtensionContext` passed as the 2nd argument to event
+  // handlers and as the 5th argument to tool `execute` (matching TS).
+  // Most fields are safe defaults; the runtime cannot honour UI prompts,
+  // abort, or compaction, so those degrade gracefully. `cwd` is set per
+  // load via `__piCwd`.
+  function createCtx() {
+    return {
+      ui: {
+        notify: (message, level) => { Deno.core.ops.op_pi_log(String(message)); },
+        setStatus: () => {},
+        confirm: () => Promise.resolve(false),
+        select: () => Promise.resolve(undefined),
+        input: () => Promise.resolve(undefined),
+      },
+      mode: 'fast',
+      hasUI: false,
+      cwd: globalThis.__piCwd || '.',
+      sessionManager: new Proxy({}, { get: () => () => {} }),
+      modelRegistry: new Proxy({}, { get: () => () => {} }),
+      model: undefined,
+      scopedModels: [],
+      thinkingLevel: undefined,
+      isIdle: () => true,
+      isProjectTrusted: () => false,
+      signal: undefined,
+      abort: () => {},
+      hasPendingMessages: () => false,
+      shutdown: () => {},
+      getContextUsage: () => undefined,
+      compact: () => {},
+      getSystemPrompt: () => '',
+    };
+  }
+
   globalThis.__pi = {
     // ---- Logging (not part of TS ExtensionAPI, used for diagnostics) ----
 
@@ -998,6 +1032,10 @@ const BOOTSTRAP_JS: &str = r#"
     __invokeCommandHandler: null,
     __invokeEventHandler: null,
   };
+
+  // Expose the ctx factory (used by Rust-side scripts for tool execute
+  // and event handlers).
+  globalThis.__pi.createCtx = createCtx;
 
   // Store the maps on __pi for later Rust-side callback invocation.
   globalThis.__pi.__handlers = handlers;

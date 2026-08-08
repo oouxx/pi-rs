@@ -399,10 +399,14 @@ impl RuntimeHandle {
 
 /// Result from a  event handler.
 /// Extensions return paths to additional resources they provide.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourcesDiscoverResult {
+    #[serde(default)]
     pub skill_paths: Vec<String>,
+    #[serde(default)]
     pub prompt_paths: Vec<String>,
+    #[serde(default)]
     pub theme_paths: Vec<String>,
 }
 
@@ -412,16 +416,18 @@ pub struct ResourcesDiscoverResult {
 
 /// Result from a  event handler.
 /// Extensions can decide whether a project should be trusted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectTrustResult {
     /// Whether the project is trusted.
     pub trusted: ProjectTrustDecision,
-    /// Whether to remember this decision.
+    #[serde(default)]
     pub remember: bool,
 }
 
 /// Trust decision from an extension.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProjectTrustDecision {
     Yes,
     No,
@@ -434,13 +440,16 @@ pub enum ProjectTrustDecision {
 
 /// Result from a `user_bash` event handler.
 /// Extensions can provide custom operations or a full replacement result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserBashResult {
     /// Custom operations to use for execution (e.g., custom exec function).
     /// If set, the session will use these operations instead of the default bash execution.
+    #[serde(default)]
     pub operations: Option<serde_json::Value>,
     /// Full replacement: extension handled execution, use this result.
     /// If set, the session will use this result directly.
+    #[serde(default)]
     pub result: Option<serde_json::Value>,
 }
 

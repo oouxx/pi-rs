@@ -140,25 +140,21 @@ impl JsToolResult {
 /// The original TS `ToolDefinition.execute` takes five arguments:
 /// `(toolCallId, params, signal, onUpdate, ctx)`. We pass `undefined` for
 /// `signal` and `onUpdate` (no abort signalling / streaming updates in the
-/// runtime loader) and a minimal stub `ctx` whose methods are no-ops or safe
-/// defaults. Tools that require real UI interaction or abort signals will
-/// degrade gracefully rather than crash.
+/// runtime loader) and a `ctx` built by `__pi.createCtx()` whose methods are
+/// no-ops or safe defaults. Tools that require real UI interaction or abort
+/// signals will degrade gracefully rather than crash.
 fn build_tool_execute_script(tool_name: &str, tool_call_id: &str, params_json: &str) -> String {
-    // A minimal ctx object. Fields are stubbed to safe defaults; methods that
-    // the runtime cannot honour (abort, shutdown, UI prompts) are no-ops.
-    let ctx = "(() => { const cwd = globalThis.__piCwd || '.'; return {         ui: new Proxy({}, { get: () => () => {} }),         mode: 'fast', hasUI: false, cwd,         sessionManager: new Proxy({}, { get: () => () => {} }),         modelRegistry: new Proxy({}, { get: () => () => {} }),         model: undefined, signal: undefined,         isIdle: () => true, isProjectTrusted: () => false,         abort: () => {}, hasPendingMessages: () => false,         shutdown: () => {}, getContextUsage: () => undefined,         compact: () => {}, getSystemPrompt: () => '',     }; })()";
     format!(
         "(async () => {{
           const fn = globalThis.__pi.__toolExecutors.get({name:?});
           if (!fn) throw new Error('Tool not found: ' + {name:?});
-          const ctx = {ctx};
+          const ctx = globalThis.__pi.createCtx();
           const result = await fn({call_id:?}, {params}, undefined, undefined, ctx);
           return result;
         }})()",
         name = tool_name,
         call_id = tool_call_id,
         params = params_json,
-        ctx = ctx,
     )
 }
 
@@ -653,6 +649,369 @@ impl HookHandler for JsExtensionAdapter {
         }
         HookResult::Continue(())
     }
+
+    // ── Remaining hooks (aligned with TS ExtensionAPI event surface) ──
+    // Notification hooks fire with marshalled data; result-bearing hooks
+    // parse the JS handler return values (via the FireEvent collector).
+
+    async fn on_session_info_changed(&self, _name: Option<&str>) {
+        if has_handler(&self, "session_info_changed") {
+            let data = serde_json::json!({ "name": _name });
+            let _ = self.fire_event_via_js("session_info_changed", &data.to_string()).await;
+        }
+    }
+
+    async fn on_thinking_level_select(&self, _level: &str, _previous_level: &str) {
+        if has_handler(&self, "thinking_level_select") {
+            let data = serde_json::json!({ "level": _level, "previousLevel": _previous_level });
+            let _ = self.fire_event_via_js("thinking_level_select", &data.to_string()).await;
+        }
+    }
+
+    async fn on_tree(&self, _new_leaf_id: Option<&str>, _old_leaf_id: Option<&str>) {
+        if has_handler(&self, "session_tree") {
+            let data = serde_json::json!({ "newLeafId": _new_leaf_id, "oldLeafId": _old_leaf_id });
+            let _ = self.fire_event_via_js("session_tree", &data.to_string()).await;
+        }
+    }
+
+    async fn on_resources_discover(
+        &self,
+        _cwd: &str,
+        _reason: &str,
+    ) -> Option<pi_extension_api::ResourcesDiscoverResult> {
+        if !has_handler(&self, "resources_discover") {
+            return None;
+        }
+        let data = serde_json::json!({ "cwd": _cwd, "reason": _reason });
+        if let Ok(results) = self.fire_event_via_js("resources_discover", &data.to_string()).await {
+            if let Some(r) = first_result(&results) {
+                return serde_json::from_value(r.clone()).ok();
+            }
+        }
+        None
+    }
+
+    async fn on_project_trust(&self, _cwd: &str) -> Option<pi_extension_api::ProjectTrustResult> {
+        if !has_handler(&self, "project_trust") {
+            return None;
+        }
+        let data = serde_json::json!({ "cwd": _cwd });
+        if let Ok(results) = self.fire_event_via_js("project_trust", &data.to_string()).await {
+            if let Some(r) = first_result(&results) {
+                return serde_json::from_value(r.clone()).ok();
+            }
+        }
+        None
+    }
+
+    async fn on_user_bash(&self, _command: &str, _cwd: &str) -> Option<pi_extension_api::UserBashResult> {
+        if !has_handler(&self, "user_bash") {
+            return None;
+        }
+        let data = serde_json::json!({ "command": _command, "cwd": _cwd });
+        if let Ok(results) = self.fire_event_via_js("user_bash", &data.to_string()).await {
+            if let Some(r) = first_result(&results) {
+                return serde_json::from_value(r.clone()).ok();
+            }
+        }
+        None
+    }
+
+    async fn on_context(&self, _messages: &[Value]) {
+        if has_handler(&self, "context") {
+            let data = serde_json::json!({ "messages": _messages });
+            let _ = self.fire_event_via_js("context", &data.to_string()).await;
+        }
+    }
+
+    async fn on_context_mut(&self, _messages: Vec<Value>) -> HookResult<Vec<Value>> {
+        if !has_handler(&self, "context") {
+            return HookResult::Continue(_messages);
+        }
+        let data = serde_json::json!({ "messages": _messages });
+        if let Ok(results) = self.fire_event_via_js("context", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                let messages = r
+                    .get("messages")
+                    .and_then(|m| serde_json::from_value::<Vec<Value>>(m.clone()).ok())
+                    .or_else(|| r.as_array().cloned());
+                if let Some(m) = messages {
+                    return HookResult::Continue(m);
+                }
+            }
+        }
+        HookResult::Continue(_messages)
+    }
+
+    async fn on_tool_result_mut(
+        &self,
+        _tool_name: &str,
+        _content: Vec<Value>,
+        _details: Option<Value>,
+        _is_error: bool,
+    ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
+        if !has_handler(&self, "tool_result") {
+            return HookResult::Continue((_content, _details, _is_error));
+        }
+        let data = serde_json::json!({
+            "toolName": _tool_name,
+            "content": _content,
+            "details": _details,
+            "isError": _is_error,
+        });
+        if let Ok(results) = self.fire_event_via_js("tool_result", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(content) = r
+                    .get("content")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok())
+                {
+                    let is_error = r
+                        .get("isError")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(_is_error);
+                    return HookResult::Continue((content, r.get("details").cloned(), is_error));
+                }
+            }
+        }
+        HookResult::Continue((_content, _details, _is_error))
+    }
+
+    async fn before_agent_start(
+        &self,
+        _prompt: String,
+        _images: Option<Vec<Value>>,
+        _system_prompt: String,
+        _system_prompt_options: Option<Value>,
+    ) -> HookResult<(String, String, Option<Vec<Value>>)> {
+        if !has_handler(&self, "before_agent_start") {
+            return HookResult::Continue((_prompt, _system_prompt, None));
+        }
+        let data = serde_json::json!({
+            "prompt": _prompt,
+            "images": _images,
+            "systemPrompt": _system_prompt,
+            "systemPromptOptions": _system_prompt_options,
+        });
+        if let Ok(results) = self.fire_event_via_js("before_agent_start", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                let prompt = r
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&_prompt)
+                    .to_string();
+                let system_prompt = r
+                    .get("systemPrompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&_system_prompt)
+                    .to_string();
+                let images = r
+                    .get("images")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok());
+                return HookResult::Continue((prompt, system_prompt, images));
+            }
+        }
+        HookResult::Continue((_prompt, _system_prompt, None))
+    }
+
+    async fn on_input(
+        &self,
+        _text: String,
+        _images: Option<Vec<Value>>,
+        _source: String,
+        _streaming_behavior: Option<String>,
+    ) -> HookResult<String> {
+        if !has_handler(&self, "input") {
+            return HookResult::Continue(_text);
+        }
+        let data = serde_json::json!({
+            "text": _text,
+            "images": _images,
+            "source": _source,
+            "streamingBehavior": _streaming_behavior,
+        });
+        if let Ok(results) = self.fire_event_via_js("input", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(text) = r.as_str() {
+                    return HookResult::Continue(text.to_string());
+                }
+                if let Some(text) = r.get("text").and_then(|v| v.as_str()) {
+                    return HookResult::Continue(text.to_string());
+                }
+            }
+        }
+        HookResult::Continue(_text)
+    }
+
+    async fn before_provider_request(&self, _payload: Value) -> HookResult<Value> {
+        if !has_handler(&self, "before_provider_request") {
+            return HookResult::Continue(_payload);
+        }
+        let data = serde_json::json!({ "payload": _payload });
+        if let Ok(results) = self
+            .fire_event_via_js("before_provider_request", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(p) = r.get("payload") {
+                    return HookResult::Continue(p.clone());
+                }
+                if !r.is_null() {
+                    return HookResult::Continue(r.clone());
+                }
+            }
+        }
+        HookResult::Continue(_payload)
+    }
+
+    async fn before_provider_headers(
+        &self,
+        _headers: std::collections::HashMap<String, String>,
+    ) -> HookResult<std::collections::HashMap<String, String>> {
+        if !has_handler(&self, "before_provider_headers") {
+            return HookResult::Continue(_headers);
+        }
+        let data = serde_json::json!({ "headers": _headers });
+        if let Ok(results) = self
+            .fire_event_via_js("before_provider_headers", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(h) = r
+                    .get("headers")
+                    .and_then(|v| serde_json::from_value::<std::collections::HashMap<String, String>>(v.clone()).ok())
+                {
+                    return HookResult::Continue(h);
+                }
+            }
+        }
+        HookResult::Continue(_headers)
+    }
+
+    async fn after_provider_response(
+        &self,
+        _status: u16,
+        _headers: std::collections::HashMap<String, String>,
+    ) -> HookResult<()> {
+        if has_handler(&self, "after_provider_response") {
+            let data = serde_json::json!({ "status": _status, "headers": _headers });
+            let _ = self.fire_event_via_js("after_provider_response", &data.to_string()).await;
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_switch(
+        &self,
+        _reason: String,
+        _target_session_file: Option<String>,
+    ) -> HookResult<()> {
+        if !has_handler(&self, "session_before_switch") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "reason": _reason, "targetSessionFile": _target_session_file });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_switch", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_fork(&self, _entry_id: String, _position: String) -> HookResult<()> {
+        if !has_handler(&self, "session_before_fork") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "entryId": _entry_id, "position": _position });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_fork", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_compact(&self, _reason: String, _will_retry: bool) -> HookResult<()> {
+        if !has_handler(&self, "session_before_compact") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "reason": _reason, "willRetry": _will_retry });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_compact", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_tree(&self, _target_id: String) -> HookResult<()> {
+        if !has_handler(&self, "session_before_tree") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "targetId": _target_id });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_tree", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+}
+
+/// Whether any loaded handler for `event` exists.
+fn has_handler(adapter: &JsExtensionAdapter, event: &str) -> bool {
+    adapter.load_result.handlers.iter().any(|h| h.event == event)
+}
+
+/// Find the first non-null handler return value.
+fn first_result(results: &Value) -> Option<&Value> {
+    // `undefined` JS values are dropped by the FireEvent collector, so
+    // only null needs filtering here.
+    results.as_array()?.iter().find(|r| !r.is_null())
+}
+
+/// Find the first `{block: true, reason}` among handler return values.
+fn first_block_reason(results: &Value) -> Option<String> {
+    results.as_array()?.iter().find_map(|r| {
+        let is_block = r.get("block").and_then(|b| b.as_bool()).unwrap_or(false);
+        is_block.then_some(
+            r.get("reason")
+                .and_then(|x| x.as_str())
+                .unwrap_or("blocked by extension")
+                .to_string(),
+        )
+    })
 }
 
 // ============================================================================
@@ -861,8 +1220,9 @@ impl JsExtensionManager {
                             "(async () => {{
                               const handlers = globalThis.__pi.__handlers.get({event:?}) ?? [];
                               const results = [];
+                              const ctx = globalThis.__pi.createCtx();
                               for (const h of handlers) {{
-                                const r = await h({data});
+                                const r = await h({data}, ctx);
                                 if (r !== undefined) results.push(r);
                               }}
                               return results;
@@ -1405,6 +1765,104 @@ export default async function(pi) {
         let arr = results.as_array().expect("results must be an array");
         assert_eq!(arr.len(), 1, "one handler registered");
         assert_eq!(arr[0]["seenCommand"], "ls -la", "handler must see the payload");
+    }
+
+    /// Event handlers receive the second `ctx` argument (TS `(event, ctx)`),
+    /// so `ctx.hasUI` / `ctx.cwd` guards work instead of crashing.
+    #[test]
+    fn test_event_handler_receives_ctx() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("ctx.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("tool_call", async (event, ctx) => {
+    // Permission-gate style guard: uses ctx without crashing.
+    return {
+      hasUI: ctx.hasUI,
+      mode: ctx.mode,
+      cwd: ctx.cwd,
+      isIdle: ctx.isIdle(),
+      canSelect: typeof ctx.ui.select === "function",
+    };
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let results = block_on(adapter.fire_event_via_js(
+            "tool_call",
+            r#"{"toolName":"bash","input":{}}"#,
+        ))
+        .expect("fire_event_via_js");
+        let r = &results.as_array().expect("array")[0];
+        assert_eq!(r["hasUI"], false, "no UI in fast mode");
+        assert_eq!(r["mode"], "fast");
+        assert!(r["isIdle"].as_bool().unwrap_or(false), "ctx.isIdle() must work");
+        assert_eq!(r["canSelect"], true, "ctx.ui.select must exist");
+        let _ = r["cwd"]; // cwd present (may be empty in tests)
+    }
+
+    /// A `before_agent_start` handler can modify the prompt (result-bearing
+    /// hook) — its return value is parsed and applied.
+    #[test]
+    fn test_before_agent_start_modifies_prompt() {
+        use pi_extension_api::HookResult;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("preagent.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("before_agent_start", async (event) => {
+    return { prompt: "PREFIX: " + event.prompt, systemPrompt: event.systemPrompt };
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let result = block_on(adapter.before_agent_start(
+            "hello".to_string(),
+            None,
+            "sys".to_string(),
+            None,
+        ));
+        match result {
+            HookResult::Continue((prompt, system_prompt, _)) => {
+                assert_eq!(prompt, "PREFIX: hello");
+                assert_eq!(system_prompt, "sys");
+            }
+            HookResult::Cancel(reason) => panic!("unexpected cancel: {reason}"),
+        }
     }
 }
 

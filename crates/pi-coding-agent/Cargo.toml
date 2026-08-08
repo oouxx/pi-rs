@@ -19,6 +19,11 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+tokio-util = { workspace = true }
+# ACP (Agent Client Protocol) — agent-side server for Zed / ACP-compatible editors.
+# The `unstable` feature enables session/model/config-option methods used by
+# modern ACP clients (Zed, JetBrains, etc.).
+agent-client-protocol = { version = "0.10.4", features = ["unstable"] }
 glob = "0.3"
 # gitignore-aware directory walking (ripgrep's walker): respects .gitignore /
 # .ignore / .git/info/exclude and stops parent rules at nested git repo
@@ -38,14 +43,25 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 deno_core = { workspace = true, optional = true }
 deno_ast = { version = "0.53", optional = true, features = ["transpiling"] }
 deno_error = { version = "0.7", optional = true }
+# MCP (Model Context Protocol) client — lets ACP sessions call external MCP
+# servers' tools (stdio + streamable HTTP). Default-on.
+rmcp = { version = "1.8", optional = true, default-features = false, features = [
+  "client",
+  "transport-child-process",
+  "which-command",
+  "transport-streamable-http-client-reqwest",
+] }
 
 [features]
 # Interactive TUI mode. The pi-tui / crossterm dependencies are currently removed
 # because pi-tui's ratatui 0.29 hard-pins unicode-width =0.2.0. Re-add once pi-tui
 # upgrades to ratatui 0.30. The interactive mode code stays gated behind
 # `#[cfg(feature = "interactive")]` and is inert until then.
-default = []
+default = ["mcp"]
 interactive = []
+# MCP (Model Context Protocol) client support (stdio + streamable HTTP).
+# Default-on. Disabling removes the rmcp dependency and the ACP MCP wiring.
+mcp = ["dep:rmcp"]
 # Embeds V8 (via deno_core) + swc (via deno_ast) to load TS/JS extensions
 # at runtime, mirroring TS loader.ts. Heavy build dependency — opt-in.
 js-runtime = ["dep:deno_core", "dep:deno_ast", "dep:deno_error"]

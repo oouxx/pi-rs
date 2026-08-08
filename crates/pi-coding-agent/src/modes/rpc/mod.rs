@@ -16,6 +16,24 @@ use super::rpc::handler::handle_command;
 use super::rpc::jsonl::serialize_json_line;
 use super::rpc::rpc_types::*;
 
+/// Mirror of TS `modes/json-event.ts` `toJsonEvent()`.
+///
+/// The RPC wire format matches the TS `AgentSessionEvent` shape:
+/// a `type`-discriminated union with camelCase fields. The one difference
+/// from the in-memory event is that `message_update` events strip the
+/// cumulative `partial` assistant snapshot from `assistantMessageEvent`
+/// (`message_start` provides the initial message, deltas build it, and
+/// `message_end` provides the final authoritative message).
+fn to_json_event(event: &AgentSessionEvent) -> serde_json::Value {
+    let mut value = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+    if let Some(ame) = value.get_mut("assistantMessageEvent") {
+        if let Some(obj) = ame.as_object_mut() {
+            obj.remove("partial");
+        }
+    }
+    value
+}
+
 /// Run the RPC mode: read JSON commands from stdin, output JSON events/responses
 /// to stdout, and drive the agent session.
 ///
@@ -23,7 +41,10 @@ use super::rpc::rpc_types::*;
 /// - Commands: JSON objects with `type` field on stdin (one per line)
 /// - Responses: JSON objects on stdout with `type: "response"`
 /// - Events: JSON objects on stdout with `type: "event"` streamed as they occur
-pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
+pub async fn run_rpc_mode(
+    extension_paths: Vec<String>,
+    extension_flags: std::collections::HashMap<String, String>,
+) -> i32 {
     // ── Build a minimal agent session ──────────────────────────────────
     let agent_dir = crate::config::get_agent_dir();
     let cwd = std::env::current_dir()
@@ -45,6 +66,7 @@ pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
         stream_fn: None,
         convert_to_llm: None,
         extension_paths,
+        extension_flags: Some(extension_flags),
         enable_extensions: true,
         persist_session: false,
         session_file: None,
@@ -128,11 +150,12 @@ pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
     let output_tx_for_session = output_tx.clone();
     let _session_event_handle = session.subscribe_session_events(
         std::sync::Arc::new(move |event: AgentSessionEvent| {
-            // Serialize event to JSON and forward to output channel
-            if let Ok(json) = serde_json::to_value(&event) {
-                let line = serialize_json_line(&json);
-                let _ = output_tx_for_session.send(line);
-            }
+            // Serialize event to JSON and forward to output channel.
+            // Use to_json_event() to match the TS RPC wire shape exactly
+            // (type-discriminated union, camelCase fields, no `partial` snapshot).
+            let json = to_json_event(&event);
+            let line = serialize_json_line(&json);
+            let _ = output_tx_for_session.send(line);
             // Check for agent_settled to trigger shutdown check (matching TS)
             if matches!(event, AgentSessionEvent::AgentSettled) {
                 // If shutdown was requested, the main loop will handle it
@@ -228,4 +251,111 @@ pub async fn run_rpc_mode(extension_paths: Vec<String>) -> i32 {
 
     session.dispose_inner().await;
     0
+}
+
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use pi_agent_core::pi_ai_types::{AssistantMessage, AssistantMessageEvent, StopReason, Usage};
+
+    fn sample_assistant_message() -> AssistantMessage {
+        AssistantMessage {
+            content: vec![],
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+        }
+    }
+
+    /// The RPC wire format must match the TS `AgentSessionEvent` shape:
+    /// a `type`-discriminated union with camelCase fields (TS
+    /// `packages/coding-agent/src/core/agent-session.ts` + `modes/json-event.ts`).
+    #[test]
+    fn event_wire_format_matches_ts() {
+        // unit variant -> {"type":"agent_start"}
+        let e = AgentSessionEvent::AgentStart;
+        assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"type":"agent_start"}"#);
+
+        // message_update -> type tag + camelCase fields
+        let am = sample_assistant_message();
+        let e2 = AgentSessionEvent::MessageUpdate {
+            message: serde_json::from_value(serde_json::json!({
+                "role":"assistant","content":[],"api":"openai-completions","provider":"openai",
+                "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
+                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
+                "stopReason":"stop","timestamp":0
+            })).unwrap(),
+            assistant_message_event: AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "hi".into(),
+                partial: am,
+            },
+        };
+        let v = serde_json::to_value(&e2).unwrap();
+        assert_eq!(v["type"], "message_update");
+        assert_eq!(v["assistantMessageEvent"]["type"], "text_delta");
+        assert_eq!(v["assistantMessageEvent"]["contentIndex"], 0);
+        assert_eq!(v["assistantMessageEvent"]["delta"], "hi");
+
+        // tool_execution_start -> camelCase fields
+        let e3 = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "t1".into(),
+            tool_name: "read".into(),
+            args: serde_json::json!({"path": "a.txt"}),
+        };
+        let v3 = serde_json::to_value(&e3).unwrap();
+        assert_eq!(v3["type"], "tool_execution_start");
+        assert_eq!(v3["toolCallId"], "t1");
+        assert_eq!(v3["toolName"], "read");
+        assert_eq!(v3["args"]["path"], "a.txt");
+
+        // compaction_end -> camelCase fields (willRetry/errorMessage)
+        let e4 = AgentSessionEvent::CompactionEnd {
+            reason: crate::core::agent_session::CompactionReason::Manual,
+            result: None,
+            aborted: false,
+            will_retry: false,
+            error_message: None,
+        };
+        let v4 = serde_json::to_value(&e4).unwrap();
+        assert_eq!(v4["type"], "compaction_end");
+        assert!(v4.get("willRetry").is_some(), "compaction_end must use willRetry");
+        assert!(v4.get("will_retry").is_none());
+        assert!(v4.get("errorMessage").is_some(), "compaction_end must use errorMessage");
+    }
+
+    /// `to_json_event` strips the cumulative `partial` snapshot from
+    /// `message_update` events, mirroring TS `toJsonEvent()`.
+    #[test]
+    fn to_json_event_strips_partial() {
+        let am = sample_assistant_message();
+        let e = AgentSessionEvent::MessageUpdate {
+            message: serde_json::from_value(serde_json::json!({
+                "role":"assistant","content":[],"api":"openai-completions","provider":"openai",
+                "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
+                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
+                "stopReason":"stop","timestamp":0
+            })).unwrap(),
+            assistant_message_event: AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "hi".into(),
+                partial: am,
+            },
+        };
+        let v = to_json_event(&e);
+        assert_eq!(v["type"], "message_update");
+        assert!(v["assistantMessageEvent"].get("partial").is_none(),
+            "partial must be stripped on the wire (TS toJsonEvent)");
+        assert_eq!(v["assistantMessageEvent"]["delta"], "hi");
+    }
 }

@@ -22,12 +22,10 @@ tempfile = { workspace = true }
 serde_yaml = "0.9"
 regex = { workspace = true }
 schemars = { version = "0.8", optional = true, features = ["derive"] }
-rmcp = { version = "1.7", optional = true, default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 
 [features]
 default = ["extraction"]
 extraction = ["dep:schemars"]
-mcp = ["dep:rmcp"]
 
 [dev-dependencies]
 

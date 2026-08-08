@@ -93,6 +93,8 @@ async fn create_test_session(
         extension_registry: Some(extension_registry),
         custom_tools: None,
         resources: None,
+        extension_state_view: None,
+        extension_action_rx: None,
     };
 
     let session = AgentSession::new(
@@ -424,4 +426,228 @@ async fn test_create_agent_session_runtime() {
 
     assert!(!runtime.cwd().is_empty());
     assert!(!runtime.session().get_session_id().is_empty());
+}
+
+/// Extension action bus: write-actions queued via the bus are applied by
+/// `drain_extension_actions()` at turn boundaries; read-actions see the
+/// refreshed state snapshot.
+#[tokio::test]
+async fn test_extension_action_bus_drain_and_state_refresh() {
+    use pi_coding_agent::core::agent_session::AgentSessionConfig;
+    use pi_coding_agent::core::extensions::action_bus::{
+        ExtensionAction, ExtensionActionSender,
+    };
+    use pi_coding_agent::core::extensions::ExtensionRegistry;
+    use pi_coding_agent::core::model_registry::ModelRegistry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let session_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_manager =
+        SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
+    let settings_manager =
+        pi_coding_agent::core::settings_manager::SettingsManager::create(&cwd, None);
+
+    let (sender, rx, state_view) = ExtensionActionSender::new();
+
+    let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+    // Directly constructed thinking-capable model (the builtin models don't
+    // support thinking, which would clamp set_thinking_level to "off").
+    let model = pi_agent_core::pi_ai_types::Model {
+        id: "test-model".to_string(),
+        name: "Test Model".to_string(),
+        api: "test-api".to_string(),
+        provider: "test".to_string(),
+        base_url: "http://localhost".to_string(),
+        reasoning: true,
+        thinking_level_map: None,
+        input: Vec::new(),
+        cost: pi_agent_core::pi_ai_types::ModelCost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            tiers: vec![],
+        },
+        context_window: 128000,
+        max_tokens: 4096,
+        headers: None,
+        compat: None,
+    };
+
+    let extension_registry = Arc::new(ExtensionRegistry::new());
+    let options = AgentSessionConfig {
+        cwd: cwd.clone(),
+        model,
+        thinking_level: "medium".to_string(),
+        custom_prompt: None,
+        append_system_prompt: None,
+        selected_tools: None,
+        tool_snippets: None,
+        prompt_guidelines: None,
+        context_files: Vec::new(),
+        skills: Vec::new(),
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        initial_active_tool_names: None,
+        allowed_tool_names: None,
+        excluded_tool_names: None,
+        extension_registry: Some(extension_registry),
+        custom_tools: None,
+        resources: None,
+        extension_state_view: Some(state_view),
+        extension_action_rx: Some(rx),
+    };
+
+    let session = AgentSession::new(session_manager, settings_manager, model_registry, options)
+        .await;
+
+    // ── Write-actions: queue via the sender, apply via drain ──
+    sender.send(ExtensionAction::SetSessionName("bus-test".to_string()));
+    sender.send(ExtensionAction::SetThinkingLevel("high".to_string()));
+    sender.send(ExtensionAction::SetActiveTools(vec!["read".to_string()]));
+    session.drain_extension_actions().await;
+
+    assert_eq!(session.get_session_name().as_deref(), Some("bus-test"));
+    assert_eq!(session.get_thinking_level().await, "high");
+    assert_eq!(session.get_active_tool_names().await, vec!["read"]);
+
+    // ── Read-actions: state snapshot refreshed by drain ──
+    let view = sender.state();
+    {
+        let guard = view.lock().unwrap();
+        assert_eq!(guard.session_name.as_deref(), Some("bus-test"));
+        assert_eq!(guard.thinking_level, "high");
+        assert_eq!(guard.active_tools, vec!["read"]);
+        assert!(!guard.model_id.as_deref().unwrap_or("").is_empty());
+    }
+
+    // ── appendEntry + setLabel through the bus ──
+    sender.send(ExtensionAction::AppendEntry {
+        custom_type: "test-entry".to_string(),
+        data_json: Some("{\"x\":1}".to_string()),
+    });
+    session.drain_extension_actions().await;
+    // Scope the session_manager guard so it's dropped before the next drain
+    // (a held guard would deadlock the session_manager lock inside drain).
+    let entry_found = {
+        let mgr = session.get_session_manager();
+        mgr.get_entries().iter().any(|e| {
+            matches!(
+                e,
+                pi_coding_agent::core::session_manager::SessionEntry::Custom {
+                    custom_type, ..
+                } if custom_type == "test-entry"
+            )
+        })
+    };
+    assert!(entry_found, "custom entry should be appended");
+
+    // ── sendMessage (triggerTurn=false) appends to agent messages ──
+    sender.send(ExtensionAction::SendMessage {
+        custom_type: "msg-type".to_string(),
+        content: "hello from extension".to_string(),
+        options_json: None,
+    });
+    session.drain_extension_actions().await;
+    let messages = session.get_agent().messages().await;
+    assert!(
+        messages.iter().any(|m| {
+            matches!(
+                m,
+                pi_agent_core::types::AgentMessage::User { content, .. }
+                    if content.iter().any(|c| matches!(
+                        c,
+                        pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. }
+                            if text == "hello from extension"
+                    ))
+            )
+        }),
+        "sendMessage must append a user message"
+    );
+}
+
+/// Session switch must trigger the JS-runtime invalidator (stale-ctx guard):
+/// `session_mgr_switch` calls the callback wired by the SDK.
+#[tokio::test]
+async fn test_session_switch_invalidates_js_runtime() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use pi_coding_agent::core::agent_session::AgentSessionConfig;
+    use pi_coding_agent::core::extensions::ExtensionRegistry;
+    use pi_coding_agent::core::model_registry::ModelRegistry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let session_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_manager =
+        SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
+    let settings_manager =
+        pi_coding_agent::core::settings_manager::SettingsManager::create(&cwd, None);
+    let model = pi_agent_core::pi_ai_types::Model {
+        id: "test-model".to_string(),
+        name: "Test Model".to_string(),
+        api: "test-api".to_string(),
+        provider: "test".to_string(),
+        base_url: "http://localhost".to_string(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: Vec::new(),
+        cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+        context_window: 128000,
+        max_tokens: 4096,
+        headers: None,
+        compat: None,
+    };
+    let options = AgentSessionConfig {
+        cwd: cwd.clone(),
+        model,
+        thinking_level: "medium".to_string(),
+        custom_prompt: None,
+        append_system_prompt: None,
+        selected_tools: None,
+        tool_snippets: None,
+        prompt_guidelines: None,
+        context_files: Vec::new(),
+        skills: Vec::new(),
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        initial_active_tool_names: None,
+        allowed_tool_names: None,
+        excluded_tool_names: None,
+        extension_registry: Some(Arc::new(ExtensionRegistry::new())),
+        custom_tools: None,
+        resources: None,
+        extension_state_view: None,
+        extension_action_rx: None,
+    };
+    let mut session =
+        AgentSession::new(session_manager, settings_manager, ModelRegistry::new(ModelRegistry::builtin_models_list()), options).await;
+
+    let invalidated = Arc::new(AtomicUsize::new(0));
+    let inv = invalidated.clone();
+    session.set_js_invalidator(Some(Arc::new(move || {
+        inv.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    // A minimal valid session file for switch_session to load.
+    let target = dir.path().join("target.jsonl");
+    std::fs::write(
+        &target,
+        r#"{"type":"session","version":3,"id":"target-session","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp"}"#,
+    )
+    .unwrap();
+
+    session
+        .session_mgr_switch(&target.to_string_lossy(), None)
+        .await
+        .expect("switch_session");
+    assert_eq!(
+        invalidated.load(Ordering::SeqCst),
+        1,
+        "session switch must invalidate the JS runtime"
+    );
 }

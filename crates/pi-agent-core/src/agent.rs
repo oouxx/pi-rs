@@ -360,6 +360,16 @@ impl Agent {
         self.state.read().await.clone()
     }
 
+    /// Apply a mutation to the shared agent state under the write lock.
+    ///
+    /// Use this (or a dedicated setter like [`Agent::set_model`]) whenever the
+    /// intent is to **change** state — [`Agent::state`] returns a snapshot
+    /// clone, so mutating its result has no effect on the shared state.
+    pub async fn update_state(&self, f: impl FnOnce(&mut AgentState)) {
+        let mut state = self.state.write().await;
+        f(&mut state);
+    }
+
     /// Add or replace tools in the agent's tool list.
     ///
     /// Tools with the same `name` as an existing entry are replaced in-place,

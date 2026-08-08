@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod agent_bridge;
 #[cfg(feature = "interactive")]
 pub mod interactive;

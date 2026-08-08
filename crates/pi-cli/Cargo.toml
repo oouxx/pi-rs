@@ -20,6 +20,9 @@ tempfile = { workspace = true }
 [features]
 default = []
 interactive = []
+# Enable JS/TS extension loading (embeds V8 via pi-coding-agent's js-runtime
+# feature). Heavy build dependency — opt-in.
+js-runtime = ["pi-coding-agent/js-runtime"]
 
 
 [lints]

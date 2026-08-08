@@ -15,6 +15,8 @@ pub enum OutputMode {
     Json,
     Rpc,
     Interactive,
+    /// ACP (Agent Client Protocol) server over stdio — for Zed / ACP editors.
+    Acp,
 }
 
 /// Parsed CLI arguments.
@@ -78,7 +80,8 @@ pub fn print_help() {
     println!("OPTIONS:");
     println!("    -p, --print           Print mode (single-shot, output to stdout)");
     println!("    -i, --interactive     Interactive TUI mode");
-    println!("    --mode <MODE>         Output mode: text (default), json, rpc, or interactive/tui");
+    println!("    --mode <MODE>         Output mode: text (default), json, rpc, acp, or interactive/tui");
+    println!("    --acp                 ACP server mode (Agent Client Protocol over stdio)");
     println!("    -m, --model <MODEL>   Model to use (e.g. claude-sonnet-4-6)");
     println!("    -P, --provider <P>    Provider to use");
     println!("    -k, --api-key <KEY>   API key");
@@ -126,6 +129,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--help" | "-h" => result.help = true,
             "--version" | "-v" => result.version = true,
             "--interactive" | "-i" => result.mode = OutputMode::Interactive,
+            "--acp" => result.mode = OutputMode::Acp,
             "--print" | "-p" => result.print = true,
             "--verbose" => result.verbose = true,
             "--list-models" => result.list_models = true,
@@ -144,6 +148,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         "json" => result.mode = OutputMode::Json,
                         "rpc" => result.mode = OutputMode::Rpc,
                         "interactive" | "tui" => result.mode = OutputMode::Interactive,
+                        "acp" => result.mode = OutputMode::Acp,
                         _ => result.mode = OutputMode::Text,
                     }
                 }
@@ -267,9 +272,20 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
-            // Unknown flag that starts with --
+            // Unknown flag that starts with -- → collect as an extension flag
+            // (e.g. `--my-flag value`, `--my-flag=value`, or bare `--my-flag`
+            // = boolean true), matching TS `getFlag()`.
             s if s.starts_with("--") || s.starts_with("-") && s.len() > 1 => {
-                result.diagnostics.push(format!("Unknown flag: {s}"));
+                let name = s.trim_start_matches('-').to_string();
+                if let Some(eq) = name.find('=') {
+                    let (k, v) = name.split_at(eq);
+                    result.unknown_flags.insert(k.to_string(), v[1..].to_string());
+                } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    i += 1;
+                    result.unknown_flags.insert(name, args[i].clone());
+                } else {
+                    result.unknown_flags.insert(name, "true".to_string());
+                }
             }
 
             // Check for subcommands
@@ -386,5 +402,24 @@ mod tests {
     fn test_parse_default_trust() {
         let args = parse_args(&["--default-trust".into(), "always".into()]);
         assert_eq!(args.default_project_trust, DefaultProjectTrust::Always);
+    }
+
+    #[test]
+    fn test_parse_extension_flags() {
+        // --flag value (two tokens)
+        let args = parse_args(&["--my-flag".into(), "blue".into()]);
+        assert_eq!(args.unknown_flags.get("my-flag"), Some(&"blue".to_string()));
+
+        // --flag=value (single token)
+        let args = parse_args(&["--model=fast".into()]);
+        assert_eq!(args.unknown_flags.get("model"), Some(&"fast".to_string()));
+
+        // bare --flag → boolean true (no value token follows)
+        let args = parse_args(&["--another-flag".into()]);
+        assert_eq!(args.unknown_flags.get("another-flag"), Some(&"true".to_string()));
+
+        // known flags are NOT collected as extension flags
+        let args = parse_args(&["--print".into()]);
+        assert!(args.unknown_flags.is_empty());
     }
 }

@@ -53,10 +53,13 @@ pub enum JsCommand {
         response_tx: oneshot::Sender<Result<ToolCallOutput, String>>,
     },
     /// Fire an event to all registered JS handlers for that event name.
+    /// Returns the (JSON array of) handler return values — used by
+    /// result-bearing hooks like `tool_call` (`{block: true}`) and
+    /// `before_agent_start`.
     FireEvent {
         event: String,
         data_json: String,
-        response_tx: oneshot::Sender<Result<(), String>>,
+        response_tx: oneshot::Sender<Result<serde_json::Value, String>>,
     },
     /// Execute a registered command's JS handler.
     ExecuteCommand {
@@ -71,6 +74,14 @@ pub enum JsCommand {
         actions: super::js_runtime::RuntimeActions,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
+    /// Set an extension flag value (CLI-passed flags override defaults).
+    SetFlagValue {
+        name: String,
+        value: String,
+    },
+    /// Invalidate the runtime context (session changed: new/fork/switch/
+    /// reload). After this, action ops throw a stale-ctx error.
+    Invalidate,
     /// Shut down the V8 runtime thread. The receiver breaks out of its
     /// command loop on receipt, so shutdown is deterministic even if some
     /// adapter-held sender clones are still alive.
@@ -85,6 +96,8 @@ impl std::fmt::Debug for JsCommand {
             Self::FireEvent { .. } => write!(f, "JsCommand::FireEvent"),
             Self::ExecuteCommand { .. } => write!(f, "JsCommand::ExecuteCommand"),
             Self::BindCore { .. } => write!(f, "JsCommand::BindCore"),
+            Self::SetFlagValue { .. } => write!(f, "JsCommand::SetFlagValue"),
+            Self::Invalidate => write!(f, "JsCommand::Invalidate"),
             Self::Shutdown => write!(f, "JsCommand::Shutdown"),
         }
     }
@@ -133,25 +146,21 @@ impl JsToolResult {
 /// The original TS `ToolDefinition.execute` takes five arguments:
 /// `(toolCallId, params, signal, onUpdate, ctx)`. We pass `undefined` for
 /// `signal` and `onUpdate` (no abort signalling / streaming updates in the
-/// runtime loader) and a minimal stub `ctx` whose methods are no-ops or safe
-/// defaults. Tools that require real UI interaction or abort signals will
-/// degrade gracefully rather than crash.
+/// runtime loader) and a `ctx` built by `__pi.createCtx()` whose methods are
+/// no-ops or safe defaults. Tools that require real UI interaction or abort
+/// signals will degrade gracefully rather than crash.
 fn build_tool_execute_script(tool_name: &str, tool_call_id: &str, params_json: &str) -> String {
-    // A minimal ctx object. Fields are stubbed to safe defaults; methods that
-    // the runtime cannot honour (abort, shutdown, UI prompts) are no-ops.
-    let ctx = "(() => { const cwd = globalThis.__piCwd || '.'; return {         ui: new Proxy({}, { get: () => () => {} }),         mode: 'fast', hasUI: false, cwd,         sessionManager: new Proxy({}, { get: () => () => {} }),         modelRegistry: new Proxy({}, { get: () => () => {} }),         model: undefined, signal: undefined,         isIdle: () => true, isProjectTrusted: () => false,         abort: () => {}, hasPendingMessages: () => false,         shutdown: () => {}, getContextUsage: () => undefined,         compact: () => {}, getSystemPrompt: () => '',     }; })()";
     format!(
         "(async () => {{
           const fn = globalThis.__pi.__toolExecutors.get({name:?});
           if (!fn) throw new Error('Tool not found: ' + {name:?});
-          const ctx = {ctx};
+          const ctx = globalThis.__pi.createCtx();
           const result = await fn({call_id:?}, {params}, undefined, undefined, ctx);
           return result;
         }})()",
         name = tool_name,
         call_id = tool_call_id,
         params = params_json,
-        ctx = ctx,
     )
 }
 
@@ -246,8 +255,12 @@ impl JsExtensionAdapter {
         response_rx.await.map_err(|_| "V8 runtime dropped response".to_string())?
     }
 
-    /// Fire an event to JS handlers.
-    async fn fire_event_via_js(&self, event: &str, data_json: &str) -> Result<(), String> {
+    /// Fire an event to JS handlers and collect their return values.
+    async fn fire_event_via_js(
+        &self,
+        event: &str,
+        data_json: &str,
+    ) -> Result<serde_json::Value, String> {
         let (response_tx, response_rx) = oneshot::channel();
         self.cmd_tx
             .send(JsCommand::FireEvent {
@@ -414,7 +427,8 @@ impl HookHandler for JsExtensionAdapter {
 
     async fn on_session_start(&self, _reason: &str, _previous_session_file: Option<&str>) {
         if self.load_result.handlers.iter().any(|h| h.event == "session_start") {
-            let _ = self.fire_event_via_js("session_start", "{}").await;
+            let data = serde_json::json!({ "reason": _reason, "previousSessionFile": _previous_session_file });
+            let _ = self.fire_event_via_js("session_start", &data.to_string()).await;
         }
     }
 
@@ -425,7 +439,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "session_shutdown")
         {
-            let _ = self.fire_event_via_js("session_shutdown", "{}").await;
+            let data = serde_json::json!({ "reason": _reason, "targetSessionFile": _target_session_file });
+            let _ = self.fire_event_via_js("session_shutdown", &data.to_string()).await;
         }
     }
 
@@ -442,7 +457,8 @@ impl HookHandler for JsExtensionAdapter {
 
     async fn on_agent_end(&self, _messages: &[Value]) {
         if self.load_result.handlers.iter().any(|h| h.event == "agent_end") {
-            let _ = self.fire_event_via_js("agent_end", "{}").await;
+            let data = serde_json::json!({ "messages": _messages });
+            let _ = self.fire_event_via_js("agent_end", &data.to_string()).await;
         }
     }
 
@@ -464,13 +480,15 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "turn_start")
         {
-            let _ = self.fire_event_via_js("turn_start", "{}").await;
+            let data = serde_json::json!({ "turnIndex": _turn_index });
+            let _ = self.fire_event_via_js("turn_start", &data.to_string()).await;
         }
     }
 
     async fn on_turn_end(&self, _turn_index: u32, _message: &Value, _tool_results: &[Value]) {
         if self.load_result.handlers.iter().any(|h| h.event == "turn_end") {
-            let _ = self.fire_event_via_js("turn_end", "{}").await;
+            let data = serde_json::json!({ "turnIndex": _turn_index, "message": _message, "toolResults": _tool_results });
+            let _ = self.fire_event_via_js("turn_end", &data.to_string()).await;
         }
     }
 
@@ -481,7 +499,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "message_start")
         {
-            let _ = self.fire_event_via_js("message_start", "{}").await;
+            let data = serde_json::json!({ "message": _message });
+            let _ = self.fire_event_via_js("message_start", &data.to_string()).await;
         }
     }
 
@@ -492,7 +511,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "message_update")
         {
-            let _ = self.fire_event_via_js("message_update", "{}").await;
+            let data = serde_json::json!({ "message": _message });
+            let _ = self.fire_event_via_js("message_update", &data.to_string()).await;
         }
     }
 
@@ -503,7 +523,8 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "message_end")
         {
-            let _ = self.fire_event_via_js("message_end", "{}").await;
+            let data = serde_json::json!({ "message": _message });
+            let _ = self.fire_event_via_js("message_end", &data.to_string()).await;
         }
     }
 
@@ -514,13 +535,15 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "model_select")
         {
-            let _ = self.fire_event_via_js("model_select", "{}").await;
+            let data = serde_json::json!({ "model": _model, "previousModel": _previous_model });
+            let _ = self.fire_event_via_js("model_select", &data.to_string()).await;
         }
     }
 
     async fn on_compact(&self, _summary: &str, _tokens_before: u64) {
         if self.load_result.handlers.iter().any(|h| h.event == "session_compact") {
-            let _ = self.fire_event_via_js("session_compact", "{}").await;
+            let data = serde_json::json!({ "summary": _summary, "tokensBefore": _tokens_before });
+            let _ = self.fire_event_via_js("session_compact", &data.to_string()).await;
         }
     }
 
@@ -536,8 +559,13 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_execution_start")
         {
+            let data = serde_json::json!({
+                "toolCallId": _tool_call_id,
+                "toolName": _tool_name,
+                "input": _args,
+            });
             let _ = self
-                .fire_event_via_js("tool_execution_start", "{}")
+                .fire_event_via_js("tool_execution_start", &data.to_string())
                 .await;
         }
     }
@@ -555,8 +583,14 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_execution_end")
         {
+            let data = serde_json::json!({
+                "toolCallId": _tool_call_id,
+                "toolName": _tool_name,
+                "result": _result,
+                "isError": _is_error,
+            });
             let _ = self
-                .fire_event_via_js("tool_execution_end", "{}")
+                .fire_event_via_js("tool_execution_end", &data.to_string())
                 .await;
         }
     }
@@ -572,10 +606,30 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_call")
         {
-            let data = serde_json::json!({ "toolName": tool_name, "args": args });
-            let _ = self
+            let data = serde_json::json!({ "toolName": tool_name, "input": args });
+            if let Ok(results) = self
                 .fire_event_via_js("tool_call", &data.to_string())
-                .await;
+                .await
+            {
+                // TS `tool_call` handlers may return `{block: true, reason}` to
+                // veto the call (e.g. permission-gate extensions).
+                if let Some(blocked) = results.as_array().and_then(|arr| {
+                    arr.iter().find_map(|r| {
+                        let is_block = r
+                            .get("block")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false);
+                        is_block.then_some(
+                            r.get("reason")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("blocked by extension")
+                                .to_string(),
+                        )
+                    })
+                }) {
+                    return HookResult::Cancel(blocked);
+                }
+            }
         }
         HookResult::Continue((tool_name, args))
     }
@@ -592,10 +646,378 @@ impl HookHandler for JsExtensionAdapter {
             .iter()
             .any(|h| h.event == "tool_result")
         {
-            let _ = self.fire_event_via_js("tool_result", "{}").await;
+            let data = serde_json::json!({
+                "toolName": _tool_name,
+                "result": _result,
+                "isError": _is_error,
+            });
+            let _ = self.fire_event_via_js("tool_result", &data.to_string()).await;
         }
         HookResult::Continue(())
     }
+
+    // ── Remaining hooks (aligned with TS ExtensionAPI event surface) ──
+    // Notification hooks fire with marshalled data; result-bearing hooks
+    // parse the JS handler return values (via the FireEvent collector).
+
+    async fn on_session_info_changed(&self, _name: Option<&str>) {
+        if has_handler(&self, "session_info_changed") {
+            let data = serde_json::json!({ "name": _name });
+            let _ = self.fire_event_via_js("session_info_changed", &data.to_string()).await;
+        }
+    }
+
+    async fn on_thinking_level_select(&self, _level: &str, _previous_level: &str) {
+        if has_handler(&self, "thinking_level_select") {
+            let data = serde_json::json!({ "level": _level, "previousLevel": _previous_level });
+            let _ = self.fire_event_via_js("thinking_level_select", &data.to_string()).await;
+        }
+    }
+
+    async fn on_tree(&self, _new_leaf_id: Option<&str>, _old_leaf_id: Option<&str>) {
+        if has_handler(&self, "session_tree") {
+            let data = serde_json::json!({ "newLeafId": _new_leaf_id, "oldLeafId": _old_leaf_id });
+            let _ = self.fire_event_via_js("session_tree", &data.to_string()).await;
+        }
+    }
+
+    async fn on_resources_discover(
+        &self,
+        _cwd: &str,
+        _reason: &str,
+    ) -> Option<pi_extension_api::ResourcesDiscoverResult> {
+        if !has_handler(&self, "resources_discover") {
+            return None;
+        }
+        let data = serde_json::json!({ "cwd": _cwd, "reason": _reason });
+        if let Ok(results) = self.fire_event_via_js("resources_discover", &data.to_string()).await {
+            if let Some(r) = first_result(&results) {
+                return serde_json::from_value(r.clone()).ok();
+            }
+        }
+        None
+    }
+
+    async fn on_project_trust(&self, _cwd: &str) -> Option<pi_extension_api::ProjectTrustResult> {
+        if !has_handler(&self, "project_trust") {
+            return None;
+        }
+        let data = serde_json::json!({ "cwd": _cwd });
+        if let Ok(results) = self.fire_event_via_js("project_trust", &data.to_string()).await {
+            if let Some(r) = first_result(&results) {
+                return serde_json::from_value(r.clone()).ok();
+            }
+        }
+        None
+    }
+
+    async fn on_user_bash(&self, _command: &str, _cwd: &str) -> Option<pi_extension_api::UserBashResult> {
+        if !has_handler(&self, "user_bash") {
+            return None;
+        }
+        let data = serde_json::json!({ "command": _command, "cwd": _cwd });
+        if let Ok(results) = self.fire_event_via_js("user_bash", &data.to_string()).await {
+            if let Some(r) = first_result(&results) {
+                return serde_json::from_value(r.clone()).ok();
+            }
+        }
+        None
+    }
+
+    async fn on_context(&self, _messages: &[Value]) {
+        if has_handler(&self, "context") {
+            let data = serde_json::json!({ "messages": _messages });
+            let _ = self.fire_event_via_js("context", &data.to_string()).await;
+        }
+    }
+
+    async fn on_context_mut(&self, _messages: Vec<Value>) -> HookResult<Vec<Value>> {
+        if !has_handler(&self, "context") {
+            return HookResult::Continue(_messages);
+        }
+        let data = serde_json::json!({ "messages": _messages });
+        if let Ok(results) = self.fire_event_via_js("context", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                let messages = r
+                    .get("messages")
+                    .and_then(|m| serde_json::from_value::<Vec<Value>>(m.clone()).ok())
+                    .or_else(|| r.as_array().cloned());
+                if let Some(m) = messages {
+                    return HookResult::Continue(m);
+                }
+            }
+        }
+        HookResult::Continue(_messages)
+    }
+
+    async fn on_tool_result_mut(
+        &self,
+        _tool_name: &str,
+        _content: Vec<Value>,
+        _details: Option<Value>,
+        _is_error: bool,
+    ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
+        if !has_handler(&self, "tool_result") {
+            return HookResult::Continue((_content, _details, _is_error));
+        }
+        let data = serde_json::json!({
+            "toolName": _tool_name,
+            "content": _content,
+            "details": _details,
+            "isError": _is_error,
+        });
+        if let Ok(results) = self.fire_event_via_js("tool_result", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(content) = r
+                    .get("content")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok())
+                {
+                    let is_error = r
+                        .get("isError")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(_is_error);
+                    return HookResult::Continue((content, r.get("details").cloned(), is_error));
+                }
+            }
+        }
+        HookResult::Continue((_content, _details, _is_error))
+    }
+
+    async fn before_agent_start(
+        &self,
+        _prompt: String,
+        _images: Option<Vec<Value>>,
+        _system_prompt: String,
+        _system_prompt_options: Option<Value>,
+    ) -> HookResult<(String, String, Option<Vec<Value>>)> {
+        if !has_handler(&self, "before_agent_start") {
+            return HookResult::Continue((_prompt, _system_prompt, None));
+        }
+        let data = serde_json::json!({
+            "prompt": _prompt,
+            "images": _images,
+            "systemPrompt": _system_prompt,
+            "systemPromptOptions": _system_prompt_options,
+        });
+        if let Ok(results) = self.fire_event_via_js("before_agent_start", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                let prompt = r
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&_prompt)
+                    .to_string();
+                let system_prompt = r
+                    .get("systemPrompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&_system_prompt)
+                    .to_string();
+                let images = r
+                    .get("images")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok());
+                return HookResult::Continue((prompt, system_prompt, images));
+            }
+        }
+        HookResult::Continue((_prompt, _system_prompt, None))
+    }
+
+    async fn on_input(
+        &self,
+        _text: String,
+        _images: Option<Vec<Value>>,
+        _source: String,
+        _streaming_behavior: Option<String>,
+    ) -> HookResult<String> {
+        if !has_handler(&self, "input") {
+            return HookResult::Continue(_text);
+        }
+        let data = serde_json::json!({
+            "text": _text,
+            "images": _images,
+            "source": _source,
+            "streamingBehavior": _streaming_behavior,
+        });
+        if let Ok(results) = self.fire_event_via_js("input", &data.to_string()).await {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(text) = r.as_str() {
+                    return HookResult::Continue(text.to_string());
+                }
+                if let Some(text) = r.get("text").and_then(|v| v.as_str()) {
+                    return HookResult::Continue(text.to_string());
+                }
+            }
+        }
+        HookResult::Continue(_text)
+    }
+
+    async fn before_provider_request(&self, _payload: Value) -> HookResult<Value> {
+        if !has_handler(&self, "before_provider_request") {
+            return HookResult::Continue(_payload);
+        }
+        let data = serde_json::json!({ "payload": _payload });
+        if let Ok(results) = self
+            .fire_event_via_js("before_provider_request", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(p) = r.get("payload") {
+                    return HookResult::Continue(p.clone());
+                }
+                if !r.is_null() {
+                    return HookResult::Continue(r.clone());
+                }
+            }
+        }
+        HookResult::Continue(_payload)
+    }
+
+    async fn before_provider_headers(
+        &self,
+        _headers: std::collections::HashMap<String, String>,
+    ) -> HookResult<std::collections::HashMap<String, String>> {
+        if !has_handler(&self, "before_provider_headers") {
+            return HookResult::Continue(_headers);
+        }
+        let data = serde_json::json!({ "headers": _headers });
+        if let Ok(results) = self
+            .fire_event_via_js("before_provider_headers", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+            if let Some(r) = first_result(&results) {
+                if let Some(h) = r
+                    .get("headers")
+                    .and_then(|v| serde_json::from_value::<std::collections::HashMap<String, String>>(v.clone()).ok())
+                {
+                    return HookResult::Continue(h);
+                }
+            }
+        }
+        HookResult::Continue(_headers)
+    }
+
+    async fn after_provider_response(
+        &self,
+        _status: u16,
+        _headers: std::collections::HashMap<String, String>,
+    ) -> HookResult<()> {
+        if has_handler(&self, "after_provider_response") {
+            let data = serde_json::json!({ "status": _status, "headers": _headers });
+            let _ = self.fire_event_via_js("after_provider_response", &data.to_string()).await;
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_switch(
+        &self,
+        _reason: String,
+        _target_session_file: Option<String>,
+    ) -> HookResult<()> {
+        if !has_handler(&self, "session_before_switch") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "reason": _reason, "targetSessionFile": _target_session_file });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_switch", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_fork(&self, _entry_id: String, _position: String) -> HookResult<()> {
+        if !has_handler(&self, "session_before_fork") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "entryId": _entry_id, "position": _position });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_fork", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_compact(&self, _reason: String, _will_retry: bool) -> HookResult<()> {
+        if !has_handler(&self, "session_before_compact") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "reason": _reason, "willRetry": _will_retry });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_compact", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+
+    async fn before_session_tree(&self, _target_id: String) -> HookResult<()> {
+        if !has_handler(&self, "session_before_tree") {
+            return HookResult::Continue(());
+        }
+        let data = serde_json::json!({ "targetId": _target_id });
+        if let Ok(results) = self
+            .fire_event_via_js("session_before_tree", &data.to_string())
+            .await
+        {
+            if let Some(reason) = first_block_reason(&results) {
+                return HookResult::Cancel(reason);
+            }
+        }
+        HookResult::Continue(())
+    }
+}
+
+/// Whether any loaded handler for `event` exists.
+fn has_handler(adapter: &JsExtensionAdapter, event: &str) -> bool {
+    adapter.load_result.handlers.iter().any(|h| h.event == event)
+}
+
+/// Find the first non-null handler return value.
+fn first_result(results: &Value) -> Option<&Value> {
+    // `undefined` JS values are dropped by the FireEvent collector, so
+    // only null needs filtering here.
+    results.as_array()?.iter().find(|r| !r.is_null())
+}
+
+/// Find the first `{block: true, reason}` among handler return values.
+fn first_block_reason(results: &Value) -> Option<String> {
+    results.as_array()?.iter().find_map(|r| {
+        let is_block = r.get("block").and_then(|b| b.as_bool()).unwrap_or(false);
+        is_block.then_some(
+            r.get("reason")
+                .and_then(|x| x.as_str())
+                .unwrap_or("blocked by extension")
+                .to_string(),
+        )
+    })
 }
 
 // ============================================================================
@@ -791,6 +1213,12 @@ impl JsExtensionManager {
                         js_runtime.bind_core(actions);
                         let _ = response_tx.send(Ok(()));
                     }
+                    JsCommand::SetFlagValue { name, value } => {
+                        js_runtime.set_flag_value(&name, &value);
+                    }
+                    JsCommand::Invalidate => {
+                        js_runtime.invalidate();
+                    }
                     JsCommand::Shutdown => break,
                     JsCommand::FireEvent {
                         event,
@@ -800,22 +1228,27 @@ impl JsExtensionManager {
                         let script = format!(
                             "(async () => {{
                               const handlers = globalThis.__pi.__handlers.get({event:?}) ?? [];
+                              const results = [];
+                              const ctx = globalThis.__pi.createCtx();
                               for (const h of handlers) {{
-                                await h({data});
+                                const r = await h({data}, ctx);
+                                if (r !== undefined) results.push(r);
                               }}
+                              return results;
                             }})()",
                             event = event,
                             data = data_json,
                         );
-                        match js_runtime.execute_script("<event-fire>", &script) {
-                            Ok(_) => {
-                                if let Err(e) = js_runtime.run_event_loop()
-                                    .await
-                                {
-                                    let _ = response_tx.send(Err(format!("V8 event loop: {e}")));
-                                    continue;
-                                }
-                                let _ = response_tx.send(Ok(()));
+                        // Collect handler return values as a JSON array (used
+                        // by result-bearing hooks like `tool_call` -> `{block}`).
+                        match js_runtime
+                            .execute_async_and_get_json("<event-fire>", &script)
+                            .await
+                        {
+                            Ok(json_str) => {
+                                let value = serde_json::from_str(&json_str)
+                                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                                let _ = response_tx.send(Ok(value));
                             }
                             Err(e) => {
                                 let _ = response_tx.send(Err(format!("V8 fire: {e}")));
@@ -851,6 +1284,41 @@ impl JsExtensionManager {
                 }
             }
         });
+    }
+
+    /// Invalidate the extension runtime context (stale-ctx guard): after a
+    /// session change (new/fork/switch/reload), extensions that hold stale
+    /// contexts must have their action ops throw. Mirrors TS
+    /// `runtime.invalidate()`. The intended wiring point is
+    /// `AgentSessionRuntime::set_before_session_invalidate`.
+    ///
+    /// # Errors
+    /// Returns a `String` if the V8 runtime thread has already shut down.
+    pub async fn invalidate(&self) -> Result<(), String> {
+        self.cmd_tx
+            .send(JsCommand::Invalidate)
+            .await
+            .map_err(|_| "V8 runtime channel closed".to_string())
+    }
+
+    /// Synchronous invalidate (best-effort, no await) — usable from a sync
+    /// `Fn()` callback (e.g. the session-switch invalidator).
+    pub fn invalidate_sync(&self) {
+        let _ = self.cmd_tx.try_send(JsCommand::Invalidate);
+    }
+
+    /// Set an extension flag value (CLI-passed flags override defaults).
+    ///
+    /// # Errors
+    /// Returns a `String` if the V8 runtime thread has already shut down.
+    pub async fn set_flag_value(&self, name: &str, value: &str) -> Result<(), String> {
+        self.cmd_tx
+            .send(JsCommand::SetFlagValue {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+            .await
+            .map_err(|_| "V8 runtime channel closed".to_string())
     }
 
     /// Shut down the V8 runtime (drop the channel sender and join the thread).
@@ -1222,6 +1690,264 @@ export default async function(pi) {
         let providers2 = model_registry.get_registered_providers();
         assert!(providers2.contains(&"e2e-provider".to_string()));
     }
+
+    /// A `tool_call` handler returning `{block: true, reason}` must veto the
+    /// call via `HookResult::Cancel` — the permission-gate pattern. Previously
+    /// the JS handler's return value was dropped, so blocking never worked.
+    #[test]
+    fn test_before_tool_call_block_interception() {
+        use pi_extension_api::HookResult;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("gate.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("tool_call", async (event) => {
+    const cmd = String((event.input && event.input.command) || "");
+    if (event.toolName === "bash" && cmd.includes("rm -rf")) {
+      return { block: true, reason: "dangerous command blocked" };
+    }
+    return undefined;
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        assert_eq!(load_result.handlers.len(), 1);
+        assert_eq!(load_result.handlers[0].event, "tool_call");
+
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        // Dangerous bash → blocked with the handler's reason.
+        let result = block_on(adapter.before_tool_call(
+            "bash".to_string(),
+            serde_json::json!({ "command": "rm -rf /" }),
+        ));
+        assert!(
+            result.is_cancel(),
+            "dangerous tool_call must be blocked, got {result:?}"
+        );
+        if let HookResult::Cancel(reason) = result {
+            assert_eq!(reason, "dangerous command blocked");
+        }
+
+        // Safe bash → continue.
+        let result = block_on(adapter.before_tool_call(
+            "bash".to_string(),
+            serde_json::json!({ "command": "ls" }),
+        ));
+        assert!(result.is_continue(), "safe tool_call must continue");
+    }
+
+    /// Event handlers must receive the marshalled event payload (not `{}`),
+    /// and their return values must come back through `fire_event_via_js`.
+    #[test]
+    fn test_event_payload_reaches_handler() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("payload.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("tool_call", async (event) => {
+    if (event && event.input) {
+      return { seenCommand: String(event.input.command || "") };
+    }
+    return undefined;
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let results = block_on(adapter.fire_event_via_js(
+            "tool_call",
+            r#"{"toolName":"bash","input":{"command":"ls -la"}}"#,
+        ))
+        .expect("fire_event_via_js");
+        let arr = results.as_array().expect("results must be an array");
+        assert_eq!(arr.len(), 1, "one handler registered");
+        assert_eq!(arr[0]["seenCommand"], "ls -la", "handler must see the payload");
+    }
+
+    /// Event handlers receive the second `ctx` argument (TS `(event, ctx)`),
+    /// so `ctx.hasUI` / `ctx.cwd` guards work instead of crashing.
+    #[test]
+    fn test_event_handler_receives_ctx() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("ctx.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("tool_call", async (event, ctx) => {
+    // Permission-gate style guard: uses ctx without crashing.
+    return {
+      hasUI: ctx.hasUI,
+      mode: ctx.mode,
+      cwd: ctx.cwd,
+      isIdle: ctx.isIdle(),
+      canSelect: typeof ctx.ui.select === "function",
+    };
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let results = block_on(adapter.fire_event_via_js(
+            "tool_call",
+            r#"{"toolName":"bash","input":{}}"#,
+        ))
+        .expect("fire_event_via_js");
+        let r = &results.as_array().expect("array")[0];
+        assert_eq!(r["hasUI"], false, "no UI in fast mode");
+        assert_eq!(r["mode"], "fast");
+        assert!(r["isIdle"].as_bool().unwrap_or(false), "ctx.isIdle() must work");
+        assert_eq!(r["canSelect"], true, "ctx.ui.select must exist");
+        let _ = r["cwd"]; // cwd present (may be empty in tests)
+    }
+
+    /// A `before_agent_start` handler can modify the prompt (result-bearing
+    /// hook) — its return value is parsed and applied.
+    #[test]
+    fn test_before_agent_start_modifies_prompt() {
+        use pi_extension_api::HookResult;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("preagent.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.on("before_agent_start", async (event) => {
+    return { prompt: "PREFIX: " + event.prompt, systemPrompt: event.systemPrompt };
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+
+        let result = block_on(adapter.before_agent_start(
+            "hello".to_string(),
+            None,
+            "sys".to_string(),
+            None,
+        ));
+        match result {
+            HookResult::Continue((prompt, system_prompt, _)) => {
+                assert_eq!(prompt, "PREFIX: hello");
+                assert_eq!(system_prompt, "sys");
+            }
+            HookResult::Cancel(reason) => panic!("unexpected cancel: {reason}"),
+        }
+    }
+
+    /// `pi.exec(command, args)` runs on the dedicated worker thread and
+    /// returns the TS `ExecResult` shape — callable from a tool execute
+    /// without deadlocking the agent loop.
+    #[test]
+    fn test_exec_from_tool_execute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = {
+            let path = dir.path().join("exec.ts");
+            std::fs::write(
+                &path,
+                r#"
+export default async function(pi) {
+  pi.registerTool({
+    name: "run_echo",
+    description: "run echo via pi.exec",
+    execute: async () => {
+      const r = await pi.exec("echo", ["hello-from-exec"]);
+      return {
+        content: [{ type: "text", text: "code=" + r.code + " out=" + r.stdout.trim() }],
+        details: { stderr: r.stderr, killed: r.killed },
+        terminate: false,
+      };
+    },
+  });
+}
+"#,
+            )
+            .expect("write extension");
+            path
+        };
+
+        let (manager, _cmd_tx) = JsExtensionManager::spawn();
+        let load_result =
+            block_on(manager.load_extension(ext.clone(), dir.path().to_path_buf()))
+                .expect("load_extension");
+        let adapter = JsExtensionAdapter::new(
+            &ext.to_string_lossy(),
+            load_result,
+            manager.command_sender(),
+        );
+        let mut tools = ToolRegistry::new(adapter.source_info().clone());
+        adapter.register_tools(&mut tools);
+        let registered = tools.into_vec();
+        let execute = registered[0].definition.execute.clone().expect("execute fn");
+        let output = block_on(execute("c".to_string(), serde_json::json!({}), None))
+            .expect("tool execute");
+        if output.is_error {
+            eprintln!("[dbg] exec tool error output: {:?}", output.content);
+        }
+        assert!(!output.is_error);
+        assert_eq!(output.content[0]["text"], "code=0 out=hello-from-exec");
+        let details = output.details.expect("details");
+        assert_eq!(details["killed"], false);
+    }
 }
 
 // ============================================================================
@@ -1257,6 +1983,7 @@ pub async fn load_js_extensions(
     extension_paths: &[String],
     cwd: &str,
     agent_dir: &str,
+    flags: &std::collections::HashMap<String, String>,
 ) -> Result<Option<JsExtensionsLoaded>, Vec<String>> {
     let discovered = discover_extension_paths(extension_paths, cwd, agent_dir);
     if discovered.paths.is_empty() {
@@ -1267,6 +1994,15 @@ pub async fn load_js_extensions(
     let mut adapters = Vec::new();
     let mut errors = Vec::new();
 
+    // Apply CLI-passed flag values BEFORE loading any extension, so the
+    // factory's `pi.getFlag()` reads them (registerFlag defaults never
+    // override an existing value).
+    for (name, value) in flags {
+        if let Err(e) = manager.set_flag_value(name, value).await {
+            errors.push(format!("set_flag_value({name}) failed: {e}"));
+        }
+    }
+
     for ext_path in &discovered.paths {
         let path_str = ext_path.to_string_lossy().to_string();
         match manager
@@ -1274,6 +2010,11 @@ pub async fn load_js_extensions(
             .await
         {
             Ok(load_result) => {
+                // Surface `pi.log()` output captured during the factory call
+                // (mirrors TS, where pi.log prints to the console).
+                for log in &load_result.logs {
+                    eprintln!("[pi] extension: {log}");
+                }
                 if load_result.tools.is_empty()
                     && load_result.commands.is_empty()
                     && load_result.shortcuts.is_empty()

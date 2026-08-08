@@ -178,22 +178,50 @@
 
 （即无论选哪个运行时模型，下面这些 gap 都要补，源自 TS 侧契约）
 
-- [ ] `ExtensionFactory` default-export 调用入口
-- [ ] `createExtensionAPI` 桥：`on` + 7 个 register + N 个 action + `events`
-- [ ] `ExtensionRuntime` 两阶段（占位 → bind_core，含
+> 状态标记（2026-08-08 更新）：[x] 已实现；[~] 部分实现/有已知限制；[ ] 未实现
+
+- [x] `ExtensionFactory` default-export 调用入口
+- [x] `createExtensionAPI` 桥：`on` + 7 个 register + N 个 action + `events`
+      （action 已通过 `ExtensionActionBus` 接通：读类读共享快照，写类在 turn 边界
+      drain；`exec` 未接，见下文）
+- [x] 事件 `ctx` 参数：`(event, ctx)` 对齐 TS —— `__pi.createCtx()` 提供完整
+      `ExtensionContext` 表面（ui/mode/hasUI/cwd/isIdle/...），事件 handler 与
+      tool execute 均传入
+- [x] HookHandler 全事件面：adapter 补齐 resources_discover/project_trust/
+      user_bash/context(+mut)/tool_result_mut/before_agent_start/input/
+      before_provider_request/headers/after_provider_response/
+      before_session_switch/fork/compact/tree/session_info_changed/
+      thinking_level_select/session_tree 等全部钩子（result-bearing 钩子解析
+      JS 返回值并应用）
+- [x] `ExtensionRuntime` 两阶段（占位 → bind_core，含
       `pendingProviderRegistrations` 队列与 flush）
-- [ ] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）
-- [ ] 清单发现：`package.json` 的 `pi.extensions`、`.ts/.js` 判定、
+- [x] `assertActive/invalidate` 防止 stale ctx（newSession/fork/switch/reload 后）
+      —— 机制已实现（`RuntimePhase::Invalidated` + `JsExtensionManager::invalidate()`），
+      session 切换接线点预留为 `AgentSessionRuntime::set_before_session_invalidate`
+      （当前真实模式不用 AgentSessionRuntime，接线留作后续）
+- [x] 清单发现：`package.json` 的 `pi.extensions`、`.ts/.js` 判定、
       `agent_dir/extensions` 扫描
-- [ ] cwd 失效缓存 + `clearExtensionCache()`（generation 计数）
-- [ ] `sourceInfo` 传播到 `RegisteredCommand/RegisteredTool/RegisteredShortcut`
-- [ ] virtual modules：typebox + pi-agent-core + pi-tui + pi-ai(/compat) +
+- [x] cwd 失效缓存 + `clearExtensionCache()`（generation 计数）
+- [x] `sourceInfo` 传播到 `RegisteredCommand/RegisteredTool/RegisteredShortcut`
+- [x] virtual modules：typebox + pi-agent-core + pi-tui + pi-ai(/compat) +
       pi-coding-agent 的 JS shim
-- [ ] `registerProvider`/`unregisterProvider` 在扩展 API 表面暴露并
+- [x] `registerProvider`/`unregisterProvider` 在扩展 API 表面暴露并
       接到 `ModelRegistry::register_provider`
-- [ ] `EventBus`（`on/emit/off`）补齐，对接现有 `EventPublisher`
-- [ ] `extension_paths`/`--extensions`/`enable_extensions` 从死参数转 live
-- [ ] `pi install` 装完后触发加载（闭环 package_manager → loader）
+- [x] `EventBus`（`on/emit/off`）补齐，对接现有 `EventPublisher`
+- [x] `extension_paths`/`--extensions`/`enable_extensions` 从死参数转 live
+- [~] `pi install` 装完后触发加载（闭环 package_manager → loader）——下次会话
+      启动时自动发现；无 TS 的运行时 /reload 命令
+
+已知剩余限制（js-runtime 侧）：
+- `exec` 已实现：独立 exec worker 线程（自带 tokio runtime，不依赖 session
+  owner / V8 线程）+ 同步 op 阻塞等回复，turn 内调用不死锁；支持 timeout/cwd
+  选项，返回 TS ExecResult 形状
+- 写类 action 在 turn 边界生效（非立即）；`setModel` 乐观返回，模型在下次
+  drain 应用
+- CLI 扩展 flag → 扩展 `getFlag` 未接线（CLI 只收集 unknown_flags）；扩展自身
+  注册的默认值经 JS map 可读
+- `registerMarkdownTransformer` 已占位（no-op，TUI 未移植）
+- session 切换 → `invalidate()` 的接线待做（机制已就绪，见上）
 
 ## 7. 与已有偏差记录的关系
 

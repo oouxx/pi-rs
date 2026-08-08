@@ -14,6 +14,8 @@ pub mod extensions;
 pub mod footer_data_provider;
 pub mod http_dispatcher;
 pub mod messages;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod output_guard;

@@ -81,7 +81,16 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // RPC mode creates its own session internally
     if args.mode == OutputMode::Rpc {
-        return pi_coding_agent::modes::rpc::run_rpc_mode(args.extensions.clone()).await;
+        return pi_coding_agent::modes::rpc::run_rpc_mode(
+            args.extensions.clone(),
+            args.unknown_flags.clone(),
+        )
+        .await;
+    }
+
+    // ACP mode: speak the Agent Client Protocol over stdio (Zed, JetBrains, …)
+    if args.mode == OutputMode::Acp {
+        return pi_coding_agent::modes::acp::run_acp_mode().await;
     }
 
     if !trusted {
@@ -115,6 +124,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
+        extension_flags: Some(args.unknown_flags.clone()),
         enable_extensions: !args.no_extensions,
         extension_registry: {
             let mut reg = ExtensionRegistry::new();
@@ -189,6 +199,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         stream_fn: None,
         convert_to_llm: None,
         extension_paths: args.extensions.clone(),
+        extension_flags: Some(args.unknown_flags.clone()),
         enable_extensions: !args.no_extensions,
         extension_registry: {
             let mut reg = ExtensionRegistry::new();

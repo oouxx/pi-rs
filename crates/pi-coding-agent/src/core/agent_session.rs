@@ -120,23 +120,34 @@ pub struct AgentSessionConfig {
     /// Call `agent.add_tools()` after session creation to replace stubs
     /// with real execute implementations.
     pub custom_tools: Option<Vec<ToolDefinition>>,
+    /// Shared state snapshot for JS extension read-actions (getActiveTools,
+    /// getSessionName, ...). Refreshed at drain points.
+    pub extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
+    /// Receiver for JS extension write-actions (sendMessage, setModel, ...),
+    /// drained at turn boundaries.
+    pub extension_action_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>,
 }
 
 /// Options for AgentSession.prompt().
 /// Matches the original TypeScript PromptOptions interface.
 /// Options for send_custom_message(), matching TS sendCustomMessage() options.
-#[derive(Default)]
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CustomMessageOptions {
     /// Whether to trigger a turn after sending the message.
+    #[serde(default)]
     pub trigger_turn: bool,
     /// Delivery mode when streaming: "steer", "followUp", or "nextTurn".
+    #[serde(default)]
     pub deliver_as: Option<String>,
 }
 
 /// Options for send_user_message(), matching TS sendUserMessage() options.
-#[derive(Default)]
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendUserMessageOptions {
     /// Delivery mode when streaming: "steer" or "followUp".
+    #[serde(default)]
     pub deliver_as: Option<String>,
 }
 
@@ -229,8 +240,11 @@ impl std::fmt::Display for CompactionReason {
 
 /// Session-specific events that extend the core AgentEvent.
 /// Matches the original TypeScript AgentSessionEvent type.
+///
+/// Serialized as a `type`-discriminated union, matching the TS
+/// `AgentSessionEvent` shape on the RPC/JSON wire (`{"type": "message_update", ...}`).
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "type")]
 #[allow(clippy::large_enum_variant)]
 pub enum AgentSessionEvent {
     // ── Passthrough from AgentEvent (all variants except AgentEnd) ──
@@ -383,6 +397,15 @@ pub struct AgentSession {
     /// Pending bash execution results queued while agent is streaming,
     /// matching TS `_pendingBashMessages`.
     pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// Shared state snapshot for JS extension read-actions, refreshed at
+    /// drain points (turn boundaries).
+    extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
+    /// Receiver for JS extension write-actions, drained at turn boundaries.
+    extension_action_rx: Option<Arc<std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>>>,
+    /// Sync callback that invalidates the JS extension runtime (stale-ctx
+    /// guard) when the session changes (new/fork/switch/reload). Set by the
+    /// SDK from the V8 manager; absent when `js-runtime` is off.
+    js_invalidator: Option<Arc<dyn Fn() + Send + Sync>>,
     // ── Event subscription state ──
     event_listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
     /// Handle to the internal agent event subscription.
@@ -907,6 +930,11 @@ impl AgentSession {
             resources: options.resources,
             extension_resource_paths: None,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
+            extension_state_view: options.extension_state_view,
+            extension_action_rx: options
+                .extension_action_rx
+                .map(|rx| Arc::new(std::sync::Mutex::new(rx))),
+            js_invalidator: None,
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
             _agent_subscription: None,
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
@@ -1563,7 +1591,7 @@ impl AgentSession {
         self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_session_name()
     }
 
-    pub fn set_session_name(&mut self, name: &str) {
+    pub fn set_session_name(&self, name: &str) {
         self.session_manager
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1908,8 +1936,178 @@ impl AgentSession {
             .iter()
             .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
             .collect();
-        let mut state = self.agent.state().await;
-        state.tools = selected;
+        // Write through the shared state — `state()` returns a clone.
+        self.agent.update_state(|s| s.tools = selected).await;
+    }
+
+    // =========================================================================
+    // Extension action bus (JS extension actions)
+    // =========================================================================
+
+    /// Build the list of discoverable slash commands, matching TS
+    /// `getCommands()`. Order: extension commands, prompt templates, skills.
+    pub fn get_commands_info(&self) -> Vec<crate::core::slash_commands::SlashCommandInfo> {
+        let mut commands: Vec<crate::core::slash_commands::SlashCommandInfo> = Vec::new();
+
+        // Extension commands → source = "extension" (with `:N` dedup).
+        if let Some(registry) = self.get_extension_registry() {
+            let resolved =
+                crate::core::slash_commands::resolve_extension_commands(registry.commands());
+            for cmd in resolved {
+                commands.push(crate::core::slash_commands::SlashCommandInfo {
+                    name: cmd.invocation_name,
+                    description: cmd.description,
+                    source: crate::core::slash_commands::SlashCommandSource::Extension,
+                    source_info: cmd.source_info,
+                });
+            }
+        }
+
+        // Prompt templates → source = "prompt".
+        for template in self.prompt_templates() {
+            commands.push(crate::core::slash_commands::SlashCommandInfo {
+                name: template.name,
+                description: Some(template.description),
+                source: crate::core::slash_commands::SlashCommandSource::Prompt,
+                source_info: template.source_info,
+            });
+        }
+
+        // Skills → name = "skill:<name>", source = "skill".
+        if let Some(resources) = self.resource_loader() {
+            for skill in &resources.skills {
+                commands.push(crate::core::slash_commands::SlashCommandInfo {
+                    name: format!("skill:{}", skill.name),
+                    description: Some(skill.description.clone()),
+                    source: crate::core::slash_commands::SlashCommandSource::Skill,
+                    source_info: skill.source_info.clone(),
+                });
+            }
+        }
+        commands
+    }
+
+    /// Refresh the shared extension state snapshot from the current session
+    /// state. Called at drain points (turn boundaries) so JS extension
+    /// read-actions (`getActiveTools`, `getAllTools`, `getSessionName`, …)
+    /// see up-to-date values.
+    pub async fn refresh_extension_state(&self) {
+        let Some(view) = self.extension_state_view.as_ref() else {
+            return;
+        };
+        // Collect all values before taking the lock so no await happens while
+        // the MutexGuard is held.
+        let model = self.get_model().await;
+        let all_tools = self
+            .get_all_tools()
+            .into_iter()
+            .filter_map(|t| serde_json::to_value(t).ok())
+            .collect();
+        let commands = self
+            .get_commands_info()
+            .into_iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .collect();
+        let session_name = self.get_session_name();
+        let active_tools = self.get_active_tool_names().await;
+        let thinking_level = self.get_thinking_level().await;
+        let mut guard = view
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.session_name = session_name;
+        guard.active_tools = active_tools;
+        guard.all_tools = all_tools;
+        guard.thinking_level = thinking_level;
+        guard.commands = commands;
+        guard.model_id = Some(format!("{}/{}", model.provider, model.id));
+    }
+
+    /// Register a synchronous callback that invalidates the JS extension
+    /// runtime when the session changes (new/fork/switch/reload). The SDK
+    /// wires this to the V8 manager under `js-runtime`.
+    pub fn set_js_invalidator(&mut self, invalidator: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.js_invalidator = invalidator;
+    }
+
+    /// Apply all queued JS extension write-actions, then refresh the state
+    /// snapshot. Called at turn boundaries (start of `prompt`/`steer`/
+    /// `follow_up`/`send_user_message`).
+    ///
+    /// Boxed because `send_user_message` → `prompt` → `drain` is a recursive
+    /// async cycle (runtime-safe: the queue is fully drained before any action
+    /// is applied, so a nested drain is a no-op).
+    pub async fn drain_extension_actions(&self) {
+        use crate::core::extensions::action_bus::ExtensionAction;
+        Box::pin(async move {
+            let Some(rx) = self.extension_action_rx.as_ref() else {
+                return;
+            };
+            let mut actions = Vec::new();
+            {
+                let mut guard = rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                while let Ok(action) = guard.try_recv() {
+                    actions.push(action);
+                }
+            }
+            for action in actions {
+                match action {
+                    ExtensionAction::SendMessage {
+                        custom_type,
+                        content,
+                        options_json,
+                    } => {
+                        let opts = options_json
+                            .as_deref()
+                            .and_then(|o| serde_json::from_str(o).ok());
+                        self.send_custom_message(&custom_type, &content, opts).await;
+                    }
+                    ExtensionAction::SendUserMessage { content, options_json } => {
+                        let opts = options_json
+                            .as_deref()
+                            .and_then(|o| serde_json::from_str(o).ok());
+                        self.send_user_message(&content, opts).await;
+                    }
+                    ExtensionAction::AppendEntry { custom_type, data_json } => {
+                        let data = data_json
+                            .as_deref()
+                            .and_then(|d| serde_json::from_str(d).ok());
+                        self.session_manager
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .append_custom_entry(&custom_type, data);
+                    }
+                    ExtensionAction::SetSessionName(name) => {
+                        self.set_session_name(&name);
+                    }
+                    ExtensionAction::SetLabel { entry_id, label } => {
+                        // `set_label` panics on unknown entries; guard first.
+                        let mut mgr = self
+                            .session_manager
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if mgr.get_entry(&entry_id).is_some() {
+                            mgr.set_label(&entry_id, label.as_deref());
+                        }
+                    }
+                    ExtensionAction::SetActiveTools(tools) => {
+                        self.set_active_tools_by_name(&tools).await;
+                    }
+                    ExtensionAction::SetThinkingLevel(level) => {
+                        self.set_thinking_level(&level).await;
+                    }
+                    ExtensionAction::SetModel(model_id) => {
+                        // "provider/model" string, resolved via the model registry.
+                        if let Some((provider, id)) = model_id.split_once('/') {
+                            if let Some(model) = self.model_registry.find(provider, id) {
+                                let _ = self.set_model(model).await;
+                            }
+                        }
+                    }
+                }
+            }
+            self.refresh_extension_state().await;
+        })
+        .await
     }
 
     // =========================================================================
@@ -1991,6 +2189,8 @@ impl AgentSession {
         {
             eprintln!("[pi] Failed to refresh session state before next turn: {e}");
         }
+        // Apply queued JS extension actions before the turn starts.
+        self.drain_extension_actions().await;
 
         let opts = options.unwrap_or_default();
         let expand_templates = opts.expand_prompt_templates.unwrap_or(true);
@@ -2247,8 +2447,10 @@ References are relative to {}.
         }
         for msg_value in &messages {
             if let Ok(agent_msg) = serde_json::from_value::<AgentMessage>(msg_value.clone()) {
-                let mut state = self.agent.state().await;
-                state.messages.push(agent_msg);
+                // Write through the shared state — `state()` returns a clone.
+                self.agent
+                    .update_state(|s| s.messages.push(agent_msg))
+                    .await;
                 // Note: session persistence is handled by the agent event handler
             }
         }
@@ -2734,7 +2936,7 @@ References are relative to {}.
 
     /// Set the model on the agent, matching the original setModel().
     /// Persists to session and settings, re-clamps thinking level, and emits events.
-    pub async fn set_model(&mut self, model: Model) -> Result<(), String> {
+    pub async fn set_model(&self, model: Model) -> Result<(), String> {
         // Check auth before setting model, matching TS _modelRuntime.checkAuth()
         let auth_result = self.model_registry.get_api_key_and_headers(&model).await?;
         if !auth_result.ok {
@@ -2746,15 +2948,15 @@ References are relative to {}.
 
         let model_id = model.id.clone();
         let model_provider = model.provider.clone();
-        let mut state = self.agent.state().await;
+        let state = self.agent.state().await;
         let previous_model_id = state.model.id.clone();
         let previous_model = if previous_model_id.is_empty() {
             None
         } else {
             Some(previous_model_id.clone())
         };
-        state.model = model;
-        drop(state);
+        // Write through the shared state — `state()` returns a clone.
+        self.agent.set_model(model).await;
 
         // Persist to session (matching TS sessionManager.appendModelChange)
         self.session_manager
@@ -2809,7 +3011,7 @@ References are relative to {}.
     /// Set the thinking level on the agent.
     /// Clamps to model capabilities, matching TS setThinkingLevel().
     /// Persists to session and settings, emits events, dispatches to extensions.
-    pub async fn set_thinking_level(&mut self, level: &str) {
+    pub async fn set_thinking_level(&self, level: &str) {
         let state = self.agent.state().await;
         let available = pi_agent_core::pi_ai_types::get_supported_thinking_levels(&state.model);
         let effective = if available.contains(&level) {
@@ -2822,9 +3024,8 @@ References are relative to {}.
         drop(state);
 
         if is_changing {
-            let mut state = self.agent.state().await;
-            state.thinking_level = effective.clone();
-            drop(state);
+            // Write through the shared state — `state()` returns a clone.
+            self.agent.set_thinking_level(effective.clone()).await;
 
             // Persist to session (matching TS sessionManager.appendThinkingLevelChange)
             self.session_manager
@@ -2919,15 +3120,15 @@ References are relative to {}.
         let model_provider = model.provider.clone();
 
         // Set model on agent state (matching TS _cycleScopedModel)
-        let mut state = self.agent.state().await;
+        let state = self.agent.state().await;
         let previous_model_id = state.model.id.clone();
         let previous_model = if previous_model_id.is_empty() {
             None
         } else {
             Some(previous_model_id.clone())
         };
-        state.model = model.clone();
-        drop(state);
+        // Write through the shared state — `state()` returns a clone.
+        self.agent.set_model(model.clone()).await;
 
         // Persist to session (matching TS sessionManager.appendModelChange)
         self.session_manager
@@ -3202,7 +3403,7 @@ References are relative to {}.
     /// Send a custom message, matching TS sendCustomMessage().
     /// Supports `triggerTurn` and `deliverAs` options.
     pub async fn send_custom_message(
-        &mut self,
+        &self,
         custom_type: &str,
         content: &str,
         options: Option<CustomMessageOptions>,
@@ -3247,10 +3448,11 @@ References are relative to {}.
         if opts.trigger_turn {
             self.agent.process(vec![message]).await.ok();
         } else {
-            // Just append to messages and emit events
-            let mut state = self.agent.state().await;
-            state.messages.push(message);
-            drop(state);
+            // Just append to messages and emit events. Write through the
+            // shared state — `state()` returns a clone.
+            self.agent
+                .update_state(|s| s.messages.push(message))
+                .await;
         }
     }
 
@@ -3261,6 +3463,8 @@ References are relative to {}.
     /// Queue a steering message (interrupts current stream), matching TS steer().
     /// Supports optional image attachments.
     pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) {
+        // Apply queued JS extension actions before the steer.
+        self.drain_extension_actions().await;
         let timestamp = chrono::Utc::now().timestamp_millis();
         let mut content = vec![ContentBlock::text(text)];
         if let Some(imgs) = images {
@@ -3273,6 +3477,8 @@ References are relative to {}.
     /// Queue a follow-up message (waits for current stream), matching TS followUp().
     /// Supports optional image attachments.
     pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) {
+        // Apply queued JS extension actions before the follow-up.
+        self.drain_extension_actions().await;
         let timestamp = chrono::Utc::now().timestamp_millis();
         let mut content = vec![ContentBlock::text(text)];
         if let Some(imgs) = images {
@@ -3850,8 +4056,10 @@ impl AgentSession {
             self.pending_bash_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(value);
         } else {
             // Add to agent state immediately
-            let mut state = self.agent.state().await;
-            state.messages.push(bash_message);
+            // Write through the shared state — `state()` returns a clone.
+            self.agent
+                .update_state(|s| s.messages.push(bash_message))
+                .await;
             // Note: session persistence is handled by the agent event handler
         }
     }
@@ -4060,6 +4268,11 @@ impl AgentSession {
         let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
         *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
         self.load_messages_from_session().await;
+        // The session changed: invalidate the JS extension runtime so stale
+        // contexts are detected (assertActive / runtime.invalidate).
+        if let Some(ref invalidate) = self.js_invalidator {
+            invalidate();
+        }
         Ok(())
     }
 

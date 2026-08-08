@@ -147,6 +147,9 @@ enum RuntimePhase {
     Uninitialized,
     /// Bound: action methods delegate to the closures.
     Bound(RuntimeActions),
+    /// Session changed (newSession/fork/switch/reload): action methods throw a
+    /// stale-ctx error (TS `assertActive` / `runtime.invalidate`).
+    Invalidated,
 }
 
 /// Action-method closures, set by `bind_core()`. Mirrors TS
@@ -161,11 +164,15 @@ pub struct RuntimeActions {
     pub get_session_name: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     pub set_label: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
     pub get_active_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
-    pub get_all_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    /// Serialized `ToolInfo` objects, matching TS `getAllTools()`.
+    pub get_all_tools: Option<Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>>,
     pub set_active_tools: Option<Arc<dyn Fn(Vec<String>) + Send + Sync>>,
-    pub get_commands: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    /// Serialized `SlashCommandInfo` objects, matching TS `getCommands()`.
+    pub get_commands: Option<Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>>,
     pub get_thinking_level: Option<Arc<dyn Fn() -> String + Send + Sync>>,
     pub set_thinking_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// `provider/model` string, resolved + applied at the next drain point.
+    pub set_model: Option<Arc<dyn Fn(String) + Send + Sync>>,
     pub register_provider:
         Option<Arc<dyn Fn(String, String, String) + Send + Sync>>,
     pub unregister_provider: Option<Arc<dyn Fn(String) + Send + Sync>>,
@@ -248,13 +255,202 @@ fn op_register_flag(
 ) -> Result<(), JsErrorBox> {
     let mut result = take_result(state);
     result.flags.push(LoadedFlagRecord {
-        name,
+        name: name.clone(),
         flag_type,
         description,
-        default_value,
+        default_value: default_value.clone(),
     });
+    // Seed the flag-value store with the default so getFlag() works without
+    // an explicit CLI value.
+    if let Some(ref d) = default_value {
+        let mut flags = state
+            .try_borrow_mut::<std::collections::HashMap<String, String>>()
+            .cloned()
+            .unwrap_or_default();
+        flags.entry(name).or_insert_with(|| d.clone());
+        state.put(flags);
+    }
     state.put(result);
     Ok(())
+}
+
+#[op2]
+#[string]
+fn op_get_flag_value(state: &mut OpState, #[string] name: String) -> Option<String> {
+    state
+        .try_borrow::<std::collections::HashMap<String, String>>()
+        .and_then(|m| m.get(&name).cloned())
+}
+
+#[op2(fast)]
+fn op_set_flag_value(
+    state: &mut OpState,
+    #[string] name: String,
+    #[string] value: String,
+) -> Result<(), JsErrorBox> {
+    let mut flags = state
+        .try_borrow_mut::<std::collections::HashMap<String, String>>()
+        .cloned()
+        .unwrap_or_default();
+    flags.insert(name, value);
+    state.put(flags);
+    Ok(())
+}
+
+// ============================================================================
+// exec — `pi.exec(command, args, options)`
+// ============================================================================
+
+/// A request to run a shell command via the exec worker.
+struct ExecRequest {
+    command: String,
+    args: Vec<String>,
+    options_json: Option<String>,
+    reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+}
+
+/// Dedicated exec worker: runs shell commands on its own thread with its own
+/// tokio runtime, independent of the session owner and the V8 thread. This is
+/// what makes a blocking `op_exec` safe — the worker never depends on the
+/// agent loop, so it cannot deadlock even when `pi.exec` is called from a
+/// tool execute or event handler mid-turn.
+struct ExecWorker {
+    tx: Option<tokio::sync::mpsc::UnboundedSender<ExecRequest>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ExecWorker {
+    fn spawn(cwd: String) -> Self {
+        let (tx, mut rx): (tokio::sync::mpsc::UnboundedSender<ExecRequest>, _) =
+            tokio::sync::mpsc::unbounded_channel();
+        let handle = std::thread::Builder::new()
+            .name("pi-exec-worker".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build exec worker runtime");
+                rt.block_on(async move {
+                    while let Some(req) = rx.recv().await {
+                        let result = run_command(&cwd, &req).await;
+                        let _ = req.reply.send(result);
+                    }
+                });
+            })
+            .expect("spawn exec worker");
+        Self {
+            tx: Some(tx),
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for ExecWorker {
+    fn drop(&mut self) {
+        // Drop the sender FIRST so the worker's `rx.recv()` returns None and
+        // its thread can exit; then join. (Fields are dropped after `drop()`,
+        // so joining while `tx` is still alive would deadlock.)
+        self.tx.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Run one command, returning the TS `ExecResult` shape
+/// (`{ stdout, stderr, code, killed }`).
+async fn run_command(cwd: &str, req: &ExecRequest) -> Result<serde_json::Value, String> {
+    let options: serde_json::Value = req
+        .options_json
+        .as_deref()
+        .and_then(|o| serde_json::from_str(o).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let timeout_ms = options.get("timeout").and_then(|t| t.as_u64());
+    let cwd_override = options
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string());
+
+    let mut cmd = tokio::process::Command::new(&req.command);
+    cmd.args(&req.args);
+    cmd.current_dir(cwd_override.as_deref().unwrap_or(cwd));
+
+    let output = if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(std::time::Duration::from_millis(ms), cmd.output()).await {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(format!("spawn failed: {e}")),
+            Err(_) => {
+                return Ok(serde_json::json!({
+                    "stdout": "",
+                    "stderr": "command timed out",
+                    "code": 1,
+                    "killed": true,
+                }));
+            }
+        }
+    } else {
+        cmd.output()
+            .await
+            .map_err(|e| format!("spawn failed: {e}"))?
+    };
+
+    Ok(serde_json::json!({
+        "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
+        "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+        "code": output.status.code().unwrap_or(1),
+        "killed": false,
+    }))
+}
+
+/// Exec context stored in OpState: the session cwd (set on first load) and
+/// the lazily-spawned worker.
+struct ExecContext {
+    cwd: String,
+    worker: Option<ExecWorker>,
+}
+
+#[op2]
+#[string]
+fn op_exec(
+    state: &mut OpState,
+    #[string] command: String,
+    #[string] args_json: String,
+    #[string] options_json: Option<String>,
+) -> Result<String, JsErrorBox> {
+    let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
+    let mut ctx = state
+        .try_borrow_mut::<ExecContext>()
+        .ok_or_else(|| JsErrorBox::generic("exec: session cwd not initialized"))?;
+    if ctx.worker.is_none() {
+        ctx.worker = Some(ExecWorker::spawn(ctx.cwd.clone()));
+    }
+    let worker = ctx
+        .worker
+        .as_ref()
+        .ok_or_else(|| JsErrorBox::generic("exec: worker not available"))?;
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    worker
+        .tx
+        .as_ref()
+        .ok_or_else(|| JsErrorBox::generic("exec: worker channel closed"))?
+        .send(ExecRequest {
+            command,
+            args,
+            options_json,
+            reply: reply_tx,
+        })
+        .map_err(|_| JsErrorBox::generic("exec: worker channel closed"))?;
+    // Block the V8 thread until the worker (on its own thread/runtime)
+    // completes the command. Safe: the worker never depends on the agent
+    // loop or the V8 thread.
+    let result = reply_rx
+        .recv()
+        .map_err(|_| JsErrorBox::generic("exec: worker dropped the reply"))?;
+    match result {
+        Ok(value) => serde_json::to_string(&value)
+            .map_err(|e| JsErrorBox::generic(format!("exec: serialize result: {e}"))),
+        Err(e) => Err(JsErrorBox::generic(format!("exec: {e}"))),
+    }
 }
 
 #[op2(fast)]
@@ -491,6 +687,16 @@ fn op_set_thinking_level(
 }
 
 #[op2(fast)]
+fn op_set_model(state: &mut OpState, #[string] model_id: String) -> Result<(), JsErrorBox> {
+    let actions = bound_actions(state)?;
+    let set = actions.set_model.as_ref().ok_or_else(not_initialized)?;
+    // Fire-and-forget: the model is resolved + applied at the session's next
+    // drain point (turn boundary). The JS side resolves optimistically.
+    set(model_id);
+    Ok(())
+}
+
+#[op2(fast)]
 fn op_register_provider_action(
     state: &mut OpState,
     #[string] name: String,
@@ -692,6 +898,10 @@ fn bound_actions(state: &mut OpState) -> Result<RuntimeActions, JsErrorBox> {
     match phase {
         RuntimePhase::Uninitialized => Err(not_initialized()),
         RuntimePhase::Bound(actions) => Ok(actions.clone()),
+        RuntimePhase::Invalidated => Err(JsErrorBox::generic(
+            "Extension runtime invalidated: session was changed (new/fork/switch/reload). \
+             Reload extensions to continue.",
+        )),
     }
 }
 
@@ -701,6 +911,9 @@ const OPS: &[OpDecl] = &[
     op_register_command(),
     op_register_shortcut(),
     op_register_flag(),
+    op_get_flag_value(),
+    op_set_flag_value(),
+    op_exec(),
     op_register_handler(),
     op_register_message_renderer(),
     op_register_entry_renderer(),
@@ -719,6 +932,7 @@ const OPS: &[OpDecl] = &[
     op_get_commands(),
     op_get_thinking_level(),
     op_set_thinking_level(),
+    op_set_model(),
     op_register_provider_action(),
     op_unregister_provider_action(),
     // Node.js built-in module ops
@@ -763,6 +977,40 @@ const BOOTSTRAP_JS: &str = r#"
   function assertActive() {
     // The stale-ctx check is done Rust-side via the phase; if the runtime
     // has been invalidated, ops will throw. Nothing to check in JS here.
+  }
+
+  // Builds the `ExtensionContext` passed as the 2nd argument to event
+  // handlers and as the 5th argument to tool `execute` (matching TS).
+  // Most fields are safe defaults; the runtime cannot honour UI prompts,
+  // abort, or compaction, so those degrade gracefully. `cwd` is set per
+  // load via `__piCwd`.
+  function createCtx() {
+    return {
+      ui: {
+        notify: (message, level) => { Deno.core.ops.op_pi_log(String(message)); },
+        setStatus: () => {},
+        confirm: () => Promise.resolve(false),
+        select: () => Promise.resolve(undefined),
+        input: () => Promise.resolve(undefined),
+      },
+      mode: 'fast',
+      hasUI: false,
+      cwd: globalThis.__piCwd || '.',
+      sessionManager: new Proxy({}, { get: () => () => {} }),
+      modelRegistry: new Proxy({}, { get: () => () => {} }),
+      model: undefined,
+      scopedModels: [],
+      thinkingLevel: undefined,
+      isIdle: () => true,
+      isProjectTrusted: () => false,
+      signal: undefined,
+      abort: () => {},
+      hasPendingMessages: () => false,
+      shutdown: () => {},
+      getContextUsage: () => undefined,
+      compact: () => {},
+      getSystemPrompt: () => '',
+    };
   }
 
   globalThis.__pi = {
@@ -830,12 +1078,22 @@ const BOOTSTRAP_JS: &str = r#"
 
     getFlag(name) {
       assertActive();
-      return flagValues.get(name);
+      const v = Deno.core.ops.op_get_flag_value(String(name));
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return (v === null || v === undefined) ? undefined : v;
     },
 
     registerMessageRenderer(customType, renderer) {
       assertActive();
       Deno.core.ops.op_register_message_renderer(String(customType));
+    },
+
+    // Markdown transformer: captured so the extension loads successfully;
+    // the TUI (which would consume transformers) is not ported (confirmed
+    // deviation), so the transformer is a no-op.
+    registerMarkdownTransformer(transformer) {
+      assertActive();
     },
 
     registerEntryRenderer(customType, renderer) {
@@ -907,10 +1165,23 @@ const BOOTSTRAP_JS: &str = r#"
 
     setModel(model) {
       assertActive();
-      // setModel is async in TS; we return a Promise that resolves once the
-      // Rust side processes it. For now this is a placeholder — the real
-      // implementation will call an async op.
-      return Promise.resolve(false);
+      // Fire-and-forget: the op queues the model change; the session applies
+      // it at the next turn boundary. The promise resolves optimistically —
+      // the actual result (auth check) surfaces via getModel/state reads.
+      const id = (model && (model.provider + "/" + model.id)) || String(model);
+      Deno.core.ops.op_set_model(String(id));
+      return Promise.resolve(true);
+    },
+
+    exec(command, args, options) {
+      assertActive();
+      // Runs on a dedicated worker thread; the op blocks until the command
+      // completes and returns the ExecResult object.
+      return JSON.parse(Deno.core.ops.op_exec(
+        String(command),
+        JSON.stringify(args || []),
+        options ? JSON.stringify(options) : null,
+      ));
     },
 
     getThinkingLevel() {
@@ -967,6 +1238,10 @@ const BOOTSTRAP_JS: &str = r#"
     __invokeCommandHandler: null,
     __invokeEventHandler: null,
   };
+
+  // Expose the ctx factory (used by Rust-side scripts for tool execute
+  // and event handlers).
+  globalThis.__pi.createCtx = createCtx;
 
   // Store the maps on __pi for later Rust-side callback invocation.
   globalThis.__pi.__handlers = handlers;
@@ -1174,6 +1449,9 @@ impl JsExtensionRuntime {
             let mut state = op_state.borrow_mut();
             state.put(ExtensionLoadResult::default());
             state.put(RuntimePhase::Uninitialized);
+            // Flag-value store (seeded with registerFlag defaults; updated by
+            // CLI-passed values via `op_set_flag_value`).
+            state.put(std::collections::HashMap::<String, String>::new());
         }
         runtime
             .execute_script("<pi-bootstrap>", BOOTSTRAP_JS)
@@ -1199,7 +1477,20 @@ impl JsExtensionRuntime {
     /// stale-ctx error.
     pub fn invalidate(&mut self) {
         let op_state = self.runtime.op_state();
-        op_state.borrow_mut().put(RuntimePhase::Uninitialized);
+        op_state.borrow_mut().put(RuntimePhase::Invalidated);
+    }
+
+    /// Set an extension flag value (CLI-passed flags override the default
+    /// seeded by `registerFlag`).
+    pub fn set_flag_value(&mut self, name: &str, value: &str) {
+        let op_state = self.runtime.op_state();
+        let mut state = op_state.borrow_mut();
+        let mut flags = state
+            .try_borrow_mut::<std::collections::HashMap<String, String>>()
+            .cloned()
+            .unwrap_or_default();
+        flags.insert(name.to_string(), value.to_string());
+        state.put(flags);
     }
 
     /// Load and invoke the default-export factory of the TS/JS extension at
@@ -1220,6 +1511,17 @@ impl JsExtensionRuntime {
                 path = path.to_string_lossy()
             ))
             .map_err(|e| anyhow::anyhow!("set extension path: {e}"))?;
+        // Record the session cwd for `pi.exec` (worker spawned lazily).
+        {
+            let op_state = self.runtime.op_state();
+            let mut state = op_state.borrow_mut();
+            if state.try_borrow::<ExecContext>().is_none() {
+                state.put(ExecContext {
+                    cwd: cwd.to_string_lossy().to_string(),
+                    worker: None,
+                });
+            }
+        }
         // A shim module that imports the extension's default export and invokes
         // it with the host-provided `__pi` object. This mirrors jiti's
         // `{ default: true }` extraction + `factory(api)` call.
@@ -1662,12 +1964,42 @@ export default async function(pi) {
         // Invalidate.
         js.invalidate();
 
-        // Should throw after invalidate.
+        // Should throw after invalidate (stale-ctx error, not "not initialized").
         let err = js
             .runtime
             .execute_script("<after>", "globalThis.__pi.setSessionName('after');")
             .unwrap_err();
-        assert!(err.to_string().contains("not initialized"));
+        assert!(
+            err.to_string().contains("invalidated"),
+            "expected stale-ctx error, got: {err}"
+        );
+    }
+
+    /// `registerFlag` seeds the Rust flag-value store with its default, and
+    /// `op_set_flag_value` (CLI-passed) overrides it — `getFlag` reflects the
+    /// override (and converts "true"/"false" to booleans).
+    #[test]
+    fn test_flag_default_and_cli_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext = write_extension(
+            dir.path(),
+            "flags.ts",
+            r#"
+export default async function(pi) {
+  pi.registerFlag("verbose", { type: "boolean", default: false, description: "verbose" });
+  pi.log("flag-default=" + pi.getFlag("verbose"));
+  Deno.core.ops.op_set_flag_value("verbose", "true");
+  pi.log("flag-after=" + pi.getFlag("verbose"));
+}
+"#,
+        );
+        let mut js = JsExtensionRuntime::new().expect("runtime");
+        block_on(js.load_extension(&ext, dir.path())).expect("load_extension");
+        let result = js.take_result();
+        assert_eq!(
+            result.logs,
+            vec!["flag-default=false".to_string(), "flag-after=true".to_string()]
+        );
     }
 
     #[test]

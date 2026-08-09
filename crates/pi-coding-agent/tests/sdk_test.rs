@@ -375,9 +375,11 @@ fn convert_msg(
 #[tokio::test]
 async fn test_create_agent_session_with_extension() {
     let ext_registry = create_registry();
+    // 临时目录隔离 agent_dir，避免测试污染 ~/.pi-rs/agent。
+    let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
-        agent_dir: None,
+        agent_dir: Some(tmp.path().to_string_lossy().to_string()),
         model: Some(make_model()),
         thinking_level: None,
         scoped_models: None,
@@ -448,9 +450,11 @@ async fn test_create_agent_session_with_extension() {
 #[tokio::test]
 async fn test_session_builtin_bash_tool_exec() {
     let ext_registry = create_registry();
+    // 临时目录隔离 agent_dir，避免测试污染 ~/.pi-rs/agent。
+    let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
-        agent_dir: None,
+        agent_dir: Some(tmp.path().to_string_lossy().to_string()),
         model: Some(make_model()),
         thinking_level: None,
         scoped_models: None,
@@ -1328,9 +1332,12 @@ async fn test_state_mutations_persist_to_agent() {
     model.reasoning = true;
     model.thinking_level_map = Some(HashMap::new());
 
+    // 用临时目录隔离 agent_dir，避免测试污染 ~/.pi-rs/agent
+    // （persist_session + set_model 会写 session 文件和 settings.json）。
+    let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
-        agent_dir: None,
+        agent_dir: Some(tmp.path().to_string_lossy().to_string()),
         model: Some(model),
         thinking_level: None,
         scoped_models: None,
@@ -1437,7 +1444,7 @@ async fn test_prompt_returns_error_when_no_api_key() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
         cwd: ".".to_string(),
-        agent_dir: None,
+        agent_dir: Some(tmp.path().to_string_lossy().to_string()),
         model: Some(model),
         thinking_level: None,
         scoped_models: None,

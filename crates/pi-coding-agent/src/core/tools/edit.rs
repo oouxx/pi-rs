@@ -241,7 +241,17 @@ pub fn create_edit_tool(
     AgentTool {
         name: "edit".to_string(),
         description: "Edit a file by performing targeted replacements. Each edit replaces exact text matches with fuzzy fallback.".to_string(),
-        label: "Edit".to_string(),
+        label: "edit".to_string(),
+        prompt_snippet: Some(
+            "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
+                .to_string(),
+        ),
+        prompt_guidelines: Some(vec![
+            "Use edit for precise changes (edits[].oldText must match exactly)".to_string(),
+            "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls".to_string(),
+            "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.".to_string(),
+            "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.".to_string(),
+        ]),
         parameters_schema: edit_parameters_schema(),
         execution_mode: None,
         prepare_arguments: Some(Arc::new(prepare_edit_arguments)),

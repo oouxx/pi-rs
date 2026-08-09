@@ -145,7 +145,9 @@ pub fn create_read_tool(
             truncate::DEFAULT_MAX_LINES,
             DEFAULT_MAX_BYTES / 1024
         ),
-        label: "Read".to_string(),
+        label: "read".to_string(),
+        prompt_snippet: Some("Read file contents".to_string()),
+        prompt_guidelines: Some(vec!["Use read to examine files instead of cat or sed.".to_string()]),
         parameters_schema: read_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,

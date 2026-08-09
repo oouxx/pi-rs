@@ -145,6 +145,13 @@ where
     pub name: String,
     pub description: String,
     pub label: String,
+    /// Short system-prompt contribution for this tool (matching TS
+    /// `ToolDefinition.promptSnippet`), injected into the system prompt so the
+    /// model knows what each enabled tool is for.
+    pub prompt_snippet: Option<String>,
+    /// Additional system-prompt guidelines for this tool (matching TS
+    /// `ToolDefinition.promptGuidelines`).
+    pub prompt_guidelines: Option<Vec<String>>,
     pub parameters_schema: serde_json::Value,
     pub execution_mode: Option<ToolExecutionMode>,
     pub prepare_arguments: Option<Arc<dyn Fn(&serde_json::Value) -> TParams + Send + Sync>>,
@@ -192,6 +199,8 @@ where
             name: self.name.clone(),
             description: self.description.clone(),
             label: self.label.clone(),
+            prompt_snippet: self.prompt_snippet.clone(),
+            prompt_guidelines: self.prompt_guidelines.clone(),
             parameters_schema: self.parameters_schema.clone(),
             execution_mode: self.execution_mode,
             prepare_arguments: self.prepare_arguments.clone(),

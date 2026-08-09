@@ -132,7 +132,9 @@ pub fn create_write_tool(
         name: "write".to_string(),
         description: "Write content to a file. Creates the file and any parent directories if they don't exist."
             .to_string(),
-        label: "Write".to_string(),
+        label: "write".to_string(),
+        prompt_snippet: Some("Create or overwrite files".to_string()),
+        prompt_guidelines: Some(vec!["Use write only for new files or complete rewrites.".to_string()]),
         parameters_schema: write_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,

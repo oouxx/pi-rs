@@ -203,7 +203,9 @@ pub fn create_find_tool(
              Output is truncated to {} results or 256KB (whichever is hit first).",
             DEFAULT_LIMIT
         ),
-        label: "Find".to_string(),
+        label: "find".to_string(),
+        prompt_snippet: Some("Find files by glob pattern (respects .gitignore)".to_string()),
+        prompt_guidelines: None,
         parameters_schema: find_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,

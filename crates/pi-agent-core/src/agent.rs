@@ -2044,6 +2044,8 @@ mod tests {
         let noop_tool = AgentTool {
             name: "noop".into(),
             label: "Noop".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
             description: "A noop tool".into(),
             parameters_schema: serde_json::json!({}),
             execution_mode: None,
@@ -2083,6 +2085,8 @@ mod tests {
         let delayed_tool = AgentTool {
             name: "delayed_tool".into(),
             label: "Delayed Tool".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
             description: "Captures progress callbacks".into(),
             parameters_schema: serde_json::json!({}),
             execution_mode: None,
@@ -2210,6 +2214,8 @@ mod tests {
         let settled_tool = AgentTool {
             name: "settled_tool".into(),
             label: "Settled Tool".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
             description: "Finishes quickly".into(),
             parameters_schema: serde_json::json!({}),
             execution_mode: None,
@@ -2239,6 +2245,8 @@ mod tests {
         let slow_tool = AgentTool {
             name: "slow_tool".into(),
             label: "Slow Tool".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
             description: "Hangs".into(),
             parameters_schema: serde_json::json!({}),
             execution_mode: None,

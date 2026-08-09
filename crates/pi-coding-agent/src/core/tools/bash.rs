@@ -635,14 +635,21 @@ pub fn create_bash_tool(
     AgentTool {
         name: "bash".to_string(),
         description: format!(
-            "Execute a bash command on the local machine. Returns stdout and stderr. \
+            "Execute a bash command in the current working directory. Returns stdout and stderr. \
              Output is truncated to last {} lines or {}KB (whichever is hit first). \
              If truncated, full output is saved to a temp file. \
              Optionally provide a timeout in seconds.",
             DEFAULT_MAX_LINES,
             DEFAULT_MAX_BYTES / 1024
         ),
-        label: "Bash".to_string(),
+        label: "bash".to_string(),
+        prompt_snippet: Some(
+            "Execute bash commands (ls, grep, find, etc.)".to_string(),
+        ),
+        prompt_guidelines: Some(vec![
+            "You can inspect PI_* environment variables for current model and session details."
+                .to_string(),
+        ]),
         parameters_schema: bash_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,
@@ -1041,5 +1048,34 @@ mod tests {
         let (text, details) = format_output(&snapshot, 0, "(no output)");
         assert_eq!(text, "(no output)");
         assert!(details.is_none());
+    }
+
+    /// Tool definition must match TS `createBashToolDefinition`: name/label,
+    /// description wording ("in the current working directory"), and the
+    /// prompt snippet + guidelines (bashToolSystemPromptContribution).
+    #[test]
+    fn bash_tool_definition_matches_ts() {
+        let tool = create_bash_tool("/tmp", None);
+        assert_eq!(tool.name, "bash");
+        assert_eq!(tool.label, "bash");
+        assert!(
+            tool.description.contains("in the current working directory"),
+            "description must match TS wording: {}",
+            tool.description
+        );
+        assert_eq!(
+            tool.prompt_snippet.as_deref(),
+            Some("Execute bash commands (ls, grep, find, etc.)")
+        );
+        let guidelines = tool.prompt_guidelines.as_deref().expect("guidelines");
+        assert_eq!(
+            guidelines,
+            &["You can inspect PI_* environment variables for current model and session details."]
+        );
+        // Parameters schema matches TS bashSchema.
+        let params = tool.parameters_schema.as_object().expect("object");
+        assert_eq!(params["required"], serde_json::json!(["command"]));
+        assert!(params["properties"].get("command").is_some());
+        assert!(params["properties"].get("timeout").is_some());
     }
 }

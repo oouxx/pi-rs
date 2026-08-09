@@ -153,7 +153,9 @@ pub fn create_ls_tool(
              Output is truncated to {} entries or 256KB (whichever is hit first).",
             DEFAULT_LIMIT
         ),
-        label: "Ls".to_string(),
+        label: "ls".to_string(),
+        prompt_snippet: Some("List directory contents".to_string()),
+        prompt_guidelines: None,
         parameters_schema: ls_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,

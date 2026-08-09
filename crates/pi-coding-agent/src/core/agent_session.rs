@@ -615,6 +615,8 @@ impl AgentSession {
                     name: def.name.clone(),
                     description: def.description.clone(),
                     label: def.label.clone().unwrap_or_default(),
+                    prompt_snippet: def.prompt_snippet.clone(),
+                    prompt_guidelines: def.prompt_guidelines.clone(),
                     parameters_schema: def.parameters.clone().unwrap_or(
                         serde_json::json!({"type": "object", "properties": {}, "required": []}),
                     ),
@@ -674,6 +676,8 @@ impl AgentSession {
                     name: def.name,
                     description: def.description,
                     label: def.label.unwrap_or_default(),
+                    prompt_snippet: def.prompt_snippet,
+                    prompt_guidelines: def.prompt_guidelines,
                     parameters_schema: def.parameters.unwrap_or(
                         serde_json::json!({"type": "object", "properties": {}, "required": []}),
                     ),
@@ -704,8 +708,19 @@ impl AgentSession {
         // 5. Build system prompt with tool metadata from ALL active tools.
         //    Matches TS _rebuildSystemPrompt(validToolNames) which runs after
         //    tool registry refresh and includes tool snippets/guidelines.
+        //    Built-in tools carry their own prompt_snippet / prompt_guidelines
+        //    on the AgentTool (matching TS ToolDefinition.promptSnippet).
         let tool_snippets: std::collections::HashMap<String, String> = {
             let mut map = options.tool_snippets.clone().unwrap_or_default();
+            for tool in &tool_list {
+                if let Some(ref snippet) = tool.prompt_snippet {
+                    let normalized =
+                        snippet.trim().replace(|c: char| c.is_ascii_control(), " ");
+                    if !normalized.is_empty() {
+                        map.insert(tool.name.clone(), normalized);
+                    }
+                }
+            }
             if let Some(ref custom_tools) = options.custom_tools {
                 for def in custom_tools {
                     if let Some(ref snippet) = def.prompt_snippet {
@@ -722,6 +737,16 @@ impl AgentSession {
 
         let prompt_guidelines: Vec<String> = {
             let mut guidelines = options.prompt_guidelines.clone().unwrap_or_default();
+            for tool in &tool_list {
+                if let Some(ref g) = tool.prompt_guidelines {
+                    for line in g {
+                        let trimmed = line.trim().to_string();
+                        if !trimmed.is_empty() {
+                            guidelines.push(trimmed);
+                        }
+                    }
+                }
+            }
             if let Some(ref custom_tools) = options.custom_tools {
                 for def in custom_tools {
                     if let Some(ref g) = def.prompt_guidelines {

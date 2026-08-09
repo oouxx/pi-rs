@@ -340,4 +340,39 @@ mod tests {
         let prompt = build_system_prompt(&opts);
         assert!(prompt.contains("Use bash for file operations like ls, rg, find"));
     }
+
+    /// Tool snippets and per-tool guidelines from enabled tools (e.g. bash's
+    /// PI_* environment hint) must be injected into the system prompt, matching
+    /// TS `_rebuildSystemPrompt` (toolSnippets + promptGuidelines).
+    #[test]
+    fn test_build_system_prompt_includes_tool_snippets_and_guidelines() {
+        let opts = BuildSystemPromptOptions {
+            cwd: "/home/user/project".to_string(),
+            selected_tools: Some(vec!["bash".to_string()]),
+            tool_snippets: Some(
+                [(
+                    "bash".to_string(),
+                    "Execute bash commands (ls, grep, find, etc.)".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            prompt_guidelines: Some(vec![
+                "You can inspect PI_* environment variables for current model and session details."
+                    .to_string(),
+            ]),
+            ..Default::default()
+        };
+        let prompt = build_system_prompt(&opts);
+        assert!(
+            prompt.contains("- bash: Execute bash commands (ls, grep, find, etc.)"),
+            "tool snippet must be in system prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains(
+                "You can inspect PI_* environment variables for current model and session details."
+            ),
+            "bash guideline must be in system prompt: {prompt}"
+        );
+    }
 }

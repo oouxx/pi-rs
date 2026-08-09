@@ -146,7 +146,9 @@ pub fn create_grep_tool(
              Long lines are truncated to {} chars.",
             DEFAULT_LIMIT, GREP_MAX_LINE_LENGTH
         ),
-        label: "Grep".to_string(),
+        label: "grep".to_string(),
+        prompt_snippet: Some("Search file contents for patterns (respects .gitignore)".to_string()),
+        prompt_guidelines: None,
         parameters_schema: grep_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,

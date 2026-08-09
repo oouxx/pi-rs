@@ -1,4 +1,5 @@
 //! subagent 扩展测试：假 pi 脚本模拟子进程 JSONL 输出，验证解析/超时/深度限制。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use pi_extension_api::{ExtensionContext, ExtensionUIContext, RuntimeHandle};

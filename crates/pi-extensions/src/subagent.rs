@@ -264,7 +264,11 @@ impl HookHandler for SubagentExtension {
         cmd.current_dir(&cwd);
         cmd.env(SUBAGENT_DEPTH_ENV, (depth + 1).to_string());
         cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        // stderr 重定向到 null：不读 stderr 管道，子进程写满 64KB 管道会
+        // 阻塞死锁（错误信息会反映在 stdout 的 message_end error_message）。
+        cmd.stderr(std::process::Stdio::null());
+        // task 被 drop（父进程退出/取消）时自动 kill 子进程，防孤儿。
+        cmd.kill_on_drop(true);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -277,7 +281,10 @@ impl HookHandler for SubagentExtension {
         };
 
         // ── 解析 stdout JSONL，提取最终消息 ──
-        let stdout = child.stdout.take().expect("stdout piped");
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => return Some(error_output("subagent: failed to capture child stdout")),
+        };
         let mut lines = BufReader::new(stdout).lines();
         let mut final_text = String::new();
         let mut saw_end = false;
@@ -413,10 +420,7 @@ impl SubagentExtension {
             "runId": run_id,
             "startedAt": ts,
         });
-        let _ = std::fs::write(
-            run_dir.join("status.json"),
-            serde_json::to_string_pretty(&status).unwrap_or_default(),
-        );
+        write_status(&run_dir, &status);
 
         // ── spawn 子进程，stdout 重定向到 output.jsonl ──
         let mut cmd = Command::new(&self.pi_binary);
@@ -438,12 +442,25 @@ impl SubagentExtension {
         cmd.arg(task);
         cmd.current_dir(cwd);
         cmd.env(SUBAGENT_DEPTH_ENV, (depth + 1).to_string());
-        if let Ok(f) = std::fs::File::create(run_dir.join("output.jsonl")) {
-            cmd.stdout(std::process::Stdio::from(f));
-        } else {
-            cmd.stdout(std::process::Stdio::null());
-        }
+        // output.jsonl 创建失败：报错而不是静默丢弃 stdout。
+        let output_file = match std::fs::File::create(run_dir.join("output.jsonl")) {
+            Ok(f) => f,
+            Err(e) => {
+                let status = json!({
+                    "status": "error",
+                    "runId": run_id,
+                    "error": format!("failed to create output.jsonl: {e}"),
+                });
+                write_status(&run_dir, &status);
+                return error_output(format!(
+                    "subagent: failed to create output.jsonl: {e}"
+                ));
+            }
+        };
+        cmd.stdout(std::process::Stdio::from(output_file));
         cmd.stderr(std::process::Stdio::null());
+        // task 被 drop（父进程退出/取消）时自动 kill 子进程，防孤儿。
+        cmd.kill_on_drop(true);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -453,10 +470,7 @@ impl SubagentExtension {
                     "runId": run_id,
                     "error": format!("failed to spawn pi: {e}"),
                 });
-                let _ = std::fs::write(
-                    run_dir.join("status.json"),
-                    serde_json::to_string_pretty(&status).unwrap_or_default(),
-                );
+                write_status(&run_dir, &status);
                 return error_output(format!(
                     "subagent: failed to spawn pi: {e} (binary: {})",
                     self.pi_binary
@@ -505,10 +519,7 @@ impl SubagentExtension {
                     "output": final_text,
                 })
             };
-            let _ = std::fs::write(
-                run_dir_owned.join("status.json"),
-                serde_json::to_string_pretty(&status).unwrap_or_default(),
-            );
+            write_status(&run_dir_owned, &status);
         });
 
         ToolCallOutput {
@@ -585,7 +596,17 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         let mut out: String = s.chars().take(max).collect();
-        out.push_str("…");
+        out.push('…');
         out
+    }
+}
+
+/// 写 status.json；失败时打印警告（后台 run 的状态是核心契约，
+/// 静默吞错会让 query_run 报 "run not found" 掩盖真实原因）。
+fn write_status(run_dir: &std::path::Path, status: &Value) {
+    let path = run_dir.join("status.json");
+    let body = serde_json::to_string_pretty(status).unwrap_or_default();
+    if let Err(e) = std::fs::write(&path, body) {
+        eprintln!("[pi] subagent: failed to write {}: {e}", path.display());
     }
 }

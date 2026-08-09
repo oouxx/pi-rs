@@ -19,7 +19,10 @@ use uuid::Uuid;
 use crate::core::agent_session::AgentSession;
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
-use super::translate::translate_event;
+use super::slash_commands::{
+    ResolvedCommand, load_slash_commands, resolve_command, substitute_args,
+};
+use super::translate::EventTranslator;
 
 /// MCP connection handle. A no-op (unit) type when the `mcp` feature is off,
 /// so session/registry code stays feature-agnostic.
@@ -77,6 +80,8 @@ pub enum SessionCommand {
     GetConfigOptions {
         reply: oneshot::Sender<Vec<acp::SessionConfigOption>>,
     },
+    /// Set the startup-info block to emit as the first chunk of the next prompt.
+    SetStartupInfo { text: String },
     Shutdown,
 }
 
@@ -184,6 +189,11 @@ impl SessionRegistry {
             notif_tx,
             session_id: session_id.clone(),
             mcp_connections,
+            translator: EventTranslator::new(cwd),
+            file_commands: load_slash_commands(cwd),
+            startup_info: None,
+            startup_info_sent: false,
+            replay_history: false,
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -247,6 +257,11 @@ impl SessionRegistry {
             notif_tx,
             session_id: session_id.clone(),
             mcp_connections,
+            translator: EventTranslator::new(&persisted.cwd),
+            file_commands: load_slash_commands(&persisted.cwd),
+            startup_info: None,
+            startup_info_sent: false,
+            replay_history: true,
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -328,6 +343,20 @@ impl SessionRegistry {
         self.sessions.get(session_id)
     }
 
+    /// Delete a session: stop its task, remove it from the registry and the
+    /// on-disk map, and delete its session file (idempotent — deleting a
+    /// session that does not exist succeeds, matching ACP `session/delete`
+    /// semantics).
+    pub fn delete(&mut self, session_id: &acp::SessionId) {
+        if let Some(handle) = self.sessions.remove(session_id) {
+            let _ = handle.send(SessionCommand::Shutdown);
+        }
+        if let Some(persisted) = self.persisted.remove(session_id) {
+            let _ = std::fs::remove_file(&persisted.session_file);
+            self.save_map();
+        }
+    }
+
     /// List sessions: running in-memory ones plus persisted-but-not-loaded ones
     /// (so `session/list` survives restarts).
     pub fn list(&self) -> Vec<acp::SessionInfo> {
@@ -392,10 +421,26 @@ struct SessionTask {
     /// tool-execute closures (which capture a peer handle) stay valid.
     #[allow(dead_code)]
     mcp_connections: Vec<McpConnection>,
+    /// Enriches tool-call notifications with locations / diffs / bash terminals.
+    translator: EventTranslator,
+    /// File-based slash commands loaded for this session's cwd.
+    file_commands: Vec<super::slash_commands::FileSlashCommand>,
+    /// Startup-info block to emit as the first chunk of the next prompt.
+    startup_info: Option<String>,
+    /// Whether the startup info has already been emitted.
+    startup_info_sent: bool,
+    /// Whether to replay the persisted conversation history on startup
+    /// (set for `session/load`).
+    replay_history: bool,
 }
 
 impl SessionTask {
     async fn run(mut self) {
+        // Replay persisted conversation history (session/load) before
+        // processing any commands, so the client sees the full context.
+        if self.replay_history {
+            self.replay_history().await;
+        }
         while let Some(cmd) = self.cmd_rx.recv().await {
             match cmd {
                 SessionCommand::Prompt { text, images, reply } => {
@@ -416,7 +461,80 @@ impl SessionTask {
                     let options = self.config_options().await;
                     let _ = reply.send(options);
                 }
+                SessionCommand::SetStartupInfo { text } => {
+                    self.startup_info = Some(text);
+                }
                 SessionCommand::Shutdown => break,
+            }
+        }
+    }
+
+    /// Replay the persisted conversation as ACP notifications (mirrors
+    /// pi-acp's `session/load` history replay in `agent.ts`).
+    async fn replay_history(&mut self) {
+        use pi_agent_core::types::AgentMessage;
+        let messages = self.session.get_messages().await;
+        for msg in messages {
+            match msg {
+                AgentMessage::User { content, .. } => {
+                    let text = content_text(&content);
+                    if !text.is_empty() {
+                        let _ = self.emit_user_chunk(&text).await;
+                    }
+                }
+                AgentMessage::Assistant { content, .. } => {
+                    let text = content_text(&content);
+                    if !text.is_empty() {
+                        let _ = self.emit_text(&text).await;
+                    }
+                }
+                AgentMessage::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    content,
+                    is_error,
+                    ..
+                } => {
+                    let text = content_text(&content);
+                    let status = if is_error {
+                        acp::ToolCallStatus::Failed
+                    } else {
+                        acp::ToolCallStatus::Completed
+                    };
+                    // Synthetic tool call so the client renders historic tool usage.
+                    let tc = acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
+                        .kind(super::translate::tool_kind(&tool_name))
+                        .status(status);
+                    let notif = acp::SessionNotification::new(
+                        self.session_id.clone(),
+                        acp::SessionUpdate::ToolCall(tc),
+                    );
+                    let (ack_tx, ack_rx) = oneshot::channel();
+                    if self.notif_tx.send((notif, ack_tx)).is_err() {
+                        return;
+                    }
+                    let _ = ack_rx.await;
+                    if !text.is_empty() {
+                        let fields = acp::ToolCallUpdateFields::new()
+                            .status(status)
+                            .content(vec![acp::ToolCallContent::Content(acp::Content::new(
+                                acp::ContentBlock::Text(acp::TextContent::new(text)),
+                            ))]);
+                        let notif = acp::SessionNotification::new(
+                            self.session_id.clone(),
+                            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                                tool_call_id,
+                                fields,
+                            )),
+                        );
+                        let (ack_tx, ack_rx) = oneshot::channel();
+                        if self.notif_tx.send((notif, ack_tx)).is_err() {
+                            return;
+                        }
+                        let _ = ack_rx.await;
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -425,7 +543,53 @@ impl SessionTask {
     /// with the stop reason. `session/cancel` is handled inline so it can
     /// interrupt the running turn. `images` are passed through to pi's
     /// `prompt()` (ContentBlock::Image), matching the RPC mode.
+    ///
+    /// Slash commands are resolved first (matching pi-acp): built-in commands
+    /// are executed directly and their result emitted as a message chunk;
+    /// file-based commands are expanded (with `$1`/`$2`/`$@` substitution)
+    /// and run as a normal prompt.
     async fn run_prompt(
+        &mut self,
+        text: String,
+        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
+        reply: oneshot::Sender<Result<acp::PromptResponse, String>>,
+    ) {
+        // Emit the startup-info block once, as the first chunk of the first
+        // prompt (mirrors pi-acp's `sendStartupInfoIfPending`).
+        if !self.startup_info_sent {
+            self.startup_info_sent = true;
+            if let Some(info) = self.startup_info.take() {
+                if self.emit_text(&info).await.is_err() {
+                    let _ = reply.send(Err("client disconnected".to_string()));
+                    return;
+                }
+            }
+        }
+        // Slash commands only apply to plain-text prompts (no images).
+        if images.is_empty() {
+            if let Some((cmd, args)) = resolve_command(&text, &self.file_commands) {
+                match cmd {
+                    ResolvedCommand::Builtin(name) => {
+                        let result = self.run_builtin_command(&name, &args).await;
+                        let response = match result {
+                            Ok(()) => Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+                            Err(e) => Err(e),
+                        };
+                        let _ = reply.send(response);
+                        return;
+                    }
+                    ResolvedCommand::File(f) => {
+                        let expanded = substitute_args(&f.content, &args);
+                        return self.run_prompt_inner(expanded, images, reply).await;
+                    }
+                }
+            }
+        }
+        self.run_prompt_inner(text, images, reply).await;
+    }
+
+    /// The actual prompt loop (see `run_prompt` for slash-command handling).
+    async fn run_prompt_inner(
         &mut self,
         text: String,
         images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
@@ -444,6 +608,7 @@ impl SessionTask {
             images: (!images.is_empty()).then_some(images),
             streaming_behavior: None,
             source: Some("acp".to_string()),
+            preflight_result: None,
         };
         let prompt_fut = self.session.prompt(&text, Some(prompt_options));
         tokio::pin!(prompt_fut);
@@ -464,7 +629,7 @@ impl SessionTask {
                         if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
                             saw_agent_end = true;
                         }
-                        if let Some(notif) = translate_event(&self.session_id, &event) {
+                        if let Some(notif) = self.translator.translate(&self.session_id, &event) {
                             let (ack_tx, ack_rx) = oneshot::channel();
                             if self.notif_tx.send((notif, ack_tx)).is_err() {
                                 disconnected = true;
@@ -485,7 +650,7 @@ impl SessionTask {
                     if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
                         saw_agent_end = true;
                     }
-                    if let Some(notif) = translate_event(&self.session_id, &event) {
+                    if let Some(notif) = self.translator.translate(&self.session_id, &event) {
                         let (ack_tx, ack_rx) = oneshot::channel();
                         if self.notif_tx.send((notif, ack_tx)).is_err() {
                             break Err("client disconnected".to_string());
@@ -519,6 +684,196 @@ impl SessionTask {
             Err("agent run failed to start or completed without AgentEnd".to_string())
         };
         let _ = reply.send(outcome.and(response));
+    }
+
+    /// Emit a plain-text message chunk notification to the client.
+    async fn emit_text(&self, text: &str) -> Result<(), String> {
+        let notif = acp::SessionNotification::new(
+            self.session_id.clone(),
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                acp::ContentBlock::Text(acp::TextContent::new(text.to_string())),
+            )),
+        );
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.notif_tx
+            .send((notif, ack_tx))
+            .map_err(|_| "client disconnected".to_string())?;
+        ack_rx.await.map_err(|_| "client disconnected".to_string())
+    }
+
+    /// Emit a user message chunk notification to the client.
+    async fn emit_user_chunk(&self, text: &str) -> Result<(), String> {
+        let notif = acp::SessionNotification::new(
+            self.session_id.clone(),
+            acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
+                acp::ContentBlock::Text(acp::TextContent::new(text.to_string())),
+            )),
+        );
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.notif_tx
+            .send((notif, ack_tx))
+            .map_err(|_| "client disconnected".to_string())?;
+        ack_rx.await.map_err(|_| "client disconnected".to_string())
+    }
+
+    /// Execute a built-in slash command and emit its result as a message
+    /// chunk (mirrors pi-acp's built-in command handling in `agent.ts`).
+    async fn run_builtin_command(&mut self, name: &str, args: &[String]) -> Result<(), String> {
+        use pi_agent_core::types::QueueMode;
+
+        match name {
+            "compact" => {
+                let custom = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.join(" "))
+                };
+                match self.session.compact(custom.as_deref()).await {
+                    Ok(result) => {
+                        let mut lines = vec!["Compaction completed.".to_string()];
+                        if custom.is_some() {
+                            lines.push("(custom instructions applied)".to_string());
+                        }
+                        if result.tokens_before > 0 {
+                            lines.push(format!("Tokens before: {}", result.tokens_before));
+                        }
+                        if !result.summary.is_empty() {
+                            lines.push(String::new());
+                            lines.push(result.summary);
+                        }
+                        self.emit_text(&lines.join("\n")).await
+                    }
+                    Err(e) => self.emit_text(&format!("Compaction failed: {e}")).await,
+                }
+            }
+            "autocompact" => {
+                let current = self.session.get_compaction_settings().compact_on_threshold;
+                let next = match args.first().map(|s| s.as_str()) {
+                    Some("on") => true,
+                    Some("off") => false,
+                    Some("toggle") | None => !current,
+                    Some(other) => {
+                        return self
+                            .emit_text(&format!("Usage: /autocompact on|off|toggle (got: {other})"))
+                            .await;
+                    }
+                };
+                let mut settings = self.session.get_compaction_settings().clone();
+                settings.compact_on_threshold = next;
+                self.session.set_compaction_settings(settings);
+                self.emit_text(&format!("Auto-compaction: {}", if next { "on" } else { "off" }))
+                    .await
+            }
+            "export" => {
+                match self.session.export_html_to_file(None) {
+                    Ok(path) => self.emit_text(&format!("Session exported to: {path}")).await,
+                    Err(e) => self.emit_text(&format!("Export failed: {e}")).await,
+                }
+            }
+            "session" => {
+                let stats = self.session.get_session_stats();
+                let mut lines = Vec::new();
+                if !stats.session_id.is_empty() {
+                    lines.push(format!("Session: {}", stats.session_id));
+                }
+                if let Some(file) = &stats.session_file {
+                    lines.push(format!("Session file: {file}"));
+                }
+                lines.push(format!("Messages: {}", stats.total_messages));
+                lines.push(format!("Cost: {:.4}", stats.cost));
+                let t = &stats.tokens;
+                let mut parts = Vec::new();
+                if t.input > 0 {
+                    parts.push(format!("in {}", t.input));
+                }
+                if t.output > 0 {
+                    parts.push(format!("out {}", t.output));
+                }
+                if t.cache_read > 0 {
+                    parts.push(format!("cache read {}", t.cache_read));
+                }
+                if t.cache_write > 0 {
+                    parts.push(format!("cache write {}", t.cache_write));
+                }
+                if t.total > 0 {
+                    parts.push(format!("total {}", t.total));
+                }
+                if !parts.is_empty() {
+                    lines.push(format!("Tokens: {}", parts.join(", ")));
+                }
+                self.emit_text(&lines.join("\n")).await
+            }
+            "name" => {
+                let name = args.join(" ").trim().to_string();
+                if name.is_empty() {
+                    return self.emit_text("Usage: /name <name>").await;
+                }
+                self.session.set_session_name(&name);
+                self.emit_text(&format!("Session name set to: {name}")).await
+            }
+            "queue" => {
+                let mode = match args.first().map(|s| s.as_str()) {
+                    Some("all") => QueueMode::All,
+                    Some("one-at-a-time") => QueueMode::OneAtATime,
+                    Some(other) => {
+                        return self
+                            .emit_text(&format!("Usage: /queue all|one-at-a-time (got: {other})"))
+                            .await;
+                    }
+                    None => {
+                        return self.emit_text("Usage: /queue all|one-at-a-time").await;
+                    }
+                };
+                self.session.set_steering_mode(mode).await;
+                self.session.set_follow_up_mode(mode).await;
+                self.emit_text(&format!("Queue mode: {}", if mode == QueueMode::All { "all" } else { "one-at-a-time" }))
+                    .await
+            }
+            "steering" => {
+                if let Some(mode) = args.first() {
+                    let mode = match mode.as_str() {
+                        "all" => QueueMode::All,
+                        "one-at-a-time" => QueueMode::OneAtATime,
+                        other => {
+                            return self
+                                .emit_text(&format!("Usage: /steering all|one-at-a-time (got: {other})"))
+                                .await;
+                        }
+                    };
+                    self.session.set_steering_mode(mode).await;
+                }
+                let current = self.session.steering_mode().await;
+                let label = if current == QueueMode::All { "all" } else { "one-at-a-time" };
+                self.emit_text(&format!("Steering mode: {label}")).await
+            }
+            "follow-up" => {
+                if let Some(mode) = args.first() {
+                    let mode = match mode.as_str() {
+                        "all" => QueueMode::All,
+                        "one-at-a-time" => QueueMode::OneAtATime,
+                        other => {
+                            return self
+                                .emit_text(&format!("Usage: /follow-up all|one-at-a-time (got: {other})"))
+                                .await;
+                        }
+                    };
+                    self.session.set_follow_up_mode(mode).await;
+                }
+                let current = self.session.follow_up_mode().await;
+                let label = if current == QueueMode::All { "all" } else { "one-at-a-time" };
+                self.emit_text(&format!("Follow-up mode: {label}")).await
+            }
+            "changelog" => {
+                // Best-effort: the Rust port has no bundled changelog; point at
+                // the version instead (pi-acp prints the npm changelog).
+                self.emit_text(&format!(
+                    "pi-coding-agent v{} (changelog not bundled in the Rust port)",
+                    crate::config::VERSION
+                ))
+                .await
+            }
+            other => self.emit_text(&format!("Unknown command: /{other}")).await,
+        }
     }
 
     /// Build the ACP session config options (model + thinking level).
@@ -592,8 +947,26 @@ fn reject_busy(cmd: SessionCommand) {
         SessionCommand::GetConfigOptions { reply } => {
             let _ = reply.send(Vec::new());
         }
+        SessionCommand::SetStartupInfo { .. } => {}
         SessionCommand::Cancel | SessionCommand::Shutdown => {}
     }
+}
+
+/// Extract the plain text from a message's content blocks (text + thinking).
+fn content_text(content: &[pi_agent_core::pi_ai_types::ContentBlock]) -> String {
+    let mut parts = Vec::new();
+    for block in content {
+        match block {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+                parts.push(text.clone());
+            }
+            pi_agent_core::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
+                parts.push(thinking.clone());
+            }
+            _ => {}
+        }
+    }
+    parts.join("\n")
 }
 
 #[cfg(test)]
@@ -667,5 +1040,25 @@ mod tests {
         let unknown = acp::SessionId::new(Uuid::new_v4().to_string());
         let err = reg.load(&unknown, &[], notif_tx(), &spawn).await.unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
+    }
+
+    /// `session/close` (delete) removes the session from the registry, deletes
+    /// its on-disk file, and is idempotent for unknown IDs.
+    #[tokio::test]
+    async fn delete_removes_session_and_file() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let spawn = noop_spawn();
+        let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
+        let sid = reg.create("/tmp", &[], notif_tx(), &spawn).await.expect("create");
+        let session_file = base.path().join("acp").join(format!("{}.jsonl", sid.0));
+        assert!(session_file.exists(), "session file must exist");
+
+        reg.delete(&sid);
+        assert!(reg.get(&sid).is_none(), "session must be removed from registry");
+        assert!(!session_file.exists(), "session file must be deleted");
+        assert_eq!(reg.list().len(), 0, "session must not be listed");
+
+        // Deleting again (unknown ID) is a no-op, not an error.
+        reg.delete(&sid);
     }
 }

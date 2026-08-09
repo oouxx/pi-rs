@@ -162,6 +162,11 @@ pub struct PromptOptions {
     pub streaming_behavior: Option<String>,
     /// Source of input for extension input event handlers. Defaults to "interactive".
     pub source: Option<String>,
+    /// Internal hook used by RPC mode to observe prompt preflight acceptance
+    /// or rejection (matching TS `PromptOptions.preflightResult`). Called with
+    /// `true` when the prompt is accepted (queued or about to run), `false`
+    /// when a preflight check rejects it.
+    pub preflight_result: Option<Arc<dyn Fn(bool) + Send + Sync>>,
 }
 
 /// Extension bindings for bind_extensions(), matching TS ExtensionBindings interface.
@@ -2347,6 +2352,9 @@ impl AgentSession {
         // Handle extension commands first (execute immediately, even during streaming),
         // matching TS prompt() which calls _tryExecuteExtensionCommand(text).
         if expand_templates && text.starts_with("/") && self._try_execute_extension_command(text).await {
+            if let Some(cb) = &opts.preflight_result {
+                cb(true);
+            }
             return Ok(());
         }
 
@@ -2365,7 +2373,12 @@ impl AgentSession {
             )
             .await
             {
-                crate::core::extensions::dispatcher::InputEventResult::Handled => return Ok(()),
+                crate::core::extensions::dispatcher::InputEventResult::Handled => {
+                    if let Some(cb) = &opts.preflight_result {
+                        cb(true);
+                    }
+                    return Ok(());
+                }
                 crate::core::extensions::dispatcher::InputEventResult::Continue {
                     text: t,
                     images,
@@ -2397,6 +2410,9 @@ impl AgentSession {
             } else {
                 self.steer(&expanded_text, current_images).await;
             }
+            if let Some(cb) = &opts.preflight_result {
+                cb(true);
+            }
             return Ok(());
         }
 
@@ -2408,6 +2424,9 @@ impl AgentSession {
         // matching TS prompt() which checks model and auth.
         let state = self.agent.state().await;
         if state.model.id.is_empty() {
+            if let Some(cb) = &opts.preflight_result {
+                cb(false);
+            }
             return Err(crate::core::auth_guidance::format_no_model_selected_message(
                 &crate::config::get_docs_path().to_string_lossy(),
             ));
@@ -2418,12 +2437,18 @@ impl AgentSession {
             .await;
         match auth_result {
             Ok(r) if !r.ok => {
+                if let Some(cb) = &opts.preflight_result {
+                    cb(false);
+                }
                 return Err(crate::core::auth_guidance::format_no_api_key_found_message(
                     &state.model.provider,
                     &crate::config::get_docs_path().to_string_lossy(),
                 ));
             }
             Err(e) => {
+                if let Some(cb) = &opts.preflight_result {
+                    cb(false);
+                }
                 return Err(format!("Auth check failed: {e}"));
             }
             _ => {}
@@ -2441,6 +2466,11 @@ impl AgentSession {
 
         // Send the prompt with pending next-turn messages injected as context,
         // matching TS prompt() which injects _pendingNextTurnMessages.
+        // Preflight passed — the prompt is accepted (matching TS
+        // `preflightResult?.(true)` right before `_runAgentPrompt`).
+        if let Some(cb) = &opts.preflight_result {
+            cb(true);
+        }
         self.add_user_text_with_options(&expanded_text, current_images, source)
             .await?;
 
@@ -4228,6 +4258,7 @@ impl AgentSession {
                 images: None,
                 streaming_behavior: opts.deliver_as,
                 source: Some("extension".to_string()),
+                preflight_result: None,
             }),
         )
         .await

@@ -290,7 +290,9 @@ pub enum RpcOutput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSessionState {
-    pub model: pi_agent_core::pi_ai_types::Model,
+    /// Present only when a model is selected (matching TS `model?: Model`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<pi_agent_core::pi_ai_types::Model>,
     pub thinking_level: String,
     pub is_streaming: bool,
     pub session_id: String,
@@ -336,5 +338,74 @@ pub fn rpc_error(id: Option<String>, command: &str, error: String) -> RpcOutput 
         success: false,
         data: None,
         error: Some(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// `get_state` must omit the `model` field when no model is selected
+    /// (matching TS `RpcSessionState.model?: Model`).
+    #[test]
+    fn session_state_omits_model_when_none() {
+        let state = RpcSessionState {
+            model: None,
+            thinking_level: "medium".to_string(),
+            is_streaming: false,
+            session_id: "s1".to_string(),
+            session_name: None,
+            message_count: 0,
+            is_compacting: Some(false),
+            steering_mode: Some("all".to_string()),
+            follow_up_mode: Some("all".to_string()),
+            session_file: None,
+            auto_compaction_enabled: Some(false),
+            pending_message_count: Some(0),
+        };
+        let v = serde_json::to_value(&state).unwrap();
+        assert!(v.get("model").is_none(), "model must be omitted when None");
+        assert_eq!(v["thinkingLevel"], "medium");
+        assert_eq!(v["steeringMode"], "all");
+        assert_eq!(v["autoCompactionEnabled"], false);
+    }
+
+    /// When a model is selected it must be present with camelCase fields.
+    #[test]
+    fn session_state_includes_model_when_selected() {
+        let state = RpcSessionState {
+            model: Some(pi_agent_core::pi_ai_types::Model {
+                id: "gpt-5.5".to_string(),
+                name: "GPT-5.5".to_string(),
+                api: "openai-completions".to_string(),
+                provider: "openai".to_string(),
+                base_url: String::new(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: Vec::new(),
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                context_window: 128000,
+                max_tokens: 8192,
+                headers: None,
+                compat: None,
+            }),
+            thinking_level: "high".to_string(),
+            is_streaming: true,
+            session_id: "s1".to_string(),
+            session_name: Some("my session".to_string()),
+            message_count: 3,
+            is_compacting: Some(false),
+            steering_mode: Some("one-at-a-time".to_string()),
+            follow_up_mode: Some("all".to_string()),
+            session_file: Some("/tmp/s.jsonl".to_string()),
+            auto_compaction_enabled: Some(true),
+            pending_message_count: Some(1),
+        };
+        let v = serde_json::to_value(&state).unwrap();
+        assert_eq!(v["model"]["id"], "gpt-5.5");
+        assert_eq!(v["model"]["provider"], "openai");
+        assert_eq!(v["sessionName"], "my session");
+        assert_eq!(v["sessionFile"], "/tmp/s.jsonl");
     }
 }

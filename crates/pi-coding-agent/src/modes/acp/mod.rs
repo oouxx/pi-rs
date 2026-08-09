@@ -11,6 +11,7 @@
 
 pub mod agent;
 pub mod session;
+pub mod slash_commands;
 pub mod translate;
 
 use std::sync::Arc;
@@ -96,12 +97,44 @@ mod tests {
         }
     }
 
+    /// A client that records every session notification it receives.
+    #[derive(Default)]
+    struct RecordingClient {
+        notifications: std::sync::Arc<std::sync::Mutex<Vec<acp::SessionNotification>>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for RecordingClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Err(acp::Error::method_not_found())
+        }
+        async fn session_notification(
+            &self,
+            args: acp::SessionNotification,
+        ) -> acp::Result<()> {
+            self.notifications.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(args);
+            Ok(())
+        }
+    }
+
     /// Wire a `PiAcpAgent` to a client-side connection over in-memory pipes.
     /// Returns the client-side connection (implements `Agent`) for the test
     /// to drive, and keeps the agent-side connection (implements `Client`)
     /// inside a task that forwards session notifications.
     fn wire(
         spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)>,
+    ) -> acp::ClientSideConnection {
+        wire_with(spawn, TestClient)
+    }
+
+    /// Like `wire`, but with a custom client (e.g. one that records
+    /// notifications).
+    fn wire_with<C: acp::Client + 'static>(
+        spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)>,
+        client: C,
     ) -> acp::ClientSideConnection {
         let (notif_tx, mut notif_rx) =
             mpsc::unbounded_channel::<(acp::SessionNotification, oneshot::Sender<()>)>();
@@ -113,7 +146,7 @@ mod tests {
         let (agent_tx, client_rx) = duplex(64 * 1024);
 
         let (client_conn, client_io) = acp::ClientSideConnection::new(
-            TestClient,
+            client,
             client_tx.compat_write(),
             client_rx.compat(),
             |fut| {
@@ -203,6 +236,133 @@ mod tests {
                     .await
                     .expect_err("prompt on unknown session must fail");
                 assert_eq!(err.code, acp::ErrorCode::InvalidParams);
+            })
+            .await;
+    }
+
+    /// `session/new` must advertise slash commands via
+    /// `available_commands_update` (file-based + built-in), and
+    /// `session/close` must remove the session.
+    #[tokio::test]
+    async fn new_session_advertises_commands_and_close_removes() {
+        let local_set = tokio::task::LocalSet::new();
+        local_set
+            .run_until(async {
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let client = RecordingClient::default();
+                let notifications = client.notifications.clone();
+                let client_conn = wire_with(spawn, client);
+
+                let resp = client_conn
+                    .new_session(acp::NewSessionRequest::new("/tmp"))
+                    .await
+                    .expect("new_session");
+                let sid = resp.session_id;
+
+                // The available_commands_update notification is emitted after
+                // a short delay; wait for it.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let commands = loop {
+                    let found = {
+                        let notifs = notifications
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        notifs.iter().find_map(|n| match &n.update {
+                            acp::SessionUpdate::AvailableCommandsUpdate(u) => {
+                                Some(u.available_commands.clone())
+                            }
+                            _ => None,
+                        })
+                    };
+                    if let Some(cmds) = found {
+                        break cmds;
+                    }
+                    if std::time::Instant::now() > deadline {
+                        panic!("available_commands_update not received");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                };
+                let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+                assert!(
+                    names.contains(&"compact"),
+                    "built-in /compact must be advertised: {names:?}"
+                );
+                assert!(
+                    names.contains(&"session"),
+                    "built-in /session must be advertised: {names:?}"
+                );
+
+                // session/close removes the session.
+                client_conn
+                    .close_session(acp::CloseSessionRequest::new(sid.clone()))
+                    .await
+                    .expect("close_session");
+                let err = client_conn
+                    .prompt(acp::PromptRequest::new(
+                        sid,
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("hi"))],
+                    ))
+                    .await
+                    .expect_err("prompt on closed session must fail");
+                assert_eq!(err.code, acp::ErrorCode::InvalidParams);
+            })
+            .await;
+    }
+
+    /// `session/set_mode` (thinking level) must succeed and emit a
+    /// `current_mode_update` notification.
+    #[tokio::test]
+    async fn set_session_mode_emits_current_mode_update() {
+        let local_set = tokio::task::LocalSet::new();
+        local_set
+            .run_until(async {
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let client = RecordingClient::default();
+                let notifications = client.notifications.clone();
+                let client_conn = wire_with(spawn, client);
+
+                let resp = client_conn
+                    .new_session(acp::NewSessionRequest::new("/tmp"))
+                    .await
+                    .expect("new_session");
+                let sid = resp.session_id;
+
+                client_conn
+                    .set_session_mode(acp::SetSessionModeRequest::new(
+                        sid.clone(),
+                        acp::SessionModeId::new("high"),
+                    ))
+                    .await
+                    .expect("set_session_mode");
+
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let found = {
+                        let notifs = notifications
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        notifs.iter().any(|n| {
+                            matches!(
+                                &n.update,
+                                acp::SessionUpdate::CurrentModeUpdate(u)
+                                    if u.current_mode_id.0.as_ref() == "high"
+                            )
+                        })
+                    };
+                    if found {
+                        break;
+                    }
+                    if std::time::Instant::now() > deadline {
+                        panic!("current_mode_update not received");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
             })
             .await;
     }

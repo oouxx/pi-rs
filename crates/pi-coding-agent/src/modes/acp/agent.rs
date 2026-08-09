@@ -5,6 +5,7 @@
 //! pi-coding-agent directly over stdio.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use agent_client_protocol as acp;
 use futures::future::LocalBoxFuture;
@@ -13,6 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::config;
 
 use super::session::{SessionCommand, SessionHandle, SessionRegistry};
+use super::slash_commands::{builtin_available_commands, load_slash_commands, to_available_commands};
 
 /// The ACP agent: owns the session registry and the notification channel.
 pub struct PiAcpAgent {
@@ -106,6 +108,18 @@ impl acp::Agent for PiAcpAgent {
             .create(&cwd, &args.mcp_servers, self.notif_tx.clone(), &self.spawn)
             .await
             .map_err(internal_err)?;
+
+        // Startup info block (pi version + context), emitted as the first
+        // chunk of the first prompt (mirrors pi-acp's startup info).
+        let startup_info = build_startup_info(&cwd);
+        if let Some(handle) = reg.get(&session_id) {
+            let _ = handle.send(SessionCommand::SetStartupInfo { text: startup_info });
+        }
+
+        // Advertise slash commands after the response is delivered (clients
+        // ignore notifications for unknown session IDs).
+        self.emit_available_commands(session_id.clone(), &cwd);
+
         Ok(acp::NewSessionResponse::new(session_id))
     }
 
@@ -120,6 +134,9 @@ impl acp::Agent for PiAcpAgent {
         reg.load(&args.session_id, &args.mcp_servers, self.notif_tx.clone(), &self.spawn)
             .await
             .map_err(invalid_params_err)?;
+        // Advertise slash commands after the response is delivered.
+        let cwd = args.cwd.to_string_lossy().to_string();
+        self.emit_available_commands(args.session_id.clone(), &cwd);
         Ok(acp::LoadSessionResponse::new())
     }
 
@@ -178,6 +195,41 @@ impl acp::Agent for PiAcpAgent {
         Ok(acp::SetSessionModelResponse::default())
     }
 
+    async fn set_session_mode(
+        &self,
+        args: acp::SetSessionModeRequest,
+    ) -> Result<acp::SetSessionModeResponse, acp::Error> {
+        let handle = self.handle(&args.session_id).await?;
+        let level = args.mode_id.0.to_string();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .send(SessionCommand::SetThinkingLevel {
+                level: level.clone(),
+                reply: reply_tx,
+            })
+            .map_err(|_| internal_err("session closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| internal_err("session closed"))?
+            .map_err(internal_err)?;
+        // Keep the client's mode dropdown in sync.
+        self.emit_notification(
+            args.session_id.clone(),
+            acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(level)),
+        );
+        self.emit_config_options_update(args.session_id.clone()).await?;
+        Ok(acp::SetSessionModeResponse::default())
+    }
+
+    async fn close_session(
+        &self,
+        args: acp::CloseSessionRequest,
+    ) -> Result<acp::CloseSessionResponse, acp::Error> {
+        let mut reg = self.registry.lock().await;
+        reg.delete(&args.session_id);
+        Ok(acp::CloseSessionResponse::default())
+    }
+
     async fn set_session_config_option(
         &self,
         args: acp::SetSessionConfigOptionRequest,
@@ -194,7 +246,7 @@ impl acp::Agent for PiAcpAgent {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 handle
                     .send(SessionCommand::SetThinkingLevel {
-                        level: value,
+                        level: value.clone(),
                         reply: reply_tx,
                     })
                     .map_err(|_| internal_err("session closed"))?;
@@ -202,6 +254,11 @@ impl acp::Agent for PiAcpAgent {
                     .await
                     .map_err(|_| internal_err("session closed"))?
                     .map_err(internal_err)?;
+                // Keep the client's mode dropdown in sync.
+                self.emit_notification(
+                    args.session_id.clone(),
+                    acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(value)),
+                );
             }
             "model" => {
                 let model = resolve_model(&value).await?;
@@ -221,7 +278,7 @@ impl acp::Agent for PiAcpAgent {
                 return Err(invalid_params_err("unknown config option"));
             }
         }
-        // Return the full updated option set.
+        // Return the full updated option set and notify the client.
         let (reply_tx, reply_rx) = oneshot::channel();
         handle
             .send(SessionCommand::GetConfigOptions { reply: reply_tx })
@@ -229,8 +286,73 @@ impl acp::Agent for PiAcpAgent {
         let options = reply_rx
             .await
             .map_err(|_| internal_err("session closed"))?;
+        self.emit_notification(
+            args.session_id.clone(),
+            acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(options.clone())),
+        );
         Ok(acp::SetSessionConfigOptionResponse::new(options))
     }
+}
+
+impl PiAcpAgent {
+    /// Send a session notification through the forwarding channel.
+    fn emit_notification(&self, session_id: acp::SessionId, update: acp::SessionUpdate) {
+        let notif = acp::SessionNotification::new(session_id, update);
+        let (ack_tx, _ack_rx) = oneshot::channel();
+        let _ = self.notif_tx.send((notif, ack_tx));
+    }
+
+    /// Emit a `config_options_update` notification for a session.
+    async fn emit_config_options_update(&self, session_id: acp::SessionId) -> Result<(), acp::Error> {
+        let handle = self.handle(&session_id).await?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .send(SessionCommand::GetConfigOptions { reply: reply_tx })
+            .map_err(|_| internal_err("session closed"))?;
+        let options = reply_rx
+            .await
+            .map_err(|_| internal_err("session closed"))?;
+        self.emit_notification(
+            session_id,
+            acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(options)),
+        );
+        Ok(())
+    }
+
+    /// Advertise the available slash commands (file-based + built-in) for a
+    /// session. The notification is emitted after a short delay so the client
+    /// has already received the `session/new` / `session/load` response — some
+    /// clients (e.g. Zed) drop notifications for unknown session IDs.
+    fn emit_available_commands(&self, session_id: acp::SessionId, cwd: &str) {
+        let file_commands = load_slash_commands(cwd);
+        let mut commands = to_available_commands(&file_commands);
+        commands.extend(builtin_available_commands());
+        let notif = acp::SessionNotification::new(
+            session_id,
+            acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate::new(
+                commands,
+            )),
+        );
+        let tx = self.notif_tx.clone();
+        let spawn = self.spawn.clone();
+        spawn(Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let (ack_tx, _ack_rx) = oneshot::channel();
+            let _ = tx.send((notif, ack_tx));
+        }));
+    }
+}
+
+/// Build the startup-info block emitted as the first chunk of the first
+/// prompt (mirrors pi-acp's `buildStartupInfo` — pi version + context).
+fn build_startup_info(cwd: &str) -> String {
+    let mut md = Vec::new();
+    md.push(format!("pi-coding-agent v{}", config::VERSION));
+    md.push("---".to_string());
+    md.push(String::new());
+    md.push("## Context".to_string());
+    md.push(format!("- cwd: {cwd}"));
+    md.join("\n")
 }
 
 /// Extract plain text (and note images) from an ACP prompt's content blocks.

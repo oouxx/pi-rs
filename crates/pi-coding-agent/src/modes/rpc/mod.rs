@@ -3,7 +3,7 @@ pub mod jsonl;
 pub mod rpc_types;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -142,12 +142,20 @@ pub async fn run_rpc_mode(
     // ── Event streaming setup ──────────────────────────────────────────
     let mut handler_state = handler::RpcHandlerState::new(output_tx.clone());
 
-
+    // Shutdown coordination: the `shutdown` command sets
+    // `handler_state.shutdown_requested`; if a prompt is running, the main
+    // loop waits for `agent_settled` before exiting (matching TS
+    // `checkShutdownRequested` on agent_settled). The watch channel signals
+    // the main loop from the event subscription.
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     // ── Global session event subscription ──────────────────────────────
     // Subscribe to ALL session events and forward them to stdout,
     // matching TS: session.subscribe((event) => { output(event); ... })
     let output_tx_for_session = output_tx.clone();
+    let shutdown_flag_for_events = shutdown_requested.clone();
+    let shutdown_tx_for_events = shutdown_tx.clone();
     let _session_event_handle = session.subscribe_session_events(
         std::sync::Arc::new(move |event: AgentSessionEvent| {
             // Serialize event to JSON and forward to output channel.
@@ -156,10 +164,12 @@ pub async fn run_rpc_mode(
             let json = to_json_event(&event);
             let line = serialize_json_line(&json);
             let _ = output_tx_for_session.send(line);
-            // Check for agent_settled to trigger shutdown check (matching TS)
-            if matches!(event, AgentSessionEvent::AgentSettled) {
-                // If shutdown was requested, the main loop will handle it
-                // via handler_state.shutdown_requested
+            // Check for agent_settled to trigger shutdown check (matching TS
+            // `checkShutdownRequested` which runs on agent_settled).
+            if matches!(event, AgentSessionEvent::AgentSettled)
+                && shutdown_flag_for_events.load(Ordering::SeqCst)
+            {
+                let _ = shutdown_tx_for_events.send(true);
             }
         }),
     );
@@ -182,7 +192,18 @@ pub async fn run_rpc_mode(
             return if sig == 2 { 129 } else { 143 };
         }
 
-        let line = match lines.next_line().await {
+        // Wait for the next command, or for a shutdown request to complete
+        // (signaled by the agent_settled event handler when a prompt was
+        // running — matching TS `checkShutdownRequested` on agent_settled).
+        let line = tokio::select! {
+            line = lines.next_line() => line,
+            _ = shutdown_rx.changed() => {
+                shutdown = true;
+                continue;
+            }
+        };
+
+        let line = match line {
             Ok(Some(l)) => l,
             Ok(None) => break, // EOF
             Err(_) => break,
@@ -245,7 +266,13 @@ pub async fn run_rpc_mode(
         }
 
         if handler_state.shutdown_requested {
-            shutdown = true;
+            if session.is_streaming().await {
+                // A prompt is running — wait for agent_settled to exit
+                // (matching TS `checkShutdownRequested` on agent_settled).
+                shutdown_requested.store(true, Ordering::SeqCst);
+            } else {
+                shutdown = true;
+            }
         }
     }
 

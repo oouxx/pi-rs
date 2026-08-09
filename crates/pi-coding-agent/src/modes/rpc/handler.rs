@@ -2,17 +2,6 @@
 //!
 //! Mirrors the command handling in packages/coding-agent/src/modes/rpc/rpc-mode.ts
 
-use std::pin::Pin;
-/// Agent event listener used by the RPC handler.
-type RpcAgentEventListener = Arc<
-    dyn Fn(
-            pi_agent_core::types::AgentEvent,
-            Option<tokio::sync::watch::Receiver<bool>>,
-        ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-        + Send
-        + Sync,
->;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -41,29 +30,18 @@ pub async fn handle_command(
             let output_tx = state.output_tx.clone();
             let cmd_id = id.clone();
 
-            // Use a shared cell so the listener can unsubscribe itself after firing,
-            // preventing duplicate responses when multiple prompt commands are sent.
-            let unsubscribe_handle = Arc::new(tokio::sync::Mutex::new(None::<pi_agent_core::agent::UnsubscribeHandle>));
-            let uh = unsubscribe_handle.clone();
-
-            let listener: RpcAgentEventListener = Arc::new(move |event, _signal| {
-                let output_tx = output_tx.clone();
-                let cmd_id = cmd_id.clone();
-                let uh = uh.clone();
-                Box::pin(async move {
-                    // Events are forwarded globally via subscribe_session_events in mod.rs.
-                    // This listener only handles the prompt success response.
-                    if matches!(event, pi_agent_core::types::AgentEvent::AgentEnd { .. }) {
-                        // Emit success response for prompt command
-                        // (matching TS preflightResult pattern)
-                        let success = rpc_success(cmd_id, "prompt", None);
-                        let _ = output_tx.send(serialize_json_line(&success));
-                        // Unsubscribe to prevent firing again on subsequent AgentEnd events
-                        if let Some(handle) = uh.lock().await.take() {
-                            handle.unsubscribe().await;
-                        }
-                    }
-                })
+            // Track whether the prompt was accepted by preflight. The success
+            // response is emitted as soon as preflight passes (matching TS
+            // `preflightResult`), not when the run finishes — events stream
+            // after the response.
+            let preflight = Arc::new(AtomicBool::new(false));
+            let preflight_flag = preflight.clone();
+            let preflight_cb: Arc<dyn Fn(bool) + Send + Sync> = Arc::new(move |ok| {
+                if ok {
+                    preflight_flag.store(true, Ordering::SeqCst);
+                    let success = rpc_success(cmd_id.clone(), "prompt", None);
+                    let _ = output_tx.send(serialize_json_line(&success));
+                }
             });
 
             // Build PromptOptions matching TS prompt() call
@@ -85,45 +63,34 @@ pub async fn handle_command(
                 images: images_content.filter(|v| !v.is_empty()),
                 streaming_behavior,
                 source: Some("rpc".to_string()),
+                preflight_result: Some(preflight_cb),
             };
 
-            // Track whether AgentEnd was received (agent run completed successfully)
-            let agent_end_received = Arc::new(AtomicBool::new(false));
-            let aer = agent_end_received.clone();
-
-            // Wrap the listener to also set the flag on AgentEnd
-            let original_listener = listener;
-            let listener: RpcAgentEventListener = Arc::new(move |event, signal| {
-                let aer = aer.clone();
-                let orig = original_listener.clone();
-                Box::pin(async move {
-                    if matches!(event, pi_agent_core::types::AgentEvent::AgentEnd { .. }) {
-                        aer.store(true, Ordering::SeqCst);
-                    }
-                    orig(event, signal).await;
-                })
-            });
-
-            let handle = session.get_agent().subscribe(listener).await;
-            *unsubscribe_handle.lock().await = Some(handle);
-
-            // Call prompt and let the listener handle events + success response.
-            // prompt() returns Err when the run cannot start (no model / no API
-            // key) — propagate the real error, matching TS
+            // Call prompt and let the preflight callback emit the success
+            // response. prompt() returns Err when the run cannot start (no
+            // model / no API key) — propagate the real error, matching TS
             // session.prompt().catch((e) => output(error(id, "prompt", e.message))).
             match session.prompt(&message, Some(options)).await {
                 Ok(()) => {
-                    // After prompt() returns, check if AgentEnd was received.
-                    // If not, the agent run failed to start (e.g. agent was already busy),
-                    // and the RPC client would hang waiting for a response.
-                    if !agent_end_received.load(Ordering::SeqCst) {
-                        let err = rpc_error(id, "prompt", "Agent run failed to start or completed without emitting AgentEnd".to_string());
+                    // If preflight never accepted the prompt, the run failed
+                    // to start (e.g. agent was already busy) and the RPC
+                    // client would hang waiting for a response.
+                    if !preflight.load(Ordering::SeqCst) {
+                        let err = rpc_error(
+                            id,
+                            "prompt",
+                            "Agent run failed to start or completed without preflight acceptance".to_string(),
+                        );
                         let _ = state.output_tx.send(serialize_json_line(&err));
                     }
                 }
                 Err(e) => {
-                    let err = rpc_error(id, "prompt", e);
-                    let _ = state.output_tx.send(serialize_json_line(&err));
+                    // preflight_result(false) was already invoked; only emit
+                    // the error if no success response was sent.
+                    if !preflight.load(Ordering::SeqCst) {
+                        let err = rpc_error(id, "prompt", e);
+                        let _ = state.output_tx.send(serialize_json_line(&err));
+                    }
                 }
             }
 
@@ -232,7 +199,12 @@ pub async fn handle_command(
             };
 
             let state_data = RpcSessionState {
-                model: model.clone(),
+                // Omit the model when none is selected (matching TS `model?`).
+                model: if model.id.is_empty() {
+                    None
+                } else {
+                    Some(model.clone())
+                },
                 thinking_level,
                 is_streaming: session.is_streaming().await,
                 session_id: session.get_session_id(),
@@ -269,11 +241,9 @@ pub async fn handle_command(
                             "set_model",
                             Some(serde_json::to_value(&m).unwrap_or_default()),
                         )),
-                        Err(e) => Some(rpc_error(
-                            id,
-                            "set_model",
-                            format!("Auth error: {e}"),
-                        )),
+                        // Propagate the raw error message (matching TS, which
+                        // surfaces the setModel error directly).
+                        Err(e) => Some(rpc_error(id, "set_model", e)),
                     }
                 }
                 None => Some(rpc_error(
@@ -498,11 +468,33 @@ pub async fn handle_command(
         }
 
         RpcCommand::Fork { id, entry_id } => {
+            // Extract the selected user-message text (matching TS fork() which
+            // returns `selectedText` from the forked entry).
+            let selected_text = {
+                let mgr = session.get_session_manager();
+                mgr.get_entry(&entry_id).and_then(|e| match e {
+                    crate::core::session_manager::SessionEntry::Message { message, .. } => {
+                        let role = message
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if role == "user" {
+                            extract_user_message_text(message.get("content"))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                })
+            };
             match session.session_mgr_fork(&entry_id).await {
                 Ok(_path) => Some(rpc_success(
                     id,
                     "fork",
-                    Some(serde_json::json!({"text": "", "cancelled": false})),
+                    Some(serde_json::json!({
+                        "text": selected_text.unwrap_or_default(),
+                        "cancelled": false,
+                    })),
                 )),
                 Err(e) => Some(rpc_error(id, "fork", e)),
             }
@@ -626,6 +618,33 @@ pub async fn handle_command(
     }
 }
 
+/// Extract the plain text from a user message's content (string or
+/// `[{type:"text",text}]` array), matching TS `extractUserMessageText`.
+fn extract_user_message_text(content: Option<&serde_json::Value>) -> Option<String> {
+    match content {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::Array(parts)) => {
+            let text: String = parts
+                .iter()
+                .filter_map(|p| {
+                    let obj = p.as_object()?;
+                    if obj.get("type")?.as_str() == Some("text") {
+                        obj.get("text")?.as_str().map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Serialize a SessionTreeNode to a JSON value.
 fn serialize_tree_node(node: &crate::core::session_manager::SessionTreeNode) -> serde_json::Value {
     let entry = serde_json::to_value(&node.entry).unwrap_or_default();
@@ -667,5 +686,37 @@ impl RpcHandlerState {
                 std::collections::HashMap::new(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// `extract_user_message_text` must handle both string content and
+    /// `[{type:"text",text}]` arrays, matching TS `extractUserMessageText`.
+    #[test]
+    fn extract_user_message_text_handles_string_and_array() {
+        assert_eq!(
+            extract_user_message_text(Some(&serde_json::json!("hello"))),
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            extract_user_message_text(Some(&serde_json::json!([
+                {"type": "text", "text": "a"},
+                {"type": "image", "data": "x"},
+                {"type": "text", "text": "b"}
+            ]))),
+            Some("ab".to_string())
+        );
+        // No text blocks -> None
+        assert_eq!(
+            extract_user_message_text(Some(&serde_json::json!([{"type": "image", "data": "x"}]))),
+            None
+        );
+        // Non-string/non-array -> None
+        assert_eq!(extract_user_message_text(Some(&serde_json::json!(42))), None);
+        assert_eq!(extract_user_message_text(None), None);
     }
 }

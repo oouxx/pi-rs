@@ -348,3 +348,31 @@ fn test_extract_message_text() {
     let msg = json!({ "role": "assistant", "content": "plain string" });
     assert_eq!(extract_message_text(&msg), None);
 }
+
+/// 多轮工具调用：只取最终 assistant 消息（stop_reason=stop），
+/// 不取工具调用中间态（stop_reason=toolUse）或工具结果。
+#[tokio::test]
+async fn test_subagent_takes_final_assistant_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = write_fake_pi(
+        dir.path(),
+        r#"#!/bin/sh
+echo '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"the task"}]}}'
+echo '{"type":"message_end","message":{"role":"assistant","stop_reason":"toolUse","content":[{"type":"text","text":"I will read the file"}]}}'
+echo '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"file contents"}]}}'
+echo '{"type":"message_end","message":{"role":"assistant","stop_reason":"stop","content":[{"type":"text","text":"FINAL REVIEW: no issues found"}]}}'
+echo '{"type":"agent_end"}'
+"#,
+    );
+    let ext = SubagentExtension::new().with_pi_binary(&fake);
+    let ctx = test_ctx("/tmp", None);
+    let out = ext
+        .handle_tool_call("subagent", json!({ "task": "review" }), &ctx)
+        .await
+        .expect("handled");
+    assert!(!out.is_error, "got: {out:?}");
+    let text = out.content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("FINAL REVIEW"), "got: {text}");
+    assert!(!text.contains("I will read"), "should not return tool-call intermediate: {text}");
+    assert!(!text.contains("file contents"), "should not return tool result: {text}");
+}

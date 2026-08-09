@@ -456,6 +456,9 @@ impl AgentSession {
         ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
         let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
         ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
+        // 当前模型（provider/model），供扩展（如 subagent）继承给子进程。
+        let ext_model = format!("{}/{}", options.model.provider, options.model.id);
+        ext_runtime_handle.get_model = std::sync::Arc::new(move || ext_model.clone());
         let ext_ctx = ExtensionContext::new(
             options.cwd.clone(),
             false,

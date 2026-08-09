@@ -179,7 +179,17 @@ impl HookHandler for SubagentExtension {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .or(self.default_model.as_deref())
-            .unwrap_or("");
+            .map(|s| s.to_string())
+            // 模型继承：父会话当前模型（provider/model），子 agent 默认继承。
+            .or_else(|| {
+                let m = (ctx.runtime.get_model)();
+                if m.is_empty() {
+                    None
+                } else {
+                    Some(m)
+                }
+            })
+            .unwrap_or_default();
         let timeout_secs = params
             .get("timeoutSeconds")
             .and_then(|v| v.as_u64())
@@ -233,8 +243,15 @@ impl HookHandler for SubagentExtension {
         // ── spawn 子 pi 进程 ──
         let mut cmd = Command::new(&self.pi_binary);
         cmd.arg("--mode").arg("json").arg("-p");
+        // 模型继承：get_model 返回 "provider/model"，拆开传 --provider + --model
+        // （pi-cli 的 --model 不支持 provider 前缀，需分开传）。
         if !model.is_empty() {
-            cmd.arg("--model").arg(model);
+            if let Some((provider, model_id)) = model.split_once('/') {
+                cmd.arg("--provider").arg(provider);
+                cmd.arg("--model").arg(model_id);
+            } else {
+                cmd.arg("--model").arg(model);
+            }
         }
         cmd.arg("--no-session");
         // 子 agent 不加载扩展（防递归：subagent 扩展不会在子进程里再注册）。
@@ -282,8 +299,16 @@ impl HookHandler for SubagentExtension {
                 match v.get("type").and_then(|t| t.as_str()) {
                     Some("message_end") => {
                         if let Some(msg) = v.get("message") {
-                            if let Some(text) = extract_message_text(msg) {
-                                final_text = text;
+                            // 只取最终 assistant 消息：role=assistant 且
+                            // stop_reason 不是 toolUse（工具调用中间态）。
+                            // 子进程多轮工具调用会产生多个 message_end，
+                            // 最后一个可能是工具结果而非最终结论。
+                            let role = msg.get("role").and_then(|r| r.as_str());
+                            let stop_reason = msg.get("stop_reason").and_then(|s| s.as_str());
+                            if role == Some("assistant") && stop_reason != Some("toolUse") {
+                                if let Some(text) = extract_message_text(msg) {
+                                    final_text = text;
+                                }
                             }
                         }
                     }
@@ -396,8 +421,14 @@ impl SubagentExtension {
         // ── spawn 子进程，stdout 重定向到 output.jsonl ──
         let mut cmd = Command::new(&self.pi_binary);
         cmd.arg("--mode").arg("json").arg("-p");
+        // 模型继承："provider/model" 拆开传 --provider + --model。
         if !model.is_empty() {
-            cmd.arg("--model").arg(model);
+            if let Some((provider, model_id)) = model.split_once('/') {
+                cmd.arg("--provider").arg(provider);
+                cmd.arg("--model").arg(model_id);
+            } else {
+                cmd.arg("--model").arg(model);
+            }
         }
         cmd.arg("--no-session");
         cmd.arg("--no-extensions");
@@ -512,7 +543,8 @@ fn extract_message_text(msg: &Value) -> Option<String> {
     }
 }
 
-/// 从 output.jsonl 提取最终 assistant 消息（最后一个 message_end 的文本）。
+/// 从 output.jsonl 提取最终 assistant 消息（最后一个 role=assistant 且
+/// stop_reason != toolUse 的 message_end 的文本）。
 fn parse_output_jsonl(output: &str) -> String {
     let mut final_text = String::new();
     for line in output.lines() {
@@ -525,8 +557,12 @@ fn parse_output_jsonl(output: &str) -> String {
         };
         if v.get("type").and_then(|t| t.as_str()) == Some("message_end") {
             if let Some(msg) = v.get("message") {
-                if let Some(text) = extract_message_text(msg) {
-                    final_text = text;
+                let role = msg.get("role").and_then(|r| r.as_str());
+                let stop_reason = msg.get("stop_reason").and_then(|s| s.as_str());
+                if role == Some("assistant") && stop_reason != Some("toolUse") {
+                    if let Some(text) = extract_message_text(msg) {
+                        final_text = text;
+                    }
                 }
             }
         }

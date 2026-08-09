@@ -158,7 +158,15 @@ impl HookHandler for SubagentExtension {
         let timeout_dur = Duration::from_secs(timeout_secs.max(1));
 
         // ── spawn 子 pi 进程 ──
+        // get_cwd 可能为空（宿主 RuntimeHandle 未正确设置），fallback 到进程 cwd。
         let cwd = (ctx.runtime.get_cwd)();
+        let cwd = if cwd.is_empty() {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        } else {
+            cwd
+        };
         let mut cmd = Command::new(&self.pi_binary);
         cmd.arg("--mode").arg("json").arg("-p");
         if !model.is_empty() {
@@ -210,6 +218,13 @@ impl HookHandler for SubagentExtension {
                                 final_text = text;
                             }
                         }
+                    }
+                    // agent_end 表示 agent 循环结束，最终消息已收到。
+                    // 不依赖后续的 `end` 事件（print mode 在流式错误时可能
+                    // 卡在 wait_for_idle 不输出 end，子进程也不退出）。
+                    Some("agent_end") => {
+                        saw_end = true;
+                        break;
                     }
                     Some("end") => {
                         saw_end = true;

@@ -2393,9 +2393,7 @@ impl AgentSession {
         let expanded_text = if expand_templates {
             let mut t = current_text;
             t = self._expand_skill_command(&t);
-            // Prompt template expansion is not yet implemented in Rust.
-            // TS expandPromptTemplate() expands /template_name args to template content.
-            // t = expand_prompt_template(&t, &self.prompt_templates());
+            t = crate::core::prompt_templates::expand_prompt_template(&t, &self.prompt_templates());
             t
         } else {
             current_text
@@ -3671,6 +3669,8 @@ References are relative to {}.
             self._throw_if_extension_command(text)?;
         }
         let expanded_text = self._expand_skill_command(text);
+        let expanded_text =
+            crate::core::prompt_templates::expand_prompt_template(&expanded_text, &self.prompt_templates());
         self._queue_steer(&expanded_text, images).await;
         Ok(())
     }
@@ -3682,6 +3682,8 @@ References are relative to {}.
             self._throw_if_extension_command(text)?;
         }
         let expanded_text = self._expand_skill_command(text);
+        let expanded_text =
+            crate::core::prompt_templates::expand_prompt_template(&expanded_text, &self.prompt_templates());
         self._queue_follow_up(&expanded_text, images).await;
         Ok(())
     }

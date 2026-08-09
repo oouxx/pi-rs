@@ -77,6 +77,27 @@ fn steer_queues_message_and_reports_pending_count() {
     let _ = child.wait();
 }
 
+/// A `/`-prefixed message that is NOT an extension command must queue
+/// normally (the extension-command rejection only fires for registered
+/// extension commands, matching TS `_throwIfExtensionCommand`).
+#[test]
+fn steer_non_extension_slash_text_is_not_rejected() {
+    let (mut child, mut stdin, mut stdout) = spawn_rpc();
+
+    let lines = send_and_read(&mut stdin, &mut stdout, r#"{"type":"steer","id":"s1","message":"/nonexistent_cmd hello"}"#, "s1");
+    let response = lines.last().expect("response");
+    assert_eq!(response["command"], "steer");
+    assert_eq!(response["success"], true, "unknown slash text must queue: {response}");
+    let queue_update = lines
+        .iter()
+        .find(|l| l["type"] == "queue_update")
+        .expect("queue_update event");
+    assert_eq!(queue_update["steering"], serde_json::json!(["/nonexistent_cmd hello"]));
+
+    child.kill().expect("kill child");
+    let _ = child.wait();
+}
+
 #[test]
 fn follow_up_queues_message_and_reports_pending_count() {
     let (mut child, mut stdin, mut stdout) = spawn_rpc();

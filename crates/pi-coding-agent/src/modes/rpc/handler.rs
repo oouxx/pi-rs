@@ -112,8 +112,10 @@ pub async fn handle_command(
                     })
                     .collect::<Vec<_>>()
             });
-            session.steer(&message, images_content.filter(|v| !v.is_empty())).await;
-            Some(rpc_success(id, "steer", None))
+            match session.steer(&message, images_content.filter(|v| !v.is_empty())).await {
+                Ok(()) => Some(rpc_success(id, "steer", None)),
+                Err(e) => Some(rpc_error(id, "steer", e)),
+            }
         }
 
         RpcCommand::FollowUp { id, message, images } => {
@@ -129,8 +131,10 @@ pub async fn handle_command(
                     })
                     .collect::<Vec<_>>()
             });
-            session.follow_up(&message, images_content.filter(|v| !v.is_empty())).await;
-            Some(rpc_success(id, "follow_up", None))
+            match session.follow_up(&message, images_content.filter(|v| !v.is_empty())).await {
+                Ok(()) => Some(rpc_success(id, "follow_up", None)),
+                Err(e) => Some(rpc_error(id, "follow_up", e)),
+            }
         }
 
         // ── Abort ─────────────────────────────────────────────────────────

@@ -2402,13 +2402,16 @@ impl AgentSession {
         };
 
         // If streaming, queue via steer() or followUp() based on streamingBehavior option,
-        // matching TS prompt() which checks isStreaming.
+        // matching TS prompt() which checks isStreaming. Uses the internal
+        // `_queue_steer`/`_queue_follow_up` (pre-expanded text, no extension
+        // command check) matching TS prompt() which calls `_queueSteer`/
+        // `_queueFollowUp` directly.
         if self.is_streaming().await {
             let behavior = opts.streaming_behavior.as_deref().unwrap_or("steer");
             if behavior == "follow_up" || behavior == "followUp" {
-                self.follow_up(&expanded_text, current_images).await;
+                self._queue_follow_up(&expanded_text, current_images).await;
             } else {
-                self.steer(&expanded_text, current_images).await;
+                self._queue_steer(&expanded_text, current_images).await;
             }
             if let Some(cb) = &opts.preflight_result {
                 cb(true);
@@ -3659,22 +3662,44 @@ References are relative to {}.
 
     /// Queue a steering message (interrupts current stream), matching TS steer().
     /// Supports optional image attachments.
-    pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) {
-        // Apply queued JS extension actions before the steer.
-        self.drain_extension_actions().await;
-        // Expand skill commands and prompt templates (matching TS steer()
-        // which calls _expandSkillCommand + expandPromptTemplate).
+    /// Queue a steering message (interrupts the current stream), matching TS
+    /// `steer()`. Errors if the text is an extension command (cannot be
+    /// queued, matching TS `_throwIfExtensionCommand`). Expands skill commands
+    /// and prompt templates before queueing.
+    pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), String> {
+        if text.starts_with('/') {
+            self._throw_if_extension_command(text)?;
+        }
         let expanded_text = self._expand_skill_command(text);
+        self._queue_steer(&expanded_text, images).await;
+        Ok(())
+    }
+
+    /// Queue a follow-up message (waits for the current stream), matching TS
+    /// `followUp()`. Errors on extension commands; expands skills/templates.
+    pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), String> {
+        if text.starts_with('/') {
+            self._throw_if_extension_command(text)?;
+        }
+        let expanded_text = self._expand_skill_command(text);
+        self._queue_follow_up(&expanded_text, images).await;
+        Ok(())
+    }
+
+    /// Internal: enqueue an already-expanded steering message (matching TS
+    /// `_queueSteer`, which receives pre-expanded text and skips the extension
+    /// command check — the caller has already handled commands).
+    async fn _queue_steer(&self, text: &str, images: Option<Vec<ContentBlock>>) {
         // Mirror the queued message for pendingMessageCount / getSteeringMessages
         // / QueueUpdate events (matching TS _queueSteer which pushes to
         // `_steeringMessages` and emits a queue update).
         self.steering_messages
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(expanded_text.clone());
+            .push(text.to_string());
         self._emit_queue_update();
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let mut content = vec![ContentBlock::text(&expanded_text)];
+        let mut content = vec![ContentBlock::text(text)];
         if let Some(imgs) = images {
             content.extend(imgs);
         }
@@ -3682,26 +3707,44 @@ References are relative to {}.
         self.agent.steer(message).await;
     }
 
-    /// Queue a follow-up message (waits for current stream), matching TS followUp().
-    /// Supports optional image attachments.
-    pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) {
-        // Apply queued JS extension actions before the follow-up.
-        self.drain_extension_actions().await;
-        // Expand skill commands and prompt templates (matching TS followUp()).
-        let expanded_text = self._expand_skill_command(text);
-        // Mirror the queued message (matching TS _queueFollowUp).
+    /// Internal: enqueue an already-expanded follow-up message (matching TS
+    /// `_queueFollowUp`).
+    async fn _queue_follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) {
         self.follow_up_messages
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(expanded_text.clone());
+            .push(text.to_string());
         self._emit_queue_update();
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let mut content = vec![ContentBlock::text(&expanded_text)];
+        let mut content = vec![ContentBlock::text(text)];
         if let Some(imgs) = images {
             content.extend(imgs);
         }
         let message = AgentMessage::User { content, timestamp };
         self.agent.follow_up(message).await;
+    }
+
+    /// Throw if the text is an extension command (cannot be queued), matching
+    /// TS `_throwIfExtensionCommand`.
+    fn _throw_if_extension_command(&self, text: &str) -> Result<(), String> {
+        if !text.starts_with('/') {
+            return Ok(());
+        }
+        let space_idx = text.find(' ');
+        let command_name = if let Some(idx) = space_idx {
+            &text[1..idx]
+        } else {
+            &text[1..]
+        };
+        if let Some(ref registry) = self.extension_registry {
+            let commands = registry.commands();
+            if commands.iter().any(|c| c.name == command_name) {
+                return Err(format!(
+                    "Extension command \"/{command_name}\" cannot be queued. Use prompt() or execute the command when not streaming."
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Check if there are queued messages, matching original hasQueuedMessages().

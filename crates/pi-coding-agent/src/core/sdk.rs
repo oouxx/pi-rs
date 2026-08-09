@@ -5,8 +5,6 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
-#[cfg(feature = "js-runtime")]
-use crate::core::model_registry::ProviderConfig;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
@@ -193,11 +191,6 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
     /// Loaded extensions result. Populated when extensions are enabled.
     pub extensions_result: Option<ExtensionsResult>,
-    /// Opaque handle keeping the V8 runtime alive (when `js-runtime` feature
-    /// is enabled and JS extensions were loaded). Dropping this shuts down V8.
-    /// Stored as `Box<dyn Any + Send>` to avoid a hard dependency on
-    /// `js-runtime` types in the struct definition.
-    pub _js_extension_manager: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl std::fmt::Debug for CreateAgentSessionResult {
@@ -205,7 +198,6 @@ impl std::fmt::Debug for CreateAgentSessionResult {
         f.debug_struct("CreateAgentSessionResult")
             .field("model_fallback_message", &self.model_fallback_message)
             .field("extensions_result", &self.extensions_result)
-            .field("_js_extension_manager", &self._js_extension_manager.as_ref().map(|_| "<JsExtensionManager>"))
             .finish()
     }
 }
@@ -523,72 +515,10 @@ pub async fn create_agent_session(
 
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    #[cfg_attr(not(feature = "js-runtime"), allow(unused_mut))]
     let mut extension_registry = options
         .extension_registry
         .take()
         .unwrap_or_default();
-
-    // ── JS/TS extension loading (V8 runtime, feature-gated) ──────────
-    #[cfg(feature = "js-runtime")]
-    let mut js_extension_manager: Option<Box<dyn std::any::Any + Send>> = None;
-    #[cfg(feature = "js-runtime")]
-    let mut js_load_errors: Vec<ExtensionError> = Vec::new();
-
-    #[cfg(feature = "js-runtime")]
-    if options.enable_extensions {
-        let default_flags = std::collections::HashMap::new();
-        let extension_flags = options.extension_flags.as_ref().unwrap_or(&default_flags);
-        match crate::core::extensions::js_adapter::load_js_extensions(
-            &options.extension_paths,
-            &cwd,
-            &agent_dir,
-            extension_flags,
-        )
-        .await
-        {
-            Ok(Some(loaded)) => {
-                for adapter in loaded.adapters {
-                    // Flush pre-bind provider registrations (queued via
-                    // `pi.registerProvider` during the factory call) to the
-                    // ModelRegistry, mirroring TS `bindCore()` flushing
-                    // `pendingProviderRegistrations`.
-                    for pending in adapter.pending_providers() {
-                        match serde_json::from_str::<ProviderConfig>(&pending.config_json) {
-                            Ok(config) => {
-                                model_registry.register_provider(&pending.name, config);
-                            }
-                            Err(e) => {
-                                js_load_errors.push(ExtensionError {
-                                    path: pending.extension_path.clone(),
-                                    error: format!("registerProvider config parse error: {e}"),
-                                });
-                            }
-                        }
-                    }
-                    // Use the per-extension SourceInfo (derived from the
-                    // extension file path) so registered tools/commands carry
-                    // accurate provenance, not a generic placeholder.
-                    let source_info = adapter.source_info().clone();
-                    extension_registry.register(Box::new(adapter), source_info);
-                }
-                // Wrap in Arc so the session's JS invalidator callback can hold
-                // a clone alongside the result handle.
-                js_extension_manager = Some(Box::new(std::sync::Arc::new(loaded.manager)));
-            }
-            Ok(None) => {
-                // No JS extension files discovered — nothing to do.
-            }
-            Err(errors) => {
-                for e in errors {
-                    js_load_errors.push(ExtensionError {
-                        path: "<js-extension>".to_string(),
-                        error: e,
-                    });
-                }
-            }
-        }
-    }
 
     // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
@@ -687,8 +617,7 @@ pub async fn create_agent_session(
     // Extension action bus: JS extension read-actions read the shared state
     // snapshot; write-actions are queued and drained by the session at turn
     // boundaries. Always created (negligible cost) so the config fields are
-    // unconditionally populated; only used when `js-runtime` is enabled.
-    #[cfg_attr(not(feature = "js-runtime"), allow(unused_variables))]
+    // unconditionally populated.
     let (extension_action_sender, extension_action_rx, extension_state_view) =
         crate::core::extensions::action_bus::ExtensionActionSender::new();
 
@@ -718,160 +647,8 @@ pub async fn create_agent_session(
         extension_action_rx: Some(extension_action_rx),
     };
 
-    // Clone the model registry before it's moved into the session. The clone
-    // shares the `registered_providers` Arc with the original, so the
-    // post-bind `register_provider` closure can reach the live provider map
-    // that the session's model registry uses. (Other fields — models,
-    // models_json_providers — are deep-copied; they are read-only after
-    // construction so that's fine.)
-    #[cfg(feature = "js-runtime")]
-    let model_registry_for_actions = model_registry.clone();
-
-    #[cfg_attr(not(feature = "js-runtime"), allow(unused_mut))]
     let mut session =
         AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
-
-    // ── Bind the JS extension runtime core ─────────────────────────────
-    // After all extensions are loaded and the session is created, install
-    // the action-method closures so that post-load action ops (e.g. live
-    // `pi.registerProvider` calls from event handlers) delegate to the host.
-    // Mirrors TS `ExtensionRunner.bindCore()`.
-    #[cfg(feature = "js-runtime")]
-    if let Some(ref manager_any) = js_extension_manager {
-        if let Some(manager_arc) = manager_any
-            .downcast_ref::<std::sync::Arc<crate::core::extensions::js_adapter::JsExtensionManager>>()
-        {
-            let manager = manager_arc.as_ref();
-            use crate::core::extensions::action_bus::ExtensionAction;
-            use crate::core::extensions::js_runtime::RuntimeActions;
-
-            let registry = model_registry_for_actions.clone();
-
-            // Read-actions read the shared state snapshot (refreshed by the
-            // session at drain points); write-actions enqueue onto the bus.
-            let state_view = extension_action_sender.state();
-            let actions = RuntimeActions {
-                get_session_name: Some(std::sync::Arc::new({
-                    let state = state_view.clone();
-                    move || state.lock().unwrap().session_name.clone()
-                })),
-                get_active_tools: Some(std::sync::Arc::new({
-                    let state = state_view.clone();
-                    move || state.lock().unwrap().active_tools.clone()
-                })),
-                get_all_tools: Some(std::sync::Arc::new({
-                    let state = state_view.clone();
-                    move || state.lock().unwrap().all_tools.clone()
-                })),
-                get_commands: Some(std::sync::Arc::new({
-                    let state = state_view.clone();
-                    move || state.lock().unwrap().commands.clone()
-                })),
-                get_thinking_level: Some(std::sync::Arc::new({
-                    let state = state_view.clone();
-                    move || state.lock().unwrap().thinking_level.clone()
-                })),
-
-                send_message: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |message_json: String, options_json: Option<String>| {
-                        // message_json is the full CustomMessage object;
-                        // extract customType + content for the action.
-                        let (custom_type, content) = serde_json::from_str::<serde_json::Value>(
-                            &message_json,
-                        )
-                        .ok()
-                        .map(|v| {
-                            (
-                                v.get("customType")
-                                    .and_then(|c| c.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                v.get("content")
-                                    .and_then(|c| c.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            )
-                        })
-                        .unwrap_or_default();
-                        sender.send(ExtensionAction::SendMessage {
-                            custom_type,
-                            content,
-                            options_json,
-                        });
-                    }
-                })),
-                send_user_message: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |content: String, options_json: Option<String>| {
-                        sender.send(ExtensionAction::SendUserMessage {
-                            content,
-                            options_json,
-                        });
-                    }
-                })),
-                append_entry: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |custom_type: String, data_json: Option<String>| {
-                        sender.send(ExtensionAction::AppendEntry {
-                            custom_type,
-                            data_json,
-                        });
-                    }
-                })),
-                set_session_name: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |name: String| sender.send(ExtensionAction::SetSessionName(name))
-                })),
-                set_label: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |entry_id: String, label: Option<String>| {
-                        sender.send(ExtensionAction::SetLabel { entry_id, label });
-                    }
-                })),
-                set_active_tools: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |tools: Vec<String>| sender.send(ExtensionAction::SetActiveTools(tools))
-                })),
-                set_thinking_level: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |level: String| sender.send(ExtensionAction::SetThinkingLevel(level))
-                })),
-                set_model: Some(std::sync::Arc::new({
-                    let sender = extension_action_sender.clone();
-                    move |model_id: String| sender.send(ExtensionAction::SetModel(model_id))
-                })),
-
-                register_provider: Some(std::sync::Arc::new(
-                    move |name: String, config_json: String, _ext_path: String| {
-                        match serde_json::from_str::<ProviderConfig>(&config_json) {
-                            Ok(config) => registry.register_provider(&name, config),
-                            Err(_) => {
-                                eprintln!(
-                                    "[pi] extension registerProvider: failed to parse config for '{name}'"
-                                );
-                            }
-                        }
-                    },
-                )),
-                unregister_provider: Some(std::sync::Arc::new(
-                    move |name: String| {
-                        model_registry_for_actions.unregister_provider(&name);
-                    },
-                )),
-            };
-            if let Err(e) = manager.bind_core(actions).await {
-                eprintln!("[pi] extension bindCore failed: {e}");
-            }
-            // Wire session-switch -> runtime invalidation (stale-ctx guard).
-            // Clone the Arc into the 'static closure (the session outlives the
-            // bind_core scope).
-            let manager_arc_owned = manager_arc.clone();
-            let invalidator = std::sync::Arc::new(move || manager_arc_owned.invalidate_sync());
-            session.set_js_invalidator(Some(invalidator));
-
-        }
-    }
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {
@@ -882,14 +659,10 @@ pub async fn create_agent_session(
     }
 
     // Build extensions result from pre-collected names
-    #[cfg(not(feature = "js-runtime"))]
-    let js_load_errors: Vec<ExtensionError> = Vec::new();
-
     let extensions_result = if options.enable_extensions {
-        let mut all_errors = js_load_errors;
         Some(ExtensionsResult {
             extensions: extension_names,
-            errors: std::mem::take(&mut all_errors),
+            errors: Vec::new(),
         })
     } else {
         None
@@ -900,12 +673,6 @@ pub async fn create_agent_session(
         CreateAgentSessionResult {
             model_fallback_message: fallback_message,
             extensions_result,
-            _js_extension_manager: {
-                #[cfg(feature = "js-runtime")]
-                { js_extension_manager }
-                #[cfg(not(feature = "js-runtime"))]
-                { None }
-            },
         },
     ))
 }

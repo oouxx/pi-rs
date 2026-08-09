@@ -1,9 +1,6 @@
 //! Extension system tests for pi-coding-agent.
 //!
 //! These tests cover ToolDefinition serialization/deserialization.
-//! Tests for the old load_extensions/LoadedExtension/ToolInfo system
-//! were removed in Phase 6.6 cleanup (those types were dead code
-//! replaced by the embedded deno_core JS runtime).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

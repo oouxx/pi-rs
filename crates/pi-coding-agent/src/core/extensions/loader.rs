@@ -1,14 +1,13 @@
-//! Extension discovery + module cache — the V8-agnostic half of TS
+//! Extension discovery + module cache — the runtime-agnostic half of TS
 //! `core/extensions/loader.ts`.
 //!
 //! This module ports the pieces of `loader.ts` that need **no JavaScript
 //! runtime**: manifest parsing, entry-point resolution, directory scanning,
 //! and the cwd-invalidating module cache. The factory-invocation half
-//! (`loadExtensionModule` / `loadExtension` / `createExtensionAPI`) requires
-//! an embedded JS runtime (deno_core / rquickjs) and is deliberately *not*
-//! stubbed here — see `EXTENSION_LOADING_FEASIBILITY.md` §6 for the remaining
-//! sub-items. Anything in this file is reusable regardless of which runtime
-//! backend is later chosen.
+//! (`loadExtensionModule` / `loadExtension` / `createExtensionAPI`) lives on
+//! the `feat/bun-extension-compat` branch (Bun subprocess runtime).
+//! Anything in this file is reusable regardless of which runtime backend is
+//! later chosen.
 //!
 //! TS source: `packages/coding-agent/src/core/extensions/loader.ts`.
 //! The functions below mirror the named TS functions 1:1 in behavior; error
@@ -281,7 +280,7 @@ pub struct CacheToken {
 /// Mirrors the TS module-level `extensionCache` / `extensionCacheCwd` /
 /// `extensionCacheGeneration` triple. Generic over the cached value (`V`)
 /// so the invalidation logic is reusable regardless of the runtime backend:
-/// a future deno_core chunk instantiates `ExtensionCache<ExtensionFactory>`,
+/// a future runtime chunk instantiates `ExtensionCache<ExtensionFactory>`,
 /// while tests can use `ExtensionCache<()>`.
 ///
 /// Invalidation rules (matching TS):

@@ -4,3 +4,5 @@
 .superpowers
 .pi-rs
 .DS_Store
+# Bun runtime binary (61MB, downloaded via `make fetch-bun`; not committed)
+/assets/runtime/

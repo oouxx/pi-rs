@@ -358,6 +358,13 @@ pub enum AgentSessionEvent {
     /// (match TS `summarization_retry_finished`).
     #[serde(rename_all = "camelCase")]
     SummarizationRetryFinished {},
+    /// Streamed output delta from a direct bash execution, correlated with the
+    /// request id (match TS `bash_execution_update`, #6971).
+    #[serde(rename_all = "camelCase")]
+    BashExecutionUpdate {
+        id: Option<String>,
+        delta: String,
+    },
 }
 
 /// Listener function for agent session events.
@@ -387,7 +394,7 @@ impl SessionEventUnsubscribeHandle {
 
 #[allow(clippy::type_complexity)]
 pub struct AgentSession {
-    agent: Agent,
+    agent: Arc<Agent>,
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
     settings_manager: Arc<std::sync::Mutex<crate::core::settings_manager::SettingsManager>>,
     model_registry: ModelRegistry,
@@ -507,9 +514,62 @@ impl AgentSession {
         let mut tool_list: Vec<pi_agent_core::types::DynTool> = Vec::new();
 
         // 1. Built-in tools (read, bash, edit, write)
+        // Bash tools receive current session metadata as PI_* env vars, resolved
+        // at each command start (match TS #6967). The agent reference is bound
+        // late (after Agent::new) so model/thinking-level changes are picked up.
+        let bash_agent_ref: Arc<std::sync::Mutex<Option<Arc<Agent>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let bash_session_manager = Arc::new(std::sync::Mutex::new(session_manager));
+        let bash_session_env_provider: tools::bash::BashSessionEnvProvider = {
+            let agent_ref = bash_agent_ref.clone();
+            let sm = bash_session_manager.clone();
+            Arc::new(move || {
+                let agent_ref = agent_ref.clone();
+                let sm = sm.clone();
+                Box::pin(async move {
+                    // Read session metadata in a scoped block so the MutexGuard
+                    // is dropped before any await (keeps the future Send).
+                    let (session_id, session_file) = {
+                        let sm_guard =
+                            sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        (
+                            sm_guard.get_session_id().to_string(),
+                            sm_guard
+                                .get_session_file()
+                                .map(|p| p.to_string_lossy().to_string()),
+                        )
+                    };
+                    // Clone the agent Arc and drop the guard before awaiting.
+                    let agent = agent_ref
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match agent {
+                        Some(agent) => {
+                            let state = agent.state().await;
+                            tools::bash::BashSessionEnv {
+                                session_id: Some(session_id),
+                                session_file,
+                                provider: Some(state.model.provider.clone()),
+                                model: Some(state.model.id.clone()),
+                                thinking_level: Some(state.thinking_level.clone()),
+                            }
+                        }
+                        None => tools::bash::BashSessionEnv {
+                            session_id: Some(session_id),
+                            session_file,
+                            provider: None,
+                            model: None,
+                            thinking_level: None,
+                        },
+                    }
+                })
+            })
+        };
         tool_list.extend(tools::create_coding_tools(
             &options.cwd,
             Some(&tools_options),
+            Some(bash_session_env_provider),
         ));
 
         // 2. Custom tools from SDK callers (via custom_tools / ToolDefinition + execute)
@@ -700,7 +760,7 @@ impl AgentSession {
         // to gating by initial_active_tool_names. Extension tools (e.g. goal)
         // and custom tools are always active.
         let builtin_names: std::collections::HashSet<String> =
-            tools::create_coding_tools(&options.cwd, None)
+            tools::create_coding_tools(&options.cwd, None, None)
                 .iter()
                 .map(|t| t.name.clone())
                 .collect();
@@ -899,7 +959,13 @@ impl AgentSession {
             initial_state: Some(initial_state),
             convert_to_llm: Some(convert_to_llm),
             stream_fn: Some(stream_fn),
-            session_id: Some(session_manager.get_session_id().to_string()),
+            session_id: Some(
+                bash_session_manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_session_id()
+                    .to_string(),
+            ),
             before_tool_call,
             after_tool_call,
             transform_context,
@@ -910,8 +976,13 @@ impl AgentSession {
             ..Default::default()
         };
 
-        let agent = Agent::new(agent_options);
-        let session_manager = Arc::new(std::sync::Mutex::new(session_manager));
+        let agent = Arc::new(Agent::new(agent_options));
+        // Bind the agent reference used by the bash tool's session-env provider
+        // (resolved at each command start, match TS #6967).
+        *bash_agent_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(agent.clone());
+        let session_manager = bash_session_manager;
 
         let initial_active_tool_names = options.initial_active_tool_names.unwrap_or_else(|| {
             ["read", "bash", "edit", "write"]
@@ -1571,7 +1642,7 @@ impl AgentSession {
     // =========================================================================
 
     pub fn get_agent(&self) -> &Agent {
-        &self.agent
+        self.agent.as_ref()
     }
 
     /// Get full agent state, matching TS `get state()`.
@@ -3368,7 +3439,14 @@ References are relative to {}.
                 let model = model.clone();
                 let llm_context = llm_context.clone();
                 async move {
-                    consume_stream_to_message(stream_fn, model, llm_context).await
+                    // Summaries are standalone requests: fresh routing session ID
+                    // + cacheRetention "none" (match TS #6618).
+                    let fn_options = pi_agent_core::types::StreamFnOptions {
+                        cache_retention: Some(pi_agent_core::pi_ai_types::CacheRetention::None),
+                        session_id: Some(pi_agent_core::pi_ai_types::uuid_v7()),
+                        ..Default::default()
+                    };
+                    consume_stream_to_message(stream_fn, model, llm_context, fn_options).await
                 }
             };
             let result = pi_agent_core::pi_ai_types::retry_assistant_call(
@@ -3813,6 +3891,9 @@ References are relative to {}.
             "terminated",
             "websocket closed",
             "websocket error",
+            "getaddrinfo",
+            "enotfound",
+            "eai_again",
             "ended without",
             "stream ended before message_stop",
             "stream ended before a terminal response event",
@@ -4084,6 +4165,7 @@ async fn consume_stream_to_message(
     stream_fn: pi_agent_core::types::StreamFn,
     model: pi_agent_core::pi_ai_types::Model,
     context: pi_agent_core::pi_ai_types::Context,
+    fn_options: pi_agent_core::types::StreamFnOptions,
 ) -> pi_agent_core::pi_ai_types::AssistantMessage {
     let error_message = |e: String| pi_agent_core::pi_ai_types::AssistantMessage {
         content: vec![],
@@ -4100,14 +4182,7 @@ async fn consume_stream_to_message(
         timestamp: chrono::Utc::now().timestamp_millis(),
     };
 
-    match stream_fn(
-        model.clone(),
-        context,
-        None,
-        pi_agent_core::types::StreamFnOptions::default(),
-    )
-    .await
-    {
+    match stream_fn(model.clone(), context, None, fn_options).await {
         Ok(mut stream) => {
             use futures::StreamExt;
             let mut last_message: Option<pi_agent_core::pi_ai_types::AssistantMessage> = None;
@@ -4177,6 +4252,7 @@ impl AgentSession {
         command: &str,
         on_chunk: Option<ErrorListener>,
         exclude_from_context: Option<bool>,
+        id: Option<String>,
     ) -> Result<crate::core::bash_executor::BashExecutorResult, String> {
         use crate::core::bash_executor::{BashExecutor, BashExecutorOptions};
 
@@ -4205,8 +4281,33 @@ impl AgentSession {
         *self.bash_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
         let executor = BashExecutor::new(&self.cwd);
+        // Forward output deltas to the caller AND emit bash_execution_update
+        // events (match TS #6971).
+        let event_listeners = self.event_listeners.clone();
+        let on_chunk = {
+            let on_chunk = on_chunk;
+            let id = id.clone();
+            Box::new(move |delta: &str| {
+                if let Some(cb) = &on_chunk {
+                    cb(delta);
+                }
+                let evt = AgentSessionEvent::BashExecutionUpdate {
+                    id: id.clone(),
+                    delta: delta.to_string(),
+                };
+                let batch = {
+                    let l = event_listeners
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    l.iter().cloned().collect::<Vec<_>>()
+                };
+                for listener in batch {
+                    listener(evt.clone());
+                }
+            })
+        };
         let options = BashExecutorOptions {
-            on_chunk,
+            on_chunk: Some(on_chunk),
             signal: Some(rx),
         };
 

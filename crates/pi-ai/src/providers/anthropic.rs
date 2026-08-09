@@ -628,10 +628,25 @@ pub fn stream_anthropic(
     let model = model.clone();
     let context = context.clone();
     let owned_options = options.cloned();
-    let api_key = owned_options
-        .as_ref()
-        .and_then(|o| o.api_key.clone())
-        .or_else(|| crate::env_api_keys::get_env_api_key(&model.provider));
+    // Auth resolution order (match TS `anthropicApiKeyAuth().resolve`):
+    // 1. explicit/stored credential api_key → x-api-key
+    // 2. ANTHROPIC_AUTH_TOKEN → Authorization: Bearer
+    // 3. ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY env → x-api-key
+    let explicit_api_key = owned_options.as_ref().and_then(|o| o.api_key.clone());
+    let auth_token = std::env::var(crate::env_api_keys::ANTHROPIC_AUTH_TOKEN_ENV)
+        .ok()
+        .filter(|t| !t.is_empty());
+    let api_key = explicit_api_key
+        .clone()
+        .or_else(|| {
+            if auth_token.is_some() {
+                None
+            } else {
+                crate::env_api_keys::get_env_api_key(&model.provider)
+            }
+        });
+    let use_bearer = explicit_api_key.is_none() && auth_token.is_some();
+    let auth_token_for_inner = auth_token.clone();
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -641,6 +656,8 @@ pub fn stream_anthropic(
             &context,
             owned_options.as_ref(),
             api_key.as_deref(),
+            use_bearer,
+            auth_token_for_inner.as_deref(),
             &tx,
         )
         .await;
@@ -673,9 +690,20 @@ async fn stream_anthropic_inner(
     context: &Context,
     options: Option<&StreamOptions>,
     api_key: Option<&str>,
+    use_bearer: bool,
+    auth_token: Option<&str>,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let api_key = api_key.ok_or_else(|| format!("No API key for provider: {}", model.provider))?;
+    // When using ANTHROPIC_AUTH_TOKEN (Bearer), no x-api-key is required.
+    let api_key = if use_bearer {
+        api_key.map(|s| s.to_string())
+    } else {
+        Some(
+            api_key
+                .ok_or_else(|| format!("No API key for provider: {}", model.provider))?
+                .to_string(),
+        )
+    };
 
     let compat = get_anthropic_compat(model);
     let temperature = options.and_then(|o| o.temperature);
@@ -687,7 +715,18 @@ async fn stream_anthropic_inner(
 
     // Allow extensions to modify HTTP request headers
     let mut header_map = std::collections::HashMap::new();
-    header_map.insert("x-api-key".to_string(), api_key.to_string());
+    // ANTHROPIC_AUTH_TOKEN authenticates against Anthropic-compatible gateways
+    // that require `Authorization: Bearer` (TS #5871/#6148).
+    if use_bearer {
+        if let Some(token) = auth_token {
+            header_map.insert("authorization".to_string(), format!("Bearer {token}"));
+        }
+    } else {
+        header_map.insert(
+            "x-api-key".to_string(),
+            api_key.clone().unwrap_or_default(),
+        );
+    }
     header_map.insert(
         "anthropic-version".to_string(),
         ANTHROPIC_VERSION.to_string(),

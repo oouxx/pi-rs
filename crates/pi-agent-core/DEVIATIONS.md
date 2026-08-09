@@ -16,3 +16,4 @@
 > steering/follow-up/should_stop_after_turn/prepare_next_turn、length→fail truncated、
 > 工具批量执行顺序/并行）、messages、compaction、session 单 lane 生命周期、proxy 均与
 > TS 原版对齐。差异集中在多 lane 架构（#2/#6）及其下游（#3/#4），单 lane 行为一致。
+| 7 | `harness/` 内置工具（TS `harness/tools/read.ts`/`write.ts`/`edit.ts`/`bash.ts`，v0.82.0 #e32c1491b） | TS harness 内置 context-aware 工具对象：`createReadTool`/`createWriteTool`/`createEditTool`/`createBashTool`，通过 `ExecutionToolContext`（`{env: ExecutionEnv}`）执行，应用可注入自定义 toolContext；`ShellExecOptions.inheritEnv`、`~`/`file://` 路径处理、shell 输出捕获（子进程退出后 drain）、跨平台进程清理 | pi-rs harness 工具为**事件转发模式**：工具是名字列表（`tools: Vec<String>`），执行通过 `before_tool_call`/`after_tool_call` hooks 转发给外部事件处理器，无内置工具对象；`ExecutionEnv` trait 已有（文件系统 + shell 抽象），`env/nodejs.rs` 实现缺 `~`/`file://` 路径处理与 `inheritEnv` | pi-rs harness 无外部使用者（孤儿模块，pi-cli/pi-coding-agent/pi-tui 均不引用），工具由使用方注入；补内置工具对象等于改变 harness 架构而非补缺失功能。`ExecutionEnv` 行为对齐（`~`/`file://`/`inheritEnv`）属可选小增强，待 harness 有实际使用者时再补 | 已确认保留（架构差异） |

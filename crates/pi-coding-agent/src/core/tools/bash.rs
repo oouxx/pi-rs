@@ -186,16 +186,48 @@ fn get_shell_env() -> Vec<(String, String)> {
     std::env::vars().collect()
 }
 
+/// PI_* variables that are never inherited from the parent process; they are
+/// re-injected from the current session when available (match TS #6967).
+const PI_SESSION_ENV_VARS: &[&str] = &[
+    "PI_SESSION_ID",
+    "PI_SESSION_FILE",
+    "PI_PROVIDER",
+    "PI_MODEL",
+    "PI_REASONING_LEVEL",
+];
+
 /// Resolve the spawn context, applying the spawn hook if provided.
+/// Session metadata is injected as `PI_*` env vars (match TS #6967).
 fn resolve_spawn_context(
     command: &str,
     cwd: &str,
     spawn_hook: Option<&BashSpawnHook>,
+    session_env: Option<&BashSessionEnv>,
 ) -> BashSpawnContext {
+    let mut env = get_shell_env();
+    // Never inherit PI_* from the parent process.
+    env.retain(|(k, _)| !PI_SESSION_ENV_VARS.contains(&k.as_str()));
+    if let Some(session) = session_env {
+        if let Some(id) = &session.session_id {
+            env.push(("PI_SESSION_ID".to_string(), id.clone()));
+        }
+        if let Some(file) = &session.session_file {
+            env.push(("PI_SESSION_FILE".to_string(), file.clone()));
+        }
+        if let Some(provider) = &session.provider {
+            env.push(("PI_PROVIDER".to_string(), provider.clone()));
+        }
+        if let Some(model) = &session.model {
+            env.push(("PI_MODEL".to_string(), model.clone()));
+        }
+        if let Some(level) = &session.thinking_level {
+            env.push(("PI_REASONING_LEVEL".to_string(), level.clone()));
+        }
+    }
     let base = BashSpawnContext {
         command: command.to_string(),
         cwd: cwd.to_string(),
-        env: get_shell_env(),
+        env,
     };
     match spawn_hook {
         Some(hook) => hook(base),
@@ -447,12 +479,35 @@ impl BashOperations for LocalBashOperations {
 // BashToolOptions
 // ============================================================================
 
+/// Current session metadata exposed to bash commands as `PI_*` environment
+/// variables (match TS #6967).
+#[derive(Debug, Clone, Default)]
+pub struct BashSessionEnv {
+    pub session_id: Option<String>,
+    pub session_file: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub thinking_level: Option<String>,
+}
+
+/// Async provider for [`BashSessionEnv`], resolved at each command start so
+/// model/thinking-level changes are picked up (match TS #6967).
+pub type BashSessionEnvProvider = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = BashSessionEnv> + Send>,
+        > + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub struct BashToolOptions {
     pub operations: Arc<dyn BashOperations>,
     pub command_prefix: Option<String>,
     pub shell_path: Option<String>,
     pub spawn_hook: Option<BashSpawnHook>,
+    /// Current session metadata injected as `PI_*` env vars, resolved at each
+    /// command start (match TS #6967).
+    pub session_env_provider: Option<BashSessionEnvProvider>,
 }
 
 impl fmt::Debug for BashToolOptions {
@@ -472,6 +527,7 @@ impl Default for BashToolOptions {
             command_prefix: None,
             shell_path: None,
             spawn_hook: None,
+            session_env_provider: None,
         }
     }
 }
@@ -574,6 +630,7 @@ pub fn create_bash_tool(
     let operations = opts.operations.clone();
     let command_prefix = opts.command_prefix.clone();
     let spawn_hook = opts.spawn_hook.clone();
+    let session_env_provider = opts.session_env_provider.clone();
 
     AgentTool {
         name: "bash".to_string(),
@@ -600,6 +657,7 @@ pub fn create_bash_tool(
                 let operations = operations.clone();
                 let command_prefix = command_prefix.clone();
                 let spawn_hook = spawn_hook.clone();
+                let session_env_provider = session_env_provider.clone();
                 Box::pin(async move {
                     let command = params
                         .get("command")
@@ -615,8 +673,18 @@ pub fn create_bash_tool(
                         command.clone()
                     };
 
-                    // Resolve spawn context (applies spawn hook)
-                    let spawn_ctx = resolve_spawn_context(&resolved_command, &cwd, spawn_hook.as_ref());
+                    // Resolve spawn context (applies spawn hook). Session metadata
+                    // is resolved at command start (match TS #6967).
+                    let session_env = match &session_env_provider {
+                        Some(provider) => provider().await,
+                        None => BashSessionEnv::default(),
+                    };
+                    let spawn_ctx = resolve_spawn_context(
+                        &resolved_command,
+                        &cwd,
+                        spawn_hook.as_ref(),
+                        Some(&session_env),
+                    );
 
                     // Create OutputAccumulator for streaming output
                     let output = Arc::new(Mutex::new(OutputAccumulator::new(
@@ -889,7 +957,7 @@ mod tests {
 
     #[test]
     fn test_resolve_spawn_context_no_hook() {
-        let ctx = resolve_spawn_context("echo hello", "/tmp", None);
+        let ctx = resolve_spawn_context("echo hello", "/tmp", None, None);
         assert_eq!(ctx.command, "echo hello");
         assert_eq!(ctx.cwd, "/tmp");
         assert!(!ctx.env.is_empty());
@@ -901,8 +969,30 @@ mod tests {
             ctx.command = format!("echo 'wrapped: {}'", ctx.command);
             ctx
         });
-        let ctx = resolve_spawn_context("hello", "/tmp", Some(&hook));
+        let ctx = resolve_spawn_context("hello", "/tmp", Some(&hook), None);
         assert_eq!(ctx.command, "echo 'wrapped: hello'");
+    }
+
+    #[test]
+    fn test_resolve_spawn_context_injects_session_env() {
+        let session = BashSessionEnv {
+            session_id: Some("sess-1".to_string()),
+            session_file: Some("/tmp/sess.jsonl".to_string()),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-sonnet-4-6".to_string()),
+            thinking_level: Some("high".to_string()),
+        };
+        let ctx = resolve_spawn_context("echo hi", "/tmp", None, Some(&session));
+        let env: std::collections::HashMap<&str, &str> = ctx
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(env.get("PI_SESSION_ID"), Some(&"sess-1"));
+        assert_eq!(env.get("PI_SESSION_FILE"), Some(&"/tmp/sess.jsonl"));
+        assert_eq!(env.get("PI_PROVIDER"), Some(&"anthropic"));
+        assert_eq!(env.get("PI_MODEL"), Some(&"claude-sonnet-4-6"));
+        assert_eq!(env.get("PI_REASONING_LEVEL"), Some(&"high"));
     }
 
     #[test]

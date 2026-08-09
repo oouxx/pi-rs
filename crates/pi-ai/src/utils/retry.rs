@@ -82,6 +82,10 @@ const RETRYABLE_PATTERNS: &[&str] = &[
     "terminated",
     "websocket closed",
     "websocket error",
+    // DNS lookup failures (TS #6946)
+    "getaddrinfo",
+    "enotfound",
+    "eai_again",
     "ended without",
     "stream ended before message_stop",
     "stream ended before a terminal response event",

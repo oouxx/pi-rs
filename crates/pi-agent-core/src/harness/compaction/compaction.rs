@@ -421,10 +421,15 @@ Format your summary as:
 pub async fn complete_summarization(
     model: &crate::pi_ai_types::Model,
     context: &crate::pi_ai_types::Context,
-    options: crate::pi_ai_types::SimpleStreamOptions,
+    mut options: crate::pi_ai_types::SimpleStreamOptions,
     retry: Option<crate::pi_ai_types::RetryPolicy>,
     callbacks: Option<&crate::pi_ai_types::RetryCallbacks>,
 ) -> std::result::Result<crate::pi_ai_types::AssistantMessage, String> {
+    // Summaries are standalone requests, so isolate routing and avoid cache
+    // writes that cannot be reused (match TS #6618: fresh routing session ID +
+    // `cacheRetention: "none"`).
+    options.base.cache_retention = Some(crate::pi_ai_types::CacheRetention::None);
+    options.base.session_id = Some(crate::pi_ai_types::uuid_v7());
     let produce = || {
         let model = model.clone();
         let context = context.clone();

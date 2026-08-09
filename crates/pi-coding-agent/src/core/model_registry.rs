@@ -13,6 +13,8 @@ pub struct ModelRegistry {
     registered_providers: Arc<RwLock<HashMap<String, ProviderConfig>>>,
     /// Provider configs loaded from models.json (provider-level settings like baseUrl, apiKey, headers, etc.)
     models_json_providers: RwLock<HashMap<String, ProviderConfig>>,
+    /// Path of the models.json file, kept for hot reload (match TS #6999).
+    models_path: Option<std::path::PathBuf>,
 }
 
 impl Clone for ModelRegistry {
@@ -21,6 +23,7 @@ impl Clone for ModelRegistry {
             models: RwLock::new(self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
             registered_providers: Arc::clone(&self.registered_providers),
             models_json_providers: RwLock::new(self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
+            models_path: self.models_path.clone(),
         }
     }
 }
@@ -56,11 +59,13 @@ pub struct ModelRegistryEntry {
 impl ModelRegistry {
     pub fn new(builtin_models: Vec<Model>) -> Self {
         let mut models = builtin_models;
-        let models_json_providers = Self::load_models_from_file(&mut models);
+        let models_path = config::get_models_path();
+        let models_json_providers = Self::load_models_from_path(&mut models, &models_path);
         Self {
             models: RwLock::new(models),
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
             models_json_providers: RwLock::new(models_json_providers),
+            models_path: Some(models_path),
         }
     }
 
@@ -74,7 +79,29 @@ impl ModelRegistry {
             models: RwLock::new(models),
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
             models_json_providers: RwLock::new(models_json_providers),
+            models_path: Some(models_path.to_path_buf()),
         }
+    }
+
+    /// Reload models.json configuration (match TS `ModelRegistry.refresh()`, #6999).
+    /// Re-reads the models.json file and upserts its models into the registry,
+    /// so updated config (baseUrl/compat/new models) takes effect without a restart.
+    pub fn refresh(&self) {
+        let Some(path) = self.models_path.clone() else {
+            return;
+        };
+        if !path.exists() {
+            return;
+        }
+        let mut models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let providers = Self::load_models_from_path(&mut models, &path);
+        let mut models_guard = self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *models_guard = models;
+        let mut providers_guard = self
+            .models_json_providers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *providers_guard = providers;
     }
 
     pub fn builtin_models_list() -> Vec<Model> {
@@ -296,13 +323,6 @@ impl ModelRegistry {
     pub fn get_registered_providers(&self) -> Vec<String> {
         let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.keys().cloned().collect()
-    }
-
-    /// Load models from models.json (TS-compatible format: { "providers": { "name": { ... } } })
-    /// Returns the provider configs extracted from the file.
-    fn load_models_from_file(models: &mut Vec<Model>) -> HashMap<String, ProviderConfig> {
-        let models_path = config::get_models_path();
-        Self::load_models_from_path(models, &models_path)
     }
 
     fn load_models_from_path(

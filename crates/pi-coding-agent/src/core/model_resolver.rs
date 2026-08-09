@@ -71,8 +71,18 @@ pub struct ParsedModelResult {
     pub warning: Option<String>,
 }
 
+/// Diagnostic code for a model scope warning (match TS `ModelScopeDiagnostic.code`,
+/// #7032).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelScopeDiagnosticCode {
+    NoMatch,
+    InvalidThinkingLevel,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelScopeDiagnostic {
+    pub code: ModelScopeDiagnosticCode,
     pub message: String,
     pub pattern: String,
 }
@@ -318,6 +328,22 @@ pub fn resolve_model_scope_with_diagnostics(
                 (pattern.as_str(), None)
             };
 
+            // Bracketed model ids (e.g. `custom/bracketed-model[1m]`) must be
+            // resolved as exact literal references BEFORE glob matching, since
+            // `[1m]` is a valid glob character class (match TS #6210).
+            if let Some(exact) = find_exact_model_reference_match(glob_pattern, available_models) {
+                if !scoped_models
+                    .iter()
+                    .any(|sm| sm.model.id == exact.id && sm.model.provider == exact.provider)
+                {
+                    scoped_models.push(ScopedModel {
+                        thinking_level: thinking_level.clone(),
+                        model: exact,
+                    });
+                }
+                continue;
+            }
+
             // Match against "provider/modelId" format OR just model ID
             let matching_models: Vec<Model> = available_models
                 .iter()
@@ -330,6 +356,7 @@ pub fn resolve_model_scope_with_diagnostics(
 
             if matching_models.is_empty() {
                 diagnostics.push(ModelScopeDiagnostic {
+                    code: ModelScopeDiagnosticCode::NoMatch,
                     message: format!("No models match pattern \"{}\"", pattern),
                     pattern: pattern.clone(),
                 });
@@ -351,6 +378,7 @@ pub fn resolve_model_scope_with_diagnostics(
 
         if let Some(ref warning) = result.warning {
             diagnostics.push(ModelScopeDiagnostic {
+                code: ModelScopeDiagnosticCode::InvalidThinkingLevel,
                 message: warning.clone(),
                 pattern: pattern.clone(),
             });
@@ -365,6 +393,7 @@ pub fn resolve_model_scope_with_diagnostics(
             }
         } else {
             diagnostics.push(ModelScopeDiagnostic {
+                code: ModelScopeDiagnosticCode::NoMatch,
                 message: format!("No models match pattern \"{}\"", pattern),
                 pattern: pattern.clone(),
             });

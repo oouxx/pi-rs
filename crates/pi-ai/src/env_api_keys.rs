@@ -1,10 +1,19 @@
 use std::collections::HashMap;
 
+/// Anthropic bearer token env var (match TS `ANTHROPIC_AUTH_TOKEN_ENV`).
+/// Participates in env discovery/status, but `get_env_api_key` skips it because
+/// requests must pass it as `Authorization: Bearer` (TS #5871/#6148).
+pub const ANTHROPIC_AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
+/// Anthropic OAuth token env var (match TS `ANTHROPIC_OAUTH_TOKEN_ENV`).
+pub const ANTHROPIC_OAUTH_TOKEN_ENV: &str = "ANTHROPIC_OAUTH_TOKEN";
+/// Anthropic API key env var (match TS `ANTHROPIC_API_KEY_ENV`).
+pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
 /// Map of provider names to environment variable names for API keys.
 fn provider_env_keys() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
     map.insert("openai", "OPENAI_API_KEY");
-    map.insert("anthropic", "ANTHROPIC_API_KEY");
+    map.insert("anthropic", ANTHROPIC_API_KEY_ENV);
     map.insert("google", "GOOGLE_API_KEY");
     map.insert("google-vertex", "GOOGLE_VERTEX_API_KEY");
     map.insert("deepseek", "DEEPSEEK_API_KEY");
@@ -34,9 +43,36 @@ fn provider_env_keys() -> HashMap<&'static str, &'static str> {
 static ENV_KEYS: std::sync::LazyLock<HashMap<&'static str, &'static str>> =
     std::sync::LazyLock::new(provider_env_keys);
 
+/// All env var names that participate in auth discovery for a provider
+/// (match TS `getEnvVarNames`). Anthropic includes `ANTHROPIC_AUTH_TOKEN`
+/// which is handled separately as a Bearer token.
+pub fn get_env_var_names(provider: &str) -> Vec<&'static str> {
+    if provider == "anthropic" {
+        return vec![
+            ANTHROPIC_AUTH_TOKEN_ENV,
+            ANTHROPIC_OAUTH_TOKEN_ENV,
+            ANTHROPIC_API_KEY_ENV,
+        ];
+    }
+    ENV_KEYS.get(provider).map(|v| vec![*v]).unwrap_or_default()
+}
+
 /// Get the API key for a provider from the environment.
 /// Returns the value of the environment variable associated with the provider.
+/// Skips `ANTHROPIC_AUTH_TOKEN` (handled as a Bearer token by the provider).
 pub fn get_env_api_key(provider: &str) -> Option<String> {
+    if provider == "anthropic" {
+        // ANTHROPIC_OAUTH_TOKEN takes precedence over ANTHROPIC_API_KEY;
+        // ANTHROPIC_AUTH_TOKEN is skipped here (Bearer handled separately).
+        for var in [ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV] {
+            if let Ok(v) = std::env::var(var) {
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+        return None;
+    }
     let var_name = ENV_KEYS.get(provider)?;
     std::env::var(var_name).ok()
 }

@@ -7,20 +7,27 @@
 
 | 项 | 值 |
 | --- | --- |
-| 对齐目标 | earendil-works/pi **v0.81**（0.81.x 系列） |
-| 最终补丁 | v0.81.1 |
-| 目标 commit | `20be4b18d4c57487f8993d2762bace129f0cf7c6`（v0.81.1，2026-07-21） |
-| 起始版本 | v0.80.10（`8dc78834cde4e329284cf505f9e3f99763df5529`，2026-07-16） |
+| 对齐目标 | earendil-works/pi **v0.82**（0.82.x 系列） |
+| 最终补丁 | v0.82.1 |
+| 目标 commit | `b4f293684`（v0.82.1，2026-07-25） |
+| 起始版本 | v0.81.1（`20be4b18d4c57487f8993d2762bace129f0cf7c6`，2026-07-21） |
 | 参考 changelog | https://github.com/earendil-works/pi/releases |
 
 ## 背景
 
-- v0.80 对齐已完成（差距清单清零，见 `ALIGNMENT_GAPS.md` v0.80 部分）。
-- 开始 v0.81 对齐时 pi-rs 自身版本：**v1.81.1**（2026-08-09）。
-- 当时 `../pi` 处于 v0.84.x 时代：v0.81.1 于 2026-07-21 发布。
+- v0.81 对齐已完成（差距清单清零，见 `ALIGNMENT_GAPS.md` v0.81 部分）。
+- 开始 v0.82 对齐时 pi-rs 自身版本：**v1.81.1**（2026-08-09）。
+- 当时 `../pi` 处于 v0.84.x 时代：v0.82.1 于 2026-07-25 发布。
 - 当前 pi-rs 版本：v1.81.1（2026-08-09）。
 
-## v0.81.x 变更摘要（来自 releases changelog）
+## v0.82.x 变更摘要（来自 releases changelog）
+
+| 版本 | 发布日期 | 关键变更 |
+| --- | --- | --- |
+| v0.82.0 | 2026-07-24 | **Breaking**：`getBuiltinModelDataUrl` → `getBuiltinModelDataGeneratedAt`（目录 freshness 用生成时间）；AgentHarness `ExecutionEnv` → `toolContext` + `AgentHarnessTool`。新增：`Tool.constrainedSampling`（严格 JSON Schema + Lark/regex grammar）、OpenRouter/Kimi Code OAuth、`bash_execution_update` 事件、bash 工具 session 环境变量、`supportsGrammarTools`/`supportsStrictTools` compat flags |
+| v0.82.1 | 2026-07-25 | `ANTHROPIC_AUTH_TOKEN` bearer 认证；Claude Opus 5；远程目录 ETag 重验证；`ModelsError` 追加底层原因 |
+
+## v0.81.x 变更摘要（历史，已完成对齐）
 
 | 版本 | 发布日期 | 关键变更 |
 | --- | --- | --- |

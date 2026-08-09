@@ -183,7 +183,10 @@ pub async fn handle_command(
             command,
             exclude_from_context,
         } => {
-            match session.execute_bash(&command, None, exclude_from_context).await {
+            match session
+                .execute_bash(&command, None, exclude_from_context, id.clone())
+                .await
+            {
                 Ok(result) => Some(rpc_success(
                     id,
                     "bash",

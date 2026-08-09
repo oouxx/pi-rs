@@ -1,3 +1,67 @@
+# 对齐差距清单（v0.81 → v0.82）
+
+> 对齐目标：earendil-works/pi **v0.82**（见 `MILESTONE.md`）。
+> 本清单从 v0.81.1 → v0.82.1 的 releases changelog（https://github.com/earendil-works/pi/releases）
+> 中筛出与 pi-ai / pi-agent-core / pi-coding-agent / pi-cli 相关的变更，逐项核对 pi-rs 现状。
+>
+> 分类：**A** = 回归 bug（翻译遗漏/实现错误，直接修）；**B** = 未登记偏差（需确认或暂缓）；
+> **C** = 范围外（TUI/打包/文档）；**D** = 已登记偏差（见各 crate `DEVIATIONS.md`）。
+
+## pi-ai
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | v0.82.1 #5871/#6148 | `ANTHROPIC_AUTH_TOKEN` bearer 认证（Anthropic 兼容网关，`Authorization: Bearer`；`getEnvApiKey` 跳过它，请求侧单独处理） | `env_api_keys.rs`/`anthropic.rs` 无此支持 | A | ✅ 已修 |
+| 2 | v0.82.0 #6946 | DNS 失败（`getaddrinfo`/`ENOTFOUND`/`EAI_AGAIN`）触发自动重试 | `_is_retryable_error_message`/`is_retryable_assistant_error` 缺这些模式 | A | ✅ 已修 |
+| 3 | v0.82.0 #6618 | compaction/branch-summary 请求用 fresh routing session ID + `cacheRetention: "none"`（避免不可复用的 cache 写入） | `complete_summarization` 未设 cacheRetention/sessionId | A | ✅ 已修 |
+| 4 | v0.82.0 #6341 | `Tool.constrainedSampling` 严格 JSON Schema（prefer/require）+ Lark/regex grammar | 已实现（`constrained_sampling` + `GrammarVariants` + `JsonSchemaStrict`，v0.80 已移植） | D | 已实现（见 DEVIATIONS #5） |
+| 5 | v0.82.0 #6928 | 生成目录只暴露 provider 验证的 reasoning levels | 生成流程已确认保留 | D | 已确认保留（见 DEVIATIONS #1） |
+| 6 | v0.82.0 #5dc40fee3 | 生成模型类型从 JSON 派生 | 生成流程已确认保留 | D | 已确认保留（见 DEVIATIONS #1） |
+| 7 | v0.82.0 #7016 | `getBuiltinModelDataGeneratedAt`（目录 freshness 用生成时间而非文件 mtime） | 生成流程已确认保留 | D | 已确认保留（见 DEVIATIONS #1） |
+| 8 | v0.82.1 #4cf0a729c | `ModelsError` 消息追加底层原因 | pi-rs 无 SDK 层（直接 reqwest，错误文本含 body） | D | 不适用（架构差异） |
+| 9 | v0.82.1 #7081 | Claude Opus 5（Anthropic/Bedrock） | 模型覆盖度受限 | D | 已确认保留（见 DEVIATIONS #2） |
+| 10 | v0.82.0 #6927/#6935 | OpenRouter / Kimi Code OAuth 登录 | 无 OAuth 登录流程 | C | 范围外（OAuth 登录） |
+| 11 | v0.82.0 #6941 | OpenRouter Anthropic cache breakpoints + `~anthropic/*-latest` 别名 cache control | 模型元数据 | D | 已确认保留（见 DEVIATIONS #2） |
+| 12 | v0.82.1 #a9f5b1c12 | Radius OAuth 走 gateway | pi-messages 相关，无 OAuth | C | 范围外（OAuth） |
+| 13 | v0.82.0 #6955 | Codex WebSocket `previous_response_not_found` 重试 | 无 codex | D | 已确认保留（见 DEVIATIONS #2） |
+
+## pi-agent-core
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 14 | v0.82.0 #e32c1491b | AgentHarness breaking change：`ExecutionEnv` 依赖 + 无上下文 `AgentTool` 输入 → 应用定义 `toolContext` + context-aware `AgentHarnessTool`（read/write/edit/bash 工具 + async bash prepare） | harness 仍用旧 `ExecutionEnvInfo` + 无上下文工具 | B | ✅ 已确认保留（架构差异，见 DEVIATIONS #7） |
+| 15 | v0.82.0 #6618 | compaction/branch-summary 用 fresh routing session ID + 禁用 prompt caching | 同 #3（harness 侧） | A | ✅ 已修（随 #3） |
+
+## pi-coding-agent
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 16 | v0.82.0 #6971 | RPC bash 命令流式 `bash_execution_update` 事件（带 request id 关联） | RPC bash 无流式事件 | B | ✅ 已修 |
+| 17 | v0.82.0 #6967 | bash 工具运行时注入 `PI_SESSION_ID`/`PI_SESSION_FILE`/`PI_PROVIDER`/`PI_MODEL`/`PI_REASONING_LEVEL` | bash 工具无 session 环境变量 | B | ✅ 已修 |
+| 18 | v0.82.1 #7032 | 不可用 scoped models 从 `/models` 隐藏 → 暴露（可移除） | 未核对 | B | ✅ 已修（diagnostics 加 code 字段） |
+| 19 | v0.82.0 #6999 | `/model` 打开选择器时重载 models.json | 未核对 | B | ✅ 已修（`ModelRegistry::refresh`） |
+| 20 | v0.82.1 #7106 | 资源加载器跳过目录（AGENTS.md 是目录时 EISDIR 警告） | `resource_loader.rs` 用 `read_to_string` 静默跳过目录（无警告，行为等价） | D | 已实现（行为等价） |
+| 21 | v0.82.0 #6210 | scoped model ids 含括号时先按字面量精确匹配再 glob | 未核对 | B | ✅ 已修 |
+| 22 | v0.82.0 #7045 | `outputPad` 暴露给 custom renderers | TUI 渲染层 | C | 范围外（TUI） |
+| 23 | v0.82.0 #7072/#7034 | llama.cpp 模型目录缓存 + context window output limit | llama.cpp 不做 | C | 范围外（见 DEVIATIONS #15） |
+| 24 | v0.82.0 #6977 | 显式自更新绕过 `PI_SKIP_VERSION_CHECK` | 无 pi update | C | 范围外 |
+| 25 | v0.82.0 #7005/#7009/#6903/#6958/#7015 | protobufjs / clipboard / 外部编辑器 / debug logs / scroll indicators | TUI/打包 | C | 范围外 |
+
+## 范围外（C）
+
+- TUI：outputPad、scroll indicators、clipboard、外部编辑器、debug logs
+- OAuth 登录：OpenRouter / Kimi Code / Radius
+- llama.cpp：模型目录缓存、context window output limit
+- Codex WebSocket、protobufjs、自更新
+
+## 处理规则
+
+- A 类：直接修，修完跑 `cargo test` + `cargo clippy --all-targets -- -D warnings`，并把真回归补进 `PORTING_MISTAKES.md`。
+- B 类：需要用户确认或排期的大项，不在本次会话内擅自实现。
+- 待查：逐项核对 pi-rs 现状后归类。
+
+---
+
 # 对齐差距清单（v0.80 → v0.81）
 
 > 对齐目标：earendil-works/pi **v0.81**（见 `MILESTONE.md`）。

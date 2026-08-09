@@ -80,11 +80,19 @@ pub struct ToolsOptions {
 
 pub type DynTool = AgentTool<serde_json::Value, serde_json::Value>;
 
-pub fn create_coding_tools(cwd: &str, options: Option<&ToolsOptions>) -> Vec<DynTool> {
+pub fn create_coding_tools(
+    cwd: &str,
+    options: Option<&ToolsOptions>,
+    bash_session_env_provider: Option<bash::BashSessionEnvProvider>,
+) -> Vec<DynTool> {
     let opts = options.cloned().unwrap_or_default();
+    let mut bash_opts = opts.bash.unwrap_or_default();
+    if bash_session_env_provider.is_some() {
+        bash_opts.session_env_provider = bash_session_env_provider;
+    }
     vec![
         read::create_read_tool(cwd, opts.read),
-        bash::create_bash_tool(cwd, opts.bash),
+        bash::create_bash_tool(cwd, Some(bash_opts)),
         edit::create_edit_tool(cwd, opts.edit),
         write::create_write_tool(cwd, opts.write),
     ]

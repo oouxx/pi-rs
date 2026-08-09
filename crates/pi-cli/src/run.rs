@@ -132,6 +132,10 @@ pub async fn run(args: &CliArgs) -> i32 {
                 Box::new(pi_extensions::goal::GoalExtension::new()),
                 create_builtin_source_info("goal"),
             );
+            reg.register(
+                Box::new(pi_extensions::subagent::SubagentExtension::new()),
+                create_builtin_source_info("subagent"),
+            );
             Some(reg)
         },
         persist_session,
@@ -206,6 +210,10 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
             reg.register(
                 Box::new(pi_extensions::goal::GoalExtension::new()),
                 create_builtin_source_info("goal"),
+            );
+            reg.register(
+                Box::new(pi_extensions::subagent::SubagentExtension::new()),
+                create_builtin_source_info("subagent"),
             );
             Some(reg)
         },

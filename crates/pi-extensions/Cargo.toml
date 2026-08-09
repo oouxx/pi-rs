@@ -13,6 +13,9 @@ tokio = { workspace = true, features = ["full"] }
 async-trait = { workspace = true }
 regex = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 
 [lints]
 workspace = true

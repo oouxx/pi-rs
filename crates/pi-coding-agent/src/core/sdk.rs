@@ -538,11 +538,13 @@ pub async fn create_agent_session(
     };
 
     // Dispatch session_start to extensions before session creation.
-    // RuntimeHandle 提供真实 cwd（noop() 的 get_cwd 返回空串，
-    // 扩展 spawn 子进程时 current_dir("") 会失败）。
+    // RuntimeHandle 提供真实 cwd/agent_dir（noop() 的 get_cwd/get_agent_dir
+    // 返回空串，扩展 spawn 子进程或写状态文件时会失败/落错位置）。
     let mut ext_runtime_handle = crate::core::extensions::RuntimeHandle::noop();
     let ext_cwd = cwd.clone();
     ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
+    let ext_agent_dir = agent_dir.clone();
+    ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
     let ext_ctx = crate::core::extensions::ExtensionContext::new(
         cwd.clone(),
         false,

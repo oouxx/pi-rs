@@ -1,10 +1,12 @@
 //! pi-subagent — subagent 工具，委派独立任务给子 agent。
 //!
-//! 核心版（对应 pi-subagents 的 subagent 工具，去掉后台运行/工作流/控制通道）：
+//! 核心版（对应 pi-subagents 的 subagent 工具，去掉工作流/控制通道）：
 //! - 注册 `subagent` 工具，LLM 自主决定是否调用（工具描述引导，同 Claude Code）
-//! - 执行时 spawn 子 pi 进程（`pi --mode json -p --model <m> --no-session <task>`）
-//! - 解析子进程 stdout JSONL 事件流，提取最终 assistant 消息
-//! - 超时 kill、深度限制（防无限递归）
+//! - 前台：spawn 子 pi 进程（`pi --mode json -p --model <m> --no-session <task>`），
+//!   解析 stdout JSONL 事件流，提取最终 assistant 消息，超时 kill
+//! - 后台（async: true）：spawn 子进程不等待，返回 run_id，状态写
+//!   `{agent_dir}/subagent-runs/{run_id}/status.json`，可用 action=status 查询
+//! - 深度限制（防无限递归）
 
 use std::time::Duration;
 
@@ -24,6 +26,10 @@ const SUBAGENT_DEPTH_ENV: &str = "PI_SUBAGENT_DEPTH";
 const MAX_DEPTH: u32 = 3;
 /// 默认超时。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+/// 后台 run 目录名（agent_dir 下）。
+const RUNS_DIR: &str = "subagent-runs";
+/// 后台 run 序号（run_id = 时间戳-序号）。
+static RUN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// subagent 扩展：委派独立任务给子 pi 进程。
 pub struct SubagentExtension {
@@ -112,6 +118,19 @@ impl HookHandler for SubagentExtension {
                             "items": { "type": "string" },
                             "description": "Optional tool allowlist for the child agent (e.g. [\"read\",\"bash\"]). Default: read/bash/edit/write.",
                         },
+                        "async": {
+                            "type": "boolean",
+                            "description": "Run in background. Returns a runId immediately; check later with action=status + runId.",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["status"],
+                            "description": "Query a background run: action=status + runId.",
+                        },
+                        "runId": {
+                            "type": "string",
+                            "description": "Run ID of a background subagent (returned by async:true).",
+                        },
                     },
                     "required": ["task"],
                 })),
@@ -128,6 +147,11 @@ impl HookHandler for SubagentExtension {
     ) -> Option<ToolCallOutput> {
         if tool_name != "subagent" {
             return None;
+        }
+
+        // ── action=status：查询后台 run ──
+        if params.get("action").and_then(|v| v.as_str()) == Some("status") {
+            return Some(self.query_run(&params, ctx));
         }
 
         // ── 深度限制：子 agent 不加载扩展（--no-extensions），但环境变量
@@ -182,7 +206,7 @@ impl HookHandler for SubagentExtension {
             })
             .unwrap_or_default();
 
-        // ── spawn 子 pi 进程 ──
+        // ── 解析 cwd（async 和前台共用）──
         // get_cwd 可能为空（宿主 RuntimeHandle 未正确设置），fallback 到进程 cwd。
         let cwd = (ctx.runtime.get_cwd)();
         let cwd = if cwd.is_empty() {
@@ -192,6 +216,21 @@ impl HookHandler for SubagentExtension {
         } else {
             cwd
         };
+
+        // ── async=true：后台运行，立即返回 run_id ──
+        if params.get("async").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Some(self.start_background(
+                &task,
+                &model,
+                &tools,
+                &cwd,
+                depth,
+                timeout_dur,
+                ctx,
+            ));
+        }
+
+        // ── spawn 子 pi 进程 ──
         let mut cmd = Command::new(&self.pi_binary);
         cmd.arg("--mode").arg("json").arg("-p");
         if !model.is_empty() {
@@ -292,6 +331,169 @@ impl HookHandler for SubagentExtension {
     }
 }
 
+impl SubagentExtension {
+    /// 查询后台 run 状态（action=status + runId）。
+    fn query_run(&self, params: &Value, ctx: &ExtensionContext) -> ToolCallOutput {
+        let run_id = params
+            .get("runId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if run_id.is_empty() {
+            return error_output("subagent: runId is required for action=status.");
+        }
+        let agent_dir = (ctx.runtime.get_agent_dir)();
+        let status_path = std::path::Path::new(&agent_dir)
+            .join(RUNS_DIR)
+            .join(run_id)
+            .join("status.json");
+        match std::fs::read_to_string(&status_path) {
+            Ok(s) => ToolCallOutput {
+                content: vec![json!({ "type": "text", "text": s })],
+                details: None,
+                is_error: false,
+                terminate: None,
+            },
+            Err(_) => error_output(format!("subagent: run {run_id} not found.")),
+        }
+    }
+
+    /// 后台运行：spawn 子进程不等待，返回 run_id；监控 task 在子进程
+    /// 退出后解析 output.jsonl 并更新 status.json。
+    fn start_background(
+        &self,
+        task: &str,
+        model: &str,
+        tools: &[String],
+        cwd: &str,
+        depth: u32,
+        timeout_dur: Duration,
+        ctx: &ExtensionContext,
+    ) -> ToolCallOutput {
+        // ── run_id + 目录 ──
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let seq = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let run_id = format!("{ts}-{seq}");
+        let agent_dir = (ctx.runtime.get_agent_dir)();
+        let run_dir = std::path::Path::new(&agent_dir).join(RUNS_DIR).join(&run_id);
+        if let Err(e) = std::fs::create_dir_all(&run_dir) {
+            return error_output(format!("subagent: failed to create run dir: {e}"));
+        }
+
+        // ── 写 status.json: running ──
+        let status = json!({
+            "status": "running",
+            "runId": run_id,
+            "startedAt": ts,
+        });
+        let _ = std::fs::write(
+            run_dir.join("status.json"),
+            serde_json::to_string_pretty(&status).unwrap_or_default(),
+        );
+
+        // ── spawn 子进程，stdout 重定向到 output.jsonl ──
+        let mut cmd = Command::new(&self.pi_binary);
+        cmd.arg("--mode").arg("json").arg("-p");
+        if !model.is_empty() {
+            cmd.arg("--model").arg(model);
+        }
+        cmd.arg("--no-session");
+        cmd.arg("--no-extensions");
+        if !tools.is_empty() {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
+        cmd.arg(task);
+        cmd.current_dir(cwd);
+        cmd.env(SUBAGENT_DEPTH_ENV, (depth + 1).to_string());
+        if let Ok(f) = std::fs::File::create(run_dir.join("output.jsonl")) {
+            cmd.stdout(std::process::Stdio::from(f));
+        } else {
+            cmd.stdout(std::process::Stdio::null());
+        }
+        cmd.stderr(std::process::Stdio::null());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let status = json!({
+                    "status": "error",
+                    "runId": run_id,
+                    "error": format!("failed to spawn pi: {e}"),
+                });
+                let _ = std::fs::write(
+                    run_dir.join("status.json"),
+                    serde_json::to_string_pretty(&status).unwrap_or_default(),
+                );
+                return error_output(format!(
+                    "subagent: failed to spawn pi: {e} (binary: {})",
+                    self.pi_binary
+                ));
+            }
+        };
+
+        // ── 后台监控 task：等子进程退出 → 解析 output.jsonl → 更新 status ──
+        // 超时后 kill 子进程（print mode 在流式错误时可能卡在 wait_for_idle
+        // 不退出），status 标记为 timeout。
+        let run_dir_owned = run_dir.clone();
+        let run_id_owned = run_id.clone();
+        tokio::spawn(async move {
+            let wait_result = tokio::time::timeout(timeout_dur, child.wait()).await;
+            let timed_out = wait_result.is_err();
+            if timed_out {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            let output = std::fs::read_to_string(run_dir_owned.join("output.jsonl"))
+                .unwrap_or_default();
+            let final_text = parse_output_jsonl(&output);
+            let finished_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let status = if timed_out {
+                json!({
+                    "status": "timeout",
+                    "runId": run_id_owned,
+                    "finishedAt": finished_ts,
+                    "output": final_text,
+                })
+            } else if final_text.is_empty() {
+                json!({
+                    "status": "error",
+                    "runId": run_id_owned,
+                    "finishedAt": finished_ts,
+                    "output": final_text,
+                })
+            } else {
+                json!({
+                    "status": "done",
+                    "runId": run_id_owned,
+                    "finishedAt": finished_ts,
+                    "output": final_text,
+                })
+            };
+            let _ = std::fs::write(
+                run_dir_owned.join("status.json"),
+                serde_json::to_string_pretty(&status).unwrap_or_default(),
+            );
+        });
+
+        ToolCallOutput {
+            content: vec![json!({ "type": "text", "text": format!(
+                "Subagent started in background. Run ID: {run_id}. Check with subagent action=status runId={run_id}."
+            ) })],
+            details: Some(json!({
+                "runId": run_id,
+                "statusFile": run_dir.to_string_lossy(),
+            })),
+            is_error: false,
+            terminate: None,
+        }
+    }
+}
+
 /// 从序列化的 AgentMessage 提取文本内容（content 数组里 type=="text" 的 text 拼接）。
 fn extract_message_text(msg: &Value) -> Option<String> {
     let content = msg.get("content")?.as_array()?;
@@ -308,6 +510,28 @@ fn extract_message_text(msg: &Value) -> Option<String> {
     } else {
         Some(parts.join("\n"))
     }
+}
+
+/// 从 output.jsonl 提取最终 assistant 消息（最后一个 message_end 的文本）。
+fn parse_output_jsonl(output: &str) -> String {
+    let mut final_text = String::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("message_end") {
+            if let Some(msg) = v.get("message") {
+                if let Some(text) = extract_message_text(msg) {
+                    final_text = text;
+                }
+            }
+        }
+    }
+    final_text
 }
 
 fn error_output(text: impl Into<String>) -> ToolCallOutput {

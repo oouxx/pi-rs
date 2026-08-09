@@ -17,6 +17,12 @@ fn test_ctx(cwd: &str, depth: Option<&str>) -> ExtensionContext {
             None
         }
     });
+    // 后台 run 目录用临时目录（noop 的 get_agent_dir 返回空串）。
+    // Box::leak 保持目录存活到测试结束（进程退出时系统清理）。
+    let agent_dir = tempfile::tempdir().unwrap();
+    let agent_dir_owned = agent_dir.path().to_string_lossy().to_string();
+    Box::leak(Box::new(agent_dir));
+    handle.get_agent_dir = Arc::new(move || agent_dir_owned.clone());
     ExtensionContext::new(
         "test-session".into(),
         false,
@@ -241,6 +247,89 @@ echo '{"type":"end"}'
     assert!(!out.is_error, "got: {out:?}");
     let text = out.content[0]["text"].as_str().unwrap_or("");
     assert!(!text.contains("--tools"), "should not pass --tools, got: {text}");
+}
+
+/// 后台运行：async:true 返回 run_id，子进程完成后 status 查询返回 done + 输出。
+#[tokio::test]
+async fn test_subagent_async_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = write_fake_pi(
+        dir.path(),
+        r#"#!/bin/sh
+sleep 1
+echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"background done"}]}}'
+echo '{"type":"end"}'
+"#,
+    );
+    let ext = SubagentExtension::new().with_pi_binary(&fake);
+    let ctx = test_ctx("/tmp", None);
+
+    // 启动后台 run
+    let out = ext
+        .handle_tool_call("subagent", json!({ "task": "t", "async": true }), &ctx)
+        .await
+        .expect("handled");
+    assert!(!out.is_error, "got: {out:?}");
+    let run_id = out.details
+        .as_ref()
+        .and_then(|d| d.get("runId"))
+        .and_then(|v| v.as_str())
+        .expect("runId in details")
+        .to_string();
+    assert!(!run_id.is_empty(), "runId should not be empty");
+
+    // 轮询等待后台 task 完成（全量测试并发时 CPU 竞争，固定 sleep 不可靠）
+    let mut done = false;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let out = ext
+            .handle_tool_call(
+                "subagent",
+                json!({ "action": "status", "runId": run_id }),
+                &ctx,
+            )
+            .await
+            .expect("handled");
+        let text = out.content[0]["text"].as_str().unwrap_or("");
+        if text.contains("\"status\": \"done\"") {
+            assert!(text.contains("background done"), "got: {text}");
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "background run did not complete within 10s");
+}
+
+/// 查询不存在的 run：报错。
+#[tokio::test]
+async fn test_subagent_async_status_not_found() {
+    let ext = SubagentExtension::new();
+    let ctx = test_ctx("/tmp", None);
+    let out = ext
+        .handle_tool_call(
+            "subagent",
+            json!({ "action": "status", "runId": "nonexistent" }),
+            &ctx,
+        )
+        .await
+        .expect("handled");
+    assert!(out.is_error, "should error, got: {out:?}");
+    let text = out.content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("not found"), "got: {text}");
+}
+
+/// 后台 spawn 失败：status.json 记录 error。
+#[tokio::test]
+async fn test_subagent_async_spawn_failure() {
+    let ext = SubagentExtension::new().with_pi_binary("/nonexistent/pi-binary");
+    let ctx = test_ctx("/tmp", None);
+    let out = ext
+        .handle_tool_call("subagent", json!({ "task": "t", "async": true }), &ctx)
+        .await
+        .expect("handled");
+    assert!(out.is_error, "should error, got: {out:?}");
+    let text = out.content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("failed to spawn"), "got: {text}");
 }
 
 /// extract_message_text 单元测试。

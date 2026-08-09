@@ -154,20 +154,29 @@ async fn run_text_mode(
 
     session.get_agent().subscribe(listener).await;
 
-    // Send the first message (with images if provided)
-    if images.is_empty() {
-        session.add_user_text(message).await;
+    // Send the first message (with images if provided).
+    // 用 prompt()（内部等 agent 完成并清理 active 状态），不用 add_user_text
+    // + wait_for_idle（add_user_text 不清理 is_agent_run_active，流式错误时
+    // wait_for_idle 会永久卡住，子进程不退出）。
+    let opts = if images.is_empty() {
+        None
     } else {
-        let mut content = vec![ContentBlock::text(message)];
-        content.extend_from_slice(images);
-        session.add_user_message(content).await;
+        Some(crate::core::agent_session::PromptOptions {
+            images: Some(images.to_vec()),
+            ..Default::default()
+        })
+    };
+    if let Err(e) = session.prompt(message, opts).await {
+        eprintln!("Error: {e}");
+        return 1;
     }
-    session.wait_for_idle().await;
 
     // Send additional messages
     for msg in messages {
-        session.add_user_text(msg).await;
-        session.wait_for_idle().await;
+        if let Err(e) = session.prompt(msg, None).await {
+            eprintln!("Error: {e}");
+            return 1;
+        }
     }
 
     // Give a brief moment for final events to flush
@@ -234,20 +243,29 @@ async fn run_json_mode(
 
     session.get_agent().subscribe(listener).await;
 
-    // Send the first message (with images if provided)
-    if images.is_empty() {
-        session.add_user_text(message).await;
+    // Send the first message (with images if provided).
+    // 用 prompt()（内部等 agent 完成并清理 active 状态），不用 add_user_text
+    // + wait_for_idle（add_user_text 不清理 is_agent_run_active，流式错误时
+    // wait_for_idle 会永久卡住，子进程不退出）。
+    let opts = if images.is_empty() {
+        None
     } else {
-        let mut content = vec![ContentBlock::text(message)];
-        content.extend_from_slice(images);
-        session.add_user_message(content).await;
+        Some(crate::core::agent_session::PromptOptions {
+            images: Some(images.to_vec()),
+            ..Default::default()
+        })
+    };
+    if let Err(e) = session.prompt(message, opts).await {
+        eprintln!("Error: {e}");
+        return 1;
     }
-    session.wait_for_idle().await;
 
     // Send additional messages
     for msg in messages {
-        session.add_user_text(msg).await;
-        session.wait_for_idle().await;
+        if let Err(e) = session.prompt(msg, None).await {
+            eprintln!("Error: {e}");
+            return 1;
+        }
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -288,8 +306,10 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
     });
 
     session.get_agent().subscribe(listener).await;
-    session.add_user_text(message).await;
-    session.wait_for_idle().await;
+    if let Err(e) = session.prompt(message, None).await {
+        eprintln!("Error: {e}");
+        return 1;
+    }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let text = final_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();

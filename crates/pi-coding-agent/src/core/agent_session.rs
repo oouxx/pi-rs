@@ -449,6 +449,13 @@ impl AgentSession {
         options: AgentSessionConfig,
     ) -> Self {
         // ── Extension context (needed early for extension tool dispatch) ──
+        // RuntimeHandle 提供真实 cwd/agent_dir（noop() 返回空串，扩展 spawn
+        // 子进程或写状态文件时会失败/落错位置）。
+        let mut ext_runtime_handle = crate::core::extensions::RuntimeHandle::noop();
+        let ext_cwd = options.cwd.clone();
+        ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
+        let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
+        ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
         let ext_ctx = ExtensionContext::new(
             options.cwd.clone(),
             false,
@@ -457,7 +464,7 @@ impl AgentSession {
                 set_status: std::sync::Arc::new(|_key, _value| {}),
                 confirm: std::sync::Arc::new(|_title, _msg| false),
             },
-            crate::core::extensions::RuntimeHandle::noop(),
+            ext_runtime_handle,
         );
         let shared_ext_ctx = Arc::new(ext_ctx);
 
@@ -914,6 +921,13 @@ impl AgentSession {
             excluded_tool_names: options.excluded_tool_names,
             extension_registry: options.extension_registry,
             ext_ctx: {
+                // RuntimeHandle 提供真实 cwd/agent_dir（noop() 返回空串，
+                // 扩展 spawn 子进程或写状态文件时会失败/落错位置）。
+                let mut ext_runtime_handle = crate::core::extensions::RuntimeHandle::noop();
+                let ext_cwd = session_cwd_for_ext.clone();
+                ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
+                let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
+                ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
                 ExtensionContext::new(
                     session_cwd_for_ext.clone(),
                     false,
@@ -922,7 +936,7 @@ impl AgentSession {
                         set_status: std::sync::Arc::new(|_key, _value| {}),
                         confirm: std::sync::Arc::new(|_title, _msg| false),
                     },
-                    crate::core::extensions::RuntimeHandle::noop(),
+                    ext_runtime_handle,
                 )
             },
             tool_registry,

@@ -1611,6 +1611,7 @@ dependencies = [
  "futures",
  "glob",
  "ignore",
+ "libc",
  "pi-agent-core",
  "pi-extension-api",
  "pi-extensions",

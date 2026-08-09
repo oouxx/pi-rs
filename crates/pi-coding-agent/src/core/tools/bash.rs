@@ -237,6 +237,32 @@ fn resolve_spawn_context(
 
 pub struct LocalBashOperations;
 
+/// Kill a process and its entire tree, matching TS `killProcessTree`
+/// (`utils/shell.ts`): on Unix send SIGKILL to the process group (`-pid`)
+/// since the child was spawned as a process-group leader
+/// (`cmd.process_group(0)`); on Windows use `taskkill /F /T`. Falls back to
+/// killing just the child if the group kill fails (e.g. process already dead).
+#[cfg(unix)]
+pub fn kill_process_tree(pid: u32) {
+    let pid = pid as i32;
+    // Kill the whole process group (negative pid).
+    let group_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    if group_result != 0 {
+        // Fallback: kill just the child.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+/// Kill a process and its entire tree on Windows via `taskkill /F /T`.
+#[cfg(windows)]
+pub fn kill_process_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 impl BashOperations for LocalBashOperations {
     fn exec(
         &self,
@@ -384,7 +410,11 @@ impl BashOperations for LocalBashOperations {
                     // Check for cancellation
                     if let Some(ref mut rx) = signal {
                         if *rx.borrow() {
+                            if let Some(pid) = child.id() {
+                            kill_process_tree(pid);
+                        } else {
                             let _ = child.kill().await;
+                        }
                             // Wait for stdout/stderr tasks to finish
                             if let Some(h) = stdout_handle {
                                 let _ = h.await;
@@ -401,7 +431,11 @@ impl BashOperations for LocalBashOperations {
 
                     let elapsed = start.elapsed().as_millis() as u64;
                     if elapsed >= ms {
-                        let _ = child.kill().await;
+                        if let Some(pid) = child.id() {
+                            kill_process_tree(pid);
+                        } else {
+                            let _ = child.kill().await;
+                        }
                         // Wait for stdout/stderr tasks to finish
                         if let Some(h) = stdout_handle {
                             let _ = h.await;
@@ -435,7 +469,11 @@ impl BashOperations for LocalBashOperations {
                 loop {
                     if let Some(ref mut rx) = signal {
                         if *rx.borrow() {
+                            if let Some(pid) = child.id() {
+                            kill_process_tree(pid);
+                        } else {
                             let _ = child.kill().await;
+                        }
                             if let Some(h) = stdout_handle {
                                 let _ = h.await;
                             }
@@ -1077,5 +1115,126 @@ mod tests {
         assert_eq!(params["required"], serde_json::json!(["command"]));
         assert!(params["properties"].get("command").is_some());
         assert!(params["properties"].get("timeout").is_some());
+    }
+
+    /// Aborting a running command must kill the whole process tree, not just
+    /// the shell (matching TS `killProcessTree` which sends SIGKILL to the
+    /// process group). Regression guard: `child.kill()` alone only kills the
+    /// shell, leaving spawned children running as orphans.
+    #[tokio::test]
+    async fn abort_kills_process_tree() {
+        if cfg!(target_os = "windows") {
+            return; // process groups behave differently on Windows
+        }
+        let ops = LocalBashOperations;
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        // Spawn a background child (`sleep`) that writes its PID to a file,
+        // then wait on it — the child must die together with the shell.
+        let pid_file = std::env::temp_dir().join(format!(
+            "pi-bash-tree-test-{}.pid",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
+        let cmd = format!(
+            "sleep 61.5 & echo $! > {}; wait",
+            pid_file.to_string_lossy()
+        );
+
+        let exec_fut = ops.exec(&cmd, "/tmp", BashExecOptions {
+            on_data: None,
+            signal: Some(rx),
+            timeout: None,
+            env: None,
+        });
+        tokio::pin!(exec_fut);
+
+        // Poll the exec future while the shell starts the child and writes
+        // the pid file (a bare future is lazy — it only runs once polled).
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {}
+            _ = &mut exec_fut => panic!("exec finished before child started"),
+        }
+        let pid_text = std::fs::read_to_string(&pid_file).expect("pid file");
+        let child_pid: i32 = pid_text.trim().parse().expect("pid");
+        assert!(
+            process_alive(child_pid),
+            "background child {child_pid} must be running before abort"
+        );
+
+        // Abort — the shell must be killed together with its child.
+        tx.send(true).expect("send abort");
+        let result = exec_fut.await;
+        let err = result
+            .expect_err("abort must fail the exec")
+            .to_string();
+        assert!(err.contains("aborted"), "unexpected error: {err}");
+
+        // The background child must no longer be alive (killed with the group).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !process_alive(child_pid),
+            "background child {child_pid} must be killed with the shell"
+        );
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    /// Timeout must also kill the whole process tree and surface a
+    /// `timeout:N` error (matching TS `createLocalBashOperations` timeout
+    /// handling).
+    #[tokio::test]
+    async fn timeout_kills_process_tree() {
+        if cfg!(target_os = "windows") {
+            return;
+        }
+        let ops = LocalBashOperations;
+
+        let pid_file = std::env::temp_dir().join(format!(
+            "pi-bash-timeout-test-{}.pid",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
+        let cmd = format!(
+            "sleep 61.5 & echo $! > {}; wait",
+            pid_file.to_string_lossy()
+        );
+
+        let exec_fut = ops.exec(&cmd, "/tmp", BashExecOptions {
+            on_data: None,
+            signal: None,
+            timeout: Some(1),
+            env: None,
+        });
+        tokio::pin!(exec_fut);
+
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {}
+            _ = &mut exec_fut => panic!("exec finished before child started"),
+        }
+        let pid_text = std::fs::read_to_string(&pid_file).expect("pid file");
+        let child_pid: i32 = pid_text.trim().parse().expect("pid");
+        assert!(process_alive(child_pid), "child must be running before timeout");
+
+        let result = exec_fut.await;
+        let err = result
+            .expect_err("timeout must fail the exec")
+            .to_string();
+        assert!(err.contains("timeout:"), "unexpected error: {err}");
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !process_alive(child_pid),
+            "background child {child_pid} must be killed by timeout"
+        );
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: i32) -> bool {
+        if pid <= 0 {
+            return false;
+        }
+        // kill(pid, 0) returns 0 if the process exists.
+        unsafe { libc::kill(pid, 0) == 0 }
     }
 }

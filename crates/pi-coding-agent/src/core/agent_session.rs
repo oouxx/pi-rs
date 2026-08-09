@@ -3662,8 +3662,19 @@ References are relative to {}.
     pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) {
         // Apply queued JS extension actions before the steer.
         self.drain_extension_actions().await;
+        // Expand skill commands and prompt templates (matching TS steer()
+        // which calls _expandSkillCommand + expandPromptTemplate).
+        let expanded_text = self._expand_skill_command(text);
+        // Mirror the queued message for pendingMessageCount / getSteeringMessages
+        // / QueueUpdate events (matching TS _queueSteer which pushes to
+        // `_steeringMessages` and emits a queue update).
+        self.steering_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(expanded_text.clone());
+        self._emit_queue_update();
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let mut content = vec![ContentBlock::text(text)];
+        let mut content = vec![ContentBlock::text(&expanded_text)];
         if let Some(imgs) = images {
             content.extend(imgs);
         }
@@ -3676,8 +3687,16 @@ References are relative to {}.
     pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) {
         // Apply queued JS extension actions before the follow-up.
         self.drain_extension_actions().await;
+        // Expand skill commands and prompt templates (matching TS followUp()).
+        let expanded_text = self._expand_skill_command(text);
+        // Mirror the queued message (matching TS _queueFollowUp).
+        self.follow_up_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(expanded_text.clone());
+        self._emit_queue_update();
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let mut content = vec![ContentBlock::text(text)];
+        let mut content = vec![ContentBlock::text(&expanded_text)];
         if let Some(imgs) = images {
             content.extend(imgs);
         }

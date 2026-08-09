@@ -118,7 +118,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 2 | 数值截断 | `Math.trunc()` 向零取整；负数/小数要确认意图是"向零"还是"向下" | `as i64` 也向零截断，但若原意图是 `floor`，负数上结果不同 | 逐个数值转换点确认原意图 | #41/#42 硬编码常量（`128_000` 代替 `contextWindow ?? 0`）属同类数值取值偏差 |
 | 3 | 数组/字符串越界 | JS 越界下标返回 `undefined`，不 panic | `slice[i]` 越界 panic；TS 可能依赖越界返回 undefined 的隐式逻辑 | 显式 `.get(i)` 返回 `Option`，逐处确认是否依赖了隐式行为 | — |
 | 4 | async 并发顺序 | `Promise.all([...])` 调度细节与 `tokio::join!`/`join_all` 不完全一致 | 状态机对时序敏感处（事件流顺序）直译可能改变事件到达顺序 | 涉及并发顺序的模块做"事件序列对齐"，不能只看单测通过 | #20（双写 stdout 交错破坏 JSONL）、#21（signal handler 与主循环双重持有 session）、#62（`event.message` 指向旧引用导致持久化用错对象） |
-| 5 | **serde camelCase vs snake_case** | TS wire 一律 camelCase | Rust struct 默认 snake_case，忘加 `rename_all = "camelCase"` → 字段名全错 | 任何对外序列化的 struct/enum-内部字段都加 `rename_all`（见 §3） | PORTING_MISTAKES serde naming mismatch 系列（多条） |
+| 5 | **serde camelCase vs snake_case** | TS wire 一律 camelCase | Rust struct 默认 snake_case，忘加 `rename_all = "camelCase"` → 字段名全错；**enum 上 `rename_all` 只作用于 variant 名，字段名要 `rename_all_fields`**（serde ≥1.0.186），否则字段输出 snake_case、扩展读 camelCase 全是 undefined（静默失败） | 任何对外序列化的 struct/enum-内部字段都加 `rename_all`；enum 字段加 `rename_all_fields`；旧格式兼容用 `#[serde(alias = "snake_case")]`（见 §3） | PORTING_MISTAKES serde naming mismatch 系列（多条）+ SessionEntry rename_all_fields |
 | 6 | **响应格式/字段遗漏** | TS 返回完整对象，含 optional 字段、`null` vs 对象的区别 | Rust 返回简化占位（`{id, type:"entry"}` stub、总是非 null、漏 optional 字段） | 逐字段对照 TS 返回类型，optional → `Option`+`skip_serializing_if`，`T \| null` → `Option<T>` | #9, #10, #11, #12, #14, #15, #16, #17, #18, #22, #23, #24 |
 | 7 | **no-op / 缺失实现** | TS 方法有真实副作用 | Rust 返回 success 但没调用对应方法（占位忘了补） | 确认每个 handler 真正调用了对应 session 方法 | #6, #7, #8 |
 | 8 | **缺失校验** | TS `name.trim()` 非空等校验 | Rust 直接接受任意输入 | 补齐 TS 的输入校验，返回对应错误 | #13 |
@@ -130,6 +130,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 13 | **缺失事件发送 / 状态变更** | TS agent loop 在某分支发事件或 mutate state | Rust 该分支只更新本地变量、漏发事件/漏改 state | 逐分支核对 TS 的 emit 与 state mutation | #39（漏发 `auto_retry_end`）、#40（漏删 retry 前的 assistant 消息）、#62 |
 | 14 | **硬编码常量代替运行时值** | TS `this.model?.contextWindow ?? 0` | Rust 写死 `128_000` | 取运行时值，`?? 0` → `unwrap_or(0)` | #41, #42 |
 | 15 | **路径解析/规范化缺失** | TS 解析相对路径、校验 cwd | Rust 直接用原始字符串 | 复刻 path 解析与 cwd 校验 | #（session cwd 系列 #65/#67）、相对路径条目 |
+| 16 | **同步/异步契约错位** | TS 公开 API 是同步的（`getActiveTools(): string[]`、`getBranch(): SessionEntry[]`，直接返回数组/字符串） | 跨进程移植时把同步 API 实现成异步 RPC（返回 Promise），调用方 `try/catch` 抓不住 rejection、把 Promise 当数组用（`.filter`/`.length` 崩） | 先核对原版 API 是同步还是异步；同步读 API 在子进程架构下只能推缓存（宿主随事件推送快照，bootstrap 缓存后同步读），不能异步 RPC | PORTING_MISTAKES：bootstrap.ts `getBranch`/`getActiveTools` 两条 |
 | 16 | **动态类型 `any`** | TS `any`/`Record<string, any>` | Rust 一律当 `Value` 处理可能丢失结构化信息 | 标注为高风险点，能建具体类型就建，否则 `serde_json::Value` + 显式注释 | 全项目 `serde_json::Value` 用点 |
 | 17 | **数据结构 in-place 语义** | TS 对象引用被原地替换，后续读取已是新值 | Rust `Vec` 替换元素后，旧引用仍指向旧对象 | 替换后**重新读取**，不要复用旧引用 | #62 |
 | 18 | **缺失前置检查 / 逻辑分支** | TS 在发送前/出错时做前置检查（context overflow 检测、pre-prompt compaction、retry 前清理） | Rust 漏掉该分支，错误直达或被忽略 | 逐个对照 TS 的 if/前置 guard，补齐对应检查与处理 | #44, #45 |

@@ -1754,6 +1754,12 @@ impl AgentSession {
         self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// 返回 session manager 的 Arc 克隆（供扩展 action 闭包持有，
+    /// 构建 session 快照推送给 Bun 子进程）。
+    pub fn session_manager_arc(&self) -> Arc<std::sync::Mutex<SessionManager>> {
+        self.session_manager.clone()
+    }
+
     pub fn get_model_registry(&self) -> &ModelRegistry {
         &self.model_registry
     }

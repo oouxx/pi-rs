@@ -110,6 +110,10 @@ pub struct BunRuntimeActions {
     pub append_entry: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
     pub set_session_name: Option<Arc<dyn Fn(String) + Send + Sync>>,
     pub get_session_name: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// 构建 session 快照（cwd/sessionDir/sessionId/sessionFile/sessionName/branch），
+    /// 随 fire_event 推送给 Bun 侧，供 ctx.sessionManager 同步读取。
+    /// `getBranch` 在扩展里是同步调用，无法用异步 RPC，只能推缓存。
+    pub session_snapshot: Option<Arc<dyn Fn() -> serde_json::Value + Send + Sync>>,
     pub set_label: Option<Arc<dyn Fn(String, Option<String>) + Send + Sync>>,
     pub get_active_tools: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     /// Serialized `ToolInfo` objects, matching TS `getAllTools()`.
@@ -769,16 +773,20 @@ impl BunExtensionRunner {
     }
 
     /// 执行扩展注册的 JS 工具。
+    ///
+    /// 同时携带同步读 API 快照（工具执行里也可能调 getActiveTools/getCommands
+    /// 等同步 API，与 fire_event 同款推缓存机制）。
     pub async fn execute_tool(
         &self,
         name: &str,
         call_id: &str,
         params: Value,
     ) -> Result<ToolCallOutput, String> {
+        let session = self.build_snapshot().await;
         let result = self
             .request(
                 "execute_tool",
-                serde_json::json!({ "name": name, "callId": call_id, "params": params }),
+                serde_json::json!({ "name": name, "callId": call_id, "params": params, "session": session }),
             )
             .await?;
         // JS 侧返回 AgentToolResult 形状（content/details/terminate）。
@@ -793,19 +801,63 @@ impl BunExtensionRunner {
     }
 
     /// 触发事件，返回 handler 返回值数组（result-bearing hook 用）。
+    ///
+    /// 同时把同步读 API 的完整快照（session + activeTools/allTools/commands/
+    /// thinkingLevel/modelId）随事件推给 Bun 侧（`message_update` 流式热路径除外，
+    /// 每 token 一次，避免每次序列化整条 branch）。bootstrap 缓存后供
+    /// `ctx.sessionManager` 和 `pi.getActiveTools()` 等同步 API 读取——
+    /// 这些 API 在扩展里是同步调用，无法用异步 RPC，只能推缓存。
     pub async fn fire_event(&self, event: &str, data: Value) -> Result<Value, String> {
+        let session = if event == "message_update" {
+            Value::Null
+        } else {
+            self.build_snapshot().await
+        };
         self.request(
             "fire_event",
-            serde_json::json!({ "event": event, "data": data }),
+            serde_json::json!({ "event": event, "data": data, "session": session }),
         )
         .await
     }
 
+    /// 组装同步读 API 的完整快照（复用 bind_actions 安装的闭包，避免重复接线）。
+    async fn build_snapshot(&self) -> Value {
+        let actions = self.actions.lock().await;
+        let a = match actions.as_ref() {
+            Some(a) => a,
+            None => return Value::Null,
+        };
+        let mut snap = serde_json::Map::new();
+        if let Some(f) = a.session_snapshot.as_ref() {
+            snap.insert("session".to_string(), f());
+        }
+        if let Some(f) = a.get_active_tools.as_ref() {
+            snap.insert("activeTools".to_string(), serde_json::to_value(f()).unwrap_or_default());
+        }
+        if let Some(f) = a.get_all_tools.as_ref() {
+            snap.insert("allTools".to_string(), serde_json::to_value(f()).unwrap_or_default());
+        }
+        if let Some(f) = a.get_commands.as_ref() {
+            snap.insert("commands".to_string(), serde_json::to_value(f()).unwrap_or_default());
+        }
+        if let Some(f) = a.get_thinking_level.as_ref() {
+            snap.insert("thinkingLevel".to_string(), serde_json::to_value(f()).unwrap_or_default());
+        }
+        if let Some(f) = a.get_model.as_ref() {
+            snap.insert("modelId".to_string(), f().map(Value::String).unwrap_or(Value::Null));
+        }
+        Value::Object(snap)
+    }
+
     /// 执行扩展注册的命令 handler。
     pub async fn execute_command(&self, name: &str) -> Result<(), String> {
-        self.request("execute_command", serde_json::json!({ "name": name }))
-            .await
-            .map(|_| ())
+        let session = self.build_snapshot().await;
+        self.request(
+            "execute_command",
+            serde_json::json!({ "name": name, "session": session }),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// 取出加载结果（factory 阶段收集的注册信息）。
@@ -1870,5 +1922,137 @@ export default function(pi) { pi.registerTool(createBashTool()); }
             assert!(!output.is_error, "bash tool should succeed");
             let text = output.content[0]["text"].as_str().unwrap_or("");
             assert!(text.contains("hi"), "got: {text}");
+        }
+
+        /// session 快照推送：bind_actions 后 fire_event 携带真实 session 数据，
+        /// 扩展在 handler 里同步读 ctx.sessionManager 全部 14 个方法
+        /// （同步 API，不能异步 RPC，只能推缓存）。
+        #[tokio::test]
+        async fn test_bun_session_snapshot_push() {
+            let dir = tempfile::tempdir().unwrap();
+            let ext = write_ext(
+                dir.path(),
+                "snapshot.ts",
+                r#"
+export default function(pi) {
+  pi.on("session_start", (event, ctx) => {
+    const sm = ctx.sessionManager;
+    const branch = sm.getBranch();
+    const branchFromId = sm.getBranch(branch[0].id);
+    const leaf = sm.getLeafEntry();
+    const first = sm.getEntry(branch[0].id);
+    const tree = sm.getTree();
+    const header = sm.getHeader();
+    const contextEntries = sm.buildContextEntries();
+    return {
+      branchLen: branch.length,
+      branchFromIdLen: branchFromId.length,
+      sessionName: sm.getSessionName(),
+      sessionId: sm.getSessionId(),
+      leafId: sm.getLeafId(),
+      leafEntryId: leaf && leaf.id,
+      firstEntryId: first && first.id,
+      treeRoots: tree.length,
+      headerCwd: header && header.cwd,
+      contextLen: contextEntries.length,
+      activeTools: pi.getActiveTools(),
+      thinkingLevel: pi.getThinkingLevel(),
+    };
+  });
+}
+"#,
+            );
+            let agent_dir = tempfile::tempdir().unwrap();
+            let paths = vec![ext.to_string_lossy().to_string()];
+            let flags: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            let loaded = load_bun_extensions(
+                &paths,
+                "/tmp",
+                &agent_dir.path().to_string_lossy(),
+                &flags,
+            )
+            .await
+            .expect("load")
+            .expect("some");
+
+            // 真实 session manager：两条 entry + session name。
+            let mut sm = crate::core::session_manager::SessionManager::new(
+                "/tmp",
+                agent_dir.path().to_str().unwrap(),
+                None,
+                false,
+                None,
+            );
+            let msg_id = sm.append_message(serde_json::json!({ "role": "user", "content": "hi" }));
+            let custom_id = sm.append_custom_entry("plan-mode-state", Some(serde_json::json!({ "enabled": true })));
+            let info_id = sm.append_session_info("my-session");
+            sm.set_label(&msg_id, Some("bookmark"));
+            let sm = std::sync::Arc::new(std::sync::Mutex::new(sm));
+
+            let actions = BunRuntimeActions {
+                session_snapshot: Some(std::sync::Arc::new({
+                    let sm = sm.clone();
+                    move || {
+                        let g = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let snap = serde_json::json!({
+                            "cwd": g.get_cwd(),
+                            "sessionDir": g.get_session_dir().to_string_lossy().to_string(),
+                            "sessionId": g.get_session_id(),
+                            "sessionFile": g.get_session_file().map(|p| p.to_string_lossy().to_string()),
+                            "sessionName": g.get_session_name(),
+                            "leafId": g.get_leaf_id(),
+                            "header": g.get_header(),
+                            "entries": g.get_entries(),
+                            "labels": g.get_labels(),
+                        });
+                        snap
+                    }
+                })),
+                get_active_tools: Some(std::sync::Arc::new(|| {
+                    vec!["read".to_string(), "bash".to_string()]
+                })),
+                get_thinking_level: Some(std::sync::Arc::new(|| "medium".to_string())),
+                ..Default::default()
+            };
+            loaded.runner.bind_actions(actions).await;
+
+            let result = loaded
+                .runner
+                .fire_event("session_start", serde_json::json!({ "reason": "new" }))
+                .await
+                .expect("fire_event");
+            let first = result
+                .as_array()
+                .and_then(|a| a.first())
+                .expect("handler result");
+            // 4 条 entry（message + custom + session_info + label），branch 是 [root, ..., leaf]。
+            assert_eq!(first["branchLen"], serde_json::json!(4), "got: {first}");
+            // getBranch(fromId) 从 root（msg_id）回溯：只有 root 自己。
+            assert_eq!(first["branchFromIdLen"], serde_json::json!(1), "got: {first}");
+            assert_eq!(first["sessionName"], serde_json::json!("my-session"), "got: {first}");
+            assert_eq!(
+                first["activeTools"],
+                serde_json::json!(["read", "bash"]),
+                "got: {first}"
+            );
+            assert_eq!(first["thinkingLevel"], serde_json::json!("medium"), "got: {first}");
+            assert!(
+                first["sessionId"].as_str().is_some_and(|s| !s.is_empty()),
+                "sessionId missing: {first}"
+            );
+            // leaf 是最后 append 的 label entry。
+            assert_eq!(first["leafEntryId"], first["leafId"], "got: {first}");
+            // getEntry 能按 id 查到第一条 message。
+            assert_eq!(first["firstEntryId"], serde_json::json!(msg_id), "got: {first}");
+            // 单链会话：树只有 1 个 root。
+            assert_eq!(first["treeRoots"], serde_json::json!(1), "got: {first}");
+            // header 存在（cwd 是 /tmp 的 canonical 路径 /private/tmp）。
+            assert!(
+                first["headerCwd"].as_str().is_some_and(|s| s.ends_with("/tmp")),
+                "headerCwd missing: {first}"
+            );
+            // 无 compaction：contextEntries == branch。
+            assert_eq!(first["contextLen"], serde_json::json!(4), "got: {first}");
+            let _ = custom_id;
         }
     }

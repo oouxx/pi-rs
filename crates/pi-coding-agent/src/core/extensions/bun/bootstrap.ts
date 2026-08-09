@@ -31,7 +31,8 @@ rl.on("line", async (line) => {
   }
   // Host → Bun request (execute_tool / fire_event / execute_command)
   if (msg.method === "execute_tool") {
-    const { name, callId, params } = msg.params;
+    const { name, callId, params, session } = msg.params;
+    if (session) sessionSnapshot = session;
     try {
       const fn = toolExecutors.get(name);
       if (!fn) throw new Error("Tool not found: " + name);
@@ -41,15 +42,23 @@ rl.on("line", async (line) => {
       send({ id: msg.id, error: { message: String(e && e.message || e) } });
     }
   } else if (msg.method === "fire_event") {
-    const { event, data } = msg.params;
+    const { event, data, session } = msg.params;
+    // 宿主随事件推送的 session 快照，供 ctx.sessionManager 同步读取。
+    if (session) sessionSnapshot = session;
     const results = [];
-    for (const h of (handlers.get(event) || [])) {
-      const r = await h(data, createCtx());
-      if (r !== undefined) results.push(r);
+    try {
+      for (const h of (handlers.get(event) || [])) {
+        const r = await h(data, createCtx());
+        if (r !== undefined) results.push(r);
+      }
+      send({ id: msg.id, result: results });
+    } catch (e) {
+      // handler 抛错也必须响应，否则宿主永远等待
+      send({ id: msg.id, error: { message: String(e && e.message || e) } });
     }
-    send({ id: msg.id, result: results });
   } else if (msg.method === "execute_command") {
-    const { name } = msg.params;
+    const { name, session } = msg.params;
+    if (session) sessionSnapshot = session;
     try {
       const fn = commandHandlers.get(name);
       if (fn) await fn();
@@ -69,20 +78,144 @@ const commandHandlers = new Map();
 const shortcutHandlers = new Map();
 const flagValues = new Map();
 
+// session 快照（宿主随 fire_event 推送）。ctx.sessionManager 的同步方法
+// 从这里读，保证扩展拿到的 branch/sessionName 等是宿主真实数据。
+let sessionSnapshot = null;
+
+// ── sessionManager 辅助：从快照 entries 派生（对齐 TS SessionManager 语义）──
+function sessionEntries() {
+  return (sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.entries) || [];
+}
+function sessionById() {
+  const m = new Map();
+  for (const e of sessionEntries()) m.set(e.id, e);
+  return m;
+}
+function sessionLeafId() {
+  return sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.leafId;
+}
+function sessionLabels() {
+  return (sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.labels) || {};
+}
+function sessionHeader() {
+  return sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.header;
+}
+// TS getBranch(fromId?)：从 fromId ?? leafId 回溯 parentId，reverse 成 [root, ..., leaf]。
+function sessionBranch(fromId) {
+  const byId = sessionById();
+  const path = [];
+  let current = byId.get(fromId || sessionLeafId());
+  while (current) {
+    path.push(current);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  path.reverse();
+  return path;
+}
+// TS getTree()：parentId 为 null/自身 → root，否则挂 parent.children，孤儿当 root；
+// children 按 timestamp 升序（oldest first）。
+function sessionTree() {
+  const entries = sessionEntries();
+  const labels = sessionLabels();
+  const nodeMap = new Map();
+  const roots = [];
+  for (const entry of entries) {
+    nodeMap.set(entry.id, { entry, children: [], label: labels[entry.id], labelTimestamp: undefined });
+  }
+  for (const entry of entries) {
+    const node = nodeMap.get(entry.id);
+    if (entry.parentId === null || entry.parentId === entry.id) {
+      roots.push(node);
+    } else {
+      const parent = nodeMap.get(entry.parentId);
+      if (parent) parent.children.push(node);
+      else roots.push(node);
+    }
+  }
+  const sortNodes = (nodes) => {
+    nodes.sort((a, b) => (a.entry.timestamp < b.entry.timestamp ? -1 : a.entry.timestamp > b.entry.timestamp ? 1 : 0));
+    for (const n of nodes) sortNodes(n.children);
+  };
+  sortNodes(roots);
+  return roots;
+}
+// TS buildContextEntries()：branch 里找最新 compaction，保留 compaction +
+// firstKeptEntryId 之后的旧 entry + compaction 之后的所有 entry。
+function sessionContextEntries() {
+  const path = sessionBranch();
+  let compaction = null;
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i].type === "compaction") { compaction = path[i]; break; }
+  }
+  if (!compaction) return path;
+  const compactionIdx = path.indexOf(compaction);
+  const firstKept = compaction.firstKeptEntryId;
+  const result = [compaction];
+  let found = false;
+  for (let i = 0; i < compactionIdx; i++) {
+    if (path[i].id === firstKept) found = true;
+    if (found) result.push(path[i]);
+  }
+  for (let i = compactionIdx + 1; i < path.length; i++) result.push(path[i]);
+  return result;
+}
+
 // CLI 传入的 flag（宿主经 PI_EXTENSION_FLAGS 环境变量下发），覆盖
 // registerFlag 默认值。
 try {
   const cliFlags = JSON.parse(process.env.PI_EXTENSION_FLAGS || "{}");
   for (const [k, v] of Object.entries(cliFlags)) flagValues.set(k, v);
-} catch {}
+  console.error("[pi] bootstrap flags:", JSON.stringify(cliFlags));
+} catch (e) {
+  console.error("[pi] bootstrap flags parse error:", String(e));
+}
 
 function createCtx() {
   return {
-    ui: { notify: (m) => send({ method: "log", params: { message: String(m) } }), setStatus: () => {}, confirm: () => Promise.resolve(false), select: () => Promise.resolve(undefined), input: () => Promise.resolve(undefined) },
+    ui: {
+      notify: (m) => send({ method: "log", params: { message: String(m) } }),
+      setStatus: () => {},
+      confirm: () => Promise.resolve(false),
+      select: () => Promise.resolve(undefined),
+      input: () => Promise.resolve(undefined),
+      // TUI 不在本轮范围：以下方法 no-op，保证扩展调用不崩。
+      setWidget: () => {},
+      setWorkingMessage: () => {},
+      setWorkingVisible: () => {},
+      setWorkingIndicator: () => {},
+      setHiddenThinkingLabel: () => {},
+      setFooter: () => {},
+      setHeader: () => {},
+      setTitle: () => {},
+      custom: () => Promise.resolve(undefined),
+      pasteToEditor: () => {},
+      setEditorText: () => {},
+      getEditorText: () => "",
+      editor: () => Promise.resolve(undefined),
+      addAutocompleteProvider: () => {},
+      onTerminalInput: () => () => {},
+    },
     mode: "fast", hasUI: false, cwd: process.env.PI_SESSION_CWD || process.cwd(),
-    sessionManager: new Proxy({}, { get: () => () => {} }),
+    sessionManager: {
+      getCwd: () => (sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.cwd) || process.env.PI_SESSION_CWD || process.cwd(),
+      getSessionDir: () => sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.sessionDir,
+      getSessionId: () => sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.sessionId,
+      getSessionFile: () => sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.sessionFile,
+      getSessionName: () => sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.sessionName,
+      getLeafId: () => sessionLeafId(),
+      getLeafEntry: () => { const id = sessionLeafId(); return id ? sessionById().get(id) : undefined; },
+      getEntry: (id) => sessionById().get(id),
+      getLabel: (entryId) => sessionLabels()[entryId],
+      getBranch: (fromId) => sessionBranch(fromId),
+      buildContextEntries: () => sessionContextEntries(),
+      getHeader: () => sessionHeader(),
+      getEntries: () => sessionEntries(),
+      getTree: () => sessionTree(),
+    },
     modelRegistry: new Proxy({}, { get: () => () => {} }),
-    model: undefined, scopedModels: [], thinkingLevel: undefined,
+    get model() { return sessionSnapshot && sessionSnapshot.modelId ? { provider: String(sessionSnapshot.modelId).split("/")[0], id: String(sessionSnapshot.modelId).split("/").slice(1).join("/") } : undefined; },
+    scopedModels: [],
+    get thinkingLevel() { return (sessionSnapshot && sessionSnapshot.thinkingLevel) || "inherit"; },
     isIdle: () => true, isProjectTrusted: () => false,
     signal: undefined, abort: () => {}, hasPendingMessages: () => false,
     shutdown: () => {}, getContextUsage: () => undefined, compact: () => {}, getSystemPrompt: () => "",
@@ -127,15 +260,17 @@ const pi = {
   sendUserMessage(content, options) { return request("send_user_message", { content: typeof content === "string" ? content : JSON.stringify(content), options_json: options ? JSON.stringify(options) : null }); },
   appendEntry(customType, data) { return request("append_entry", { custom_type: String(customType), data_json: data !== undefined ? JSON.stringify(data) : null }); },
   setSessionName(name) { return request("set_session_name", { name: String(name) }); },
-  getSessionName() { return request("get_session_name", {}); },
+  // 同步读 API（原版契约：直接返回数组/字符串，不是 Promise）。
+  // 数据来自宿主随 fire_event 推送的快照缓存。
+  getSessionName() { return sessionSnapshot && sessionSnapshot.session && sessionSnapshot.session.sessionName; },
   setLabel(entryId, label) { return request("set_label", { entry_id: String(entryId), label: label != null ? String(label) : null }); },
-  getActiveTools() { return request("get_active_tools", {}); },
-  getAllTools() { return request("get_all_tools", {}); },
+  getActiveTools() { return (sessionSnapshot && sessionSnapshot.activeTools) || []; },
+  getAllTools() { return (sessionSnapshot && sessionSnapshot.allTools) || []; },
   setActiveTools(toolNames) { return request("set_active_tools", { tools_json: JSON.stringify(toolNames) }); },
-  getCommands() { return request("get_commands", {}); },
+  getCommands() { return (sessionSnapshot && sessionSnapshot.commands) || []; },
   setModel(model) { const id = (model && (model.provider + "/" + model.id)) || String(model); return request("set_model", { model_id: String(id) }); },
   exec(command, args, options) { return request("exec", { command: String(command), args_json: JSON.stringify(args || []), options_json: options ? JSON.stringify(options) : null }); },
-  getThinkingLevel() { return request("get_thinking_level", {}); },
+  getThinkingLevel() { return (sessionSnapshot && sessionSnapshot.thinkingLevel) || "inherit"; },
   setThinkingLevel(level) { return request("set_thinking_level", { level: String(level) }); },
   registerProvider(name, config) { return request("register_provider", { name: String(name), config_json: JSON.stringify(config), extension_path: String(process.env.PI_EXTENSION_PATH || "<unknown>") }); },
   unregisterProvider(name) { return request("unregister_provider", { name: String(name) }); },

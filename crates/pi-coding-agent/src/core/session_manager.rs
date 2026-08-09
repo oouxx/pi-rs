@@ -34,10 +34,16 @@ pub struct NewSessionOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
+// `rename_all` 在 enum 上只作用于 variant 名；字段名需要 `rename_all_fields`。
+// 否则序列化输出 parent_id/custom_type 等 snake_case，扩展读 parentId/customType
+// 全是 undefined（plan-mode 的 customType 检查静默失败）。
+// alias：反序列化兼容旧 JSONL（snake_case 字段名），序列化统一 camelCase（与 TS 一致）。
+#[serde(rename_all_fields = "camelCase")]
 pub enum SessionEntry {
     #[serde(rename = "message")]
     Message {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         message: serde_json::Value,
@@ -45,38 +51,48 @@ pub enum SessionEntry {
     #[serde(rename = "thinking_level_change")]
     ThinkingLevelChange {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "thinking_level")]
         thinking_level: String,
     },
     #[serde(rename = "model_change")]
     ModelChange {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         provider: String,
+        #[serde(alias = "model_id")]
         model_id: String,
     },
     #[serde(rename = "compaction")]
     Compaction {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         summary: String,
+        #[serde(alias = "first_kept_entry_id")]
         first_kept_entry_id: String,
+        #[serde(alias = "tokens_before")]
         tokens_before: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(alias = "from_hook")]
         from_hook: Option<bool>,
     },
     #[serde(rename = "branch_summary")]
     BranchSummary {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "from_id")]
         from_id: String,
         summary: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,13 +100,16 @@ pub enum SessionEntry {
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(alias = "from_hook")]
         from_hook: Option<bool>,
     },
     #[serde(rename = "custom")]
     Custom {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "custom_type")]
         custom_type: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<serde_json::Value>,
@@ -98,8 +117,10 @@ pub enum SessionEntry {
     #[serde(rename = "custom_message")]
     CustomMessage {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "custom_type")]
         custom_type: String,
         content: serde_json::Value,
         display: bool,
@@ -109,14 +130,18 @@ pub enum SessionEntry {
     #[serde(rename = "label")]
     Label {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "target_id")]
         target_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
     #[serde(rename = "session_info")]
     SessionInfo {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1611,6 +1636,11 @@ impl SessionManager {
 
     pub fn get_label(&self, entry_id: &str) -> Option<&str> {
         self.labels_by_id.get(entry_id).map(|s| s.as_str())
+    }
+
+    /// 全部 label（entry_id → label），供扩展快照推送。
+    pub fn get_labels(&self) -> HashMap<String, String> {
+        self.labels_by_id.clone()
     }
 
     pub fn get_branch(&self, from_id: Option<&str>) -> Vec<SessionEntry> {

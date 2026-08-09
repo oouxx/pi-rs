@@ -736,6 +736,27 @@ pub async fn create_agent_session(
                     let state = state_view.clone();
                     move || state.lock().unwrap().session_name.clone()
                 })),
+                // session 快照：随 fire_event 推给 Bun 侧，供 ctx.sessionManager
+                // 同步读取（getBranch 等是同步 API，无法异步 RPC）。
+                session_snapshot: Some(std::sync::Arc::new({
+                    let session_manager = session.session_manager_arc();
+                    move || {
+                        let sm = session_manager
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        serde_json::json!({
+                            "cwd": sm.get_cwd(),
+                            "sessionDir": sm.get_session_dir().to_string_lossy().to_string(),
+                            "sessionId": sm.get_session_id(),
+                            "sessionFile": sm.get_session_file().map(|p| p.to_string_lossy().to_string()),
+                            "sessionName": sm.get_session_name(),
+                            "leafId": sm.get_leaf_id(),
+                            "header": sm.get_header(),
+                            "entries": sm.get_entries(),
+                            "labels": sm.get_labels(),
+                        })
+                    }
+                })),
                 get_active_tools: Some(std::sync::Arc::new({
                     let state = state_view.clone();
                     move || state.lock().unwrap().active_tools.clone()

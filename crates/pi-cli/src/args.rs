@@ -95,7 +95,9 @@ pub fn print_help() {
     println!("    --fork <ID>           Fork from an existing session");
     println!("    --no-session          Don't persist session");
     println!("    --session-dir <DIR>   Custom session directory");
+    println!("    --tools <LIST>        Allow specific tools (comma-separated, e.g. read,bash,edit)");
     println!("    --tool <NAME>         Allow specific tool (can be repeated)");
+    println!("    --exclude-tools <LIST> Exclude specific tools (comma-separated)");
     println!("    --exclude-tool <NAME> Exclude specific tool (can be repeated)");
     println!("    --no-tools            Disable all tools");
     println!("    --no-builtin-tools    Disable built-in tools");
@@ -189,7 +191,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
-            "--thinking" | "-t" => {
+            "--thinking" => {
                 i += 1;
                 if i < args.len() {
                     let level = args[i].to_lowercase();
@@ -251,10 +253,34 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
+            "--tools" | "-t" => {
+                i += 1;
+                if i < args.len() {
+                    result.tools.extend(
+                        args[i]
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                    );
+                }
+            }
+
             "--tool" => {
                 i += 1;
                 if i < args.len() {
                     result.tools.push(args[i].clone());
+                }
+            }
+
+            "--exclude-tools" | "-xt" => {
+                i += 1;
+                if i < args.len() {
+                    result.exclude_tools.extend(
+                        args[i]
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                    );
                 }
             }
 
@@ -353,6 +379,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tools_comma_separated() {
+        let args = parse_args(&["--tools".into(), "read,bash, edit".into()]);
+        assert_eq!(args.tools, vec!["read", "bash", "edit"]);
+    }
+
+    #[test]
+    fn test_parse_tools_short_flag() {
+        let args = parse_args(&["-t".into(), "read,bash".into()]);
+        assert_eq!(args.tools, vec!["read", "bash"]);
+    }
+
+    #[test]
+    fn test_parse_exclude_tools_comma_separated() {
+        let args = parse_args(&["--exclude-tools".into(), "bash, write".into()]);
+        assert_eq!(args.exclude_tools, vec!["bash", "write"]);
+    }
+
+    #[test]
+    fn test_parse_tools_empty_entries_filtered() {
+        let args = parse_args(&["--tools".into(), "read,,bash,".into()]);
+        assert_eq!(args.tools, vec!["read", "bash"]);
+    }
+
+    #[test]
+    fn test_parse_tool_singular_still_works() {
+        let args = parse_args(&["--tool".into(), "read".into(), "--tool".into(), "bash".into()]);
+        assert_eq!(args.tools, vec!["read", "bash"]);
+    }
+
+    #[test]
     fn test_parse_print() {
         let args = parse_args(&["-p".into(), "hello".into()]);
         assert!(args.print);
@@ -367,13 +423,13 @@ mod tests {
 
     #[test]
     fn test_parse_thinking() {
-        let args = parse_args(&["-t".into(), "high".into()]);
+        let args = parse_args(&["--thinking".into(), "high".into()]);
         assert_eq!(args.thinking, Some("high".into()));
     }
 
     #[test]
     fn test_parse_invalid_thinking() {
-        let args = parse_args(&["-t".into(), "invalid".into()]);
+        let args = parse_args(&["--thinking".into(), "invalid".into()]);
         assert!(args.thinking.is_none());
         assert!(!args.diagnostics.is_empty());
     }

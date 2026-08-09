@@ -107,6 +107,11 @@ impl HookHandler for SubagentExtension {
                             "type": "number",
                             "description": "Optional timeout in seconds. Default 300.",
                         },
+                        "tools": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional tool allowlist for the child agent (e.g. [\"read\",\"bash\"]). Default: read/bash/edit/write.",
+                        },
                     },
                     "required": ["task"],
                 })),
@@ -156,6 +161,26 @@ impl HookHandler for SubagentExtension {
             .and_then(|v| v.as_u64())
             .unwrap_or(self.timeout.as_secs());
         let timeout_dur = Duration::from_secs(timeout_secs.max(1));
+        // 可选工具白名单（逗号分隔字符串或数组），限制子 agent 可用工具。
+        let tools: Vec<String> = params
+            .get("tools")
+            .and_then(|v| match v {
+                Value::String(s) => Some(
+                    s.split(',')
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect(),
+                ),
+                Value::Array(a) => Some(
+                    a.iter()
+                        .filter_map(|t| t.as_str())
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
 
         // ── spawn 子 pi 进程 ──
         // get_cwd 可能为空（宿主 RuntimeHandle 未正确设置），fallback 到进程 cwd。
@@ -175,6 +200,10 @@ impl HookHandler for SubagentExtension {
         cmd.arg("--no-session");
         // 子 agent 不加载扩展（防递归：subagent 扩展不会在子进程里再注册）。
         cmd.arg("--no-extensions");
+        // 工具白名单（可选）：--tools read,bash,edit,write
+        if !tools.is_empty() {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
         cmd.arg(&task);
         cmd.current_dir(&cwd);
         cmd.env(SUBAGENT_DEPTH_ENV, (depth + 1).to_string());

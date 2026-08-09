@@ -169,6 +169,80 @@ async fn test_subagent_requires_task() {
     assert!(out.is_error, "missing task should error, got: {out:?}");
 }
 
+/// tools 白名单：假脚本把收到的参数输出到 message_end，验证 --tools 传递。
+#[tokio::test]
+async fn test_subagent_passes_tools_allowlist() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = write_fake_pi(
+        dir.path(),
+        r#"#!/bin/sh
+echo "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ARGS: $@\"}]}}"
+echo '{"type":"end"}'
+"#,
+    );
+    let ext = SubagentExtension::new().with_pi_binary(&fake);
+    let ctx = test_ctx("/tmp", None);
+    let out = ext
+        .handle_tool_call(
+            "subagent",
+            json!({ "task": "t", "tools": ["read", "bash"] }),
+            &ctx,
+        )
+        .await
+        .expect("handled");
+    assert!(!out.is_error, "got: {out:?}");
+    let text = out.content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("--tools read,bash"), "got: {text}");
+}
+
+/// tools 白名单（字符串形式）：逗号分隔。
+#[tokio::test]
+async fn test_subagent_passes_tools_string() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = write_fake_pi(
+        dir.path(),
+        r#"#!/bin/sh
+echo "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ARGS: $@\"}]}}"
+echo '{"type":"end"}'
+"#,
+    );
+    let ext = SubagentExtension::new().with_pi_binary(&fake);
+    let ctx = test_ctx("/tmp", None);
+    let out = ext
+        .handle_tool_call(
+            "subagent",
+            json!({ "task": "t", "tools": "read, bash" }),
+            &ctx,
+        )
+        .await
+        .expect("handled");
+    assert!(!out.is_error, "got: {out:?}");
+    let text = out.content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("--tools read,bash"), "got: {text}");
+}
+
+/// 无 tools 参数：不传 --tools。
+#[tokio::test]
+async fn test_subagent_no_tools_flag_when_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = write_fake_pi(
+        dir.path(),
+        r#"#!/bin/sh
+echo "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ARGS: $@\"}]}}"
+echo '{"type":"end"}'
+"#,
+    );
+    let ext = SubagentExtension::new().with_pi_binary(&fake);
+    let ctx = test_ctx("/tmp", None);
+    let out = ext
+        .handle_tool_call("subagent", json!({ "task": "t" }), &ctx)
+        .await
+        .expect("handled");
+    assert!(!out.is_error, "got: {out:?}");
+    let text = out.content[0]["text"].as_str().unwrap_or("");
+    assert!(!text.contains("--tools"), "should not pass --tools, got: {text}");
+}
+
 /// extract_message_text 单元测试。
 #[test]
 fn test_extract_message_text() {

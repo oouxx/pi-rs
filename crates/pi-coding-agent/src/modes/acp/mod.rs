@@ -1,11 +1,11 @@
 //! ACP (Agent Client Protocol) mode — lets ACP clients (Zed, JetBrains,
 //! ACP VSCode extensions, …) drive pi-coding-agent directly over stdio.
 //!
-//! Run with `pi-cli --acp` and register in the editor, e.g. in Zed:
+//! Run with `pi-rs --acp` and register in the editor, e.g. in Zed:
 //!
 //! ```json
 //! "agent_servers": {
-//!   "pi-rs": { "type": "custom", "command": "pi-cli", "args": ["--acp"], "env": {} }
+//!   "pi-rs": { "type": "custom", "command": "pi-rs", "args": ["--acp"], "env": {} }
 //! }
 //! ```
 

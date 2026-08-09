@@ -1,4 +1,4 @@
-//! pi-cli — CLI binary entry point for the pi coding agent.
+//! pi-rs — CLI binary entry point for the pi coding agent.
 //!
 //! Mirrors packages/coding-agent/src/cli.ts
 

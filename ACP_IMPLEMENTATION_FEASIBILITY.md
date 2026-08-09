@@ -236,7 +236,7 @@ switch_session/get_messages/get_commands）**pi-rs 的 RPC 模式全部已实现
 
 ```json
 "agent_servers": {
-  "pi-rs": { "type": "custom", "command": "pi-cli", "args": ["--acp"], "env": {} }
+  "pi-rs": { "type": "custom", "command": "pi-rs", "args": ["--acp"], "env": {} }
 }
 ```
 

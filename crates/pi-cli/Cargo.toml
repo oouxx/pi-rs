@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "CLI binary for pi-coding-agent — argument parsing, run orchestration, and terminal output"
 
+# Binary name is `pi-rs` (crate stays `pi-cli` for dependency/tooling
+# references). Build with `cargo build -p pi-cli` → target/debug/pi-rs.
+[[bin]]
+name = "pi-rs"
+path = "src/main.rs"
+
 [dependencies]
 pi-coding-agent = { workspace = true }
 pi-extensions = { workspace = true }

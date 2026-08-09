@@ -1,3 +1,75 @@
+# 对齐差距清单（v0.80 → v0.81）
+
+> 对齐目标：earendil-works/pi **v0.81**（见 `MILESTONE.md`）。
+> 本清单从 v0.80.10 → v0.81.1 的 releases changelog（https://github.com/earendil-works/pi/releases）
+> 中筛出与 pi-ai / pi-agent-core / pi-coding-agent / pi-cli 相关的变更，逐项核对 pi-rs 现状。
+>
+> 分类：**A** = 回归 bug（翻译遗漏/实现错误，直接修）；**B** = 未登记偏差（需确认或暂缓）；
+> **C** = 范围外（TUI/打包/文档）；**D** = 已登记偏差（见各 crate `DEVIATIONS.md`）。
+
+## pi-ai
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | v0.81.0 #6854 | openai-completions 跨 provider 回放时 `normalizeToolCallId` 处理 pipe 分隔 ID（`{call_id}|{item_id}`，来自 Responses API），保持 tool call id 唯一 | `openai.rs` 消息转换直接透传 `tool_call_id`，无 pipe 处理 | A | ✅ 已修 |
+| 2 | v0.81.0 #6727 | OpenAI Responses 早期流结束（"stream ended before a terminal response event"）分类为可重试 provider 错误 | `_is_retryable_error_message` 缺该模式 | A | ✅ 已修 |
+| 3 | v0.81.0 #6840 | 新增 `contentText` 工具（从 message content 提取 joined text） | 无对应工具函数 | B | ✅ 已修（`utils/text.rs`） |
+| 4 | v0.81.0 #6834 | 新增共享 `uuidv7` 工具（时间有序 ID，Codex WebSocket request id 用） | 无 uuidv7；harness entry id 用 `Uuid::new_v4` | B | ✅ 已修（`utils/uuid.rs`） |
+| 5 | v0.81.0 #6901 | 新增 `retryAssistantCall()`（bounded retries + 生命周期回调 + abort 处理） | 无对应 API | B | ✅ 已修（`utils/retry.rs`） |
+| 6 | v0.81.0 #6858 | 新增 Qwen Token Plan / Qwen Token Plan China 内置 provider | 无（13 provider 覆盖即最终范围） | D | 已确认保留（见 DEVIATIONS #2） |
+| 7 | v0.81.0 #6668 | GitHub Copilot long-context pricing tiers 修复 | 模型元数据未生成 | D | 已确认保留（见 DEVIATIONS #2） |
+| 8 | v0.81.0 #8881e1762 | Kimi Coding subscription 隐含成本 | 无 kimi-coding 模型 | D | 已确认保留（见 DEVIATIONS #2） |
+| 9 | v0.81.0 #75cb0b873 | OpenCode Go 支持 OpenAI Responses API | 无 opencode-go 模型 | D | 已确认保留（见 DEVIATIONS #2） |
+| 10 | v0.81.0 #6853 | GPT-5.6 Codex 默认 272K context | 无 codex 模型（openai 官方 gpt-5.6 为 1050K，正确） | D | 已确认保留（见 DEVIATIONS #2） |
+| 11 | v0.81.0 #6765/#6742 | 模型生成分离（TS 形状与 JSON 值分离）+ 编译前验证 | 单 JSON 文件 + xtask 生成，已确认保留 | D | 已确认保留（见 DEVIATIONS #1） |
+| 12 | v0.81.0 #a82289637/#bbb91fa8a | 新 Gemini / Qwen 生成模型 | 模型覆盖度受限 | D | 已确认保留（见 DEVIATIONS #2） |
+| 13 | v0.81.1 #959cc1897 | Kimi K3 用 OpenAI thinking format + reasoning effort | 无 kimi 模型 | D | 已确认保留（见 DEVIATIONS #2） |
+
+## pi-agent-core
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 14 | v0.81.0 #6671 | `ToolResultMessage` 加 `usage?: Usage`（工具可报告 LLM usage） | `AgentMessage::ToolResult` 缺 `usage` 字段 | A | ✅ 已修 |
+| 15 | v0.81.0 #6594 | `SessionStorage` breaking change：`getPathToRootOrCompaction`（retainedTail 自包含 checkpoint）、`getSessionName`/`getSessionStats`、cursor-based `getEntries` | harness `SessionStorage` 仍为旧接口（`get_path_to_root`、无 name/stats/cursor、无 retainedTail） | B | ✅ 已修 |
+| 16 | v0.81.0 #6851/#6915 | `Agent.streamFn` 必选 + `getDefaultStreamFn()` fallback（未配置时 throw） | `stream_fn: Option<StreamFn>` fallback 到返回 Err 的函数（运行时才报错） | B | ✅ 已修（`set_default_stream_fn`/`get_default_stream_fn`，未配置时 panic） |
+| 17 | v0.81.0 #6834 | harness entry id 用 uuidv7 | 用 `Uuid::new_v4` | B | ✅ 已修（uuidv7 尾部 8 字符） |
+
+## pi-coding-agent
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 18 | v0.81.0 #6695 | prompt-template 全参数默认值 `${@:-default}` / `${ARGUMENTS:-default}` / `${N:-default}` | `substitute_args` 不支持带默认值语法 | A | ✅ 已修 |
+| 19 | v0.81.0 #6865 | 新增 `get_available_thinking_levels` RPC 命令 + `RpcClient.getAvailableThinkingLevels()` | RPC 命令列表无此命令 | B | ✅ 已修 |
+| 20 | v0.81.1 #6901/#6647 | compaction/branch-summary 按 retry policy 重试 + `summarization_retry_scheduled/attempt_start/finished` 事件 | compaction 无 retry，无相关事件 | B | ✅ 已修（`complete_summarization` + 3 事件） |
+| 21 | v0.81.0 #f1a466b19/#3da591ab7 | llama.cpp router 集成 + Hugging Face 模型搜索/下载 | 无 | B | ✅ 已确认不做（用户拍板，见 DEVIATIONS #15） |
+| 22 | v0.81.0 #019e4ad68 | 扩展可注册完整 pi-ai provider（认证/模型刷新/过滤/流式） | 扩展系统无 provider 注册能力 | B | ✅ 已修（`RuntimeHandle.register_provider` → `ModelRegistry.register_provider`） |
+| 23 | v0.81.0 #f1c587dde | 避免重复 session 读取（启动延迟优化） | 未核对 | B | ✅ 已修（`open()` 读一次复用 entries） |
+| 24 | v0.81.0 #c889eb880/#b14250412 | 模型目录网络刷新移出启动初始化 | pi-rs 手动 `pi refresh`，已确认保留 | D | 已确认保留（见 DEVIATIONS #10） |
+| 25 | v0.81.0 #54fad505b | 持久化远程目录不覆盖更新的 bundled 目录（Last-Modified 比较） | `remote_catalog.rs` 无 bundled 比较 | D | 已确认保留（见 DEVIATIONS #10） |
+| 26 | v0.81.0 #35a0d5d62 | 压缩期间消息队列保持 steering/follow-up 投递 | interactive-mode（TUI 层）改动 | C | 范围外（TUI） |
+| 27 | v0.81.0 #a2c5ee33e | read 工具错误不做语法高亮 | TUI 渲染层改动 | C | 范围外（TUI） |
+| 28 | v0.81.0 #31dc078bf | brace-expansion 5.0.7 | 纯依赖更新 | C | 范围外 |
+
+## pi-cli
+
+| # | 来源 | TS 行为 | pi-rs 现状 | 分类 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 29 | v0.81.0 #9e7fce70a | 包根导出 message/tool execution 事件类型 | 未核对 | B | ✅ 已修（`pub use AgentEvent`） |
+
+## 范围外（C）
+
+- TUI：cursor 修复（#6790）、ANSI wrapping CRLF/CR（#6764）、paste registry（#6844）、llama 下载进度 UI
+- 打包/更新：source archives（#6913）、npm 包管理、`pi update`
+- server/orchestrator 重命名（#6898）
+
+## 处理规则
+
+- A 类：直接修，修完跑 `cargo test` + `cargo clippy --all-targets -- -D warnings`，并把真回归补进 `PORTING_MISTAKES.md`。
+- B 类：需要用户确认或排期的大项，不在本次会话内擅自实现。
+- 待查：逐项核对 pi-rs 现状后归类。
+
+---
+
 # 对齐差距清单（v0.79 → v0.80）
 
 > 对齐目标：earendil-works/pi **v0.80**（见 `MILESTONE.md`）。

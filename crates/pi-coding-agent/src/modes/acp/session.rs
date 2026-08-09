@@ -317,7 +317,7 @@ impl SessionRegistry {
                 extension_flags: None,
             }
         };
-        let (session, result) = create_agent_session(build_options(None))
+        let (session, _result) = create_agent_session(build_options(None))
             .await
             .map_err(|e| e.to_string())?;
         Ok((session, mcp_connections))

@@ -1461,7 +1461,7 @@ where
     ) -> Result<Option<CompactResult>, HarnessError> {
         let model = self.model.read().await.clone();
         let settings = crate::harness::types::DEFAULT_COMPACTION_SETTINGS;
-        let entries = self.session.read().await.get_entries().await;
+        let entries = self.session.read().await.get_entries(None).await;
 
         let preparation = crate::harness::compaction::compaction::prepare_compaction(
             &entries,
@@ -1495,12 +1495,15 @@ where
                 }
                 .unwrap_or_default();
 
+                let retained_tail = prep.retained_tail.clone();
                 let result = crate::harness::compaction::compaction::compact(
                     prep,
                     &model,
                     &api_key,
                     None,
                     custom_instructions,
+                    None,
+                    None,
                     None,
                     None,
                 )
@@ -1512,11 +1515,12 @@ where
                     session
                         .append_compaction(
                             result.summary.clone(),
-                            result.first_kept_entry_id.clone(),
+                            Some(result.first_kept_entry_id.clone()),
                             result.tokens_before,
                             result.details.clone(),
                             Some(true),
                             None,
+                            Some(retained_tail),
                         )
                         .await
                         .map_err(HarnessError::Session)?;
@@ -1621,6 +1625,8 @@ where
                         reserve_tokens: None,
                         custom_instructions: opts.custom_instructions.clone(),
                         replace_instructions: Some(opts.replace_instructions),
+                        retry: None,
+                        callbacks: None,
                     };
 
                 let branch_summary = crate::harness::compaction::branch_summarization::generate_branch_summary(

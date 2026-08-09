@@ -254,6 +254,9 @@ pub fn prepare_compaction(
     } else {
         Vec::new()
     };
+    // Retained recent messages stored on the compaction entry as a
+    // self-contained checkpoint (match TS `retainedTail`).
+    let retained_tail: Vec<AgentMessage> = messages[cut_point.first_kept_entry_index..].to_vec();
 
     let previous_summary = messages.iter().find_map(|m| {
         if let AgentMessage::CompactionSummary { summary, .. } = m {
@@ -269,6 +272,7 @@ pub fn prepare_compaction(
         first_kept_entry_id,
         messages_to_summarize,
         turn_prefix_messages,
+        retained_tail,
         is_split_turn: cut_point.is_split_turn,
         tokens_before,
         previous_summary,
@@ -409,6 +413,52 @@ Format your summary as:
 /// Calls pi_ai to stream a completion from the specified model, using
 /// the summarization system prompt and the serialized conversation as context.
 #[allow(clippy::too_many_arguments)]
+/// Shared choke point for every compaction/branch-summary summarization call
+/// (match TS `completeSummarization`). Wraps the single LLM call in
+/// `retryAssistantCall` so transient stream drops honor the configured retry
+/// policy instead of failing the whole compaction on the first attempt.
+/// Deterministic errors and aborts return immediately.
+pub async fn complete_summarization(
+    model: &crate::pi_ai_types::Model,
+    context: &crate::pi_ai_types::Context,
+    options: crate::pi_ai_types::SimpleStreamOptions,
+    retry: Option<crate::pi_ai_types::RetryPolicy>,
+    callbacks: Option<&crate::pi_ai_types::RetryCallbacks>,
+) -> std::result::Result<crate::pi_ai_types::AssistantMessage, String> {
+    let produce = || {
+        let model = model.clone();
+        let context = context.clone();
+        let options = options.clone();
+        async move {
+            match pi_complete(&model, &context, Some(options)).await {
+                Ok(msg) => msg,
+                Err(e) => crate::pi_ai_types::AssistantMessage {
+                    content: vec![],
+                    api: model.api.clone(),
+                    provider: model.provider.clone(),
+                    model: model.id.clone(),
+                    response_model: None,
+                    response_id: None,
+                    diagnostics: None,
+                    usage: crate::pi_ai_types::Usage::default(),
+                    stop_reason: crate::pi_ai_types::StopReason::Error,
+                    error_message: Some(e),
+                    raw_stop_reason: None,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                },
+            }
+        }
+    };
+    let signal = options.base.signal.clone();
+    let result = crate::pi_ai_types::retry_assistant_call(produce, retry, signal.as_ref(), callbacks).await;
+    if result.stop_reason == crate::pi_ai_types::StopReason::Error {
+        return Err(result
+            .error_message
+            .unwrap_or_else(|| "Summarization failed".to_string()));
+    }
+    Ok(result)
+}
+
 pub async fn generate_summary(
     messages: &[AgentMessage],
     model: &crate::pi_ai_types::Model,
@@ -419,6 +469,8 @@ pub async fn generate_summary(
     custom_instructions: Option<&str>,
     previous_summary: Option<&str>,
     thinking_level: Option<crate::pi_ai_types::ThinkingLevel>,
+    retry: Option<crate::pi_ai_types::RetryPolicy>,
+    callbacks: Option<&crate::pi_ai_types::RetryCallbacks>,
 ) -> std::result::Result<String, CompactionError> {
     if messages.is_empty() {
         return Ok(String::new());
@@ -491,12 +543,11 @@ pub async fn generate_summary(
         debug: None,
     };
 
-    // Call pi_ai complete_simple (matches TS: completeSimple with reasoning support)
-    let result = pi_complete(model, &context, Some(simple_options))
-        .await
-        .map_err(|e| {
-            CompactionError::SummarizationFailed(format!("LLM summarization failed: {e}"))
-        })?;
+    // Call pi_ai complete_simple wrapped in retryAssistantCall (match TS
+    // `completeSummarization`): transient stream drops honor the configured
+    // retry policy instead of failing the whole compaction on the first attempt.
+    let result = complete_summarization(model, &context, simple_options, retry, callbacks).await
+        .map_err(|e| CompactionError::SummarizationFailed(format!("LLM summarization failed: {e}")))?;
 
     // Extract text from the response
     let summary = result
@@ -526,6 +577,8 @@ pub async fn compact(
     custom_instructions: Option<&str>,
     signal: Option<tokio::sync::watch::Receiver<bool>>,
     thinking_level: Option<crate::pi_ai_types::ThinkingLevel>,
+    retry: Option<crate::pi_ai_types::RetryPolicy>,
+    callbacks: Option<&crate::pi_ai_types::RetryCallbacks>,
 ) -> std::result::Result<crate::harness::types::CompactResult, CompactionError> {
     let summary = generate_summary(
         &preparation.messages_to_summarize,
@@ -537,6 +590,8 @@ pub async fn compact(
         custom_instructions,
         preparation.previous_summary.as_deref(),
         thinking_level,
+        retry,
+        callbacks,
     )
     .await?;
 
@@ -590,6 +645,7 @@ mod tests {
             }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 1000,
         }
@@ -974,6 +1030,7 @@ mod tests {
             }],
             details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 1000,
         }];
@@ -1041,6 +1098,7 @@ mod tests {
             }],
             details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 1000,
         }];
@@ -1125,8 +1183,9 @@ mod tests {
             parent_id: Some("entry-a1".to_string()),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             summary: "First summary".to_string(),
-            first_kept_entry_id: "entry-u1".to_string(),
+            first_kept_entry_id: Some("entry-u1".to_string()),
             tokens_before: 1234,
+            retained_tail: None,
             details: None,
             usage: None,
             from_hook: None,

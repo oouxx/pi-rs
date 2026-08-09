@@ -327,6 +327,45 @@ struct StreamOptionsFlag {
 // ============================================================================
 
 /// Convert pi-ai messages to the OpenAI Chat Completions API format.
+/// Normalize a tool call id for cross-provider replay into Chat Completions
+/// (match TS `normalizeToolCallId` in openai-completions.ts, #6854).
+///
+/// OpenAI Responses API generates ids that are 450+ chars with special chars
+/// like `|` (format `{call_id}|{item_id}`). Multiple tool calls in the same
+/// turn can share `call_id` but differ by `item_id`; Chat Completions requires
+/// distinct tool call ids, so we preserve item-level uniqueness.
+fn normalize_tool_call_id(id: &str, model: &Model) -> String {
+    if id.contains('|') {
+        let separator_index = id.find('|').unwrap_or(0);
+        let call_id: String = id[..separator_index]
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let item_id: String = id[separator_index + 1..]
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let combined_id = if item_id.is_empty() {
+            call_id.clone()
+        } else {
+            format!("{call_id}_{item_id}")
+        };
+        if combined_id.len() <= 40 {
+            return combined_id;
+        }
+        let hash = super::openai_responses::short_hash(id);
+        let hash = &hash[..hash.len().min(8)];
+        let prefix_len = (40usize.saturating_sub(hash.len() + 1)).max(1);
+        let prefix: String = call_id.chars().take(prefix_len).collect();
+        return format!("{prefix}_{hash}");
+    }
+
+    if model.provider == "openai" {
+        return id.chars().take(40).collect();
+    }
+    id.to_string()
+}
+
 fn convert_messages(
     model: &Model,
     context: &Context,
@@ -345,6 +384,11 @@ fn convert_messages(
     }
 
     let mut last_role: Option<String> = None;
+
+    // Map of original tool call ids to normalized ids (match TS `transformMessages`
+    // toolCallIdMap): assistant tool calls are normalized, then tool results are
+    // rewritten to the normalized id so they stay linked.
+    let mut tool_call_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     let mut i = 0usize;
     while i < context.messages.len() {
@@ -394,7 +438,18 @@ fn convert_messages(
                 }
                 last_role = Some("user".to_string());
             }
-            Message::Assistant { content, .. } => {
+            Message::Assistant {
+                content,
+                api,
+                provider,
+                model: msg_model,
+                ..
+            } => {
+                // TS `transformMessages` only normalizes tool call ids when the
+                // assistant message came from a different model (isSameModel gate).
+                let is_same_model = provider == &model.provider
+                    && api == &model.api
+                    && msg_model == &model.id;
                 let text_parts: Vec<Value> = content
                     .iter()
                     .filter_map(|b| match b {
@@ -482,6 +537,14 @@ fn convert_messages(
                             ..
                         } => {
                             let custom_property = grammar_properties.get(name);
+                            let normalized_id = if is_same_model {
+                                id.clone()
+                            } else {
+                                normalize_tool_call_id(id, model)
+                            };
+                            if normalized_id != *id {
+                                tool_call_id_map.insert(id.clone(), normalized_id.clone());
+                            }
                             if let Some(property) = custom_property {
                                 let input = match super::openai_responses::get_grammar_tool_input(
                                     name, arguments, property,
@@ -493,13 +556,13 @@ fn convert_messages(
                                     }
                                 };
                                 Some(json!({
-                                    "id": id,
+                                    "id": normalized_id,
                                     "type": "custom",
                                     "custom": { "name": name, "input": input },
                                 }))
                             } else {
                                 Some(json!({
-                                    "id": id,
+                                    "id": normalized_id,
                                     "type": "function",
                                     "function": { "name": name, "arguments": arguments.to_string() },
                                 }))
@@ -588,7 +651,11 @@ fn convert_messages(
                     let mut tool_msg = serde_json::Map::new();
                     tool_msg.insert("role".into(), json!("tool"));
                     tool_msg.insert("content".into(), json!(tool_result_text));
-                    tool_msg.insert("tool_call_id".into(), json!(tool_call_id));
+                    let effective_id = tool_call_id_map
+                        .get(tool_call_id)
+                        .cloned()
+                        .unwrap_or_else(|| tool_call_id.clone());
+                    tool_msg.insert("tool_call_id".into(), json!(effective_id));
                     if compat.requires_tool_result_name {
                         tool_msg.insert("name".into(), json!(tool_name));
                     }
@@ -892,6 +959,7 @@ fn get_deferred_tool_names(messages: &[Message]) -> std::collections::HashSet<St
     let mut names = std::collections::HashSet::new();
     for msg in messages {
         if let Message::ToolResult {
+            usage: None,
             added_tool_names: Some(added),
             ..
         } = msg
@@ -1826,6 +1894,70 @@ mod tests {
     // map_stop_reason tests
     // ============================================================
 
+    fn test_model(provider: &str) -> Model {
+        Model {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            api: "openai-completions".to_string(),
+            provider: provider.to_string(),
+            base_url: "https://example.com".to_string(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    #[test]
+    fn test_normalize_tool_call_id_pipe() {
+        // Pipe-separated ids from Responses API: {call_id}|{item_id} (TS #6854)
+        let model = test_model("github-copilot");
+        let id = "call_abc|item_xyz";
+        let normalized = normalize_tool_call_id(id, &model);
+        assert_eq!(normalized, "call_abc_item_xyz");
+    }
+
+    #[test]
+    fn test_normalize_tool_call_id_pipe_sanitizes() {
+        // Special chars in the item id are replaced with underscores
+        let model = test_model("opencode");
+        let id = "call_1|item+with/special=chars";
+        let normalized = normalize_tool_call_id(id, &model);
+        assert_eq!(normalized, "call_1_item_with_special_chars");
+    }
+
+    #[test]
+    fn test_normalize_tool_call_id_pipe_long_hashes() {
+        // Combined id over 40 chars: prefix + 8-char hash
+        let model = test_model("opencode");
+        let id = "call_very_long_call_id_1234567890|item_very_long_item_id_abcdefghijklmnopqrstuvwxyz";
+        let normalized = normalize_tool_call_id(id, &model);
+        assert!(normalized.len() <= 40, "normalized id too long: {normalized}");
+        // prefix = call_id truncated to 40 - 8 (hash) - 1 (separator) = 31 chars
+        assert!(normalized.starts_with("call_very_long_call_id_12345678_"));
+    }
+
+    #[test]
+    fn test_normalize_tool_call_id_openai_truncates() {
+        // openai provider: truncate to 40 chars
+        let model = test_model("openai");
+        let long_id = "a".repeat(100);
+        let normalized = normalize_tool_call_id(&long_id, &model);
+        assert_eq!(normalized.len(), 40);
+    }
+
+    #[test]
+    fn test_normalize_tool_call_id_plain_passthrough() {
+        // Non-openai, no pipe: unchanged
+        let model = test_model("anthropic");
+        let id = "toolu_01ABC";
+        assert_eq!(normalize_tool_call_id(id, &model), id);
+    }
+
     #[test]
     fn test_map_stop_reason_stop() {
         assert_eq!(map_stop_reason("stop"), (StopReason::Stop, None));
@@ -2024,6 +2156,7 @@ mod tests {
                 content: vec![ContentBlock::text("72F sunny")],
                 details: None,
                 is_error: false,
+                usage: None,
                 added_tool_names: None,
                 timestamp: 1000,
             }],

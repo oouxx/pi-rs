@@ -338,6 +338,26 @@ pub enum AgentSessionEvent {
         attempt: u32,
         final_error: Option<String>,
     },
+    /// Emitted before the backoff sleep of a compaction/branch-summary retry
+    /// (match TS `summarization_retry_scheduled`).
+    #[serde(rename_all = "camelCase")]
+    SummarizationRetryScheduled {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+    },
+    /// Emitted after the backoff sleep, immediately before the retried
+    /// summarization call starts (match TS `summarization_retry_attempt_start`).
+    #[serde(rename_all = "camelCase")]
+    SummarizationRetryAttemptStart {
+        source: String,
+        reason: Option<String>,
+    },
+    /// Emitted once when the summarization retry loop ends
+    /// (match TS `summarization_retry_finished`).
+    #[serde(rename_all = "camelCase")]
+    SummarizationRetryFinished {},
 }
 
 /// Listener function for agent session events.
@@ -459,6 +479,17 @@ impl AgentSession {
         // 当前模型（provider/model），供扩展（如 subagent）继承给子进程。
         let ext_model = format!("{}/{}", options.model.provider, options.model.id);
         ext_runtime_handle.get_model = std::sync::Arc::new(move || ext_model.clone());
+        // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
+        let registry_for_provider = model_registry.clone();
+        ext_runtime_handle.register_provider = std::sync::Arc::new(move |config_value| {
+            if let Ok(config) = serde_json::from_value::<crate::core::model_registry::ProviderConfig>(
+                config_value,
+            ) {
+                if let Some(name) = config.name.clone() {
+                    registry_for_provider.register_provider(&name, config);
+                }
+            }
+        });
         let ext_ctx = ExtensionContext::new(
             options.cwd.clone(),
             false,
@@ -501,6 +532,8 @@ impl AgentSession {
                             Ok(AgentToolResult {
                                 content,
                                 details: output.details.unwrap_or(serde_json::Value::Null),
+                                usage: None,
+                                added_tool_names: None,
                                 terminate: output.terminate,
                             })
                         })
@@ -561,6 +594,8 @@ impl AgentSession {
                                 Ok(AgentToolResult {
                                     content,
                                     details: output.details.unwrap_or(serde_json::Value::Null),
+                                    usage: None,
+                                    added_tool_names: None,
                                     terminate: output.terminate,
                                 })
                             }
@@ -911,6 +946,9 @@ impl AgentSession {
             .as_ref()
             .map(std::sync::Arc::clone);
 
+        // Clone registry ref for extension provider registration (before it's moved into self)
+        let model_registry_for_ext = model_registry.clone();
+
         let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
@@ -931,6 +969,19 @@ impl AgentSession {
                 ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
                 let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
                 ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
+                // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
+                let registry_for_provider = model_registry_for_ext.clone();
+                ext_runtime_handle.register_provider = std::sync::Arc::new(move |config_value| {
+                    if let Ok(config) =
+                        serde_json::from_value::<crate::core::model_registry::ProviderConfig>(
+                            config_value,
+                        )
+                    {
+                        if let Some(name) = config.name.clone() {
+                            registry_for_provider.register_provider(&name, config);
+                        }
+                    }
+                });
                 ExtensionContext::new(
                     session_cwd_for_ext.clone(),
                     false,
@@ -3276,7 +3327,9 @@ References are relative to {}.
             custom_instructions,
         );
 
-        // Generate summary using the LLM if a stream_fn is available
+        // Generate summary using the LLM if a stream_fn is available.
+        // Wrapped in retryAssistantCall (match TS `completeSummarization`) so
+        // transient stream drops honor the configured retry policy.
         let summary = if let Some(stream_fn) = self.agent.get_stream_fn() {
             let model = self.agent.state().await.model;
             let llm_context = pi_agent_core::pi_ai_types::Context {
@@ -3289,58 +3342,57 @@ References are relative to {}.
                 }],
                 tools: None,
             };
-            match stream_fn(
-                model,
-                llm_context,
+
+            // Retry policy from settings (match TS settingsManager.getRetrySettings())
+            let retry_settings = self
+                .settings_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_retry_settings();
+            let retry_policy = pi_agent_core::pi_ai_types::RetryPolicy {
+                enabled: retry_settings.enabled.unwrap_or(true),
+                max_retries: retry_settings.max_retries.unwrap_or(0),
+                base_delay_ms: retry_settings.base_delay_ms.unwrap_or(1000),
+            };
+            let callbacks = self._summarization_retry_callbacks(
+                "compaction",
+                Some(if custom_instructions.is_some() {
+                    "manual".to_string()
+                } else {
+                    "threshold".to_string()
+                }),
+            );
+
+            let produce = || {
+                let stream_fn = stream_fn.clone();
+                let model = model.clone();
+                let llm_context = llm_context.clone();
+                async move {
+                    consume_stream_to_message(stream_fn, model, llm_context).await
+                }
+            };
+            let result = pi_agent_core::pi_ai_types::retry_assistant_call(
+                produce,
+                Some(retry_policy),
                 None,
-                pi_agent_core::types::StreamFnOptions::default(),
+                Some(&callbacks),
             )
-            .await
-            {
-                Ok(mut stream) => {
-                    use futures::StreamExt;
-                    let mut full_text = String::new();
-                    while let Some(event) = stream.next().await {
-                        match &event {
-                            pi_agent_core::pi_ai_types::AssistantMessageEvent::TextDelta {
-                                delta,
-                                ..
-                            } => {
-                                full_text.push_str(delta);
-                            }
-                            pi_agent_core::pi_ai_types::AssistantMessageEvent::Done {
-                                message,
-                                ..
-                            } => {
-                                // Use the final message content if we have no deltas
-                                if full_text.is_empty() {
-                                    for block in &message.content {
-                                        if let pi_agent_core::pi_ai_types::ContentBlock::Text {
-                                            text,
-                                            ..
-                                        } = block
-                                        {
-                                            full_text.push_str(text);
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    if full_text.is_empty() {
-                        format!(
-                            "Compacted {} messages (summary generation unavailable)",
-                            messages.len()
-                        )
-                    } else {
-                        full_text
-                    }
+            .await;
+
+            // Extract text from the final message
+            let mut full_text = String::new();
+            for block in &result.content {
+                if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
+                    full_text.push_str(text);
                 }
-                Err(_) => {
-                    format!("Compacted {} messages (LLM unavailable)", messages.len())
-                }
+            }
+            if full_text.trim().is_empty() {
+                format!(
+                    "Compacted {} messages (summary generation unavailable)",
+                    messages.len()
+                )
+            } else {
+                full_text
             }
         } else {
             format!("Compacted {} messages", messages.len())
@@ -3597,6 +3649,71 @@ References are relative to {}.
 
     /// Emit an event to all registered session event listeners.
     #[allow(clippy::empty_line_after_doc_comments)]
+    /// Retry policy + callbacks shared by compaction and branch-summary
+    /// summarization calls (match TS `_summarizationRetryCallbacks`). Uses the
+    /// same `settings.retry` budget/backoff as agent-turn retries so a single
+    /// transient stream drop no longer fails the whole operation.
+    fn _summarization_retry_callbacks(
+        &self,
+        source: &str,
+        reason: Option<String>,
+    ) -> pi_agent_core::pi_ai_types::RetryCallbacks {
+        let listeners = self.event_listeners.clone();
+        let source = source.to_string();
+        let reason = reason.clone();
+        let listeners_scheduled = listeners.clone();
+        let listeners_attempt = listeners.clone();
+        let listeners_finished = listeners;
+        pi_agent_core::pi_ai_types::RetryCallbacks {
+            on_retry_scheduled: Some(Arc::new(
+                move |attempt, max_attempts, delay_ms, error_message| {
+                    let evt = AgentSessionEvent::SummarizationRetryScheduled {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        error_message,
+                    };
+                    let batch = {
+                        let l = listeners_scheduled
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        l.iter().cloned().collect::<Vec<_>>()
+                    };
+                    for listener in batch {
+                        listener(evt.clone());
+                    }
+                },
+            )),
+            on_retry_attempt_start: Some(Arc::new(move || {
+                let evt = AgentSessionEvent::SummarizationRetryAttemptStart {
+                    source: source.clone(),
+                    reason: reason.clone(),
+                };
+                let batch = {
+                    let l = listeners_attempt
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    l.iter().cloned().collect::<Vec<_>>()
+                };
+                for listener in batch {
+                    listener(evt.clone());
+                }
+            })),
+            on_retry_finished: Some(Arc::new(move |_, _, _| {
+                let evt = AgentSessionEvent::SummarizationRetryFinished {};
+                let batch = {
+                    let l = listeners_finished
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    l.iter().cloned().collect::<Vec<_>>()
+                };
+                for listener in batch {
+                    listener(evt.clone());
+                }
+            })),
+        }
+    }
+
     fn _emit(&self, event: AgentSessionEvent) {
         let batch = {
             let listeners = self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3698,6 +3815,7 @@ References are relative to {}.
             "websocket error",
             "ended without",
             "stream ended before message_stop",
+            "stream ended before a terminal response event",
             "http2 request did not get a response",
             "retry delay",
             "you can retry your request",
@@ -3957,6 +4075,56 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Consume a stream_fn event stream into a final `AssistantMessage`.
+/// Errors and premature stream endings are normalized to an error message so
+/// the retry loop can classify them (match TS `streamFn(...).result()`).
+async fn consume_stream_to_message(
+    stream_fn: pi_agent_core::types::StreamFn,
+    model: pi_agent_core::pi_ai_types::Model,
+    context: pi_agent_core::pi_ai_types::Context,
+) -> pi_agent_core::pi_ai_types::AssistantMessage {
+    let error_message = |e: String| pi_agent_core::pi_ai_types::AssistantMessage {
+        content: vec![],
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: pi_agent_core::pi_ai_types::Usage::default(),
+        stop_reason: pi_agent_core::pi_ai_types::StopReason::Error,
+        error_message: Some(e),
+        raw_stop_reason: None,
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    };
+
+    match stream_fn(
+        model.clone(),
+        context,
+        None,
+        pi_agent_core::types::StreamFnOptions::default(),
+    )
+    .await
+    {
+        Ok(mut stream) => {
+            use futures::StreamExt;
+            let mut last_message: Option<pi_agent_core::pi_ai_types::AssistantMessage> = None;
+            while let Some(event) = stream.next().await {
+                if let pi_agent_core::pi_ai_types::AssistantMessageEvent::Done { message, .. } =
+                    &event
+                {
+                    last_message = Some(message.clone());
+                    break;
+                }
+            }
+            last_message.unwrap_or_else(|| {
+                error_message("Stream ended without a terminal event".to_string())
+            })
+        }
+        Err(e) => error_message(e.to_string()),
+    }
 }
 
 impl AgentSession {

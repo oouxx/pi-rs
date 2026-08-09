@@ -184,6 +184,10 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(rename = "addedToolNames")]
         added_tool_names: Option<Vec<String>>,
+        /// Usage from the tool execution itself, if available. Not part of main
+        /// LLM context accounting (match TS `ToolResultMessage.usage`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
         timestamp: i64,
     },
 }
@@ -1049,6 +1053,7 @@ mod tests {
             content: vec![ContentBlock::text("result")],
             details: Some(serde_json::json!({"status": "ok"})),
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 123_456,
         };

@@ -282,44 +282,64 @@ fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String, 
 }
 
 pub fn substitute_args(content: &str, args: &[String]) -> String {
-    let mut result = content.to_string();
-
-    let re_num = regex::Regex::new(r"\$(\d+)").unwrap();
-    let args_owned: Vec<String> = args.to_vec();
-    result = re_num
-        .replace_all(&result, |caps: &regex::Captures| {
-            let num: usize = caps[1].parse().unwrap_or(0);
-            args_owned
-                .get(num.saturating_sub(1))
-                .cloned()
-                .unwrap_or_default()
-        })
-        .to_string();
-
-    let re_range = regex::Regex::new(r"\$\{@:(\d+)(?::(\d+))?\}").unwrap();
-    let args_owned2: Vec<String> = args.to_vec();
-    result = re_range
-        .replace_all(&result, |caps: &regex::Captures| {
-            let start: usize = caps[1].parse::<usize>().unwrap_or(1).saturating_sub(1);
-            let end: Option<usize> = caps.get(2).and_then(|m| m.as_str().parse::<usize>().ok());
-            match end {
-                Some(e) => args_owned2
-                    .get(start..e.min(args_owned2.len()))
-                    .map(|slice: &[String]| slice.join(" "))
-                    .unwrap_or_default(),
-                None => args_owned2
-                    .get(start..)
-                    .map(|slice: &[String]| slice.join(" "))
-                    .unwrap_or_default(),
-            }
-        })
-        .to_string();
-
+    // Match TS `substituteArgs` (packages/coding-agent/src/core/prompt-templates.ts):
+    //   ${N:-default} | ${ARGUMENTS:-default} | ${@:-default}  (default when missing/empty)
+    //   ${@:N} | ${@:N:L}  (bash-style slicing; L is a length, not an absolute end)
+    //   $ARGUMENTS | $@ | $N
+    // Replacement happens on the template string only; argument and default values
+    // containing patterns like $1, $@, or $ARGUMENTS are NOT recursively substituted.
+    let re = regex::Regex::new(
+        r"\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)",
+    )
+    .unwrap();
     let all_args = args.join(" ");
-    result = result.replace("$ARGUMENTS", &all_args);
-    result = result.replace("$@", &all_args);
 
-    result
+    re.replace_all(content, |caps: &regex::Captures| {
+        if let Some(default_target) = caps.get(1) {
+            let value = if default_target.as_str() == "@" || default_target.as_str() == "ARGUMENTS" {
+                all_args.clone()
+            } else {
+                let num: usize = default_target.as_str().parse().unwrap_or(0);
+                args.get(num.saturating_sub(1)).cloned().unwrap_or_default()
+            };
+            let default_value = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
+            return if value.is_empty() { default_value } else { value };
+        }
+
+        if let Some(slice_start) = caps.get(3) {
+            // Convert to 0-indexed (user provides 1-indexed); treat 0 as 1
+            // (bash convention: args start at 1), so saturating_sub handles it.
+            let start: usize = slice_start
+                .as_str()
+                .parse::<usize>()
+                .unwrap_or(1)
+                .saturating_sub(1);
+            if let Some(slice_length) = caps.get(4) {
+                let length: usize = slice_length.as_str().parse().unwrap_or(0);
+                let end = start.saturating_add(length).min(args.len());
+                return args
+                    .get(start..end)
+                    .map(|slice: &[String]| slice.join(" "))
+                    .unwrap_or_default();
+            }
+            return args
+                .get(start..)
+                .map(|slice: &[String]| slice.join(" "))
+                .unwrap_or_default();
+        }
+
+        if let Some(simple) = caps.get(5) {
+            let s = simple.as_str();
+            if s == "ARGUMENTS" || s == "@" {
+                return all_args.clone();
+            }
+            let num: usize = s.parse().unwrap_or(0);
+            return args.get(num.saturating_sub(1)).cloned().unwrap_or_default();
+        }
+
+        String::new()
+    })
+    .to_string()
 }
 
 pub fn parse_command_args(args_string: &str) -> Vec<String> {
@@ -452,6 +472,60 @@ mod tests {
         let args: Vec<String> = vec![];
         let result = substitute_args(content, &args);
         assert_eq!(result, "Hello ");
+    }
+
+    #[test]
+    fn test_substitute_args_positional_default() {
+        // ${N:-default}: use default when arg missing or empty (TS #6695)
+        let content = "Hello ${1:-world}";
+        let args: Vec<String> = vec![];
+        assert_eq!(substitute_args(content, &args), "Hello world");
+        let args = vec!["pi".to_string()];
+        assert_eq!(substitute_args(content, &args), "Hello pi");
+        // empty string counts as missing
+        let args = vec!["".to_string()];
+        assert_eq!(substitute_args(content, &args), "Hello world");
+    }
+
+    #[test]
+    fn test_substitute_args_all_args_default() {
+        // ${@:-default} / ${ARGUMENTS:-default}: default when all args empty (TS #6695)
+        let content = "All: ${@:-none}";
+        let args: Vec<String> = vec![];
+        assert_eq!(substitute_args(content, &args), "All: none");
+        let args = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(substitute_args(content, &args), "All: a b");
+
+        let content = "All: ${ARGUMENTS:-none}";
+        let args: Vec<String> = vec![];
+        assert_eq!(substitute_args(content, &args), "All: none");
+        let args = vec!["a".to_string()];
+        assert_eq!(substitute_args(content, &args), "All: a");
+    }
+
+    #[test]
+    fn test_substitute_args_range_length_semantics() {
+        // ${@:N:L}: L is a length, not an absolute end (TS slice semantics)
+        let content = "${@:2:2}";
+        let args = vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()];
+        assert_eq!(substitute_args(content, &args), "b c");
+        // length beyond bounds clamps
+        let content = "${@:3:5}";
+        assert_eq!(substitute_args(content, &args), "c d");
+        // ${@:0} treated as ${@:1} (bash convention)
+        let content = "${@:0}";
+        assert_eq!(substitute_args(content, &args), "a b c d");
+    }
+
+    #[test]
+    fn test_substitute_args_defaults_not_recursive() {
+        // Default values containing $1/$@ are NOT recursively substituted (TS note)
+        let content = "${1:-$2}";
+        let args = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(substitute_args(content, &args), "a");
+        let content = "${1:-$2}";
+        let args: Vec<String> = vec![];
+        assert_eq!(substitute_args(content, &args), "$2");
     }
 
     #[test]

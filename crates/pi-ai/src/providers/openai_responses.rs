@@ -317,7 +317,7 @@ fn to_base36(mut n: u32) -> String {
 }
 
 /// Fast deterministic hash to shorten long strings (matches TS `shortHash`).
-fn short_hash(s: &str) -> String {
+pub(super) fn short_hash(s: &str) -> String {
     let mut h1: u32 = 0xdeadbeef;
     let mut h2: u32 = 0x41c6ce57;
     for ch in s.chars() {
@@ -1057,6 +1057,7 @@ fn split_deferred_tools(
                 }
             }
             Message::ToolResult {
+                usage: None,
                 added_tool_names: Some(names),
                 ..
             } => {
@@ -2338,6 +2339,7 @@ mod tests {
                 content: vec![ContentBlock::text("file contents")],
                 details: None,
                 is_error: false,
+                usage: None,
                 added_tool_names: None,
                 timestamp: 0,
             }],
@@ -2425,6 +2427,7 @@ mod tests {
                     content: vec![ContentBlock::text("done")],
                     details: None,
                     is_error: false,
+                    usage: None,
                     added_tool_names: None,
                     timestamp: 0,
                 },

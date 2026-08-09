@@ -104,9 +104,11 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::harness::types::{
-    SessionCreateOptions, SessionError, SessionMetadata, SessionRepo, SessionStorage,
-    SessionTreeEntry,
+    SessionCreateOptions, SessionEntryCursorOptions, SessionError, SessionMetadata, SessionRepo,
+    SessionStats, SessionStorage, SessionTreeEntry,
 };
+use crate::pi_ai_types::Usage;
+use crate::types::AgentMessage;
 
 pub struct JsonlSessionStorage {
     file_path: PathBuf,
@@ -269,12 +271,15 @@ fn update_label_cache(labels_by_id: &mut HashMap<String, String>, entry: &Sessio
 
 fn generate_entry_id(by_id: &HashMap<String, usize>) -> String {
     for _ in 0..100 {
-        let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        if !by_id.contains_key(&id) {
-            return id;
+        // The uuidv7 prefix is timestamp-derived and nearly constant between calls,
+        // so short ids must come from the random tail (match TS `generateEntryId`).
+        let id = crate::pi_ai_types::uuid_v7();
+        let id = &id[id.len().saturating_sub(8)..];
+        if !by_id.contains_key(id) {
+            return id.to_string();
         }
     }
-    uuid::Uuid::new_v4().to_string()
+    crate::pi_ai_types::uuid_v7()
 }
 
 #[async_trait]
@@ -356,7 +361,44 @@ impl SessionStorage for JsonlSessionStorage {
         self.labels_by_id.get(id).cloned()
     }
 
-    async fn get_path_to_root(
+    async fn get_session_name(&self) -> Option<String> {
+        let entries = self.find_entries("session_info").await;
+        entries
+            .last()
+            .and_then(|e| match e {
+                SessionTreeEntry::SessionInfo { name, .. } => Some(name.trim().to_string()),
+                _ => None,
+            })
+            .filter(|n| !n.is_empty())
+    }
+
+    async fn get_session_stats(&self) -> SessionStats {
+        let mut stats = SessionStats::default();
+        for entry in &self.entries {
+            if matches!(entry, SessionTreeEntry::Message { .. }) {
+                stats.message_count += 1;
+            }
+            let usage = match entry {
+                SessionTreeEntry::Message {
+                    message: AgentMessage::Assistant { usage, .. },
+                    ..
+                } => Some(usage.clone()),
+                SessionTreeEntry::Compaction { usage, .. }
+                | SessionTreeEntry::BranchSummary { usage, .. } => usage
+                    .as_ref()
+                    .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok()),
+                _ => None,
+            };
+            let Some(usage) = usage else { continue };
+            stats.cached_tokens += usage.cache_read;
+            stats.uncached_tokens += usage.input + usage.cache_write;
+            stats.total_tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
+            stats.cost_total += usage.cost.total;
+        }
+        stats
+    }
+
+    async fn get_path_to_root_or_compaction(
         &self,
         leaf_id: Option<&str>,
     ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
@@ -369,6 +411,7 @@ impl SessionStorage for JsonlSessionStorage {
         };
 
         let mut path = Vec::new();
+        let mut stop_at_entry_id: Option<String> = None;
         let mut current_id = leaf_id;
 
         loop {
@@ -385,6 +428,24 @@ impl SessionStorage for JsonlSessionStorage {
             let parent_id = entry.parent_id().map(|s| s.to_string());
             path.push(entry.clone());
 
+            if let Some(stop_id) = &stop_at_entry_id {
+                if entry.id() == stop_id {
+                    break;
+                }
+            }
+            if let SessionTreeEntry::Compaction {
+                retained_tail,
+                first_kept_entry_id,
+                ..
+            } = entry
+            {
+                if retained_tail.is_some() {
+                    // Self-contained checkpoint: stop here.
+                    break;
+                }
+                stop_at_entry_id = first_kept_entry_id.clone();
+            }
+
             match parent_id {
                 Some(pid) => current_id = pid,
                 None => break,
@@ -395,8 +456,19 @@ impl SessionStorage for JsonlSessionStorage {
         Ok(path)
     }
 
-    async fn get_entries(&self) -> Vec<SessionTreeEntry> {
-        self.entries.clone()
+    async fn get_entries(
+        &self,
+        options: Option<&SessionEntryCursorOptions>,
+    ) -> Vec<SessionTreeEntry> {
+        let start = options.map(|o| o.after_entry_seq as usize).unwrap_or(0);
+        let end = match options.and_then(|o| o.limit) {
+            Some(limit) => start.saturating_add(limit as usize),
+            None => self.entries.len(),
+        };
+        self.entries
+            .get(start..end)
+            .map(|s| s.to_vec())
+            .unwrap_or_default()
     }
 }
 
@@ -593,7 +665,7 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
     ) -> std::result::Result<crate::harness::types::Session<JsonlSessionMetadata>, SessionError>
     {
         let source = self.open(source_metadata).await?;
-        let entries = source.get_entries().await;
+        let entries = source.get_entries(None).await;
 
         let forked_entries = if let Some(entry_id) = &options.entry_id {
             let target = source.get_entry(entry_id).await.ok_or_else(|| {
@@ -606,7 +678,7 @@ impl SessionRepo<JsonlSessionMetadata> for JsonlSessionRepo {
             };
 
             source
-                .get_path_to_root(effective_leaf_id.as_deref())
+                .get_path_to_root_or_compaction(effective_leaf_id.as_deref())
                 .await?
         } else {
             entries
@@ -700,14 +772,25 @@ impl SessionStorage<JsonlSessionMetadata> for JsonlSessionStorageAdapter {
         self.storage.get_label(id).await
     }
 
-    async fn get_path_to_root(
+    async fn get_path_to_root_or_compaction(
         &self,
         leaf_id: Option<&str>,
     ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
-        self.storage.get_path_to_root(leaf_id).await
+        self.storage.get_path_to_root_or_compaction(leaf_id).await
     }
 
-    async fn get_entries(&self) -> Vec<SessionTreeEntry> {
-        self.storage.get_entries().await
+    async fn get_session_name(&self) -> Option<String> {
+        self.storage.get_session_name().await
+    }
+
+    async fn get_session_stats(&self) -> SessionStats {
+        self.storage.get_session_stats().await
+    }
+
+    async fn get_entries(
+        &self,
+        options: Option<&SessionEntryCursorOptions>,
+    ) -> Vec<SessionTreeEntry> {
+        self.storage.get_entries(options).await
     }
 }

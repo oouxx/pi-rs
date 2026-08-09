@@ -12,6 +12,22 @@ use crate::types::{
     QueueMode, ShouldStopAfterTurnFn, StreamFn, TransformContextFn,
 };
 
+/// Global fallback stream function used by `Agent` when callers omit `stream_fn`
+/// (match TS `setDefaultStreamFn` / `getDefaultStreamFn` in stream-fn.ts).
+/// Hosts that provide a default model runtime can install its stream function
+/// here without making pi-agent-core depend on a provider catalog.
+static DEFAULT_STREAM_FN: std::sync::OnceLock<StreamFn> = std::sync::OnceLock::new();
+
+/// Configure the fallback used by `Agent` when callers omit `stream_fn`.
+pub fn set_default_stream_fn(stream_fn: StreamFn) {
+    let _ = DEFAULT_STREAM_FN.set(stream_fn);
+}
+
+/// Get the configured default stream function, if any.
+pub fn get_default_stream_fn() -> Option<StreamFn> {
+    DEFAULT_STREAM_FN.get().cloned()
+}
+
 /// Input to `Agent::prompt()`. Matches TS `Agent.prompt()` overloads.
 pub enum PromptInput<'a> {
     /// A batch of messages.
@@ -285,15 +301,18 @@ impl Agent {
             .convert_to_llm
             .unwrap_or_else(|| Arc::new(default_convert_to_llm));
 
-        let stream_fn = options.stream_fn.unwrap_or_else(|| {
-            Arc::new(|_model, _ctx, _thinking, _opts| {
-                Box::pin(async {
-                    Err::<crate::pi_ai_types::StreamResponse, _>(
-                        "No stream function configured".into(),
-                    )
-                })
-            })
-        });
+        let stream_fn = match options.stream_fn {
+            Some(f) => f,
+            None => match get_default_stream_fn() {
+                Some(f) => f,
+                // Match TS `getDefaultStreamFn()` which throws when no default is
+                // configured: "No default stream function configured. Pass streamFn
+                // explicitly or call setDefaultStreamFn()."
+                None => panic!(
+                    "No default stream function configured. Pass stream_fn explicitly or call set_default_stream_fn()."
+                ),
+            },
+        };
 
         Self {
             state: Arc::new(RwLock::new(state)),
@@ -2034,6 +2053,8 @@ mod tests {
                     Ok(crate::types::AgentToolResult {
                         content: vec![ContentBlock::text("ok")],
                         details: serde_json::json!({}),
+                        usage: None,
+                        added_tool_names: None,
                         terminate: None,
                     })
                 })
@@ -2077,6 +2098,8 @@ mod tests {
                         cb(crate::types::AgentToolResult {
                             content: vec![ContentBlock::text("running")],
                             details: serde_json::json!({"status": "running"}),
+                            usage: None,
+                            added_tool_names: None,
                             terminate: None,
                         });
                     }
@@ -2084,6 +2107,8 @@ mod tests {
                     Ok(crate::types::AgentToolResult {
                         content: vec![ContentBlock::text("ok")],
                         details: serde_json::json!({"status": "done"}),
+                        usage: None,
+                        added_tool_names: None,
                         terminate: Some(true),
                     })
                 })
@@ -2151,6 +2176,8 @@ mod tests {
                 cb(crate::types::AgentToolResult {
                     content: vec![ContentBlock::text("late")],
                     details: serde_json::json!({"status": "late"}),
+                    usage: None,
+                    added_tool_names: None,
                     terminate: None,
                 });
             }
@@ -2197,6 +2224,8 @@ mod tests {
                     Ok(crate::types::AgentToolResult {
                         content: vec![ContentBlock::text("done")],
                         details: serde_json::json!({"status": "done"}),
+                        usage: None,
+                        added_tool_names: None,
                         terminate: Some(true),
                     })
                 })
@@ -2223,6 +2252,8 @@ mod tests {
                     Ok(crate::types::AgentToolResult {
                         content: vec![ContentBlock::text("done")],
                         details: serde_json::json!({"status": "done"}),
+                        usage: None,
+                        added_tool_names: None,
                         terminate: Some(true),
                     })
                 })
@@ -2312,6 +2343,8 @@ mod tests {
                 cb(crate::types::AgentToolResult {
                     content: vec![ContentBlock::text("late")],
                     details: serde_json::json!({"status": "late"}),
+                    usage: None,
+                    added_tool_names: None,
                     terminate: None,
                 });
             }

@@ -119,7 +119,7 @@ pub async fn get_entries_to_fork<S: SessionStorage + ?Sized>(
     options: &crate::harness::types::ForkOptions,
 ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
     if options.entry_id.is_none() {
-        return Ok(storage.get_entries().await);
+        return Ok(storage.get_entries(None).await);
     }
 
     let entry_id = options.entry_id.as_ref().unwrap();
@@ -152,7 +152,9 @@ pub async fn get_entries_to_fork<S: SessionStorage + ?Sized>(
         }
     };
 
-    storage.get_path_to_root(effective_leaf_id.as_deref()).await
+    storage
+        .get_path_to_root_or_compaction(effective_leaf_id.as_deref())
+        .await
 }
 
 #[cfg(test)]

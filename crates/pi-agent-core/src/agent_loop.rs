@@ -56,6 +56,8 @@ fn create_error_tool_result(message: &str) -> AgentToolResult<serde_json::Value>
             text_signature: None,
         }],
         details: serde_json::Value::Object(Default::default()),
+        usage: None,
+        added_tool_names: None,
         terminate: None,
     }
 }
@@ -304,7 +306,8 @@ fn create_tool_result_message(finalized: &FinalizedToolCallOutcome) -> AgentMess
         content,
         details: finalized.result.details.clone(),
         is_error: finalized.is_error,
-        added_tool_names: None,
+        added_tool_names: finalized.result.added_tool_names.clone(),
+        usage: finalized.result.usage.clone(),
         timestamp: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -405,7 +408,7 @@ async fn execute_tool_calls_parallel(
     emit: &AgentEventSink,
 ) -> ExecutedToolCallBatch {
     enum FinalizedEntry {
-        Done(FinalizedToolCallOutcome),
+        Done(Box<FinalizedToolCallOutcome>),
         Lazy(std::pin::Pin<Box<dyn std::future::Future<Output = FinalizedToolCallOutcome> + Send>>),
     }
 
@@ -442,7 +445,7 @@ async fn execute_tool_calls_parallel(
                     is_error: finalized.is_error,
                 })
                 .await;
-                entries.push(FinalizedEntry::Done(finalized));
+                entries.push(FinalizedEntry::Done(Box::new(finalized)));
             }
             PreparedOrImmediate::Prepared {
                 tool,
@@ -476,7 +479,8 @@ async fn execute_tool_calls_parallel(
     for entry in entries {
         match entry {
             FinalizedEntry::Done(f) => {
-                ordered_finalized.push(f);
+                let finalized = *f;
+                ordered_finalized.push(finalized);
             }
             FinalizedEntry::Lazy(fut) => {
                 let finalized = fut.await;
@@ -1456,6 +1460,8 @@ mod tests {
                 result: AgentToolResult {
                     content: vec![],
                     details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
                     terminate: Some(true),
                 },
                 is_error: false,
@@ -1465,6 +1471,8 @@ mod tests {
                 result: AgentToolResult {
                     content: vec![],
                     details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
                     terminate: Some(true),
                 },
                 is_error: false,
@@ -1481,6 +1489,8 @@ mod tests {
                 result: AgentToolResult {
                     content: vec![],
                     details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
                     terminate: Some(true),
                 },
                 is_error: false,
@@ -1490,6 +1500,8 @@ mod tests {
                 result: AgentToolResult {
                     content: vec![],
                     details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
                     terminate: None,
                 },
                 is_error: false,
@@ -1505,6 +1517,8 @@ mod tests {
             result: AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             },
             is_error: false,
@@ -1582,6 +1596,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -1605,6 +1621,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -1696,6 +1714,8 @@ mod tests {
                     text_signature: None,
                 }],
                 details: serde_json::json!({"ok": true}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             },
             is_error: false,
@@ -1727,6 +1747,8 @@ mod tests {
             result: AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             },
             is_error: true,
@@ -1734,6 +1756,44 @@ mod tests {
         let msg = create_tool_result_message(&finalized);
         match msg {
             AgentMessage::ToolResult { is_error, .. } => assert!(is_error),
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_create_tool_result_message_passes_usage() {
+        // TS #6671: tool result usage is passed through to the ToolResultMessage
+        let usage = crate::pi_ai_types::Usage {
+            input: 10,
+            output: 5,
+            cache_read: 0,
+            cache_write: 0,
+            reasoning: None,
+            cache_write_1h: None,
+            total_tokens: 15,
+            cost: crate::pi_ai_types::UsageCost::default(),
+        };
+        let finalized = FinalizedToolCallOutcome {
+            tool_call: dummy_tool_call("call-3", "usage_tool", serde_json::json!({})),
+            result: AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                usage: Some(usage.clone()),
+                added_tool_names: Some(vec!["new_tool".to_string()]),
+                terminate: None,
+            },
+            is_error: false,
+        };
+        let msg = create_tool_result_message(&finalized);
+        match msg {
+            AgentMessage::ToolResult {
+                usage: msg_usage,
+                added_tool_names,
+                ..
+            } => {
+                assert_eq!(msg_usage.as_ref(), Some(&usage));
+                assert_eq!(added_tool_names.as_ref(), Some(&vec!["new_tool".to_string()]));
+            }
             _ => panic!("expected ToolResult"),
         }
     }
@@ -1763,6 +1823,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -1806,6 +1868,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -1842,6 +1906,8 @@ mod tests {
                 text_signature: None,
             }],
             details: serde_json::json!({"status": "ok"}),
+            usage: None,
+            added_tool_names: None,
             terminate: Some(false),
         });
         let tool = dummy_agent_tool("t1", serde_json::json!({}), None, execute_result);
@@ -1896,6 +1962,8 @@ mod tests {
             result: AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             },
             is_error: false,
@@ -1924,6 +1992,8 @@ mod tests {
             result: AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({"original": true}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             },
             is_error: false,
@@ -1984,6 +2054,8 @@ mod tests {
                     text_signature: None,
                 }],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -2030,6 +2102,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: Some(true),
             }),
         );
@@ -2063,6 +2137,8 @@ mod tests {
                 text_signature: None,
             }],
             details: serde_json::json!({}),
+            usage: None,
+            added_tool_names: None,
             terminate: None,
         });
 
@@ -2112,6 +2188,8 @@ mod tests {
                     text_signature: None,
                 }],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -2125,6 +2203,8 @@ mod tests {
                     text_signature: None,
                 }],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -2164,6 +2244,8 @@ mod tests {
                     text_signature: None,
                 }],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -2222,6 +2304,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -2253,6 +2337,8 @@ mod tests {
             Ok(AgentToolResult {
                 content: vec![],
                 details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
                 terminate: None,
             }),
         );
@@ -2290,6 +2376,8 @@ mod tests {
                     Ok(AgentToolResult {
                         content: vec![],
                         details: serde_json::json!({}),
+                        usage: None,
+                        added_tool_names: None,
                         terminate: None,
                     })
                 })

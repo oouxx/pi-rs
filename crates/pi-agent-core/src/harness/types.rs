@@ -329,6 +329,9 @@ pub struct CompactionPreparation {
     pub first_kept_entry_id: String,
     pub messages_to_summarize: Vec<AgentMessage>,
     pub turn_prefix_messages: Vec<AgentMessage>,
+    /// Recent messages retained after compaction and stored on the compaction
+    /// entry as a self-contained checkpoint (match TS `retainedTail`).
+    pub retained_tail: Vec<AgentMessage>,
     pub is_split_turn: bool,
     pub tokens_before: u64,
     pub previous_summary: Option<String>,
@@ -418,8 +421,13 @@ pub enum SessionTreeEntry {
         parent_id: Option<String>,
         timestamp: String,
         summary: String,
-        first_kept_entry_id: String,
+        /// Entry id where retained history starts. Optional during Pi 2.0
+        /// transition (match TS `CompactionEntry.firstKeptEntryId?`).
+        first_kept_entry_id: Option<String>,
         tokens_before: u64,
+        /// Retained recent messages stored directly on the compaction entry
+        /// (self-contained checkpoint, match TS `CompactionEntry.retainedTail?`).
+        retained_tail: Option<Vec<AgentMessage>>,
         details: Option<serde_json::Value>,
         usage: Option<serde_json::Value>,
         from_hook: Option<bool>,
@@ -596,6 +604,26 @@ pub struct SessionMetadata {
     pub created_at: String,
     pub cwd: Option<String>,
     pub parent_session: Option<String>,
+}
+
+/// Aggregate usage statistics across a session (match TS `SessionStats`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionStats {
+    pub message_count: u64,
+    pub cached_tokens: u64,
+    pub uncached_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_total: f64,
+}
+
+/// Cursor options for [`SessionStorage::get_entries`] (match TS
+/// `SessionEntryCursorOptions`).
+#[derive(Debug, Clone, Default)]
+pub struct SessionEntryCursorOptions {
+    /// Start reading after this entry sequence number (0 = from the beginning).
+    pub after_entry_seq: u64,
+    /// Maximum number of entries to return.
+    pub limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -859,11 +887,24 @@ pub trait SessionStorage<M: Clone + Send + Sync = SessionMetadata>: Send + Sync 
     async fn get_entry(&self, id: &str) -> Option<SessionTreeEntry>;
     async fn find_entries(&self, entry_type: &str) -> Vec<SessionTreeEntry>;
     async fn get_label(&self, id: &str) -> Option<String>;
-    async fn get_path_to_root(
+    /// Session name from the most recent `session_info` entry (match TS
+    /// `SessionStorage.getSessionName`).
+    async fn get_session_name(&self) -> Option<String>;
+    /// Aggregate usage statistics across all entries (match TS
+    /// `SessionStorage.getSessionStats`).
+    async fn get_session_stats(&self) -> SessionStats;
+    /// Path from the leaf to the root, stopping at the most recent compaction
+    /// boundary (match TS `SessionStorage.getPathToRootOrCompaction`):
+    /// - a compaction with a `retained_tail` is a self-contained checkpoint and
+    ///   stops the walk;
+    /// - otherwise the walk stops at `first_kept_entry_id`.
+    async fn get_path_to_root_or_compaction(
         &self,
         leaf_id: Option<&str>,
     ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError>;
-    async fn get_entries(&self) -> Vec<SessionTreeEntry>;
+    /// Cursor-based entry reads (match TS `SessionStorage.getEntries` with
+    /// `SessionEntryCursorOptions`).
+    async fn get_entries(&self, options: Option<&SessionEntryCursorOptions>) -> Vec<SessionTreeEntry>;
 }
 
 #[async_trait]
@@ -901,7 +942,6 @@ pub struct ForkOptions {
 pub struct Session<M: Clone + Send + Sync = SessionMetadata> {
     storage: Arc<tokio::sync::RwLock<Box<dyn SessionStorage<M>>>>,
 }
-
 impl<M: Clone + Send + Sync + 'static> Clone for Session<M> {
     fn clone(&self) -> Self {
         Self {
@@ -961,15 +1001,30 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         self.storage.read().await.get_label(id).await
     }
 
-    pub async fn get_path_to_root(
+    pub async fn get_session_name(&self) -> Option<String> {
+        self.storage.read().await.get_session_name().await
+    }
+
+    pub async fn get_session_stats(&self) -> SessionStats {
+        self.storage.read().await.get_session_stats().await
+    }
+
+    pub async fn get_path_to_root_or_compaction(
         &self,
         leaf_id: Option<&str>,
     ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
-        self.storage.read().await.get_path_to_root(leaf_id).await
+        self.storage
+            .read()
+            .await
+            .get_path_to_root_or_compaction(leaf_id)
+            .await
     }
 
-    pub async fn get_entries(&self) -> Vec<SessionTreeEntry> {
-        self.storage.read().await.get_entries().await
+    pub async fn get_entries(
+        &self,
+        options: Option<&SessionEntryCursorOptions>,
+    ) -> Vec<SessionTreeEntry> {
+        self.storage.read().await.get_entries(options).await
     }
 
     pub async fn get_branch(
@@ -983,7 +1038,7 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
         self.storage
             .read()
             .await
-            .get_path_to_root(leaf_id.as_deref())
+            .get_path_to_root_or_compaction(leaf_id.as_deref())
             .await
     }
 
@@ -1061,11 +1116,12 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
     pub async fn append_compaction(
         &mut self,
         summary: String,
-        first_kept_entry_id: String,
+        first_kept_entry_id: Option<String>,
         tokens_before: u64,
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
         usage: Option<serde_json::Value>,
+        retained_tail: Option<Vec<AgentMessage>>,
     ) -> std::result::Result<String, SessionError> {
         let id = self.storage.read().await.create_entry_id().await;
         let leaf_id = self.storage.read().await.get_leaf_id().await;
@@ -1076,6 +1132,7 @@ impl<M: Clone + Send + Sync + 'static> Session<M> {
             summary,
             first_kept_entry_id,
             tokens_before,
+            retained_tail,
             details,
             usage,
             from_hook,
@@ -1221,12 +1278,21 @@ pub fn build_session_context(entries: &[SessionTreeEntry]) -> SessionContext {
                     model_id: model_id.clone(),
                 });
             }
-            SessionTreeEntry::Compaction { summary, .. } => {
+            SessionTreeEntry::Compaction {
+                summary,
+                retained_tail,
+                ..
+            } => {
                 messages.push(AgentMessage::CompactionSummary {
                     summary: summary.clone(),
                     tokens_before: 0,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 });
+                // Self-contained checkpoint: retained recent messages are part of
+                // the context (match TS `sessionEntryToContextMessages`).
+                if let Some(tail) = retained_tail {
+                    messages.extend(tail.iter().cloned());
+                }
             }
             SessionTreeEntry::BranchSummary {
                 summary, from_id, ..
@@ -1258,12 +1324,15 @@ pub struct ShellCaptureResult {
     pub full_output_path: Option<String>,
 }
 
-#[derive(Debug, Clone)]
 pub struct GenerateBranchSummaryOptions {
     pub model: Model,
     pub reserve_tokens: Option<u64>,
     pub custom_instructions: Option<String>,
     pub replace_instructions: Option<bool>,
+    /// Retry policy for transient summarization errors (match TS `retry`).
+    pub retry: Option<crate::pi_ai_types::RetryPolicy>,
+    /// Optional callbacks for retry reporting (match TS `callbacks`).
+    pub callbacks: Option<crate::pi_ai_types::RetryCallbacks>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

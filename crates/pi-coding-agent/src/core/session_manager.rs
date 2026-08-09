@@ -1155,6 +1155,8 @@ impl SessionManager {
     /// Derives session_dir from the file's parent directory if not provided.
     pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>) -> Self {
         let resolved_path = std::path::PathBuf::from(config::resolve_path(path));
+        // Read the file once and reuse the parsed entries (match TS #6793:
+        // avoid reading and parsing the session twice when opened).
         let entries = load_entries_from_file(&resolved_path);
         let header_cwd = entries.iter().find_map(|e| match e {
             FileEntry::Header(h) => Some(h.cwd.clone()),
@@ -1175,7 +1177,15 @@ impl SessionManager {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::path::PathBuf::from(".")),
         };
-        Self::new(&cwd, &dir.to_string_lossy(), Some(path), true, None)
+        let mut mgr = Self::new(&cwd, &dir.to_string_lossy(), None, true, None);
+        mgr.session_file = Some(resolved_path.clone());
+        if resolved_path.exists() {
+            mgr.set_session_file_with_entries(&resolved_path, entries);
+        } else {
+            mgr.new_session(None);
+            mgr.session_file = Some(resolved_path);
+        }
+        mgr
     }
 
     pub fn set_session_file(&mut self, session_file: &str) {
@@ -1183,72 +1193,73 @@ impl SessionManager {
         self.session_file = Some(resolved.clone());
 
         if resolved.exists() {
-            self.file_entries = load_entries_from_file(&resolved);
-
-            // If file was empty, initialize with a valid session header.
-            // If non-empty but did not parse as a pi session, fail without modifying it.
-            if self.file_entries.is_empty() {
-                if resolved.metadata().map(|m| m.len()).unwrap_or(0) > 0 {
-                    panic!(
-                        "Session file is not a valid pi session: {}",
-                        resolved.display()
-                    );
-                }
-                self.new_session(None);
-                self.session_file = Some(resolved.clone());
-                // Rewrite file with the new header
-                if self.persist {
-                    if let Ok(mut f) = fs::File::create(&resolved) {
-                        if let Some(FileEntry::Header(h)) = self.file_entries.first() {
-                            let _ =
-                                writeln!(f, "{}", serde_json::to_string(&h).unwrap_or_default());
-                        }
-                    }
-                }
-                self.flushed = true;
-                return;
-            }
-
-            // Extract session ID from header
-            let header = self.file_entries.iter().find_map(|e| match e {
-                FileEntry::Header(h) => Some(h),
-                _ => None,
-            });
-            self.session_id = header
-                .map(|h| h.id.clone())
-                .unwrap_or_else(create_session_id);
-
-            // Run migration if needed
-            if migrate_entries_to_current(&mut self.file_entries) {
-                // Rewrite file with migrated entries
-                if self.persist {
-                    if let Ok(mut f) = fs::File::create(&resolved) {
-                        for fe in &self.file_entries {
-                            let line = match fe {
-                                FileEntry::Header(h) => {
-                                    serde_json::to_string(&h).unwrap_or_default()
-                                }
-                                FileEntry::Entry(e) => {
-                                    serde_json::to_string(&e).unwrap_or_default()
-                                }
-                                FileEntry::RawJson(v) => {
-                                    serde_json::to_string(&v).unwrap_or_default()
-                                }
-                            };
-                            let _ = writeln!(f, "{}", line);
-                        }
-                    }
-                }
-            }
-
-            self.rebuild_index();
-            self.leaf_id = self.find_last_leaf_id();
-            self.flushed = true;
+            let entries = load_entries_from_file(&resolved);
+            self.set_session_file_with_entries(&resolved, entries);
         } else {
             let explicit_path = self.session_file.clone();
             self.new_session(None);
             self.session_file = explicit_path; // preserve explicit path from --session flag
         }
+    }
+
+    /// Apply already-parsed session entries to this manager without re-reading
+    /// the file (match TS #6793: avoid reading and parsing the session twice).
+    fn set_session_file_with_entries(&mut self, resolved: &Path, entries: Vec<FileEntry>) {
+        self.file_entries = entries;
+
+        // If file was empty, initialize with a valid session header.
+        // If non-empty but did not parse as a pi session, fail without modifying it.
+        if self.file_entries.is_empty() {
+            if resolved.metadata().map(|m| m.len()).unwrap_or(0) > 0 {
+                panic!(
+                    "Session file is not a valid pi session: {}",
+                    resolved.display()
+                );
+            }
+            self.new_session(None);
+            self.session_file = Some(resolved.to_path_buf());
+            // Rewrite file with the new header
+            if self.persist {
+                if let Ok(mut f) = fs::File::create(resolved) {
+                    if let Some(FileEntry::Header(h)) = self.file_entries.first() {
+                        let _ =
+                            writeln!(f, "{}", serde_json::to_string(&h).unwrap_or_default());
+                    }
+                }
+            }
+            self.flushed = true;
+            return;
+        }
+
+        // Extract session ID from header
+        let header = self.file_entries.iter().find_map(|e| match e {
+            FileEntry::Header(h) => Some(h),
+            _ => None,
+        });
+        self.session_id = header
+            .map(|h| h.id.clone())
+            .unwrap_or_else(create_session_id);
+
+        // Run migration if needed
+        if migrate_entries_to_current(&mut self.file_entries) {
+            // Rewrite file with migrated entries
+            if self.persist {
+                if let Ok(mut f) = fs::File::create(resolved) {
+                    for fe in &self.file_entries {
+                        let line = match fe {
+                            FileEntry::Header(h) => serde_json::to_string(&h).unwrap_or_default(),
+                            FileEntry::Entry(e) => serde_json::to_string(&e).unwrap_or_default(),
+                            FileEntry::RawJson(v) => serde_json::to_string(&v).unwrap_or_default(),
+                        };
+                        let _ = writeln!(f, "{}", line);
+                    }
+                }
+            }
+        }
+
+        self.rebuild_index();
+        self.leaf_id = self.find_last_leaf_id();
+        self.flushed = true;
     }
 
     fn new_session(&mut self, options: Option<NewSessionOptions>) {

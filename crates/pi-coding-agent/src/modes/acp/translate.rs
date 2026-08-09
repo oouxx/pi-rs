@@ -113,17 +113,16 @@ pub fn translate_event(
         // chunk — otherwise the client UI shows an empty turn with no
         // explanation (e.g. an LLM 402/insufficient-balance error).
         AgentSessionEvent::MessageEnd { message } => {
-            if let pi_agent_core::types::AgentMessage::Assistant {
+            let pi_agent_core::types::AgentMessage::Assistant {
                 error_message: Some(err),
                 ..
             } = message
-            {
-                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                    acp::ContentBlock::Text(acp::TextContent::new(format!("⚠️ {err}"))),
-                ))
-            } else {
+            else {
                 return None;
-            }
+            };
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                acp::ContentBlock::Text(acp::TextContent::new(format!("⚠️ {err}"))),
+            ))
         }
 
         // Turn lifecycle / compaction / queue events have no ACP wire

@@ -635,6 +635,9 @@ pub fn create_bash_tool(
                         cb(AgentToolResult {
                             content: vec![],
                             details: serde_json::Value::Null,
+                            usage: None,
+                            added_tool_names: None,
+
                             terminate: None,
                         });
                     }
@@ -693,6 +696,9 @@ pub fn create_bash_tool(
                                             content: vec![ContentBlock::text(text)],
                                             details: serde_json::to_value(details)
                                                 .unwrap_or(serde_json::Value::Null),
+                                            usage: None,
+                                            added_tool_names: None,
+
                                             terminate: None,
                                         });
                                     }
@@ -754,6 +760,9 @@ pub fn create_bash_tool(
                                             content: vec![ContentBlock::text(&final_text)],
                                             details: serde_json::to_value(&details)
                                                 .unwrap_or(serde_json::Value::Null),
+                                            usage: None,
+                                            added_tool_names: None,
+
                                             terminate: None,
                                         });
                                     }
@@ -767,6 +776,9 @@ format!("Command failed with exit code {}", code),
                                 content: vec![ContentBlock::text(final_text)],
                                 details: serde_json::to_value(details)
                                     .unwrap_or(serde_json::Value::Null),
+                                usage: None,
+                                added_tool_names: None,
+
                                 terminate: None,
                             })
                         }
@@ -793,6 +805,9 @@ format!("Command failed with exit code {}", code),
                                     content: vec![ContentBlock::text(&final_text)],
                                     details: serde_json::to_value(BashToolDetails::default())
                                         .unwrap_or(serde_json::Value::Null),
+                                    usage: None,
+                                    added_tool_names: None,
+
                                     terminate: None,
                                 });
                             }

@@ -150,6 +150,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 details,
                 is_error,
                 added_tool_names,
+                usage,
                 timestamp,
             } => Some(Message::ToolResult {
                 tool_call_id: tool_call_id.clone(),
@@ -158,6 +159,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 details: Some(details.clone()),
                 is_error: *is_error,
                 added_tool_names: added_tool_names.clone(),
+                usage: usage.clone(),
                 timestamp: *timestamp,
             }),
         })
@@ -355,6 +357,7 @@ mod tests {
             content: vec![],
             details: None,
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 0,
         };

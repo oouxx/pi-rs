@@ -515,7 +515,7 @@ pub async fn create_agent_session(
 
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    let mut extension_registry = options
+    let extension_registry = options
         .extension_registry
         .take()
         .unwrap_or_default();
@@ -545,6 +545,17 @@ pub async fn create_agent_session(
     ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
     let ext_agent_dir = agent_dir.clone();
     ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
+    // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
+    let registry_for_provider = model_registry.clone();
+    ext_runtime_handle.register_provider = std::sync::Arc::new(move |config_value| {
+        if let Ok(config) = serde_json::from_value::<crate::core::model_registry::ProviderConfig>(
+            config_value,
+        ) {
+            if let Some(name) = config.name.clone() {
+                registry_for_provider.register_provider(&name, config);
+            }
+        }
+    });
     let ext_ctx = crate::core::extensions::ExtensionContext::new(
         cwd.clone(),
         false,
@@ -625,7 +636,7 @@ pub async fn create_agent_session(
     // snapshot; write-actions are queued and drained by the session at turn
     // boundaries. Always created (negligible cost) so the config fields are
     // unconditionally populated.
-    let (extension_action_sender, extension_action_rx, extension_state_view) =
+    let (_extension_action_sender, extension_action_rx, extension_state_view) =
         crate::core::extensions::action_bus::ExtensionActionSender::new();
 
     let session_options = AgentSessionConfig {
@@ -654,7 +665,7 @@ pub async fn create_agent_session(
         extension_action_rx: Some(extension_action_rx),
     };
 
-    let mut session =
+    let session =
         AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
 
     // Load persisted messages into agent state if restoring from a session file

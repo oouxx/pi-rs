@@ -7,19 +7,27 @@
 
 | 项 | 值 |
 | --- | --- |
-| 对齐目标 | earendil-works/pi **v0.80**（0.80.x 系列） |
-| 最终补丁 | v0.80.10 |
-| 目标 commit | `8dc78834cde4e329284cf505f9e3f99763df5529`（v0.80.10，2026-07-16） |
-| 起始版本 | v0.80.0（`f08e968c83d92bce5f5fd2f7f20ef37f8cf04a39`，2026-06-23） |
+| 对齐目标 | earendil-works/pi **v0.81**（0.81.x 系列） |
+| 最终补丁 | v0.81.1 |
+| 目标 commit | `20be4b18d4c57487f8993d2762bace129f0cf7c6`（v0.81.1，2026-07-21） |
+| 起始版本 | v0.80.10（`8dc78834cde4e329284cf505f9e3f99763df5529`，2026-07-16） |
 | 参考 changelog | https://github.com/earendil-works/pi/releases |
 
 ## 背景
 
-- 开始对齐时 pi-rs 自身版本：**v1.79.x**（2026-07-30 前后）。
-- 当时 `../pi` 处于 v0.80.x 时代：v0.80.10 于 2026-07-16 发布，v0.81.0 尚未发布。
-- 当前 pi-rs 版本：v1.80.2（2026-08-01 之后）。
+- v0.80 对齐已完成（差距清单清零，见 `ALIGNMENT_GAPS.md` v0.80 部分）。
+- 开始 v0.81 对齐时 pi-rs 自身版本：**v1.81.1**（2026-08-09）。
+- 当时 `../pi` 处于 v0.84.x 时代：v0.81.1 于 2026-07-21 发布。
+- 当前 pi-rs 版本：v1.81.1（2026-08-09）。
 
-## v0.80.x 变更摘要（来自 releases changelog）
+## v0.81.x 变更摘要（来自 releases changelog）
+
+| 版本 | 发布日期 | 关键变更 |
+| --- | --- | --- |
+| v0.81.0 | 2026-07-21 | **Breaking**：`SessionStorage` 接口大改（`getPathToRootOrCompaction`/`getSessionName`/`getSessionStats`/cursor-based `getEntries`/retainedTail checkpoint）；`uuidv7` 移到 pi-ai；`Agent.streamFn` 改为必选 `streamFunction`（后 #6915 恢复 fallback）。新增：Qwen Token Plan provider、`contentText`、`retryAssistantCall`、`get_available_thinking_levels` RPC、usage 元数据（tool result/compaction/branch summary）、llama.cpp router、完整 provider 扩展、模型生成分离与验证 |
+| v0.81.1 | 2026-07-21 | compaction/branch-summary 按 retry policy 重试 + 生命周期事件；恢复 streamFn 扩展兼容；Kimi K3 用 OpenAI thinking format + reasoning effort |
+
+## v0.80.x 变更摘要（历史，已完成对齐）
 
 | 版本 | 发布日期 | 关键变更 |
 | --- | --- | --- |
@@ -38,11 +46,13 @@
 ## 对齐状态
 
 - 已确认偏差：见各 crate 的 `DEVIATIONS.md`（`crates/pi-ai/DEVIATIONS.md`、`crates/pi-coding-agent/DEVIATIONS.md`）。
-- 已知未覆盖项（相对 v0.80，已确认为最终范围）：
+- v0.81 差距清单：见 `ALIGNMENT_GAPS.md` v0.81 部分（A 类 4 项待修，B 类 10 项待确认/排期）。
+- 已知未覆盖项（相对 v0.81，已确认为最终范围）：
   - `openai-responses` API 后端：已移植（openai 官方 provider 走 `/v1/responses`）。
   - `azure-openai-responses` / `openai-codex-responses` 后端：**范围外**（用户拍板：主流仅需 anthropic + openai 格式）。
   - `pi-messages` 后端：已移植（`providers/pi_messages.rs`，Radius gateway 协议；见 DEVIATIONS #7）。
   - v0.80.8 的 `ModelRuntime` / live model catalog refresh：手动刷新已实现（`pi refresh`），自动刷新/可用性检查/credential 同步未做（范围外）。
   - 模型覆盖度：用户确认仅保留 anthropic + openai 主流范围（见 `crates/pi-ai/DEVIATIONS.md` #2，已确认保留）。
+  - v0.81 新 provider（Qwen Token Plan）、llama.cpp router、完整 provider 扩展：**范围外**（用户拍板不扩展 provider 后端，见 DEVIATIONS #2）。
 
 > 本文件是里程碑基准，不是偏差日志。发现行为不一致时仍按 CLAUDE.md 阶段四流程处理：先查 `DEVIATIONS.md`，未登记再分类处理。

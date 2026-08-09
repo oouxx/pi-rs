@@ -115,6 +115,12 @@ pub enum RpcCommand {
         id: Option<String>,
     },
 
+    /// Get available thinking levels for the current model (TS #6865)
+    GetAvailableThinkingLevels {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
     /// Set steering queue mode
     SetSteeringMode {
         #[serde(default)]

@@ -92,7 +92,7 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
 
 /// Run in text mode: stream response to stdout.
 async fn run_text_mode(
-    mut session: AgentSession,
+    session: AgentSession,
     message: &str,
     messages: &[String],
     images: &[ContentBlock],
@@ -191,7 +191,7 @@ async fn run_text_mode(
 
 /// Run in JSON mode: newline-delimited JSON event stream.
 async fn run_json_mode(
-    mut session: AgentSession,
+    session: AgentSession,
     message: &str,
     messages: &[String],
     images: &[ContentBlock],

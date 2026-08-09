@@ -36,15 +36,15 @@
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | overflow 检测括号形式 | `maximum context length (N)` 判为 overflow | 同左 | 是 | 修复见 PORTING_MISTAKES.md |
 
-## 未覆盖项（相对 v0.80）
+## 未覆盖项（相对 v0.81）
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
-| `openai-responses` API | openai 官方 provider 走 `/v1/responses` | 未实现，openai 模型走 `openai-completions` | 否 | 未登记偏差，见 ALIGNMENT_GAPS.md #15 |
-| `ModelRuntime` / live catalog refresh | v0.80.8 引入 | 未实现 | 否 | 未登记偏差，见 ALIGNMENT_GAPS.md #16 |
-| `detectCompat` fallback | v0.80.2 恢复运行时推断 | 未实现 | 否 | 未登记偏差，见 ALIGNMENT_GAPS.md #11 |
-| `chat_template_kwargs` thinking | v0.79.9 引入 | 未实现 | 否 | 未登记偏差，见 ALIGNMENT_GAPS.md #12 |
-| 模型覆盖度 | 全 provider + 手工补充模型 | 13 provider，元数据不全 | 否 | 见 DEVIATIONS.md #2（待确认） |
+| `ModelRuntime` / live catalog refresh | v0.80.8 引入，启动/后台自动刷新 | 手动 `pi refresh` 有界子集 | 否 | 见 DEVIATIONS.md #10（已确认保留） |
+| 模型覆盖度 | 全 provider + 手工补充模型 | 13 provider，元数据不全 | 否 | 见 DEVIATIONS.md #2（已确认保留） |
+| Qwen Token Plan provider | v0.81.0 #6858 新增 | 未实现 | 否 | 见 DEVIATIONS.md #2（已确认保留） |
+| `contentText` / `uuidv7` 工具 | v0.81.0 #6840/#6834 新增 | 已实现（`utils/text.rs`/`utils/uuid.rs`） | 是 | 修复见 PORTING_MISTAKES.md |
+| `retryAssistantCall()` | v0.81.0 #6901 新增 | 已实现（`utils/retry.rs`） | 是 | 修复见 PORTING_MISTAKES.md |
 
 ## OpenAI Responses provider（`providers/openai_responses.rs`）
 
@@ -60,7 +60,10 @@
 | 流式事件序列 | `response.output_item.added` → `thinking_start`/`text_start`/`toolcall_start`；delta 事件 → `*_delta`；`output_item.done` → `*_end`；`response.completed` → usage/stop-reason | 同左 | 是 | — |
 | usage 解析 | input 减 cached+write、reasoning 从 `output_tokens_details` | 同左 | 是 | — |
 | stop reason 映射 | completed→stop、incomplete+max_output_tokens→length、failed/cancelled→error、有 toolCall 且 stop→toolUse | 同左 | 是 | — |
-| grammar 约束采样 | `custom_tool_call` + grammar JSON buffer | 按普通 function_call 处理 | 否 | 见 DEVIATIONS.md #5（简化） |
-| deferred tools | `tool_search_call`/`tool_search_output` | 未实现 | 否 | 见 DEVIATIONS.md #5（简化） |
-| service tier 定价 | flex/priority 倍率 | 未实现 | 否 | 见 DEVIATIONS.md #5（简化） |
-| `rawStopReason` | 输出字段 | 未实现 | 否 | 见 DEVIATIONS.md #5（简化） |
+| grammar 约束采样 | `custom_tool_call` + grammar JSON buffer | 已实现（`Tool.constrained_sampling` + `GrammarVariants` + 增量重建） | 是 | 见 DEVIATIONS.md #5 |
+| deferred tools | `tool_search_call`/`tool_search_output` | 已实现（`split_deferred_tools` + `defer_loading:true`） | 是 | 见 DEVIATIONS.md #5 |
+| service tier 定价 | flex/priority 倍率 | 已实现 | 是 | 见 DEVIATIONS.md #5 |
+| `rawStopReason` | 输出字段 | 已实现 | 是 | 见 DEVIATIONS.md #5 |
+| 早期流结束重试 | "stream ended before a terminal response event" 分类为可重试（v0.81.0 #6727） | `_is_retryable_error_message` 已含该模式 | 是 | 修复见 PORTING_MISTAKES.md |
+| tool-call id 归一化（openai-completions） | pipe 分隔 ID 归一化 + isSameModel 门控 + toolCallIdMap（v0.81.0 #6854） | `normalize_tool_call_id` 已移植 | 是 | 修复见 PORTING_MISTAKES.md |
+| `ToolResultMessage.usage` | 工具可报告 LLM usage（v0.81.0 #6671） | `Message::ToolResult.usage: Option<Usage>` 已加 | 是 | 修复见 PORTING_MISTAKES.md |

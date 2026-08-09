@@ -82,8 +82,6 @@ use crate::pi_ai_types::ContentBlock;
 use crate::types::AgentMessage;
 
 use crate::pi_ai_types::get_env_api_key;
-use pi_ai::stream::stream as pi_stream;
-
 pub struct BranchPreparation {
     pub messages: Vec<AgentMessage>,
     pub file_ops: FileOperations,
@@ -258,10 +256,23 @@ pub async fn generate_branch_summary(
         ..Default::default()
     };
 
-    // Try to call the LLM; fall back to a basic placeholder on failure
-    let summary = match pi_stream(&options.model, &context, Some(stream_options))
-        .result()
-        .await
+    // Try to call the LLM; fall back to a basic placeholder on failure.
+    // Wrapped in retryAssistantCall (match TS `completeSummarization`) so
+    // transient stream drops honor the configured retry policy.
+    let simple_options = crate::pi_ai_types::SimpleStreamOptions {
+        base: stream_options,
+        reasoning: None,
+        thinking_budgets: None,
+        debug: None,
+    };
+    let summary = match super::compaction::complete_summarization(
+        &options.model,
+        &context,
+        simple_options,
+        options.retry,
+        options.callbacks.as_ref(),
+    )
+    .await
     {
         Ok(response) => {
             let text = response
@@ -378,6 +389,7 @@ mod tests {
             }],
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 1000,
         }
@@ -459,8 +471,9 @@ mod tests {
                 parent_id: None,
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 summary: "Previous summary".to_string(),
-                first_kept_entry_id: "e0".to_string(),
+                first_kept_entry_id: Some("e0".to_string()),
                 tokens_before: 1000,
+                retained_tail: None,
                 details: None,
                 usage: None,
                 from_hook: None,

@@ -210,6 +210,9 @@ pub struct RuntimeHandle {
     pub run_command: Arc<dyn Fn(String, String) -> Value + Send + Sync>,
     pub open_url: Arc<dyn Fn(String) + Send + Sync>,
     pub log: Arc<dyn Fn(String, String) + Send + Sync>,
+    /// Register a provider config (match TS extension `registerProvider`,
+    /// #019e4ad68). Receives a `ProviderConfig`-shaped JSON value.
+    pub register_provider: Arc<dyn Fn(Value) + Send + Sync>,
 }
 
 impl RuntimeHandle {
@@ -271,6 +274,7 @@ impl RuntimeHandle {
         run_command: Arc<dyn Fn(String, String) -> Value + Send + Sync>,
         open_url: Arc<dyn Fn(String) + Send + Sync>,
         log: Arc<dyn Fn(String, String) + Send + Sync>,
+        register_provider: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> Self {
         Self {
             send_message,
@@ -328,6 +332,7 @@ impl RuntimeHandle {
             run_command,
             open_url,
             log,
+            register_provider,
         }
     }
 
@@ -389,6 +394,7 @@ impl RuntimeHandle {
             Arc::new(|_, _| Value::Null),
             Arc::new(|_| {}),
             Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
         )
     }
 }

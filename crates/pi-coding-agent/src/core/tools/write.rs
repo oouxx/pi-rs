@@ -259,6 +259,8 @@ format!("Error writing file: {}", e),
                                         byte_count, fp
                                     ))],
                                     details: serde_json::Value::Null,
+                                    usage: None,
+                                    added_tool_names: None,
                                     terminate: None,
                                 }
                             )
@@ -270,6 +272,8 @@ format!("Error writing file: {}", e),
                         Err(e) => Ok(AgentToolResult {
                             content: vec![ContentBlock::text(format!("Write error: {}", e))],
                             details: serde_json::Value::Null,
+                            usage: None,
+                            added_tool_names: None,
                             terminate: None,
                         }),
                     }

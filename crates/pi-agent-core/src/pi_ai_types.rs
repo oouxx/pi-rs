@@ -4,6 +4,8 @@
 //! them directly, plus adds a few pi-agent-core-specific types and helpers.
 
 pub use pi_ai::env_api_keys::{get_env_api_key, get_env_var_name};
+pub use pi_ai::utils::retry::{retry_assistant_call, RetryCallbacks, RetryPolicy};
+pub use pi_ai::utils::uuid::uuid_v7;
 pub use pi_ai::types::{
     AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent,
     CacheRetention, ContentBlock, Context, ImagesModel, Message, Model, ModelCompat, ModelCost,
@@ -41,6 +43,8 @@ pub fn create_error_tool_result(message: &str) -> crate::types::AgentToolResult<
     crate::types::AgentToolResult {
         content: vec![text_block(message)],
         details: serde_json::Value::Object(Default::default()),
+        usage: None,
+        added_tool_names: None,
         terminate: None,
     }
 }
@@ -187,6 +191,7 @@ pub fn tool_result_msg(
         details: None,
         is_error,
         added_tool_names: None,
+        usage: None,
         timestamp,
     }
 }

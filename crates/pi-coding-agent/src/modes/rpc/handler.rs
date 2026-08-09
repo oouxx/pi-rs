@@ -333,6 +333,15 @@ pub async fn handle_command(
             }
         }
 
+        RpcCommand::GetAvailableThinkingLevels { id } => {
+            let levels = session.get_available_thinking_levels().await;
+            Some(rpc_success(
+                id,
+                "get_available_thinking_levels",
+                Some(serde_json::json!({"levels": levels})),
+            ))
+        }
+
         // ── Queue Modes ──────────────────────────────────────────────────
 
         RpcCommand::SetSteeringMode { id, mode } => {

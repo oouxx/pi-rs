@@ -102,9 +102,11 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::harness::types::{
-    SessionCreateOptions, SessionError, SessionMetadata, SessionRepo, SessionStorage,
-    SessionTreeEntry,
+    SessionCreateOptions, SessionEntryCursorOptions, SessionError, SessionMetadata, SessionRepo,
+    SessionStats, SessionStorage, SessionTreeEntry,
 };
+use crate::pi_ai_types::Usage;
+use crate::types::AgentMessage;
 
 pub struct InMemorySessionStorage {
     metadata: SessionMetadata,
@@ -183,12 +185,15 @@ fn update_label_cache(labels_by_id: &mut HashMap<String, String>, entry: &Sessio
 
 fn generate_entry_id(by_id: &HashMap<String, usize>) -> String {
     for _ in 0..100 {
-        let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        if !by_id.contains_key(&id) {
-            return id;
+        // The uuidv7 prefix is timestamp-derived and nearly constant between calls,
+        // so short ids must come from the random tail (match TS `generateEntryId`).
+        let id = crate::pi_ai_types::uuid_v7();
+        let id = &id[id.len().saturating_sub(8)..];
+        if !by_id.contains_key(id) {
+            return id.to_string();
         }
     }
-    uuid::Uuid::new_v4().to_string()
+    crate::pi_ai_types::uuid_v7()
 }
 
 #[async_trait]
@@ -257,7 +262,44 @@ impl SessionStorage for InMemorySessionStorage {
         self.labels_by_id.get(id).cloned()
     }
 
-    async fn get_path_to_root(
+    async fn get_session_name(&self) -> Option<String> {
+        let entries = self.find_entries("session_info").await;
+        entries
+            .last()
+            .and_then(|e| match e {
+                SessionTreeEntry::SessionInfo { name, .. } => Some(name.trim().to_string()),
+                _ => None,
+            })
+            .filter(|n| !n.is_empty())
+    }
+
+    async fn get_session_stats(&self) -> SessionStats {
+        let mut stats = SessionStats::default();
+        for entry in &self.entries {
+            if matches!(entry, SessionTreeEntry::Message { .. }) {
+                stats.message_count += 1;
+            }
+            let usage = match entry {
+                SessionTreeEntry::Message {
+                    message: AgentMessage::Assistant { usage, .. },
+                    ..
+                } => Some(usage.clone()),
+                SessionTreeEntry::Compaction { usage, .. }
+                | SessionTreeEntry::BranchSummary { usage, .. } => usage
+                    .as_ref()
+                    .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok()),
+                _ => None,
+            };
+            let Some(usage) = usage else { continue };
+            stats.cached_tokens += usage.cache_read;
+            stats.uncached_tokens += usage.input + usage.cache_write;
+            stats.total_tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
+            stats.cost_total += usage.cost.total;
+        }
+        stats
+    }
+
+    async fn get_path_to_root_or_compaction(
         &self,
         leaf_id: Option<&str>,
     ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError> {
@@ -270,6 +312,7 @@ impl SessionStorage for InMemorySessionStorage {
         };
 
         let mut path = Vec::new();
+        let mut stop_at_entry_id: Option<String> = None;
         let mut current_id = leaf_id;
 
         loop {
@@ -286,6 +329,24 @@ impl SessionStorage for InMemorySessionStorage {
             let parent_id = entry.parent_id().map(|s| s.to_string());
             path.push(entry.clone());
 
+            if let Some(stop_id) = &stop_at_entry_id {
+                if entry.id() == stop_id {
+                    break;
+                }
+            }
+            if let SessionTreeEntry::Compaction {
+                retained_tail,
+                first_kept_entry_id,
+                ..
+            } = entry
+            {
+                if retained_tail.is_some() {
+                    // Self-contained checkpoint: stop here.
+                    break;
+                }
+                stop_at_entry_id = first_kept_entry_id.clone();
+            }
+
             match parent_id {
                 Some(pid) => current_id = pid,
                 None => break,
@@ -296,8 +357,19 @@ impl SessionStorage for InMemorySessionStorage {
         Ok(path)
     }
 
-    async fn get_entries(&self) -> Vec<SessionTreeEntry> {
-        self.entries.clone()
+    async fn get_entries(
+        &self,
+        options: Option<&SessionEntryCursorOptions>,
+    ) -> Vec<SessionTreeEntry> {
+        let start = options.map(|o| o.after_entry_seq as usize).unwrap_or(0);
+        let end = match options.and_then(|o| o.limit) {
+            Some(limit) => start.saturating_add(limit as usize),
+            None => self.entries.len(),
+        };
+        self.entries
+            .get(start..end)
+            .map(|s| s.to_vec())
+            .unwrap_or_default()
     }
 }
 
@@ -380,7 +452,7 @@ impl SessionRepo for InMemorySessionRepo {
         options: crate::harness::types::ForkOptions,
     ) -> std::result::Result<crate::harness::types::Session, SessionError> {
         let source = self.open(source_metadata).await?;
-        let entries = source.get_entries().await;
+        let entries = source.get_entries(None).await;
 
         let forked_entries = if let Some(entry_id) = &options.entry_id {
             let target = source.get_entry(entry_id).await.ok_or_else(|| {
@@ -393,7 +465,7 @@ impl SessionRepo for InMemorySessionRepo {
             };
 
             source
-                .get_path_to_root(effective_leaf_id.as_deref())
+                .get_path_to_root_or_compaction(effective_leaf_id.as_deref())
                 .await?
         } else {
             entries
@@ -418,5 +490,167 @@ impl SessionRepo for InMemorySessionRepo {
         let session = crate::harness::types::Session::new(storage);
         self.sessions.insert(id, session);
         Ok(self.sessions.values().last().unwrap().clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::types::SessionTreeEntry;
+    use crate::pi_ai_types::ContentBlock;
+
+    fn text_message(id: &str, parent: Option<&str>, text: &str) -> SessionTreeEntry {
+        SessionTreeEntry::Message {
+            id: id.to_string(),
+            parent_id: parent.map(|s| s.to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            message: crate::types::AgentMessage::User {
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                    text_signature: None,
+                }],
+                timestamp: 0,
+            },
+        }
+    }
+
+    fn compaction_entry(id: &str, parent: Option<&str>, retained_tail: Option<Vec<crate::types::AgentMessage>>) -> SessionTreeEntry {
+        SessionTreeEntry::Compaction {
+            id: id.to_string(),
+            parent_id: parent.map(|s| s.to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            summary: "summary".to_string(),
+            first_kept_entry_id: None,
+            tokens_before: 100,
+            retained_tail,
+            details: None,
+            usage: None,
+            from_hook: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_path_to_root_or_compaction_stops_at_retained_tail() {
+        // root -> compaction(with retainedTail) -> msg1 -> msg2 (leaf)
+        // The walk must stop at the compaction entry (self-contained checkpoint).
+        let mut storage = InMemorySessionStorage::new(None);
+        storage
+            .append_entry(text_message("root", None, "root"))
+            .await
+            .unwrap();
+        storage
+            .append_entry(compaction_entry("comp", Some("root"), Some(vec![])))
+            .await
+            .unwrap();
+        storage
+            .append_entry(text_message("m1", Some("comp"), "m1"))
+            .await
+            .unwrap();
+        storage
+            .append_entry(text_message("m2", Some("m1"), "m2"))
+            .await
+            .unwrap();
+        storage.set_leaf_id(Some("m2".to_string())).await.unwrap();
+
+        let path = storage
+            .get_path_to_root_or_compaction(Some("m2"))
+            .await
+            .unwrap();
+        let ids: Vec<&str> = path.iter().map(|e| e.id()).collect();
+        // stops at compaction: [comp, m1, m2] — root is NOT included
+        assert_eq!(ids, vec!["comp", "m1", "m2"]);
+    }
+
+    #[tokio::test]
+    async fn test_get_path_to_root_or_compaction_stops_at_first_kept() {
+        // root -> pre -> compaction(firstKeptEntryId=pre) -> m1 -> m2 (leaf)
+        // Without retainedTail, the walk continues upward and stops at the
+        // first kept entry (pre), excluding root.
+        let mut storage = InMemorySessionStorage::new(None);
+        storage
+            .append_entry(text_message("root", None, "root"))
+            .await
+            .unwrap();
+        storage
+            .append_entry(text_message("pre", Some("root"), "pre"))
+            .await
+            .unwrap();
+        storage
+            .append_entry(SessionTreeEntry::Compaction {
+                id: "comp".to_string(),
+                parent_id: Some("pre".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                summary: "summary".to_string(),
+                first_kept_entry_id: Some("pre".to_string()),
+                tokens_before: 100,
+                retained_tail: None,
+                details: None,
+                usage: None,
+                from_hook: None,
+            })
+            .await
+            .unwrap();
+        storage
+            .append_entry(text_message("m1", Some("comp"), "m1"))
+            .await
+            .unwrap();
+        storage
+            .append_entry(text_message("m2", Some("m1"), "m2"))
+            .await
+            .unwrap();
+        storage.set_leaf_id(Some("m2".to_string())).await.unwrap();
+
+        let path = storage
+            .get_path_to_root_or_compaction(Some("m2"))
+            .await
+            .unwrap();
+        let ids: Vec<&str> = path.iter().map(|e| e.id()).collect();
+        // stops at first kept entry (pre): [pre, comp, m1, m2] — root is NOT included
+        assert_eq!(ids, vec!["pre", "comp", "m1", "m2"]);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_stats_aggregates_usage() {
+        let mut storage = InMemorySessionStorage::new(None);
+        storage
+            .append_entry(SessionTreeEntry::Message {
+                id: "m1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: crate::types::AgentMessage::Assistant {
+                    content: vec![],
+                    api: "openai-completions".into(),
+                    provider: "openai".into(),
+                    model: "gpt-5.5".into(),
+                    usage: crate::pi_ai_types::Usage {
+                        input: 100,
+                        output: 50,
+                        cache_read: 10,
+                        cache_write: 5,
+                        reasoning: None,
+                        cache_write_1h: None,
+                        total_tokens: 165,
+                        cost: crate::pi_ai_types::UsageCost {
+                            input: 1.0,
+                            output: 2.0,
+                            cache_read: 0.1,
+                            cache_write: 0.2,
+                            total: 3.3,
+                        },
+                    },
+                    stop_reason: Some(crate::pi_ai_types::StopReason::Stop),
+                    error_message: None,
+                    timestamp: 0,
+                },
+            })
+            .await
+            .unwrap();
+
+        let stats = storage.get_session_stats().await;
+        assert_eq!(stats.message_count, 1);
+        assert_eq!(stats.cached_tokens, 10);
+        assert_eq!(stats.uncached_tokens, 105);
+        assert_eq!(stats.total_tokens, 165);
+        assert_eq!(stats.cost_total, 3.3);
     }
 }

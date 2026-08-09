@@ -1414,6 +1414,7 @@ mod tests {
             content: vec![ContentBlock::text("file contents")],
             details: None,
             is_error: false,
+            usage: None,
             added_tool_names: None,
             timestamp: 1000,
         }];
@@ -1457,6 +1458,7 @@ mod tests {
                 content: vec![ContentBlock::text("72F sunny")],
                 details: None,
                 is_error: false,
+                usage: None,
                 added_tool_names: None,
                 timestamp: 1000,
             },

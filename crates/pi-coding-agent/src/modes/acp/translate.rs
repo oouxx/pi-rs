@@ -31,8 +31,11 @@ use crate::core::agent_session::AgentSessionEvent;
 
 /// Snapshot of a file taken before a mutating tool (`edit`/`write`) ran.
 struct FileSnapshot {
-    /// Resolved absolute path of the file.
+    /// Original path from the tool args (may be relative) — used in the ACP
+    /// diff, matching pi-acp which emits the raw tool path.
     path: String,
+    /// Resolved absolute path — used to read the file.
+    resolved_path: PathBuf,
     /// Pre-mutation content (`None` when the file did not exist / unreadable).
     old_text: Option<String>,
 }
@@ -91,10 +94,13 @@ impl EventTranslator {
                     let (tool_call_id, tool_name, args) =
                         tool_call_at(partial, *content_index)?;
                     let locations = self.tool_locations(&tool_name, &args, None);
-                    let mut tc = acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
-                        .kind(tool_kind(&tool_name))
-                        .status(acp::ToolCallStatus::Pending)
-                        .raw_input(args.clone());
+                    let mut tc = acp::ToolCall::new(
+                        tool_call_id.clone(),
+                        tool_title(&tool_name, &args),
+                    )
+                    .kind(tool_kind(&tool_name))
+                    .status(acp::ToolCallStatus::Pending)
+                    .raw_input(args.clone());
                     if let Some(locs) = locations {
                         tc = tc.locations(locs);
                     }
@@ -170,10 +176,13 @@ impl EventTranslator {
                 args,
                 ..
             } => {
-                let mut tc = acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
-                    .kind(tool_kind(tool_name))
-                    .status(acp::ToolCallStatus::InProgress)
-                    .raw_input(args.clone());
+                let mut tc = acp::ToolCall::new(
+                    tool_call_id.clone(),
+                    tool_title(tool_name, args),
+                )
+                .kind(tool_kind(tool_name))
+                .status(acp::ToolCallStatus::InProgress)
+                .raw_input(args.clone());
 
                 if is_bash_tool(tool_name) {
                     // Render bash as a display-only terminal (Zed executes
@@ -192,7 +201,8 @@ impl EventTranslator {
                             self.file_snapshots.insert(
                                 tool_call_id.clone(),
                                 FileSnapshot {
-                                    path: resolved.to_string_lossy().to_string(),
+                                    path: path.clone(),
+                                    resolved_path: resolved,
                                     old_text,
                                 },
                             );
@@ -228,7 +238,7 @@ impl EventTranslator {
                     .status(acp::ToolCallStatus::InProgress);
                 if is_bash_tool(tool_name) {
                     // Stream bash output as terminal_output deltas.
-                    let text = partial_text(partial_result);
+                    let text = tool_result_to_text(partial_result);
                     let prev = self.bash_outputs.get(tool_call_id).cloned().unwrap_or_default();
                     let delta = if text.starts_with(&prev) {
                         text[prev.len()..].to_string()
@@ -241,11 +251,19 @@ impl EventTranslator {
                         update = update.meta(bash_terminal_output_meta(tool_call_id, &delta));
                     }
                     acp::SessionUpdate::ToolCallUpdate(update)
+                } else if tool_name == "edit" || tool_name == "write" {
+                    // File-mutation tools don't stream intermediate content — a
+                    // structured diff is emitted on completion (matching pi-acp).
+                    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                        tool_call_id.clone(),
+                        fields,
+                    ))
                 } else {
-                    let text = partial_text(partial_result);
+                    let text = tool_result_to_text(partial_result);
                     fields = fields.content(vec![acp::ToolCallContent::Content(acp::Content::new(
                         acp::ContentBlock::Text(acp::TextContent::new(text)),
                     ))]);
+                    fields = fields.raw_output(partial_result.clone());
                     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                         tool_call_id.clone(),
                         fields,
@@ -275,25 +293,51 @@ impl EventTranslator {
                         .meta(bash_terminal_exit_meta(tool_call_id, exit_code));
                     acp::SessionUpdate::ToolCallUpdate(update)
                 } else if tool_name == "edit" || tool_name == "write" {
-                    // Emit a structured diff from the pre-mutation snapshot.
-                    if let Some(snapshot) = self.file_snapshots.remove(tool_call_id) {
-                        let new_text = std::fs::read_to_string(&snapshot.path).ok();
-                        let diff = acp::Diff::new(
-                            PathBuf::from(&snapshot.path),
-                            new_text.unwrap_or_default(),
-                        )
-                        .old_text(snapshot.old_text);
-                        fields = fields.content(vec![acp::ToolCallContent::Diff(diff)]);
+                    // Emit a structured diff only when the tool succeeded and the
+                    // file actually changed (matching pi-acp): a diff on an error
+                    // or an unchanged file is noise, and a failed read must fall
+                    // back to plain text instead of a bogus empty diff.
+                    let mut has_diff = false;
+                    if !*is_error {
+                        if let Some(snapshot) = self.file_snapshots.remove(tool_call_id) {
+                            if let Ok(new_text) = std::fs::read_to_string(&snapshot.resolved_path) {
+                                if snapshot.old_text.is_none()
+                                    || new_text != snapshot.old_text.as_deref().unwrap_or("")
+                                {
+                                    has_diff = true;
+                                    let diff = acp::Diff::new(
+                                        PathBuf::from(&snapshot.path),
+                                        new_text,
+                                    )
+                                    .old_text(snapshot.old_text);
+                                    fields = fields.content(vec![acp::ToolCallContent::Diff(diff)]);
+                                }
+                            }
+                        }
+                    }
+                    if !has_diff {
+                        // Fall back to plain text (and raw output) so the client
+                        // still sees the tool result (matching pi-acp).
+                        let text = tool_result_to_text(result);
+                        if !text.is_empty() {
+                            fields = fields.content(vec![acp::ToolCallContent::Content(
+                                acp::Content::new(acp::ContentBlock::Text(acp::TextContent::new(
+                                    text,
+                                ))),
+                            )]);
+                        }
+                        fields = fields.raw_output(result.clone());
                     }
                     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                         tool_call_id.clone(),
                         fields,
                     ))
                 } else {
-                    let text = partial_text(result);
+                    let text = tool_result_to_text(result);
                     fields = fields.content(vec![acp::ToolCallContent::Content(acp::Content::new(
                         acp::ContentBlock::Text(acp::TextContent::new(text)),
                     ))]);
+                    fields = fields.raw_output(result.clone());
                     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                         tool_call_id.clone(),
                         fields,
@@ -314,11 +358,19 @@ impl EventTranslator {
             AgentSessionEvent::MessageEnd { message } => {
                 let pi_agent_core::types::AgentMessage::Assistant {
                     error_message: Some(err),
+                    stop_reason,
                     ..
                 } = message
                 else {
                     return None;
                 };
+                // A user-initiated abort is not an error — don't surface the
+                // provider's "Request was aborted" message as a ⚠️ chunk.
+                if stop_reason
+                    == &Some(pi_agent_core::pi_ai_types::StopReason::Aborted)
+                {
+                    return None;
+                }
                 acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
                     acp::ContentBlock::Text(acp::TextContent::new(format!("⚠️ {err}"))),
                 ))
@@ -455,21 +507,118 @@ fn tool_call_at(
     }
 }
 
-/// Extract a plain-text representation from a tool result / partial result.
-fn partial_text(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Object(map) => {
-            // Common shapes: { "text": "..." } or { "output": "..." }
-            for key in ["text", "output", "content"] {
-                if let Some(serde_json::Value::String(s)) = map.get(key) {
-                    return s.clone();
+/// Extract a plain-text representation from a tool result / partial result,
+/// matching pi-acp's `toolResultToText`: `details.diff` (edit's unified diff),
+/// then `content` text blocks, then stdout/stderr/exit code, then JSON.
+fn tool_result_to_text(value: &serde_json::Value) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    let obj = value.as_object();
+    let details = obj.and_then(|o| o.get("details")).and_then(|d| d.as_object());
+
+    // `details.diff` — pi's edit tool returns the unified diff there.
+    if let Some(diff) = details.and_then(|d| d.get("diff")).and_then(|d| d.as_str()) {
+        if !diff.trim().is_empty() {
+            return diff.to_string();
+        }
+    }
+
+    // `content: [{ type: "text", text: "..." }, ...]`
+    if let Some(content) = obj.and_then(|o| o.get("content")).and_then(|c| c.as_array()) {
+        let texts: Vec<&str> = content
+            .iter()
+            .filter_map(|c| {
+                let c = c.as_object()?;
+                if c.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    c.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !texts.is_empty() {
+            return texts.join("");
+        }
+    }
+
+    // stdout/stderr/exit code (bash often reports these in `details`).
+    let get_str = |key: &str| -> Option<String> {
+        details
+            .and_then(|d| d.get(key))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                obj.and_then(|o| o.get(key))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    };
+    let stdout = get_str("stdout").or_else(|| get_str("output"));
+    let stderr = get_str("stderr");
+    let exit_code = obj
+        .and_then(|o| o.get("exitCode"))
+        .and_then(|v| v.as_i64())
+        .or_else(|| obj.and_then(|o| o.get("code")).and_then(|v| v.as_i64()))
+        .or_else(|| details.and_then(|d| d.get("exitCode")).and_then(|v| v.as_i64()))
+        .or_else(|| details.and_then(|d| d.get("code")).and_then(|v| v.as_i64()));
+
+    let has_stdout = stdout.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_stderr = stderr.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if has_stdout || has_stderr {
+        let mut parts = Vec::new();
+        if let Some(s) = stdout {
+            if !s.trim().is_empty() {
+                parts.push(s);
+            }
+        }
+        if let Some(s) = stderr {
+            if !s.trim().is_empty() {
+                parts.push(format!("stderr:\n{s}"));
+            }
+        }
+        if let Some(code) = exit_code {
+            parts.push(format!("exit code: {code}"));
+        }
+        return parts.join("\n\n").trim_end().to_string();
+    }
+
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// Human-readable tool title, matching pi-acp: bash shows the command text
+/// ("Run ls -la"), everything else shows the tool name.
+fn tool_title(tool_name: &str, args: &serde_json::Value) -> String {
+    if is_bash_tool(tool_name) {
+        bash_command(args).unwrap_or_else(|| tool_name.to_string())
+    } else {
+        tool_name.to_string()
+    }
+}
+
+/// Extract the shell command from bash tool args, matching pi-acp's
+/// `bashCommand` (checks `command`/`cmd` at the top level and in nested
+/// `args`/`input`/`rawInput`/`toolInput`/`details` objects).
+fn bash_command(args: &serde_json::Value) -> Option<String> {
+    fn find(v: &serde_json::Value) -> Option<String> {
+        let obj = v.as_object()?;
+        for key in ["command", "cmd"] {
+            if let Some(s) = obj.get(key).and_then(|x| x.as_str()) {
+                if !s.trim().is_empty() {
+                    return Some(s.to_string());
                 }
             }
-            value.to_string()
         }
-        _ => value.to_string(),
+        for key in ["args", "input", "rawInput", "toolInput", "details"] {
+            if let Some(nested) = obj.get(key) {
+                if let Some(s) = find(nested) {
+                    return Some(s);
+                }
+            }
+        }
+        None
     }
+    find(args)
 }
 
 /// Best-effort exit code from a bash tool result (matching pi-acp's
@@ -781,12 +930,15 @@ mod tests {
             other => panic!("expected tool_call, got {other:?}"),
         }
 
-        // Output deltas stream as terminal_output meta.
+        // Output deltas stream as terminal_output meta (bash reports output
+        // as content text blocks, matching pi's bash tool).
         let update = AgentSessionEvent::ToolExecutionUpdate {
             tool_call_id: "b1".into(),
             tool_name: "bash".into(),
             args: serde_json::json!({"command": "ls"}),
-            partial_result: serde_json::json!({"text": "a.txt\nb.txt\n"}),
+            partial_result: serde_json::json!({
+                "content": [{"type": "text", "text": "a.txt\nb.txt\n"}]
+            }),
         };
         let notif = t.translate(&sid(), &update).expect("should translate");
         match notif.update {
@@ -942,5 +1094,165 @@ mod tests {
         });
         let old_texts = get_edit_old_texts(&args);
         assert_eq!(old_texts, vec!["x", "z"]);
+    }
+
+    /// A failed edit must not emit a diff (the file may be unchanged); it
+    /// falls back to plain text + raw output (matching pi-acp).
+    #[test]
+    fn edit_failure_falls_back_to_text_not_diff() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "before\n").expect("write");
+        let path_str = file.to_string_lossy().to_string();
+
+        let start = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "t1".into(),
+            tool_name: "edit".into(),
+            args: serde_json::json!({ "path": path_str, "oldText": "before", "newText": "after" }),
+        };
+        let mut t = EventTranslator::new("/proj");
+        t.translate(&sid(), &start).expect("start");
+
+        // Tool failed; file unchanged.
+        let end = AgentSessionEvent::ToolExecutionEnd {
+            tool_call_id: "t1".into(),
+            tool_name: "edit".into(),
+            result: serde_json::json!({"content": [{"type": "text", "text": "edit failed"}]}),
+            is_error: true,
+        };
+        let notif = t.translate(&sid(), &end).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::Failed));
+                let content = tcu.fields.content.expect("content");
+                assert!(
+                    matches!(&content[0], acp::ToolCallContent::Content(_)),
+                    "failed edit must fall back to text, got {content:?}"
+                );
+                assert!(tcu.fields.raw_output.is_some(), "raw output expected");
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+    }
+
+    /// An edit that did not change the file must not emit a diff (matching
+    /// pi-acp's `newText !== oldText` check).
+    #[test]
+    fn edit_unchanged_file_has_no_diff() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "same\n").expect("write");
+        let path_str = file.to_string_lossy().to_string();
+
+        let start = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "t1".into(),
+            tool_name: "edit".into(),
+            args: serde_json::json!({ "path": path_str, "oldText": "same", "newText": "same" }),
+        };
+        let mut t = EventTranslator::new("/proj");
+        t.translate(&sid(), &start).expect("start");
+
+        // Tool "succeeded" but wrote identical content.
+        let end = AgentSessionEvent::ToolExecutionEnd {
+            tool_call_id: "t1".into(),
+            tool_name: "edit".into(),
+            result: serde_json::json!({"content": [{"type": "text", "text": "ok"}]}),
+            is_error: false,
+        };
+        let notif = t.translate(&sid(), &end).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let content = tcu.fields.content.expect("content");
+                assert!(
+                    matches!(&content[0], acp::ToolCallContent::Content(_)),
+                    "unchanged file must not emit a diff, got {content:?}"
+                );
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+    }
+
+    /// A user-initiated abort must not surface the provider's
+    /// "Request was aborted" message as a ⚠️ chunk.
+    #[test]
+    fn aborted_message_end_is_not_translated() {
+        let event = AgentSessionEvent::MessageEnd {
+            message: pi_agent_core::types::AgentMessage::Assistant {
+                content: vec![],
+                api: "openai-completions".into(),
+                provider: "openai".into(),
+                model: "gpt-5.5".into(),
+                usage: pi_agent_core::pi_ai_types::Usage::default(),
+                stop_reason: Some(pi_agent_core::pi_ai_types::StopReason::Aborted),
+                error_message: Some("Request was aborted".to_string()),
+                timestamp: 0,
+            },
+        };
+        let mut t = EventTranslator::new("/proj");
+        assert!(
+            t.translate(&sid(), &event).is_none(),
+            "aborted message must not be translated"
+        );
+    }
+
+    /// Bash tool calls get a descriptive title with the command text
+    /// (matching pi-acp's `bashCommand`), other tools keep the tool name.
+    #[test]
+    fn bash_tool_call_has_command_title() {
+        let start = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "b1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::json!({"command": "ls -la"}),
+        };
+        let mut t = EventTranslator::new("/proj");
+        let notif = t.translate(&sid(), &start).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert_eq!(tc.title, "ls -la");
+            }
+            other => panic!("expected tool_call, got {other:?}"),
+        }
+
+        // Non-bash tools keep the tool name as title.
+        let read = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "r1".into(),
+            tool_name: "read".into(),
+            args: serde_json::json!({"path": "a.txt"}),
+        };
+        let notif = t.translate(&sid(), &read).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert_eq!(tc.title, "read");
+            }
+            other => panic!("expected tool_call, got {other:?}"),
+        }
+    }
+
+    /// File-mutation tools (edit/write) don't stream intermediate content
+    /// during execution — only the final diff (matching pi-acp).
+    #[test]
+    fn file_mutation_update_has_no_content() {
+        let update = AgentSessionEvent::ToolExecutionUpdate {
+            tool_call_id: "t1".into(),
+            tool_name: "edit".into(),
+            args: serde_json::json!({"path": "a.txt"}),
+            partial_result: serde_json::json!({"content": [{"type": "text", "text": "partial"}]}),
+        };
+        let mut t = EventTranslator::new("/proj");
+        let notif = t.translate(&sid(), &update).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert!(
+                    tcu.fields.content.is_none(),
+                    "edit update must not stream content, got {:?}",
+                    tcu.fields.content
+                );
+                assert!(
+                    tcu.fields.raw_output.is_none(),
+                    "edit update must not stream raw output"
+                );
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
     }
 }

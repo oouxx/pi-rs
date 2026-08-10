@@ -60,6 +60,15 @@ async fn connect_mcp_servers(
     Ok((Vec::new(), Vec::new()))
 }
 
+/// A prompt queued while another prompt was running (matching pi-acp's
+/// turn queue: prompts arriving mid-turn are queued and started in order
+/// after the current turn settles, instead of being rejected).
+struct QueuedPrompt {
+    text: String,
+    images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
+    reply: oneshot::Sender<Result<acp::PromptResponse, String>>,
+}
+
 /// A command sent to a session task.
 #[allow(clippy::large_enum_variant)]
 pub enum SessionCommand {
@@ -194,6 +203,7 @@ impl SessionRegistry {
             startup_info: None,
             startup_info_sent: false,
             replay_history: false,
+            prompt_queue: std::collections::VecDeque::new(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -219,7 +229,10 @@ impl SessionRegistry {
     /// Load a previously created session by ACP ID, resuming its persisted
     /// messages. Works for sessions created by a previous ACP process as long
     /// as their on-disk session file still exists. If the session is already
-    /// running in memory, this is a no-op.
+    /// running in memory, it is torn down and rebuilt so history is replayed
+    /// and commands re-advertised (matching pi-acp's `loadSession`, which
+    /// closes the existing session — some clients call `session/load` when
+    /// restoring from history).
     pub async fn load(
         &mut self,
         session_id: &acp::SessionId,
@@ -227,8 +240,10 @@ impl SessionRegistry {
         notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
     ) -> Result<(), String> {
-        if self.sessions.contains_key(session_id) {
-            return Ok(());
+        // Tear down an already-active session (without deleting its file) so
+        // we can start fresh and replay history.
+        if let Some(handle) = self.sessions.remove(session_id) {
+            let _ = handle.send(SessionCommand::Shutdown);
         }
         let persisted = self
             .persisted
@@ -262,6 +277,7 @@ impl SessionRegistry {
             startup_info: None,
             startup_info_sent: false,
             replay_history: true,
+            prompt_queue: std::collections::VecDeque::new(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -432,6 +448,8 @@ struct SessionTask {
     /// Whether to replay the persisted conversation history on startup
     /// (set for `session/load`).
     replay_history: bool,
+    /// Prompts queued while another prompt was running (pi-acp turn queue).
+    prompt_queue: std::collections::VecDeque<QueuedPrompt>,
 }
 
 impl SessionTask {
@@ -589,12 +607,45 @@ impl SessionTask {
     }
 
     /// The actual prompt loop (see `run_prompt` for slash-command handling).
+    ///
+    /// Runs the prompt, then any prompts queued while it was running
+    /// (matching pi-acp's turn queue). A failed run stops the queue — pi may
+    /// be unhealthy, so we don't auto-proceed (matching pi-acp).
     async fn run_prompt_inner(
         &mut self,
         text: String,
         images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
         reply: oneshot::Sender<Result<acp::PromptResponse, String>>,
     ) {
+        let mut current = QueuedPrompt { text, images, reply };
+        loop {
+            let outcome = self.run_single_prompt(current.text, current.images).await;
+            let _ = current.reply.send(outcome.clone());
+            if outcome.is_err() {
+                // Don't auto-proceed after a failure; reject anything queued.
+                while let Some(queued) = self.prompt_queue.pop_front() {
+                    let _ = queued
+                        .reply
+                        .send(Err("session is busy processing a prompt".to_string()));
+                }
+                break;
+            }
+            match self.prompt_queue.pop_front() {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+    }
+
+    /// Run one prompt turn: stream pi events as ACP notifications, then reply
+    /// with the stop reason. `session/cancel` is handled inline so it can
+    /// interrupt the running turn; prompts arriving mid-turn are queued
+    /// (matching pi-acp) instead of rejected.
+    async fn run_single_prompt(
+        &mut self,
+        text: String,
+        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
+    ) -> Result<acp::PromptResponse, String> {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<crate::core::agent_session::AgentSessionEvent>();
         let listener: Arc<
             dyn Fn(crate::core::agent_session::AgentSessionEvent) + Send + Sync,
@@ -616,6 +667,14 @@ impl SessionTask {
         // Track whether the agent actually ran a turn (mirrors the RPC mode's
         // AgentEnd check: prompt() returns Ok even when the run fails to start).
         let mut saw_agent_end = false;
+        // Set when the client cancelled this turn; the response then reports
+        // `cancelled` instead of `end_turn` (matching pi-acp).
+        let mut cancel_requested = false;
+        // Acks of notifications forwarded while the turn ran. We don't await
+        // them inline (that would block the select loop and delay cancel);
+        // they are flushed when the prompt future completes (matching
+        // pi-acp's fire-and-forget emit + flushEmits on agent_settled).
+        let mut pending_acks: Vec<oneshot::Receiver<()>> = Vec::new();
 
         let outcome: Result<(), String> = loop {
             tokio::select! {
@@ -623,7 +682,7 @@ impl SessionTask {
                     // Drain any events still queued (e.g. AgentEnd) so the
                     // saw_agent_end check below is accurate: prompt() may
                     // return before the select! loop has consumed the final
-                    // events (each event waits for a notification ack).
+                    // events.
                     let mut disconnected = false;
                     while let Ok(event) = event_rx.try_recv() {
                         if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
@@ -635,10 +694,15 @@ impl SessionTask {
                                 disconnected = true;
                                 break;
                             }
-                            if ack_rx.await.is_err() {
-                                disconnected = true;
-                                break;
-                            }
+                            pending_acks.push(ack_rx);
+                        }
+                    }
+                    // Flush: wait for all forwarded notifications to be
+                    // delivered before replying to the prompt.
+                    for ack in pending_acks.drain(..) {
+                        if ack.await.is_err() {
+                            disconnected = true;
+                            break;
                         }
                     }
                     if disconnected {
@@ -655,15 +719,27 @@ impl SessionTask {
                         if self.notif_tx.send((notif, ack_tx)).is_err() {
                             break Err("client disconnected".to_string());
                         }
-                        if ack_rx.await.is_err() {
-                            break Err("client disconnected".to_string());
-                        }
+                        pending_acks.push(ack_rx);
                     }
                 }
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(SessionCommand::Cancel) => {
+                            cancel_requested = true;
                             self.session.abort().await;
+                            // Cancel clears the queued prompts (matching
+                            // pi-acp: cancel resolves queued turns as
+                            // cancelled).
+                            while let Some(queued) = self.prompt_queue.pop_front() {
+                                let _ = queued.reply.send(Ok(
+                                    acp::PromptResponse::new(acp::StopReason::Cancelled),
+                                ));
+                            }
+                        }
+                        Some(SessionCommand::Prompt { text, images, reply }) => {
+                            // Queue the prompt; it runs after the current turn
+                            // settles (matching pi-acp's turn queue).
+                            self.prompt_queue.push_back(QueuedPrompt { text, images, reply });
                         }
                         Some(SessionCommand::Shutdown) | None => {
                             break Err("session closed".to_string());
@@ -679,11 +755,16 @@ impl SessionTask {
 
         handle.unsubscribe();
         let response = if saw_agent_end {
-            Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+            let reason = if cancel_requested {
+                acp::StopReason::Cancelled
+            } else {
+                acp::StopReason::EndTurn
+            };
+            Ok(acp::PromptResponse::new(reason))
         } else {
             Err("agent run failed to start or completed without AgentEnd".to_string())
         };
-        let _ = reply.send(outcome.and(response));
+        outcome.and(response)
     }
 
     /// Emit a plain-text message chunk notification to the client.

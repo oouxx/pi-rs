@@ -355,7 +355,10 @@ fn build_startup_info(cwd: &str) -> String {
     md.join("\n")
 }
 
-/// Extract plain text (and note images) from an ACP prompt's content blocks.
+/// Extract plain text (and note images) from an ACP prompt's content blocks,
+/// matching pi-acp's `promptToPiMessage`: text is concatenated, resource
+/// links / embedded resources / audio become human-readable context markers,
+/// and images are passed through as pi content blocks.
 fn extract_prompt(prompt: &[acp::ContentBlock]) -> (String, Vec<pi_agent_core::pi_ai_types::ContentBlock>) {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
@@ -367,6 +370,43 @@ fn extract_prompt(prompt: &[acp::ContentBlock]) -> (String, Vec<pi_agent_core::p
                     data: img.data.clone(),
                     mime_type: img.mime_type.clone(),
                 });
+            }
+            acp::ContentBlock::ResourceLink(r) => {
+                text_parts.push(format!("\n[Context] {}", r.uri));
+            }
+            acp::ContentBlock::Resource(r) => match &r.resource {
+                acp::EmbeddedResourceResource::TextResourceContents(t) => {
+                    let mime = t
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "text/plain".to_string());
+                    text_parts.push(format!(
+                        "\n[Embedded Context] {} ({mime})\n{}",
+                        t.uri, t.text
+                    ));
+                }
+                acp::EmbeddedResourceResource::BlobResourceContents(b) => {
+                    let mime = b
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    // Base64 decoded length (ignoring padding, off by ≤2 bytes).
+                    let bytes = b.blob.len() * 3 / 4;
+                    text_parts.push(format!(
+                        "\n[Embedded Context] {} ({mime}, {bytes} bytes)",
+                        b.uri
+                    ));
+                }
+                _ => {}
+            },
+            acp::ContentBlock::Audio(a) => {
+                // Not supported by pi; provide a marker so we don't silently
+                // drop context (matching pi-acp).
+                let bytes = a.data.len() * 3 / 4;
+                text_parts.push(format!(
+                    "\n[Audio] ({}, {bytes} bytes) not supported by pi-acp",
+                    a.mime_type
+                ));
             }
             _ => {}
         }
@@ -416,10 +456,40 @@ mod tests {
 
     #[test]
     fn extract_prompt_skips_non_text_non_image() {
-        // An audio block (unsupported) is ignored; text is still collected.
+        // Text is still collected.
         let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new("hi"))];
         let (text, images) = extract_prompt(&prompt);
         assert_eq!(text, "hi");
+        assert!(images.is_empty());
+    }
+
+    /// Resource links, embedded resources and audio become human-readable
+    /// context markers instead of being silently dropped (matching pi-acp's
+    /// `promptToPiMessage`).
+    #[test]
+    fn extract_prompt_handles_resources_and_audio() {
+        let prompt = vec![
+            acp::ContentBlock::ResourceLink(acp::ResourceLink::new(
+                "a.md".to_string(),
+                "file:///a.md".to_string(),
+            )),
+            acp::ContentBlock::Resource(acp::EmbeddedResource::new(
+                acp::EmbeddedResourceResource::TextResourceContents(
+                    acp::TextResourceContents::new("body".to_string(), "file:///b.md".to_string()),
+                ),
+            )),
+            acp::ContentBlock::Audio(acp::AudioContent::new("AAAA".to_string(), "audio/mp3".to_string())),
+        ];
+        let (text, images) = extract_prompt(&prompt);
+        assert!(text.contains("[Context] file:///a.md"), "got: {text}");
+        assert!(
+            text.contains("[Embedded Context] file:///b.md (text/plain)\nbody"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("[Audio] (audio/mp3, 3 bytes) not supported"),
+            "got: {text}"
+        );
         assert!(images.is_empty());
     }
 }

@@ -61,6 +61,10 @@ pub struct ToolDefinition {
     pub execution_mode: Option<String>,
     #[serde(skip)]
     pub execute: Option<ToolExecuteFn>,
+    /// Provenance of the tool definition (builtin / extension / sdk),
+    /// matching TS `ToolDefinitionEntry.sourceInfo`.
+    #[serde(skip)]
+    pub source_info: Option<SourceInfo>,
 }
 
 
@@ -103,6 +107,10 @@ pub struct ToolInfo {
     pub name: String,
     pub description: String,
     pub parameters: Option<Value>,
+    /// Prompt guidelines for the tool, matching TS `ToolInfo.promptGuidelines`.
+    pub prompt_guidelines: Option<Vec<String>>,
+    /// Provenance of the tool definition, matching TS `ToolInfo.sourceInfo`.
+    pub source_info: Option<SourceInfo>,
 }
 
 // ============================================================================

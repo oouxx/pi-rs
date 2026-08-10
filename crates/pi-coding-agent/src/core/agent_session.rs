@@ -492,8 +492,6 @@ pub struct AgentSession {
     retry_attempt: Arc<std::sync::Mutex<u32>>,
     /// Abort controller for retry backoff, matching TS `_retryAbortController`.
     retry_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
-    /// Whether auto-retry is enabled, matching TS `autoRetryEnabled`.
-    auto_retry_enabled: Arc<std::sync::Mutex<bool>>,
     /// Whether overflow recovery has been attempted in the current turn.
     overflow_recovery_attempted: Arc<std::sync::Mutex<bool>>,
     /// Last assistant message received, for auto-compaction and retry checks.
@@ -748,8 +746,9 @@ impl AgentSession {
             let mut map = options.tool_snippets.clone().unwrap_or_default();
             for tool in &tool_list {
                 if let Some(ref snippet) = tool.prompt_snippet {
-                    let normalized =
-                        snippet.trim().replace(|c: char| c.is_ascii_control(), " ");
+                    // Collapse all whitespace runs to single spaces (matching
+                    // TS _normalizePromptSnippet: \r\n → space, \s+ → space).
+                    let normalized = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !normalized.is_empty() {
                         map.insert(tool.name.clone(), normalized);
                     }
@@ -759,7 +758,7 @@ impl AgentSession {
                 for def in custom_tools {
                     if let Some(ref snippet) = def.prompt_snippet {
                         let normalized =
-                            snippet.trim().replace(|c: char| c.is_ascii_control(), " ");
+                            snippet.split_whitespace().collect::<Vec<_>>().join(" ");
                         if !normalized.is_empty() {
                             map.insert(def.name.clone(), normalized);
                         }
@@ -1091,14 +1090,26 @@ impl AgentSession {
         > = std::collections::HashMap::new();
         if let Some(ref custom_tools) = options.custom_tools {
             for def in custom_tools {
-                tool_definitions.insert(def.name.clone(), def.clone());
+                let mut def = def.clone();
+                // SDK tools carry a synthetic source (matching TS
+                // createSyntheticSourceInfo(`<sdk:${name}>`, { source: "sdk" })).
+                def.source_info = Some(crate::core::extensions::create_synthetic_source_info(
+                    format!("<sdk:{}>", def.name),
+                    "sdk".to_string(),
+                    None,
+                    None,
+                    None,
+                ));
+                tool_definitions.insert(def.name.clone(), def);
             }
         }
         if let Some(ref registry) = options.extension_registry {
             for rt in registry.tools().to_vec() {
+                let mut def = rt.definition;
+                def.source_info = Some(rt.source_info);
                 tool_definitions
-                    .entry(rt.definition.name.clone())
-                    .or_insert(rt.definition);
+                    .entry(def.name.clone())
+                    .or_insert(def);
             }
         }
 
@@ -1182,7 +1193,6 @@ impl AgentSession {
             pending_next_turn_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
             retry_attempt: Arc::new(std::sync::Mutex::new(0)),
             retry_abort: Arc::new(std::sync::Mutex::new(None)),
-            auto_retry_enabled: Arc::new(std::sync::Mutex::new(true)),
             overflow_recovery_attempted: Arc::new(std::sync::Mutex::new(false)),
             last_assistant_message: Arc::new(std::sync::Mutex::new(None)),
             compaction_abort: Arc::new(std::sync::Mutex::new(None)),
@@ -1780,6 +1790,11 @@ impl AgentSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .append_session_info(name);
+        // Emit session_info_changed to session listeners (matching TS
+        // setSessionName which calls this._emit).
+        self._emit(AgentSessionEvent::SessionInfoChanged {
+            name: Some(name.to_string()),
+        });
         // Dispatch session_info_changed to extensions
         if let Some(ref registry) = self.extension_registry {
             let reg = Arc::clone(registry);
@@ -1802,13 +1817,23 @@ impl AgentSession {
         }
     }
 
+    /// Whether the session is currently processing an agent run or post-run
+    /// continuation (retry / compaction / queued), matching TS `get isStreaming()`
+    /// which returns `_isAgentRunActive`.
     pub async fn is_streaming(&self) -> bool {
-        self.agent.state().await.is_streaming
+        *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Whether the agent has no active run, matching TS `get isIdle()`.
+    /// Whether the session has no active agent run, retry, auto-compaction, or
+    /// queued continuation, matching TS `get isIdle()`.
     pub async fn is_idle(&self) -> bool {
-        !self.agent.state().await.is_streaming
+        !*self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn get_error_message(&self) -> Option<String> {
@@ -2193,14 +2218,21 @@ impl AgentSession {
         self.retry_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
     }
 
-    /// Whether auto-retry is enabled, matching TS `get autoRetryEnabled()`.
+    /// Whether auto-retry is enabled, matching TS `get autoRetryEnabled()`
+    /// which reads settingsManager.getRetryEnabled().
     pub fn auto_retry_enabled(&self) -> bool {
-        *self.auto_retry_enabled.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.settings_manager
+            .lock()
+            .map(|sm| sm.get_retry_enabled())
+            .unwrap_or(true)
     }
 
-    /// Enable or disable auto-retry, matching TS `setAutoRetryEnabled()`.
+    /// Enable or disable auto-retry, matching TS `setAutoRetryEnabled()`
+    /// which writes settingsManager.setRetryEnabled.
     pub fn set_auto_retry_enabled(&self, enabled: bool) {
-        *self.auto_retry_enabled.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = enabled;
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_retry_enabled(enabled);
+        }
     }
 
     pub fn retry_attempt(&self) -> u32 {
@@ -2235,7 +2267,8 @@ impl AgentSession {
                 name: def.name.clone(),
                 description: def.description.clone(),
                 parameters: def.parameters.clone(),
-                // prompt_guidelines removed from ToolInfo in new architecture
+                prompt_guidelines: def.prompt_guidelines.clone(),
+                source_info: def.source_info.clone(),
             })
             .collect()
     }
@@ -2891,13 +2924,12 @@ References are relative to {}.
     /// Returns true if the caller should continue the agent.
     /// Matches TS _prepareRetry().
     async fn _prepare_retry(&self, message: &AgentMessage) -> bool {
-        // Check if auto-retry is enabled, matching TS settingsManager.getRetrySettings().enabled
-        if !*self.auto_retry_enabled.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        // Read retry settings from settings manager, matching TS
+        // settingsManager.getRetrySettings() (enabled + backoff).
+        let retry_settings = self.settings_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_retry_settings();
+        if !retry_settings.enabled.unwrap_or(true) {
             return false;
         }
-
-        // Read retry settings from settings manager, matching TS settingsManager.getRetrySettings()
-        let retry_settings = self.settings_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_retry_settings();
         let max_retries = retry_settings.max_retries.unwrap_or(3);
         let base_delay_ms = retry_settings.base_delay_ms.unwrap_or(2000);
 
@@ -3457,8 +3489,12 @@ References are relative to {}.
         }
         let levels = self.get_available_thinking_levels().await;
         let current = self.agent.state().await.thinking_level;
-        let current_idx = levels.iter().position(|&l| l == current).unwrap_or(0);
-        let next_idx = (current_idx + 1) % levels.len();
+        // TS uses levels.indexOf(this.thinkingLevel): -1 (not found) wraps to
+        // the first level via (-1 + 1) % len == 0.
+        let next_idx = match levels.iter().position(|&l| l == current) {
+            Some(i) => (i + 1) % levels.len(),
+            None => 0,
+        };
         let next = levels[next_idx].to_string();
         self.set_thinking_level(&next).await;
         Some(next)

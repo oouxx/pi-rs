@@ -27,11 +27,7 @@ fn test_ctx(cwd: &str, depth: Option<&str>) -> ExtensionContext {
     ExtensionContext::new(
         "test-session".into(),
         false,
-        ExtensionUIContext {
-            notify: Arc::new(|_, _| {}),
-            set_status: Arc::new(|_, _| {}),
-            confirm: Arc::new(|_, _| false),
-        },
+        ExtensionUIContext::noop(),
         handle,
     )
 }

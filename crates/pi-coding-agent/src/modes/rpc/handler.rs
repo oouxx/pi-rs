@@ -689,13 +689,19 @@ pub struct RpcHandlerState {
 impl RpcHandlerState {
     pub fn new(
         output_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        pending_extension_requests: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    String,
+                    tokio::sync::oneshot::Sender<serde_json::Value>,
+                >,
+            >,
+        >,
     ) -> Self {
         RpcHandlerState {
             shutdown_requested: false,
             output_tx,
-            pending_extension_requests: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            pending_extension_requests,
         }
     }
 }

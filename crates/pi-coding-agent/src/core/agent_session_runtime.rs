@@ -214,8 +214,7 @@ impl AgentSessionRuntime {
             false,
             ExtensionUIContext {
                 notify: Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                set_status: Arc::new(|_key, _value| {}),
-                confirm: Arc::new(|_title, _msg| false),
+                ..ExtensionUIContext::noop()
             },
             RuntimeHandle::noop(),
         )

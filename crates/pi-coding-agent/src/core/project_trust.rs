@@ -81,8 +81,7 @@ pub fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) -> boo
             false,
             crate::core::extensions::ExtensionUIContext {
                 notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                set_status: std::sync::Arc::new(|_key, _value| {}),
-                confirm: std::sync::Arc::new(|_title, _msg| false),
+                ..crate::core::extensions::ExtensionUIContext::noop()
             },
             crate::core::extensions::RuntimeHandle::noop(),
         );

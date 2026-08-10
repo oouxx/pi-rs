@@ -344,6 +344,7 @@ impl SessionRegistry {
                 session_manager: None,
                 settings_manager: None,
                 session_start_event: None,
+        ui_context: None,
                 custom_tools: custom_tools.clone(),
                 extension_flags: None,
             }

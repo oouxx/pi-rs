@@ -92,6 +92,9 @@ pub struct CreateAgentSessionFromServicesOptions {
     /// Session start event metadata for extension runtime startup.
     /// When set, used instead of the default "startup" reason.
     pub session_start_event: Option<crate::core::sdk::SessionStartEvent>,
+    /// Extension UI context. When set, used instead of the default no-op
+    /// context (headless modes wire dialogs/notifications to their client).
+    pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
 }
 
 // ============================================================================
@@ -252,6 +255,7 @@ pub async fn create_agent_session_from_services(
         session_manager: Some(session_manager),
         settings_manager: None,
         session_start_event: options.session_start_event,
+        ui_context: options.ui_context,
         custom_tools: options.custom_tools,
         extension_flags: None,
     };

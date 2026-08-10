@@ -140,6 +140,9 @@ pub struct CreateAgentSessionOptions {
     /// Session start event metadata for extension runtime startup.
     /// When set, used instead of the default "startup" reason.
     pub session_start_event: Option<SessionStartEvent>,
+    /// Extension UI context. When set, used instead of the default no-op
+    /// context (headless modes wire dialogs/notifications to their client).
+    pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
 }
 
 impl Default for CreateAgentSessionOptions {
@@ -177,6 +180,7 @@ impl Default for CreateAgentSessionOptions {
             session_manager: None,
             settings_manager: None,
             session_start_event: None,
+        ui_context: None,
         }
     }
 }
@@ -559,11 +563,10 @@ pub async fn create_agent_session(
     let ext_ctx = crate::core::extensions::ExtensionContext::new(
         cwd.clone(),
         false,
-        crate::core::extensions::ExtensionUIContext {
-            notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-            set_status: std::sync::Arc::new(|_key, _value| {}),
-            confirm: std::sync::Arc::new(|_title, _msg| false),
-        },
+        options
+            .ui_context
+            .clone()
+            .unwrap_or_else(crate::core::extensions::ExtensionUIContext::noop),
         ext_runtime_handle,
     );
     let session_start_reason = options

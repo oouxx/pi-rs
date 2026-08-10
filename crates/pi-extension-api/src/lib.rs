@@ -140,12 +140,60 @@ impl ExtensionContext {
 // ============================================================================
 
 /// UI context for extensions to interact with the user interface.
+///
+/// Dialog methods (`select`, `input`) return a future that resolves with the
+/// user's choice; fire-and-forget methods (`notify`, `set_status`, …) send a
+/// request and return immediately. Matching TS `ExtensionUIContext`.
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub struct ExtensionUIContext {
     pub notify: Arc<dyn Fn(&str, &Value) + Send + Sync>,
     pub set_status: Arc<dyn Fn(&str, &str) + Send + Sync>,
     pub confirm: Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+    /// Show a selector and return the user's choice (matching TS `ui.select`).
+    pub select: Arc<
+        dyn Fn(
+                &str,
+                &[String],
+                Option<&Value>,
+            ) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>
+            + Send
+            + Sync,
+    >,
+    /// Show a text input dialog (matching TS `ui.input`).
+    pub input: Arc<
+        dyn Fn(
+                &str,
+                Option<&str>,
+                Option<&Value>,
+            ) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>
+            + Send
+            + Sync,
+    >,
+    /// Set a widget above/below the editor (matching TS `ui.setWidget`).
+    pub set_widget: Arc<dyn Fn(&str, Option<&[String]>, Option<&Value>) + Send + Sync>,
+    /// Set the terminal window/tab title (matching TS `ui.setTitle`).
+    pub set_title: Arc<dyn Fn(&str) + Send + Sync>,
+    /// Set the text in the input editor (matching TS `ui.setEditorText`).
+    pub set_editor_text: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+impl ExtensionUIContext {
+    /// A no-op UI context: dialogs resolve with `None`/`false`, fire-and-forget
+    /// methods do nothing. Used by headless modes that don't wire a UI.
+    #[must_use]
+    pub fn noop() -> Self {
+        Self {
+            notify: Arc::new(|_, _| {}),
+            set_status: Arc::new(|_, _| {}),
+            confirm: Arc::new(|_, _| false),
+            select: Arc::new(|_, _, _| Box::pin(async { None })),
+            input: Arc::new(|_, _, _| Box::pin(async { None })),
+            set_widget: Arc::new(|_, _, _| {}),
+            set_title: Arc::new(|_| {}),
+            set_editor_text: Arc::new(|_| {}),
+        }
+    }
 }
 
 // ============================================================================

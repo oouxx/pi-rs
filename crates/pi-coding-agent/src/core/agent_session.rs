@@ -29,7 +29,22 @@ pub type AbortHandler = Box<dyn Fn() + Send + Sync>;
 /// Shutdown handler called when the session is disposed.
 pub type ShutdownHandler = Box<dyn Fn() + Send + Sync>;
 /// Error listener for extension errors.
-pub type ErrorListener = Box<dyn Fn(&str) + Send + Sync>;
+/// An error raised by an extension, matching TS `ExtensionError`.
+#[derive(Debug, Clone)]
+pub struct ExtensionError {
+    /// Path of the extension that raised the error.
+    pub extension_path: String,
+    /// The extension event that was being handled (e.g. "tool_call").
+    pub event: String,
+    /// Error message.
+    pub error: String,
+}
+
+/// Listener for extension errors, matching TS `bindExtensions({ onError })`.
+pub type ErrorListener = Box<dyn Fn(&ExtensionError) + Send + Sync>;
+
+/// Output-chunk callback for `execute_bash` (not an error listener).
+pub type ChunkCallback = Box<dyn Fn(&str) + Send + Sync>;
 /// Send a custom message (bound to this session).
 pub type SendMessageFn = Box<dyn Fn(String, Option<CustomMessageOptions>) + Send + Sync>;
 /// Send a user message (bound to this session).
@@ -172,6 +187,7 @@ pub struct PromptOptions {
 /// Extension bindings for bind_extensions(), matching TS ExtensionBindings interface.
 /// In the current Rust architecture, extensions are registered at construction time,
 /// so most fields are informational. The struct is kept for API compatibility.
+#[derive(Default)]
 pub struct ExtensionBindings {
     /// UI context for extension notifications/confirmations.
     pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
@@ -434,6 +450,9 @@ pub struct AgentSession {
     extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
     /// Receiver for JS extension write-actions, drained at turn boundaries.
     extension_action_rx: Option<Arc<std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>>>,
+    /// Extension error listener, matching TS `bindExtensions({ onError })`.
+    /// Set via `bind_extensions()`; invoked when an extension raises an error.
+    extension_error_listener: Arc<std::sync::Mutex<Option<ErrorListener>>>,
     /// Sync callback that invalidates the JS extension runtime (stale-ctx
     /// guard) when the session changes (new/fork/switch/reload). Set by the
     /// SDK; absent when no JS extension runtime is loaded.
@@ -507,8 +526,7 @@ impl AgentSession {
             false,
             crate::core::extensions::ExtensionUIContext {
                 notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                set_status: std::sync::Arc::new(|_key, _value| {}),
-                confirm: std::sync::Arc::new(|_title, _msg| false),
+                ..crate::core::extensions::ExtensionUIContext::noop()
             },
             ext_runtime_handle,
         );
@@ -1088,8 +1106,7 @@ impl AgentSession {
                     false,
                     crate::core::extensions::ExtensionUIContext {
                         notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                        set_status: std::sync::Arc::new(|_key, _value| {}),
-                        confirm: std::sync::Arc::new(|_title, _msg| false),
+                        ..crate::core::extensions::ExtensionUIContext::noop()
                     },
                     ext_runtime_handle,
                 )
@@ -1104,6 +1121,7 @@ impl AgentSession {
                 .extension_action_rx
                 .map(|rx| Arc::new(std::sync::Mutex::new(rx))),
             js_invalidator: None,
+            extension_error_listener: Arc::new(std::sync::Mutex::new(None)),
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
             _agent_subscription: None,
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
@@ -1719,11 +1737,7 @@ impl AgentSession {
             let ext_ctx = crate::core::extensions::ExtensionContext::new(
                 String::new(),
                 false,
-                crate::core::extensions::ExtensionUIContext {
-                    notify: std::sync::Arc::new(|_, _| {}),
-                    set_status: std::sync::Arc::new(|_, _| {}),
-                    confirm: std::sync::Arc::new(|_, _| false),
-                },
+                crate::core::extensions::ExtensionUIContext::noop(),
                 crate::core::extensions::RuntimeHandle::noop(),
             );
             tokio::spawn(async move {
@@ -1915,12 +1929,36 @@ impl AgentSession {
     /// In the current Rust architecture, extensions are registered at construction
     /// time via ExtensionRegistry, so this is a no-op for the binding logic.
     /// The bindings are stored for reference and the session_start event is emitted.
-    pub async fn bind_extensions(&self, _bindings: ExtensionBindings) {
+    pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
+        // Store the error listener (matching TS `_extensionErrorListener`).
+        if bindings.on_error.is_some() {
+            *self
+                .extension_error_listener
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = bindings.on_error;
+        }
         // In TS, this sets _extensionUIContext, _extensionMode, etc. and calls
         // _applyExtensionBindings() + emits session_start to extensions.
         // In Rust, the equivalent is done at construction time via ExtensionContext.
         // Emit session_start to extensions if any are registered.
         self.emit_session_start("startup").await;
+    }
+
+    /// Report an extension error to the bound error listener (matching TS
+    /// `ExtensionRunner.emitError`). No-op when no listener is bound.
+    pub fn emit_extension_error(&self, extension_path: &str, event: &str, error: &str) {
+        if let Some(listener) = self
+            .extension_error_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            listener(&ExtensionError {
+                extension_path: extension_path.to_string(),
+                event: event.to_string(),
+                error: error.to_string(),
+            });
+        }
     }
 
     /// Emit `session_start` to extensions with the given reason, matching TS
@@ -4370,7 +4408,7 @@ impl AgentSession {
     pub async fn execute_bash(
         &self,
         command: &str,
-        on_chunk: Option<ErrorListener>,
+        on_chunk: Option<ChunkCallback>,
         exclude_from_context: Option<bool>,
         id: Option<String>,
     ) -> Result<crate::core::bash_executor::BashExecutorResult, String> {

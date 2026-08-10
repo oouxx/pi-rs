@@ -410,6 +410,7 @@ async fn test_create_agent_session_with_extension() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -485,6 +486,7 @@ async fn test_session_builtin_bash_tool_exec() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -563,6 +565,7 @@ async fn test_llm_detect_builtin_tools() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -645,6 +648,7 @@ async fn test_invoke_agent() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -912,6 +916,7 @@ async fn test_multi_turn_tool_communication() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1368,6 +1373,7 @@ async fn test_state_mutations_persist_to_agent() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1475,6 +1481,7 @@ async fn test_prompt_returns_error_when_no_api_key() {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     })
     .await
     .expect("session creation must succeed");

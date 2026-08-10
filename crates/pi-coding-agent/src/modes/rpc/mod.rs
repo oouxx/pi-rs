@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
 use crate::core::agent_session::{AgentSession, AgentSessionEvent};
+use crate::core::extensions::ExtensionUIContext;
 use crate::core::model_registry::ModelRegistry;
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
@@ -34,6 +35,201 @@ fn to_json_event(event: &AgentSessionEvent) -> serde_json::Value {
     value
 }
 
+/// Build the RPC-mode extension UI context, matching TS
+/// `createExtensionUIContext()`: dialog methods (`select`, `input`) emit an
+/// `extension_ui_request` on stdout and block until the client replies with
+/// `extension_ui_response`; fire-and-forget methods (`notify`, `set_status`,
+/// `set_widget`, `set_title`, `set_editor_text`) emit the request without
+/// waiting.
+fn create_rpc_ui_context(
+    output_tx: mpsc::UnboundedSender<String>,
+    pending: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>,
+        >,
+    >,
+) -> ExtensionUIContext {
+    use std::sync::PoisonError;
+
+    // Fire-and-forget request: emit `extension_ui_request` and return.
+    let fire_and_forget = {
+        let output_tx = output_tx.clone();
+        move |request: serde_json::Value| {
+            let line = serialize_json_line(&request);
+            let _ = output_tx.send(line);
+        }
+    };
+
+    // Dialog request: emit `extension_ui_request`, register a oneshot, and
+    // await the client's `extension_ui_response` (matching TS
+    // `createDialogPromise`).
+    let dialog = {
+        let output_tx = output_tx.clone();
+        let pending = pending.clone();
+        move |mut request: serde_json::Value| {
+            let output_tx = output_tx.clone();
+            let pending = pending.clone();
+            Box::pin(async move {
+                let id = uuid::Uuid::new_v4().to_string();
+                request["id"] = serde_json::Value::String(id.clone());
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(id, tx);
+                let line = serialize_json_line(&request);
+                let _ = output_tx.send(line);
+                match rx.await {
+                    Ok(resp) => resp,
+                    Err(_) => serde_json::Value::Null,
+                }
+            })
+        }
+    };
+
+    let select = {
+        let dialog = dialog.clone();
+        Arc::new(move |title: &str, options: &[String], opts: Option<&serde_json::Value>| {
+            let dialog = dialog.clone();
+            let title = title.to_string();
+            let options: Vec<String> = options.to_vec();
+            let opts = opts.cloned();
+            Box::pin(async move {
+                let mut req = serde_json::json!({
+                    "type": "extension_ui_request",
+                    "method": "select",
+                    "title": title,
+                    "options": options,
+                });
+                if let Some(opts) = opts {
+                    if let Some(timeout) = opts.get("timeout") {
+                        req["timeout"] = timeout.clone();
+                    }
+                }
+                let resp = dialog(req).await;
+                if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
+                    None
+                } else {
+                    resp.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                }
+            }) as std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<String>> + Send>,
+            >
+        })
+    };
+
+    let input = {
+        let dialog = dialog.clone();
+        Arc::new(move |title: &str, placeholder: Option<&str>, opts: Option<&serde_json::Value>| {
+            let dialog = dialog.clone();
+            let title = title.to_string();
+            let placeholder = placeholder.map(|s| s.to_string());
+            let opts = opts.cloned();
+            Box::pin(async move {
+                let mut req = serde_json::json!({
+                    "type": "extension_ui_request",
+                    "method": "input",
+                    "title": title,
+                });
+                if let Some(p) = placeholder {
+                    req["placeholder"] = serde_json::Value::String(p);
+                }
+                if let Some(opts) = opts {
+                    if let Some(timeout) = opts.get("timeout") {
+                        req["timeout"] = timeout.clone();
+                    }
+                }
+                let resp = dialog(req).await;
+                if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
+                    None
+                } else {
+                    resp.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                }
+            }) as std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<String>> + Send>,
+            >
+        })
+    };
+
+    let notify = {
+        let fire_and_forget = fire_and_forget.clone();
+        Arc::new(move |msg: &str, level: &serde_json::Value| {
+            let req = serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "notify",
+                "message": msg,
+                "notifyType": level,
+            });
+            fire_and_forget(req);
+        })
+    };
+
+    let set_status = {
+        let fire_and_forget = fire_and_forget.clone();
+        Arc::new(move |key: &str, text: &str| {
+            let req = serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "setStatus",
+                "statusKey": key,
+                "statusText": text,
+            });
+            fire_and_forget(req);
+        })
+    };
+
+    let set_widget = {
+        let fire_and_forget = fire_and_forget.clone();
+        Arc::new(move |key: &str, lines: Option<&[String]>, _opts: Option<&serde_json::Value>| {
+            let req = serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "setWidget",
+                "widgetKey": key,
+                "widgetLines": lines,
+            });
+            fire_and_forget(req);
+        })
+    };
+
+    let set_title = {
+        let fire_and_forget = fire_and_forget.clone();
+        Arc::new(move |title: &str| {
+            let req = serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "setTitle",
+                "title": title,
+            });
+            fire_and_forget(req);
+        })
+    };
+
+    let set_editor_text = {
+        let fire_and_forget = fire_and_forget.clone();
+        Arc::new(move |text: &str| {
+            let req = serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "set_editor_text",
+                "text": text,
+            });
+            fire_and_forget(req);
+        })
+    };
+
+    ExtensionUIContext {
+        notify,
+        set_status,
+        confirm: Arc::new(|_title, _msg| false),
+        select,
+        input,
+        set_widget,
+        set_title,
+        set_editor_text,
+    }
+}
+
 /// Run the RPC mode: read JSON commands from stdin, output JSON events/responses
 /// to stdout, and drive the agent session.
 ///
@@ -45,11 +241,37 @@ pub async fn run_rpc_mode(
     extension_paths: Vec<String>,
     extension_flags: std::collections::HashMap<String, String>,
 ) -> i32 {
+    // ── Single output channel for all stdout writes ────────────────────
+    // Both event streaming and synchronous responses go through this channel,
+    // ensuring no interleaving on stdout. Created before the session so the
+    // extension UI context can emit `extension_ui_request` lines.
+    let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
+
+    // Spawn a single writer task that owns stdout
+    tokio::spawn(async move {
+        use std::io::Write;
+        while let Some(line) = output_rx.recv().await {
+            let mut handle = std::io::stdout().lock();
+            let _ = handle.write_all(line.as_bytes());
+            let _ = handle.flush();
+        }
+    });
+
+    // Pending extension UI dialogs awaiting the client's `extension_ui_response`
+    // (shared by the UI context and the main loop's response handling).
+    let pending_extension_requests: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>,
+        >,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
     // ── Build a minimal agent session ──────────────────────────────────
     let agent_dir = crate::config::get_agent_dir();
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
+
+    let ui_context = create_rpc_ui_context(output_tx.clone(), pending_extension_requests.clone());
 
     let sdk_options = CreateAgentSessionOptions {
         cwd: cwd.clone(),
@@ -81,6 +303,7 @@ pub async fn run_rpc_mode(
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: Some(ui_context),
         custom_tools: None,
     };
 
@@ -96,20 +319,25 @@ pub async fn run_rpc_mode(
     rpc_builtins.extend(pi_agent_core::pi_ai::providers::ollama::discover_ollama_models().await);
     let model_registry = ModelRegistry::new(rpc_builtins);
 
-    // ── Single output channel for all stdout writes ────────────────────
-    // Both event streaming and synchronous responses go through this channel,
-    // ensuring no interleaving on stdout.
-    let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
-
-    // Spawn a single writer task that owns stdout
-    tokio::spawn(async move {
-        use std::io::Write;
-        while let Some(line) = output_rx.recv().await {
-            let mut handle = std::io::stdout().lock();
-            let _ = handle.write_all(line.as_bytes());
-            let _ = handle.flush();
-        }
-    });
+    // Bind extension error reporting (matching TS rebindSession's
+    // bindExtensions({ onError }) which outputs `extension_error` events).
+    {
+        let output_tx_for_errors = output_tx.clone();
+        session
+            .bind_extensions(crate::core::agent_session::ExtensionBindings {
+                on_error: Some(Box::new(move |err: &crate::core::agent_session::ExtensionError| {
+                    let line = serialize_json_line(&serde_json::json!({
+                        "type": "extension_error",
+                        "extensionPath": err.extension_path,
+                        "event": err.event,
+                        "error": err.error,
+                    }));
+                    let _ = output_tx_for_errors.send(line);
+                })),
+                ..Default::default()
+            })
+            .await;
+    }
 
     // ── Signal handling ────────────────────────────────────────────────
     // Track which signal was received for correct exit code (matching TS:
@@ -140,7 +368,8 @@ pub async fn run_rpc_mode(
     });
 
     // ── Event streaming setup ──────────────────────────────────────────
-    let mut handler_state = handler::RpcHandlerState::new(output_tx.clone());
+    let mut handler_state =
+        handler::RpcHandlerState::new(output_tx.clone(), pending_extension_requests.clone());
 
     // Shutdown coordination: the `shutdown` command sets
     // `handler_state.shutdown_requested`; if a prompt is running, the main

@@ -1560,14 +1560,35 @@ async fn stream_openai_inner(
         std::collections::HashMap::new();
 
     use futures::StreamExt;
-    while let Some(event) = events.next().await {
-        let event = event?;
-        let Some(chunk) = parse_openai_sse_event(&event) else {
-            continue;
-        };
-        // Check abort
-        if let Some(ref rx) = signal {
-            if *rx.borrow() {
+
+    // Abort future: completes when the abort signal flips to true. When there
+    // is no signal, it never completes (matching TS, where the fetch is passed
+    // the AbortSignal and aborts actively — here we select on the signal so an
+    // abort interrupts the SSE read immediately instead of waiting for the
+    // next chunk).
+    let abort_fut = async {
+        if let Some(mut rx) = signal.clone() {
+            loop {
+                if *rx.borrow() {
+                    break;
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(abort_fut);
+
+    loop {
+        let next = tokio::select! {
+            event = events.next() => event,
+            _ = &mut abort_fut => {
+                // Abort requested — mark the message as aborted (matching TS
+                // `output.stopReason = signal.aborted ? "aborted" : "error"`)
+                // so downstream compaction/retry checks skip it.
                 output.stop_reason = StopReason::Aborted;
                 output.error_message = Some("Request was aborted".to_string());
                 let _ = tx.send(AssistantMessageEvent::Error {
@@ -1576,7 +1597,15 @@ async fn stream_openai_inner(
                 });
                 return Ok(());
             }
-        }
+        };
+        let Some(event) = next else {
+            break;
+        };
+        let event = event?;
+        let Some(chunk) = parse_openai_sse_event(&event) else {
+            continue;
+        };
+        // (Abort is handled by the select above; no per-chunk poll needed.)
 
         // Capture response ID and model (routed model surfaces on responseModel
         // when it differs from the requested id — match TS openai-completions).
@@ -1801,7 +1830,22 @@ async fn stream_openai_inner(
         }
     }
 
-    // Match TS: check that we received a finish_reason
+    // Match TS: check that we received a finish_reason. If the stream ended
+    // but an abort was requested (e.g. the provider closed the connection
+    // right as the user cancelled), mark the message as aborted — matching TS
+    // `output.stopReason = signal.aborted ? "aborted" : "error"` — so
+    // downstream compaction/retry checks skip it.
+    if let Some(ref rx) = signal {
+        if *rx.borrow() {
+            output.stop_reason = StopReason::Aborted;
+            output.error_message = Some("Request was aborted".to_string());
+            let _ = tx.send(AssistantMessageEvent::Error {
+                reason: StopReason::Aborted,
+                error: output.clone(),
+            });
+            return Ok(());
+        }
+    }
     if !has_finish_reason {
         output.stop_reason = StopReason::Error;
         output.error_message = Some("Stream ended without finish_reason".to_string());
@@ -2435,5 +2479,113 @@ mod tests {
         let usage = parse_chunk_usage(&usage_json);
         assert_eq!(usage.input, 80);
         assert_eq!(usage.cache_read, 20);
+    }
+}
+
+#[cfg(test)]
+mod abort_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use futures::StreamExt;
+
+    fn abort_test_model(addr: &str) -> Model {
+        Model {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            api: "openai-completions".to_string(),
+            provider: "ollama".to_string(),
+            base_url: format!("http://{addr}"),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// Aborting mid-stream must interrupt the SSE read immediately and mark
+    /// the message `StopReason::Aborted` (matching TS openai-completions:
+    /// `output.stopReason = signal.aborted ? "aborted" : "error"`).
+    ///
+    /// Regression guard: the old code only polled the signal per SSE chunk,
+    /// so an abort while the stream was idle (no new chunk) never fired — the
+    /// stream ran to completion and the message was marked `Error` instead of
+    /// `Aborted`, which then triggered compaction on the next turn.
+    #[tokio::test]
+    async fn abort_interrupts_idle_sse_stream_and_marks_aborted() {
+        // Mock server: send one thinking chunk, then hold the connection open
+        // (no more data) so the SSE read blocks — exactly the "idle stream"
+        // case where the old per-chunk poll never fired.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let body = "data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"},\"index\":0}]}\n\n";
+            // No Content-Length: the connection stays open after the chunk so
+            // the SSE read blocks (idle stream) until the client aborts.
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{}",
+                body
+            );
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, resp.as_bytes()).await;
+            // Hold the connection open — never send more data, never close.
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let model = abort_test_model(&addr.to_string());
+        let context = Context {
+            system_prompt: Some("You are helpful".into()),
+            messages: vec![],
+            tools: None,
+        };
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let opts = StreamOptions {
+            api_key: Some("test-key".into()),
+            signal: Some(rx),
+            ..Default::default()
+        };
+        let mut stream = stream_openai(&model, &context, Some(&opts));
+
+        // Wait until the first (thinking) chunk arrives, proving the stream is
+        // mid-flight and now idle.
+        let mut saw_thinking = false;
+        for _ in 0..100 {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), stream.next()).await {
+                Ok(Some(AssistantMessageEvent::ThinkingStart { .. }))
+                | Ok(Some(AssistantMessageEvent::ThinkingDelta { .. })) => {
+                    saw_thinking = true;
+                    break;
+                }
+                Ok(Some(ev)) => eprintln!("unexpected event: {ev:?}"),
+                Ok(None) => panic!("stream ended before abort"),
+                Err(_) => {}
+            }
+        }
+        assert!(saw_thinking, "must receive the thinking chunk first");
+
+        // Abort while the stream is idle (blocked on the next SSE chunk).
+        tx.send(true).unwrap();
+
+        // The stream must terminate promptly with an Error(Aborted) message.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .unwrap_or_else(|_| panic!("abort must interrupt the idle stream within 5s"))
+            .unwrap_or_else(|| panic!("stream must yield an event after abort"));
+        match result {
+            AssistantMessageEvent::Error { reason, error } => {
+                assert_eq!(reason, StopReason::Aborted);
+                assert_eq!(error.stop_reason, StopReason::Aborted);
+                assert_eq!(
+                    error.error_message.as_deref(),
+                    Some("Request was aborted")
+                );
+            }
+            other => panic!("expected Error(Aborted), got {other:?}"),
+        }
     }
 }

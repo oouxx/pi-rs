@@ -1605,6 +1605,7 @@ version = "1.82.2"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "base64",
  "chrono",
  "dirs",
  "fs2",

@@ -150,6 +150,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
         custom_tools: None,
     };
 
@@ -230,6 +231,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         session_manager: None,
         settings_manager: None,
         session_start_event: None,
+        ui_context: None,
     };
 
     let (session, _result) = match create_agent_session(sdk_options).await {

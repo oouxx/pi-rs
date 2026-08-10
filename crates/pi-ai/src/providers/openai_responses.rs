@@ -1436,6 +1436,7 @@ async fn process_responses_stream<S>(
     model: &Model,
     service_tier: Option<&str>,
     grammar_properties: &std::collections::HashMap<String, String>,
+    signal: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<(), String>
 where
     S: futures::Stream<Item = Result<Option<Value>, String>> + Unpin,
@@ -1445,8 +1446,41 @@ where
     let mut output_slots: HashMap<usize, OutputSlot> = HashMap::new();
     let mut reasoning_blocks: HashMap<String, usize> = HashMap::new();
 
+    // Abort future: completes when the abort signal flips to true (matching TS
+    // active abort). With no signal it never completes.
+    let abort_fut = async {
+        if let Some(mut rx) = signal.clone() {
+            loop {
+                if *rx.borrow() {
+                    break;
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(abort_fut);
+
     let mut events = events;
-    while let Some(item) = events.next().await {
+    loop {
+        let next = tokio::select! {
+            item = events.next() => item,
+            _ = &mut abort_fut => {
+                output.stop_reason = StopReason::Aborted;
+                output.error_message = Some("Request was aborted".to_string());
+                let _ = tx.send(AssistantMessageEvent::Error {
+                    reason: StopReason::Aborted,
+                    error: output.clone(),
+                });
+                return Ok(());
+            }
+        };
+        let Some(item) = next else {
+            break;
+        };
         let Some(event) = item? else {
             continue;
         };
@@ -1904,6 +1938,19 @@ where
         }
     }
 
+    // If the stream ended but an abort was requested, mark as aborted
+    // (matching TS `signal.aborted ? "aborted" : "error"`).
+    if let Some(ref rx) = signal {
+        if *rx.borrow() {
+            output.stop_reason = StopReason::Aborted;
+            output.error_message = Some("Request was aborted".to_string());
+            let _ = tx.send(AssistantMessageEvent::Error {
+                reason: StopReason::Aborted,
+                error: output.clone(),
+            });
+            return Ok(());
+        }
+    }
     if !saw_terminal {
         return Err("OpenAI Responses stream ended before a terminal response event".into());
     }
@@ -2164,6 +2211,7 @@ async fn stream_openai_responses_inner(
         model,
         service_tier,
         &grammar_properties,
+        signal,
     )
     .await?;
 
@@ -2525,6 +2573,7 @@ mod tests {
             &model,
             None,
             &std::collections::HashMap::new(),
+            None,
         )
         .await
         .unwrap();
@@ -2591,6 +2640,7 @@ mod tests {
             &model,
             None,
             &grammar,
+            None,
         )
         .await
         .unwrap();
@@ -2843,6 +2893,7 @@ mod tests {
             &model,
             None,
             &std::collections::HashMap::new(),
+            None,
         )
         .await
         .unwrap();
@@ -2860,6 +2911,98 @@ mod tests {
                 assert_eq!(arguments["path"], "/tmp/a");
             }
             _ => panic!("expected tool call block"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod abort_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use futures::StreamExt;
+
+    fn abort_test_model(addr: &str) -> Model {
+        Model {
+            id: "gpt-test".to_string(),
+            name: "GPT Test".to_string(),
+            api: "openai-responses".to_string(),
+            provider: "openai".to_string(),
+            base_url: format!("http://{addr}"),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// Aborting mid-stream must interrupt the idle SSE read immediately and
+    /// mark the message `StopReason::Aborted` (matching TS active abort).
+    #[tokio::test]
+    async fn abort_interrupts_idle_sse_stream_and_marks_aborted() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            // One reasoning delta, then hold the connection open (idle stream).
+            let body = concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"r1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"\"}]}}\n\n",
+                "data: {\"type\":\"response.reasoning_text.delta\",\"output_index\":0,\"delta\":\"thinking...\"}\n\n",
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{}",
+                body
+            );
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, resp.as_bytes()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let model = abort_test_model(&addr.to_string());
+        let context = Context {
+            system_prompt: Some("You are helpful".into()),
+            messages: vec![],
+            tools: None,
+        };
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let opts = StreamOptions {
+            api_key: Some("test-key".into()),
+            signal: Some(rx),
+            ..Default::default()
+        };
+        let mut stream = stream_openai_responses(&model, &context, Some(&opts));
+
+        let mut saw_thinking = false;
+        for _ in 0..100 {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), stream.next()).await {
+                Ok(Some(AssistantMessageEvent::ThinkingDelta { .. })) => {
+                    saw_thinking = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("stream ended before abort"),
+                Err(_) => {}
+            }
+        }
+        assert!(saw_thinking, "must receive the thinking delta first");
+
+        tx.send(true).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .unwrap_or_else(|_| panic!("abort must interrupt the idle stream within 5s"))
+            .unwrap_or_else(|| panic!("stream must yield an event after abort"));
+        match result {
+            AssistantMessageEvent::Error { reason, error } => {
+                assert_eq!(reason, StopReason::Aborted);
+                assert_eq!(error.stop_reason, StopReason::Aborted);
+                assert_eq!(error.error_message.as_deref(), Some("Request was aborted"));
+            }
+            other => panic!("expected Error(Aborted), got {other:?}"),
         }
     }
 }

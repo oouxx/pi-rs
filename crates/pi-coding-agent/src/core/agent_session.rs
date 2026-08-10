@@ -46,7 +46,18 @@ pub type ErrorListener = Box<dyn Fn(&ExtensionError) + Send + Sync>;
 /// Output-chunk callback for `execute_bash` (not an error listener).
 pub type ChunkCallback = Box<dyn Fn(&str) + Send + Sync>;
 /// Send a custom message (bound to this session).
-pub type SendMessageFn = Box<dyn Fn(String, Option<CustomMessageOptions>) + Send + Sync>;
+/// A custom message sent by an extension, matching TS `CustomMessage`.
+#[derive(Debug, Clone)]
+pub struct CustomMessage {
+    pub custom_type: String,
+    pub content: Vec<ContentBlock>,
+    pub display: Option<bool>,
+    pub details: Option<serde_json::Value>,
+}
+
+/// Send a custom message (bound to this session), matching TS
+/// `sendMessage(message, options)`.
+pub type SendMessageFn = Box<dyn Fn(CustomMessage, Option<CustomMessageOptions>) + Send + Sync>;
 /// Send a user message (bound to this session).
 pub type SendUserMessageFn = Box<dyn Fn(String, Option<SendUserMessageOptions>) + Send + Sync>;
 /// Extension hook: transform the provider request payload.
@@ -2021,12 +2032,118 @@ impl AgentSession {
     /// Returns a ReplacedSessionContext with send_message and send_user_message methods
     /// bound to this session.
     pub fn create_replaced_session_context(&self) -> ReplacedSessionContext {
-        // In TS, this clones the extension runner's command context and binds
-        // sendMessage/sendUserMessage. In Rust, we create a simplified context
-        // with the same interface.
+        // Bind sendMessage/sendUserMessage to this session (matching TS
+        // createReplacedSessionContext which binds sendCustomMessage and
+        // sendUserMessage). The closures capture the shared Arc fields and
+        // spawn the async work (TS's sendMessage is fire-and-forget too).
+        let agent = self.agent.clone();
+        let session_manager = self.session_manager.clone();
+        let is_agent_run_active = self.is_agent_run_active.clone();
+        let pending_next_turn = self.pending_next_turn_messages.clone();
+        // Each closure needs its own Arc clones (they are moved into the
+        // closures independently).
+        let (agent2, sm2, active2, next2) = (
+            agent.clone(),
+            session_manager.clone(),
+            is_agent_run_active.clone(),
+            pending_next_turn.clone(),
+        );
         ReplacedSessionContext {
-            send_message: None,
-            send_user_message: None,
+            send_message: Some(Box::new(move |message, options| {
+                let agent = agent.clone();
+                let session_manager = session_manager.clone();
+                let is_agent_run_active = is_agent_run_active.clone();
+                let pending_next_turn = pending_next_turn.clone();
+                tokio::spawn(async move {
+                    let opts = options.unwrap_or_default();
+                    let timestamp = chrono::Utc::now().timestamp_millis();
+                    let app_message = AgentMessage::Custom {
+                        custom_type: message.custom_type.clone(),
+                        content: pi_agent_core::types::CustomContent::Blocks(
+                            message.content.clone(),
+                        ),
+                        display: message.display.unwrap_or(true),
+                        details: message.details.clone(),
+                        timestamp,
+                    };
+                    // deliverAs="nextTurn" → queue for next prompt()
+                    if opts.deliver_as.as_deref() == Some("nextTurn") {
+                        pending_next_turn
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(app_message);
+                        return;
+                    }
+                    // If streaming, use steer/followUp
+                    if *is_agent_run_active
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    {
+                        if opts.deliver_as.as_deref() == Some("followUp") {
+                            agent.follow_up(app_message).await;
+                        } else {
+                            agent.steer(app_message).await;
+                        }
+                        return;
+                    }
+                    // Not streaming: persist and optionally trigger a turn
+                    session_manager
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .append_custom_message_entry(
+                            &message.custom_type,
+                            serde_json::to_value(&app_message).unwrap_or_default(),
+                            message.display.unwrap_or(true),
+                            message.details.clone(),
+                        );
+                    if opts.trigger_turn {
+                        agent.process(vec![app_message]).await.ok();
+                    } else {
+                        agent
+                            .update_state(|s| s.messages.push(app_message))
+                            .await;
+                    }
+                });
+            })),
+            send_user_message: Some(Box::new(move |content, options| {
+                let agent = agent2.clone();
+                let session_manager = sm2.clone();
+                let is_agent_run_active = active2.clone();
+                let pending_next_turn = next2.clone();
+                tokio::spawn(async move {
+                    let opts = options.unwrap_or_default();
+                    let timestamp = chrono::Utc::now().timestamp_millis();
+                    let message = AgentMessage::User {
+                        content: vec![ContentBlock::text(&content)],
+                        timestamp,
+                    };
+                    if opts.deliver_as.as_deref() == Some("nextTurn") {
+                        pending_next_turn
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(message);
+                        return;
+                    }
+                    if *is_agent_run_active
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    {
+                        if opts.deliver_as.as_deref() == Some("followUp") {
+                            agent.follow_up(message).await;
+                        } else {
+                            agent.steer(message).await;
+                        }
+                        return;
+                    }
+                    session_manager
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .append_message(serde_json::to_value(&message).unwrap_or_default());
+                    agent
+                        .update_state(|s| s.messages.push(message))
+                        .await;
+                });
+            })),
         }
     }
 

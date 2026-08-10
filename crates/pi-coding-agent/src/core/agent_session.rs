@@ -15,7 +15,7 @@ use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::LoadedResources;
 use crate::core::session_manager::SessionEntry;
 use crate::core::session_manager::SessionManager;
-use crate::core::system_prompt::{self, BuildSystemPromptOptions, ContextFile, SkillInfo};
+use crate::core::system_prompt::{self, ContextFile, SkillInfo};
 use crate::core::tools;
 use pi_agent_core::pi_ai_types::AssistantMessageEvent;
 use tokio::sync::Notify;
@@ -438,6 +438,11 @@ pub struct AgentSession {
     tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition>,
     /// Loaded resources (skills, prompt templates, context files), matching TS `_resourceLoader`.
     resources: Option<LoadedResources>,
+    /// System-prompt build options (without the selected-tool list, which
+    /// changes with the active tool set). Saved at construction so
+    /// `set_active_tools_by_name` can rebuild the prompt (matching TS
+    /// `_rebuildSystemPrompt`).
+    system_prompt_options: Option<system_prompt::BuildSystemPromptOptions>,
     /// Extension-contributed resource paths from `resources_discover` event.
     /// These are collected at session start and can be applied to the resource loader
     /// on session reload via `extend_resources()`.
@@ -781,7 +786,7 @@ impl AgentSession {
         };
 
         let selected_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
-        let system_prompt = system_prompt::build_system_prompt(&BuildSystemPromptOptions {
+        let system_prompt_options = system_prompt::BuildSystemPromptOptions {
             cwd: options.cwd.clone(),
             custom_prompt: options.custom_prompt,
             append_system_prompt: options.append_system_prompt,
@@ -790,7 +795,8 @@ impl AgentSession {
             prompt_guidelines: Some(prompt_guidelines),
             context_files: Some(options.context_files),
             skills: Some(options.skills),
-        });
+        };
+        let system_prompt = system_prompt::build_system_prompt(&system_prompt_options);
 
         // 6. Apply initial_active_tool_names: only built-in tools are gated
         //    by this; custom + extension tools are always active (matching
@@ -1021,6 +1027,32 @@ impl AgentSession {
             on_headers,
             on_provider_response,
             get_api_key,
+            // Refresh system prompt / tools / model / thinking level before
+            // each turn (matching TS _installAgentNextTurnRefresh which sets
+            // agent.prepareNextTurnWithContext). The agent reference is bound
+            // late via bash_agent_ref (set after Agent::new).
+            prepare_next_turn_with_context: {
+                let agent_ref = bash_agent_ref.clone();
+                Some(Arc::new(move |turn, _signal| {
+                    let agent_ref = agent_ref.clone();
+                    Box::pin(async move {
+                        let agent = agent_ref
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()?;
+                        let state = agent.state().await;
+                        Some(pi_agent_core::types::AgentLoopTurnUpdate {
+                            context: Some(pi_agent_core::types::AgentContext {
+                                system_prompt: state.system_prompt,
+                                messages: turn.context.messages,
+                                tools: Some(state.tools),
+                            }),
+                            model: Some(state.model),
+                            thinking_level: Some(state.thinking_level),
+                        })
+                    })
+                }))
+            },
             ..Default::default()
         };
 
@@ -1114,6 +1146,14 @@ impl AgentSession {
             tool_registry,
             tool_definitions,
             resources: options.resources,
+            system_prompt_options: Some({
+                // Save the build options without the selected-tool list so
+                // set_active_tools_by_name can rebuild the prompt when the
+                // active tool set changes (matching TS _rebuildSystemPrompt).
+                let mut opts = system_prompt_options.clone();
+                opts.selected_tools = None;
+                opts
+            }),
             extension_resource_paths: None,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
             extension_state_view: options.extension_state_view,
@@ -2099,6 +2139,14 @@ impl AgentSession {
             .collect();
         // Write through the shared state — `state()` returns a clone.
         self.agent.update_state(|s| s.tools = selected).await;
+
+        // Rebuild the base system prompt with the new tool set (matching TS
+        // setActiveToolsByName which calls _rebuildSystemPrompt).
+        if let Some(mut opts) = self.system_prompt_options.clone() {
+            opts.selected_tools = Some(tool_names.to_vec());
+            let rebuilt = system_prompt::build_system_prompt(&opts);
+            self.agent.set_system_prompt(rebuilt).await;
+        }
     }
 
     // =========================================================================
@@ -2615,7 +2663,16 @@ References are relative to {}.
                         )
                     }
                 }
-                Err(_) => text.to_string(),
+                Err(e) => {
+                    // Emit the error like extension commands do (matching TS
+                    // _expandSkillCommand which calls emitError).
+                    self.emit_extension_error(
+                        &skill.file_path,
+                        "skill_expansion",
+                        &e.to_string(),
+                    );
+                    text.to_string()
+                }
             }
         } else {
             text.to_string()

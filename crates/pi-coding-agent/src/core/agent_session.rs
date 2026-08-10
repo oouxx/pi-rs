@@ -1208,6 +1208,142 @@ impl AgentSession {
             bash_abort: Arc::new(std::sync::Mutex::new(None)),
         };
 
+        // Bind extension runtime actions (matching TS _bindExtensionCore):
+        // pi.sendMessage() / pi.sendUserMessage() delegate to the session.
+        // The closures capture the shared Arc fields and spawn the async work
+        // (TS's sendMessage is fire-and-forget too).
+        {
+            let agent = session.agent.clone();
+            let session_manager = session.session_manager.clone();
+            let is_agent_run_active = session.is_agent_run_active.clone();
+            let pending_next_turn = session.pending_next_turn_messages.clone();
+            let send_message = {
+                let agent = agent.clone();
+                let session_manager = session_manager.clone();
+                let is_agent_run_active = is_agent_run_active.clone();
+                let pending_next_turn = pending_next_turn.clone();
+                std::sync::Arc::new(move |message: String, options: Option<serde_json::Value>| {
+                    let agent = agent.clone();
+                    let session_manager = session_manager.clone();
+                    let is_agent_run_active = is_agent_run_active.clone();
+                    let pending_next_turn = pending_next_turn.clone();
+                    tokio::spawn(async move {
+                        // The message is a JSON string (extensions serialize
+                        // their event); derive customType from its "type" field.
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(&message).unwrap_or(serde_json::Value::Null);
+                        let custom_type = parsed
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("custom")
+                            .to_string();
+                        let opts = options.unwrap_or(serde_json::Value::Null);
+                        let trigger_turn = opts
+                            .get("triggerTurn")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let deliver_as = opts
+                            .get("deliverAs")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let timestamp = chrono::Utc::now().timestamp_millis();
+                        let app_message = AgentMessage::Custom {
+                            custom_type: custom_type.clone(),
+                            content: pi_agent_core::types::CustomContent::Text(message.clone()),
+                            display: true,
+                            details: None,
+                            timestamp,
+                        };
+                        if deliver_as.as_deref() == Some("nextTurn") {
+                            pending_next_turn
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push(app_message);
+                            return;
+                        }
+                        if *is_agent_run_active
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        {
+                            if deliver_as.as_deref() == Some("followUp") {
+                                agent.follow_up(app_message).await;
+                            } else {
+                                agent.steer(app_message).await;
+                            }
+                            return;
+                        }
+                        session_manager
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .append_custom_message_entry(
+                                &custom_type,
+                                serde_json::to_value(&app_message).unwrap_or_default(),
+                                true,
+                                None,
+                            );
+                        if trigger_turn {
+                            agent.process(vec![app_message]).await.ok();
+                        } else {
+                            agent
+                                .update_state(|s| s.messages.push(app_message))
+                                .await;
+                        }
+                    });
+                })
+            };
+            let send_user_message = {
+                let agent = agent.clone();
+                let session_manager = session_manager.clone();
+                let is_agent_run_active = is_agent_run_active.clone();
+                let pending_next_turn = pending_next_turn.clone();
+                std::sync::Arc::new(move |content: String, options: Option<serde_json::Value>| {
+                    let agent = agent.clone();
+                    let session_manager = session_manager.clone();
+                    let is_agent_run_active = is_agent_run_active.clone();
+                    let pending_next_turn = pending_next_turn.clone();
+                    tokio::spawn(async move {
+                        let opts = options.unwrap_or(serde_json::Value::Null);
+                        let deliver_as = opts
+                            .get("deliverAs")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let timestamp = chrono::Utc::now().timestamp_millis();
+                        let message = AgentMessage::User {
+                            content: vec![ContentBlock::text(&content)],
+                            timestamp,
+                        };
+                        if deliver_as.as_deref() == Some("nextTurn") {
+                            pending_next_turn
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push(message);
+                            return;
+                        }
+                        if *is_agent_run_active
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        {
+                            if deliver_as.as_deref() == Some("followUp") {
+                                agent.follow_up(message).await;
+                            } else {
+                                agent.steer(message).await;
+                            }
+                            return;
+                        }
+                        session_manager
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .append_message(serde_json::to_value(&message).unwrap_or_default());
+                        agent
+                            .update_state(|s| s.messages.push(message))
+                            .await;
+                    });
+                })
+            };
+            session.ext_ctx.runtime.send_message = send_message;
+            session.ext_ctx.runtime.send_user_message = send_user_message;
+        }
+
         // ── Dispatch resources_discover event to extensions ──
         // Notifies extensions that resources have been loaded, allowing them
         // to contribute additional resource paths (skillPaths, promptPaths, themePaths).

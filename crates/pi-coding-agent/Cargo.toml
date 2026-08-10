@@ -35,6 +35,7 @@ similar = "2"
 unicode-normalization = "0.1"
 url = "2"
 fs2 = "0.4"
+base64 = "0.22"
 # Process-group kill for the bash tool (kill the whole tree, matching TS
 # `killProcessTree` which sends SIGKILL to -pid on Unix).
 [target.'cfg(unix)'.dependencies]

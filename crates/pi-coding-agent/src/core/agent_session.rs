@@ -1449,39 +1449,24 @@ impl AgentSession {
                 // ── 3. Emit to session event listeners ──
                 let session_event = match &event {
                     AgentEvent::AgentEnd { messages } => {
-                        // Compute will_retry, matching TS _willRetryAfterAgentEnd():
-                        // retry must be enabled and under the attempt cap, and the
-                        // last assistant message (searched from the end) must be a
-                        // retryable error.
+                        // Compute will_retry, matching TS _handleAgentEvent
+                        // which calls _willRetryAfterAgentEnd(event).
                         let retry_settings = inner_settings
                             .clone()
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .get_retry_settings();
-                        let retry_enabled = retry_settings.enabled.unwrap_or(true);
-                        let max_retries = retry_settings.max_retries.unwrap_or(3);
                         let retry_attempt =
                             *_retry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let will_retry = retry_enabled && retry_attempt < max_retries && {
-                            messages.iter().rev().find_map(|m| match m {
-                                AgentMessage::Assistant {
-                                    stop_reason,
-                                    error_message,
-                                    ..
-                                } => {
-                                    if stop_reason
-                                        == &Some(pi_agent_core::pi_ai_types::StopReason::Error)
-                                    {
-                                        error_message
-                                            .as_deref()
-                                            .map(is_retryable_error_message)
-                                    } else {
-                                        Some(false)
-                                    }
-                                }
-                                _ => None,
-                            })
-                        } == Some(true);
+                        // TS passes this.model?.contextWindow ?? 0; the
+                        // listener cannot await agent state, so usage-based
+                        // overflow cases are disabled (error patterns only).
+                        let will_retry = will_retry_after_agent_end(
+                            messages,
+                            retry_attempt,
+                            &retry_settings,
+                            0,
+                        );
                         AgentSessionEvent::AgentEnd {
                             messages: messages.clone(),
                             will_retry,
@@ -2462,7 +2447,7 @@ impl AgentSession {
         };
 
         // Check retry
-        if self._is_retryable_error(&msg) && self._prepare_retry(&msg).await {
+        if self._is_retryable_error(&msg).await && self._prepare_retry(&msg).await {
             // Continue the agent
             self.agent.continue_run().await.ok();
             return true;
@@ -2669,30 +2654,9 @@ References are relative to {}.
     /// Check if an assistant message has a retryable error.
     /// Context overflow is NOT retryable (handled by compaction instead).
     /// Matches TS _isRetryableError().
-    fn _is_retryable_error(&self, message: &AgentMessage) -> bool {
-        if let AgentMessage::Assistant {
-            stop_reason,
-            error_message,
-            ..
-        } = message
-        {
-            if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
-                return false;
-            }
-            if let Some(ref err_msg) = error_message {
-                // Context overflow is handled by compaction, not retry
-                if err_msg.to_lowercase().contains("context")
-                    && err_msg.to_lowercase().contains("overflow")
-                {
-                    return false;
-                }
-                if err_msg.to_lowercase().contains("context_length") {
-                    return false;
-                }
-                return self._is_retryable_error_message(err_msg);
-            }
-        }
-        false
+    async fn _is_retryable_error(&self, message: &AgentMessage) -> bool {
+        let context_window = self.agent.state().await.model.context_window;
+        is_retryable_error(message, context_window)
     }
 
     /// Prepare a retry with exponential backoff.
@@ -3923,22 +3887,25 @@ References are relative to {}.
     }
 
     /// Check whether the agent should retry after an agent_end event.
-    /// Matches TS `_willRetryAfterAgentEnd`.
+    /// Matches TS `_willRetryAfterAgentEnd`: retry must be enabled and under
+    /// the attempt cap, and the last assistant message (searched from the end)
+    /// must be a retryable error.
     fn _will_retry_after_agent_end(&self, event: &AgentEvent) -> bool {
-        // Check if the agent_end has a retryable error
         if let AgentEvent::AgentEnd { messages } = event {
-            if let Some(AgentMessage::Assistant {
-                stop_reason,
-                error_message,
-                ..
-            }) = messages.last()
-            {
-                if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
-                    if let Some(ref err_msg) = error_message {
-                        return self._is_retryable_error_message(err_msg);
-                    }
-                }
-            }
+            let retry_settings = self
+                .settings_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_retry_settings();
+            let retry_attempt = *self
+                .retry_attempt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // TS passes this.model?.contextWindow ?? 0; a synchronous method
+            // cannot await agent state, so overflow detection falls back to
+            // error-message patterns only (context_window 0 disables the
+            // usage-based cases, matching TS when no context window is known).
+            return will_retry_after_agent_end(messages, retry_attempt, &retry_settings, 0);
         }
         false
     }
@@ -4657,6 +4624,82 @@ impl AgentSession {
         self.session_mgr_switch(&branch_path, None).await?;
         Ok(branch_path)
     }
+}
+
+/// Whether an assistant message is a retryable error, matching TS
+/// `_isRetryableError`: context overflow is handled by compaction, not retry
+/// (full `isContextOverflow` detection: error patterns + silent usage
+/// overflow + length-stop overflow).
+fn is_retryable_error(message: &AgentMessage, context_window: u64) -> bool {
+    if let AgentMessage::Assistant {
+        content,
+        api,
+        provider,
+        model,
+        usage,
+        stop_reason,
+        error_message,
+        timestamp,
+    } = message
+    {
+        if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
+            return false;
+        }
+        if let Some(ref err_msg) = error_message {
+            // Context overflow is handled by compaction, not retry. A zero
+            // context window disables the usage-based overflow cases
+            // (matching TS `this.model?.contextWindow ?? 0`).
+            let cw = if context_window > 0 {
+                Some(context_window)
+            } else {
+                None
+            };
+            let msg = pi_agent_core::pi_ai_types::AssistantMessage {
+                content: content.clone(),
+                api: api.clone(),
+                provider: provider.clone(),
+                model: model.clone(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: usage.clone(),
+                stop_reason: stop_reason.clone().unwrap_or(
+                    pi_agent_core::pi_ai_types::StopReason::Stop,
+                ),
+                error_message: error_message.clone(),
+                raw_stop_reason: None,
+                timestamp: *timestamp,
+            };
+            if pi_agent_core::pi_ai::utils::overflow::is_context_overflow(&msg, cw) {
+                return false;
+            }
+            return is_retryable_error_message(err_msg);
+        }
+    }
+    false
+}
+
+/// Whether the agent will retry after an agent_end, matching TS
+/// `_willRetryAfterAgentEnd`: retry must be enabled and under the attempt
+/// cap, and the last assistant message (searched from the end) must be a
+/// retryable error.
+fn will_retry_after_agent_end(
+    messages: &[AgentMessage],
+    retry_attempt: u32,
+    retry_settings: &crate::core::settings_manager::RetrySettings,
+    context_window: u64,
+) -> bool {
+    if !retry_settings.enabled.unwrap_or(true)
+        || retry_attempt >= retry_settings.max_retries.unwrap_or(3)
+    {
+        return false;
+    }
+    for message in messages.iter().rev() {
+        if let AgentMessage::Assistant { .. } = message {
+            return is_retryable_error(message, context_window);
+        }
+    }
+    false
 }
 
 /// Whether an error message matches a retryable transient provider/transport

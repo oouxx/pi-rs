@@ -390,8 +390,9 @@ fn extract_prompt(prompt: &[acp::ContentBlock]) -> (String, Vec<pi_agent_core::p
                         .mime_type
                         .clone()
                         .unwrap_or_else(|| "application/octet-stream".to_string());
-                    // Base64 decoded length (ignoring padding, off by ≤2 bytes).
-                    let bytes = b.blob.len() * 3 / 4;
+                    // Exact base64-decoded byte length (matching pi-acp's
+                    // `Buffer.byteLength(b.blob, 'base64')`).
+                    let bytes = base64_decode_len(&b.blob);
                     text_parts.push(format!(
                         "\n[Embedded Context] {} ({mime}, {bytes} bytes)",
                         b.uri
@@ -402,7 +403,7 @@ fn extract_prompt(prompt: &[acp::ContentBlock]) -> (String, Vec<pi_agent_core::p
             acp::ContentBlock::Audio(a) => {
                 // Not supported by pi; provide a marker so we don't silently
                 // drop context (matching pi-acp).
-                let bytes = a.data.len() * 3 / 4;
+                let bytes = base64_decode_len(&a.data);
                 text_parts.push(format!(
                     "\n[Audio] ({}, {bytes} bytes) not supported by pi-acp",
                     a.mime_type
@@ -412,6 +413,17 @@ fn extract_prompt(prompt: &[acp::ContentBlock]) -> (String, Vec<pi_agent_core::p
         }
     }
     (text_parts.join("\n"), images)
+}
+
+/// Exact byte length of a base64 string (matching pi-acp's
+/// `Buffer.byteLength(data, 'base64')`). Invalid input falls back to the
+/// length estimate.
+fn base64_decode_len(data: &str) -> usize {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map(|bytes| bytes.len())
+        .unwrap_or_else(|_| data.len() * 3 / 4)
 }
 
 /// Resolve a `provider/model` string to a pi `Model` via the session's model

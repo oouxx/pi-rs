@@ -1507,13 +1507,21 @@ async fn stream_openai_inner(
     for (k, v) in &headers {
         request = request.header(k, v);
     }
-    let response = request.send().await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API error {status}: {text}").into());
-    }
+    // Send the request with HTTP-level retry (match TS `retryProviderRequest`):
+    // transient errors (network, 408/409/429, 5xx) are retried with exponential
+    // backoff honoring retry-after headers; the abort signal interrupts sleeps.
+    let request = request.build()?;
+    let response = crate::utils::provider_retry::send_with_retry(
+        request,
+        &http_client,
+        signal.clone(),
+        options.and_then(|o| o.max_retries),
+        options.and_then(|o| o.max_retry_delay_ms),
+        "OpenAI API error",
+    )
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
     // Stream the SSE body incrementally (match TS openai-completions streaming).
     let events = crate::utils::sse::sse_events_stream(
@@ -1636,6 +1644,14 @@ async fn stream_openai_inner(
             continue;
         }
         let choice = &choices[0];
+
+        // Fallback: some providers (e.g. Moonshot) return usage in
+        // choice.usage instead of the standard chunk.usage (matching TS).
+        if chunk.get("usage").is_none() {
+            if let Some(usage) = choice.get("usage") {
+                output.usage = parse_chunk_usage(usage);
+            }
+        }
 
         // Check finish reason
         if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {

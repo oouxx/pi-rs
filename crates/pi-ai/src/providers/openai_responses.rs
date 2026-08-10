@@ -109,159 +109,7 @@ fn apply_service_tier_pricing(usage: &mut Usage, model_id: &str, service_tier: O
 }
 
 // ============================================================================
-// Provider retry (match TS `retryProviderRequest` / `isRetryableProviderError`)
-// ============================================================================
-
-const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
-
-struct ProviderHttpError {
-    status: Option<u16>,
-    headers: reqwest::header::HeaderMap,
-    message: String,
-}
-
-fn is_retryable_provider_error(error: &ProviderHttpError) -> bool {
-    if let Some(should_retry) = error
-        .headers
-        .get("x-should-retry")
-        .and_then(|v| v.to_str().ok())
-    {
-        if should_retry == "true" {
-            return true;
-        }
-        if should_retry == "false" {
-            return false;
-        }
-    }
-    match error.status {
-        None => true,
-        Some(408) | Some(409) | Some(429) => true,
-        Some(s) => s >= 500,
-    }
-}
-
-fn validate_server_retry_delay_ms(
-    delay_ms: f64,
-    max_retry_delay_ms: Option<u64>,
-    provider_error_message: &str,
-) -> Result<u64, String> {
-    let max_delay_ms = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
-    if max_delay_ms > 0 && delay_ms > max_delay_ms as f64 {
-        return Err(format!(
-            "Server requested {}s retry delay (max: {}s). {provider_error_message}",
-            (delay_ms / 1000.0).ceil(),
-            (max_delay_ms as f64 / 1000.0).ceil(),
-        ));
-    }
-    Ok(delay_ms as u64)
-}
-
-fn get_retry_delay_ms(
-    error: &ProviderHttpError,
-    retry_index: u32,
-    max_retry_delay_ms: Option<u64>,
-) -> Result<u64, String> {
-    if let Some(v) = error
-        .headers
-        .get("retry-after-ms")
-        .and_then(|v| v.to_str().ok())
-    {
-        if let Ok(value) = v.parse::<f64>() {
-            return validate_server_retry_delay_ms(value, max_retry_delay_ms, &error.message);
-        }
-    }
-    if let Some(v) = error
-        .headers
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-    {
-        let delay_ms = match v.parse::<f64>() {
-            Ok(seconds) => seconds * 1000.0,
-            Err(_) => match chrono::DateTime::parse_from_rfc2822(v) {
-                Ok(dt) => (dt.timestamp_millis() - chrono::Utc::now().timestamp_millis()) as f64,
-                Err(_) => f64::NAN,
-            },
-        };
-        if !delay_ms.is_nan() {
-            return validate_server_retry_delay_ms(delay_ms, max_retry_delay_ms, &error.message);
-        }
-    }
-    let exponential = (0.5 * 2f64.powi(retry_index as i32)).min(8.0) * 1000.0;
-    Ok((exponential * (1.0 - rand::random::<f64>() * 0.25)) as u64)
-}
-
-async fn abortable_sleep(
-    ms: u64,
-    signal: &Option<tokio::sync::watch::Receiver<bool>>,
-) -> Result<(), String> {
-    if let Some(rx) = signal {
-        if *rx.borrow() {
-            return Err("Request aborted".into());
-        }
-        let mut rx = rx.clone();
-        tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => {}
-            _ = rx.changed() => {
-                if *rx.borrow() {
-                    return Err("Request aborted".into());
-                }
-            }
-        }
-        Ok(())
-    } else {
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-        Ok(())
-    }
-}
-
-/// Send the request with retry, mirroring the OpenAI/Anthropic SDK retry policy
-/// (match TS `retryProviderRequest`).
-async fn send_with_retry(
-    request_fn: impl Fn() -> reqwest::RequestBuilder,
-    max_retries: Option<u32>,
-    max_retry_delay_ms: Option<u64>,
-    signal: &Option<tokio::sync::watch::Receiver<bool>>,
-) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
-    let max_retries = max_retries.unwrap_or(0);
-    let mut retries_remaining = max_retries;
-    loop {
-        let result = request_fn().send().await;
-        let error = match result {
-            Ok(response) => {
-                if response.status().is_success() {
-                    return Ok(response);
-                }
-                let status = response.status();
-                let headers = response.headers().clone();
-                let text = response.text().await.unwrap_or_default();
-                ProviderHttpError {
-                    status: Some(status.as_u16()),
-                    headers,
-                    message: format!("OpenAI API error {status}: {text}"),
-                }
-            }
-            Err(e) => ProviderHttpError {
-                status: None,
-                headers: reqwest::header::HeaderMap::new(),
-                message: e.to_string(),
-            },
-        };
-        if retries_remaining == 0 || !is_retryable_provider_error(&error) {
-            return Err(error.message.into());
-        }
-        if let Some(rx) = signal {
-            if *rx.borrow() {
-                return Err("Request aborted".into());
-            }
-        }
-        let retry_index = max_retries - retries_remaining;
-        retries_remaining -= 1;
-        let delay = get_retry_delay_ms(&error, retry_index, max_retry_delay_ms)?;
-        abortable_sleep(delay, signal).await?;
-    }
-}
-
-// ============================================================================
+// Provider retry (match TS `retryProviderRequest` / `isRetryableProviderError`)// ============================================================================
 // GitHub Copilot dynamic headers (match TS `buildCopilotDynamicHeaders`)
 // ============================================================================
 
@@ -2148,18 +1996,20 @@ async fn stream_openai_responses_inner(
         headers.extend(build_copilot_dynamic_headers(&context.messages));
     }
 
-    let request_fn = || {
+    let request = {
         let mut req = http_client.post(&url).json(&request_body);
         for (k, v) in &headers {
             req = req.header(k, v);
         }
         req
     };
-    let response = send_with_retry(
-        request_fn,
+    let response = crate::utils::provider_retry::send_with_retry(
+        request.build()?,
+        &http_client,
+        signal.clone(),
         options.and_then(|o| o.max_retries),
         options.and_then(|o| o.max_retry_delay_ms),
-        &signal,
+        "OpenAI API error",
     )
     .await?;
 
@@ -2780,55 +2630,28 @@ mod tests {
 
     #[test]
     fn test_is_retryable_provider_error() {
-        let mk = |status: Option<u16>, headers: reqwest::header::HeaderMap| ProviderHttpError {
-            status,
-            headers,
-            message: "err".into(),
-        };
-        assert!(is_retryable_provider_error(&mk(
-            None,
-            reqwest::header::HeaderMap::new()
-        )));
-        assert!(is_retryable_provider_error(&mk(
-            Some(408),
-            reqwest::header::HeaderMap::new()
-        )));
-        assert!(is_retryable_provider_error(&mk(
-            Some(409),
-            reqwest::header::HeaderMap::new()
-        )));
-        assert!(is_retryable_provider_error(&mk(
-            Some(429),
-            reqwest::header::HeaderMap::new()
-        )));
-        assert!(is_retryable_provider_error(&mk(
-            Some(500),
-            reqwest::header::HeaderMap::new()
-        )));
-        assert!(!is_retryable_provider_error(&mk(
-            Some(400),
-            reqwest::header::HeaderMap::new()
-        )));
-        assert!(!is_retryable_provider_error(&mk(
-            Some(404),
-            reqwest::header::HeaderMap::new()
-        )));
+        use crate::utils::provider_retry::{ProviderHttpError, is_retryable_provider_error};
+        let mk = |status: Option<u16>| ProviderHttpError::new(status, "err");
+        assert!(is_retryable_provider_error(&mk(None)));
+        assert!(is_retryable_provider_error(&mk(Some(408))));
+        assert!(is_retryable_provider_error(&mk(Some(409))));
+        assert!(is_retryable_provider_error(&mk(Some(429))));
+        assert!(is_retryable_provider_error(&mk(Some(500))));
+        assert!(!is_retryable_provider_error(&mk(Some(400))));
+        assert!(!is_retryable_provider_error(&mk(Some(404))));
         // x-should-retry header overrides
-        let mut h = reqwest::header::HeaderMap::new();
-        h.insert("x-should-retry", "true".parse().unwrap());
-        assert!(is_retryable_provider_error(&mk(Some(400), h)));
-        let mut h = reqwest::header::HeaderMap::new();
-        h.insert("x-should-retry", "false".parse().unwrap());
-        assert!(!is_retryable_provider_error(&mk(Some(500), h)));
+        let mut err = crate::utils::provider_retry::ProviderHttpError::new(Some(400), "err");
+        err.should_retry = Some("true".to_string());
+        assert!(crate::utils::provider_retry::is_retryable_provider_error(&err));
+        let mut err = crate::utils::provider_retry::ProviderHttpError::new(Some(400), "err");
+        err.should_retry = Some("false".to_string());
+        assert!(!crate::utils::provider_retry::is_retryable_provider_error(&err));
     }
 
     #[test]
     fn test_get_retry_delay_exponential() {
-        let err = ProviderHttpError {
-            status: Some(429),
-            headers: reqwest::header::HeaderMap::new(),
-            message: "err".into(),
-        };
+        use crate::utils::provider_retry::{ProviderHttpError, get_retry_delay_ms};
+        let err = ProviderHttpError::new(Some(429), "err");
         // retryIndex 0: 0.5s * jitter(0.75..1.0)
         let d0 = get_retry_delay_ms(&err, 0, None).unwrap();
         assert!((375..=500).contains(&d0), "d0={d0}");
@@ -2842,22 +2665,13 @@ mod tests {
 
     #[test]
     fn test_get_retry_delay_server_header() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("retry-after-ms", "1500".parse().unwrap());
-        let err = ProviderHttpError {
-            status: Some(429),
-            headers,
-            message: "err".into(),
-        };
+        use crate::utils::provider_retry::{ProviderHttpError, get_retry_delay_ms};
+        let mut err = ProviderHttpError::new(Some(429), "err");
+        err.retry_after_ms = Some(1500.0);
         assert_eq!(get_retry_delay_ms(&err, 0, None).unwrap(), 1500);
         // server delay above max fails immediately
-        let mut headers2 = reqwest::header::HeaderMap::new();
-        headers2.insert("retry-after-ms", "150000".parse().unwrap());
-        let err2 = ProviderHttpError {
-            status: Some(429),
-            headers: headers2,
-            message: "err".into(),
-        };
+        let mut err2 = ProviderHttpError::new(Some(429), "err");
+        err2.retry_after_ms = Some(150_000.0);
         assert!(get_retry_delay_ms(&err2, 0, None).is_err());
     }
 

@@ -751,20 +751,74 @@ async fn stream_pi_messages_inner(
             request = request.header(k, v);
         }
     }
-    let response = request.send().await?;
-    let status = response.status();
-    let status_text = status.canonical_reason().unwrap_or("").to_string();
-
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(Box::new(create_pi_messages_response_error(
-            model,
-            &url,
-            status.as_u16(),
-            &status_text,
-            &body,
-        )));
-    }
+    let response = {
+        use crate::utils::provider_retry::{
+            ProviderHttpError, RetryProviderOptions, retry_provider_request,
+        };
+        let request = request.build()?;
+        let request_ref = &request;
+        let url_ref = &url;
+        let model_ref = model;
+        retry_provider_request(
+            || {
+                let client = client.clone();
+                async move {
+                    let req = request_ref.try_clone().ok_or_else(|| {
+                        ProviderHttpError::new(None, "request body not cloneable")
+                    })?;
+                    let response = client
+                        .execute(req)
+                        .await
+                        .map_err(|e| ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string()))?;
+                    let status = response.status();
+                    let headers = response.headers().clone();
+                    if !status.is_success() {
+                        let body = response.text().await.unwrap_or_default();
+                        let status_text = status.canonical_reason().unwrap_or("").to_string();
+                        let pme = create_pi_messages_response_error(
+                            model_ref,
+                            url_ref,
+                            status.as_u16(),
+                            &status_text,
+                            &body,
+                        );
+                        let mut err = ProviderHttpError::new(
+                            Some(status.as_u16()),
+                            pme.to_string(),
+                        );
+                        err.source = Some(Box::new(pme));
+                        err.retry_after_ms = headers
+                            .get("retry-after-ms")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.trim().parse::<f64>().ok());
+                        err.retry_after = headers
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        err.should_retry = headers
+                            .get("x-should-retry")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        return Err(err);
+                    }
+                    Ok(response)
+                }
+            },
+            RetryProviderOptions {
+                max_retries: options.and_then(|o| o.max_retries),
+                max_retry_delay_ms: options.and_then(|o| o.max_retry_delay_ms),
+                signal: signal.clone(),
+            },
+        )
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            if let Some(src) = e.source {
+                src
+            } else {
+                e.message.into()
+            }
+        })?
+    };
     if response.content_length() == Some(0) {
         return Err(format!("{} response has no body", model.provider).into());
     }

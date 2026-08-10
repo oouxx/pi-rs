@@ -592,7 +592,13 @@ pub fn map_stop_reason(
             StopReason::Error,
             Some("Provider stopped with: sensitive".to_string()),
         ),
-        other => panic!("Unhandled stop reason: {other}"),
+        // Handle unknown stop reasons gracefully (API may add new values),
+        // matching TS which throws — here surfaced as an error stop reason
+        // instead of panicking the stream task.
+        other => (
+            StopReason::Error,
+            Some(format!("Unhandled stop reason: {other}")),
+        ),
     }
 }
 
@@ -910,11 +916,21 @@ async fn stream_anthropic_inner(
         request_body
     };
 
-    let response = http_client
-        .post(&model.base_url)
-        .json(&request_body)
-        .send()
-        .await?;
+    let response = {
+        let request = http_client.post(&model.base_url).json(&request_body);
+        // HTTP-level retry (match TS `retryProviderRequest`): transient errors
+        // are retried with exponential backoff; the abort signal interrupts.
+        crate::utils::provider_retry::send_with_retry(
+            request.build()?,
+            &http_client,
+            signal.clone(),
+            options.and_then(|o| o.max_retries),
+            options.and_then(|o| o.max_retry_delay_ms),
+            "Anthropic API error",
+        )
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?
+    };
 
     // Notify extensions about the provider response
     if let Some(on_provider_response) = options
@@ -928,12 +944,6 @@ async fn stream_anthropic_inner(
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         on_provider_response(status, resp_headers);
-    }
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error {status}: {text}").into());
     }
 
     // Stream the SSE body incrementally (match TS `iterateSseMessages`).
@@ -1440,9 +1450,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Unhandled stop reason: unknown_reason")]
     fn test_map_stop_reason_unknown() {
-        let _ = map_stop_reason("unknown_reason", None);
+        // Unknown stop reasons must surface as an error stop reason (matching
+        // TS throw → catch → error), not panic the stream task.
+        let (reason, msg) = map_stop_reason("unknown_reason", None);
+        assert_eq!(reason, StopReason::Error);
+        assert_eq!(msg.as_deref(), Some("Unhandled stop reason: unknown_reason"));
     }
 
     // ============================================================

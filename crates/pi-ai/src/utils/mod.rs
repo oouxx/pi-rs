@@ -3,6 +3,7 @@ pub mod event_stream;
 pub mod headers;
 pub mod json_parse;
 pub mod overflow;
+pub mod provider_retry;
 pub mod retry;
 pub mod session_resources;
 pub mod sse;

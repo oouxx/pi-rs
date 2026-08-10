@@ -454,6 +454,12 @@ pub struct AgentSession {
     /// `set_active_tools_by_name` can rebuild the prompt (matching TS
     /// `_rebuildSystemPrompt`).
     system_prompt_options: Option<system_prompt::BuildSystemPromptOptions>,
+    /// The base system prompt (before per-turn extension modifications),
+    /// matching TS `_baseSystemPrompt`. Rebuilt when the active tool set
+    /// changes; `before_agent_start` dispatches against it so extension
+    /// modifications don't accumulate across turns (matching TS which passes
+    /// `this._baseSystemPrompt`).
+    base_system_prompt: Arc<std::sync::Mutex<String>>,
     /// Extension-contributed resource paths from `resources_discover` event.
     /// These are collected at session start and can be applied to the resource loader
     /// on session reload via `extend_resources()`.
@@ -839,7 +845,7 @@ impl AgentSession {
             .collect();
 
         let initial_state = AgentState {
-            system_prompt,
+            system_prompt: system_prompt.clone(),
             model: options.model.clone(),
             thinking_level: options.thinking_level,
             tools,
@@ -1176,6 +1182,7 @@ impl AgentSession {
                 opts.selected_tools = None;
                 opts
             }),
+            base_system_prompt: Arc::new(std::sync::Mutex::new(system_prompt.clone())),
             extension_resource_paths: None,
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
             extension_state_view: options.extension_state_view,
@@ -2295,6 +2302,10 @@ impl AgentSession {
         if let Some(mut opts) = self.system_prompt_options.clone() {
             opts.selected_tools = Some(tool_names.to_vec());
             let rebuilt = system_prompt::build_system_prompt(&opts);
+            *self
+                .base_system_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = rebuilt.clone();
             self.agent.set_system_prompt(rebuilt).await;
         }
     }
@@ -2862,10 +2873,18 @@ References are relative to {}.
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             let images_ref = images.as_deref();
+            // Dispatch against the base system prompt (matching TS which
+            // passes this._baseSystemPrompt) so extension modifications don't
+            // accumulate across turns.
+            let base_prompt = self
+                .base_system_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
-                    system_prompt: &state.system_prompt,
+                    system_prompt: &base_prompt,
                     messages: &state.messages,
                     images: images_ref,
                     system_prompt_options: None,
@@ -3244,10 +3263,15 @@ References are relative to {}.
             } else {
                 Some(images.as_slice())
             };
+            let base_prompt = self
+                .base_system_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
-                    system_prompt: &state.system_prompt,
+                    system_prompt: &base_prompt,
                     messages: &state.messages,
                     images: images_ref,
                     system_prompt_options: None,
@@ -3306,10 +3330,15 @@ References are relative to {}.
         // Extensions can cancel the agent start or modify the system prompt.
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
+            let base_prompt = self
+                .base_system_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
                 crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
                     registry,
-                    system_prompt: &state.system_prompt,
+                    system_prompt: &base_prompt,
                     messages: &state.messages,
                     images: None,
                     system_prompt_options: None,

@@ -19,6 +19,13 @@ type ChunkCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub struct BashExecutorOptions {
     pub on_chunk: Option<ChunkCallback>,
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Shell to run the command with (defaults to `bash`, or `cmd` on
+    /// Windows). Matches TS `settingsManager.getShellPath()`.
+    pub shell_path: Option<String>,
+    /// Command prefix applied before the user command (e.g.
+    /// "shopt -s expand_aliases" for alias support). Matches TS
+    /// `settingsManager.getShellCommandPrefix()`.
+    pub command_prefix: Option<String>,
 }
 
 impl std::fmt::Debug for BashExecutorOptions {
@@ -77,20 +84,32 @@ impl BashExecutor {
         options: Option<BashExecutorOptions>,
     ) -> Result<BashExecutorResult, Box<dyn std::error::Error + Send + Sync>> {
         let opts = options.unwrap_or_default();
-        let shell = if cfg!(target_os = "windows") {
-            "cmd"
-        } else {
-            "bash"
-        };
+        let shell = opts
+            .shell_path
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if cfg!(target_os = "windows") {
+                    "cmd".to_string()
+                } else {
+                    "bash".to_string()
+                }
+            });
         let shell_arg = if cfg!(target_os = "windows") {
             "/C"
         } else {
             "-c"
         };
+        // Apply the configured command prefix (e.g. alias support), matching
+        // TS executeBash() which prepends settingsManager.getShellCommandPrefix().
+        let resolved_command = match &opts.command_prefix {
+            Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{command}"),
+            _ => command.to_string(),
+        };
 
         let mut cmd = tokio::process::Command::new(shell);
         cmd.arg(shell_arg)
-            .arg(command)
+            .arg(resolved_command)
             .current_dir(&self.cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -236,5 +255,44 @@ mod tests {
         assert!(result.is_ok());
         let r = result.unwrap();
         assert_eq!(r.exit_code, Some(42));
+    }
+
+    /// The configured command prefix must be prepended to the command
+    /// (matching TS executeBash() which applies getShellCommandPrefix()).
+    #[tokio::test]
+    async fn test_bash_executor_applies_command_prefix() {
+        let executor = BashExecutor::new("/tmp");
+        let result = executor
+            .execute(
+                "echo $MY_ALIAS_VAR",
+                Some(BashExecutorOptions {
+                    command_prefix: Some("MY_ALIAS_VAR=from_prefix".to_string()),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r.exit_code, Some(0));
+        assert!(r.output.contains("from_prefix"), "got: {}", r.output);
+    }
+
+    /// A custom shell path must be honored (matching TS getShellPath()).
+    #[tokio::test]
+    async fn test_bash_executor_uses_custom_shell() {
+        let executor = BashExecutor::new("/tmp");
+        let result = executor
+            .execute(
+                "echo custom-shell",
+                Some(BashExecutorOptions {
+                    shell_path: Some("/bin/sh".to_string()),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r.exit_code, Some(0));
+        assert!(r.output.contains("custom-shell"), "got: {}", r.output);
     }
 }

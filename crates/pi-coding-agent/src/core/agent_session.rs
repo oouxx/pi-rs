@@ -1219,6 +1219,7 @@ impl AgentSession {
         let _inner_idle = session.idle_notify.clone();
         let inner_ext_ctx = shared_ext_ctx.clone();
         let inner_agent = session.agent.clone();
+        let inner_settings = session.settings_manager.clone();
         let turn_index: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(0));
 
         let internal_listener: AgentEventListener = Arc::new(move |event: AgentEvent, _signal| {
@@ -1236,6 +1237,7 @@ impl AgentSession {
             let _idle = _inner_idle.clone();
             let agent = inner_agent.clone();
             let turn_index = turn_index.clone();
+            let inner_settings = inner_settings.clone();
 
             Box::pin(async move {
                 // ── 1. Handle queue updates and state resets ──
@@ -1447,80 +1449,39 @@ impl AgentSession {
                 // ── 3. Emit to session event listeners ──
                 let session_event = match &event {
                     AgentEvent::AgentEnd { messages } => {
-                        // Compute will_retry from the last assistant message,
-                        // matching TS _willRetryAfterAgentEnd().
-                        let will_retry = messages.last().is_some_and(|last| {
-                            if let AgentMessage::Assistant {
-                                stop_reason,
-                                error_message,
-                                ..
-                            } = last
-                            {
-                                if stop_reason
-                                    == &Some(pi_agent_core::pi_ai_types::StopReason::Error)
-                                {
-                                    if let Some(ref err_msg) = error_message {
-                                        // Check retryable patterns (same as _is_retryable_error_message)
-                                        let non_retryable = [
-                                            "insufficient_quota",
-                                            "out of budget",
-                                            "quota exceeded",
-                                            "billing",
-                                            "GoUsageLimitError",
-                                            "FreeUsageLimitError",
-                                            "Monthly usage limit reached",
-                                            "available balance",
-                                        ];
-                                        for pattern in &non_retryable {
-                                            if err_msg.to_lowercase().contains(pattern) {
-                                                return false;
-                                            }
-                                        }
-                                        let retryable = [
-                                            "overloaded",
-                                            "rate limit",
-                                            "too many requests",
-                                            "429",
-                                            "500",
-                                            "502",
-                                            "503",
-                                            "504",
-                                            "524",
-                                            "service unavailable",
-                                            "server error",
-                                            "internal error",
-                                            "provider returned error",
-                                            "network error",
-                                            "connection error",
-                                            "connection refused",
-                                            "fetch failed",
-                                            "upstream connect",
-                                            "reset before headers",
-                                            "socket hang up",
-                                            "timed out",
-                                            "timeout",
-                                            "terminated",
-                                            "websocket closed",
-                                            "websocket error",
-                                            "ended without",
-                                            "stream ended before message_stop",
-                                            "http2 request did not get a response",
-                                            "retry delay",
-                                            "you can retry your request",
-                                            "try your request again",
-                                            "please retry your request",
-                                            "ResourceExhausted",
-                                        ];
-                                        for pattern in &retryable {
-                                            if err_msg.to_lowercase().contains(pattern) {
-                                                return true;
-                                            }
-                                        }
+                        // Compute will_retry, matching TS _willRetryAfterAgentEnd():
+                        // retry must be enabled and under the attempt cap, and the
+                        // last assistant message (searched from the end) must be a
+                        // retryable error.
+                        let retry_settings = inner_settings
+                            .clone()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get_retry_settings();
+                        let retry_enabled = retry_settings.enabled.unwrap_or(true);
+                        let max_retries = retry_settings.max_retries.unwrap_or(3);
+                        let retry_attempt =
+                            *_retry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let will_retry = retry_enabled && retry_attempt < max_retries && {
+                            messages.iter().rev().find_map(|m| match m {
+                                AgentMessage::Assistant {
+                                    stop_reason,
+                                    error_message,
+                                    ..
+                                } => {
+                                    if stop_reason
+                                        == &Some(pi_agent_core::pi_ai_types::StopReason::Error)
+                                    {
+                                        error_message
+                                            .as_deref()
+                                            .map(is_retryable_error_message)
+                                    } else {
+                                        Some(false)
                                     }
                                 }
-                            }
-                            false
-                        });
+                                _ => None,
+                            })
+                        } == Some(true);
                         AgentSessionEvent::AgentEnd {
                             messages: messages.clone(),
                             will_retry,
@@ -2290,40 +2251,8 @@ impl AgentSession {
     pub fn get_session_stats(&self) -> SessionStats {
         let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries = mgr.get_entries();
-
-        let mut user_messages = 0;
-        let mut assistant_messages = 0;
-        let mut tool_calls = 0;
-        let mut tool_results = 0;
-
-        for entry in entries {
-            if let crate::core::session_manager::SessionEntry::Message { message, .. } = entry {
-                if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
-                    match role {
-                        "user" => user_messages += 1,
-                        "assistant" => {
-                            assistant_messages += 1;
-                            // Count tool calls within assistant messages
-                            if let Some(content) = message.get("content") {
-                                if let Some(blocks) = content.as_array() {
-                                    for block in blocks {
-                                        if block.get("type").and_then(|v| v.as_str())
-                                            == Some("tool_use")
-                                        {
-                                            tool_calls += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        "tool_result" => tool_results += 1,
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        let total_messages = user_messages + assistant_messages + tool_calls + tool_results;
+        let (user_messages, assistant_messages, tool_calls, tool_results, total_messages, tokens, cost) =
+            compute_session_stats(entries);
 
         SessionStats {
             session_file: mgr
@@ -2335,6 +2264,8 @@ impl AgentSession {
             tool_calls,
             tool_results,
             total_messages,
+            tokens,
+            cost,
             ..Default::default()
         }
     }
@@ -2482,12 +2413,16 @@ impl AgentSession {
         drop(state);
 
         // Check if we need to compact before sending (catches aborted responses),
-        // matching TS prompt() which calls _checkCompaction(lastAssistant, false).
+        // matching TS prompt() which calls _checkCompaction(lastAssistant, false)
+        // with the last assistant message (searched from the end, not just the
+        // final message which may be a tool result).
         let msgs = self.agent.messages().await;
-        if let Some(last) = msgs.last() {
-            if matches!(last, AgentMessage::Assistant { .. }) {
-                self._check_compaction(last, false).await;
-            }
+        if let Some(last_assistant) = msgs
+            .iter()
+            .rev()
+            .find(|m| matches!(m, AgentMessage::Assistant { .. }))
+        {
+            self._check_compaction(last_assistant, false).await;
         }
 
         // Send the prompt with pending next-turn messages injected as context,
@@ -2507,6 +2442,9 @@ impl AgentSession {
                 break;
             }
         }
+        // Flush any bash messages queued while the agent was streaming
+        // (matching TS _runAgentPrompt's finally block).
+        self._flush_pending_bash_messages().await;
         // Emit agent_settled after the agent run is fully complete
         // (no retry, compaction, or queued messages pending).
         self._emit_agent_settled().await;
@@ -2818,9 +2756,16 @@ References are relative to {}.
                 *self.retry_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             }
             _ = rx.changed() => {
-                // Retry was aborted
+                // Retry was aborted — emit the end event so the UI can clean
+                // up (matching TS _prepareRetry's catch branch).
                 *self.retry_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                let attempt = *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+                self._emit(AgentSessionEvent::AutoRetryEnd {
+                    success: false,
+                    attempt,
+                    final_error: Some("Retry cancelled".to_string()),
+                });
                 return false;
             }
         }
@@ -2845,7 +2790,6 @@ References are relative to {}.
             stop_reason,
             provider,
             model,
-            error_message,
             ..
         } = assistant_message
         {
@@ -2890,28 +2834,48 @@ References are relative to {}.
 
             if same_model {
                 let context_window = state.model.context_window;
-                // Check for context overflow
+                // Check for context overflow (matching TS isContextOverflow:
+                // error-message patterns, silent usage overflow, and
+                // length-stop overflow).
                 if context_window > 0 {
-                    use pi_agent_core::pi_ai_types::StopReason;
-                    let is_overflow = match stop_reason {
-                        Some(StopReason::Error) => {
-                            if let Some(ref err_msg) = error_message {
-                                let err_lower = err_msg.to_lowercase();
-                                err_lower.contains("context") && err_lower.contains("overflow")
-                                    || err_lower.contains("context_length")
-                                    || err_lower.contains("prompt is too long")
-                                    || err_lower.contains("exceeds.*context.*window")
-                                    || err_lower.contains("maximum.*context.*length")
-                                    || err_lower.contains("token.*count.*exceeds")
-                            } else {
-                                false
-                            }
+                    let is_overflow = match assistant_message {
+                        AgentMessage::Assistant {
+                            content,
+                            api,
+                            provider,
+                            model,
+                            usage,
+                            stop_reason,
+                            error_message,
+                            timestamp,
+                        } => {
+                            let msg = pi_agent_core::pi_ai_types::AssistantMessage {
+                                content: content.clone(),
+                                api: api.clone(),
+                                provider: provider.clone(),
+                                model: model.clone(),
+                                response_model: None,
+                                response_id: None,
+                                diagnostics: None,
+                                usage: usage.clone(),
+                                stop_reason: stop_reason.clone().unwrap_or(
+                                    pi_agent_core::pi_ai_types::StopReason::Stop,
+                                ),
+                                error_message: error_message.clone(),
+                                raw_stop_reason: None,
+                                timestamp: *timestamp,
+                            };
+                            pi_agent_core::pi_ai::utils::overflow::is_context_overflow(
+                                &msg,
+                                Some(context_window),
+                            )
                         }
                         _ => false,
                     };
 
                     if is_overflow {
-                        let will_retry = stop_reason != &Some(StopReason::Stop);
+                        let will_retry = stop_reason
+                            != &Some(pi_agent_core::pi_ai_types::StopReason::Stop);
 
                         if !will_retry {
                             return self._run_auto_compaction("overflow", false).await;
@@ -2964,9 +2928,9 @@ References are relative to {}.
             _ => CompactionReason::Threshold,
         };
 
-        self._emit(AgentSessionEvent::CompactionStart {
-            reason: compaction_reason,
-        });
+        // compaction_start is emitted inside compact() (matching TS: manual
+        // compact() emits it at the top; _runAutoCompaction emits it after
+        // preparation succeeds, which compact() re-checks).
 
         // Create abort signal
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -3000,12 +2964,19 @@ References are relative to {}.
                 if e == "Compaction not needed" {
                     return false;
                 }
+                // An extension cancelling compaction is an abort, not a failure
+                // (matching TS _runAutoCompaction which emits aborted: true).
+                let aborted = e == "Compaction cancelled by extension";
                 self._emit(AgentSessionEvent::CompactionEnd {
                     reason: compaction_reason,
                     result: None,
-                    aborted: false,
+                    aborted,
                     will_retry: false,
-                    error_message: Some(format!("Compaction failed: {e}")),
+                    error_message: if aborted {
+                        None
+                    } else {
+                        Some(format!("Compaction failed: {e}"))
+                    },
                 });
                 false
             }
@@ -3437,6 +3408,15 @@ References are relative to {}.
         if !compaction::should_compact(total_tokens, context_window, &self.compaction_settings) {
             return Err("Compaction not needed".to_string());
         }
+
+        // Emit compaction_start once the run is actually going to happen
+        // (matching TS: manual compact() emits it at the top; auto-compaction
+        // emits it after preparation succeeds). Emitting only after the
+        // should_compact check avoids a dangling compaction_start when
+        // compaction is not needed.
+        self._emit(AgentSessionEvent::CompactionStart {
+            reason: CompactionReason::Manual,
+        });
 
         let keep_recent_turns = 5usize;
         let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);
@@ -3966,69 +3946,7 @@ References are relative to {}.
     /// Check if an error message is retryable (transient provider/transport error).
     /// Matches TS isRetryableAssistantError() logic.
     fn _is_retryable_error_message(&self, error_message: &str) -> bool {
-        // Non-retryable patterns (quota/billing/limit errors)
-        let non_retryable_patterns = [
-            "insufficient_quota",
-            "out of budget",
-            "quota exceeded",
-            "billing",
-            "GoUsageLimitError",
-            "FreeUsageLimitError",
-            "Monthly usage limit reached",
-            "available balance",
-        ];
-        for pattern in &non_retryable_patterns {
-            if error_message.to_lowercase().contains(pattern) {
-                return false;
-            }
-        }
-
-        // Retryable patterns (transient provider/transport errors)
-        let retryable_patterns = [
-            "overloaded",
-            "rate limit",
-            "too many requests",
-            "429",
-            "500",
-            "502",
-            "503",
-            "504",
-            "524",
-            "service unavailable",
-            "server error",
-            "internal error",
-            "provider returned error",
-            "network error",
-            "connection error",
-            "connection refused",
-            "fetch failed",
-            "upstream connect",
-            "reset before headers",
-            "socket hang up",
-            "timed out",
-            "timeout",
-            "terminated",
-            "websocket closed",
-            "websocket error",
-            "getaddrinfo",
-            "enotfound",
-            "eai_again",
-            "ended without",
-            "stream ended before message_stop",
-            "stream ended before a terminal response event",
-            "http2 request did not get a response",
-            "retry delay",
-            "you can retry your request",
-            "try your request again",
-            "please retry your request",
-            "ResourceExhausted",
-        ];
-        for pattern in &retryable_patterns {
-            if error_message.to_lowercase().contains(pattern) {
-                return true;
-            }
-        }
-        false
+        is_retryable_error_message(error_message)
     }
 
     /// Subscribe to session-level events (AgentSessionEvent).
@@ -4401,6 +4319,19 @@ impl AgentSession {
         *self.bash_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
         let executor = BashExecutor::new(&self.cwd);
+        // Apply the configured shell path and command prefix (matching TS
+        // executeBash() which reads settingsManager.getShellPath() and
+        // getShellCommandPrefix()).
+        let (shell_path, command_prefix) = {
+            let sm = self
+                .settings_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                sm.get_shell_path().map(|s| s.to_string()),
+                sm.get_shell_command_prefix().map(|s| s.to_string()),
+            )
+        };
         // Forward output deltas to the caller AND emit bash_execution_update
         // events (match TS #6971).
         let event_listeners = self.event_listeners.clone();
@@ -4429,6 +4360,8 @@ impl AgentSession {
         let options = BashExecutorOptions {
             on_chunk: Some(on_chunk),
             signal: Some(rx),
+            shell_path,
+            command_prefix,
         };
 
         let result = executor
@@ -4511,8 +4444,13 @@ impl AgentSession {
         }
     }
 
+    /// Abort the current operation and wait for the agent to become idle,
+    /// matching TS `abort()` which calls abortRetry() + agent.abort() +
+    /// waitForIdle().
     pub async fn abort(&self) {
+        self.abort_retry();
         self.agent.abort().await;
+        self.wait_for_idle().await;
     }
 
     /// Wait for the agent to finish processing (idle).
@@ -4718,5 +4656,260 @@ impl AgentSession {
             .create_branched_session(entry_id, None)?;
         self.session_mgr_switch(&branch_path, None).await?;
         Ok(branch_path)
+    }
+}
+
+/// Whether an error message matches a retryable transient provider/transport
+/// error (quota/billing errors are not retryable). Shared by the agent_end
+/// will_retry computation and `_is_retryable_error`.
+fn is_retryable_error_message(error_message: &str) -> bool {
+    // Non-retryable patterns (quota/billing/limit errors)
+    let non_retryable_patterns = [
+        "insufficient_quota",
+        "out of budget",
+        "quota exceeded",
+        "billing",
+        "GoUsageLimitError",
+        "FreeUsageLimitError",
+        "Monthly usage limit reached",
+        "available balance",
+    ];
+    for pattern in &non_retryable_patterns {
+        if error_message.to_lowercase().contains(pattern) {
+            return false;
+        }
+    }
+
+    // Retryable patterns (transient provider/transport errors)
+    let retryable_patterns = [
+        "overloaded",
+        "rate limit",
+        "too many requests",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "524",
+        "service unavailable",
+        "server error",
+        "internal error",
+        "provider returned error",
+        "network error",
+        "connection error",
+        "connection refused",
+        "fetch failed",
+        "upstream connect",
+        "reset before headers",
+        "socket hang up",
+        "timed out",
+        "timeout",
+        "terminated",
+        "websocket closed",
+        "websocket error",
+        "getaddrinfo",
+        "enotfound",
+        "eai_again",
+        "ended without",
+        "stream ended before message_stop",
+        "stream ended before a terminal response event",
+        "http2 request did not get a response",
+        "retry delay",
+        "you can retry your request",
+        "try your request again",
+        "please retry your request",
+        "ResourceExhausted",
+    ];
+    for pattern in &retryable_patterns {
+        if error_message.to_lowercase().contains(pattern) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Accumulate token/cost totals from a usage JSON value (matching TS
+/// `addUsageToTotals`).
+fn add_usage_to_totals(tokens: &mut TokenUsage, cost: &mut f64, usage: &serde_json::Value) {
+    let obj = usage.as_object();
+    let get = |key: &str| {
+        obj.and_then(|o| o.get(key))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    tokens.input += get("input");
+    tokens.output += get("output");
+    tokens.cache_read += get("cacheRead");
+    tokens.cache_write += get("cacheWrite");
+    if let Some(cost_total) = obj
+        .and_then(|o| o.get("cost"))
+        .and_then(|c| c.get("total"))
+        .and_then(|v| v.as_f64())
+    {
+        *cost += cost_total;
+    }
+}
+
+/// Compute session statistics from session entries, matching TS
+/// `getSessionStats()`: message counts, tool-call count (content block type
+/// "toolCall"), and token/cost totals accumulated from assistant, toolResult,
+/// compaction and branch-summary usage.
+fn compute_session_stats(
+    entries: Vec<&crate::core::session_manager::SessionEntry>,
+) -> (usize, usize, usize, usize, usize, TokenUsage, f64) {
+    let mut user_messages = 0;
+    let mut assistant_messages = 0;
+    let mut tool_calls = 0;
+    let mut tool_results = 0;
+    let mut total_messages = 0;
+    let mut tokens = TokenUsage::default();
+    let mut cost = 0.0;
+
+    for entry in entries {
+        match entry {
+            // Compaction / branch-summary entries contribute their usage.
+            crate::core::session_manager::SessionEntry::Compaction { usage, .. }
+            | crate::core::session_manager::SessionEntry::BranchSummary { usage, .. } => {
+                if let Some(usage) = usage {
+                    add_usage_to_totals(&mut tokens, &mut cost, usage);
+                }
+            }
+            crate::core::session_manager::SessionEntry::Message { message, .. } => {
+                total_messages += 1;
+                if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
+                    match role {
+                        "user" => user_messages += 1,
+                        "assistant" => {
+                            assistant_messages += 1;
+                            // Count tool calls within assistant messages
+                            // (content block type is "toolCall", matching
+                            // TS which checks c.type === "toolCall").
+                            if let Some(content) = message.get("content") {
+                                if let Some(blocks) = content.as_array() {
+                                    for block in blocks {
+                                        if block.get("type").and_then(|v| v.as_str())
+                                            == Some("toolCall")
+                                        {
+                                            tool_calls += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(usage) = message.get("usage") {
+                                add_usage_to_totals(&mut tokens, &mut cost, usage);
+                            }
+                        }
+                        "toolResult" => {
+                            tool_results += 1;
+                            if let Some(usage) = message.get("usage") {
+                                add_usage_to_totals(&mut tokens, &mut cost, usage);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    tokens.total = tokens.input + tokens.output + tokens.cache_read + tokens.cache_write;
+    (
+        user_messages,
+        assistant_messages,
+        tool_calls,
+        tool_results,
+        total_messages,
+        tokens,
+        cost,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::core::session_manager::SessionEntry;
+
+    fn message_entry(role: &str, content: serde_json::Value, usage: Option<serde_json::Value>) -> SessionEntry {
+        let mut msg = serde_json::json!({ "role": role, "content": content });
+        if let Some(u) = usage {
+            msg["usage"] = u;
+        }
+        SessionEntry::Message {
+            id: "id".into(),
+            parent_id: None,
+            timestamp: "0".into(),
+            message: msg,
+        }
+    }
+
+    /// Tool calls are counted from content blocks with type "toolCall"
+    /// (matching TS `c.type === "toolCall"`), not "tool_use".
+    #[test]
+    fn session_stats_counts_tool_calls_from_toolcall_blocks() {
+        let entries = [
+            message_entry(
+                "assistant",
+                serde_json::json!([
+                    { "type": "text", "text": "hi" },
+                    { "type": "toolCall", "id": "c1", "name": "bash", "arguments": {} },
+                    { "type": "toolCall", "id": "c2", "name": "read", "arguments": {} }
+                ]),
+                None,
+            ),
+            message_entry("toolResult", serde_json::json!([]), None),
+            message_entry("user", serde_json::json!([{ "type": "text", "text": "q" }]), None),
+        ];
+        let (user, assistant, tool_calls, tool_results, total, _, _) =
+            compute_session_stats(entries.iter().collect());
+        assert_eq!(user, 1);
+        assert_eq!(assistant, 1);
+        assert_eq!(tool_calls, 2);
+        assert_eq!(tool_results, 1);
+        // total_messages counts message entries only (not tool calls).
+        assert_eq!(total, 3);
+    }
+
+    /// Usage from assistant, toolResult, compaction and branch-summary entries
+    /// is accumulated into token/cost totals (matching TS addUsageToTotals).
+    #[test]
+    fn session_stats_accumulates_usage_and_cost() {
+        let usage = |input: u64, output: u64, cost: f64| {
+            serde_json::json!({
+                "input": input, "output": output, "cacheRead": 0, "cacheWrite": 0,
+                "cost": { "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": cost }
+            })
+        };
+        let entries = [
+            message_entry("assistant", serde_json::json!([]), Some(usage(100, 50, 0.5))),
+            message_entry("toolResult", serde_json::json!([]), Some(usage(10, 0, 0.1))),
+            SessionEntry::Compaction {
+                id: "c".into(),
+                parent_id: None,
+                timestamp: "1".into(),
+                summary: "s".into(),
+                first_kept_entry_id: "x".into(),
+                tokens_before: 0,
+                details: None,
+                usage: Some(usage(200, 100, 1.0)),
+                from_hook: None,
+            },
+        ];
+        let (_, _, _, _, _, tokens, cost) = compute_session_stats(entries.iter().collect());
+        assert_eq!(tokens.input, 310);
+        assert_eq!(tokens.output, 150);
+        assert_eq!(tokens.total, 460);
+        assert!((cost - 1.6).abs() < 1e-9);
+    }
+
+    /// Quota/billing errors are not retryable; transient errors are.
+    #[test]
+    fn retryable_error_message_classification() {
+        assert!(is_retryable_error_message("529 overloaded_error: Overloaded"));
+        assert!(is_retryable_error_message("network error: connection refused"));
+        assert!(!is_retryable_error_message("insufficient_quota: out of credits"));
+        assert!(!is_retryable_error_message("billing issue on account"));
+        assert!(!is_retryable_error_message("Monthly usage limit reached"));
     }
 }

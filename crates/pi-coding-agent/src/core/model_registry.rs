@@ -202,24 +202,15 @@ impl ModelRegistry {
     }
 
     /// Check if the model uses OAuth authentication, matching the original isUsingOAuth().
-    pub fn is_using_oauth(&self, model: &Model) -> bool {
-        // OAuth providers typically don't use API keys
-        let has_key = get_env_api_key(&model.provider).is_some()
-            || self
-                .registered_providers
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&model.provider)
-                .and_then(|c| c.api_key.as_ref())
-                .is_some()
-            || self
-                .models_json_providers
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&model.provider)
-                .and_then(|c| c.api_key.as_ref())
-                .is_some();
-        !has_key
+    ///
+    /// The Rust port does not implement the OAuth login flow
+    /// (`AuthStorage::login` returns "not yet implemented" and
+    /// `get_oauth_provider` returns `None`), so no provider can be configured
+    /// with OAuth credentials — always `false`. (TS checks the auth snapshot's
+    /// credential type; the `!has_key` heuristic previously used here was
+    /// wrong: it classified every keyless provider as OAuth.)
+    pub fn is_using_oauth(&self, _model: &Model) -> bool {
+        false
     }
 
     /// Get API key for a provider, checking env vars, registered providers,

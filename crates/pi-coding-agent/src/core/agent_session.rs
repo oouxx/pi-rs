@@ -2390,6 +2390,14 @@ impl AgentSession {
                 if let Some(cb) = &opts.preflight_result {
                     cb(false);
                 }
+                // OAuth providers get a re-auth hint (matching TS prompt()
+                // which checks isUsingOAuth before the generic no-key error).
+                if self.model_registry.is_using_oauth(&state.model) {
+                    return Err(format!(
+                        "Authentication failed for \"{}\". Credentials may have expired or network is unavailable. Run '/login {}' to re-authenticate.",
+                        state.model.provider, state.model.provider
+                    ));
+                }
                 return Err(crate::core::auth_guidance::format_no_api_key_found_message(
                     &state.model.provider,
                     &crate::config::get_docs_path().to_string_lossy(),
@@ -3251,6 +3259,19 @@ References are relative to {}.
         &mut self,
         direction: &str,
     ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
+        // Scoped models (from --models flag) take precedence, otherwise cycle
+        // through all available models (matching TS cycleModel()).
+        if !self.scoped_models.is_empty() {
+            return self._cycle_scoped_model(direction).await;
+        }
+        self._cycle_available_model(direction).await
+    }
+
+    /// Cycle through scoped models, matching TS `_cycleScopedModel()`.
+    async fn _cycle_scoped_model(
+        &mut self,
+        direction: &str,
+    ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
         if self.scoped_models.is_empty() {
             return None;
         }
@@ -3304,6 +3325,8 @@ References are relative to {}.
             ._get_thinking_level_for_model_switch(thinking_level.as_deref())
             .await;
         self.set_thinking_level(&tl).await;
+        // TS returns this.thinkingLevel (the clamped current value).
+        let effective_tl = self.agent.state().await.thinking_level;
 
         // Dispatch model_select to extensions (matching TS _emitModelSelect)
         // Note: TS only sends model_select to extension runner, not as session event
@@ -3319,7 +3342,69 @@ References are relative to {}.
             .await;
         }
 
-        Some((model, thinking_level, true))
+        Some((model, Some(effective_tl), true))
+    }
+
+    /// Cycle through all available models, matching TS `_cycleAvailableModel()`.
+    async fn _cycle_available_model(
+        &mut self,
+        direction: &str,
+    ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
+        let available_models = self.model_registry.get_models();
+        if available_models.len() <= 1 {
+            return None;
+        }
+
+        let current_model = self.agent.state().await.model;
+        let current_idx = available_models
+            .iter()
+            .position(|m| m.provider == current_model.provider && m.id == current_model.id)
+            .unwrap_or(0);
+        let len = available_models.len();
+        let next_idx = match direction {
+            "forward" => (current_idx + 1) % len,
+            "backward" => (current_idx + len - 1) % len,
+            _ => (current_idx + 1) % len,
+        };
+        let next_model = available_models[next_idx].clone();
+        let model_id = next_model.id.clone();
+        let model_provider = next_model.provider.clone();
+        let previous_model_id = current_model.id.clone();
+        let previous_model = if previous_model_id.is_empty() {
+            None
+        } else {
+            Some(previous_model_id)
+        };
+
+        // Apply model (matching TS _cycleAvailableModel)
+        self.agent.set_model(next_model.clone()).await;
+        self.session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .append_model_change(&model_provider, &model_id);
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_default_model_and_provider(&model_provider, &model_id);
+        }
+
+        // Re-clamp thinking level for the new model's capabilities.
+        let tl = self._get_thinking_level_for_model_switch(None).await;
+        self.set_thinking_level(&tl).await;
+        let effective_tl = self.agent.state().await.thinking_level;
+
+        // Dispatch model_select to extensions (matching TS _emitModelSelect)
+        if let Some(ref registry) = self.extension_registry {
+            crate::core::extensions::dispatcher::dispatch_model_select(
+                crate::core::extensions::dispatcher::DispatchModelSelectParams {
+                    registry,
+                    model: &model_id,
+                    previous_model: previous_model.as_deref(),
+                    ext_ctx: &self.ext_ctx,
+                },
+            )
+            .await;
+        }
+
+        Some((next_model, Some(effective_tl), false))
     }
 
     // =========================================================================
@@ -3352,6 +3437,10 @@ References are relative to {}.
         custom_instructions: Option<&str>,
     ) -> Result<crate::core::compaction::CompactionResult, String> {
         use crate::core::compaction;
+
+        // Abort any in-progress agent run before compacting (matching TS
+        // compact() which calls this.abort() first).
+        self.abort().await;
 
         // Dispatch session_before_compact to extensions.
         // If an extension cancels, return early.
@@ -4144,11 +4233,9 @@ References are relative to {}.
             if let SessionEntry::Message { message, .. } = entry {
                 if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
                     if role == "user" {
-                        let text = message
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        // Extract text from string or content-block array
+                        // (matching TS contentText()).
+                        let text = message_content_text(message);
                         if !text.is_empty() {
                             result.push((entry.id().to_string(), text));
                         }
@@ -4158,6 +4245,26 @@ References are relative to {}.
         }
 
         result
+    }
+}
+
+/// Extract plain text from a message's `content` field, which may be a
+/// string or an array of content blocks (matching TS `contentText`).
+fn message_content_text(message: &serde_json::Value) -> String {
+    match message.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    b.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<&str>>()
+            .join("\n"),
+        _ => String::new(),
     }
 }
 

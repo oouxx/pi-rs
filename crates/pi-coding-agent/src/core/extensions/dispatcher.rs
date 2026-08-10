@@ -48,6 +48,8 @@ pub struct DispatchModelSelectParams<'a> {
     pub registry: &'a ExtensionRegistry,
     pub model: &'a str,
     pub previous_model: Option<&'a str>,
+    /// "set" | "cycle" | "restore", matching TS `model_select` source.
+    pub source: &'a str,
     pub ext_ctx: &'a ExtensionContext,
 }
 
@@ -519,7 +521,7 @@ pub async fn dispatch_model_select(
 ) {
     params.registry
         .hook_runner()
-        .fire_model_select(params.model, params.previous_model)
+        .fire_model_select(params.model, params.previous_model, params.source)
         .await;
 }
 

@@ -361,7 +361,15 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// 模型切换时触发。
-    async fn on_model_select(&self, _model: &str, _previous_model: Option<&str>) {}
+    /// 模型切换时触发。`source` 是 "set" | "cycle" | "restore"（匹配 TS
+    /// `model_select` 事件的 source 字段）。
+    async fn on_model_select(
+        &self,
+        _model: &str,
+        _previous_model: Option<&str>,
+        _source: &str,
+    ) {
+    }
 
     /// Thinking level 切换时触发。
     async fn on_thinking_level_select(&self, _level: &str, _previous_level: &str) {}
@@ -720,11 +728,16 @@ impl HookRunner {
     }
 
     /// Fire `on_model_select` to all handlers (parallel).
-    pub async fn fire_model_select(&self, model: &str, previous_model: Option<&str>) {
+    pub async fn fire_model_select(
+        &self,
+        model: &str,
+        previous_model: Option<&str>,
+        source: &str,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_model_select(model, previous_model))
+            .map(|h| h.on_model_select(model, previous_model, source))
             .collect();
         futures::future::join_all(futures).await;
     }

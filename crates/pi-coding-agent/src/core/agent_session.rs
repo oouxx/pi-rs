@@ -3556,6 +3556,7 @@ References are relative to {}.
                     registry,
                     model: &model_id,
                     previous_model: previous_model.as_deref(),
+                    source: "set",
                     ext_ctx: &self.ext_ctx,
                 },
             )
@@ -3749,6 +3750,7 @@ References are relative to {}.
                     registry,
                     model: &model_id,
                     previous_model: previous_model.as_deref(),
+                    source: "cycle",
                     ext_ctx: &self.ext_ctx,
                 },
             )
@@ -3811,6 +3813,7 @@ References are relative to {}.
                     registry,
                     model: &model_id,
                     previous_model: previous_model.as_deref(),
+                    source: "cycle",
                     ext_ctx: &self.ext_ctx,
                 },
             )

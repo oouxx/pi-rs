@@ -1920,10 +1920,18 @@ impl AgentSession {
         // _applyExtensionBindings() + emits session_start to extensions.
         // In Rust, the equivalent is done at construction time via ExtensionContext.
         // Emit session_start to extensions if any are registered.
+        self.emit_session_start("startup").await;
+    }
+
+    /// Emit `session_start` to extensions with the given reason, matching TS
+    /// `bindExtensions()` which emits the session start event. Used by RPC
+    /// mode's rebind after `new_session` (reason "new") / `switch_session`
+    /// (reason "resume"), mirroring TS `rebindSession()`.
+    pub async fn emit_session_start(&self, reason: &str) {
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_start(
                 registry,
-                "startup",
+                reason,
                 &self.ext_ctx,
                 None,
             )

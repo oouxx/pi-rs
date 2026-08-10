@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
-use crate::core::agent_session::AgentSessionEvent;
+use crate::core::agent_session::{AgentSession, AgentSessionEvent};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
@@ -153,26 +153,31 @@ pub async fn run_rpc_mode(
     // ── Global session event subscription ──────────────────────────────
     // Subscribe to ALL session events and forward them to stdout,
     // matching TS: session.subscribe((event) => { output(event); ... })
-    let output_tx_for_session = output_tx.clone();
-    let shutdown_flag_for_events = shutdown_requested.clone();
-    let shutdown_tx_for_events = shutdown_tx.clone();
-    let _session_event_handle = session.subscribe_session_events(
-        std::sync::Arc::new(move |event: AgentSessionEvent| {
-            // Serialize event to JSON and forward to output channel.
-            // Use to_json_event() to match the TS RPC wire shape exactly
-            // (type-discriminated union, camelCase fields, no `partial` snapshot).
-            let json = to_json_event(&event);
-            let line = serialize_json_line(&json);
-            let _ = output_tx_for_session.send(line);
-            // Check for agent_settled to trigger shutdown check (matching TS
-            // `checkShutdownRequested` which runs on agent_settled).
-            if matches!(event, AgentSessionEvent::AgentSettled)
-                && shutdown_flag_for_events.load(Ordering::SeqCst)
-            {
-                let _ = shutdown_tx_for_events.send(true);
-            }
-        }),
-    );
+    // The subscription is re-created after new_session/switch_session
+    // (matching TS rebindSession which re-subscribes).
+    let subscribe_events = |session: &AgentSession| {
+        let output_tx_for_session = output_tx.clone();
+        let shutdown_flag_for_events = shutdown_requested.clone();
+        let shutdown_tx_for_events = shutdown_tx.clone();
+        session.subscribe_session_events(
+            std::sync::Arc::new(move |event: AgentSessionEvent| {
+                // Serialize event to JSON and forward to output channel.
+                // Use to_json_event() to match the TS RPC wire shape exactly
+                // (type-discriminated union, camelCase fields, no `partial` snapshot).
+                let json = to_json_event(&event);
+                let line = serialize_json_line(&json);
+                let _ = output_tx_for_session.send(line);
+                // Check for agent_settled to trigger shutdown check (matching TS
+                // `checkShutdownRequested` which runs on agent_settled).
+                if matches!(event, AgentSessionEvent::AgentSettled)
+                    && shutdown_flag_for_events.load(Ordering::SeqCst)
+                {
+                    let _ = shutdown_tx_for_events.send(true);
+                }
+            }),
+        )
+    };
+    let mut session_event_handle = subscribe_events(&session);
 
     // ── Main loop: read JSON commands from stdin ──────────────────────
     let stdin = tokio::io::stdin();
@@ -258,6 +263,15 @@ pub async fn run_rpc_mode(
             &mut handler_state,
         )
         .await;
+
+        // Re-subscribe events after a session replacement (matching TS
+        // rebindSession which re-subscribes after new_session/switch_session).
+        if let Some(RpcOutput::Response { command, .. }) = &response {
+            if command == "new_session" || command == "switch_session" {
+                session_event_handle.unsubscribe();
+                session_event_handle = subscribe_events(&session);
+            }
+        }
 
         // Write synchronous response through the shared output channel
         if let Some(output) = response {

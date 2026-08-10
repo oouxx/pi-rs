@@ -171,10 +171,11 @@ pub async fn handle_command(
 
         RpcCommand::NewSession { id, parent_session } => {
             session.session_mgr_new(parent_session.as_deref()).await;
-            // Note: TS calls rebindSession() after new_session to re-subscribe
-            // events and re-bind extensions. In the current Rust architecture,
-            // extensions are bound at construction time, so rebinding is a no-op.
-            // The session reference remains valid after new_session().
+            // Rebind extensions (matching TS rebindSession() after
+            // new_session: bindExtensions emits session_start with reason
+            // "new"). The session reference remains valid — only the session
+            // manager is replaced — so event subscriptions stay attached.
+            session.emit_session_start("new").await;
             Some(rpc_success(
                 id,
                 "new_session",
@@ -466,7 +467,13 @@ pub async fn handle_command(
 
         RpcCommand::SwitchSession { id, session_path } => {
             match session.session_mgr_switch(&session_path, None).await {
-                Ok(()) => Some(rpc_success(id, "switch_session", Some(serde_json::json!({"cancelled": false})))),
+                Ok(()) => {
+                    // Rebind extensions (matching TS rebindSession() after
+                    // switch_session: bindExtensions emits session_start with
+                    // reason "resume").
+                    session.emit_session_start("resume").await;
+                    Some(rpc_success(id, "switch_session", Some(serde_json::json!({"cancelled": false}))))
+                }
                 Err(e) => Some(rpc_error(id, "switch_session", e)),
             }
         }

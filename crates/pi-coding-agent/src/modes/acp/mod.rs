@@ -317,6 +317,98 @@ mod tests {
             .await;
     }
 
+    /// `session/new` must return the initial config options (model +
+    /// thought_level selectors) so the client can render dropdowns immediately
+    /// (matching pi-acp's `newSession` response).
+    #[tokio::test]
+    async fn new_session_returns_config_options() {
+        let local_set = tokio::task::LocalSet::new();
+        local_set
+            .run_until(async {
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let client_conn = wire(spawn);
+
+                let resp = client_conn
+                    .new_session(acp::NewSessionRequest::new("/tmp"))
+                    .await
+                    .expect("new_session");
+                let options = resp.config_options.expect("config_options");
+                let ids: Vec<&str> = options.iter().map(|o| o.id.0.as_ref()).collect();
+                assert!(
+                    ids.contains(&"model"),
+                    "model selector must be advertised: {ids:?}"
+                );
+                assert!(
+                    ids.contains(&"thought_level"),
+                    "thought_level selector must be advertised (pi-acp config id): {ids:?}"
+                );
+            })
+            .await;
+    }
+
+    /// `session/new` with a relative cwd must be rejected (matching pi-acp's
+    /// validation).
+    #[tokio::test]
+    async fn new_session_rejects_relative_cwd() {
+        let local_set = tokio::task::LocalSet::new();
+        local_set
+            .run_until(async {
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let client_conn = wire(spawn);
+
+                let err = client_conn
+                    .new_session(acp::NewSessionRequest::new("relative/path"))
+                    .await
+                    .expect_err("relative cwd must be rejected");
+                assert_eq!(err.code, acp::ErrorCode::InvalidParams);
+            })
+            .await;
+    }
+
+    /// `session/list` must filter by cwd (defaulting to the last session cwd,
+    /// matching pi-acp) and include title/updatedAt.
+    #[tokio::test]
+    async fn list_sessions_filters_by_cwd_and_includes_metadata() {
+        let local_set = tokio::task::LocalSet::new();
+        local_set
+            .run_until(async {
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let client_conn = wire(spawn);
+
+                let resp = client_conn
+                    .new_session(acp::NewSessionRequest::new("/tmp"))
+                    .await
+                    .expect("new_session");
+                let sid = resp.session_id;
+
+                // No cwd → defaults to the last session cwd (/tmp).
+                let resp = client_conn
+                    .list_sessions(acp::ListSessionsRequest::new())
+                    .await
+                    .expect("list_sessions");
+                assert_eq!(resp.sessions.len(), 1);
+                assert_eq!(resp.sessions[0].session_id, sid);
+                assert_eq!(resp.sessions[0].cwd, std::path::PathBuf::from("/tmp"));
+
+                // Explicit cwd filter for a different dir → empty.
+                let resp = client_conn
+                    .list_sessions(acp::ListSessionsRequest::new().cwd("/other"))
+                    .await
+                    .expect("list_sessions");
+                assert_eq!(resp.sessions.len(), 0);
+            })
+            .await;
+    }
+
     /// `session/set_mode` (thinking level) must succeed and emit a
     /// `current_mode_update` notification.
     #[tokio::test]

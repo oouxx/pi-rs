@@ -1,11 +1,12 @@
 //! ACP session management.
 //!
 //! Each ACP session is backed by a pi `AgentSession` owned by a dedicated
-//! task (`SessionTask`). The task is the single owner of the session, which
-//! lets `session/cancel` interrupt a running `session/prompt` without
-//! deadlocking on a shared lock: while a prompt is in flight the task
-//! `select!`s on the prompt future, the event stream, and the command
-//! channel, so a `Cancel` command can call `abort()` on the same session.
+//! actor task (`SessionTask`). The task owns the command mailbox and the
+//! session itself (via `Arc`); LLM prompt turns run as separate tasks on the
+//! same local executor, so the actor stays responsive to every command while
+//! a turn is in flight. `session/cancel` therefore works without deadlocking
+//! on a shared lock: it signals the session's abort and lets the turn task
+//! settle, reporting `cancelled` as the stop reason.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -88,6 +89,11 @@ pub enum SessionCommand {
     },
     GetConfigOptions {
         reply: oneshot::Sender<Vec<acp::SessionConfigOption>>,
+    },
+    /// Build the ACP `available_commands_update` list (pi's get_commands +
+    /// file-based + builtin, matching pi-acp's `mergeCommands`).
+    GetCommands {
+        reply: oneshot::Sender<Vec<acp::AvailableCommand>>,
     },
     /// Set the startup-info block to emit as the first chunk of the next prompt.
     SetStartupInfo { text: String },
@@ -193,17 +199,19 @@ impl SessionRegistry {
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let task = SessionTask {
-            session,
+            session: Arc::new(session),
             cmd_rx,
             notif_tx,
             session_id: session_id.clone(),
             mcp_connections,
-            translator: EventTranslator::new(cwd),
             file_commands: load_slash_commands(cwd),
             startup_info: None,
             startup_info_sent: false,
             replay_history: false,
             prompt_queue: std::collections::VecDeque::new(),
+            turn_done_rx: None,
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            spawn: spawn.clone(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -239,6 +247,7 @@ impl SessionRegistry {
         mcp_servers: &[acp::McpServer],
         notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
+        cwd_override: Option<&str>,
     ) -> Result<(), String> {
         // Tear down an already-active session (without deleting its file) so
         // we can start fresh and replay history.
@@ -261,23 +270,28 @@ impl SessionRegistry {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| self.base_dir.join("acp").to_string_lossy().to_string());
 
+        // The client's cwd overrides the recorded one (matching pi-acp's
+        // `opts?.cwd ?? stored.cwd`).
+        let cwd = cwd_override.unwrap_or(&persisted.cwd).to_string();
         let (session, mcp_connections) = self
-            .build_session(&persisted.cwd, Some(&persisted.session_file), &session_dir, mcp_servers)
+            .build_session(&cwd, Some(&persisted.session_file), &session_dir, mcp_servers)
             .await?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let task = SessionTask {
-            session,
+            session: Arc::new(session),
             cmd_rx,
             notif_tx,
             session_id: session_id.clone(),
             mcp_connections,
-            translator: EventTranslator::new(&persisted.cwd),
-            file_commands: load_slash_commands(&persisted.cwd),
+            file_commands: load_slash_commands(&cwd),
             startup_info: None,
             startup_info_sent: false,
             replay_history: true,
             prompt_queue: std::collections::VecDeque::new(),
+            turn_done_rx: None,
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            spawn: spawn.clone(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
         spawn(fut);
@@ -285,7 +299,7 @@ impl SessionRegistry {
             session_id.clone(),
             SessionHandle {
                 cmd_tx,
-                cwd: persisted.cwd,
+                cwd: cwd.clone(),
             },
         );
         Ok(())
@@ -360,6 +374,13 @@ impl SessionRegistry {
         self.sessions.get(session_id)
     }
 
+    /// The storage root this registry persists ACP sessions under
+    /// (`{base_dir}/acp/`). `session/list` scans it (plus pi's own session
+    /// subdirectories) so the list is scoped to this agent's storage.
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
     /// Delete a session: stop its task, remove it from the registry and the
     /// on-disk map, and delete its session file (idempotent — deleting a
     /// session that does not exist succeeds, matching ACP `session/delete`
@@ -429,8 +450,16 @@ fn load_map(path: &Path) -> HashMap<acp::SessionId, PersistedSession> {
 }
 
 /// The task that owns one pi `AgentSession` and drives ACP commands.
+/// Result of the session task's next event: a command from the mailbox, or
+/// the current turn settling (so the next queued prompt can start).
+#[allow(clippy::large_enum_variant)]
+enum NextEvent {
+    Command(Option<SessionCommand>),
+    TurnDone(Result<(), String>),
+}
+
 struct SessionTask {
-    session: AgentSession,
+    session: Arc<AgentSession>,
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
     notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     session_id: acp::SessionId,
@@ -438,8 +467,6 @@ struct SessionTask {
     /// tool-execute closures (which capture a peer handle) stay valid.
     #[allow(dead_code)]
     mcp_connections: Vec<McpConnection>,
-    /// Enriches tool-call notifications with locations / diffs / bash terminals.
-    translator: EventTranslator,
     /// File-based slash commands loaded for this session's cwd.
     file_commands: Vec<super::slash_commands::FileSlashCommand>,
     /// Startup-info block to emit as the first chunk of the next prompt.
@@ -451,40 +478,104 @@ struct SessionTask {
     replay_history: bool,
     /// Prompts queued while another prompt was running (pi-acp turn queue).
     prompt_queue: std::collections::VecDeque<QueuedPrompt>,
+    /// Set while an LLM turn is in flight; the receiver fires with the turn's
+    /// outcome when it settles, letting the actor start the next queued prompt.
+    turn_done_rx: Option<mpsc::Receiver<Result<(), String>>>,
+    /// Set by `session/cancel`; the turn task reads it after the run settles
+    /// to report `cancelled` instead of `end_turn`. Reset per turn.
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    /// Local-future spawner (the same executor the session task itself runs
+    /// on) used to spawn turn tasks.
+    spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
 }
 
 impl SessionTask {
+    /// The actor loop: process commands, and when the in-flight turn settles,
+    /// start the next queued prompt (matching pi-acp's turn queue). Commands
+    /// are never rejected for "busy" — only prompts queue, everything else is
+    /// handled immediately (matching pi-acp, which applies e.g. set_model
+    /// while a turn runs).
     async fn run(mut self) {
         // Replay persisted conversation history (session/load) before
         // processing any commands, so the client sees the full context.
         if self.replay_history {
             self.replay_history().await;
         }
-        while let Some(cmd) = self.cmd_rx.recv().await {
-            match cmd {
-                SessionCommand::Prompt { text, images, reply } => {
-                    self.run_prompt(text, images, reply).await;
+        loop {
+            match self.next_event().await {
+                NextEvent::Command(Some(SessionCommand::Prompt { text, images, reply })) => {
+                    self.on_prompt(text, images, reply).await;
                 }
-                SessionCommand::Cancel => {
-                    self.session.abort().await;
+                NextEvent::Command(Some(SessionCommand::Cancel)) => {
+                    self.on_cancel().await;
                 }
-                SessionCommand::SetModel { model, reply } => {
+                NextEvent::Command(Some(SessionCommand::SetModel { model, reply })) => {
                     let result = self.session.set_model(model).await;
                     let _ = reply.send(result);
                 }
-                SessionCommand::SetThinkingLevel { level, reply } => {
+                NextEvent::Command(Some(SessionCommand::SetThinkingLevel { level, reply })) => {
                     self.session.set_thinking_level(&level).await;
                     let _ = reply.send(Ok(()));
                 }
-                SessionCommand::GetConfigOptions { reply } => {
+                NextEvent::Command(Some(SessionCommand::GetConfigOptions { reply })) => {
                     let options = self.config_options().await;
                     let _ = reply.send(options);
                 }
-                SessionCommand::SetStartupInfo { text } => {
+                NextEvent::Command(Some(SessionCommand::GetCommands { reply })) => {
+                    let commands = self.available_commands().await;
+                    let _ = reply.send(commands);
+                }
+                NextEvent::Command(Some(SessionCommand::SetStartupInfo { text })) => {
                     self.startup_info = Some(text);
                 }
-                SessionCommand::Shutdown => break,
+                NextEvent::Command(Some(SessionCommand::Shutdown)) | NextEvent::Command(None) => {
+                    // Stop any in-flight turn before the session task exits so
+                    // it doesn't keep running against a torn-down session.
+                    if self.turn_done_rx.is_some() {
+                        let session = Arc::clone(&self.session);
+                        let fut: futures::future::LocalBoxFuture<'static, ()> =
+                            Box::pin(async move {
+                                session.abort().await;
+                            });
+                        (self.spawn)(fut);
+                    }
+                    break;
+                }
+                NextEvent::TurnDone(outcome) => {
+                    // The turn settled. Publish the queue depth, then either
+                    // start the next queued prompt or (on failure) reject the
+                    // rest of the queue — pi may be unhealthy, so we don't
+                    // auto-proceed after a failure (matching pi-acp).
+                    self.turn_done_rx = None;
+                    let _ = self.emit_queue_depth(self.prompt_queue.len(), false).await;
+                    if outcome.is_err() {
+                        while let Some(queued) = self.prompt_queue.pop_front() {
+                            let _ = queued.reply.send(Err(
+                                "session is busy processing a prompt".to_string(),
+                            ));
+                        }
+                    } else if let Some(queued) = self.prompt_queue.pop_front() {
+                        self.start_prompt_turn(queued);
+                    }
+                }
             }
+        }
+    }
+
+    /// Wait for the next event: a command from the mailbox, or (while a turn
+    /// is in flight) the turn settling.
+    async fn next_event(&mut self) -> NextEvent {
+        match &mut self.turn_done_rx {
+            Some(rx) => tokio::select! {
+                cmd = self.cmd_rx.recv() => NextEvent::Command(cmd),
+                done = rx.recv() => match done {
+                    Some(outcome) => NextEvent::TurnDone(outcome),
+                    // The turn task died without reporting — treat as a
+                    // failed turn so the queue is rejected rather than stuck.
+                    None => NextEvent::TurnDone(Err("turn task ended unexpectedly".to_string())),
+                },
+            },
+            None => NextEvent::Command(self.cmd_rx.recv().await),
         }
     }
 
@@ -520,10 +611,22 @@ impl SessionTask {
                     } else {
                         acp::ToolCallStatus::Completed
                     };
+                    let is_bash = super::translate::is_bash_tool(&tool_name);
                     // Synthetic tool call so the client renders historic tool usage.
-                    let tc = acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
+                    // Bash results are rendered as display-only terminals
+                    // (matching pi-acp's `session/load` replay).
+                    let mut tc = acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
                         .kind(super::translate::tool_kind(&tool_name))
                         .status(status);
+                    if is_bash {
+                        tc = tc.content(vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
+                            acp::TerminalId::new(tool_call_id.clone()),
+                        ))]);
+                        tc = tc.meta(super::translate::bash_terminal_info_meta(
+                            &tool_call_id,
+                            self.session.get_cwd(),
+                        ));
+                    }
                     let notif = acp::SessionNotification::new(
                         self.session_id.clone(),
                         acp::SessionUpdate::ToolCall(tc),
@@ -534,17 +637,32 @@ impl SessionTask {
                     }
                     let _ = ack_rx.await;
                     if !text.is_empty() {
-                        let fields = acp::ToolCallUpdateFields::new()
-                            .status(status)
-                            .content(vec![acp::ToolCallContent::Content(acp::Content::new(
-                                acp::ContentBlock::Text(acp::TextContent::new(text)),
-                            ))]);
+                        let mut update = acp::ToolCallUpdate::new(
+                            tool_call_id,
+                            acp::ToolCallUpdateFields::new().status(status),
+                        );
+                        if is_bash {
+                            // Stream the captured output + close the terminal
+                            // with the exit code.
+                            let id = update.tool_call_id.0.clone();
+                            update = update.meta(super::translate::bash_terminal_output_meta(
+                                &id,
+                                &text,
+                            ));
+                            update = update.meta(super::translate::bash_terminal_exit_meta(
+                                &id,
+                                if is_error { 1 } else { 0 },
+                            ));
+                        } else {
+                            update.fields.content = Some(vec![acp::ToolCallContent::Content(
+                                acp::Content::new(acp::ContentBlock::Text(acp::TextContent::new(
+                                    text,
+                                ))),
+                            )]);
+                        }
                         let notif = acp::SessionNotification::new(
                             self.session_id.clone(),
-                            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-                                tool_call_id,
-                                fields,
-                            )),
+                            acp::SessionUpdate::ToolCallUpdate(update),
                         );
                         let (ack_tx, ack_rx) = oneshot::channel();
                         if self.notif_tx.send((notif, ack_tx)).is_err() {
@@ -558,16 +676,11 @@ impl SessionTask {
         }
     }
 
-    /// Run one prompt turn: stream pi events as ACP notifications, then reply
-    /// with the stop reason. `session/cancel` is handled inline so it can
-    /// interrupt the running turn. `images` are passed through to pi's
-    /// `prompt()` (ContentBlock::Image), matching the RPC mode.
-    ///
-    /// Slash commands are resolved first (matching pi-acp): built-in commands
-    /// are executed directly and their result emitted as a message chunk;
-    /// file-based commands are expanded (with `$1`/`$2`/`$@` substitution)
-    /// and run as a normal prompt.
-    async fn run_prompt(
+    /// Handle a `session/prompt` command: emit startup info once, then either
+    /// start the prompt immediately or queue it (matching pi-acp's turn
+    /// queue: prompts arriving mid-turn are queued and started in order after
+    /// the current turn settles, instead of being rejected).
+    async fn on_prompt(
         &mut self,
         text: String,
         images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
@@ -584,9 +697,33 @@ impl SessionTask {
                 }
             }
         }
-        // Slash commands only apply to plain-text prompts (no images).
-        if images.is_empty() {
-            if let Some((cmd, args)) = resolve_command(&text, &self.file_commands) {
+        let prompt = QueuedPrompt { text, images, reply };
+        if self.turn_done_rx.is_some() {
+            // Queue the prompt; it runs after the current turn settles
+            // (matching pi-acp's turn queue). Notify the client.
+            self.prompt_queue.push_back(prompt);
+            let _ = self
+                .emit_text(&format!(
+                    "Queued message (position {}).",
+                    self.prompt_queue.len()
+                ))
+                .await;
+            let _ = self.emit_queue_depth(self.prompt_queue.len(), true).await;
+        } else {
+            self.start_prompt(prompt).await;
+        }
+    }
+
+    /// Start processing one prompt: resolve slash commands (built-ins execute
+    /// inline and their result is emitted as a message chunk; file commands
+    /// expand with `$1`/`$2`/`$@` substitution), otherwise spawn an LLM turn
+    /// task. Slash commands only apply to plain-text prompts (no images);
+    /// leading whitespace is trimmed before detection (matching pi-acp's
+    /// `message.trimStart().startsWith('/')`).
+    async fn start_prompt(&mut self, prompt: QueuedPrompt) {
+        if prompt.images.is_empty() {
+            let trimmed = prompt.text.trim_start().to_string();
+            if let Some((cmd, args)) = resolve_command(&trimmed, &self.file_commands) {
                 match cmd {
                     ResolvedCommand::Builtin(name) => {
                         let result = self.run_builtin_command(&name, &args).await;
@@ -594,178 +731,96 @@ impl SessionTask {
                             Ok(()) => Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
                             Err(e) => Err(e),
                         };
-                        let _ = reply.send(response);
+                        let _ = prompt.reply.send(response);
                         return;
                     }
                     ResolvedCommand::File(f) => {
                         let expanded = substitute_args(&f.content, &args);
-                        return self.run_prompt_inner(expanded, images, reply).await;
+                        self.start_prompt_turn(QueuedPrompt {
+                            text: expanded,
+                            images: prompt.images,
+                            reply: prompt.reply,
+                        });
+                        return;
                     }
                 }
             }
         }
-        self.run_prompt_inner(text, images, reply).await;
+        self.start_prompt_turn(prompt);
     }
 
-    /// The actual prompt loop (see `run_prompt` for slash-command handling).
-    ///
-    /// Runs the prompt, then any prompts queued while it was running
-    /// (matching pi-acp's turn queue). A failed run stops the queue — pi may
-    /// be unhealthy, so we don't auto-proceed (matching pi-acp).
-    async fn run_prompt_inner(
-        &mut self,
-        text: String,
-        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
-        reply: oneshot::Sender<Result<acp::PromptResponse, String>>,
-    ) {
-        let mut current = QueuedPrompt { text, images, reply };
-        loop {
-            let outcome = self.run_single_prompt(current.text, current.images).await;
-            let _ = current.reply.send(outcome.clone());
-            if outcome.is_err() {
-                // Don't auto-proceed after a failure; reject anything queued.
-                while let Some(queued) = self.prompt_queue.pop_front() {
-                    let _ = queued
-                        .reply
-                        .send(Err("session is busy processing a prompt".to_string()));
-                }
-                break;
-            }
-            match self.prompt_queue.pop_front() {
-                Some(next) => current = next,
-                None => break,
-            }
+    /// Spawn the LLM turn as a task on the session's executor. The task
+    /// streams pi events as ACP notifications, replies with the stop reason,
+    /// and reports the outcome on a fresh `turn_done_rx` channel so the actor
+    /// can start the next queued prompt.
+    fn start_prompt_turn(&mut self, prompt: QueuedPrompt) {
+        let (turn_done_tx, turn_done_rx) = mpsc::channel::<Result<(), String>>(1);
+        self.turn_done_rx = Some(turn_done_rx);
+        // A cancel flag from a previous turn must not leak into this one.
+        self.cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
+        let fut = run_prompt_turn(
+            Arc::clone(&self.session),
+            self.session_id.clone(),
+            self.notif_tx.clone(),
+            Arc::clone(&self.cancelled),
+            turn_done_tx,
+            prompt,
+        );
+        let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(fut);
+        (self.spawn)(fut);
+    }
+
+    /// `session/cancel`: stop the current turn without blocking the command
+    /// loop, resolve queued prompts as cancelled (matching pi-acp), and let
+    /// the turn task report `cancelled` once the run settles.
+    async fn on_cancel(&mut self) {
+        if self.turn_done_rx.is_none() {
+            // Nothing is running — no-op.
+            return;
         }
-    }
-
-    /// Run one prompt turn: stream pi events as ACP notifications, then reply
-    /// with the stop reason. `session/cancel` is handled inline so it can
-    /// interrupt the running turn; prompts arriving mid-turn are queued
-    /// (matching pi-acp) instead of rejected.
-    async fn run_single_prompt(
-        &mut self,
-        text: String,
-        images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
-    ) -> Result<acp::PromptResponse, String> {
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<crate::core::agent_session::AgentSessionEvent>();
-        let listener: Arc<
-            dyn Fn(crate::core::agent_session::AgentSessionEvent) + Send + Sync,
-        > = Arc::new(move |event| {
-            let _ = event_tx.send(event);
+        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Signal the run to stop. `abort()` waits for the agent to become
+        // idle, so it runs as a separate task; the turn task observes the
+        // abort, settles, and replies `cancelled`.
+        let session = Arc::clone(&self.session);
+        let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(async move {
+            session.abort().await;
         });
-        let handle = self.session.subscribe_session_events(listener);
+        (self.spawn)(fut);
+        // Cancel clears the queued prompts (matching pi-acp: cancel resolves
+        // queued turns as cancelled).
+        while let Some(queued) = self.prompt_queue.pop_front() {
+            let _ = queued
+                .reply
+                .send(Ok(acp::PromptResponse::new(acp::StopReason::Cancelled)));
+        }
+        // Notify the client the queue was cleared (matching pi-acp).
+        let _ = self.emit_text("Cleared queued prompts.").await;
+        let _ = self.emit_queue_depth(0, true).await;
+    }
 
-        let prompt_options = crate::core::agent_session::PromptOptions {
-            expand_prompt_templates: None,
-            images: (!images.is_empty()).then_some(images),
-            streaming_behavior: None,
-            source: Some("acp".to_string()),
-            preflight_result: None,
-        };
-        let prompt_fut = self.session.prompt(&text, Some(prompt_options));
-        tokio::pin!(prompt_fut);
-
-        // Track whether the agent actually ran a turn (mirrors the RPC mode's
-        // AgentEnd check: prompt() returns Ok even when the run fails to start).
-        let mut saw_agent_end = false;
-        // Set when the client cancelled this turn; the response then reports
-        // `cancelled` instead of `end_turn` (matching pi-acp).
-        let mut cancel_requested = false;
-        // Acks of notifications forwarded while the turn ran. We don't await
-        // them inline (that would block the select loop and delay cancel);
-        // they are flushed when the prompt future completes (matching
-        // pi-acp's fire-and-forget emit + flushEmits on agent_settled).
-        let mut pending_acks: Vec<oneshot::Receiver<()>> = Vec::new();
-
-        let outcome: Result<(), String> = loop {
-            tokio::select! {
-                result = &mut prompt_fut => {
-                    // Drain any events still queued (e.g. AgentEnd) so the
-                    // saw_agent_end check below is accurate: prompt() may
-                    // return before the select! loop has consumed the final
-                    // events.
-                    let mut disconnected = false;
-                    while let Ok(event) = event_rx.try_recv() {
-                        if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
-                            saw_agent_end = true;
-                        }
-                        if let Some(notif) = self.translator.translate(&self.session_id, &event) {
-                            let (ack_tx, ack_rx) = oneshot::channel();
-                            if self.notif_tx.send((notif, ack_tx)).is_err() {
-                                disconnected = true;
-                                break;
-                            }
-                            pending_acks.push(ack_rx);
-                        }
-                    }
-                    // Flush: wait for all forwarded notifications to be
-                    // delivered before replying to the prompt.
-                    for ack in pending_acks.drain(..) {
-                        if ack.await.is_err() {
-                            disconnected = true;
-                            break;
-                        }
-                    }
-                    if disconnected {
-                        break Err("client disconnected".to_string());
-                    }
-                    break result;
-                }
-                Some(event) = event_rx.recv() => {
-                    if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
-                        saw_agent_end = true;
-                    }
-                    if let Some(notif) = self.translator.translate(&self.session_id, &event) {
-                        let (ack_tx, ack_rx) = oneshot::channel();
-                        if self.notif_tx.send((notif, ack_tx)).is_err() {
-                            break Err("client disconnected".to_string());
-                        }
-                        pending_acks.push(ack_rx);
-                    }
-                }
-                cmd = self.cmd_rx.recv() => {
-                    match cmd {
-                        Some(SessionCommand::Cancel) => {
-                            cancel_requested = true;
-                            self.session.abort().await;
-                            // Cancel clears the queued prompts (matching
-                            // pi-acp: cancel resolves queued turns as
-                            // cancelled).
-                            while let Some(queued) = self.prompt_queue.pop_front() {
-                                let _ = queued.reply.send(Ok(
-                                    acp::PromptResponse::new(acp::StopReason::Cancelled),
-                                ));
-                            }
-                        }
-                        Some(SessionCommand::Prompt { text, images, reply }) => {
-                            // Queue the prompt; it runs after the current turn
-                            // settles (matching pi-acp's turn queue).
-                            self.prompt_queue.push_back(QueuedPrompt { text, images, reply });
-                        }
-                        Some(SessionCommand::Shutdown) | None => {
-                            break Err("session closed".to_string());
-                        }
-                        Some(other) => {
-                            // Session is busy — reject other commands.
-                            reject_busy(other);
-                        }
-                    }
-                }
-            }
-        };
-
-        handle.unsubscribe();
-        let response = if saw_agent_end {
-            let reason = if cancel_requested {
-                acp::StopReason::Cancelled
-            } else {
-                acp::StopReason::EndTurn
-            };
-            Ok(acp::PromptResponse::new(reason))
-        } else {
-            Err("agent run failed to start or completed without AgentEnd".to_string())
-        };
-        outcome.and(response)
+    /// Emit a `session_info_update` carrying the pi-acp queue-depth metadata
+    /// (`_meta.piAcp.queueDepth` / `running`).
+    async fn emit_queue_depth(&self, depth: usize, running: bool) -> Result<(), String> {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "piAcp".to_string(),
+            serde_json::json!({
+                "queueDepth": depth,
+                "running": running,
+            }),
+        );
+        let notif = acp::SessionNotification::new(
+            self.session_id.clone(),
+            acp::SessionUpdate::SessionInfoUpdate(
+                acp::SessionInfoUpdate::new().meta(meta),
+            ),
+        );
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.notif_tx
+            .send((notif, ack_tx))
+            .map_err(|_| "client disconnected".to_string())?;
+        ack_rx.await.map_err(|_| "client disconnected".to_string())
     }
 
     /// Emit a plain-text message chunk notification to the client.
@@ -800,7 +855,7 @@ impl SessionTask {
 
     /// Execute a built-in slash command and emit its result as a message
     /// chunk (mirrors pi-acp's built-in command handling in `agent.ts`).
-    async fn run_builtin_command(&mut self, name: &str, args: &[String]) -> Result<(), String> {
+    async fn run_builtin_command(&self, name: &str, args: &[String]) -> Result<(), String> {
         use pi_agent_core::types::QueueMode;
 
         match name {
@@ -840,15 +895,43 @@ impl SessionTask {
                             .await;
                     }
                 };
-                let mut settings = self.session.get_compaction_settings().clone();
+                let mut settings = self.session.get_compaction_settings();
                 settings.compact_on_threshold = next;
                 self.session.set_compaction_settings(settings);
                 self.emit_text(&format!("Auto-compaction: {}", if next { "on" } else { "off" }))
                     .await
             }
             "export" => {
-                match self.session.export_html_to_file(None) {
-                    Ok(path) => self.emit_text(&format!("Session exported to: {path}")).await,
+                // Export into the session cwd with a stable name, matching
+                // pi-acp's `pi-session-{id}.html` in the session cwd, and emit
+                // a resource link so clients render a clickable file.
+                let safe_id = self
+                    .session_id
+                    .0
+                    .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "_");
+                let output_path = std::path::Path::new(self.session.get_cwd())
+                    .join(format!("pi-session-{safe_id}.html"));
+                match self.session.export_html_to_file(Some(&output_path.to_string_lossy())) {
+                    Ok(path) => {
+                        let uri = format!("file://{path}");
+                        let _ = self.emit_text("Session exported: ").await;
+                        let notif = acp::SessionNotification::new(
+                            self.session_id.clone(),
+                            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                                acp::ContentBlock::ResourceLink(
+                                    acp::ResourceLink::new(
+                                        format!("pi-session-{safe_id}.html"),
+                                        uri,
+                                    )
+                                    .mime_type("text/html")
+                                    .title("Session exported"),
+                                ),
+                            )),
+                        );
+                        let (ack_tx, ack_rx) = oneshot::channel();
+                        self.notif_tx.send((notif, ack_tx)).map_err(|_| "client disconnected".to_string())?;
+                        ack_rx.await.map_err(|_| "client disconnected".to_string())
+                    }
                     Err(e) => self.emit_text(&format!("Export failed: {e}")).await,
                 }
             }
@@ -891,6 +974,17 @@ impl SessionTask {
                     return self.emit_text("Usage: /name <name>").await;
                 }
                 self.session.set_session_name(&name);
+                // Keep the client's session title in sync (matching pi-acp's
+                // `session_info_update` after `/name`).
+                let notif = acp::SessionNotification::new(
+                    self.session_id.clone(),
+                    acp::SessionUpdate::SessionInfoUpdate(
+                        acp::SessionInfoUpdate::new().title(name.clone()),
+                    ),
+                );
+                let (ack_tx, ack_rx) = oneshot::channel();
+                self.notif_tx.send((notif, ack_tx)).map_err(|_| "client disconnected".to_string())?;
+                let _ = ack_rx.await;
                 self.emit_text(&format!("Session name set to: {name}")).await
             }
             "queue" => {
@@ -990,10 +1084,14 @@ impl SessionTask {
                 current_model_id,
                 model_options,
             )),
-        );
+        )
+        .category(acp::SessionConfigOptionCategory::Model)
+        .description("Select the model for this session");
         options.push(model_option);
 
-        // Thinking level selector.
+        // Thinking level selector. The config id is `thought_level` (matching
+        // pi-acp's `THOUGHT_LEVEL_CONFIG_ID`); `set_session_config_option`
+        // accepts both it and the legacy `thinking_level` spelling.
         let level = self.session.get_thinking_level().await;
         let levels = self.session.get_available_thinking_levels().await;
         let level_options: Vec<acp::SessionConfigSelectOption> = levels
@@ -1001,37 +1099,188 @@ impl SessionTask {
             .map(|l| acp::SessionConfigSelectOption::new(l.to_string(), l.to_string()))
             .collect();
         let level_option = acp::SessionConfigOption::new(
-            "thinking_level",
-            "Thinking Level",
+            "thought_level",
+            "Thinking",
             acp::SessionConfigKind::Select(acp::SessionConfigSelect::new(
                 level.to_string(),
                 level_options,
             )),
-        );
+        )
+        .category(acp::SessionConfigOptionCategory::ThoughtLevel)
+        .description("Set the reasoning effort for this session");
         options.push(level_option);
 
         options
     }
+
+    /// Build the ACP `available_commands_update` list: pi's own discoverable
+    /// commands (prompt templates + skills; extension commands are excluded,
+    /// matching pi-acp's `includeExtensionCommands: false`), then file-based
+    /// commands, then built-ins — de-duped by name, first wins (matching
+    /// pi-acp's `mergeCommands`).
+    async fn available_commands(&self) -> Vec<acp::AvailableCommand> {
+        let mut commands: Vec<acp::AvailableCommand> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        let mut push = |name: String, description: String| {
+            if seen.insert(name.clone()) {
+                commands.push(acp::AvailableCommand::new(name, description));
+            }
+        };
+
+        // pi's get_commands: prompt templates + skills (no extension commands).
+        for info in self.session.get_commands_info() {
+            if matches!(
+                info.source,
+                crate::core::slash_commands::SlashCommandSource::Extension
+            ) {
+                continue;
+            }
+            let description = info
+                .description
+                .unwrap_or_else(|| format!("({})", info.source_info.source));
+            push(info.name, description);
+        }
+
+        // File-based prompt templates (user + project).
+        for c in &self.file_commands {
+            push(c.name.clone(), c.description.clone());
+        }
+
+        // Built-ins.
+        for c in super::slash_commands::builtin_available_commands() {
+            push(c.name.clone(), c.description.clone());
+        }
+
+        commands
+    }
 }
 
-/// Reply "session busy" to a command that arrived while a prompt was running.
-fn reject_busy(cmd: SessionCommand) {
-    match cmd {
-        SessionCommand::Prompt { reply, .. } => {
-            let _ = reply.send(Err("session is busy processing a prompt".to_string()));
+/// Spawned by the session task: run one LLM turn against the shared session,
+/// reply with the stop reason, then report the outcome so the actor can
+/// start the next queued prompt.
+async fn run_prompt_turn(
+    session: Arc<AgentSession>,
+    session_id: acp::SessionId,
+    notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    turn_done: mpsc::Sender<Result<(), String>>,
+    prompt: QueuedPrompt,
+) {
+    let QueuedPrompt { text, images, reply } = prompt;
+    let response =
+        run_single_prompt(&session, &session_id, &notif_tx, &cancelled, &text, images).await;
+    let outcome = response.as_ref().map(|_| ()).map_err(|e| e.clone());
+    let _ = reply.send(response);
+    let _ = turn_done.send(outcome).await;
+}
+
+/// Run one prompt turn: stream pi events as ACP notifications, then report
+/// the stop reason. `cancelled` is set by the session task on
+/// `session/cancel`; the response then reports `cancelled` instead of
+/// `end_turn` (matching pi-acp).
+async fn run_single_prompt(
+    session: &AgentSession,
+    session_id: &acp::SessionId,
+    notif_tx: &mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+    cancelled: &std::sync::atomic::AtomicBool,
+    text: &str,
+    images: Vec<pi_agent_core::pi_ai_types::ContentBlock>,
+) -> Result<acp::PromptResponse, String> {
+    let (event_tx, mut event_rx) =
+        mpsc::unbounded_channel::<crate::core::agent_session::AgentSessionEvent>();
+    let listener: Arc<
+        dyn Fn(crate::core::agent_session::AgentSessionEvent) + Send + Sync,
+    > = Arc::new(move |event| {
+        let _ = event_tx.send(event);
+    });
+    let handle = session.subscribe_session_events(listener);
+
+    let prompt_options = crate::core::agent_session::PromptOptions {
+        expand_prompt_templates: None,
+        images: (!images.is_empty()).then_some(images),
+        streaming_behavior: None,
+        source: Some("acp".to_string()),
+        preflight_result: None,
+    };
+    let prompt_fut = session.prompt(text, Some(prompt_options));
+    tokio::pin!(prompt_fut);
+
+    // Track whether the agent actually ran a turn (mirrors the RPC mode's
+    // AgentEnd check: prompt() returns Ok even when the run fails to start).
+    let mut saw_agent_end = false;
+    // Acks of notifications forwarded while the turn ran. We don't await
+    // them inline (that would delay reacting to the prompt future); they are
+    // flushed when the prompt future completes (matching pi-acp's
+    // fire-and-forget emit + flushEmits on agent_settled).
+    let mut pending_acks: Vec<oneshot::Receiver<()>> = Vec::new();
+
+    // Per-turn translator: tool-call state (snapshots / statuses) is keyed by
+    // tool-call id, which is unique per call, so nothing carries across turns.
+    let mut translator = EventTranslator::new(session.get_cwd());
+
+    let outcome: Result<(), String> = loop {
+        tokio::select! {
+            result = &mut prompt_fut => {
+                // Drain any events still queued (e.g. AgentEnd) so the
+                // saw_agent_end check below is accurate: prompt() may
+                // return before the select! loop has consumed the final
+                // events.
+                let mut disconnected = false;
+                while let Ok(event) = event_rx.try_recv() {
+                    if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
+                        saw_agent_end = true;
+                    }
+                    if let Some(notif) = translator.translate(session_id, &event) {
+                        let (ack_tx, ack_rx) = oneshot::channel();
+                        if notif_tx.send((notif, ack_tx)).is_err() {
+                            disconnected = true;
+                            break;
+                        }
+                        pending_acks.push(ack_rx);
+                    }
+                }
+                // Flush: wait for all forwarded notifications to be
+                // delivered before replying to the prompt.
+                for ack in pending_acks.drain(..) {
+                    if ack.await.is_err() {
+                        disconnected = true;
+                        break;
+                    }
+                }
+                if disconnected {
+                    break Err("client disconnected".to_string());
+                }
+                break result;
+            }
+            Some(event) = event_rx.recv() => {
+                if matches!(event, crate::core::agent_session::AgentSessionEvent::AgentEnd { .. }) {
+                    saw_agent_end = true;
+                }
+                if let Some(notif) = translator.translate(session_id, &event) {
+                    let (ack_tx, ack_rx) = oneshot::channel();
+                    if notif_tx.send((notif, ack_tx)).is_err() {
+                        break Err("client disconnected".to_string());
+                    }
+                    pending_acks.push(ack_rx);
+                }
+            }
         }
-        SessionCommand::SetModel { reply, .. } => {
-            let _ = reply.send(Err("session is busy processing a prompt".to_string()));
-        }
-        SessionCommand::SetThinkingLevel { reply, .. } => {
-            let _ = reply.send(Err("session is busy processing a prompt".to_string()));
-        }
-        SessionCommand::GetConfigOptions { reply } => {
-            let _ = reply.send(Vec::new());
-        }
-        SessionCommand::SetStartupInfo { .. } => {}
-        SessionCommand::Cancel | SessionCommand::Shutdown => {}
-    }
+    };
+
+    handle.unsubscribe();
+    let cancel_requested = cancelled.load(std::sync::atomic::Ordering::SeqCst);
+    let response = if saw_agent_end {
+        let reason = if cancel_requested {
+            acp::StopReason::Cancelled
+        } else {
+            acp::StopReason::EndTurn
+        };
+        Ok(acp::PromptResponse::new(reason))
+    } else {
+        Err("agent run failed to start or completed without AgentEnd".to_string())
+    };
+    outcome.and(response)
 }
 
 /// Extract the plain text from a message's content blocks (text + thinking).
@@ -1049,6 +1298,154 @@ fn content_text(content: &[pi_agent_core::pi_ai_types::ContentBlock]) -> String 
         }
     }
     parts.join("\n")
+}
+
+/// A pi session discovered on disk (mirrors pi-acp's `PiSessionListItem`).
+#[derive(Debug, Clone)]
+pub struct PiSessionItem {
+    pub session_id: String,
+    pub cwd: String,
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// Recursively scan `dir` for pi session JSONL files and extract the session
+/// id / cwd / title / updatedAt, mirroring pi-acp's `listPiSessions`:
+/// - header line (`{"type":"session","id":…,"cwd":…}`) gives id + cwd
+/// - the last `session_info` entry with a name gives the title
+/// - the last `message` entry's timestamp gives updatedAt
+/// - fallbacks: file mtime for updatedAt, first user message for title
+///
+/// Scoped to the agent's storage root so `session/list` is isolated per agent
+/// (tests use a tempdir; production uses `{sessions_dir}` which also contains
+/// regular CLI sessions in per-cwd subdirectories).
+pub fn scan_pi_sessions(dir: &std::path::Path) -> Vec<PiSessionItem> {
+    let mut files = Vec::new();
+    walk_jsonl_files(dir, &mut files);
+
+    let mut items = Vec::new();
+    for file in files {
+        let Some(item) = scan_session_file(&file) else {
+            continue;
+        };
+        items.push(item);
+    }
+
+    // Sort most recent first (matching pi-acp).
+    items.sort_by(|a, b| {
+        let aa = a.updated_at.as_deref().unwrap_or("");
+        let bb = b.updated_at.as_deref().unwrap_or("");
+        bb.cmp(aa)
+    });
+    items
+}
+
+fn walk_jsonl_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_jsonl_files(&path, out);
+        } else if path.is_file()
+            && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn scan_session_file(path: &std::path::Path) -> Option<PiSessionItem> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+
+    // Header line: {"type":"session","id":…,"cwd":…}
+    let header: serde_json::Value = serde_json::from_str(lines.next()?.trim()).ok()?;
+    if header.get("type").and_then(|t| t.as_str()) != Some("session") {
+        return None;
+    }
+    let session_id = header.get("id")?.as_str()?.to_string();
+    let cwd = header.get("cwd")?.as_str()?.to_string();
+
+    let mut title: Option<String> = None;
+    let mut updated_at: Option<String> = None;
+    let mut first_user_message: Option<String> = None;
+
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("session_info") => {
+                if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+                    if !name.trim().is_empty() {
+                        title = Some(name.trim().to_string());
+                    }
+                }
+            }
+            Some("message") => {
+                if let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {
+                    updated_at = Some(ts.to_string());
+                }
+                if first_user_message.is_none() {
+                    let role = v
+                        .get("message")
+                        .and_then(|m| m.get("role"))
+                        .and_then(|r| r.as_str());
+                    if role == Some("user") {
+                        first_user_message = extract_first_text(&v);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fallback: file mtime for updatedAt.
+    if updated_at.is_none() {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if let Ok(modified) = meta.modified() {
+                let dt: chrono::DateTime<chrono::Utc> = modified.into();
+                updated_at = Some(dt.to_rfc3339());
+            }
+        }
+    }
+    // Fallback: first user message for title.
+    if title.is_none() {
+        title = first_user_message.map(|t| {
+            let truncated: String = t.chars().take(80).collect();
+            truncated
+        });
+    }
+
+    Some(PiSessionItem {
+        session_id,
+        cwd,
+        title,
+        updated_at,
+    })
+}
+
+/// Extract the first text block from a message entry's `message.content`.
+fn extract_first_text(entry: &serde_json::Value) -> Option<String> {
+    let content = entry.get("message")?.get("content")?;
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    let arr = content.as_array()?;
+    for block in arr {
+        if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+            if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1105,11 +1502,11 @@ mod tests {
         assert_eq!(reg.list()[0].session_id, sid);
 
         // Loading by ID resumes it.
-        reg.load(&sid, &[], notif_tx(), &spawn).await.expect("load cross-process");
+        reg.load(&sid, &[], notif_tx(), &spawn, None).await.expect("load cross-process");
         assert!(reg.get(&sid).is_some(), "session should be loaded after restart");
 
         // Loading again is a no-op (already running in memory).
-        reg.load(&sid, &[], notif_tx(), &spawn).await.expect("re-load is a no-op");
+        reg.load(&sid, &[], notif_tx(), &spawn, None).await.expect("re-load is a no-op");
     }
 
     /// `session/load` of an unknown ID (never created, or from an unrelated
@@ -1120,7 +1517,7 @@ mod tests {
         let spawn = noop_spawn();
         let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
         let unknown = acp::SessionId::new(Uuid::new_v4().to_string());
-        let err = reg.load(&unknown, &[], notif_tx(), &spawn).await.unwrap_err();
+        let err = reg.load(&unknown, &[], notif_tx(), &spawn, None).await.unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
     }
 
@@ -1142,5 +1539,527 @@ mod tests {
 
         // Deleting again (unknown ID) is a no-op, not an error.
         reg.delete(&sid);
+    }
+
+    /// `scan_pi_sessions` parses session id / cwd / title / updatedAt from
+    /// JSONL files (matching pi-acp's `listPiSessions`): header line for
+    /// id+cwd, last `session_info` name for title, last message timestamp for
+    /// updatedAt, and falls back to the first user message for the title.
+    #[test]
+    fn scan_pi_sessions_parses_header_title_and_updated_at() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let file = sub.join("s1.jsonl");
+        std::fs::write(
+            &file,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/proj\"}\n",
+                "{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2026-01-01T00:01:00Z\",\"message\":{\"role\":\"user\",\"content\":\"hello world\"}}\n",
+                "{\"type\":\"session_info\",\"id\":\"i1\",\"timestamp\":\"2026-01-01T00:02:00Z\",\"name\":\"My Session\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let items = scan_pi_sessions(dir.path());
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.session_id, "s1");
+        assert_eq!(item.cwd, "/proj");
+        assert_eq!(item.title.as_deref(), Some("My Session"));
+        assert_eq!(item.updated_at.as_deref(), Some("2026-01-01T00:01:00Z"));
+    }
+
+    /// A session file without a `session_info` name falls back to the first
+    /// user message as the title (matching pi-acp's `pickFallbackTitleFromHead`).
+    #[test]
+    fn scan_pi_sessions_falls_back_to_first_user_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("s2.jsonl");
+        std::fs::write(
+            &file,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"s2\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/proj\"}\n",
+                "{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2026-01-01T00:01:00Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Fix the bug please\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let items = scan_pi_sessions(dir.path());
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("Fix the bug please"));
+    }
+
+    // =====================================================================
+    // SessionTask actor tests (real AgentSession + fake stream_fn)
+    // =====================================================================
+
+    fn fake_model() -> pi_agent_core::pi_ai_types::Model {
+        pi_agent_core::pi_ai_types::Model {
+            id: "test-model".into(),
+            name: "Test Model".into(),
+            api: "test-api".into(),
+            provider: "test-provider".into(),
+            base_url: "https://test.invalid".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                tiers: vec![],
+            },
+            context_window: 128_000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// A model registry whose `test-provider` has an API key, so the auth
+    /// check in `prompt()` passes without env vars.
+    fn fake_model_registry() -> crate::core::model_registry::ModelRegistry {
+        let registry = crate::core::model_registry::ModelRegistry::new(vec![fake_model()]);
+        registry.register_provider(
+            "test-provider",
+            crate::core::model_registry::ProviderConfig {
+                name: Some("Test Provider".into()),
+                base_url: None,
+                api_key: Some("test-key".into()),
+                api: Some("test-api".into()),
+                headers: None,
+                auth_header: None,
+            },
+        );
+        registry
+    }
+
+    /// A minimal `AssistantMessageEvent::Done` carrying the model identity
+    /// (the agent loop finalizes the turn with it).
+    fn fake_done_event(
+        model: &pi_agent_core::pi_ai_types::Model,
+    ) -> pi_agent_core::pi_ai_types::AssistantMessageEvent {
+        pi_agent_core::pi_ai_types::AssistantMessageEvent::Done {
+            reason: pi_agent_core::pi_ai_types::StopReason::Stop,
+            message: pi_agent_core::pi_ai_types::AssistantMessage {
+                content: vec![],
+                api: model.api.clone(),
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: pi_agent_core::pi_ai_types::Usage::default(),
+                stop_reason: pi_agent_core::pi_ai_types::StopReason::Stop,
+                error_message: None,
+                raw_stop_reason: None,
+                timestamp: 0,
+            },
+        }
+    }
+
+    /// The event a real provider stream emits when the abort signal fires
+    /// (matching pi-ai: `stop_reason = "aborted"` so downstream retry and
+    /// compaction checks skip the turn).
+    fn fake_aborted_event(
+        model: &pi_agent_core::pi_ai_types::Model,
+    ) -> pi_agent_core::pi_ai_types::AssistantMessageEvent {
+        pi_agent_core::pi_ai_types::AssistantMessageEvent::Error {
+            reason: pi_agent_core::pi_ai_types::StopReason::Aborted,
+            error: pi_agent_core::pi_ai_types::AssistantMessage {
+                content: vec![],
+                api: model.api.clone(),
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: pi_agent_core::pi_ai_types::Usage::default(),
+                stop_reason: pi_agent_core::pi_ai_types::StopReason::Aborted,
+                error_message: Some("Request was aborted".to_string()),
+                raw_stop_reason: None,
+                timestamp: 0,
+            },
+        }
+    }
+
+    /// Create an `AgentSession` wired to the given fake stream_fn (no real
+    /// LLM, no extensions, no persistence).
+    async fn test_agent_session(
+        stream_fn: pi_agent_core::types::StreamFn,
+        base_dir: &std::path::Path,
+    ) -> AgentSession {
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: "/tmp".to_string(),
+            agent_dir: Some(base_dir.to_string_lossy().to_string()),
+            model: Some(fake_model()),
+            thinking_level: None,
+            scoped_models: None,
+            no_tools: Some(crate::core::sdk::NoToolsMode::All),
+            tools: None,
+            exclude_tools: None,
+            custom_prompt: None,
+            append_system_prompt: None,
+            session_name: None,
+            stream_fn: Some(stream_fn),
+            convert_to_llm: None,
+            custom_tools: None,
+            extension_flags: None,
+            extension_paths: vec![],
+            enable_extensions: false,
+            extension_registry: None,
+            cli_provider: None,
+            cli_model: None,
+            persist_session: false,
+            session_file: None,
+            fork_from: None,
+            session_dir: None,
+            auth_storage: None,
+            model_registry: Some(fake_model_registry()),
+            resource_loader: None,
+            session_manager: None,
+            settings_manager: None,
+            session_start_event: None,
+            ui_context: None,
+        })
+        .await
+        .expect("create test agent session");
+        session
+    }
+
+    /// Wire a `SessionTask` on a `LocalSet` (the same executor shape the ACP
+    /// mode uses) and return the command sender plus a collector of the
+    /// notifications the task emitted (acked immediately, like a client).
+    fn spawn_session_task(
+        local: &tokio::task::LocalSet,
+        spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
+        session: AgentSession,
+    ) -> (
+        mpsc::UnboundedSender<SessionCommand>,
+        Arc<std::sync::Mutex<Vec<acp::SessionNotification>>>,
+    ) {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (notif_tx, mut notif_rx) =
+            mpsc::unbounded_channel::<(acp::SessionNotification, oneshot::Sender<()>)>();
+        let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected2 = collected.clone();
+        // Ack notifications as they arrive so the turn task's ack flush
+        // doesn't block waiting for an absent client.
+        local.spawn_local(async move {
+            while let Some((notif, ack)) = notif_rx.recv().await {
+                collected2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(notif);
+                let _ = ack.send(());
+            }
+        });
+        let task = SessionTask {
+            session: Arc::new(session),
+            cmd_rx,
+            notif_tx,
+            session_id: acp::SessionId::new(String::from("test-session")),
+            mcp_connections: vec![],
+            file_commands: vec![],
+            startup_info: None,
+            startup_info_sent: false,
+            replay_history: false,
+            prompt_queue: std::collections::VecDeque::new(),
+            turn_done_rx: None,
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            spawn: spawn.clone(),
+        };
+        let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
+        local.spawn_local(fut);
+        (cmd_tx, collected)
+    }
+
+    fn send_prompt(
+        cmd_tx: &mpsc::UnboundedSender<SessionCommand>,
+        text: &str,
+    ) -> oneshot::Receiver<Result<acp::PromptResponse, String>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(SessionCommand::Prompt {
+                text: text.to_string(),
+                images: vec![],
+                reply: reply_tx,
+            })
+            .expect("send prompt");
+        reply_rx
+    }
+
+    /// A stream_fn whose first call blocks until the abort signal fires
+    /// (simulating a long-running LLM call) and whose later calls complete
+    /// immediately. Returns the call counter too.
+    fn blocking_then_completing_stream() -> (
+        pi_agent_core::types::StreamFn,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let stream_fn: pi_agent_core::types::StreamFn = Arc::new(
+            move |model: pi_agent_core::pi_ai_types::Model,
+                  _ctx: pi_agent_core::pi_ai_types::Context,
+                  _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+                  opts: pi_agent_core::types::StreamFnOptions| {
+                let call = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let signal = opts.signal.clone();
+                let model = model.clone();
+                Box::pin(async move {
+                    let stream = futures::stream::unfold(call, move |call| {
+                        let mut signal = signal.clone();
+                        let model = model.clone();
+                        // Box the future so the unfold stream is Unpin.
+                        Box::pin(async move {
+                            if call > 0 {
+                                // Later turns complete immediately.
+                                return Some((fake_done_event(&model), call + 1));
+                            }
+                            // First turn: block until the abort signal fires,
+                            // then report the turn as aborted (matching the
+                            // real provider streams).
+                            if let Some(rx) = &mut signal {
+                                if !*rx.borrow() {
+                                    let _ = Box::pin(rx.changed()).await;
+                                }
+                            }
+                            if signal
+                                .as_ref()
+                                .map(|rx| *rx.borrow())
+                                .unwrap_or(false)
+                            {
+                                return Some((fake_aborted_event(&model), call + 1));
+                            }
+                            None
+                        })
+                    });
+                    Ok(Box::new(stream) as pi_agent_core::pi_ai_types::StreamResponse)
+                })
+            },
+        );
+        (stream_fn, calls)
+    }
+
+    /// A stream_fn whose first call completes after a delay and whose later
+    /// calls complete immediately.
+    fn delayed_completing_stream() -> (
+        pi_agent_core::types::StreamFn,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let stream_fn: pi_agent_core::types::StreamFn = Arc::new(
+            move |model: pi_agent_core::pi_ai_types::Model,
+                  _ctx: pi_agent_core::pi_ai_types::Context,
+                  _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+                  _opts: pi_agent_core::types::StreamFnOptions| {
+                let call = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let delay = if call == 0 {
+                    std::time::Duration::from_millis(200)
+                } else {
+                    std::time::Duration::ZERO
+                };
+                let model = model.clone();
+                Box::pin(async move {
+                    let stream = futures::stream::unfold(0u8, move |state| {
+                        let model = model.clone();
+                        // Box the future so the unfold stream is Unpin.
+                        Box::pin(async move {
+                            if state == 0 {
+                                Box::pin(tokio::time::sleep(delay)).await;
+                                return Some((fake_done_event(&model), 1));
+                            }
+                            None
+                        })
+                    });
+                    Ok(Box::new(stream) as pi_agent_core::pi_ai_types::StreamResponse)
+                })
+            },
+        );
+        (stream_fn, calls)
+    }
+
+    fn chunk_text(chunk: &acp::ContentChunk) -> String {
+        match &chunk.content {
+            acp::ContentBlock::Text(t) => t.text.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// Wait until `calls` reaches the given count (the turn has actually
+    /// started), yielding to the LocalSet so the session/turn tasks run.
+    async fn wait_for_calls(
+        calls: &Arc<std::sync::atomic::AtomicUsize>,
+        expected: usize,
+    ) {
+        for _ in 0..200 {
+            if calls.load(std::sync::atomic::Ordering::SeqCst) >= expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "timed out waiting for stream call {} (got {})",
+            expected,
+            calls.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+
+    /// `session/cancel` during a running turn must (1) be non-blocking,
+    /// (2) report `cancelled` for the interrupted prompt, and (3) leave the
+    /// session usable — the next prompt runs a normal `end_turn` turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_then_prompt_again() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let base = tempfile::tempdir().expect("tempdir");
+                let (stream_fn, calls) = blocking_then_completing_stream();
+                let session = test_agent_session(stream_fn, base.path()).await;
+                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session);
+
+                // Prompt 1: the fake stream blocks, so the turn stays in flight.
+                let reply_rx = send_prompt(&cmd_tx, "hello 1");
+                wait_for_calls(&calls, 1).await;
+
+                // Cancel: the interrupted prompt must report `cancelled`.
+                cmd_tx.send(SessionCommand::Cancel).unwrap();
+                let resp = reply_rx
+                    .await
+                    .expect("cancelled prompt must reply")
+                    .expect("cancelled prompt must succeed");
+                assert_eq!(resp.stop_reason, acp::StopReason::Cancelled);
+
+                // Prompt 2 after cancel: runs a normal turn.
+                let reply_rx2 = send_prompt(&cmd_tx, "hello 2");
+                let resp2 = reply_rx2
+                    .await
+                    .expect("second prompt must reply")
+                    .expect("second prompt must succeed");
+                assert_eq!(resp2.stop_reason, acp::StopReason::EndTurn);
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "second turn must have run"
+                );
+            })
+            .await;
+    }
+
+    /// Prompts arriving while a turn is in flight are queued and started in
+    /// order after the current turn settles (matching pi-acp's turn queue) —
+    /// the actor drains the queue on turn-done instead of rejecting them, and
+    /// the client is told the message was queued.
+    #[tokio::test(flavor = "current_thread")]
+    async fn prompts_queue_behind_running_turn() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let base = tempfile::tempdir().expect("tempdir");
+                let (stream_fn, calls) = delayed_completing_stream();
+                let session = test_agent_session(stream_fn, base.path()).await;
+                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session);
+
+                // Prompt A: first stream call takes 200ms, so turn A is in
+                // flight for a while.
+                let reply_a = send_prompt(&cmd_tx, "prompt A");
+                wait_for_calls(&calls, 1).await;
+
+                // Prompt B while A is running: must be queued, not rejected.
+                let reply_b = send_prompt(&cmd_tx, "prompt B");
+
+                // Both turns settle in order, each reporting `end_turn`.
+                let resp_a = reply_a
+                    .await
+                    .expect("prompt A must reply")
+                    .expect("prompt A must succeed");
+                assert_eq!(resp_a.stop_reason, acp::StopReason::EndTurn);
+                let resp_b = reply_b
+                    .await
+                    .expect("prompt B must reply")
+                    .expect("prompt B must succeed");
+                assert_eq!(resp_b.stop_reason, acp::StopReason::EndTurn);
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "queued turn must have run after the first settled"
+                );
+
+                // The client must have been told prompt B was queued.
+                let queued = notifs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .any(|n| {
+                        matches!(&n.update, acp::SessionUpdate::AgentMessageChunk(c)
+                            if chunk_text(c).contains("Queued message"))
+                    });
+                assert!(queued, "client must be notified the prompt was queued");
+            })
+            .await;
+    }
+
+    /// Commands other than prompts are handled immediately even while a turn
+    /// is in flight (the actor stays responsive) — they are not rejected with
+    /// "session is busy".
+    #[tokio::test(flavor = "current_thread")]
+    async fn commands_handled_during_turn() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let base = tempfile::tempdir().expect("tempdir");
+                let (stream_fn, calls) = blocking_then_completing_stream();
+                let session = test_agent_session(stream_fn, base.path()).await;
+                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session);
+
+                // Blocking turn in flight.
+                let reply_rx = send_prompt(&cmd_tx, "hello");
+                wait_for_calls(&calls, 1).await;
+
+                // GetConfigOptions must return the real options (not the
+                // empty fallback the old busy-rejection used).
+                let (reply_tx, reply_rx_cfg) = oneshot::channel();
+                cmd_tx
+                    .send(SessionCommand::GetConfigOptions {
+                        reply: reply_tx,
+                    })
+                    .unwrap();
+                let options = reply_rx_cfg.await.expect("config options reply");
+                assert!(
+                    !options.is_empty(),
+                    "config options must be served during a turn"
+                );
+
+                // SetStartupInfo is applied while a turn runs.
+                cmd_tx
+                    .send(SessionCommand::SetStartupInfo {
+                        text: "startup".into(),
+                    })
+                    .unwrap();
+
+                // The turn itself still cancels cleanly afterwards.
+                cmd_tx.send(SessionCommand::Cancel).unwrap();
+                let resp = reply_rx
+                    .await
+                    .expect("prompt must reply")
+                    .expect("prompt must succeed");
+                assert_eq!(resp.stop_reason, acp::StopReason::Cancelled);
+            })
+            .await;
     }
 }

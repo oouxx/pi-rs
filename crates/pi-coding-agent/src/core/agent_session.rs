@@ -430,7 +430,10 @@ pub struct AgentSession {
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
     settings_manager: Arc<std::sync::Mutex<crate::core::settings_manager::SettingsManager>>,
     model_registry: ModelRegistry,
-    compaction_settings: CompactionSettings,
+    /// Shared compaction settings. Locked so `get_compaction_settings` /
+    /// `set_compaction_settings` are `&self` — the ACP session task shares
+    /// the session with in-flight prompt turns via `Arc<AgentSession>`.
+    compaction_settings: Arc<std::sync::Mutex<CompactionSettings>>,
     cwd: String,
     scoped_models: Vec<(Model, Option<ThinkingLevel>)>,
     initial_active_tool_names: Vec<String>,
@@ -1132,7 +1135,7 @@ impl AgentSession {
             session_manager: session_manager.clone(),
             settings_manager: Arc::new(std::sync::Mutex::new(settings_manager)),
             model_registry,
-            compaction_settings: CompactionSettings::default(),
+            compaction_settings: Arc::new(std::sync::Mutex::new(CompactionSettings::default())),
             cwd: session_cwd.clone(),
             scoped_models: Vec::new(),
             initial_active_tool_names,
@@ -2159,12 +2162,18 @@ impl AgentSession {
         &self.model_registry
     }
 
-    pub fn get_compaction_settings(&self) -> &CompactionSettings {
-        &self.compaction_settings
+    pub fn get_compaction_settings(&self) -> CompactionSettings {
+        self.compaction_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
-    pub fn set_compaction_settings(&mut self, settings: CompactionSettings) {
-        self.compaction_settings = settings;
+    pub fn set_compaction_settings(&self, settings: CompactionSettings) {
+        *self
+            .compaction_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = settings;
     }
 
     pub fn get_initial_active_tool_names(&self) -> &[String] {
@@ -3222,7 +3231,12 @@ References are relative to {}.
         skip_aborted_check: bool,
     ) -> bool {
         // Check compaction settings
-        if !self.compaction_settings.compact_on_threshold {
+        if !self
+            .compaction_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .compact_on_threshold
+        {
             return false;
         }
 
@@ -3904,7 +3918,11 @@ References are relative to {}.
     /// Check whether compaction should be triggered, matching the original shouldCompact().
     pub fn check_should_compact(&self, total_tokens: u64, context_window: u64) -> bool {
         use crate::core::compaction;
-        compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
+        let settings = self
+            .compaction_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        compaction::should_compact(total_tokens, context_window, &settings)
     }
 
     /// Check whether compaction should be triggered, using token estimation.
@@ -3917,7 +3935,11 @@ References are relative to {}.
         let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
         let context_window = state.model.context_window.max(1);
 
-        compaction::should_compact(total_tokens, context_window, &self.compaction_settings)
+        let settings = self
+            .compaction_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        compaction::should_compact(total_tokens, context_window, &settings)
     }
 
     /// Trigger compaction, matching the original compact().
@@ -3975,8 +3997,14 @@ References are relative to {}.
         let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
         let context_window = state.model.context_window.max(1);
 
-        if !compaction::should_compact(total_tokens, context_window, &self.compaction_settings) {
-            return Err("Compaction not needed".to_string());
+        {
+            let settings = self
+                .compaction_settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !compaction::should_compact(total_tokens, context_window, &settings) {
+                return Err("Compaction not needed".to_string());
+            }
         }
 
         // Emit compaction_start once the run is actually going to happen
@@ -3989,10 +4017,17 @@ References are relative to {}.
         let keep_recent_turns = 5usize;
         let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);
 
+        let compaction_settings = {
+            let settings = self
+                .compaction_settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            settings.clone()
+        };
         let prepared = compaction::prepare_compaction(
             &messages,
             keep_recent_turns,
-            self.compaction_settings.clone(),
+            compaction_settings,
         );
 
         // Build the summarization prompt

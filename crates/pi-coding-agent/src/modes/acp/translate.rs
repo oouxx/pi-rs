@@ -48,6 +48,12 @@ pub struct EventTranslator {
     file_snapshots: HashMap<String, FileSnapshot>,
     /// Accumulated bash output per tool call id (for delta computation).
     bash_outputs: HashMap<String, String>,
+    /// Last-surfaced status per tool call id, so status transitions stay
+    /// monotonic (pending → in_progress → completed/failed) and a tool that
+    /// was already surfaced while the model streamed its args is not emitted
+    /// as a second `tool_call` when execution starts (matching pi-acp's
+    /// `currentToolCalls` map).
+    tool_statuses: HashMap<String, acp::ToolCallStatus>,
 }
 
 impl EventTranslator {
@@ -56,6 +62,7 @@ impl EventTranslator {
             cwd: cwd.to_string(),
             file_snapshots: HashMap::new(),
             bash_outputs: HashMap::new(),
+            tool_statuses: HashMap::new(),
         }
     }
 
@@ -93,6 +100,11 @@ impl EventTranslator {
                 } => {
                     let (tool_call_id, tool_name, args) =
                         tool_call_at(partial, *content_index)?;
+                    // Remember the tool was surfaced while streaming so
+                    // `tool_execution_start` transitions it instead of
+                    // emitting a duplicate `tool_call` (matching pi-acp).
+                    self.tool_statuses
+                        .insert(tool_call_id.clone(), acp::ToolCallStatus::Pending);
                     let locations = self.tool_locations(&tool_name, &args, None);
                     let mut tc = acp::ToolCall::new(
                         tool_call_id.clone(),
@@ -120,8 +132,13 @@ impl EventTranslator {
                     let (tool_call_id, tool_name, args) =
                         tool_call_at(partial, *content_index)?;
                     let locations = self.tool_locations(&tool_name, &args, None);
+                    let status = self
+                        .tool_statuses
+                        .get(&tool_call_id)
+                        .cloned()
+                        .unwrap_or(acp::ToolCallStatus::Pending);
                     let mut fields = acp::ToolCallUpdateFields::new()
-                        .status(acp::ToolCallStatus::Pending)
+                        .status(status)
                         .raw_input(args.clone());
                     if let Some(locs) = locations {
                         fields = fields.locations(locs);
@@ -147,8 +164,13 @@ impl EventTranslator {
                     let tool_name = tool_call.name.clone();
                     let args = tool_call.arguments.clone();
                     let locations = self.tool_locations(&tool_name, &args, None);
+                    let status = self
+                        .tool_statuses
+                        .get(&tool_call_id)
+                        .cloned()
+                        .unwrap_or(acp::ToolCallStatus::Pending);
                     let mut fields = acp::ToolCallUpdateFields::new()
-                        .status(acp::ToolCallStatus::Pending)
+                        .status(status)
                         .raw_input(args.clone());
                     if let Some(locs) = locations {
                         fields = fields.locations(locs);
@@ -176,21 +198,39 @@ impl EventTranslator {
                 args,
                 ..
             } => {
-                let mut tc = acp::ToolCall::new(
-                    tool_call_id.clone(),
-                    tool_title(tool_name, args),
-                )
-                .kind(tool_kind(tool_name))
-                .status(acp::ToolCallStatus::InProgress)
-                .raw_input(args.clone());
+                // If the tool was already surfaced while the model streamed
+                // its args, transition it to in_progress instead of emitting
+                // a second `tool_call` (matching pi-acp's `currentToolCalls`
+                // monotonic-status guard).
+                let already_surfaced = self.tool_statuses.contains_key(tool_call_id);
+                self.tool_statuses
+                    .insert(tool_call_id.clone(), acp::ToolCallStatus::InProgress);
+
+                let title = tool_title(tool_name, args);
+                let kind = tool_kind(tool_name);
+                let mut fields = acp::ToolCallUpdateFields::new()
+                    .status(acp::ToolCallStatus::InProgress)
+                    .raw_input(args.clone());
 
                 if is_bash_tool(tool_name) {
                     // Render bash as a display-only terminal (Zed executes
                     // `execute` tools with terminal content + terminal meta).
-                    tc = tc.content(vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
-                        acp::TerminalId::new(tool_call_id.clone()),
-                    ))]);
-                    tc = tc.meta(bash_terminal_info_meta(tool_call_id, &self.cwd));
+                    fields = fields.content(vec![acp::ToolCallContent::Terminal(
+                        acp::Terminal::new(acp::TerminalId::new(tool_call_id.clone())),
+                    )]);
+                    let update = acp::ToolCallUpdate::new(tool_call_id.clone(), fields)
+                        .meta(bash_terminal_info_meta(tool_call_id, &self.cwd));
+                    if already_surfaced {
+                        acp::SessionUpdate::ToolCallUpdate(update)
+                    } else {
+                        let tc = acp::ToolCall::new(tool_call_id.clone(), title)
+                            .kind(kind)
+                            .status(acp::ToolCallStatus::InProgress)
+                            .raw_input(args.clone())
+                            .content(update.fields.content.clone().unwrap_or_default())
+                            .meta(update.meta.clone());
+                        acp::SessionUpdate::ToolCall(tc)
+                    }
                 } else {
                     // Snapshot the file before a mutating tool runs so we can
                     // emit a structured diff on completion.
@@ -223,10 +263,24 @@ impl EventTranslator {
                         None
                     };
                     if let Some(locs) = self.tool_locations(tool_name, args, line) {
-                        tc = tc.locations(locs);
+                        fields = fields.locations(locs);
+                    }
+                    if already_surfaced {
+                        acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                            tool_call_id.clone(),
+                            fields,
+                        ))
+                    } else {
+                        let mut tc = acp::ToolCall::new(tool_call_id.clone(), title)
+                            .kind(kind)
+                            .status(acp::ToolCallStatus::InProgress)
+                            .raw_input(args.clone());
+                        if let Some(locs) = fields.locations.clone() {
+                            tc = tc.locations(locs);
+                        }
+                        acp::SessionUpdate::ToolCall(tc)
                     }
                 }
-                acp::SessionUpdate::ToolCall(tc)
             }
             AgentSessionEvent::ToolExecutionUpdate {
                 tool_call_id,
@@ -282,6 +336,10 @@ impl EventTranslator {
                 } else {
                     acp::ToolCallStatus::Completed
                 };
+                // The tool call is done — drop its status so a future tool
+                // with the same id starts fresh (matching pi-acp's
+                // `cleanupToolCall`).
+                self.tool_statuses.remove(tool_call_id);
                 let mut fields = acp::ToolCallUpdateFields::new()
                     .status(status)
                     .raw_output(result.clone());
@@ -376,8 +434,53 @@ impl EventTranslator {
                 ))
             }
 
-            // Turn lifecycle / compaction / queue events have no ACP wire
-            // equivalent — the prompt response itself signals turn completion.
+            // ── Auto-retry / auto-compaction progress ───────────────────
+            // pi-acp surfaces these as plain message chunks so the client UI
+            // shows why the turn is taking longer (matching its
+            // `auto_retry_start` / `auto_retry_end` / `auto_compaction_start` /
+            // `auto_compaction_end` handling).
+            AgentSessionEvent::AutoRetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                ..
+            } => {
+                let mut delay_seconds = (*delay_ms as f64 / 1000.0).round() as u64;
+                if *delay_ms > 0 && delay_seconds == 0 {
+                    delay_seconds = 1;
+                }
+                let text = format!(
+                    "Retrying (attempt {attempt}/{max_attempts}, waiting {delay_seconds}s)..."
+                );
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::Text(acp::TextContent::new(text)),
+                ))
+            }
+            AgentSessionEvent::AutoRetryEnd { .. } => {
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::Text(acp::TextContent::new(
+                        "Retry finished, resuming.".to_string(),
+                    )),
+                ))
+            }
+            AgentSessionEvent::CompactionStart { .. } => {
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::Text(acp::TextContent::new(
+                        "Context nearing limit, running automatic compaction...".to_string(),
+                    )),
+                ))
+            }
+            AgentSessionEvent::CompactionEnd { .. } => {
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::Text(acp::TextContent::new(
+                        "Automatic compaction finished; context was summarized to continue the session."
+                            .to_string(),
+                    )),
+                ))
+            }
+
+            // Turn lifecycle / queue events have no ACP wire equivalent —
+            // the prompt response itself signals turn completion.
             _ => return None,
         };
 
@@ -415,7 +518,7 @@ pub fn tool_kind(tool_name: &str) -> acp::ToolKind {
 }
 
 /// Whether the tool is the bash tool (case-insensitive, matching pi-acp).
-fn is_bash_tool(tool_name: &str) -> bool {
+pub(crate) fn is_bash_tool(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("bash")
 }
 
@@ -647,7 +750,7 @@ fn bash_exit_code(result: &serde_json::Value, is_error: bool) -> i64 {
 }
 
 /// ACP `_meta` for a bash terminal: `{ terminal_info: { terminal_id, cwd } }`.
-fn bash_terminal_info_meta(tool_call_id: &str, cwd: &str) -> acp::Meta {
+pub(crate) fn bash_terminal_info_meta(tool_call_id: &str, cwd: &str) -> acp::Meta {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "terminal_info".to_string(),
@@ -657,7 +760,7 @@ fn bash_terminal_info_meta(tool_call_id: &str, cwd: &str) -> acp::Meta {
 }
 
 /// ACP `_meta` for streamed bash output: `{ terminal_output: { terminal_id, data } }`.
-fn bash_terminal_output_meta(tool_call_id: &str, data: &str) -> acp::Meta {
+pub(crate) fn bash_terminal_output_meta(tool_call_id: &str, data: &str) -> acp::Meta {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "terminal_output".to_string(),
@@ -667,7 +770,7 @@ fn bash_terminal_output_meta(tool_call_id: &str, data: &str) -> acp::Meta {
 }
 
 /// ACP `_meta` for bash completion: `{ terminal_exit: { terminal_id, exit_code, signal } }`.
-fn bash_terminal_exit_meta(tool_call_id: &str, exit_code: i64) -> acp::Meta {
+pub(crate) fn bash_terminal_exit_meta(tool_call_id: &str, exit_code: i64) -> acp::Meta {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "terminal_exit".to_string(),
@@ -1253,6 +1356,133 @@ mod tests {
                 );
             }
             other => panic!("expected tool_call_update, got {other:?}"),
+        }
+    }
+
+    /// A tool surfaced while the model streamed its args must be *transitioned*
+    /// (tool_call_update) when execution starts, not re-emitted as a second
+    /// tool_call (matching pi-acp's monotonic-status guard).
+    #[test]
+    fn tool_execution_start_transitions_already_surfaced_tool() {
+        let mut t = EventTranslator::new("/proj");
+
+        // 1) Model streams the tool call args → tool_call (pending).
+        let partial = AssistantMessage {
+            content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+                id: "tc1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "a.txt"}),
+                thought_signature: None,
+            }],
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+        };
+        let start = AgentSessionEvent::MessageUpdate {
+            message: serde_json::from_value(serde_json::json!({
+                "role":"assistant","content":[],"api":"openai-completions","provider":"openai",
+                "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
+                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
+                "stopReason":"stop","timestamp":0
+            })).unwrap(),
+            assistant_message_event: AssistantMessageEvent::ToolCallStart {
+                content_index: 0,
+                partial,
+            },
+        };
+        assert!(matches!(
+            t.translate(&sid(), &start).expect("start").update,
+            acp::SessionUpdate::ToolCall(_)
+        ));
+
+        // 2) Execution starts → must be a tool_call_update, not a new tool_call.
+        let exec = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "tc1".into(),
+            tool_name: "read".into(),
+            args: serde_json::json!({"path": "a.txt"}),
+        };
+        match t.translate(&sid(), &exec).expect("exec").update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.tool_call_id.0.as_ref(), "tc1");
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::InProgress));
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+
+        // 3) Completion → completed, and the status map is cleaned up so a
+        //    future tool with the same id starts fresh.
+        let end = AgentSessionEvent::ToolExecutionEnd {
+            tool_call_id: "tc1".into(),
+            tool_name: "read".into(),
+            result: serde_json::json!({"text": "ok"}),
+            is_error: false,
+        };
+        match t.translate(&sid(), &end).expect("end").update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::Completed));
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+        assert!(
+            t.tool_statuses.is_empty(),
+            "tool status must be cleaned up after completion"
+        );
+    }
+
+    /// Auto-retry and auto-compaction progress must be surfaced as message
+    /// chunks (matching pi-acp's auto_retry_* / auto_compaction_* handling).
+    #[test]
+    fn auto_retry_and_compaction_are_surfaced() {
+        let mut t = EventTranslator::new("/proj");
+
+        let retry = AgentSessionEvent::AutoRetryStart {
+            attempt: 2,
+            max_attempts: 3,
+            delay_ms: 1500,
+            error_message: "rate limited".into(),
+        };
+        match t.translate(&sid(), &retry).expect("retry").update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => {
+                    assert_eq!(t.text, "Retrying (attempt 2/3, waiting 2s)...");
+                }
+                _ => panic!("expected text content"),
+            },
+            other => panic!("expected agent_message_chunk, got {other:?}"),
+        }
+
+        let retry_end = AgentSessionEvent::AutoRetryEnd {
+            success: true,
+            attempt: 2,
+            final_error: None,
+        };
+        match t.translate(&sid(), &retry_end).expect("retry end").update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => assert_eq!(t.text, "Retry finished, resuming."),
+                _ => panic!("expected text content"),
+            },
+            other => panic!("expected agent_message_chunk, got {other:?}"),
+        }
+
+        let comp = AgentSessionEvent::CompactionStart {
+            reason: crate::core::agent_session::CompactionReason::Threshold,
+        };
+        match t.translate(&sid(), &comp).expect("compaction").update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => {
+                    assert!(t.text.contains("running automatic compaction"));
+                }
+                _ => panic!("expected text content"),
+            },
+            other => panic!("expected agent_message_chunk, got {other:?}"),
         }
     }
 }

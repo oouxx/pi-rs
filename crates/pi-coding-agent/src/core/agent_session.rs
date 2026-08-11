@@ -3554,19 +3554,24 @@ References are relative to {}.
         self.set_thinking_level(&self._get_thinking_level_for_model_switch(None).await)
             .await;
 
-        // Dispatch model_select to extensions (matching TS _emitModelSelect)
+        // Dispatch model_select to extensions (matching TS _emitModelSelect
+        // which skips when modelsAreEqual(previous, next)).
         // Note: TS only sends model_select to extension runner, not as session event
-        if let Some(ref registry) = self.extension_registry {
-            crate::core::extensions::dispatcher::dispatch_model_select(
-                crate::core::extensions::dispatcher::DispatchModelSelectParams {
-                    registry,
-                    model: &model_id,
-                    previous_model: previous_model.as_deref(),
-                    source: "set",
-                    ext_ctx: &self.ext_ctx,
-                },
-            )
-            .await;
+        let same_model = previous_model.as_deref() == Some(model_id.as_str())
+            && state.model.provider == model_provider;
+        if !same_model {
+            if let Some(ref registry) = self.extension_registry {
+                crate::core::extensions::dispatcher::dispatch_model_select(
+                    crate::core::extensions::dispatcher::DispatchModelSelectParams {
+                        registry,
+                        model: &model_id,
+                        previous_model: previous_model.as_deref(),
+                        source: "set",
+                        ext_ctx: &self.ext_ctx,
+                    },
+                )
+                .await;
+            }
         }
         Ok(())
     }

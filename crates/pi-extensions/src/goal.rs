@@ -380,12 +380,18 @@ impl HookHandler for GoalExtension {
         }
     }
 
-    async fn on_turn_start(&self, _turn_index: u32) {
+    async fn on_turn_start(&self, _turn_index: u32, _timestamp: i64) {
         let now = current_millis();
         self.last_turn_time.store(now, Ordering::SeqCst);
     }
 
-    async fn on_turn_end(&self, _turn_index: u32, _message: &Value, _tool_results: &[Value]) {
+    async fn on_turn_end(
+        &self,
+        _turn_index: u32,
+        _message: &Value,
+        _tool_results: &[Value],
+        _timestamp: i64,
+    ) {
         let mut goal = self.lock_goal();
         if let Some(ref mut g) = *goal {
             if g.status == GoalStatus::Active {

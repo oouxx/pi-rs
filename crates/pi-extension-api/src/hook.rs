@@ -312,10 +312,18 @@ pub trait HookHandler: Send + Sync {
     async fn on_agent_settled(&self) {}
 
     /// Turn 开始时触发。
-    async fn on_turn_start(&self, _turn_index: u32) {}
+    /// Turn 开始时触发。`timestamp` 是毫秒时间戳（匹配 TS `turn_start` 事件）。
+    async fn on_turn_start(&self, _turn_index: u32, _timestamp: i64) {}
 
     /// Turn 结束时触发。
-    async fn on_turn_end(&self, _turn_index: u32, _message: &Value, _tool_results: &[Value]) {}
+    async fn on_turn_end(
+        &self,
+        _turn_index: u32,
+        _message: &Value,
+        _tool_results: &[Value],
+        _timestamp: i64,
+    ) {
+    }
 
     /// 消息开始时触发。
     async fn on_message_start(&self, _message: &Value) {}
@@ -616,17 +624,27 @@ impl HookRunner {
     }
 
     /// Fire `on_turn_start` to all handlers (parallel).
-    pub async fn fire_turn_start(&self, turn_index: u32) {
-        let futures: Vec<_> = self.handlers.iter().map(|h| h.on_turn_start(turn_index)).collect();
+    pub async fn fire_turn_start(&self, turn_index: u32, timestamp: i64) {
+        let futures: Vec<_> = self
+            .handlers
+            .iter()
+            .map(|h| h.on_turn_start(turn_index, timestamp))
+            .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_turn_end` to all handlers (parallel).
-    pub async fn fire_turn_end(&self, turn_index: u32, message: &Value, tool_results: &[Value]) {
+    pub async fn fire_turn_end(
+        &self,
+        turn_index: u32,
+        message: &Value,
+        tool_results: &[Value],
+        timestamp: i64,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_turn_end(turn_index, message, tool_results))
+            .map(|h| h.on_turn_end(turn_index, message, tool_results, timestamp))
             .collect();
         futures::future::join_all(futures).await;
     }

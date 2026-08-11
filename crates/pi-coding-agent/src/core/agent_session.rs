@@ -1558,7 +1558,7 @@ impl AgentSession {
                         }
                         AgentEvent::TurnStart => {
                             let ti = *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            hr.fire_turn_start(ti).await;
+                            hr.fire_turn_start(ti, chrono::Utc::now().timestamp_millis()).await;
                         }
                         AgentEvent::TurnEnd {
                             message,
@@ -1570,7 +1570,13 @@ impl AgentSession {
                                 .iter()
                                 .map(|tr| serde_json::to_value(tr).unwrap_or_default())
                                 .collect();
-                            hr.fire_turn_end(ti, &msg_val, &tr_val).await;
+                            hr.fire_turn_end(
+                                ti,
+                                &msg_val,
+                                &tr_val,
+                                chrono::Utc::now().timestamp_millis(),
+                            )
+                            .await;
                             *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
                         }
                         AgentEvent::MessageStart { message } => {

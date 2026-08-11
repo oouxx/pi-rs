@@ -3011,7 +3011,9 @@ References are relative to {}.
         *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
-        // Extensions can cancel the agent start or modify the system prompt.
+        // Extensions can cancel the agent start, modify the system prompt, or
+        // inject custom messages (matching TS emitBeforeAgentStart).
+        let mut extension_messages: Option<Vec<AgentMessage>> = None;
         if let Some(ref registry) = self.extension_registry {
             let state = self.agent.state().await;
             let images_ref = images.as_deref();
@@ -3042,6 +3044,7 @@ References are relative to {}.
             if result.system_prompt != state.system_prompt {
                 self.agent.set_system_prompt(result.system_prompt).await;
             }
+            extension_messages = result.messages;
         }
 
         let timestamp = chrono::Utc::now().timestamp_millis();
@@ -3050,8 +3053,13 @@ References are relative to {}.
             content.extend(images);
         }
 
-        // Build messages array: user message + pending next-turn messages as context
+        // Build messages array: user message + extension custom messages +
+        // pending next-turn messages as context (matching TS prompt() which
+        // injects before_agent_start messages and _pendingNextTurnMessages).
         let mut messages = vec![AgentMessage::User { content, timestamp }];
+        if let Some(ext_msgs) = extension_messages {
+            messages.extend(ext_msgs);
+        }
 
         // Inject any pending "nextTurn" messages as context alongside the user message,
         // matching TS prompt() which injects _pendingNextTurnMessages.

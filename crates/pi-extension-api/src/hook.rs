@@ -939,7 +939,9 @@ impl HookRunner {
         system_prompt_options: Option<Value>,
     ) -> HookResult<(String, String, Option<Vec<Value>>)> {
         let mut current = (prompt, system_prompt);
-        let mut messages: Option<Vec<Value>> = None;
+        // Collect messages from all handlers (matching TS emitBeforeAgentStart
+        // which pushes each handler's message).
+        let mut messages: Vec<Value> = Vec::new();
         for handler in &self.handlers {
             match handler
                 .before_agent_start(current.0.clone(), images.clone(), current.1.clone(), system_prompt_options.clone())
@@ -947,14 +949,22 @@ impl HookRunner {
             {
                 HookResult::Continue((p, s, msgs)) => {
                     current = (p, s);
-                    if msgs.is_some() {
-                        messages = msgs;
+                    if let Some(msgs) = msgs {
+                        messages.extend(msgs);
                     }
                 }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
         }
-        HookResult::Continue((current.0, current.1, messages))
+        HookResult::Continue((
+            current.0,
+            current.1,
+            if messages.is_empty() {
+                None
+            } else {
+                Some(messages)
+            },
+        ))
     }
 
     /// Run `on_input` handlers in priority order.

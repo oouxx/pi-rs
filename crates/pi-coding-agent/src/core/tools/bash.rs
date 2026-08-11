@@ -1004,7 +1004,7 @@ pub fn create_bash_tool(
                         acc.finish();
                     }
 
-                    // Emit final update
+                    // Final snapshot (matching TS `finishOutput`).
                     let snapshot = {
                         let acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.snapshot(true)
@@ -1013,44 +1013,56 @@ pub fn create_bash_tool(
                         let acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.get_last_line_bytes()
                     };
+                    let final_details: Option<BashToolDetails> = if snapshot.truncation.truncated {
+                        Some(BashToolDetails {
+                            truncation: Some(snapshot.truncation.clone()),
+                            full_output_path: snapshot.full_output_path.clone(),
+                        })
+                    } else {
+                        None
+                    };
+
+                    // Matching TS `finishOutput` → `emitOutputUpdate`: flush any
+                    // output that arrived since the last throttled update so the
+                    // client streams the complete text (the ACP translator's
+                    // delta logic filters empty updates downstream). Without this,
+                    // a fast command that never hit the 100ms throttle would
+                    // deliver its output only at `tool_execution_end` — and a
+                    // successful command never emits a final update at all.
+                    if update_dirty.load(Ordering::SeqCst) {
+                        if let Some(ref cb) = on_update {
+                            cb(AgentToolResult {
+                                content: vec![ContentBlock::text(snapshot.content.clone())],
+                                details: serde_json::to_value(&final_details)
+                                    .unwrap_or(serde_json::Value::Null),
+                                usage: None,
+                                added_tool_names: None,
+
+                                terminate: None,
+                            });
+                        }
+                        update_dirty.store(false, Ordering::SeqCst);
+                    }
 
                     match result {
                         Ok(exec_result) => {
                             let (output_text, details) = format_output(&snapshot, last_line_bytes, "(no output)");
 
-                            let final_text = if let Some(code) = exec_result.exit_code {
-                                if code != 0 {
-                                    append_status(&output_text, &format!("Command exited with code {}", code))
-                                } else {
-                                    output_text
-                                }
-                            } else {
-                                output_text
-                            };
-
-                            // If exit code is non-zero, treat as error
+                            // If exit code is non-zero, treat as error. Matching
+                            // TS: the thrown error carries the FULL output + status
+                            // (`appendStatus(outputText, "Command exited with code
+                            // N")`) so the output lands in the tool result message
+                            // and the ACP terminal — not a bare status line.
                             if let Some(code) = exec_result.exit_code {
                                 if code != 0 {
-                                    // Emit final error update
-                                    if let Some(ref cb) = on_update {
-                                        cb(AgentToolResult {
-                                            content: vec![ContentBlock::text(&final_text)],
-                                            details: serde_json::to_value(&details)
-                                                .unwrap_or(serde_json::Value::Null),
-                                            usage: None,
-                                            added_tool_names: None,
-
-                                            terminate: None,
-                                        });
-                                    }
                                     return Err(Box::new(std::io::Error::other(
-format!("Command failed with exit code {}", code),
-    )) as Box<dyn std::error::Error + Send + Sync>);
+                                        append_status(&output_text, &format!("Command exited with code {}", code)),
+                                    )) as Box<dyn std::error::Error + Send + Sync>);
                                 }
                             }
 
                             Ok(AgentToolResult {
-                                content: vec![ContentBlock::text(final_text)],
+                                content: vec![ContentBlock::text(output_text)],
                                 details: serde_json::to_value(details)
                                     .unwrap_or(serde_json::Value::Null),
                                 usage: None,
@@ -1076,22 +1088,9 @@ format!("Command failed with exit code {}", code),
                                 err_msg
                             };
 
-                            // Emit final error update
-                            if let Some(ref cb) = on_update {
-                                cb(AgentToolResult {
-                                    content: vec![ContentBlock::text(&final_text)],
-                                    details: serde_json::to_value(BashToolDetails::default())
-                                        .unwrap_or(serde_json::Value::Null),
-                                    usage: None,
-                                    added_tool_names: None,
-
-                                    terminate: None,
-                                });
-                            }
-
                             Err(Box::new(std::io::Error::other(
-final_text,
-    )) as Box<dyn std::error::Error + Send + Sync>)
+                                final_text,
+                            )) as Box<dyn std::error::Error + Send + Sync>)
                         }
                     }
                 })

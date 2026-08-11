@@ -584,6 +584,10 @@ impl SessionTask {
     async fn replay_history(&mut self) {
         use pi_agent_core::types::AgentMessage;
         let messages = self.session.get_messages().await;
+        // Track bash commands from assistant tool calls so replayed bash
+        // terminals show the command (matching the live path's title) instead
+        // of the bare tool name.
+        let mut bash_commands: HashMap<String, String> = HashMap::new();
         for msg in messages {
             match msg {
                 AgentMessage::User { content, .. } => {
@@ -593,6 +597,23 @@ impl SessionTask {
                     }
                 }
                 AgentMessage::Assistant { content, .. } => {
+                    // Record bash commands from tool calls in this message;
+                    // the matching ToolResult arrives later in the stream.
+                    for block in &content {
+                        if let pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } = block
+                        {
+                            if super::translate::is_bash_tool(name) {
+                                if let Some(cmd) = super::translate::bash_command(arguments) {
+                                    bash_commands.insert(id.clone(), cmd);
+                                }
+                            }
+                        }
+                    }
                     let text = content_text(&content);
                     if !text.is_empty() {
                         let _ = self.emit_text(&text).await;
@@ -614,8 +635,17 @@ impl SessionTask {
                     let is_bash = super::translate::is_bash_tool(&tool_name);
                     // Synthetic tool call so the client renders historic tool usage.
                     // Bash results are rendered as display-only terminals
-                    // (matching pi-acp's `session/load` replay).
-                    let mut tc = acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
+                    // (matching pi-acp's `session/load` replay), with the
+                    // command as title when we saw the tool call stream in.
+                    let title = if is_bash {
+                        bash_commands
+                            .get(&tool_call_id)
+                            .cloned()
+                            .unwrap_or_else(|| tool_name.clone())
+                    } else {
+                        tool_name.clone()
+                    };
+                    let mut tc = acp::ToolCall::new(tool_call_id.clone(), title)
                         .kind(super::translate::tool_kind(&tool_name))
                         .status(status);
                     if is_bash {
@@ -643,16 +673,22 @@ impl SessionTask {
                         );
                         if is_bash {
                             // Stream the captured output + close the terminal
-                            // with the exit code.
+                            // with the exit code. Both keys go into ONE meta
+                            // (matching pi-acp's spread) — `meta()` replaces
+                            // rather than merges, so two chained calls would
+                            // drop the output.
                             let id = update.tool_call_id.0.clone();
-                            update = update.meta(super::translate::bash_terminal_output_meta(
+                            let mut meta = super::translate::bash_terminal_output_meta(
                                 &id,
                                 &text,
-                            ));
-                            update = update.meta(super::translate::bash_terminal_exit_meta(
+                            );
+                            for (k, v) in super::translate::bash_terminal_exit_meta(
                                 &id,
                                 if is_error { 1 } else { 0 },
-                            ));
+                            ) {
+                                meta.insert(k, v);
+                            }
+                            update = update.meta(meta);
                         } else {
                             update.fields.content = Some(vec![acp::ToolCallContent::Content(
                                 acp::Content::new(acp::ContentBlock::Text(acp::TextContent::new(
@@ -1736,6 +1772,7 @@ mod tests {
         local: &tokio::task::LocalSet,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
         session: AgentSession,
+        replay_history: bool,
     ) -> (
         mpsc::UnboundedSender<SessionCommand>,
         Arc<std::sync::Mutex<Vec<acp::SessionNotification>>>,
@@ -1765,7 +1802,7 @@ mod tests {
             file_commands: vec![],
             startup_info: None,
             startup_info_sent: false,
-            replay_history: false,
+            replay_history,
             prompt_queue: std::collections::VecDeque::new(),
             turn_done_rx: None,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1923,7 +1960,7 @@ mod tests {
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
                 let session = test_agent_session(stream_fn, base.path()).await;
-                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session);
+                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false);
 
                 // Prompt 1: the fake stream blocks, so the turn stays in flight.
                 let reply_rx = send_prompt(&cmd_tx, "hello 1");
@@ -1969,7 +2006,7 @@ mod tests {
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = delayed_completing_stream();
                 let session = test_agent_session(stream_fn, base.path()).await;
-                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session);
+                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false);
 
                 // Prompt A: first stream call takes 200ms, so turn A is in
                 // flight for a while.
@@ -2025,7 +2062,7 @@ mod tests {
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
                 let session = test_agent_session(stream_fn, base.path()).await;
-                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session);
+                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false);
 
                 // Blocking turn in flight.
                 let reply_rx = send_prompt(&cmd_tx, "hello");
@@ -2059,6 +2096,115 @@ mod tests {
                     .expect("prompt must reply")
                     .expect("prompt must succeed");
                 assert_eq!(resp.stop_reason, acp::StopReason::Cancelled);
+            })
+            .await;
+    }
+
+    /// `session/load` history replay must render bash tool results as
+    /// terminals whose title is the command (extracted from the assistant
+    /// tool call), not the bare tool name — matching the live path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_history_uses_bash_command_as_title() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let base = tempfile::tempdir().expect("tempdir");
+                let (stream_fn, _calls) = blocking_then_completing_stream();
+                let session = test_agent_session(stream_fn, base.path()).await;
+
+                // Seed the session with a bash turn: assistant tool call
+                // (carrying the command) followed by its tool result.
+                use pi_agent_core::types::AgentMessage;
+                session
+                    .get_agent()
+                    .set_initial_messages(vec![
+                        AgentMessage::Assistant {
+                            content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+                                id: "b1".into(),
+                                name: "bash".into(),
+                                arguments: serde_json::json!({"command": "ls -la"}),
+                                thought_signature: None,
+                            }],
+                            api: "openai-completions".into(),
+                            provider: "openai".into(),
+                            model: "gpt-5.5".into(),
+                            usage: pi_agent_core::pi_ai_types::Usage::default(),
+                            stop_reason: Some(pi_agent_core::pi_ai_types::StopReason::ToolUse),
+                            error_message: None,
+                            timestamp: 0,
+                        },
+                        AgentMessage::ToolResult {
+                            tool_call_id: "b1".into(),
+                            tool_name: "bash".into(),
+                            content: vec![pi_agent_core::pi_ai_types::ContentBlock::Text {
+                                text: "total 0\n".into(),
+                                text_signature: None,
+                            }],
+                            details: serde_json::json!({}),
+                            is_error: false,
+                            added_tool_names: None,
+                            usage: None,
+                            timestamp: 0,
+                        },
+                    ])
+                    .await;
+
+                let (_cmd_tx, notifs) =
+                    spawn_session_task(&local, &spawn, session, true);
+
+                // Let the replay run to completion.
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+
+                let collected = notifs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let bash_tool_call = collected.iter().find_map(|n| match &n.update {
+                    acp::SessionUpdate::ToolCall(tc)
+                        if tc.tool_call_id.0.as_ref() == "b1" =>
+                    {
+                        Some(tc.clone())
+                    }
+                    _ => None,
+                });
+                let tc = bash_tool_call.expect("replay must emit the bash tool call");
+                assert_eq!(
+                    tc.title, "ls -la",
+                    "replayed bash terminal must show the command, not the tool name"
+                );
+                assert!(
+                    matches!(tc.kind, acp::ToolKind::Execute),
+                    "bash must render as an execute terminal"
+                );
+
+                // The tool OUTPUT must also be restored: the replay streams
+                // the captured stdout into the terminal via terminal_output.
+                let out_meta = collected.iter().find_map(|n| match &n.update {
+                    acp::SessionUpdate::ToolCallUpdate(tcu)
+                        if tcu.tool_call_id.0.as_ref() == "b1" =>
+                    {
+                        tcu.meta.clone()
+                    }
+                    _ => None,
+                });
+                let meta = out_meta.expect("replay must emit a tool_call_update");
+                let term_out = meta
+                    .get("terminal_output")
+                    .expect("bash output must stream via terminal_output meta");
+                assert_eq!(
+                    term_out["data"].as_str(),
+                    Some("total 0\n"),
+                    "replayed terminal must contain the captured output"
+                );
+                let term_exit = meta
+                    .get("terminal_exit")
+                    .expect("bash terminal must be closed with an exit code");
+                assert_eq!(term_exit["exit_code"], 0);
             })
             .await;
     }

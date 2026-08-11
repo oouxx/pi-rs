@@ -47,6 +47,8 @@
 | 20 | turn 期间命令处理 | 流式 turn 期间 `set_model`/`config` 等照常处理（RPC 请求与事件流并行） | turn 期间非 prompt 命令 `reject_busy`（GetConfigOptions/GetCommands 返回空表） | 改 actor 架构：只有 prompt 排队，其余命令立即处理（2026-08-12，SessionTask 重写） |
 | 21 | cancel 非阻塞 | cancel 不阻塞会话命令处理 | cancel 在 select! 内 await `abort()`（等 idle） | `abort()` 移入独立 task（fire-and-forget），turn task 经 cancelled 标志报告 `cancelled` |
 | 22 | turn 中 Shutdown | —（pi-acp 无对应） | turn 期间 Shutdown 被内层 select 消费，task 永不退出 | Shutdown 在主循环直接 break 并 abort 在飞 turn（bug 修复） |
+| 23 | `translate.rs` `tool_execution_end`（bash） | pi-acp 在 `tool_execution_end` 对 bash 调 `emitBashOutputUpdate`：把未流式送出的剩余输出作为 `terminal_output` delta 冲刷 + `terminal_exit`，再 `cleanupToolCall` 清理状态 | 只发 `terminal_exit`，`bash_outputs` 永不清理，且 fields 带 `rawOutput` | 补剩余输出冲刷（与 exit 合并进同一个 meta，`meta()` 是替换不是合并）+ 清理状态 + bash 更新不带 rawOutput（2026-08-12） |
+| 24 | `core/tools/bash.rs` 结束路径 | TS `finishOutput` 把剩余输出以 onUpdate 冲刷给客户端；非零退出时 throw 的 Error message 是**完整输出 + 状态行**（`appendStatus(outputText, "Command exited with code N")`），ToolResultMessage 因此含完整输出 | 成功路径不冲刷最终更新；错误 message 只有 `"Command failed with exit code N"`（输出丢失、措辞不同） | 对齐 TS：结束时按 dirty 标志冲刷原始 snapshot 内容；非零退出 error message 改为完整输出 + `Command exited with code N`（2026-08-12） |
 
 ---
 

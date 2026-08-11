@@ -137,8 +137,13 @@ impl EventTranslator {
                         .get(&tool_call_id)
                         .cloned()
                         .unwrap_or(acp::ToolCallStatus::Pending);
+                    // The title is set on the initial `tool_call` while args
+                    // are still empty (`{}`), so refresh it here as the
+                    // command streams in — otherwise Zed keeps showing the
+                    // bare tool name "bash" instead of the full command.
                     let mut fields = acp::ToolCallUpdateFields::new()
                         .status(status)
+                        .title(tool_title(&tool_name, &args))
                         .raw_input(args.clone());
                     if let Some(locs) = locations {
                         fields = fields.locations(locs);
@@ -169,8 +174,12 @@ impl EventTranslator {
                         .get(&tool_call_id)
                         .cloned()
                         .unwrap_or(acp::ToolCallStatus::Pending);
+                    // Final args are complete here; make sure the title shows
+                    // the full command (the initial `tool_call` may have been
+                    // emitted with empty args).
                     let mut fields = acp::ToolCallUpdateFields::new()
                         .status(status)
+                        .title(tool_title(&tool_name, &args))
                         .raw_input(args.clone());
                     if let Some(locs) = locations {
                         fields = fields.locations(locs);
@@ -208,8 +217,13 @@ impl EventTranslator {
 
                 let title = tool_title(tool_name, args);
                 let kind = tool_kind(tool_name);
+                // Always carry the title here: args are complete at execution
+                // start, so this is the authoritative title even if the
+                // streaming path surfaced the tool with empty args (title
+                // fell back to the bare tool name).
                 let mut fields = acp::ToolCallUpdateFields::new()
                     .status(acp::ToolCallStatus::InProgress)
+                    .title(title.clone())
                     .raw_input(args.clone());
 
                 if is_bash_tool(tool_name) {
@@ -292,7 +306,7 @@ impl EventTranslator {
                     .status(acp::ToolCallStatus::InProgress);
                 if is_bash_tool(tool_name) {
                     // Stream bash output as terminal_output deltas.
-                    let text = tool_result_to_text(partial_result);
+                    let text = bash_result_text(partial_result);
                     let prev = self.bash_outputs.get(tool_call_id).cloned().unwrap_or_default();
                     let delta = if text.starts_with(&prev) {
                         text[prev.len()..].to_string()
@@ -345,10 +359,40 @@ impl EventTranslator {
                     .raw_output(result.clone());
 
                 if is_bash_tool(tool_name) {
-                    // Close the terminal with the exit code.
+                    // Flush the remaining output into the terminal and close it
+                    // with the exit code, matching pi-acp's `emitBashOutputUpdate`
+                    // on `tool_execution_end`: a fast command may never have hit
+                    // the 100ms update throttle, so the final result text (or its
+                    // tail, e.g. the truncation notice / status line) must be
+                    // delivered here — otherwise the terminal stays empty.
+                    // Both keys go into ONE meta — `meta()` replaces rather than
+                    // merges, so two chained calls would drop the output.
+                    let text = bash_result_text(result);
+                    let prev = self.bash_outputs.get(tool_call_id).cloned().unwrap_or_default();
+                    let delta = if text.starts_with(&prev) {
+                        text[prev.len()..].to_string()
+                    } else {
+                        text.clone()
+                    };
+                    // Tool is done — drop the accumulated output (matching
+                    // pi-acp's `cleanupToolCall`).
+                    self.bash_outputs.remove(tool_call_id);
                     let exit_code = bash_exit_code(result, *is_error);
-                    let update = acp::ToolCallUpdate::new(tool_call_id.clone(), fields)
-                        .meta(bash_terminal_exit_meta(tool_call_id, exit_code));
+                    let mut meta = serde_json::Map::new();
+                    if !delta.is_empty() {
+                        for (k, v) in bash_terminal_output_meta(tool_call_id, &delta) {
+                            meta.insert(k, v);
+                        }
+                    }
+                    for (k, v) in bash_terminal_exit_meta(tool_call_id, exit_code) {
+                        meta.insert(k, v);
+                    }
+                    // Bash updates carry no rawOutput (matching pi-acp).
+                    let update = acp::ToolCallUpdate::new(
+                        tool_call_id.clone(),
+                        acp::ToolCallUpdateFields::new().status(status),
+                    )
+                    .meta(meta);
                     acp::SessionUpdate::ToolCallUpdate(update)
                 } else if tool_name == "edit" || tool_name == "write" {
                     // Emit a structured diff only when the tool succeeded and the
@@ -702,7 +746,7 @@ fn tool_title(tool_name: &str, args: &serde_json::Value) -> String {
 /// Extract the shell command from bash tool args, matching pi-acp's
 /// `bashCommand` (checks `command`/`cmd` at the top level and in nested
 /// `args`/`input`/`rawInput`/`toolInput`/`details` objects).
-fn bash_command(args: &serde_json::Value) -> Option<String> {
+pub(crate) fn bash_command(args: &serde_json::Value) -> Option<String> {
     fn find(v: &serde_json::Value) -> Option<String> {
         let obj = v.as_object()?;
         for key in ["command", "cmd"] {
@@ -722,6 +766,58 @@ fn bash_command(args: &serde_json::Value) -> Option<String> {
         None
     }
     find(args)
+}
+
+/// Extract plain text from a bash tool result, matching pi-acp's
+/// `bashResultText` exactly: content text blocks first, then
+/// stdout/`output`/stderr from `details` (or the top level), joined with
+/// `\n` — **no** "stderr:" prefix or "exit code:" suffix (unlike
+/// [`tool_result_to_text`], which is used for non-bash tools).
+fn bash_result_text(value: &serde_json::Value) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    let obj = value.as_object();
+    let details = obj.and_then(|o| o.get("details")).and_then(|d| d.as_object());
+
+    // `content: [{ type: "text", text: "..." }, ...]`
+    if let Some(content) = obj.and_then(|o| o.get("content")).and_then(|c| c.as_array()) {
+        let texts: Vec<&str> = content
+            .iter()
+            .filter_map(|c| {
+                let c = c.as_object()?;
+                if c.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    c.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !texts.is_empty() {
+            return texts.join("");
+        }
+    }
+
+    let get_str = |key: &str| -> Option<String> {
+        details
+            .and_then(|d| d.get(key))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                obj.and_then(|o| o.get(key))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    };
+    let stdout = get_str("stdout").or_else(|| get_str("output"));
+    let stderr = get_str("stderr");
+
+    [stdout, stderr]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Best-effort exit code from a bash tool result (matching pi-acp's
@@ -1071,6 +1167,146 @@ mod tests {
         }
     }
 
+    /// A fast bash command that never hit the 100ms update throttle still
+    /// delivers its full output: `tool_execution_end` must flush the remaining
+    /// text as a `terminal_output` delta alongside `terminal_exit` (matching
+    /// pi-acp's `emitBashOutputUpdate` on `tool_execution_end`). Otherwise the
+    /// terminal renders empty for any command that finishes in <100ms.
+    #[test]
+    fn bash_completion_flushes_unstreamed_output() {
+        let mut t = EventTranslator::new("/proj");
+
+        // No ToolExecutionUpdate ever fired (fast command).
+        let end = AgentSessionEvent::ToolExecutionEnd {
+            tool_call_id: "b1".into(),
+            tool_name: "bash".into(),
+            result: serde_json::json!({
+                "content": [{"type": "text", "text": "total 0\n"}],
+                "details": {}
+            }),
+            is_error: false,
+        };
+        let notif = t.translate(&sid(), &end).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let meta = tcu.meta.expect("meta");
+                let out = meta.get("terminal_output").expect("terminal_output");
+                assert_eq!(
+                    out["data"], "total 0\n",
+                    "unstreamed output must be flushed at completion"
+                );
+                let exit = meta.get("terminal_exit").expect("terminal_exit");
+                assert_eq!(exit["exit_code"], 0);
+                assert!(
+                    tcu.fields.raw_output.is_none(),
+                    "bash updates must not carry rawOutput (matching pi-acp)"
+                );
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+        assert!(
+            t.bash_outputs.is_empty(),
+            "bash output state must be cleaned up at completion"
+        );
+    }
+
+    /// When output was already streamed, `tool_execution_end` only appends the
+    /// tail (e.g. the "Command exited with code N" status line the bash tool
+    /// appends to the error text), matching pi-acp's delta logic — no duplicate
+    /// full re-send.
+    #[test]
+    fn bash_completion_appends_only_status_tail() {
+        let mut t = EventTranslator::new("/proj");
+
+        // Output streamed while running.
+        let update = AgentSessionEvent::ToolExecutionUpdate {
+            tool_call_id: "b1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::json!({"command": "ls"}),
+            partial_result: serde_json::json!({
+                "content": [{"type": "text", "text": "a.txt\n"}]
+            }),
+        };
+        t.translate(&sid(), &update).expect("should translate");
+
+        // Final result: streamed text + status suffix.
+        let end = AgentSessionEvent::ToolExecutionEnd {
+            tool_call_id: "b1".into(),
+            tool_name: "bash".into(),
+            result: serde_json::json!({
+                "content": [{"type": "text", "text": "a.txt\n\nCommand exited with code 1"}],
+                "details": {}
+            }),
+            is_error: true,
+        };
+        let notif = t.translate(&sid(), &end).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let meta = tcu.meta.expect("meta");
+                let out = meta.get("terminal_output").expect("terminal_output");
+                assert_eq!(
+                    out["data"], "\nCommand exited with code 1",
+                    "only the unstreamed tail must be sent"
+                );
+                let exit = meta.get("terminal_exit").expect("terminal_exit");
+                assert_eq!(exit["exit_code"], 1);
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+    }
+
+    /// The bash tool emits an initial EMPTY update (`{"content": [],
+    /// "details": null}`) before any output arrives. That must never leak
+    /// into the terminal as raw JSON: pi-acp's `bashResultText` returns ""
+    /// for an empty content array (no pretty-printed JSON fallback), so the
+    /// delta is empty and no `terminal_output` is emitted.
+    #[test]
+    fn bash_empty_initial_update_does_not_leak_json() {
+        let mut t = EventTranslator::new("/proj");
+
+        let update = AgentSessionEvent::ToolExecutionUpdate {
+            tool_call_id: "b1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::json!({"command": "git diff"}),
+            partial_result: serde_json::json!({
+                "content": [],
+                "details": null
+            }),
+        };
+        let notif = t.translate(&sid(), &update).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert!(
+                    tcu.meta.is_none(),
+                    "empty update must not emit any terminal_output meta, got {:?}",
+                    tcu.meta
+                );
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+
+        // The follow-up update with real output must carry ONLY the output
+        // text — no JSON prefix.
+        let update = AgentSessionEvent::ToolExecutionUpdate {
+            tool_call_id: "b1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::json!({"command": "git diff"}),
+            partial_result: serde_json::json!({
+                "content": [{"type": "text", "text": "README.md | 10 +++\n"}],
+                "details": null
+            }),
+        };
+        let notif = t.translate(&sid(), &update).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let meta = tcu.meta.expect("meta");
+                let out = meta.get("terminal_output").expect("terminal_output");
+                assert_eq!(out["data"], "README.md | 10 +++\n");
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+    }
+
     /// Tool calls must be surfaced while the model is still streaming their
     /// arguments (toolcall_start inside message_update).
     #[test]
@@ -1328,6 +1564,102 @@ mod tests {
                 assert_eq!(tc.title, "read");
             }
             other => panic!("expected tool_call, got {other:?}"),
+        }
+    }
+
+    /// When the model streams a bash tool call, the initial `tool_call` is
+    /// emitted with empty args (title falls back to "bash"); the title must
+    /// be refreshed on `tool_call_delta` / `tool_call_end` once the command
+    /// has streamed in — otherwise Zed keeps showing the bare tool name.
+    #[test]
+    fn bash_title_updates_after_args_stream_in() {
+        let mut t = EventTranslator::new("/proj");
+
+        // 1. ToolCallStart: args are still `{}` → title falls back to "bash".
+        let partial = AssistantMessage {
+            content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+                id: "b1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({}),
+                thought_signature: None,
+            }],
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+        };
+        let start = AgentSessionEvent::MessageUpdate {
+            message: serde_json::from_value(serde_json::json!({
+                "role":"assistant","content":[],"api":"openai-completions","provider":"openai",
+                "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
+                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
+                "stopReason":"stop","timestamp":0
+            }))
+            .unwrap(),
+            assistant_message_event: AssistantMessageEvent::ToolCallStart {
+                content_index: 0,
+                partial,
+            },
+        };
+        let notif = t.translate(&sid(), &start).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert_eq!(tc.title, "bash", "empty args must fall back to tool name");
+            }
+            other => panic!("expected tool_call, got {other:?}"),
+        }
+
+        // 2. ToolCallDelta: the command has streamed in → title must update.
+        let partial = AssistantMessage {
+            content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+                id: "b1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "ls -la"}),
+                thought_signature: None,
+            }],
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+        };
+        let delta = AgentSessionEvent::MessageUpdate {
+            message: serde_json::from_value(serde_json::json!({
+                "role":"assistant","content":[],"api":"openai-completions","provider":"openai",
+                "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
+                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
+                "stopReason":"stop","timestamp":0
+            }))
+            .unwrap(),
+            assistant_message_event: AssistantMessageEvent::ToolCallDelta {
+                content_index: 0,
+                delta: "{\"command\":\"ls -la\"}".into(),
+                partial,
+            },
+        };
+        let notif = t.translate(&sid(), &delta).expect("should translate");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(
+                    tcu.fields.title.as_deref(),
+                    Some("ls -la"),
+                    "title must be refreshed once the command streams in"
+                );
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
         }
     }
 

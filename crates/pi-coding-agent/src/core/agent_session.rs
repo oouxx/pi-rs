@@ -3376,8 +3376,16 @@ References are relative to {}.
         let (tx, rx) = tokio::sync::watch::channel(false);
         *self.auto_compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
-        // Run compaction
-        match self.compact(None).await {
+        // Run compaction. The auto path must NOT go through the full
+        // `compact()` wrapper (disconnect/abort/wait-for-idle): when called
+        // from the post-agent-run loop `is_agent_run_active` is still set
+        // (cleared only in `_emit_agent_settled`, which runs after this loop),
+        // so `abort()` -> `wait_for_idle()` waits forever on the idle
+        // notification and never resolves — the ACP `session/prompt` response
+        // is then never sent (client shows a spinner forever and queues
+        // further prompts). Matches TS `_runAutoCompaction`, which calls the
+        // standalone `compact()` helper directly and never `this.abort()`.
+        match self._compact_inner(None, compaction_reason).await {
             Ok(_summary) => {
                 // Check if aborted
                 if *rx.borrow() {
@@ -3924,17 +3932,22 @@ References are relative to {}.
         // isn't processed / persisted).
         self._disconnect_from_agent().await;
         self.abort().await;
-        let result = self._compact_inner(custom_instructions).await;
+        let result = self
+            ._compact_inner(custom_instructions, CompactionReason::Manual)
+            .await;
         // Reconnect (matching TS _reconnectToAgent() in the finally block).
         self._reconnect_to_agent().await;
         result
     }
 
     /// The actual compaction logic (see `compact` for the
-    /// disconnect/abort/reconnect wrapper).
+    /// disconnect/abort/reconnect wrapper). `reason` is the compaction reason
+    /// reported in the `compaction_start` event (manual vs overflow vs
+    /// threshold).
     async fn _compact_inner(
         &self,
         custom_instructions: Option<&str>,
+        reason: CompactionReason,
     ) -> Result<crate::core::compaction::CompactionResult, String> {
         use crate::core::compaction;
 
@@ -3971,9 +3984,7 @@ References are relative to {}.
         // emits it after preparation succeeds). Emitting only after the
         // should_compact check avoids a dangling compaction_start when
         // compaction is not needed.
-        self._emit(AgentSessionEvent::CompactionStart {
-            reason: CompactionReason::Manual,
-        });
+        self._emit(AgentSessionEvent::CompactionStart { reason });
 
         let keep_recent_turns = 5usize;
         let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);

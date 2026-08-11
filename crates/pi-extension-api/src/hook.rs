@@ -329,7 +329,9 @@ pub trait HookHandler: Send + Sync {
     async fn on_message_start(&self, _message: &Value) {}
 
     /// 消息更新时触发。
-    async fn on_message_update(&self, _message: &Value) {}
+    /// 消息更新时触发。`assistant_message_event` 是流式 delta 事件
+    /// （匹配 TS `message_update` 事件的 assistantMessageEvent 字段）。
+    async fn on_message_update(&self, _message: &Value, _assistant_message_event: &Value) {}
 
     /// 消息结束时触发。
     async fn on_message_end(&self, _message: &Value) {}
@@ -662,11 +664,11 @@ impl HookRunner {
     }
 
     /// Fire `on_message_update` to all handlers (parallel).
-    pub async fn fire_message_update(&self, message: &Value) {
+    pub async fn fire_message_update(&self, message: &Value, assistant_message_event: &Value) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_message_update(message))
+            .map(|h| h.on_message_update(message, assistant_message_event))
             .collect();
         futures::future::join_all(futures).await;
     }

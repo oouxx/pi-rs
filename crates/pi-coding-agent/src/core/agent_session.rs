@@ -1583,9 +1583,14 @@ impl AgentSession {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             hr.fire_message_start(&msg_val).await;
                         }
-                        AgentEvent::MessageUpdate { message, .. } => {
+                        AgentEvent::MessageUpdate {
+                            message,
+                            assistant_message_event,
+                        } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
-                            hr.fire_message_update(&msg_val).await;
+                            let ame_val =
+                                serde_json::to_value(assistant_message_event).unwrap_or_default();
+                            hr.fire_message_update(&msg_val, &ame_val).await;
                         }
                         AgentEvent::MessageEnd { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();

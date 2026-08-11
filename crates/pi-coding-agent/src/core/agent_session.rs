@@ -481,8 +481,13 @@ pub struct AgentSession {
     js_invalidator: Option<Arc<dyn Fn() + Send + Sync>>,
     // ── Event subscription state ──
     event_listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
-    /// Handle to the internal agent event subscription.
-    _agent_subscription: Option<pi_agent_core::agent::UnsubscribeHandle>,
+    /// Handle to the internal agent event subscription. Mutex so
+    /// `_disconnect_from_agent` / `_reconnect_to_agent` (called from `&self`
+    /// methods like `compact`) can swap it.
+    _agent_subscription: Arc<std::sync::Mutex<Option<pi_agent_core::agent::UnsubscribeHandle>>>,
+    /// Turn index for extension turn_start/turn_end events (matching TS
+    /// `_turnIndex`).
+    turn_index: Arc<std::sync::Mutex<u32>>,
     /// Whether the agent is currently processing a run.
     is_agent_run_active: Arc<std::sync::Mutex<bool>>,
     /// Notifier for idle detection (wakes wait_for_idle callers).
@@ -1119,12 +1124,6 @@ impl AgentSession {
             }
         }
 
-        // Clone registry ref for EventPublisher (before it's moved into self)
-        let extension_registry_ref = options
-            .extension_registry
-            .as_ref()
-            .map(std::sync::Arc::clone);
-
         // Clone registry ref for extension provider registration (before it's moved into self)
         let model_registry_for_ext = model_registry.clone();
 
@@ -1192,7 +1191,8 @@ impl AgentSession {
             js_invalidator: None,
             extension_error_listener: Arc::new(std::sync::Mutex::new(None)),
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
-            _agent_subscription: None,
+            _agent_subscription: Arc::new(std::sync::Mutex::new(None)),
+            turn_index: Arc::new(std::sync::Mutex::new(0)),
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
             idle_notify: Arc::new(Notify::new()),
             steering_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1428,23 +1428,70 @@ impl AgentSession {
         // ── Register internal agent event handler ──
         // Folds persistence, extension dispatch, and session event dispatch
         // into a single subscription, matching TS `_handleAgentEvent`.
-        let inner_sm = session_manager.clone();
-        let inner_reg = extension_registry_ref.clone();
-        let inner_cwd = session_cwd.clone();
-        let inner_listeners = session.event_listeners.clone();
-        let inner_steering = session.steering_messages.clone();
-        let inner_follow_up = session.follow_up_messages.clone();
-        let inner_last_assistant = session.last_assistant_message.clone();
-        let _inner_retry = session.retry_attempt.clone();
-        let _inner_overflow = session.overflow_recovery_attempted.clone();
-        let _inner_is_active = session.is_agent_run_active.clone();
-        let _inner_idle = session.idle_notify.clone();
-        let inner_ext_ctx = shared_ext_ctx.clone();
-        let inner_agent = session.agent.clone();
-        let inner_settings = session.settings_manager.clone();
-        let turn_index: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(0));
+        let internal_listener = session._build_internal_listener();
+        let _subscription_handle = session.agent.subscribe(internal_listener).await;
+        *session
+            ._agent_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(_subscription_handle);
 
-        let internal_listener: AgentEventListener = Arc::new(move |event: AgentEvent, _signal| {
+        session
+    }
+
+    /// Temporarily disconnect from agent events (matching TS
+    /// `_disconnectFromAgent`). Used by `compact` so the abort's agent_end
+    /// isn't processed (persisted / emitted).
+    async fn _disconnect_from_agent(&self) {
+        let handle = self
+            ._agent_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            handle.unsubscribe().await;
+        }
+    }
+
+    /// Reconnect to agent events after `_disconnect_from_agent` (matching TS
+    /// `_reconnectToAgent` which re-subscribes `_handleAgentEvent`).
+    async fn _reconnect_to_agent(&self) {
+        if self
+            ._agent_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            return;
+        }
+        let listener = self._build_internal_listener();
+        let handle = self.agent.subscribe(listener).await;
+        *self
+            ._agent_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+    }
+
+    /// Build the internal agent event listener (persistence, extension
+    /// dispatch, session event dispatch), matching TS `_handleAgentEvent`.
+    /// Rebuilt on reconnect after `_disconnect_from_agent` (matching TS
+    /// `_reconnectToAgent` which re-subscribes `_handleAgentEvent`).
+    fn _build_internal_listener(&self) -> AgentEventListener {
+        let inner_sm = self.session_manager.clone();
+        let inner_reg = self.extension_registry.clone();
+        let inner_cwd = self.cwd.clone();
+        let inner_listeners = self.event_listeners.clone();
+        let inner_steering = self.steering_messages.clone();
+        let inner_follow_up = self.follow_up_messages.clone();
+        let inner_last_assistant = self.last_assistant_message.clone();
+        let _inner_retry = self.retry_attempt.clone();
+        let _inner_overflow = self.overflow_recovery_attempted.clone();
+        let _inner_is_active = self.is_agent_run_active.clone();
+        let _inner_idle = self.idle_notify.clone();
+        let inner_ext_ctx = self.ext_ctx.clone();
+        let inner_agent = self.agent.clone();
+        let inner_settings = self.settings_manager.clone();
+        let turn_index = self.turn_index.clone();
+        Arc::new(move |event: AgentEvent, _signal| {
             let sm = inner_sm.clone();
             let reg = inner_reg.clone();
             let ext_ctx = inner_ext_ctx.clone();
@@ -1838,12 +1885,7 @@ impl AgentSession {
                     }
                 }
             })
-        });
-
-        let _subscription_handle = session.agent.subscribe(internal_listener).await;
-        session._agent_subscription = Some(_subscription_handle);
-
-        session
+        })
     }
 
     // =========================================================================
@@ -3876,11 +3918,25 @@ References are relative to {}.
         &self,
         custom_instructions: Option<&str>,
     ) -> Result<crate::core::compaction::CompactionResult, String> {
-        use crate::core::compaction;
-
-        // Abort any in-progress agent run before compacting (matching TS
-        // compact() which calls this.abort() first).
+        // Disconnect from agent events and abort any in-progress run
+        // before compacting (matching TS compact() which calls
+        // _disconnectFromAgent() then abort() so the abort's agent_end
+        // isn't processed / persisted).
+        self._disconnect_from_agent().await;
         self.abort().await;
+        let result = self._compact_inner(custom_instructions).await;
+        // Reconnect (matching TS _reconnectToAgent() in the finally block).
+        self._reconnect_to_agent().await;
+        result
+    }
+
+    /// The actual compaction logic (see `compact` for the
+    /// disconnect/abort/reconnect wrapper).
+    async fn _compact_inner(
+        &self,
+        custom_instructions: Option<&str>,
+    ) -> Result<crate::core::compaction::CompactionResult, String> {
+        use crate::core::compaction;
 
         // Dispatch session_before_compact to extensions.
         // If an extension cancels, return early.
@@ -5112,8 +5168,14 @@ impl AgentSession {
         }));
         // agent.abort() is async, so we can't use catch_unwind
         self.agent.abort().await;
-        // Disconnect from agent
-        if let Some(handle) = self._agent_subscription.take() {
+        // Disconnect from agent (drop the guard before awaiting so the
+        // future stays Send).
+        let handle = self
+            ._agent_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
             handle.unsubscribe().await;
         }
         // Clear event listeners

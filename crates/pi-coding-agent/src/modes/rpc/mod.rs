@@ -519,6 +519,9 @@ pub async fn run_rpc_mode(
         }
     }
 
+    // Kill any background processes left running by bash commands (matching
+    // TS interactive-mode shutdown which calls `killTrackedDetachedChildren()`).
+    crate::utils::shell::kill_tracked_detached_children();
     session.dispose_inner().await;
     0
 }

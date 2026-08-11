@@ -69,6 +69,7 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
             } => {}
         }
         if let Some(mut session) = signal_session.lock().await.take() {
+            crate::utils::shell::kill_tracked_detached_children();
             session.dispose_inner().await;
         }
         std::process::exit(1);

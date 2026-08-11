@@ -60,7 +60,12 @@ pub async fn run_acp_mode() -> i32 {
                 }
             });
 
-            handle_io.await
+            let io_result = handle_io.await;
+            // Kill any background processes left running by bash commands
+            // (matching TS interactive-mode shutdown / signal handlers which
+            // call `killTrackedDetachedChildren()`).
+            crate::utils::shell::kill_tracked_detached_children();
+            io_result
         })
         .await;
 

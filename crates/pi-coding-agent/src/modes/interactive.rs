@@ -230,6 +230,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // ── Cleanup ──────────────────────────────────────────────────────────
     bg_exit.store(true, std::sync::atomic::Ordering::SeqCst);
     shutdown_guard.shutdown();
+    // Kill any background processes left running by bash commands (matching
+    // TS interactive-mode shutdown which calls `killTrackedDetachedChildren()`).
+    crate::utils::shell::kill_tracked_detached_children();
     restore_terminal();
     exit_code
 }

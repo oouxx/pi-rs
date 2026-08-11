@@ -128,6 +128,13 @@ impl OutputAccumulator {
             return;
         }
         self.finished = true;
+        // Flush any trailing incomplete UTF-8 sequence as replacement
+        // characters (matching TS `this.decoder.decode()` flush in finish()).
+        if !self.pending_utf8_bytes.is_empty() {
+            let replacement = "\u{FFFD}".repeat(self.pending_utf8_bytes.len());
+            self.pending_utf8_bytes.clear();
+            self.append_decoded_text(&replacement);
+        }
         if self.should_use_temp_file() {
             self.ensure_temp_file();
         }

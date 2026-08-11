@@ -2,7 +2,6 @@
 //!
 //! Mirrors packages/coding-agent/src/utils/shell.ts
 
-use std::path::Path;
 use std::sync::Mutex;
 
 /// Set of tracked detached child process PIDs.
@@ -58,22 +57,33 @@ pub fn kill_tracked_detached_children() {
     }
 }
 
-/// Kill a process and its children (Unix: SIGKILL, Windows: taskkill).
+/// Snapshot of currently tracked detached child PIDs (test helper, mirrors
+/// the internal set; also used by tests to assert track/untrack wiring).
+pub fn tracked_pids_snapshot() -> Vec<u32> {
+    TRACKED_PIDS.lock().map(|p| p.clone()).unwrap_or_default()
+}
+
+/// Serializes tests that touch the global `TRACKED_PIDS` set. Without this,
+/// a test calling `kill_tracked_detached_children()` would kill pids tracked
+/// by other concurrently running tests (and `exec_tracks_and_untracks_pid`
+/// would observe foreign pids).
+pub static TEST_TRACK_LOCK: Mutex<()> = Mutex::new(());
+
+/// Kill a process and its entire tree, matching TS `killProcessTree`
+/// (`utils/shell.ts`): on Unix send SIGKILL to the process group (`-pid`)
+/// since the child was spawned as a process-group leader (`detached` /
+/// `process_group(0)`); on Windows use `taskkill /F /T`. Falls back to
+/// killing just the child if the group kill fails (e.g. process already dead).
 pub fn kill_process_tree(pid: u32) {
     #[cfg(unix)]
     {
-        use std::process::Command;
-        // Try killing the process group first, then individual
-        let _ = Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let _ = Command::new("kill")
-            .args(["-9", &format!("{pid}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        let pid = pid as i32;
+        // Kill the whole process group (negative pid).
+        let group_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+        if group_result != 0 {
+            // Fallback: kill just the child (matching TS fallback).
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
     }
 
     #[cfg(windows)]
@@ -84,37 +94,6 @@ pub fn kill_process_tree(pid: u32) {
             .stderr(std::process::Stdio::null())
             .spawn();
     }
-}
-
-/// Resolve the shell command to use.
-pub fn resolve_shell() -> String {
-    #[cfg(windows)]
-    {
-        // Try common bash locations on Windows
-        for path in &[
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-        ] {
-            if Path::new(path).exists() {
-                return path.to_string();
-            }
-        }
-        "bash".to_string()
-    }
-
-    #[cfg(unix)]
-    {
-        if Path::new("/bin/bash").exists() {
-            "/bin/bash".to_string()
-        } else {
-            "sh".to_string()
-        }
-    }
-}
-
-/// Get shell arguments for running a command.
-pub fn shell_args() -> Vec<String> {
-    vec!["-c".to_string()]
 }
 
 #[cfg(test)]
@@ -140,15 +119,32 @@ mod tests {
         assert_eq!(result, input);
     }
 
+    /// kill_tracked_detached_children must kill every tracked pid and clear
+    /// the set (matching TS killTrackedDetachedChildren). Serialized against
+    /// other tests sharing the global TRACKED_PIDS set.
     #[test]
-    fn test_resolve_shell() {
-        let shell = resolve_shell();
-        assert!(!shell.is_empty());
-    }
+    fn kill_tracked_children_kills_tracked_pids() {
+        if cfg!(target_os = "windows") {
+            return;
+        }
+        let _guard = TEST_TRACK_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = std::process::Command::new("sleep")
+            .arg("61.5")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        track_detached_child_pid(pid);
+        assert!(tracked_pids_snapshot().contains(&pid));
 
-    #[test]
-    fn test_shell_args() {
-        let args = shell_args();
-        assert_eq!(args, vec!["-c"]);
+        kill_tracked_detached_children();
+        assert!(tracked_pids_snapshot().is_empty());
+
+        // Reap the zombie so the pid is truly gone (SIGKILL'd children stay
+        // as zombies until waited on), then assert it is no longer alive.
+        let _ = child.wait();
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        assert_ne!(result, 0, "tracked process should have been killed");
     }
 }

@@ -458,14 +458,16 @@ pub trait HookHandler: Send + Sync {
 
     /// 用户输入时触发。可修改输入文本，或取消。
     /// `_images` 和 `_streaming_behavior` 是只读输入参数。
+    /// 输入事件（transform 链）。返回 `(text, images)`，images 为 `None`
+    /// 表示不修改（匹配 TS `input` transform 的 `images ?? currentImages`）。
     async fn on_input(
         &self,
         _text: String,
         _images: Option<Vec<Value>>,
         _source: String,
         _streaming_behavior: Option<String>,
-    ) -> HookResult<String> {
-        HookResult::Continue(_text)
+    ) -> HookResult<(String, Option<Vec<Value>>)> {
+        HookResult::Continue((_text, None))
     }
 
     /// Provider 请求前触发。可修改 payload。
@@ -687,9 +689,16 @@ impl HookRunner {
     ) -> HookResult<Value> {
         let mut current = message;
         for handler in &self.handlers {
-            match handler.on_message_end_mut(current).await {
+            match handler.on_message_end_mut(current.clone()).await {
                 HookResult::Continue(m) => {
-                    current = m;
+                    // A message_end handler must return a message with the same
+                    // role (matching TS emitMessageEnd which rejects role
+                    // changes with an error and skips the modification).
+                    let same_role = m.get("role").and_then(|r| r.as_str())
+                        == current.get("role").and_then(|r| r.as_str());
+                    if same_role {
+                        current = m;
+                    }
                 }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -955,12 +964,22 @@ impl HookRunner {
         images: Option<Vec<Value>>,
         source: String,
         streaming_behavior: Option<String>,
-    ) -> HookResult<String> {
-        let mut current = text;
+    ) -> HookResult<(String, Option<Vec<Value>>)> {
+        let mut current = (text, images);
         for handler in &self.handlers {
-            match handler.on_input(current, images.clone(), source.clone(), streaming_behavior.clone()).await {
-                HookResult::Continue(t) => {
-                    current = t;
+            match handler
+                .on_input(
+                    current.0.clone(),
+                    current.1.clone(),
+                    source.clone(),
+                    streaming_behavior.clone(),
+                )
+                .await
+            {
+                HookResult::Continue((t, imgs)) => {
+                    // images: None means "keep current" (matching TS
+                    // `result.images ?? currentImages`).
+                    current = (t, imgs.or(current.1));
                 }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }

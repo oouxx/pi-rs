@@ -502,8 +502,15 @@ pub async fn dispatch_input(
         )
         .await;
     match result {
-        crate::core::extensions::HookResult::Continue(text) => {
-            InputEventResult::Continue { text, images: None }
+        crate::core::extensions::HookResult::Continue((text, images)) => {
+            // Convert Value images back to ContentBlock (matching TS input
+            // transform which can modify images).
+            let images = images.map(|imgs| {
+                imgs.into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect()
+            });
+            InputEventResult::Continue { text, images }
         }
         crate::core::extensions::HookResult::Cancel(_reason) => {
             InputEventResult::Handled

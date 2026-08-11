@@ -190,11 +190,19 @@ impl ModelRegistry {
             if config.api_key.is_some() {
                 return true;
             }
+            // 对齐 TS:provider 未声明 authHeader（不需要 Authorization）时
+            // 无凭据也可用（如本地端点），请求时不会附加认证头。
+            if config.auth_header != Some(true) {
+                return true;
+            }
         }
         // Check models.json provider configs
         let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(&model.provider) {
             if config.api_key.is_some() {
+                return true;
+            }
+            if config.auth_header != Some(true) {
                 return true;
             }
         }
@@ -224,7 +232,12 @@ impl ModelRegistry {
         let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(provider) {
             if let Some(key) = &config.api_key {
-                return Some(key.clone());
+                // `${ENV}` template resolution (match TS ConfigValue).
+                if let Some(resolved) =
+                    crate::core::resolve_config_value::resolve_config_value(key)
+                {
+                    return Some(resolved);
+                }
             }
         }
         drop(providers);
@@ -233,7 +246,11 @@ impl ModelRegistry {
         let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(provider) {
             if let Some(key) = &config.api_key {
-                return Some(key.clone());
+                if let Some(resolved) =
+                    crate::core::resolve_config_value::resolve_config_value(key)
+                {
+                    return Some(resolved);
+                }
             }
         }
         drop(json_providers);
@@ -244,15 +261,26 @@ impl ModelRegistry {
     pub async fn get_api_key_and_headers(&self, model: &Model) -> Result<ApiKeyResult, String> {
         let mut api_key = get_env_api_key(&model.provider);
         let mut headers: HashMap<String, String> = HashMap::new();
+        // Whether the provider requires an Authorization header (models.json
+        // `authHeader`, matching TS `resolveCompatibilityRequestConfig`).
+        let mut needs_auth_header = false;
 
         // Check registered providers first (higher priority)
         let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(&model.provider) {
             if api_key.is_none() {
-                api_key = config.api_key.clone();
+                // models.json / registered `apiKey` supports `${ENV}` templates
+                // (match TS ConfigValue).
+                api_key = config
+                    .api_key
+                    .as_deref()
+                    .and_then(crate::core::resolve_config_value::resolve_config_value);
             }
             if let Some(ref config_headers) = config.headers {
                 headers.extend(config_headers.clone());
+            }
+            if config.auth_header == Some(true) {
+                needs_auth_header = true;
             }
         }
         drop(providers);
@@ -261,10 +289,16 @@ impl ModelRegistry {
         let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(&model.provider) {
             if api_key.is_none() {
-                api_key = config.api_key.clone();
+                api_key = config
+                    .api_key
+                    .as_deref()
+                    .and_then(crate::core::resolve_config_value::resolve_config_value);
             }
             if let Some(ref config_headers) = config.headers {
                 headers.extend(config_headers.clone());
+            }
+            if config.auth_header == Some(true) {
+                needs_auth_header = true;
             }
         }
         drop(json_providers);
@@ -280,15 +314,33 @@ impl ModelRegistry {
                 },
                 error: String::new(),
             }),
-            None => Ok(ApiKeyResult {
-                ok: false,
-                api_key: String::new(),
-                headers: None,
-                error: format!(
-                    "No API key configured for provider '{}'. Set the appropriate environment variable or configure it via /login.",
-                    model.provider
-                ),
-            }),
+            None => {
+                // 对齐 TS getApiKeyAndHeaders：无凭据时只有 provider 声明了
+                // `authHeader: true`（需要 Authorization）才报错；否则放行，
+                // 不带认证头请求（本地端点，如 Ollama localhost）。
+                if needs_auth_header {
+                    Ok(ApiKeyResult {
+                        ok: false,
+                        api_key: String::new(),
+                        headers: None,
+                        error: format!(
+                            "No API key configured for provider '{}'. Set the appropriate environment variable or configure it via /login.",
+                            model.provider
+                        ),
+                    })
+                } else {
+                    Ok(ApiKeyResult {
+                        ok: true,
+                        api_key: String::new(),
+                        headers: if headers.is_empty() {
+                            None
+                        } else {
+                            Some(headers)
+                        },
+                        error: String::new(),
+                    })
+                }
+            }
         }
     }
 

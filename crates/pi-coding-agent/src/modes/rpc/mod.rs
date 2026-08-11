@@ -315,8 +315,7 @@ pub async fn run_rpc_mode(
         }
     };
 
-    let mut rpc_builtins = ModelRegistry::builtin_models_list();
-    rpc_builtins.extend(pi_agent_core::pi_ai::providers::ollama::discover_ollama_models().await);
+    let rpc_builtins = ModelRegistry::builtin_models_list();
     let model_registry = ModelRegistry::new(rpc_builtins);
 
     // Bind extension error reporting (matching TS rebindSession's

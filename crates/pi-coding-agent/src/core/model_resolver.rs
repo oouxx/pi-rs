@@ -34,7 +34,6 @@ pub static DEFAULT_MODEL_PER_PROVIDER: LazyLock<HashMap<&'static str, &'static s
         m.insert("cerebras", "zai-glm-4.7");
         m.insert("zai", "glm-5.1");
         m.insert("zai-coding-cn", "glm-5.1");
-        m.insert("ollama", "llama3.2");
         m.insert("minimax", "MiniMax-M2.7");
         m.insert("minimax-cn", "MiniMax-M2.7");
         m.insert("moonshotai", "kimi-k2.6");

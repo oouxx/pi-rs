@@ -400,11 +400,9 @@ pub async fn create_agent_session(
     let model_registry = match options.model_registry.take() {
         Some(r) => r,
         None => {
-            // 内置模型 + 本机 Ollama 自动发现（若 Ollama 在运行）。
-            // Ollama 探测失败时返回空 Vec，不影响启动。
-            let mut builtins = ModelRegistry::builtin_models_list();
-            builtins
-                .extend(pi_agent_core::pi_ai::providers::ollama::discover_ollama_models().await);
+            // 内置模型列表（与 TS 原版一致，无 Ollama 自动发现；本地/
+            // 自定义 OpenAI 兼容端点通过 models.json 配置）。
+            let builtins = ModelRegistry::builtin_models_list();
             ModelRegistry::new(builtins)
         }
     };

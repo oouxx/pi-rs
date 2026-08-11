@@ -36,7 +36,6 @@ fn provider_env_keys() -> HashMap<&'static str, &'static str> {
     map.insert("cloudflare-ai-gateway", "CLOUDFLARE_AI_GATEWAY_API_KEY");
     map.insert("xiaomi", "XIAOMI_API_KEY");
     map.insert("kimi-coding", "KIMI_CODING_API_KEY");
-    map.insert("ollama", "OLLAMA_API_KEY");
     map
 }
 
@@ -121,7 +120,6 @@ mod tests {
             "amazon-bedrock",
             "minimax",
             "moonshotai",
-            "ollama",
         ];
         for provider in providers {
             let var_name = get_env_var_name(provider);

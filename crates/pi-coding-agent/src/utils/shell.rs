@@ -74,6 +74,57 @@ pub static TEST_TRACK_LOCK: Mutex<()> = Mutex::new(());
 /// since the child was spawned as a process-group leader (`detached` /
 /// `process_group(0)`); on Windows use `taskkill /F /T`. Falls back to
 /// killing just the child if the group kill fails (e.g. process already dead).
+/// Run a probe command (`where` on Windows / `which` on Unix) with a timeout,
+/// hiding the console window on Windows (matching TS `spawnSync` with
+/// `timeout: 5000` + `windowsHide: true`). Returns the first line of stdout on
+/// success, or None on failure/timeout.
+///
+/// The unbounded `Command::output()` variant could hang forever if a PATH
+/// entry points at a stuck executable — TS guards with a 5s timeout.
+pub fn run_path_probe(probe: &str, arg: &str) -> Option<String> {
+    let mut cmd = std::process::Command::new(probe);
+    cmd.arg(arg).stdout(std::process::Stdio::piped());
+    // Hide the console window (matching TS `windowsHide: true`).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().ok()?;
+
+    // 5s timeout (matching TS `timeout: 5000`).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    if !status.success() {
+        return None;
+    }
+
+    // Probe output is tiny (a few paths), so reading after exit is safe.
+    let mut stdout = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        use std::io::Read;
+        let _ = out.read_to_string(&mut stdout);
+    }
+    let first = stdout.trim().split('\n').next()?.trim().to_string();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first)
+    }
+}
+
 pub fn kill_process_tree(pid: u32) {
     #[cfg(unix)]
     {
@@ -100,6 +151,51 @@ pub fn kill_process_tree(pid: u32) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn test_run_path_probe_finds_existing_binary() {
+        // `which sh` (or `where` on Windows) must return a real path.
+        let probe = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
+        let arg = if cfg!(target_os = "windows") {
+            "sh.exe"
+        } else {
+            "sh"
+        };
+        let result = run_path_probe(probe, arg);
+        assert!(
+            result.is_some(),
+            "probe for {arg} must succeed on {probe}"
+        );
+    }
+
+    #[test]
+    fn test_run_path_probe_missing_binary_returns_none() {
+        let probe = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
+        // A name that cannot exist on PATH.
+        let result = run_path_probe(probe, "pi-rs-definitely-not-a-real-binary-xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_run_path_probe_timeout_kills_stuck_probe() {
+        // A probe that never exits must be killed after the 5s deadline
+        // instead of hanging forever (matching TS `spawnSync` timeout).
+        let start = std::time::Instant::now();
+        let result = run_path_probe("sleep", "30");
+        assert!(result.is_none());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "probe must time out, not hang"
+        );
+    }
 
     #[test]
     fn test_sanitize_binary_output() {

@@ -239,37 +239,18 @@ fn is_legacy_wsl_bash_path(path: &str) -> bool {
 /// Unix uses `which`; the first existing result wins.
 fn find_bash_on_path() -> Option<String> {
     if cfg!(target_os = "windows") {
-        let result = std::process::Command::new("where")
-            .arg("bash.exe")
-            .output()
-            .ok()?;
-        if result.status.success() {
-            let first = String::from_utf8_lossy(&result.stdout)
-                .trim()
-                .split('\n')
-                .next()?
-                .trim()
-                .to_string();
-            if !first.is_empty() && std::path::Path::new(&first).exists() {
-                return Some(first);
-            }
+        // `where bash.exe` with a 5s timeout + hidden window (matching TS
+        // `findBashOnPath`: where can return non-existent paths, so verify
+        // the first match actually exists).
+        let first = crate::utils::shell::run_path_probe("where", "bash.exe")?;
+        if std::path::Path::new(&first).exists() {
+            return Some(first);
         }
         None
     } else {
-        let result = std::process::Command::new("which")
-            .arg("bash")
-            .output()
-            .ok()?;
-        if result.status.success() {
-            let first = String::from_utf8_lossy(&result.stdout)
-                .trim()
-                .split('\n')
-                .next()?
-                .trim()
-                .to_string();
-            if !first.is_empty() {
-                return Some(first);
-            }
+        let first = crate::utils::shell::run_path_probe("which", "bash")?;
+        if !first.is_empty() {
+            return Some(first);
         }
         None
     }

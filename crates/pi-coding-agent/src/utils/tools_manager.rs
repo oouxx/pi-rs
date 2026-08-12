@@ -3,7 +3,7 @@
 //! Mirrors packages/coding-agent/src/utils/tools-manager.ts
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::config;
 
@@ -55,18 +55,15 @@ fn get_tool_config(tool: &str) -> Option<&'static ToolConfig> {
 }
 
 /// Check whether `cmd` exists in the system PATH.
+/// Uses a 5s-timeout probe (matching TS `spawnSync` timeout) so a stuck
+/// `where`/`which` on PATH can't hang the tool manager.
 fn command_exists(cmd: &str) -> bool {
     let probe = if cfg!(target_os = "windows") {
         "where"
     } else {
         "which"
     };
-    Command::new(probe)
-        .arg(cmd)
-        .stdout(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::utils::shell::run_path_probe(probe, cmd).is_some()
 }
 
 /// Return the binary filename for the current platform (adds `.exe` on Windows).

@@ -157,6 +157,14 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // RPC mode creates its own session internally
     if app_mode == AppMode::Rpc {
+        // @file arguments are not supported in RPC mode (matching TS).
+        if !args.file_args.is_empty() {
+            eprintln!(
+                "{} @file arguments are not supported in RPC mode",
+                "Error:".red().bold()
+            );
+            return EXIT_FAILURE;
+        }
         return pi_coding_agent::modes::rpc::run_rpc_mode(
             args.extensions.clone(),
             args.unknown_flags.clone(),
@@ -248,7 +256,13 @@ pub async fn run(args: &CliArgs) -> i32 {
         model: None,
         thinking_level: None,
         scoped_models,
-        no_tools: None,
+        no_tools: if args.no_tools {
+            Some(pi_coding_agent::core::sdk::NoToolsMode::All)
+        } else if args.no_builtin_tools {
+            Some(pi_coding_agent::core::sdk::NoToolsMode::Builtin)
+        } else {
+            None
+        },
         tools: if args.tools.is_empty() { None } else { Some(args.tools.clone()) },
         exclude_tools: if args.exclude_tools.is_empty() { None } else { Some(args.exclude_tools.clone()) },
         custom_prompt: args.system_prompt.clone(),
@@ -351,7 +365,13 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         model: None,
         thinking_level: None,
         scoped_models: None,
-        no_tools: None,
+        no_tools: if args.no_tools {
+            Some(pi_coding_agent::core::sdk::NoToolsMode::All)
+        } else if args.no_builtin_tools {
+            Some(pi_coding_agent::core::sdk::NoToolsMode::Builtin)
+        } else {
+            None
+        },
         tools: if args.tools.is_empty() { None } else { Some(args.tools.clone()) },
         exclude_tools: if args.exclude_tools.is_empty() { None } else { Some(args.exclude_tools.clone()) },
         custom_prompt: args.system_prompt.clone(),
@@ -484,7 +504,9 @@ async fn resolve_session_opts(
 fn build_model_registry(args: &CliArgs) -> Result<ModelRegistry, String> {
     let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
     if let Some(key) = &args.api_key {
-        // Resolve the provider: --provider, or the provider of --model.
+        // Resolve the provider: --provider, the provider of --model, or the
+        // first model matched by --models (matching TS, where `--api-key`
+        // requires a resolved `sessionOptions.model`).
         let provider = if let Some(p) = &args.provider {
             p.clone()
         } else if let Some(m) = &args.model {
@@ -493,6 +515,18 @@ fn build_model_registry(args: &CliArgs) -> Result<ModelRegistry, String> {
                 .iter()
                 .find(|m2| m2.id == *m)
                 .map(|m2| m2.provider.clone())
+                .ok_or_else(|| {
+                    "--api-key requires a model to be specified via --model, --provider/--model, or --models"
+                        .to_string()
+                })?
+        } else if !args.models.is_empty() {
+            let scoped = pi_coding_agent::core::model_resolver::resolve_model_scope(
+                &args.models,
+                &registry.get_models(),
+            );
+            scoped
+                .first()
+                .map(|s| s.model.provider.clone())
                 .ok_or_else(|| {
                     "--api-key requires a model to be specified via --model, --provider/--model, or --models"
                         .to_string()

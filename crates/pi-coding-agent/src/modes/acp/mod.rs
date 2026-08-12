@@ -345,6 +345,33 @@ mod tests {
                     ids.contains(&"thought_level"),
                     "thought_level selector must be advertised (pi-acp config id): {ids:?}"
                 );
+
+                // The model dropdown labels must include the provider prefix
+                // (matching pi-acp's `name: \`${provider}/${name}\``) so the
+                // client shows which provider each model belongs to.
+                let model_option = options
+                    .iter()
+                    .find(|o| o.id.0.as_ref() == "model")
+                    .expect("model option");
+                if let acp::SessionConfigKind::Select(sel) = &model_option.kind {
+                    let opts = match &sel.options {
+                        acp::SessionConfigSelectOptions::Ungrouped(opts) => opts,
+                        _ => panic!("model selector must be ungrouped"),
+                    };
+                    assert!(
+                        !opts.is_empty(),
+                        "model selector must list models"
+                    );
+                    for opt in opts {
+                        assert!(
+                            opt.name.contains('/'),
+                            "model option label must include provider prefix, got {:?}",
+                            opt.name
+                        );
+                    }
+                } else {
+                    panic!("model option must be a select");
+                }
             })
             .await;
     }

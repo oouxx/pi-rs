@@ -1110,7 +1110,13 @@ impl SessionTask {
             .iter()
             .map(|m| {
                 let id = format!("{}/{}", m.provider, m.id);
-                acp::SessionConfigSelectOption::new(id, m.name.clone())
+                // Label includes the provider prefix (matching pi-acp's
+                // `name: \`${provider}/${name}\``) so the client's dropdown
+                // shows which provider each model belongs to.
+                acp::SessionConfigSelectOption::new(
+                    id,
+                    format!("{}/{}", m.provider, m.name),
+                )
             })
             .collect();
         let model_option = acp::SessionConfigOption::new(
@@ -1132,7 +1138,13 @@ impl SessionTask {
         let levels = self.session.get_available_thinking_levels().await;
         let level_options: Vec<acp::SessionConfigSelectOption> = levels
             .iter()
-            .map(|l| acp::SessionConfigSelectOption::new(l.to_string(), l.to_string()))
+            .map(|l| {
+                // Label matches pi-acp's `name: \`Thinking: ${id}\``.
+                acp::SessionConfigSelectOption::new(
+                    l.to_string(),
+                    format!("Thinking: {l}"),
+                )
+            })
             .collect();
         let level_option = acp::SessionConfigOption::new(
             "thought_level",

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 pub const PACKAGE_NAME: &str = "pi-coding-agent";
-pub const APP_NAME: &str = "pi";
+pub const APP_NAME: &str = "pi-rs";
 pub const APP_TITLE: &str = "π";
 pub const CONFIG_DIR_NAME: &str = ".pi-rs";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

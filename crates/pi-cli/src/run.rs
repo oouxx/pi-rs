@@ -515,6 +515,9 @@ async fn resolve_session_opts(
 /// Build the model registry, registering the `--api-key` provider if given
 /// (matching TS `modelRuntime.setRuntimeApiKey`).
 fn build_model_registry(args: &CliArgs) -> Result<ModelRegistry, String> {
+    // Ensure the full generated model list is available (the CLI path runs
+    // before `create_agent_session`, which registers providers internally).
+    pi_coding_agent::pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
     let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
     if let Some(key) = &args.api_key {
         // Resolve the provider: --provider, the provider of --model, or the

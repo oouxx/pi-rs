@@ -15,7 +15,7 @@ pi-rs -p "解释一下这个文件" < file.rs
 pi-rs --list-models
 ```
 
-首次使用前，配置你的模型和 API Key（环境变量或 `~/.pi-rs/settings.json`），然后 `pi-rs --list-models` 确认模型可用。
+首次使用前，配置你的模型和 API Key（环境变量或 `~/.pi-rs/agent/settings.json`），然后 `pi-rs --list-models` 确认模型可用。
 
 ## 使用方式
 
@@ -85,8 +85,8 @@ pi-rs --mode rpc               # RPC 模式（供外部工具调用）
 ## 数据与配置
 
 - 会话记录保存在 `~/.pi-rs/agent/sessions/`
-- 配置文件：`~/.pi-rs/settings.json`（模型、API Key、默认参数）
-- 模型列表：`~/.pi-rs/models.json`（可手动添加本地模型端点）
+- 配置文件：`~/.pi-rs/agent/settings.json`（模型、API Key、默认参数）
+- 模型列表：`~/.pi-rs/agent/models.json`（可手动添加本地模型端点）
 
 ## 致谢
 

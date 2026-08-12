@@ -39,7 +39,9 @@ pub struct CliArgs {
     pub session_id: Option<String>,
     pub fork: Option<String>,
     pub session_dir: Option<String>,
-    pub list_models: bool,
+    /// `--list-models [pattern]`: list models, optionally filtered by a search
+    /// pattern (matching TS `listModels?: string | true`).
+    pub list_models: Option<String>,
     pub tools: Vec<String>,
     pub exclude_tools: Vec<String>,
     pub no_tools: bool,
@@ -51,6 +53,23 @@ pub struct CliArgs {
     pub verbose: bool,
     pub project_trust_override: Option<bool>,
     pub messages: Vec<String>,
+    /// `@file` arguments (matching TS `fileArgs`).
+    pub file_args: Vec<String>,
+    /// `--export <session-file>`: export a session file to HTML (matching TS).
+    pub export: Option<String>,
+    /// `--offline`: skip network (version check / catalog refresh).
+    pub offline: bool,
+    /// `--models <pattern>`: model scope patterns (repeatable).
+    pub models: Vec<String>,
+    /// `--skills <path>`: additional skill paths (repeatable).
+    pub skills: Vec<String>,
+    /// `--prompt-templates <path>`: additional prompt template paths (repeatable).
+    pub prompt_templates: Vec<String>,
+    /// `--themes <path>`: additional theme paths (repeatable).
+    pub themes: Vec<String>,
+    pub no_prompt_templates: bool,
+    pub no_themes: bool,
+    pub no_context_files: bool,
     pub unknown_flags: HashMap<String, String>,
     pub diagnostics: Vec<String>,
     pub default_project_trust: DefaultProjectTrust,
@@ -64,7 +83,7 @@ impl CliArgs {
     // Default impl provided by #[derive(Default)]
 
     pub fn should_run(&self) -> bool {
-        !self.help && !self.version && !self.list_models
+        !self.help && !self.version && self.list_models.is_none()
     }
 }
 
@@ -104,10 +123,18 @@ pub fn print_help() {
     println!("    --extension <PATH>    Load extension (can be repeated)");
     println!("    --no-extensions       Disable extension loading");
     println!("    --no-skills           Disable skill loading");
+    println!("    --skills <PATH>       Additional skill path (can be repeated)");
+    println!("    --prompt-templates <PATH>  Additional prompt template path (can be repeated)");
+    println!("    --no-prompt-templates Disable prompt template loading");
+    println!("    --themes <PATH>       Additional theme path (can be repeated)");
+    println!("    --no-themes            Disable theme loading");
+    println!("    --no-context-files     Disable context file loading");
+    println!("    --export <FILE>       Export a session file to HTML");
+    println!("    --offline              Offline mode (no network)");
     println!("    --trust               Trust the project directory");
     println!("    --no-trust            Do not trust the project directory");
     println!("    --default-trust <V>   Default trust: always|never|ask (default: ask)");
-    println!("    --list-models         List available models and exit");
+    println!("    --list-models [PATTERN]  List available models (optionally filtered) and exit");
     println!("    --verbose             Verbose output");
     println!("    -h, --help            Show this help");
     println!("    -v, --version         Show version");
@@ -134,7 +161,49 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--acp" => result.mode = OutputMode::Acp,
             "--print" | "-p" => result.print = true,
             "--verbose" => result.verbose = true,
-            "--list-models" => result.list_models = true,
+            "--offline" => result.offline = true,
+            "--list-models" => {
+                // Optional search pattern (matching TS `--list-models [pattern]`).
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    i += 1;
+                    result.list_models = Some(args[i].clone());
+                } else {
+                    result.list_models = Some(String::new());
+                }
+            }
+            "--export" => {
+                i += 1;
+                if i < args.len() {
+                    result.export = Some(args[i].clone());
+                }
+            }
+            "--models" => {
+                i += 1;
+                if i < args.len() {
+                    result.models.push(args[i].clone());
+                }
+            }
+            "--skills" => {
+                i += 1;
+                if i < args.len() {
+                    result.skills.push(args[i].clone());
+                }
+            }
+            "--prompt-templates" => {
+                i += 1;
+                if i < args.len() {
+                    result.prompt_templates.push(args[i].clone());
+                }
+            }
+            "--themes" => {
+                i += 1;
+                if i < args.len() {
+                    result.themes.push(args[i].clone());
+                }
+            }
+            "--no-prompt-templates" => result.no_prompt_templates = true,
+            "--no-themes" => result.no_themes = true,
+            "--no-context-files" => result.no_context_files = true,
             "--continue" => result.continue_session = true,
             "--resume" => result.resume_session = true,
             "--no-session" => result.no_session = true,
@@ -330,9 +399,14 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
-            // Positional argument = message
+            // Positional argument = message, or @file reference (matching TS
+            // `fileArgs`).
             _ => {
-                result.messages.push(arg.clone());
+                if arg.starts_with('@') && arg.len() > 1 {
+                    result.file_args.push(arg.clone());
+                } else {
+                    result.messages.push(arg.clone());
+                }
             }
         }
 
@@ -477,5 +551,61 @@ mod tests {
         // known flags are NOT collected as extension flags
         let args = parse_args(&["--print".into()]);
         assert!(args.unknown_flags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_export() {
+        let args = parse_args(&["--export".into(), "/tmp/session.jsonl".into()]);
+        assert_eq!(args.export, Some("/tmp/session.jsonl".into()));
+    }
+
+    #[test]
+    fn test_parse_offline() {
+        let args = parse_args(&["--offline".into()]);
+        assert!(args.offline);
+    }
+
+    #[test]
+    fn test_parse_list_models_with_pattern() {
+        // `--list-models <pattern>` (matching TS `listModels?: string | true`).
+        let with_pattern = parse_args(&["--list-models".into(), "anthropic".into()]);
+        assert_eq!(with_pattern.list_models, Some("anthropic".into()));
+
+        // Bare `--list-models` → empty pattern.
+        let bare = parse_args(&["--list-models".into()]);
+        assert_eq!(bare.list_models, Some(String::new()));
+    }
+
+    #[test]
+    fn test_parse_models_skills_prompts_themes() {
+        let args = parse_args(&[
+            "--models".into(),
+            "anthropic/*".into(),
+            "--skills".into(),
+            "/tmp/skills".into(),
+            "--prompt-templates".into(),
+            "/tmp/prompts".into(),
+            "--themes".into(),
+            "/tmp/themes".into(),
+            "--no-prompt-templates".into(),
+            "--no-themes".into(),
+            "--no-context-files".into(),
+        ]);
+        assert_eq!(args.models, vec!["anthropic/*"]);
+        assert_eq!(args.skills, vec!["/tmp/skills"]);
+        assert_eq!(args.prompt_templates, vec!["/tmp/prompts"]);
+        assert_eq!(args.themes, vec!["/tmp/themes"]);
+        assert!(args.no_prompt_templates);
+        assert!(args.no_themes);
+        assert!(args.no_context_files);
+    }
+
+    #[test]
+    fn test_parse_file_args() {
+        // `@file` arguments are collected separately from messages (matching
+        // TS `fileArgs`).
+        let args = parse_args(&["@notes.txt".into(), "summarize".into()]);
+        assert_eq!(args.file_args, vec!["@notes.txt"]);
+        assert_eq!(args.messages, vec!["summarize"]);
     }
 }

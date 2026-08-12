@@ -4573,14 +4573,118 @@ References are relative to {}.
 
     pub fn export_html(&self) -> String {
         let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entries = mgr.get_entries();
-        let session_name = mgr
-            .get_session_name()
-            .unwrap_or_else(|| "Session".to_string());
-        let session_id = mgr.get_session_id();
-        let cwd = mgr.get_cwd();
+        render_session_html(&mgr)
+    }
+    /// Export the session as HTML to a file, matching the original exportHTMLToFile().
+    /// Returns the file path on success.
+    pub fn export_html_to_file(&self, file_path: Option<&str>) -> Result<String, String> {
+        let html = self.export_html();
+        let path = file_path.map(|p| p.to_string()).unwrap_or_else(|| {
+            let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session_id = mgr.get_session_id();
+            format!("session_{}.html", session_id)
+        });
+        std::fs::write(&path, &html).map_err(|e| format!("Failed to write HTML file: {}", e))?;
+        Ok(path)
+    }
 
-        let mut html = String::new();
+    /// Export the current session branch to a JSONL file, matching TS exportToJsonl().
+    /// Writes the session header followed by all entries on the current branch path.
+    pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, String> {
+        use crate::core::session_manager::CURRENT_SESSION_VERSION;
+        use crate::utils::paths::{resolve_path, PathOptions};
+        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cwd = mgr.get_cwd().to_string();
+        let raw_path = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
+            let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+            format!("session-{}.jsonl", ts)
+        });
+        let file_path = resolve_path(&raw_path, &cwd, &PathOptions::default());
+
+        let dir = std::path::Path::new(&file_path)
+            .parent()
+            .ok_or_else(|| format!("Invalid output path: {file_path} has no parent directory"))?;
+        if !dir.exists() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+
+        let header = serde_json::json!({
+            "type": "session",
+            "version": CURRENT_SESSION_VERSION,
+            "id": mgr.get_session_id(),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cwd": mgr.get_cwd(),
+        });
+
+        let branch_entries = mgr.get_branch(None);
+        let mut lines = vec![serde_json::to_string(&header).map_err(|e| e.to_string())?];
+
+        // Re-chain parentIds to form a linear sequence
+        let mut prev_id: Option<String> = None;
+        for entry in &branch_entries {
+            let mut linear = serde_json::to_value(entry).map_err(|e| e.to_string())?;
+            if let Some(obj) = linear.as_object_mut() {
+                if let Some(prev) = &prev_id {
+                    obj.insert(
+                        "parentId".to_string(),
+                        serde_json::Value::String(prev.clone()),
+                    );
+                } else {
+                    obj.insert("parentId".to_string(), serde_json::Value::Null);
+                }
+            }
+            lines.push(serde_json::to_string(&linear).map_err(|e| e.to_string())?);
+            prev_id = Some(entry.id().to_string());
+        }
+
+        std::fs::write(
+            &file_path,
+            lines.join(
+                "
+",
+            ) + "
+",
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(file_path)
+    }
+
+    /// Get all user messages from session for fork selector, matching TS getUserMessagesForForking().
+    pub fn get_user_messages_for_forking(&self) -> Vec<(String, String)> {
+        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = mgr.get_entries();
+        let mut result = Vec::new();
+
+        for entry in &entries {
+            if let SessionEntry::Message { message, .. } = entry {
+                if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
+                    if role == "user" {
+                        // Extract text from string or content-block array
+                        // (matching TS contentText()).
+                        let text = message_content_text(message);
+                        if !text.is_empty() {
+                            result.push((entry.id().to_string(), text));
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+/// Render a session as standalone HTML, matching the original
+/// `exportHTMLToFile` output. Used by `AgentSession::export_html` and the CLI
+/// `--export <session-file>` command.
+pub fn render_session_html(mgr: &crate::core::session_manager::SessionManager) -> String {
+    let entries = mgr.get_entries();
+    let session_name = mgr
+        .get_session_name()
+        .unwrap_or_else(|| "Session".to_string());
+    let session_id = mgr.get_session_id();
+    let cwd = mgr.get_cwd();
+
+    let mut html = String::new();
         html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
         html.push_str("<meta charset=\"UTF-8\">\n");
         html.push_str(
@@ -4689,105 +4793,6 @@ References are relative to {}.
 
         html.push_str("</body>\n</html>\n");
         html
-    }
-
-    /// Export the session as HTML to a file, matching the original exportHTMLToFile().
-    /// Returns the file path on success.
-    pub fn export_html_to_file(&self, file_path: Option<&str>) -> Result<String, String> {
-        let html = self.export_html();
-        let path = file_path.map(|p| p.to_string()).unwrap_or_else(|| {
-            let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session_id = mgr.get_session_id();
-            format!("session_{}.html", session_id)
-        });
-        std::fs::write(&path, &html).map_err(|e| format!("Failed to write HTML file: {}", e))?;
-        Ok(path)
-    }
-
-    /// Export the current session branch to a JSONL file, matching TS exportToJsonl().
-    /// Writes the session header followed by all entries on the current branch path.
-    pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, String> {
-        use crate::core::session_manager::CURRENT_SESSION_VERSION;
-        use crate::utils::paths::{resolve_path, PathOptions};
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cwd = mgr.get_cwd().to_string();
-        let raw_path = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
-            let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
-            format!("session-{}.jsonl", ts)
-        });
-        let file_path = resolve_path(&raw_path, &cwd, &PathOptions::default());
-
-        let dir = std::path::Path::new(&file_path)
-            .parent()
-            .ok_or_else(|| format!("Invalid output path: {file_path} has no parent directory"))?;
-        if !dir.exists() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-
-        let header = serde_json::json!({
-            "type": "session",
-            "version": CURRENT_SESSION_VERSION,
-            "id": mgr.get_session_id(),
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "cwd": mgr.get_cwd(),
-        });
-
-        let branch_entries = mgr.get_branch(None);
-        let mut lines = vec![serde_json::to_string(&header).map_err(|e| e.to_string())?];
-
-        // Re-chain parentIds to form a linear sequence
-        let mut prev_id: Option<String> = None;
-        for entry in &branch_entries {
-            let mut linear = serde_json::to_value(entry).map_err(|e| e.to_string())?;
-            if let Some(obj) = linear.as_object_mut() {
-                if let Some(prev) = &prev_id {
-                    obj.insert(
-                        "parentId".to_string(),
-                        serde_json::Value::String(prev.clone()),
-                    );
-                } else {
-                    obj.insert("parentId".to_string(), serde_json::Value::Null);
-                }
-            }
-            lines.push(serde_json::to_string(&linear).map_err(|e| e.to_string())?);
-            prev_id = Some(entry.id().to_string());
-        }
-
-        std::fs::write(
-            &file_path,
-            lines.join(
-                "
-",
-            ) + "
-",
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(file_path)
-    }
-
-    /// Get all user messages from session for fork selector, matching TS getUserMessagesForForking().
-    pub fn get_user_messages_for_forking(&self) -> Vec<(String, String)> {
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entries = mgr.get_entries();
-        let mut result = Vec::new();
-
-        for entry in &entries {
-            if let SessionEntry::Message { message, .. } = entry {
-                if let Some(role) = message.get("role").and_then(|v| v.as_str()) {
-                    if role == "user" {
-                        // Extract text from string or content-block array
-                        // (matching TS contentText()).
-                        let text = message_content_text(message);
-                        if !text.is_empty() {
-                            result.push((entry.id().to_string(), text));
-                        }
-                    }
-                }
-            }
-        }
-
-        result
-    }
 }
 
 /// Extract plain text from a message's `content` field, which may be a

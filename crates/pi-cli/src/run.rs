@@ -461,8 +461,21 @@ async fn resolve_session_opts(
 
     let fork_from = if args.no_session {
         None
+    } else if let Some(ref f) = args.fork {
+        // `--fork` accepts a path or a session id prefix (matching TS
+        // `resolveSessionPath`).
+        if f.contains('/') || f.contains('\\') || f.ends_with(".jsonl") {
+            Some(pi_coding_agent::config::resolve_path(f))
+        } else {
+            let sessions = SessionManager::list(cwd, args.session_dir.as_deref()).await;
+            sessions
+                .iter()
+                .find(|si| si.id == *f || si.id.starts_with(f))
+                .map(|si| si.path.to_string_lossy().to_string())
+                .or_else(|| Some(f.to_string()))
+        }
     } else {
-        args.fork.clone()
+        None
     };
 
     let session_dir = if args.no_session {

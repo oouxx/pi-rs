@@ -2,6 +2,22 @@
 
 π 是一个运行在终端里的 AI 编程助手（coding agent）。它可以直接在你的项目目录里工作：读代码、改文件、跑命令，帮你完成从"解释一段代码"到"实现一个功能"的各种任务。
 
+## 安装
+
+从 GitHub Releases 自动安装（自动探测操作系统/架构）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oouxx/pi-rs/main/install.sh | bash
+```
+
+或手动安装：
+
+```bash
+./install.sh install     # 安装
+./install.sh update      # 更新到最新版
+./install.sh uninstall   # 卸载
+```
+
 ## 快速开始
 
 ```bash

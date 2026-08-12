@@ -115,7 +115,10 @@ impl BashExecutor {
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null());
 
-        if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+        // Set process group for Unix so we can kill the entire tree
+        // (matching TS `killProcessTree` which sends SIGKILL to -pid).
+        #[cfg(unix)]
+        {
             cmd.process_group(0);
         }
 

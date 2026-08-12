@@ -49,31 +49,45 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
     let session_for_signal = Arc::new(tokio::sync::Mutex::new(Some(options.session)));
     let signal_session = session_for_signal.clone();
 
-    // Set up SIGTERM handler
-    let mut term_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .ok();
-    let mut hang_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-        .ok();
+    // Set up SIGTERM/SIGHUP handlers (Unix). Windows has no Unix signals;
+    // Ctrl+C is handled by the terminal / tokio's ctrl_c below.
+    #[cfg(unix)]
+    let term_handler = {
+        let mut term_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .ok();
+        let mut hang_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .ok();
 
-    let term_handler = tokio::spawn(async move {
-        tokio::select! {
-            _ = async {
-                if let Some(ref mut sig) = term_signal {
-                    sig.recv().await;
-                }
-            } => {}
-            _ = async {
-                if let Some(ref mut sig) = hang_signal {
-                    sig.recv().await;
-                }
-            } => {}
-        }
-        if let Some(mut session) = signal_session.lock().await.take() {
-            crate::utils::shell::kill_tracked_detached_children();
-            session.dispose_inner().await;
-        }
-        std::process::exit(1);
-    });
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = async {
+                    if let Some(ref mut sig) = term_signal {
+                        sig.recv().await;
+                    }
+                } => {}
+                _ = async {
+                    if let Some(ref mut sig) = hang_signal {
+                        sig.recv().await;
+                    }
+                } => {}
+            }
+            if let Some(mut session) = signal_session.lock().await.take() {
+                crate::utils::shell::kill_tracked_detached_children();
+                session.dispose_inner().await;
+            }
+            std::process::exit(1);
+        })
+    };
+    #[cfg(not(unix))]
+    let term_handler = {
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            if let Some(mut session) = signal_session.lock().await.take() {
+                session.dispose_inner().await;
+            }
+            std::process::exit(1);
+        })
+    };
 
     let session = session_for_signal
         .lock()

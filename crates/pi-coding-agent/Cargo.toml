@@ -36,12 +36,9 @@ unicode-normalization = "0.1"
 url = "2"
 fs2 = "0.4"
 base64 = "0.22"
-# Process-group kill for the bash tool (kill the whole tree, matching TS
-# `killProcessTree` which sends SIGKILL to -pid on Unix).
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 # reqwest bumped 0.11 -> 0.12 to align with pi-ai / pi-agent-core (usage is
 # limited to Client::builder + get/send/json, which is stable across the bump).
+# rustls-tls keeps it pure-Rust so cross-compilation needs no OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # MCP (Model Context Protocol) client — lets ACP sessions call external MCP
 # servers' tools (stdio + streamable HTTP). Default-on.
@@ -51,6 +48,10 @@ rmcp = { version = "1.8", optional = true, default-features = false, features = 
   "which-command",
   "transport-streamable-http-client-reqwest",
 ] }
+# Process-group kill for the bash tool (kill the whole tree, matching TS
+# `killProcessTree` which sends SIGKILL to -pid on Unix).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 # Interactive TUI mode. The pi-tui / crossterm dependencies are currently removed

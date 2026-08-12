@@ -453,7 +453,9 @@ impl BashOperations for LocalBashOperations {
             }
 
             // Set process group for Unix so we can kill the entire tree
-            if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+            // (matching TS `killProcessTree` which sends SIGKILL to -pid).
+            #[cfg(unix)]
+            {
                 cmd.process_group(0);
             }
 
@@ -1334,7 +1336,8 @@ mod tests {
     /// the shell (matching TS `killProcessTree` which sends SIGKILL to the
     /// process group). Regression guard: `child.kill()` alone only kills the
     /// shell, leaving spawned children running as orphans.
-    #[tokio::test]
+    #[cfg(unix)]
+#[tokio::test]
     async fn abort_kills_process_tree() {
         if cfg!(target_os = "windows") {
             return; // process groups behave differently on Windows
@@ -1401,6 +1404,7 @@ mod tests {
     /// Timeout must also kill the whole process tree and surface a
     /// `timeout:N` error (matching TS `createLocalBashOperations` timeout
     /// handling).
+    #[cfg(unix)]
     #[tokio::test]
     async fn timeout_kills_process_tree() {
         if cfg!(target_os = "windows") {
@@ -1459,6 +1463,7 @@ mod tests {
     /// `waitForChildProcess` — see utils/child-process.js). This was a real
     /// hang: the old code awaited the stdout/stderr reader tasks to EOF, which
     /// never happens while a descendant holds the pipe open.
+    #[cfg(unix)]
     #[tokio::test]
     async fn detached_descendant_holding_pipe_does_not_hang() {
         if cfg!(target_os = "windows") {

@@ -341,30 +341,42 @@ pub async fn run_rpc_mode(
     // ── Signal handling ────────────────────────────────────────────────
     // Track which signal was received for correct exit code (matching TS:
     // SIGHUP → 129, SIGTERM → 143). Use an atomic to communicate to main loop.
+    // Unix signals only; Windows falls back to Ctrl+C (SIGTERM-equivalent).
     let signal_received = Arc::new(AtomicU8::new(0));
     let sig_recv = signal_received.clone();
 
-    let mut term_signal = tokio::signal::unix::signal(
-        tokio::signal::unix::SignalKind::terminate(),
-    )
-    .ok();
-    let mut hang_signal = tokio::signal::unix::signal(
-        tokio::signal::unix::SignalKind::hangup(),
-    )
-    .ok();
+    #[cfg(unix)]
+    {
+        let mut term_signal = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .ok();
+        let mut hang_signal = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::hangup(),
+        )
+        .ok();
 
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = async {
-                if let Some(ref mut sig) = term_signal { sig.recv().await; }
-                sig_recv.store(1, Ordering::SeqCst); // SIGTERM
-            } => {}
-            _ = async {
-                if let Some(ref mut sig) = hang_signal { sig.recv().await; }
-                sig_recv.store(2, Ordering::SeqCst); // SIGHUP
-            } => {}
-        }
-    });
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = async {
+                    if let Some(ref mut sig) = term_signal { sig.recv().await; }
+                    sig_recv.store(1, Ordering::SeqCst); // SIGTERM
+                } => {}
+                _ = async {
+                    if let Some(ref mut sig) = hang_signal { sig.recv().await; }
+                    sig_recv.store(2, Ordering::SeqCst); // SIGHUP
+                } => {}
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let sig_recv = sig_recv.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            sig_recv.store(1, Ordering::SeqCst); // treat Ctrl+C as SIGTERM
+        });
+    }
 
     // ── Event streaming setup ──────────────────────────────────────────
     let mut handler_state =

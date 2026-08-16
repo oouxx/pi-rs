@@ -4156,7 +4156,7 @@ References are relative to {}.
 
     /// Navigate the session tree, matching the original navigateTree().
     /// `direction` can be "up", "down", "root", or an entry ID.
-    pub async fn navigate_tree(&mut self, direction: &str) -> bool {
+    pub async fn navigate_tree(&self, direction: &str) -> bool {
         // Dispatch session_before_tree event to extensions
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_tree(
@@ -5209,7 +5209,7 @@ impl AgentSession {
     /// of AgentSessionRuntime::teardown_current(). Callers that use AgentSession
     /// directly (without AgentSessionRuntime) must dispatch session_shutdown
     /// themselves before calling this method.
-    pub async fn dispose_inner(&mut self) {
+    pub async fn dispose_inner(&self) {
         // Abort all in-flight operations
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.abort_retry();
@@ -5260,7 +5260,7 @@ impl AgentSession {
     /// Switch to a different session file (session manager level), matching
     /// the original simplified switch_session(). For full lifecycle management
     /// with extension events and factory-based creation, use AgentSessionRuntime::switch_session().
-    pub async fn session_mgr_switch(&mut self, session_path: &str, cwd_override: Option<&str>) -> Result<(), String> {
+    pub async fn session_mgr_switch(&self, session_path: &str, cwd_override: Option<&str>) -> Result<(), String> {
         use crate::core::session_manager::SessionManager as SM;
         let path = std::path::Path::new(session_path);
         if !path.exists() {
@@ -5286,7 +5286,7 @@ impl AgentSession {
     /// Fork the session at a specific entry (session manager level), matching
     /// the original simplified fork_session(). For full lifecycle management
     /// with extension events and factory-based creation, use AgentSessionRuntime::fork().
-    pub async fn session_mgr_fork(&mut self, entry_id: &str) -> Result<String, String> {
+    pub async fn session_mgr_fork(&self, entry_id: &str) -> Result<String, String> {
         let branch_path = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .create_branched_session(entry_id, None)?;
         self.session_mgr_switch(&branch_path, None).await?;

@@ -104,7 +104,7 @@ pub type CreateAgentSessionRuntimeFactory = Arc<
 /// - `dispose()` — clean up the current session
 #[allow(clippy::type_complexity)]
 pub struct AgentSessionRuntime {
-    session: AgentSession,
+    session: Arc<AgentSession>,
     services: AgentSessionServices,
     create_runtime: CreateAgentSessionRuntimeFactory,
     diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
@@ -131,7 +131,7 @@ impl AgentSessionRuntime {
         model_fallback_message: Option<String>,
     ) -> Self {
         Self {
-            session,
+            session: Arc::new(session),
             services,
             create_runtime,
             diagnostics,
@@ -155,9 +155,11 @@ impl AgentSessionRuntime {
         &self.session
     }
 
-    /// Returns a mutable reference to the current AgentSession.
-    pub fn session_mut(&mut self) -> &mut AgentSession {
-        &mut self.session
+    /// Returns a shared handle to the current AgentSession. Actors share this
+    /// with in-flight prompt turns so commands stay responsive during a turn
+    /// (matching pi-acp's SessionTask, which holds `Arc<AgentSession>`).
+    pub fn session_arc(&self) -> Arc<AgentSession> {
+        Arc::clone(&self.session)
     }
 
     /// Returns the effective working directory of the current session.
@@ -285,7 +287,7 @@ impl AgentSessionRuntime {
 
     /// Apply a new runtime result, replacing the current session and services.
     fn apply(&mut self, result: CreateAgentSessionRuntimeResult) {
-        self.session = result.session;
+        self.session = Arc::new(result.session);
         self.services = result.services;
         self.diagnostics = result.diagnostics;
         self.model_fallback_message = result.model_fallback_message;

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::core::agent_session::AgentSession;
-use crate::core::auth_storage::AuthStorage;
+use crate::core::auth_storage::{AuthCredential, AuthStorage};
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::resource_loader::{self, LoadedResources, ResourceLoaderOptions};
@@ -135,9 +135,23 @@ pub async fn create_agent_session_services(
         settings_manager.get_global_settings().http_proxy.as_deref(),
     );
 
-    let model_registry = options
+    let mut model_registry = options
         .model_registry
         .unwrap_or_else(|| ModelRegistry::new(vec![]));
+    // Wire a credential resolver into the registry so API-key resolution
+    // (get_api_key_for_provider / get_api_key_and_headers / has_configured_auth)
+    // can consult auth.json — matching TS `getAuth`. The resolver reads the
+    // file fresh on each lookup so keys set after session creation are seen.
+    {
+        let auth_path = Path::new(&agent_dir).join("auth.json");
+        model_registry.set_api_key_resolver(std::sync::Arc::new(move |provider| {
+            let storage = AuthStorage::create(auth_path.clone());
+            storage.get(provider).and_then(|c| match c {
+                AuthCredential::ApiKey { key, .. } => key.clone(),
+                _ => None,
+            })
+        }));
+    }
 
     let resource_opts = options
         .resource_loader_options

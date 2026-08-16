@@ -15,6 +15,9 @@ pub struct ModelRegistry {
     models_json_providers: RwLock<HashMap<String, ProviderConfig>>,
     /// Path of the models.json file, kept for hot reload (match TS #6999).
     models_path: Option<std::path::PathBuf>,
+    /// Credential resolver consulted for API-key resolution, matching TS
+    /// `getAuth` (auth.json is the canonical place GUI-set keys live).
+    api_key_resolver: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
 }
 
 impl Clone for ModelRegistry {
@@ -24,6 +27,7 @@ impl Clone for ModelRegistry {
             registered_providers: Arc::clone(&self.registered_providers),
             models_json_providers: RwLock::new(self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
             models_path: self.models_path.clone(),
+            api_key_resolver: self.api_key_resolver.clone(),
         }
     }
 }
@@ -66,7 +70,22 @@ impl ModelRegistry {
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
             models_json_providers: RwLock::new(models_json_providers),
             models_path: Some(models_path),
+            api_key_resolver: None,
         }
+    }
+
+    /// Attach a credential resolver (auth.json) so API-key resolution can
+    /// consult keys set via the GUI / `/login` (match TS `getAuth`).
+    pub fn set_api_key_resolver(
+        &mut self,
+        resolver: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    ) {
+        self.api_key_resolver = Some(resolver);
+    }
+
+    /// Resolve a stored API key from the attached credential resolver, if any.
+    fn resolved_stored_key(&self, provider: &str) -> Option<String> {
+        self.api_key_resolver.as_ref().and_then(|r| r(provider))
     }
 
     /// Create a new ModelRegistry with models from a specific models.json path.
@@ -80,6 +99,7 @@ impl ModelRegistry {
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
             models_json_providers: RwLock::new(models_json_providers),
             models_path: Some(models_path.to_path_buf()),
+            api_key_resolver: None,
         }
     }
 
@@ -184,6 +204,10 @@ impl ModelRegistry {
         if get_env_api_key(&model.provider).is_some() {
             return true;
         }
+        // Stored credentials (auth.json) count as configured auth.
+        if self.resolved_stored_key(&model.provider).is_some() {
+            return true;
+        }
         // Check registered providers (from register_provider calls)
         let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(&model.provider) {
@@ -221,11 +245,15 @@ impl ModelRegistry {
         false
     }
 
-    /// Get API key for a provider, checking env vars, registered providers,
-    /// and models.json provider configs in order.
+    /// Get API key for a provider, checking env vars, stored credentials
+    /// (auth.json), registered providers, and models.json provider configs in order.
     pub fn get_api_key_for_provider(&self, provider: &str) -> Option<String> {
         // Check env first
         if let Some(key) = get_env_api_key(provider) {
+            return Some(key);
+        }
+        // Check stored credentials (auth.json) — keys set via the GUI / /login.
+        if let Some(key) = self.resolved_stored_key(provider) {
             return Some(key);
         }
         // Check registered providers (from register_provider calls)
@@ -260,6 +288,10 @@ impl ModelRegistry {
 
     pub async fn get_api_key_and_headers(&self, model: &Model) -> Result<ApiKeyResult, String> {
         let mut api_key = get_env_api_key(&model.provider);
+        // Stored credentials (auth.json) — keys set via the GUI / /login.
+        if api_key.is_none() {
+            api_key = self.resolved_stored_key(&model.provider);
+        }
         let mut headers: HashMap<String, String> = HashMap::new();
         // Whether the provider requires an Authorization header (models.json
         // `authHeader`, matching TS `resolveCompatibilityRequestConfig`).
@@ -708,7 +740,7 @@ fn get_pi_ai_models() -> Vec<Model> {
 
 pub fn builtin_models() -> Vec<Model> {
     vec![Model {
-        provider: "openrouter".into(),
+        provider: "test-provider-xyz".into(),
         api: "openai-completions".into(),
         id: "free".into(),
         context_window: 128000,
@@ -914,5 +946,62 @@ mod tests {
         assert_eq!(model.base_url, "http://custom-proxy/v1");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_api_key_resolver_consulted_for_auth_and_key() {
+        use std::sync::Arc;
+
+        let mut registry = ModelRegistry::new(vec![]);
+        // No env key, no models.json entry → no auth by default.
+        assert!(!registry.has_configured_auth(&Model {
+            id: "m".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            provider: "test-provider-xyz".into(),
+            base_url: String::new(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                tiers: vec![],
+            },
+            context_window: 0,
+            max_tokens: 0,
+            headers: None,
+            compat: None,
+        }));
+
+        // Attach a resolver returning a stored key → auth + key resolution work.
+        registry.set_api_key_resolver(Arc::new(|provider| {
+            (provider == "test-provider-xyz").then(|| "sk-stored-123".to_string())
+        }));
+        assert!(registry.has_configured_auth(&Model {
+            id: "m".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            provider: "test-provider-xyz".into(),
+            base_url: String::new(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: pi_agent_core::pi_ai_types::ModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                tiers: vec![],
+            },
+            context_window: 0,
+            max_tokens: 0,
+            headers: None,
+            compat: None,
+        }));
+        assert_eq!(registry.get_api_key_for_provider("test-provider-xyz"), Some("sk-stored-123".to_string()));
+        assert_eq!(registry.get_api_key_for_provider("anthropic"), None);
     }
 }

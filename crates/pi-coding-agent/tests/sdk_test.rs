@@ -11,16 +11,21 @@ use pi_agent_core::pi_ai_types::{
 use pi_agent_core::types::{AgentMessage, StreamFn};
 
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
+use pi_coding_agent::core::model_registry::{ModelRegistry, ProviderConfig};
 
 use pi_extension_api::{create_builtin_source_info, ExtensionRegistry};
 
-/// Create an `ExtensionRegistry` with the goal extension (exercises the
-/// extension-tool path alongside the built-in tools).
+/// Create an `ExtensionRegistry` with the goal + web_search extensions
+/// (exercises the extension-tool path alongside the built-in tools).
 pub fn create_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
     registry.register(
         Box::new(pi_extensions::goal::GoalExtension::new()),
         create_builtin_source_info("goal"),
+    );
+    registry.register(
+        Box::new(pi_extensions::web_search::WebSearchExtension::new()),
+        create_builtin_source_info("web_search"),
     );
     registry
 }
@@ -1442,12 +1447,31 @@ async fn test_state_mutations_persist_to_agent() {
 /// of silently returning (TS `prompt()` throws `formatNoApiKeyFoundMessage`).
 /// Without this, ACP/RPC clients only see the misleading "agent run failed to
 /// start or completed without AgentEnd" and never learn the real cause.
+///
+/// TS-aligned auth semantics (`model-registry.ts` `getApiKeyAndHeaders`): an
+/// unknown provider passes the check (local-endpoint assumption); only a
+/// provider declaring `authHeader: true` without a key fails. We register the
+/// fake provider with `authHeader: true` and no key to exercise the error path.
 #[tokio::test]
 async fn test_prompt_returns_error_when_no_api_key() {
-    // A model whose provider has no API key in env / auth / models.json.
+    // A model whose provider requires an Authorization header but has no key
+    // in env / auth.json / models.json / registered providers.
     let mut model = make_model();
     model.provider = "zzz-no-api-key-provider".to_string();
     model.id = "zzz-no-api-key-model".to_string();
+
+    let registry = ModelRegistry::new(vec![]);
+    registry.register_provider(
+        "zzz-no-api-key-provider",
+        ProviderConfig {
+            name: None,
+            base_url: None,
+            api_key: None,
+            api: None,
+            headers: None,
+            auth_header: Some(true),
+        },
+    );
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
@@ -1476,7 +1500,7 @@ async fn test_prompt_returns_error_when_no_api_key() {
         fork_from: None,
         session_dir: Some(tmp.path().to_string_lossy().to_string()),
         auth_storage: None,
-        model_registry: None,
+        model_registry: Some(registry),
         resource_loader: None,
         session_manager: None,
         settings_manager: None,

@@ -9,7 +9,7 @@ use colored::*;
 use crate::args::{print_help, CliArgs, OutputMode};
 use crate::file_processor::process_file_arguments;
 use crate::initial_message::{build_initial_message, InitialMessageInput};
-use pi_coding_agent::core::extensions::{create_builtin_source_info, ExtensionRegistry};
+
 use pi_coding_agent::core::model_registry::{ModelRegistry, ProviderConfig};
 use pi_coding_agent::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
@@ -168,13 +168,14 @@ pub async fn run(args: &CliArgs) -> i32 {
         return pi_coding_agent::modes::rpc::run_rpc_mode(
             args.extensions.clone(),
             args.unknown_flags.clone(),
+            !args.no_extensions,
         )
         .await;
     }
 
     // ACP mode: speak the Agent Client Protocol over stdio (Zed, JetBrains, …)
     if app_mode == AppMode::Acp {
-        return pi_coding_agent::modes::acp::run_acp_mode().await;
+        return pi_coding_agent::modes::acp::run_acp_mode(!args.no_extensions).await;
     }
 
     // Read piped stdin (matching TS `readPipedStdin`; skipped for rpc/acp).
@@ -273,18 +274,9 @@ pub async fn run(args: &CliArgs) -> i32 {
         extension_paths: args.extensions.clone(),
         extension_flags: Some(args.unknown_flags.clone()),
         enable_extensions: !args.no_extensions,
-        extension_registry: {
-            let mut reg = ExtensionRegistry::new();
-            reg.register(
-                Box::new(pi_extensions::goal::GoalExtension::new()),
-                create_builtin_source_info("goal"),
-            );
-            reg.register(
-                Box::new(pi_extensions::subagent::SubagentExtension::new()),
-                create_builtin_source_info("subagent"),
-            );
-            Some(reg)
-        },
+        extension_registry: pi_coding_agent::core::extensions::builtin_extension_registry(
+            !args.no_extensions,
+        ),
         persist_session,
         session_file,
         fork_from,
@@ -382,18 +374,9 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         extension_paths: args.extensions.clone(),
         extension_flags: Some(args.unknown_flags.clone()),
         enable_extensions: !args.no_extensions,
-        extension_registry: {
-            let mut reg = ExtensionRegistry::new();
-            reg.register(
-                Box::new(pi_extensions::goal::GoalExtension::new()),
-                create_builtin_source_info("goal"),
-            );
-            reg.register(
-                Box::new(pi_extensions::subagent::SubagentExtension::new()),
-                create_builtin_source_info("subagent"),
-            );
-            Some(reg)
-        },
+        extension_registry: pi_coding_agent::core::extensions::builtin_extension_registry(
+            !args.no_extensions,
+        ),
         persist_session,
         session_file,
         fork_from,

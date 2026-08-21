@@ -240,6 +240,7 @@ fn create_rpc_ui_context(
 pub async fn run_rpc_mode(
     extension_paths: Vec<String>,
     extension_flags: std::collections::HashMap<String, String>,
+    enable_extensions: bool,
 ) -> i32 {
     // ── Single output channel for all stdout writes ────────────────────
     // Both event streaming and synchronous responses go through this channel,
@@ -294,7 +295,9 @@ pub async fn run_rpc_mode(
         session_file: None,
         fork_from: None,
         session_dir: None,
-        extension_registry: None,
+        extension_registry: crate::core::extensions::builtin_extension_registry(
+            enable_extensions,
+        ),
         cli_provider: None,
         cli_model: None,
         auth_storage: None,

@@ -37,3 +37,75 @@ pub async fn load_extension_now(
     Err("JS extension loading requires a JS extension runtime (see feat/bun-extension-compat branch)"
         .to_string())
 }
+
+/// 构造内置 Rust 扩展 registry（goal + subagent + web_search）。
+///
+/// 对应原版 `--no-extensions` 语义（resource-loader.ts：`noExtensions` 时
+/// 只保留 CLI 显式路径，砍掉所有"发现的扩展"）：pi-rs 没有 JS 扩展运行时
+/// 和安装/目录发现机制，"发现到的扩展"就是这三个内置注册的 Rust 扩展，
+/// 因此 `enable=false` 时返回 `None`（无任何扩展工具进入 agent 工具列表）。
+///
+/// 所有 CLI 模式（print / interactive / acp / rpc）统一走此入口，不再各自
+/// 手写注册块。
+pub fn builtin_extension_registry(enable: bool) -> Option<ExtensionRegistry> {
+    if !enable {
+        return None;
+    }
+    let mut reg = ExtensionRegistry::new();
+    reg.register(
+        Box::new(pi_extensions::goal::GoalExtension::new()),
+        create_builtin_source_info("goal"),
+    );
+    reg.register(
+        Box::new(pi_extensions::subagent::SubagentExtension::new()),
+        create_builtin_source_info("subagent"),
+    );
+    reg.register(
+        Box::new(pi_extensions::web_search::WebSearchExtension::new()),
+        create_builtin_source_info("web_search"),
+    );
+    Some(reg)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// `--no-extensions` 语义：禁用扩展发现 → registry 为 None。
+    #[test]
+    fn test_builtin_extension_registry_disabled() {
+        assert!(builtin_extension_registry(false).is_none());
+    }
+
+    /// 默认注册全部三个内置 Rust 扩展（goal / subagent / web_search）。
+    #[test]
+    fn test_builtin_extension_registry_enabled() {
+        let reg = builtin_extension_registry(true).expect("registry");
+        let tools: Vec<&str> = reg
+            .tools()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        for name in [
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            "subagent",
+            "web_search",
+            "web_fetch",
+        ] {
+            assert!(tools.contains(&name), "missing tool {name}: {tools:?}");
+        }
+        // 来源标注正确（create_builtin_source_info -> `<builtin:{name}>`）
+        for t in reg.tools() {
+            let expected = match t.name.as_str() {
+                "get_goal" | "create_goal" | "update_goal" => "<builtin:goal>",
+                "subagent" => "<builtin:subagent>",
+                "web_search" | "web_fetch" => "<builtin:web_search>",
+                other => panic!("unexpected tool {other}"),
+            };
+            assert_eq!(t.source_info.path, expected);
+        }
+    }
+}

@@ -25,6 +25,9 @@ pub struct PiAcpAgent {
     /// (matching pi-acp's `lastSessionCwd` — Zed sends `{}` and expects the
     /// project-scoped list).
     last_session_cwd: std::sync::Mutex<Option<String>>,
+    /// 是否注册内置 Rust 扩展（goal/subagent/web_search），对应 CLI
+    /// `--no-extensions` 语义。默认 false（测试与无扩展场景）。
+    enable_extensions: bool,
 }
 
 impl PiAcpAgent {
@@ -49,7 +52,15 @@ impl PiAcpAgent {
             notif_tx,
             spawn,
             last_session_cwd: std::sync::Mutex::new(None),
+            enable_extensions: false,
         }
+    }
+
+    /// 启用/禁用内置 Rust 扩展注册（对应 CLI `--no-extensions`）。
+    #[must_use]
+    pub fn with_extensions(mut self, enable: bool) -> Self {
+        self.enable_extensions = enable;
+        self
     }
 
     async fn handle(&self, session_id: &acp::SessionId) -> Result<SessionHandle, acp::Error> {
@@ -123,9 +134,15 @@ impl acp::Agent for PiAcpAgent {
             Some(cwd.clone());
         let session_id = {
             let mut reg = self.registry.lock().await;
-            reg.create(&cwd, &args.mcp_servers, self.notif_tx.clone(), &self.spawn)
-                .await
-                .map_err(internal_err)?
+            reg.create(
+                &cwd,
+                &args.mcp_servers,
+                self.notif_tx.clone(),
+                &self.spawn,
+                self.enable_extensions,
+            )
+            .await
+            .map_err(internal_err)?
         };
 
         // Startup info block (pi version + context), emitted as the first

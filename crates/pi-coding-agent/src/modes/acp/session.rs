@@ -143,6 +143,9 @@ pub struct SessionRegistry {
     base_dir: PathBuf,
     map_path: PathBuf,
     persisted: HashMap<acp::SessionId, PersistedSession>,
+    /// 是否注册内置 Rust 扩展（goal/subagent/web_search），对应 CLI
+    /// `--no-extensions` 语义。默认 false（测试与无扩展场景）。
+    enable_extensions: bool,
 }
 
 impl Default for SessionRegistry {
@@ -168,6 +171,7 @@ impl SessionRegistry {
             base_dir,
             map_path,
             persisted,
+            enable_extensions: false,
         }
     }
 
@@ -179,6 +183,7 @@ impl SessionRegistry {
         mcp_servers: &[acp::McpServer],
         notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
+        enable_extensions: bool,
     ) -> Result<acp::SessionId, String> {
         let session_id = acp::SessionId::new(Uuid::new_v4().to_string());
         // Persist each ACP session as its own JSONL file under the ACP dir.
@@ -194,7 +199,13 @@ impl SessionRegistry {
         let _ = std::fs::File::create(&session_file);
 
         let (session, mcp_connections) = self
-            .build_session(cwd, Some(&session_file_str), &session_dir_str, mcp_servers)
+            .build_session(
+                cwd,
+                Some(&session_file_str),
+                &session_dir_str,
+                mcp_servers,
+                enable_extensions,
+            )
             .await?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -274,7 +285,13 @@ impl SessionRegistry {
         // `opts?.cwd ?? stored.cwd`).
         let cwd = cwd_override.unwrap_or(&persisted.cwd).to_string();
         let (session, mcp_connections) = self
-            .build_session(&cwd, Some(&persisted.session_file), &session_dir, mcp_servers)
+            .build_session(
+                &cwd,
+                Some(&persisted.session_file),
+                &session_dir,
+                mcp_servers,
+                self.enable_extensions,
+            )
             .await?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -315,6 +332,7 @@ impl SessionRegistry {
         session_file: Option<&str>,
         session_dir: &str,
         mcp_servers: &[acp::McpServer],
+        enable_extensions: bool,
     ) -> Result<(AgentSession, Vec<McpConnection>), String> {
         let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
         let custom_tools = if mcp_tools.is_empty() {
@@ -349,7 +367,9 @@ impl SessionRegistry {
                 session_file: session_file_owned.clone(),
                 fork_from: None,
                 session_dir: Some(session_dir_owned.clone()),
-                extension_registry: None,
+                extension_registry: crate::core::extensions::builtin_extension_registry(
+                    enable_extensions,
+                ),
                 cli_provider: None,
                 cli_model: None,
                 auth_storage: None,
@@ -1525,7 +1545,7 @@ mod tests {
         let sid;
         {
             let mut reg = SessionRegistry::with_base_dir(base_path.clone());
-            sid = reg.create("/tmp", &[], notif_tx(), &spawn).await.expect("create");
+            sid = reg.create("/tmp", &[], notif_tx(), &spawn, false).await.expect("create");
             let acp_dir = base_path.join("acp");
             assert!(
                 acp_dir.join(format!("{}.jsonl", sid.0)).exists(),
@@ -1576,7 +1596,7 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         let spawn = noop_spawn();
         let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
-        let sid = reg.create("/tmp", &[], notif_tx(), &spawn).await.expect("create");
+        let sid = reg.create("/tmp", &[], notif_tx(), &spawn, false).await.expect("create");
         let session_file = base.path().join("acp").join(format!("{}.jsonl", sid.0));
         assert!(session_file.exists(), "session file must exist");
 
@@ -2219,5 +2239,38 @@ mod tests {
                 assert_eq!(term_exit["exit_code"], 0);
             })
             .await;
+    }
+
+    /// `--no-extensions` 语义在 ACP 会话上的体现：`build_session` 的
+    /// `enable_extensions` 决定是否注册内置 Rust 扩展工具
+    /// （goal/subagent/web_search）。
+    #[tokio::test]
+    async fn test_build_session_extension_tools() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let reg = SessionRegistry::with_base_dir(tmp.path().to_path_buf());
+
+        // 启用：工具列表含全部内置扩展工具。
+        let (session, _conns) = reg
+            .build_session("/tmp", None, "/tmp", &[], true)
+            .await
+            .expect("build with extensions");
+        let state = session.get_agent().state().await;
+        let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
+        for tool in ["web_search", "web_fetch", "subagent", "get_goal", "create_goal", "update_goal"] {
+            assert!(names.contains(&tool.to_string()), "missing {tool}: {names:?}");
+        }
+
+        // 禁用（--no-extensions）：无任何扩展工具。
+        let (session, _conns) = reg
+            .build_session("/tmp", None, "/tmp", &[], false)
+            .await
+            .expect("build without extensions");
+        let state = session.get_agent().state().await;
+        let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
+        for tool in ["web_search", "web_fetch", "subagent", "get_goal"] {
+            assert!(!names.contains(&tool.to_string()), "unexpected {tool}: {names:?}");
+        }
+        // 内置基础工具不受影响。
+        assert!(names.contains(&"bash".to_string()));
     }
 }

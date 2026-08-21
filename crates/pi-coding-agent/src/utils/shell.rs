@@ -67,7 +67,8 @@ pub fn tracked_pids_snapshot() -> Vec<u32> {
 /// a test calling `kill_tracked_detached_children()` would kill pids tracked
 /// by other concurrently running tests (and `exec_tracks_and_untracks_pid`
 /// would observe foreign pids).
-pub static TEST_TRACK_LOCK: Mutex<()> = Mutex::new(());
+pub static TEST_TRACK_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Kill a process and its entire tree, matching TS `killProcessTree`
 /// (`utils/shell.ts`): on Unix send SIGKILL to the process group (`-pid`)
@@ -218,14 +219,12 @@ mod tests {
     /// kill_tracked_detached_children must kill every tracked pid and clear
     /// the set (matching TS killTrackedDetachedChildren). Serialized against
     /// other tests sharing the global TRACKED_PIDS set.
-    #[test]
-    fn kill_tracked_children_kills_tracked_pids() {
+    #[tokio::test]
+    async fn kill_tracked_children_kills_tracked_pids() {
         if cfg!(target_os = "windows") {
             return;
         }
-        let _guard = TEST_TRACK_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = TEST_TRACK_LOCK.lock().await;
         let mut child = std::process::Command::new("sleep")
             .arg("61.5")
             .spawn()

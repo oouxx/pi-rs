@@ -1325,9 +1325,7 @@ mod tests {
         }
         let ops = LocalBashOperations;
         // Serialize against other tests sharing the global TRACKED_PIDS set.
-        let _guard = crate::utils::shell::TEST_TRACK_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::utils::shell::TEST_TRACK_LOCK.lock().await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
 
@@ -1393,9 +1391,7 @@ mod tests {
         }
         let ops = LocalBashOperations;
         // Serialize against other tests sharing the global TRACKED_PIDS set.
-        let _guard = crate::utils::shell::TEST_TRACK_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::utils::shell::TEST_TRACK_LOCK.lock().await;
 
         let pid_file = std::env::temp_dir().join(format!(
             "pi-bash-timeout-test-{}.pid",
@@ -1452,9 +1448,7 @@ mod tests {
         }
         let ops = LocalBashOperations;
         // Serialize against other tests sharing the global TRACKED_PIDS set.
-        let _guard = crate::utils::shell::TEST_TRACK_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::utils::shell::TEST_TRACK_LOCK.lock().await;
 
         let pid_file = std::env::temp_dir().join(format!(
             "pi-bash-pipe-test-{}.pid",
@@ -1513,9 +1507,7 @@ mod tests {
     async fn exec_tracks_and_untracks_pid() {
         let ops = LocalBashOperations;
         // Serialize against other tests sharing the global TRACKED_PIDS set.
-        let _guard = crate::utils::shell::TEST_TRACK_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::utils::shell::TEST_TRACK_LOCK.lock().await;
 
         // Do NOT call kill_tracked_detached_children() here: that would kill
         // pids tracked by other concurrently running tests. Instead assert on

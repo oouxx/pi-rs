@@ -175,13 +175,13 @@ async fn test_runtime_services_accessor() {
 }
 
 #[tokio::test]
-async fn test_runtime_session_mut() {
-    let (mut runtime, _dir) = create_test_runtime().await;
+async fn test_runtime_session_arc() {
+    let (runtime, _dir) = create_test_runtime().await;
 
-    // session_mut should give mutable access to the session
+    // session_arc should give a shared handle to the same session
     let session_id = runtime.session().get_session_id();
-    let session_mut_id = runtime.session_mut().get_session_id();
-    assert_eq!(session_id, session_mut_id);
+    let session_arc_id = runtime.session_arc().get_session_id();
+    assert_eq!(session_id, session_arc_id);
 }
 
 #[tokio::test]
@@ -364,7 +364,7 @@ async fn test_runtime_fork() {
 
     // Add a message so we have something to fork from
     {
-        let session = runtime.session_mut();
+        let session = runtime.session_arc();
         let mut mgr = session.get_session_manager();
         mgr.append_message(serde_json::json!({
             "role": "user",

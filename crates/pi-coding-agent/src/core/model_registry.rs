@@ -8,6 +8,9 @@ use pi_agent_core::pi_ai_types::get_env_api_key;
 
 use serde::Deserialize;
 
+/// Resolver consulted for API-key resolution (auth.json), matching TS `getAuth`.
+type ApiKeyResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 pub struct ModelRegistry {
     models: RwLock<Vec<Model>>,
     registered_providers: Arc<RwLock<HashMap<String, ProviderConfig>>>,
@@ -17,7 +20,7 @@ pub struct ModelRegistry {
     models_path: Option<std::path::PathBuf>,
     /// Credential resolver consulted for API-key resolution, matching TS
     /// `getAuth` (auth.json is the canonical place GUI-set keys live).
-    api_key_resolver: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    api_key_resolver: Option<ApiKeyResolver>,
 }
 
 impl Clone for ModelRegistry {
@@ -76,10 +79,7 @@ impl ModelRegistry {
 
     /// Attach a credential resolver (auth.json) so API-key resolution can
     /// consult keys set via the GUI / `/login` (match TS `getAuth`).
-    pub fn set_api_key_resolver(
-        &mut self,
-        resolver: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
-    ) {
+    pub fn set_api_key_resolver(&mut self, resolver: ApiKeyResolver) {
         self.api_key_resolver = Some(resolver);
     }
 

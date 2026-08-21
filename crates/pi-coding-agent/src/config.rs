@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(APP_NAME, "pi");
+        assert_eq!(APP_NAME, "pi-rs");
         assert_eq!(CONFIG_DIR_NAME, ".pi-rs");
         assert_eq!(CURRENT_SESSION_VERSION, 3);
     }

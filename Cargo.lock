@@ -1395,7 +1395,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pi-agent-core"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1417,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "pi-cli"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "base64",
  "colored",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -1481,7 +1481,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extension-api"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "async-trait",
  "futures",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extensions"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3147,7 +3147,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "1.82.10"
+version = "1.82.11"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",

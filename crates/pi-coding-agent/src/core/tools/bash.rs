@@ -678,6 +678,12 @@ pub struct BashToolOptions {
     /// (matching TS `createBashToolDefinition` `exposeSessionEnvironment`,
     /// default `true`).
     pub expose_session_environment: bool,
+    /// Timeout in seconds applied when the model does not pass an explicit
+    /// `timeout` argument. `None` keeps the TS-original behavior (no default
+    /// timeout). ACP mode sets this so a hung command (e.g. a stalled
+    /// `git clone`) is killed and the turn settles instead of blocking the
+    /// session forever.
+    pub default_timeout: Option<f64>,
 }
 
 impl fmt::Debug for BashToolOptions {
@@ -704,6 +710,7 @@ impl Default for BashToolOptions {
             spawn_hook: None,
             session_env_provider: None,
             expose_session_environment: true,
+            default_timeout: None,
         }
     }
 }
@@ -855,7 +862,13 @@ pub fn create_bash_tool(
                         .unwrap_or("")
                         .to_string();
 
-                    let timeout = params.get("timeout").and_then(|v| v.as_f64());
+                    // Model-provided timeout wins; otherwise fall back to the
+                    // configured default (ACP mode injects one so hung
+                    // commands cannot block the session forever).
+                    let timeout = params
+                        .get("timeout")
+                        .and_then(|v| v.as_f64())
+                        .or(opts.default_timeout);
 
                     let resolved_command = if let Some(ref prefix) = command_prefix {
                         format!("{}\n{}", prefix, command)

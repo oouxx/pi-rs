@@ -84,6 +84,8 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub exclude_tools: Option<Vec<String>>,
     /// Custom tools to register (in addition to built-in tools).
     pub custom_tools: Option<Vec<ToolDefinition>>,
+    /// Per-tool options (e.g. bash default timeout). `None` = defaults.
+    pub tools_options: Option<crate::core::tools::ToolsOptions>,
     /// Pre-configured extension registry. When set, extensions are injected
     /// by the caller instead of being auto-discovered from disk.
     pub extension_registry: Option<ExtensionRegistry>,
@@ -271,6 +273,7 @@ pub async fn create_agent_session_from_services(
         session_start_event: options.session_start_event,
         ui_context: options.ui_context,
         custom_tools: options.custom_tools,
+        tools_options: options.tools_options,
         extension_flags: None,
     };
 

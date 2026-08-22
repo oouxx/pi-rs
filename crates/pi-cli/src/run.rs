@@ -313,6 +313,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         session_start_event: None,
         ui_context: None,
         custom_tools: None,
+        tools_options: None,
     };
 
     let (session, result) = match create_agent_session(sdk_options).await {
@@ -391,6 +392,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         cli_provider: args.provider.clone(),
         cli_model: args.model.clone(),
         custom_tools: None,
+        tools_options: None,
         auth_storage: None,
         model_registry: Some(model_registry),
         resource_loader: None,

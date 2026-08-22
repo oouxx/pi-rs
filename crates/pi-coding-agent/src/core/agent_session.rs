@@ -149,6 +149,8 @@ pub struct AgentSessionConfig {
     /// Call `agent.add_tools()` after session creation to replace stubs
     /// with real execute implementations.
     pub custom_tools: Option<Vec<ToolDefinition>>,
+    /// Per-tool options (e.g. bash default timeout). `None` = defaults.
+    pub tools_options: Option<tools::ToolsOptions>,
     /// Shared state snapshot for JS extension read-actions (getActiveTools,
     /// getSessionName, ...). Refreshed at drain points.
     pub extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
@@ -566,7 +568,7 @@ impl AgentSession {
         let shared_ext_ctx = Arc::new(ext_ctx);
 
         // ── Build tool list ──
-        let tools_options = tools::ToolsOptions::default();
+        let tools_options = options.tools_options.clone().unwrap_or_default();
         let mut tool_list: Vec<pi_agent_core::types::DynTool> = Vec::new();
 
         // 1. Built-in tools (read, bash, edit, write)

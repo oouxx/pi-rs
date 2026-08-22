@@ -54,6 +54,11 @@ pub struct EventTranslator {
     /// as a second `tool_call` when execution starts (matching pi-acp's
     /// `currentToolCalls` map).
     tool_statuses: HashMap<String, acp::ToolCallStatus>,
+    /// Epoch-ms start time per in-flight tool call id, recorded at
+    /// `tool_execution_start` and used by the heartbeat to report
+    /// `elapsed_ms` while a tool runs (clients have no other way to see
+    /// progress for a silent, long-running command).
+    tool_started_at: HashMap<String, u64>,
 }
 
 impl EventTranslator {
@@ -63,6 +68,7 @@ impl EventTranslator {
             file_snapshots: HashMap::new(),
             bash_outputs: HashMap::new(),
             tool_statuses: HashMap::new(),
+            tool_started_at: HashMap::new(),
         }
     }
 
@@ -214,6 +220,12 @@ impl EventTranslator {
                 let already_surfaced = self.tool_statuses.contains_key(tool_call_id);
                 self.tool_statuses
                     .insert(tool_call_id.clone(), acp::ToolCallStatus::InProgress);
+                // Record the execution start so the heartbeat can report
+                // elapsed time while the tool runs.
+                self.tool_started_at.insert(
+                    tool_call_id.clone(),
+                    now_epoch_ms(),
+                );
 
                 let title = tool_title(tool_name, args);
                 let kind = tool_kind(tool_name);
@@ -354,6 +366,7 @@ impl EventTranslator {
                 // with the same id starts fresh (matching pi-acp's
                 // `cleanupToolCall`).
                 self.tool_statuses.remove(tool_call_id);
+                self.tool_started_at.remove(tool_call_id);
                 let mut fields = acp::ToolCallUpdateFields::new()
                     .status(status)
                     .raw_output(result.clone());
@@ -875,6 +888,53 @@ pub(crate) fn bash_terminal_exit_meta(tool_call_id: &str, exit_code: i64) -> acp
     meta
 }
 
+/// Current wall-clock time in epoch milliseconds.
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+impl EventTranslator {
+    /// Emit a heartbeat for every tool call currently `in_progress`: a
+    /// `tool_call_update` carrying `_meta.elapsed_ms` since execution
+    /// started. Called periodically (1s) while a turn runs so clients see
+    /// progress even for a silent, long-running command (e.g. a stalled
+    /// `git clone` that produces no output). Returns `None` when nothing is
+    /// running.
+    pub fn heartbeat(
+        &mut self,
+        session_id: &acp::SessionId,
+    ) -> Option<acp::SessionNotification> {
+        let now = now_epoch_ms();
+        let mut running: Vec<(String, u64)> = Vec::new();
+        for (id, status) in &self.tool_statuses {
+            if *status == acp::ToolCallStatus::InProgress {
+                if let Some(started) = self.tool_started_at.get(id) {
+                    running.push((id.clone(), now.saturating_sub(*started)));
+                }
+            }
+        }
+        if running.is_empty() {
+            return None;
+        }
+        // One notification per running tool (each carries its own id).
+        let (id, elapsed_ms) = running.remove(0);
+        let mut meta = serde_json::Map::new();
+        meta.insert("elapsed_ms".to_string(), serde_json::json!(elapsed_ms));
+        let update = acp::ToolCallUpdate::new(
+            id,
+            acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::InProgress),
+        )
+        .meta(meta);
+        Some(acp::SessionNotification::new(
+            session_id.clone(),
+            acp::SessionUpdate::ToolCallUpdate(update),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -986,6 +1046,50 @@ mod tests {
             }
             other => panic!("expected tool_call_update, got {other:?}"),
         }
+    }
+
+    /// Heartbeat: while a tool is in_progress, `heartbeat()` emits a
+    /// `tool_call_update` carrying `_meta.elapsed_ms`; once the tool settles
+    /// (or nothing is running) it returns `None`.
+    #[test]
+    fn heartbeat_reports_elapsed_for_in_progress_tools() {
+        let start = AgentSessionEvent::ToolExecutionStart {
+            tool_call_id: "t1".into(),
+            tool_name: "bash".into(),
+            args: serde_json::json!({"command": "git clone ..."}),
+        };
+        let mut t = EventTranslator::new("/tmp");
+
+        // Nothing running yet → no heartbeat.
+        assert!(t.heartbeat(&sid()).is_none());
+
+        t.translate(&sid(), &start).expect("should translate");
+
+        // In-progress tool → heartbeat with elapsed_ms meta.
+        let notif = t.heartbeat(&sid()).expect("heartbeat while running");
+        match notif.update {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.tool_call_id.0.as_ref(), "t1");
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::InProgress));
+                let meta = tcu.meta.expect("heartbeat carries elapsed_ms meta");
+                let elapsed = meta
+                    .get("elapsed_ms")
+                    .and_then(|v| v.as_u64())
+                    .expect("elapsed_ms is a number");
+                assert!(elapsed < 10_000, "elapsed should be small, got {elapsed}");
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+
+        // After the tool settles, no more heartbeats.
+        let end = AgentSessionEvent::ToolExecutionEnd {
+            tool_call_id: "t1".into(),
+            tool_name: "bash".into(),
+            result: serde_json::json!({}),
+            is_error: false,
+        };
+        t.translate(&sid(), &end).expect("should translate");
+        assert!(t.heartbeat(&sid()).is_none());
     }
 
     /// Relative tool paths must be resolved against the session cwd and

@@ -228,6 +228,9 @@ impl SessionRegistry {
             prompt_queue: std::collections::VecDeque::new(),
             turn_done_rx: None,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            interrupt_on_prompt: std::env::var("PI_ACP_INTERRUPT_ON_PROMPT")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             spawn: spawn.clone(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
@@ -318,6 +321,9 @@ impl SessionRegistry {
             prompt_queue: std::collections::VecDeque::new(),
             turn_done_rx: None,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            interrupt_on_prompt: std::env::var("PI_ACP_INTERRUPT_ON_PROMPT")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             spawn: spawn.clone(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
@@ -486,6 +492,17 @@ impl SessionRegistry {
                 session_start_event: None,
         ui_context: ui,
                 custom_tools: custom_tools.clone(),
+                // ACP mode: inject a default bash timeout so a hung command
+                // (e.g. a stalled `git clone`) is killed and the turn
+                // settles instead of blocking the session forever. The model
+                // can still pass an explicit `timeout` to override it.
+                tools_options: Some(crate::core::tools::ToolsOptions {
+                    bash: Some(crate::core::tools::bash::BashToolOptions {
+                        default_timeout: Some(600.0),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
                 extension_flags: None,
             }
         };
@@ -610,6 +627,12 @@ struct SessionTask {
     /// Set by `session/cancel`; the turn task reads it after the run settles
     /// to report `cancelled` instead of `end_turn`. Reset per turn.
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+    /// When a prompt arrives while a turn is running, interrupt the current
+    /// turn (abort the in-flight tool, killing its process tree) and run the
+    /// new prompt next, instead of queueing behind the stuck turn. Enabled
+    /// via `PI_ACP_INTERRUPT_ON_PROMPT=1` (Codex-CLI-style behavior); off by
+    /// default to stay pi-acp-compatible.
+    interrupt_on_prompt: bool,
     /// Local-future spawner (the same executor the session task itself runs
     /// on) used to spawn turn tasks.
     spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
@@ -681,6 +704,14 @@ impl SessionTask {
                             ));
                         }
                     } else if let Some(queued) = self.prompt_queue.pop_front() {
+                        // Announce the queued message is starting (matching
+                        // pi-acp's `agent_settled` "Starting queued message.").
+                        let _ = self
+                            .emit_text(&format!(
+                                "Starting queued message. ({} remaining)",
+                                self.prompt_queue.len()
+                            ))
+                            .await;
                         self.start_prompt_turn(queued);
                     }
                 }
@@ -861,16 +892,43 @@ impl SessionTask {
         }
         let prompt = QueuedPrompt { text, images, reply };
         if self.turn_done_rx.is_some() {
-            // Queue the prompt; it runs after the current turn settles
-            // (matching pi-acp's turn queue). Notify the client.
-            self.prompt_queue.push_back(prompt);
-            let _ = self
-                .emit_text(&format!(
-                    "Queued message (position {}).",
-                    self.prompt_queue.len()
-                ))
-                .await;
-            let _ = self.emit_queue_depth(self.prompt_queue.len(), true).await;
+            if self.interrupt_on_prompt {
+                // Interrupt mode (PI_ACP_INTERRUPT_ON_PROMPT=1): abort the
+                // current turn — killing the in-flight tool's process tree —
+                // and run this prompt next instead of queueing behind a
+                // possibly-stuck turn (Codex-CLI-style behavior).
+                self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                let session = Arc::clone(&self.session);
+                let fut: futures::future::LocalBoxFuture<'static, ()> =
+                    Box::pin(async move {
+                        session.abort().await;
+                    });
+                (self.spawn)(fut);
+                // Clear any previously queued prompts (matching pi-acp's
+                // cancel semantics: queued turns resolve as cancelled).
+                while let Some(queued) = self.prompt_queue.pop_front() {
+                    let _ = queued
+                        .reply
+                        .send(Ok(acp::PromptResponse::new(acp::StopReason::Cancelled)));
+                }
+                // The new prompt runs as soon as the aborted turn settles.
+                self.prompt_queue.push_back(prompt);
+                let _ = self
+                    .emit_text("Interrupted the current turn; your message runs next.")
+                    .await;
+                let _ = self.emit_queue_depth(1, true).await;
+            } else {
+                // Queue the prompt; it runs after the current turn settles
+                // (matching pi-acp's turn queue). Notify the client.
+                self.prompt_queue.push_back(prompt);
+                let _ = self
+                    .emit_text(&format!(
+                        "Queued message (position {}).",
+                        self.prompt_queue.len()
+                    ))
+                    .await;
+                let _ = self.emit_queue_depth(self.prompt_queue.len(), true).await;
+            }
         } else {
             self.start_prompt(prompt).await;
         }
@@ -920,6 +978,11 @@ impl SessionTask {
         self.turn_done_rx = Some(turn_done_rx);
         // A cancel flag from a previous turn must not leak into this one.
         self.cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
+        // Publish the queue depth (matching pi-acp's `startTurn`, which emits
+        // `{queueDepth: remaining, running: true}` when a turn starts).
+        let depth = self.prompt_queue.len();
+        let notif_tx = self.notif_tx.clone();
+        let session_id = self.session_id.clone();
         let fut = run_prompt_turn(
             Arc::clone(&self.session),
             self.session_id.clone(),
@@ -928,7 +991,29 @@ impl SessionTask {
             turn_done_tx,
             prompt,
         );
-        let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(fut);
+        let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(async move {
+            // Fire-and-forget queue-depth update (best effort, matching
+            // pi-acp's fire-and-forget emit in `startTurn`).
+            let mut meta = serde_json::Map::new();
+            meta.insert(
+                "piAcp".to_string(),
+                serde_json::json!({
+                    "queueDepth": depth,
+                    "running": true,
+                }),
+            );
+            let notif = acp::SessionNotification::new(
+                session_id,
+                acp::SessionUpdate::SessionInfoUpdate(
+                    acp::SessionInfoUpdate::new().meta(meta),
+                ),
+            );
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if notif_tx.send((notif, ack_tx)).is_ok() {
+                let _ = ack_rx.await;
+            }
+            fut.await;
+        });
         (self.spawn)(fut);
     }
 
@@ -1393,6 +1478,14 @@ async fn run_single_prompt(
     // tool-call id, which is unique per call, so nothing carries across turns.
     let mut translator = EventTranslator::new(session.get_cwd());
 
+    // Heartbeat: while a tool is in_progress, emit a `tool_call_update` with
+    // `_meta.elapsed_ms` every second so clients see progress even for a
+    // silent, long-running command (e.g. a stalled `git clone`).
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(1));
+    // Skip the immediate first tick (interval fires right away); the first
+    // heartbeat is only useful once a tool has actually started.
+    heartbeat.tick().await;
+
     let outcome: Result<(), String> = loop {
         tokio::select! {
             result = &mut prompt_fut => {
@@ -1432,6 +1525,15 @@ async fn run_single_prompt(
                     saw_agent_end = true;
                 }
                 if let Some(notif) = translator.translate(session_id, &event) {
+                    let (ack_tx, ack_rx) = oneshot::channel();
+                    if notif_tx.send((notif, ack_tx)).is_err() {
+                        break Err("client disconnected".to_string());
+                    }
+                    pending_acks.push(ack_rx);
+                }
+            }
+            _ = heartbeat.tick() => {
+                if let Some(notif) = translator.heartbeat(session_id) {
                     let (ack_tx, ack_rx) = oneshot::channel();
                     if notif_tx.send((notif, ack_tx)).is_err() {
                         break Err("client disconnected".to_string());
@@ -1880,6 +1982,7 @@ mod tests {
             stream_fn: Some(stream_fn),
             convert_to_llm: None,
             custom_tools: None,
+            tools_options: None,
             extension_flags: None,
             extension_paths: vec![],
             enable_extensions: false,
@@ -1911,6 +2014,7 @@ mod tests {
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
         session: AgentSession,
         replay_history: bool,
+        interrupt_on_prompt: bool,
     ) -> (
         mpsc::UnboundedSender<SessionCommand>,
         Arc<std::sync::Mutex<Vec<acp::SessionNotification>>>,
@@ -1944,6 +2048,7 @@ mod tests {
             prompt_queue: std::collections::VecDeque::new(),
             turn_done_rx: None,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            interrupt_on_prompt,
             spawn: spawn.clone(),
         };
         let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(task.run());
@@ -2098,7 +2203,7 @@ mod tests {
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
                 let session = test_agent_session(stream_fn, base.path()).await;
-                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false);
+                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false, false);
 
                 // Prompt 1: the fake stream blocks, so the turn stays in flight.
                 let reply_rx = send_prompt(&cmd_tx, "hello 1");
@@ -2144,7 +2249,7 @@ mod tests {
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = delayed_completing_stream();
                 let session = test_agent_session(stream_fn, base.path()).await;
-                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false);
+                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false, false);
 
                 // Prompt A: first stream call takes 200ms, so turn A is in
                 // flight for a while.
@@ -2185,6 +2290,67 @@ mod tests {
             .await;
     }
 
+    /// With `interrupt_on_prompt` enabled, a prompt arriving mid-turn aborts
+    /// the current turn (reported `cancelled`) and runs next instead of
+    /// queueing behind a possibly-stuck turn (Codex-CLI-style behavior).
+    #[tokio::test(flavor = "current_thread")]
+    async fn prompt_interrupts_running_turn_when_enabled() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let base = tempfile::tempdir().expect("tempdir");
+                let (stream_fn, calls) = blocking_then_completing_stream();
+                let session = test_agent_session(stream_fn, base.path()).await;
+                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false, true);
+
+                // Turn A blocks until aborted (simulating a stuck turn).
+                let reply_a = send_prompt(&cmd_tx, "prompt A");
+                wait_for_calls(&calls, 1).await;
+
+                // Prompt B while A is running: interrupt mode aborts A and
+                // runs B next.
+                let reply_b = send_prompt(&cmd_tx, "prompt B");
+
+                // A reports cancelled (aborted by the interrupt).
+                let resp_a = reply_a
+                    .await
+                    .expect("prompt A must reply")
+                    .expect("prompt A must succeed");
+                assert_eq!(resp_a.stop_reason, acp::StopReason::Cancelled);
+
+                // B runs and completes.
+                let resp_b = reply_b
+                    .await
+                    .expect("prompt B must reply")
+                    .expect("prompt B must succeed");
+                assert_eq!(resp_b.stop_reason, acp::StopReason::EndTurn);
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "the interrupting prompt must have run after the abort"
+                );
+
+                // The client must have been told the turn was interrupted.
+                let interrupted = notifs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .any(|n| {
+                        matches!(&n.update, acp::SessionUpdate::AgentMessageChunk(c)
+                            if chunk_text(c).contains("Interrupted"))
+                    });
+                assert!(
+                    interrupted,
+                    "client must be notified the turn was interrupted"
+                );
+            })
+            .await;
+    }
+
     /// Commands other than prompts are handled immediately even while a turn
     /// is in flight (the actor stays responsive) — they are not rejected with
     /// "session is busy".
@@ -2200,7 +2366,7 @@ mod tests {
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
                 let session = test_agent_session(stream_fn, base.path()).await;
-                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false);
+                let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false, false);
 
                 // Blocking turn in flight.
                 let reply_rx = send_prompt(&cmd_tx, "hello");
@@ -2292,7 +2458,7 @@ mod tests {
                     .await;
 
                 let (_cmd_tx, notifs) =
-                    spawn_session_task(&local, &spawn, session, true);
+                    spawn_session_task(&local, &spawn, session, true, false);
 
                 // Let the replay run to completion.
                 tokio::task::yield_now().await;

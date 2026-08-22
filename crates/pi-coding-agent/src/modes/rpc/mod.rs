@@ -315,6 +315,7 @@ pub async fn run_rpc_mode(
         session_start_event: None,
         ui_context: Some(ui_context),
         custom_tools: None,
+        tools_options: None,
     };
 
     let (mut session, _result) = match create_agent_session(sdk_options).await {

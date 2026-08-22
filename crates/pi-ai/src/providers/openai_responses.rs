@@ -1975,7 +1975,6 @@ async fn stream_openai_responses_inner(
         "OpenAI API error",
     )
     .await?;
-
     // Stream the SSE body incrementally (match TS `processResponsesStream`).
     use futures::StreamExt as _;
     let events = crate::utils::sse::sse_events_stream(

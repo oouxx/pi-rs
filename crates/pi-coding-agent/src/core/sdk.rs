@@ -3,6 +3,7 @@ use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 
 
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
+use crate::core::tools::ToolsOptions;
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
@@ -98,6 +99,8 @@ pub struct CreateAgentSessionOptions {
     pub stream_fn: Option<StreamFn>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
     pub custom_tools: Option<Vec<ToolDefinition>>,
+    /// Per-tool options (e.g. bash default timeout). `None` = defaults.
+    pub tools_options: Option<ToolsOptions>,
     /// CLI-passed extension flag values (e.g. `--my-flag value`). Sent to the
     /// JS extension runtime so `pi.getFlag()` sees them.
     pub extension_flags: Option<std::collections::HashMap<String, String>>,
@@ -164,6 +167,7 @@ impl Default for CreateAgentSessionOptions {
             stream_fn: None,
             convert_to_llm: None,
             custom_tools: None,
+            tools_options: None,
             extension_flags: None,
             extension_paths: Vec::new(),
             enable_extensions: true,
@@ -663,6 +667,7 @@ pub async fn create_agent_session(
         ui_context: options.ui_context.clone(),
         resources: Some(resources),
         custom_tools: options.custom_tools,
+        tools_options: options.tools_options,
         extension_state_view: Some(extension_state_view),
         extension_action_rx: Some(extension_action_rx),
     };

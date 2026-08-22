@@ -501,6 +501,10 @@ pub struct AnthropicMessagesCompat {
     /// 是否支持客户端 tool_reference block（对齐 TS
     /// `supportsToolReferences`；默认第一方 Anthropic 除 Haiku 外为 true）。
     pub supports_tool_references: Option<bool>,
+    /// Whether the provider supports Anthropic strict tool schemas (TS
+    /// `supportsStrictTools`). Default: false; generated Anthropic models
+    /// enable it explicitly.
+    pub supports_strict_tools: Option<bool>,
 }
 
 // ============================================================================

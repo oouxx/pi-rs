@@ -170,6 +170,8 @@ pub(crate) struct AnthropicTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "defer_loading")]
     defer_loading: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -318,6 +320,7 @@ fn get_anthropic_compat(model: &Model) -> AnthropicMessagesCompat {
             allow_empty_signature: None,
             force_adaptive_thinking: None,
             supports_tool_references: None,
+            supports_strict_tools: None,
         },
     }
 }
@@ -683,21 +686,62 @@ pub(crate) fn convert_tools(
     tools: &[Tool],
     cache_control: Option<&AnthropicCacheControl>,
     defer_loading: bool,
-) -> Vec<AnthropicTool> {
+    supports_strict_tools: bool,
+) -> Result<Vec<AnthropicTool>, String> {
     let count = tools.len();
     tools
         .iter()
         .enumerate()
-        .map(|(index, t)| AnthropicTool {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            input_schema: t.parameters.clone(),
-            cache_control: if index == count - 1 {
-                cache_control.cloned()
+        .map(|(index, t)| {
+            // TS 0.84.2: strict tools get provider-compatible closed-object
+            // schemas (every property required, optional non-nullable widened
+            // to nullable) while the original tool definition stays untouched.
+            let strict = crate::providers::openai_responses::resolve_json_schema_strict_sampling(
+                t,
+                supports_strict_tools,
+            )?;
+            let parameters = crate::utils::strict_schema::get_json_schema_tool_parameters(
+                &t.parameters,
+                strict,
+            )?;
+            let schema = parameters.as_object().cloned().unwrap_or_default();
+            // TS `legacyInputSchema`: always send the minimal object form.
+            let mut legacy_input_schema = serde_json::Map::new();
+            legacy_input_schema.insert("type".into(), json!("object"));
+            legacy_input_schema.insert(
+                "properties".into(),
+                schema
+                    .get("properties")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            );
+            legacy_input_schema.insert(
+                "required".into(),
+                schema.get("required").cloned().unwrap_or_else(|| json!([])),
+            );
+            let input_schema = if strict == Some(true) {
+                // Strict: full converted parameters, with the legacy fields
+                // taking precedence (TS spread order).
+                let mut merged = parameters.as_object().cloned().unwrap_or_default();
+                for (k, v) in legacy_input_schema {
+                    merged.insert(k, v);
+                }
+                Value::Object(merged)
             } else {
-                None
-            },
-            defer_loading: if defer_loading { Some(true) } else { None },
+                Value::Object(legacy_input_schema)
+            };
+            Ok(AnthropicTool {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema,
+                cache_control: if index == count - 1 {
+                    cache_control.cloned()
+                } else {
+                    None
+                },
+                defer_loading: if defer_loading { Some(true) } else { None },
+                strict,
+            })
         })
         .collect()
 }
@@ -1006,12 +1050,22 @@ async fn stream_anthropic_inner(
         } else {
             None
         };
-        let mut all_tools = convert_tools(&immediate_tools, tools_cache_control, false);
+        let mut all_tools = convert_tools(
+            &immediate_tools,
+            tools_cache_control,
+            false,
+            get_anthropic_compat(model)
+                .supports_strict_tools
+                .unwrap_or(false),
+        )?;
         all_tools.extend(convert_tools(
             &deferred_tools.into_values().collect::<Vec<_>>(),
             None,
             true,
-        ));
+            get_anthropic_compat(model)
+                .supports_strict_tools
+                .unwrap_or(false),
+        )?);
         body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
     }
 
@@ -1865,9 +1919,9 @@ mod tests {
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools, None, true);
+        let converted = convert_tools(&tools, None, true, false).unwrap();
         assert_eq!(converted[0].defer_loading, Some(true));
-        let converted = convert_tools(&tools, None, false);
+        let converted = convert_tools(&tools, None, false, false).unwrap();
         assert_eq!(converted[0].defer_loading, None);
     }
 
@@ -1989,7 +2043,7 @@ mod tests {
 
     #[test]
     fn test_convert_tools_empty() {
-        let converted = convert_tools(&[], None, false);
+        let converted = convert_tools(&[], None, false, false).unwrap();
         assert!(converted.is_empty());
     }
 
@@ -2001,7 +2055,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools, None, false);
+        let converted = convert_tools(&tools, None, false, false).unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].name, "read");
         assert_eq!(converted[0].description, "Read a file");
@@ -2028,7 +2082,7 @@ mod tests {
             cache_type: "ephemeral".to_string(),
             ttl: None,
         };
-        let converted = convert_tools(&tools, Some(&cc), false);
+        let converted = convert_tools(&tools, Some(&cc), false, false).unwrap();
         assert!(converted[0].cache_control.is_none());
         assert!(converted[1].cache_control.is_some());
     }

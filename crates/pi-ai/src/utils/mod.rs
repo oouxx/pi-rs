@@ -7,6 +7,7 @@ pub mod provider_retry;
 pub mod retry;
 pub mod session_resources;
 pub mod sse;
+pub mod strict_schema;
 pub mod text;
 pub mod transform;
 pub mod typebox_helpers;

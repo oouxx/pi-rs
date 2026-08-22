@@ -918,7 +918,16 @@ fn convert_responses_tools(
         obj.insert("type".into(), json!("function"));
         obj.insert("name".into(), json!(tool.name));
         obj.insert("description".into(), json!(tool.description));
-        obj.insert("parameters".into(), tool.parameters.clone());
+        // TS 0.84.2: strict tools get provider-compatible closed-object
+        // schemas (every property required, optional non-nullable widened to
+        // nullable) while the original tool definition stays untouched.
+        obj.insert(
+            "parameters".into(),
+            crate::utils::strict_schema::get_json_schema_tool_parameters(
+                &tool.parameters,
+                strict,
+            )?,
+        );
         if defer_loading {
             obj.insert("defer_loading".into(), json!(true));
         }

@@ -69,6 +69,84 @@ fn should_terminate_tool_batch(finalized_calls: &[FinalizedToolCallOutcome]) -> 
             .all(|f| f.result.terminate == Some(true))
 }
 
+/// Whether a JSON schema accepts an explicit `null` value (TS
+/// `schemaAllowsNull`): `type: "null"` / union containing null, `const:
+/// null`, `enum` containing null, or an `anyOf` variant that allows null.
+fn schema_allows_null(schema: &serde_json::Value) -> bool {
+    if let Some(t) = schema.get("type") {
+        if t == "null" {
+            return true;
+        }
+        if let Some(arr) = t.as_array() {
+            if arr.iter().any(|v| v == "null") {
+                return true;
+            }
+        }
+    }
+    if schema.get("const") == Some(&serde_json::Value::Null) {
+        return true;
+    }
+    if let Some(enum_) = schema.get("enum").and_then(|v| v.as_array()) {
+        if enum_.iter().any(|v| v.is_null()) {
+            return true;
+        }
+    }
+    if let Some(any_of) = schema.get("anyOf").and_then(|v| v.as_array()) {
+        if any_of.iter().any(schema_allows_null) {
+            return true;
+        }
+    }
+    false
+}
+
+/// TS 0.84.2 `normalizeOptionalNulls`: `null` values for optional
+/// non-nullable tool arguments are treated as omitted — removed recursively
+/// (objects and array items) before validation/execution, so a provider that
+/// emits `null` for an absent optional argument never fails a strict schema.
+fn normalize_optional_nulls(value: &mut serde_json::Value, schema: &serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                for item in items.iter_mut() {
+                    normalize_optional_nulls(item, item_schema);
+                }
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            let Some(properties) = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+            else {
+                return;
+            };
+            let required: std::collections::HashSet<&str> = schema
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<std::collections::HashSet<_>>()
+                })
+                .unwrap_or_default();
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in keys {
+                let Some(prop_schema) = properties.get(&key) else {
+                    continue;
+                };
+                if obj.get(&key) == Some(&serde_json::Value::Null)
+                    && !required.contains(key.as_str())
+                    && !schema_allows_null(prop_schema)
+                {
+                    obj.remove(&key);
+                } else if let Some(child) = obj.get_mut(&key) {
+                    normalize_optional_nulls(child, prop_schema);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn validate_tool_arguments(
     tool_schema: &serde_json::Value,
     args: &serde_json::Value,
@@ -76,9 +154,12 @@ fn validate_tool_arguments(
     if tool_schema.is_null() {
         return args.clone();
     }
+    let mut filtered_args = args.clone();
+    // TS 0.84.2: `null` for optional non-nullable args counts as omitted.
+    normalize_optional_nulls(&mut filtered_args, tool_schema);
     if let Some(properties) = tool_schema.get("properties") {
         let mut filtered = serde_json::Map::new();
-        if let Some(obj) = args.as_object() {
+        if let Some(obj) = filtered_args.as_object() {
             for (key, value) in obj {
                 if properties.get(key).is_some() {
                     filtered.insert(key.clone(), value.clone());
@@ -87,7 +168,7 @@ fn validate_tool_arguments(
         }
         serde_json::Value::Object(filtered)
     } else {
-        args.clone()
+        filtered_args
     }
 }
 

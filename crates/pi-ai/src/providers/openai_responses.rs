@@ -50,6 +50,7 @@ fn get_compat(model: &Model) -> OpenAIResponsesCompat {
             supports_strict_mode: None,
             supports_openai_grammar_tools: None,
             supports_tool_search: None,
+            supports_additional_tools: None,
             supports_explicit_prompt_cache_mode: None,
         },
     }
@@ -360,6 +361,21 @@ fn convert_responses_messages(
 ) -> Result<Vec<Value>, String> {
     let mut messages: Vec<Value> = Vec::new();
 
+    // Deferred-tool loading mode (TS `deferredToolsMode`): message-anchored
+    // `additional_tools` preferred when supported, else client-executed tool
+    // search, else no deferred loading at all.
+    let deferred_tools_mode = if compat.supports_additional_tools.unwrap_or(false) {
+        Some("additional-tools")
+    } else if compat.supports_tool_search.unwrap_or(false) {
+        Some("tool-search")
+    } else {
+        None
+    };
+    // Loaded tool names, deduplicated across the whole message list (TS
+    // `loadedToolNames` at `convertResponsesMessages` scope).
+    let mut loaded_tool_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
     // Map of grammar-constrained tool name -> input property.
     let supports_openai_grammar_tools = compat.supports_openai_grammar_tools.unwrap_or(false);
     let grammar_tool_input_properties =
@@ -541,10 +557,11 @@ fn convert_responses_messages(
                     }));
                 }
 
-                // Deferred tools: emit tool_search_call + tool_search_output for
-                // tools added by this tool result (match TS convertResponsesMessages).
-                let mut loaded_tool_names: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
+                // Deferred tools: load tools added by this tool result
+                // (TS 0.84.2): prefer a message-anchored `additional_tools`
+                // item when the model supports it, else emit
+                // `tool_search_call` + `tool_search_output`. Names are
+                // deduplicated across the whole message list.
                 let mut deferred: Vec<Tool> = Vec::new();
                 if let Some(names) = added_tool_names {
                     for name in names {
@@ -556,31 +573,48 @@ fn convert_responses_messages(
                     }
                 }
                 if !deferred.is_empty() {
-                    let names: Vec<String> = deferred.iter().map(|t| t.name.clone()).collect();
-                    let search_call_id = format!(
-                        "pi_tool_load_{}",
-                        short_hash(&format!("{used_id}:{}", names.join(",")))
-                    );
-                    messages.push(json!({
-                        "type": "tool_search_call",
-                        "call_id": search_call_id,
-                        "execution": "client",
-                        "status": "completed",
-                        "arguments": { "query": names.join(" "), "limit": names.len() },
-                    }));
-                    messages.push(json!({
-                        "type": "tool_search_output",
-                        "call_id": search_call_id,
-                        "execution": "client",
-                        "status": "completed",
-                        "tools": convert_responses_tools(
-                            &deferred,
-                            compat_supports_strict_mode(compat),
-                            supports_openai_grammar_tools,
-                            true,
-                        )
-                        .unwrap_or_default(),
-                    }));
+                    if deferred_tools_mode == Some("additional-tools") {
+                        // Message-anchored additional_tools (no defer_loading
+                        // marker, matching TS convertResponsesTools without
+                        // deferLoading in this mode).
+                        messages.push(json!({
+                            "type": "additional_tools",
+                            "role": "developer",
+                            "tools": convert_responses_tools(
+                                &deferred,
+                                compat_supports_strict_mode(compat),
+                                supports_openai_grammar_tools,
+                                false,
+                            )
+                            .unwrap_or_default(),
+                        }));
+                    } else if deferred_tools_mode == Some("tool-search") {
+                        let names: Vec<String> = deferred.iter().map(|t| t.name.clone()).collect();
+                        let search_call_id = format!(
+                            "pi_tool_load_{}",
+                            short_hash(&format!("{used_id}:{}", names.join(",")))
+                        );
+                        messages.push(json!({
+                            "type": "tool_search_call",
+                            "call_id": search_call_id,
+                            "execution": "client",
+                            "status": "completed",
+                            "arguments": { "query": names.join(" "), "limit": names.len() },
+                        }));
+                        messages.push(json!({
+                            "type": "tool_search_output",
+                            "call_id": search_call_id,
+                            "execution": "client",
+                            "status": "completed",
+                            "tools": convert_responses_tools(
+                                &deferred,
+                                compat_supports_strict_mode(compat),
+                                supports_openai_grammar_tools,
+                                true,
+                            )
+                            .unwrap_or_default(),
+                        }));
+                    }
                 }
             }
         }
@@ -1782,8 +1816,12 @@ fn build_request_body(
     options: Option<&StreamOptions>,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     let compat = get_compat(model);
-    let supports_tool_search = compat.supports_tool_search.unwrap_or(false);
-    let (immediate_tools, deferred_tools) = split_deferred_tools(context, supports_tool_search);
+    // Deferred loading is enabled when either loading mode is supported
+    // (TS `deferredToolsMode !== undefined` gates splitDeferredTools).
+    let deferred_loading_enabled = compat.supports_additional_tools.unwrap_or(false)
+        || compat.supports_tool_search.unwrap_or(false);
+    let (immediate_tools, deferred_tools) =
+        split_deferred_tools(context, deferred_loading_enabled);
     // 对齐 TS convertResponsesMessages：先 transformMessages 再转换。
     let transformed = crate::utils::transform::transform_messages(
         &context.messages,
@@ -2306,6 +2344,7 @@ mod tests {
                 supports_strict_mode: None,
                 supports_openai_grammar_tools: Some(true),
                 supports_tool_search: None,
+                supports_additional_tools: None,
                 supports_explicit_prompt_cache_mode: None,
             },
         ));
@@ -2757,6 +2796,103 @@ mod tests {
             _ => panic!("expected tool call block"),
         }
     }
+    /// TS 0.84.2: when `supportsAdditionalTools` is set, deferred tools are
+    /// loaded via a message-anchored `additional_tools` item (preferred over
+    /// tool search).
+    fn make_tool() -> Tool {
+        Tool {
+            name: "goal".into(),
+            description: "A deferred tool".into(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            constrained_sampling: None,
+        }
+    }
+
+    #[test]
+    fn deferred_tools_additional_tools_mode() {
+        let model = make_model();
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::ToolResult {
+                tool_call_id: "call_1".into(),
+                tool_name: "bash".into(),
+                content: vec![ContentBlock::text("done")],
+                details: None,
+                is_error: false,
+                usage: None,
+                added_tool_names: Some(vec!["goal".to_string()]),
+                timestamp: 0,
+            }],
+            tools: Some(vec![make_tool()]),
+        };
+        let deferred: std::collections::HashMap<String, Tool> =
+            std::collections::HashMap::from([("goal".to_string(), make_tool())]);
+
+        // additional-tools mode -> one anchored `additional_tools` item, no
+        // tool search items, no defer_loading marker.
+        let compat = OpenAIResponsesCompat {
+            supports_additional_tools: Some(true),
+            ..Default::default()
+        };
+        let messages = convert_responses_messages(&model, &context, &deferred, &compat).unwrap();
+        let types: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| m.get("type").and_then(|t| t.as_str()))
+            .collect();
+        assert_eq!(
+            types,
+            vec!["function_call_output", "additional_tools"],
+            "additional-tools mode must anchor additional_tools after the tool result"
+        );
+        let at = &messages[1];
+        assert_eq!(at["role"], "developer");
+        let tools = at["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "goal");
+        assert!(
+            tools[0].get("defer_loading").is_none(),
+            "additional_tools mode has no defer_loading marker"
+        );
+        assert!(
+            !types.contains(&"tool_search_call"),
+            "additional-tools mode must not emit tool search"
+        );
+
+        // tool-search fallback mode → tool_search_call + tool_search_output.
+        let compat_search = OpenAIResponsesCompat {
+            supports_tool_search: Some(true),
+            supports_additional_tools: None,
+            ..Default::default()
+        };
+        let messages =
+            convert_responses_messages(&model, &context, &deferred, &compat_search).unwrap();
+        let types: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| m.get("type").and_then(|t| t.as_str()))
+            .collect();
+        assert_eq!(
+            types,
+            vec!["function_call_output", "tool_search_call", "tool_search_output"],
+            "tool-search mode keeps the fallback path"
+        );
+        let output = messages[2].clone();
+        let tools = output["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["name"], "goal");
+        assert_eq!(
+            tools[0]["defer_loading"],
+            serde_json::json!(true),
+            "tool-search mode marks tools defer_loading"
+        );
+
+        // No deferred support -> plain function_call_output only.
+        let ms = convert_responses_messages(&model, &context, &deferred, &OpenAIResponsesCompat::default()).unwrap();
+        let types: Vec<&str> = ms
+            .iter()
+            .filter_map(|m| m.get("type").and_then(|t| t.as_str()))
+            .collect();
+        assert_eq!(types, vec!["function_call_output"]);
+    }
+
 }
 
 #[cfg(test)]
@@ -2849,4 +2985,5 @@ mod abort_tests {
             other => panic!("expected Error(Aborted), got {other:?}"),
         }
     }
-}
+
+    }

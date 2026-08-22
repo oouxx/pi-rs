@@ -29,10 +29,6 @@ const UNSUPPORTED_STRICT_SCHEMA_KEYS: &[&str] = &[
     "else",
 ];
 
-fn is_json_schema_object(value: &Value) -> bool {
-    value.is_object()
-}
-
 /// TS `isStructuredSchema`: object/array schemas (or schemas with
 /// properties/items) — used to reject object/array unions.
 fn is_structured_schema(schema: &Value) -> bool {
@@ -137,12 +133,10 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), String> {
         }
     }
     if schema.get("properties").is_some() {
-        let props = schema
+        let _props = schema
             .get("properties")
             .and_then(|v| v.as_object())
             .ok_or_else(|| "object properties must be a schema map".to_string())?;
-        // (TS iterates entries of `properties`; the conversion below mutates
-        // the map, so we operate on the already-borrowed object.)
     }
     if let Some(required) = schema.get("required") {
         if !required

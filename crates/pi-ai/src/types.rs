@@ -446,7 +446,7 @@ pub struct OpenAICompletionsCompat {
     pub session_affinity_format: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAIResponsesCompat {
     /// Whether the provider supports the `developer` role (vs `system`). Default: true.
@@ -467,6 +467,12 @@ pub struct OpenAIResponsesCompat {
     /// Whether the model supports client-executed tool search for deferred tools. Default: false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_tool_search: Option<bool>,
+    /// Whether the model supports message-anchored `additional_tools` input
+    /// items (TS `supportsAdditionalTools`). Default: false. When true,
+    /// deferred tools are loaded via an `additional_tools` item anchored to
+    /// the tool result that added them, preferred over tool search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_additional_tools: Option<bool>,
     /// Whether the provider supports explicit prompt-cache mode. Default: false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_explicit_prompt_cache_mode: Option<bool>,

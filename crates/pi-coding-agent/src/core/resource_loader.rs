@@ -442,27 +442,47 @@ impl ResourceLoader for DefaultResourceLoader {
 // Context file loading
 // ============================================================================
 
-/// Load context files (AGENTS.md, CLAUDE.md, etc.) from cwd up to filesystem root,
-/// plus from the agent directory.
+/// Load context files (AGENTS.override.md, AGENTS.md, CLAUDE.md, etc.) from
+/// cwd up to filesystem root, plus from the agent directory.
+///
+/// Matching TS `loadContextFileFromDir`: each directory contributes **at most
+/// one** context file — `AGENTS.override.md` shadows `AGENTS.md`/`CLAUDE.md`
+/// in the same directory (TS 0.84 per-directory context overrides).
 fn load_context_files_ancestors(cwd: &str, agent_dir: Option<&str>) -> Vec<ContextFile> {
     let mut files = Vec::new();
     let mut seen_paths = HashSet::new();
-    let context_file_names = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+    // TS `loadContextFileFromDir` candidates: override first, then the
+    // regular names (first hit wins per directory).
+    let context_file_names = [
+        "AGENTS.override.md",
+        "AGENTS.md",
+        "AGENTS.MD",
+        "CLAUDE.md",
+        "CLAUDE.MD",
+    ];
+
+    /// First existing regular file in `dir` among the candidates, matching TS
+    /// `loadContextFileFromDir` (which `stat`s and skips non-files).
+    fn first_context_file(dir: &Path, names: &[&str]) -> Option<(String, String)> {
+        for name in names {
+            let path = dir.join(name);
+            if path.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    return Some((path.to_string_lossy().to_string(), content));
+                }
+            }
+        }
+        None
+    }
 
     // 1. Load from agent dir (global)
     if let Some(agent) = agent_dir {
-        for name in &context_file_names {
-            let path = Path::new(agent).join(name);
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let path_str = path.to_string_lossy().to_string();
-                    if seen_paths.insert(path_str.clone()) {
-                        files.push(ContextFile {
-                            path: path_str,
-                            content,
-                        });
-                    }
-                }
+        if let Some((path_str, content)) = first_context_file(Path::new(agent), &context_file_names) {
+            if seen_paths.insert(path_str.clone()) {
+                files.push(ContextFile {
+                    path: path_str,
+                    content,
+                });
             }
         }
     }
@@ -472,18 +492,12 @@ fn load_context_files_ancestors(cwd: &str, agent_dir: Option<&str>) -> Vec<Conte
     let mut current_dir = Some(Path::new(cwd).to_path_buf());
 
     while let Some(dir) = current_dir {
-        for name in &context_file_names {
-            let path = dir.join(name);
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let path_str = path.to_string_lossy().to_string();
-                    if seen_paths.insert(path_str.clone()) {
-                        ancestor_files.push(ContextFile {
-                            path: path_str,
-                            content,
-                        });
-                    }
-                }
+        if let Some((path_str, content)) = first_context_file(&dir, &context_file_names) {
+            if seen_paths.insert(path_str.clone()) {
+                ancestor_files.push(ContextFile {
+                    path: path_str,
+                    content,
+                });
             }
         }
 
@@ -576,6 +590,44 @@ mod tests {
             files.iter().any(|f| f.content == "# Agent Context"),
             "should find AGENTS.md content"
         );
+    }
+
+    /// TS 0.84 per-directory override: `AGENTS.override.md` shadows
+    /// `AGENTS.md`/`CLAUDE.md` in the same directory (first hit wins).
+    #[test]
+    fn test_load_context_files_override_shadows_agents_md() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# Regular").unwrap();
+        fs::write(dir.path().join("AGENTS.override.md"), "# Override").unwrap();
+
+        let files = load_context_files_ancestors(dir.path().to_str().unwrap(), None);
+        let contents: Vec<&str> = files.iter().map(|f| f.content.as_str()).collect();
+        assert!(
+            contents.contains(&"# Override"),
+            "AGENTS.override.md must be loaded: {contents:?}"
+        );
+        assert!(
+            !contents.contains(&"# Regular"),
+            "AGENTS.override.md must shadow AGENTS.md in the same dir: {contents:?}"
+        );
+    }
+
+    /// Matching TS `loadContextFileFromDir`: a directory contributes at most
+    /// one context file — AGENTS.md wins over CLAUDE.md (candidate order).
+    #[test]
+    fn test_load_context_files_one_per_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# Agent").unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "# Claude").unwrap();
+
+        let files = load_context_files_ancestors(dir.path().to_str().unwrap(), None);
+        let from_dir: Vec<&str> = files
+            .iter()
+            .filter(|f| f.path.starts_with(dir.path().to_str().unwrap()))
+            .map(|f| f.content.as_str())
+            .collect();
+        assert_eq!(from_dir.len(), 1, "one context file per dir: {from_dir:?}");
+        assert_eq!(from_dir[0], "# Agent");
     }
 
     #[test]

@@ -198,6 +198,7 @@ impl SessionRegistry {
         let _ = std::fs::create_dir_all(&acp_dir);
         let _ = std::fs::File::create(&session_file);
 
+        let ui = Some(Self::create_acp_ui_context(notif_tx.clone(), session_id.clone()));
         let (session, mcp_connections) = self
             .build_session(
                 cwd,
@@ -205,6 +206,7 @@ impl SessionRegistry {
                 &session_dir_str,
                 mcp_servers,
                 enable_extensions,
+                ui,
             )
             .await?;
 
@@ -284,6 +286,7 @@ impl SessionRegistry {
         // The client's cwd overrides the recorded one (matching pi-acp's
         // `opts?.cwd ?? stored.cwd`).
         let cwd = cwd_override.unwrap_or(&persisted.cwd).to_string();
+        let ui = Some(Self::create_acp_ui_context(notif_tx.clone(), session_id.clone()));
         let (session, mcp_connections) = self
             .build_session(
                 &cwd,
@@ -291,6 +294,7 @@ impl SessionRegistry {
                 &session_dir,
                 mcp_servers,
                 self.enable_extensions,
+                ui,
             )
             .await?;
 
@@ -322,6 +326,99 @@ impl SessionRegistry {
         Ok(())
     }
 
+    /// 构造 ACP 模式的扩展 UI 上下文（统一 `extension_ui_request` 协议）。
+    ///
+    /// ACP 规范没有扩展 UI 的标准通道，使用 `SessionInfoUpdate._meta`
+    /// 保留元数据传输协议行——标准客户端（Zed 等）按规范忽略 `_meta`，
+    /// 了解协议的客户端（未来 GUI / 测试）可消费。dialog 类方法
+    /// （confirm/select/input）因 ACP 无客户端回复通道而返回默认值。
+    fn create_acp_ui_context(
+        notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+        session_id: acp::SessionId,
+    ) -> crate::core::extensions::ExtensionUIContext {
+        let send_ui = {
+            let notif_tx = notif_tx.clone();
+            move |request: serde_json::Value| {
+                let mut meta = serde_json::Map::new();
+                meta.insert("extensionUiRequest".to_string(), request);
+                let update = acp::SessionInfoUpdate::new().meta(meta);
+                let notif = acp::SessionNotification::new(
+                    session_id.clone(),
+                    acp::SessionUpdate::SessionInfoUpdate(update),
+                );
+                let (ack_tx, _ack_rx) = tokio::sync::oneshot::channel();
+                let _ = notif_tx.send((notif, ack_tx));
+            }
+        };
+        let noop = crate::core::extensions::ExtensionUIContext::noop();
+        crate::core::extensions::ExtensionUIContext {
+            notify: {
+                let send_ui = send_ui.clone();
+                std::sync::Arc::new(move |msg: &str, level: &serde_json::Value| {
+                    let notify_type = level
+                        .get("level")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("info");
+                    send_ui(serde_json::json!({
+                        "type": "extension_ui_request",
+                        "method": "notify",
+                        "message": msg,
+                        "notifyType": notify_type,
+                    }));
+                })
+            },
+            set_status: {
+                let send_ui = send_ui.clone();
+                std::sync::Arc::new(move |key: &str, text: &str| {
+                    send_ui(serde_json::json!({
+                        "type": "extension_ui_request",
+                        "method": "setStatus",
+                        "statusKey": key,
+                        "statusText": text,
+                    }));
+                })
+            },
+            set_widget: {
+                let send_ui = send_ui.clone();
+                std::sync::Arc::new(
+                    move |key: &str, lines: Option<&[String]>, _opts: Option<&serde_json::Value>| {
+                        send_ui(serde_json::json!({
+                            "type": "extension_ui_request",
+                            "method": "setWidget",
+                            "widgetKey": key,
+                            "widgetLines": lines,
+                        }));
+                    },
+                )
+            },
+            set_title: {
+                let send_ui = send_ui.clone();
+                std::sync::Arc::new(move |title: &str| {
+                    send_ui(serde_json::json!({
+                        "type": "extension_ui_request",
+                        "method": "setTitle",
+                        "title": title,
+                    }));
+                })
+            },
+            set_editor_text: {
+                let send_ui = send_ui.clone();
+                std::sync::Arc::new(move |text: &str| {
+                    send_ui(serde_json::json!({
+                        "type": "extension_ui_request",
+                        "method": "set_editor_text",
+                        "text": text,
+                    }));
+                })
+            },
+            // dialog 类：ACP 无客户端回复通道 → 默认返回（confirm=false、
+            // select/input=None）。与原版 ACP（pi-acp 无扩展 UI）一致。
+            confirm: noop.confirm,
+            select: noop.select,
+            input: noop.input,
+        }
+    }
+
     /// Build a pi `AgentSession` for the given cwd, optionally backed by an
     /// existing or new session file. When `session_file` points to an existing
     /// file the session's messages are restored. MCP servers are connected and
@@ -333,6 +430,7 @@ impl SessionRegistry {
         session_dir: &str,
         mcp_servers: &[acp::McpServer],
         enable_extensions: bool,
+        ui: Option<crate::core::extensions::ExtensionUIContext>,
     ) -> Result<(AgentSession, Vec<McpConnection>), String> {
         let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
         let custom_tools = if mcp_tools.is_empty() {
@@ -378,7 +476,7 @@ impl SessionRegistry {
                 session_manager: None,
                 settings_manager: None,
                 session_start_event: None,
-        ui_context: None,
+        ui_context: ui,
                 custom_tools: custom_tools.clone(),
                 extension_flags: None,
             }
@@ -2251,7 +2349,7 @@ mod tests {
 
         // 启用：工具列表含全部内置扩展工具。
         let (session, _conns) = reg
-            .build_session("/tmp", None, "/tmp", &[], true)
+            .build_session("/tmp", None, "/tmp", &[], true, None)
             .await
             .expect("build with extensions");
         let state = session.get_agent().state().await;
@@ -2262,7 +2360,7 @@ mod tests {
 
         // 禁用（--no-extensions）：无任何扩展工具。
         let (session, _conns) = reg
-            .build_session("/tmp", None, "/tmp", &[], false)
+            .build_session("/tmp", None, "/tmp", &[], false, None)
             .await
             .expect("build without extensions");
         let state = session.get_agent().state().await;

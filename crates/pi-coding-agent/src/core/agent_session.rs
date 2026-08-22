@@ -139,6 +139,9 @@ pub struct AgentSessionConfig {
     pub excluded_tool_names: Option<Vec<String>>,
     /// Extension registry (Rust native extensions).
     pub extension_registry: Option<std::sync::Arc<ExtensionRegistry>>,
+    /// 扩展 UI 上下文（RPC/ACP/未来 GUI 通过 `extension_ui_request` 协议
+    /// 消费；None = 无 UI 客户端，notify 落 stderr、dialog 返回默认）。
+    pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
     /// Loaded resources (skills, extensions, prompt templates).
     pub resources: Option<LoadedResources>,
     /// Custom tool definitions injected by the caller (e.g. trading tools).
@@ -520,6 +523,15 @@ pub struct AgentSession {
     bash_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
 }
 
+/// 无 UI 客户端（print/json 等）时的默认扩展 UI：notify 落 stderr，
+/// dialog（confirm/select/input）返回默认值。
+fn default_extension_ui() -> crate::core::extensions::ExtensionUIContext {
+    crate::core::extensions::ExtensionUIContext {
+        notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
+        ..crate::core::extensions::ExtensionUIContext::noop()
+    }
+}
+
 impl AgentSession {
     pub async fn new(
         session_manager: SessionManager,
@@ -549,15 +561,8 @@ impl AgentSession {
                 }
             }
         });
-        let ext_ctx = ExtensionContext::new(
-            options.cwd.clone(),
-            false,
-            crate::core::extensions::ExtensionUIContext {
-                notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                ..crate::core::extensions::ExtensionUIContext::noop()
-            },
-            ext_runtime_handle,
-        );
+        let ui = options.ui_context.clone().unwrap_or_else(default_extension_ui);
+        let ext_ctx = ExtensionContext::new(options.cwd.clone(), false, ui, ext_runtime_handle);
         let shared_ext_ctx = Arc::new(ext_ctx);
 
         // ── Build tool list ──
@@ -1163,15 +1168,8 @@ impl AgentSession {
                         }
                     }
                 });
-                ExtensionContext::new(
-                    session_cwd_for_ext.clone(),
-                    false,
-                    crate::core::extensions::ExtensionUIContext {
-                        notify: std::sync::Arc::new(|msg, _level| eprintln!("[pi] {msg}")),
-                        ..crate::core::extensions::ExtensionUIContext::noop()
-                    },
-                    ext_runtime_handle,
-                )
+                let ui = options.ui_context.clone().unwrap_or_else(default_extension_ui);
+                ExtensionContext::new(session_cwd_for_ext.clone(), false, ui, ext_runtime_handle)
             },
             tool_registry,
             tool_definitions,

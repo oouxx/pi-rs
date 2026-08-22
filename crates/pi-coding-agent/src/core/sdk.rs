@@ -660,6 +660,7 @@ pub async fn create_agent_session(
         allowed_tool_names,
         excluded_tool_names,
         extension_registry: Some(extension_registry_arc),
+        ui_context: options.ui_context.clone(),
         resources: Some(resources),
         custom_tools: options.custom_tools,
         extension_state_view: Some(extension_state_view),

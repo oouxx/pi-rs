@@ -158,11 +158,16 @@ fn create_rpc_ui_context(
     let notify = {
         let fire_and_forget = fire_and_forget.clone();
         Arc::new(move |msg: &str, level: &serde_json::Value| {
+            // 原版协议 notifyType 为字符串；调用方传 `{"level": "info"}`。
+            let notify_type = level
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("info");
             let req = serde_json::json!({
                 "type": "extension_ui_request",
                 "method": "notify",
                 "message": msg,
-                "notifyType": level,
+                "notifyType": notify_type,
             });
             fire_and_forget(req);
         })

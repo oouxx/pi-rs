@@ -16,7 +16,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::{ExtensionContext, SourceInfo, ToolCallOutput, ToolDefinition};
-type CommandFn = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type CommandFn = Arc<
+    dyn Fn(
+            String,
+            Option<&crate::ExtensionContext>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A single autocomplete suggestion for a command argument.
 ///
@@ -306,10 +313,15 @@ pub trait HookHandler: Send + Sync {
     async fn on_agent_start(&self) {}
 
     /// Agent 处理完成时触发。
-    async fn on_agent_end(&self, _messages: &[Value]) {}
+    ///
+    /// `ctx` 在扩展注册到真实会话时为 `Some`（可持久化状态、发送通知）。
+    async fn on_agent_end(&self, _messages: &[Value], _ctx: Option<&crate::ExtensionContext>) {}
 
     /// Agent 进入空闲状态时触发。
-    async fn on_agent_settled(&self) {}
+    ///
+    /// `ctx` 在扩展注册到真实会话时为 `Some`（携带 runtime handle，可发送
+    /// 自动延续消息）；测试/无会话场景为 `None`。
+    async fn on_agent_settled(&self, _ctx: Option<&crate::ExtensionContext>) {}
 
     /// Turn 开始时触发。
     /// Turn 开始时触发。`timestamp` 是毫秒时间戳（匹配 TS `turn_start` 事件）。
@@ -608,21 +620,21 @@ impl HookRunner {
     }
 
     /// Fire `on_agent_end` to all handlers (parallel).
-    pub async fn fire_agent_end(&self, messages: &[Value]) {
+    pub async fn fire_agent_end(&self, messages: &[Value], ctx: Option<&crate::ExtensionContext>) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_agent_end(messages))
+            .map(|h| h.on_agent_end(messages, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_agent_settled` to all handlers (parallel).
-    pub async fn fire_agent_settled(&self) {
+    pub async fn fire_agent_settled(&self, ctx: Option<&crate::ExtensionContext>) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_agent_settled())
+            .map(|h| h.on_agent_settled(ctx))
             .collect();
         futures::future::join_all(futures).await;
     }

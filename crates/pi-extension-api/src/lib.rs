@@ -208,11 +208,25 @@ impl ExtensionUIContext {
 // RuntimeHandle
 // ============================================================================
 
+/// 会话 custom entry 写入回调（避免 type_complexity 警告）。
+type CustomEntryFn = Arc<dyn Fn(&str, Option<Value>) + Send + Sync>;
+
 /// Handle for extensions to interact with the agent runtime.
 #[derive(Clone)]
 pub struct RuntimeHandle {
     pub send_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
     pub send_user_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+    /// 同步入队一条 follow-up 消息（agent 空闲/已 settled 时也会被消费，
+    /// 用于扩展的自动延续，如 /goal 的 continuation）。`trigger_turn` 语义
+    /// 与 `send_message` 的 `deliverAs: "followUp"` 一致，但入队是同步的，
+    /// 不依赖异步 task 的调度时序。
+    pub queue_follow_up: Arc<dyn Fn(String) + Send + Sync>,
+    /// 追加一条 custom entry 到会话历史（对齐原版扩展的
+    /// `sessionManager.appendCustomEntry`，如 pi-goal 的 `goal-state`
+    /// 持久化——跨 compaction 保留、重启可恢复）。
+    pub append_custom_entry: CustomEntryFn,
+    /// 读取会话中全部 custom entries（`{customType, data}` 列表，同步）。
+    pub get_custom_entries: Arc<dyn Fn() -> Vec<Value> + Send + Sync>,
     pub set_custom_prompt: Arc<dyn Fn(Option<String>) + Send + Sync>,
     pub set_model: Arc<dyn Fn(String) + Send + Sync>,
     pub set_thinking_level: Arc<dyn Fn(String) + Send + Sync>,
@@ -277,6 +291,9 @@ impl RuntimeHandle {
     pub fn new(
         send_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
         send_user_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
+        queue_follow_up: Arc<dyn Fn(String) + Send + Sync>,
+        append_custom_entry: CustomEntryFn,
+        get_custom_entries: Arc<dyn Fn() -> Vec<Value> + Send + Sync>,
         set_custom_prompt: Arc<dyn Fn(Option<String>) + Send + Sync>,
         set_model: Arc<dyn Fn(String) + Send + Sync>,
         set_thinking_level: Arc<dyn Fn(String) + Send + Sync>,
@@ -335,6 +352,9 @@ impl RuntimeHandle {
         Self {
             send_message,
             send_user_message,
+            queue_follow_up,
+            append_custom_entry,
+            get_custom_entries,
             set_custom_prompt,
             set_model,
             set_thinking_level,
@@ -397,6 +417,9 @@ impl RuntimeHandle {
         Self::new(
             Arc::new(|_, _| {}),
             Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
+            Arc::new(Vec::new),
             Arc::new(|_| {}),
             Arc::new(|_| {}),
             Arc::new(|_| {}),
@@ -784,7 +807,7 @@ mod tests {
             fn register_commands(&self, commands: &mut hook::CommandRegistry) {
                 commands.register("c", CommandRegistration {
                     description: "c".into(),
-                    execute: std::sync::Arc::new(|_| Box::pin(async {})),
+                    execute: std::sync::Arc::new(|_, _| Box::pin(async {})),
                     get_argument_completions: None,
                 });
             }
@@ -842,7 +865,7 @@ mod tests {
                 });
                 commands.register("comp", CommandRegistration {
                     description: "comp".into(),
-                    execute: std::sync::Arc::new(|_| Box::pin(async {})),
+                    execute: std::sync::Arc::new(|_, _| Box::pin(async {})),
                     get_argument_completions: Some(cb),
                 });
             }

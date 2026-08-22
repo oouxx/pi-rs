@@ -52,6 +52,17 @@ struct PendingMessageQueue {
     mode: QueueMode,
 }
 
+/// 同步入队用的临时守卫（包 tokio MutexGuard，暴露 `enqueue`）。
+pub struct PendingMessageQueueGuard<'a> {
+    guard: tokio::sync::MutexGuard<'a, PendingMessageQueue>,
+}
+
+impl PendingMessageQueueGuard<'_> {
+    pub fn enqueue(&mut self, message: AgentMessage) {
+        self.guard.enqueue(message);
+    }
+}
+
 impl PendingMessageQueue {
     fn new(mode: QueueMode) -> Self {
         Self {
@@ -427,6 +438,22 @@ impl Agent {
 
     pub async fn follow_up(&self, message: AgentMessage) {
         self.follow_up_queue.lock().await.enqueue(message);
+    }
+
+    /// 清空 follow-up 队列并取出全部消息（供自动延续循环在续跑失败时把
+    /// 队列消息作为新的 user turn 启动）。
+    pub async fn drain_follow_up_queue(&self) -> Vec<AgentMessage> {
+        self.follow_up_queue.lock().await.drain()
+    }
+
+    /// 同步尝试入队一条 follow-up 消息（agent 空闲/已 settled 时队列空闲，
+    /// `try_lock` 必成功；超并发下失败则丢弃）。供扩展在 `agent_settled`
+    /// 边界同步发送自动延续消息，不依赖异步 task 调度时序。
+    pub fn follow_up_queue_try_lock(
+        &self,
+    ) -> std::result::Result<PendingMessageQueueGuard<'_>, tokio::sync::TryLockError> {
+        let guard = self.follow_up_queue.try_lock()?;
+        Ok(PendingMessageQueueGuard { guard })
     }
 
     pub async fn clear_steering_queue(&self) {

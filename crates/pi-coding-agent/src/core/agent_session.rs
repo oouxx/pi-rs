@@ -1345,6 +1345,54 @@ impl AgentSession {
             };
             session.ext_ctx.runtime.send_message = send_message;
             session.ext_ctx.runtime.send_user_message = send_user_message;
+            // 自动延续通道：同步把一条 follow-up 入队（agent 空闲/已 settled
+            // 时由 prompt() 尾部的 settled 循环消费并启动新一轮，供 /goal
+            // 等扩展在 agent_settled 边界自动延续）。
+            let agent_for_queue = session.agent.clone();
+            session.ext_ctx.runtime.queue_follow_up = std::sync::Arc::new(
+                move |content: String| {
+                    let message = AgentMessage::User {
+                        content: vec![pi_agent_core::pi_ai_types::text_block(&content)],
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    };
+                    // 同步入队（settled 时队列空闲；极端竞争下 try_lock 失败
+                    // 则丢弃——下一轮延续会重新评估）。
+                    if let Ok(mut q) = agent_for_queue.follow_up_queue_try_lock() {
+                        q.enqueue(message);
+                    }
+                },
+            );
+            // 会话 custom entry 通道（对齐原版 sessionManager 的
+            // appendCustomEntry / getEntries，供扩展持久化自定义状态，
+            // 如 pi-goal 的 `goal-state`——跨 compaction 保留、重启可恢复）。
+            let sm_for_append = session.session_manager.clone();
+            session.ext_ctx.runtime.append_custom_entry = std::sync::Arc::new(
+                move |custom_type: &str, data: Option<serde_json::Value>| {
+                    sm_for_append
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .append_custom_entry(custom_type, data);
+                },
+            );
+            let sm_for_entries = session.session_manager.clone();
+            session.ext_ctx.runtime.get_custom_entries = std::sync::Arc::new(move || {
+                use crate::core::session_manager::SessionEntry;
+                let sm = sm_for_entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                sm.get_entries()
+                    .iter()
+                    .filter_map(|e| match e {
+                        SessionEntry::Custom { custom_type, data, .. } => {
+                            Some(serde_json::json!({
+                                "customType": custom_type,
+                                "data": data,
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            });
         }
 
         // ── Dispatch resources_discover event to extensions ──
@@ -1604,7 +1652,8 @@ impl AgentSession {
                                 .iter()
                                 .map(|m| serde_json::to_value(m).unwrap_or_default())
                                 .collect();
-                            hr.fire_agent_end(&msgs).await;
+                            let ext_ctx_ae = ext_ctx.clone();
+                            hr.fire_agent_end(&msgs, Some(&ext_ctx_ae)).await;
                         }
                         AgentEvent::TurnStart => {
                             let ti = *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2749,6 +2798,9 @@ impl AgentSession {
             if let Some(cb) = &opts.preflight_result {
                 cb(true);
             }
+            // 扩展命令（如 /goal 激活）会同步入队 follow-up（自动延续）；
+            // 与原版 idle 循环一致，这里消费队列启动 run 而不是直接返回。
+            self._run_settled_continuations().await;
             return Ok(());
         }
 
@@ -2891,10 +2943,37 @@ impl AgentSession {
         // Flush any bash messages queued while the agent was streaming
         // (matching TS _runAgentPrompt's finally block).
         self._flush_pending_bash_messages().await;
-        // Emit agent_settled after the agent run is fully complete
-        // (no retry, compaction, or queued messages pending).
-        self._emit_agent_settled().await;
+        // 自动延续：扩展（如 /goal）在 agent_settled 边界可能同步排入
+        // follow-up。循环消费直到扩展不再入队（matching TS 交互模式 idle
+        // 循环消费 followUp 队列）。
+        self._run_settled_continuations().await;
         Ok(())
+    }
+
+    /// settled 边界的自动延续循环：agent_settled → 检查 agent follow-up
+    /// 队列 → 有则 continue_run（续跑），续跑失败（如首次启动上下文为空）
+    /// 则把队列消息作为新 turn 启动；post-run 处理后再 settled，直到队列空。
+    async fn _run_settled_continuations(&self) {
+        loop {
+            self._emit_agent_settled().await;
+            if !self.agent.has_queued_messages().await {
+                break;
+            }
+            let continued = self.agent.continue_run().await.is_ok();
+            if !continued {
+                let queued = self.agent.drain_follow_up_queue().await;
+                if queued.is_empty() {
+                    break;
+                }
+                self.agent.process(queued).await.ok();
+            }
+            loop {
+                if !self._handle_post_agent_run().await {
+                    break;
+                }
+            }
+            self._flush_pending_bash_messages().await;
+        }
     }
 
     /// Handle post-agent-run tasks: retry, compaction, queued messages.
@@ -2965,7 +3044,8 @@ impl AgentSession {
         if let Some(ref registry) = self.extension_registry {
             let commands = registry.commands();
             if let Some(cmd) = commands.iter().find(|c| c.name == command_name) {
-                (cmd.execute)(args.to_string()).await;
+                let ext_ctx = self.ext_ctx.clone();
+                (cmd.execute)(args.to_string(), Some(&ext_ctx)).await;
                 return true;
             }
         }
@@ -4518,9 +4598,10 @@ References are relative to {}.
     async fn _emit_agent_settled(&self) {
         *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
         self._emit(AgentSessionEvent::AgentSettled);
-        // Fire agent_settled to extensions
+        // Fire agent_settled to extensions（携带 ctx，扩展可在空闲边界发送
+        // 自动延续消息，如 /goal 的 continuation）。
         if let Some(ref registry) = self.extension_registry {
-            registry.hook_runner().fire_agent_settled().await;
+            registry.hook_runner().fire_agent_settled(Some(&self.ext_ctx)).await;
         }
         self.idle_notify.notify_waiters();
     }

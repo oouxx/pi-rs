@@ -95,13 +95,22 @@ enum AnthropicContentBlock {
     ToolResult {
         #[serde(rename = "tool_use_id")]
         tool_use_id: String,
-        content: String,
+        content: AnthropicToolResultContent,
         #[serde(rename = "is_error", skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(rename = "cache_control")]
         cache_control: Option<AnthropicCacheControl>,
     },
+}
+
+/// tool_result 的 content：字符串或 block 数组（对齐 TS
+/// `content: string | ContentBlockParam[]`，图片场景用数组）。
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AnthropicToolResultContent {
+    String(String),
+    Blocks(Vec<AnthropicContentBlock>),
 }
 
 #[derive(Debug, Serialize)]
@@ -325,6 +334,57 @@ fn normalize_tool_call_id(id: &str) -> String {
         .collect()
 }
 
+/// 对齐 TS `convertContentBlocks`：纯文本 → 拼接字符串；有图 → block
+/// 数组（text + image），纯图无文本时前插 `"(see attached image)"`。
+fn convert_content_blocks(content: &[ContentBlock]) -> AnthropicToolResultContent {
+    let has_images = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+    if !has_images {
+        let text = content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return AnthropicToolResultContent::String(text);
+    }
+    let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+    let mut has_text = false;
+    for b in content {
+        match b {
+            ContentBlock::Text { text, .. } => {
+                has_text = true;
+                blocks.push(AnthropicContentBlock::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                });
+            }
+            ContentBlock::Image { data, mime_type } => {
+                blocks.push(AnthropicContentBlock::Image {
+                    source: AnthropicImageSource {
+                        source_type: "base64".to_string(),
+                        media_type: mime_type.clone(),
+                        data: data.clone(),
+                    },
+                    cache_control: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    if !has_text {
+        blocks.insert(
+            0,
+            AnthropicContentBlock::Text {
+                text: "(see attached image)".to_string(),
+                cache_control: None,
+            },
+        );
+    }
+    AnthropicToolResultContent::Blocks(blocks)
+}
+
 /// Convert pi-ai messages to Anthropic API message params.
 pub(crate) fn convert_messages(
     messages: &[Message],
@@ -336,63 +396,62 @@ pub(crate) fn convert_messages(
         .unwrap_or(false);
     let mut params: Vec<AnthropicMessageParam> = Vec::new();
 
-    for msg in messages {
+    let mut i = 0usize;
+    while i < messages.len() {
+        let msg = &messages[i];
         match msg {
             Message::User { content, .. } => {
-                let text = content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                if !text.trim().is_empty() {
-                    params.push(AnthropicMessageParam {
-                        role: "user".to_string(),
-                        content: AnthropicContent::String(text),
-                    });
-                }
-
-                // Handle images
-                let has_images = content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Image { .. }));
-
-                if has_images {
-                    // For image messages, we need to use content blocks
-                    // If there are text blocks, include them alongside images
-                    let blocks: Vec<AnthropicContentBlock> = content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text, .. } => {
-                                Some(AnthropicContentBlock::Text {
-                                    text: text.clone(),
-                                    cache_control: None,
-                                })
+                // 对齐 TS convertMessages 用户分支：逐消息 push（不替换
+                // 上一条），文本块 trim 后为空则剔除，全部为空则整条跳过。
+                let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+                let mut has_images = false;
+                for b in content {
+                    match b {
+                        ContentBlock::Text { text, .. } => {
+                            if text.trim().is_empty() {
+                                continue;
                             }
-                            ContentBlock::Image { data, mime_type } => {
-                                Some(AnthropicContentBlock::Image {
-                                    source: AnthropicImageSource {
-                                        source_type: "base64".to_string(),
-                                        media_type: mime_type.clone(),
-                                        data: data.clone(),
-                                    },
-                                    cache_control: None,
-                                })
-                            }
-                            _ => None,
-                        })
-                        .collect();
-
-                    // Replace the last user message with blocks version
-                    if let Some(last) = params.last_mut() {
-                        if last.role == "user" {
-                            last.content = AnthropicContent::Blocks(blocks);
+                            blocks.push(AnthropicContentBlock::Text {
+                                text: text.clone(),
+                                cache_control: None,
+                            });
                         }
+                        ContentBlock::Image { data, mime_type } => {
+                            has_images = true;
+                            blocks.push(AnthropicContentBlock::Image {
+                                source: AnthropicImageSource {
+                                    source_type: "base64".to_string(),
+                                    media_type: mime_type.clone(),
+                                    data: data.clone(),
+                                },
+                                cache_control: None,
+                            });
+                        }
+                        _ => {}
                     }
                 }
+                if blocks.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                // 纯文本（无图）→ 拼接字符串；有图 → block 数组。
+                let content_param = if has_images {
+                    AnthropicContent::Blocks(blocks)
+                } else {
+                    let text = blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            AnthropicContentBlock::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    AnthropicContent::String(text)
+                };
+                params.push(AnthropicMessageParam {
+                    role: "user".to_string(),
+                    content: content_param,
+                });
             }
             Message::Assistant { content, .. } => {
                 let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
@@ -472,32 +531,39 @@ pub(crate) fn convert_messages(
                     });
                 }
             }
-            Message::ToolResult {
-                tool_call_id,
-                content,
-                is_error,
-                ..
-            } => {
-                let text = content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                params.push(AnthropicMessageParam {
-                    role: "user".to_string(),
-                    content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
-                        tool_use_id: normalize_tool_call_id(tool_call_id),
-                        content: text,
+            Message::ToolResult { .. } => {
+                // 对齐 TS convertMessages toolResult 分支：合并连续
+                // toolResult 消息为一条 user 消息（z.ai 端点要求）。
+                let mut tool_results: Vec<AnthropicContentBlock> = Vec::new();
+                while i < messages.len() {
+                    let Message::ToolResult {
+                        tool_call_id,
+                        content,
+                        is_error,
+                        ..
+                    } = &messages[i]
+                    else {
+                        break;
+                    };
+                    // 对齐 TS convertContentBlocks：纯文本 → 拼接字符串；
+                    // 有图 → block 数组（纯图无文本时前插占位文本）。
+                    let converted = convert_content_blocks(content);
+                    tool_results.push(AnthropicContentBlock::ToolResult {
+                        tool_use_id: tool_call_id.clone(),
+                        content: converted,
                         is_error: if *is_error { Some(true) } else { None },
                         cache_control: None,
-                    }]),
+                    });
+                    i += 1;
+                }
+                params.push(AnthropicMessageParam {
+                    role: "user".to_string(),
+                    content: AnthropicContent::Blocks(tool_results),
                 });
+                continue;
             }
         }
+        i += 1;
     }
 
     // Add cache_control to the last user message to cache conversation history
@@ -787,7 +853,14 @@ async fn stream_anthropic_inner(
 
     // Build request body
     let cache_control = get_cache_control(model, options);
-    let messages = convert_messages(&context.messages, model, cache_control.as_ref());
+    // 对齐 TS buildParams：先 transformMessages（图片降级/thinking 预处理/
+    // tool call id 归一化/孤儿合成/跳过 errored-aborted），再 convertMessages。
+    let transformed = crate::utils::transform::transform_messages(
+        &context.messages,
+        model,
+        &|id: &str, _m: &Model, _p: &str, _a: &str| normalize_tool_call_id(id),
+    );
+    let messages = convert_messages(&transformed, model, cache_control.as_ref());
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
     body.insert("messages".to_string(), serde_json::to_value(&messages)?);

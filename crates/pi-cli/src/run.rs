@@ -169,6 +169,8 @@ pub async fn run(args: &CliArgs) -> i32 {
             args.extensions.clone(),
             args.unknown_flags.clone(),
             !args.no_extensions,
+            args.provider.clone(),
+            args.model.clone(),
         )
         .await;
     }

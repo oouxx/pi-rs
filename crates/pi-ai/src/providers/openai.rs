@@ -1361,7 +1361,19 @@ async fn stream_openai_inner(
         context,
         compat.supports_openai_grammar_tools,
     );
-    let mut messages = convert_messages(model, context, &compat, &grammar_properties);
+    // 对齐 TS convertMessages：先 transformMessages（图片降级/thinking
+    // 预处理/tool call id 归一化/孤儿合成/跳过 errored-aborted）。
+    let transformed = crate::utils::transform::transform_messages(
+        &context.messages,
+        model,
+        &|id: &str, m: &Model, _p: &str, _a: &str| normalize_tool_call_id(id, m),
+    );
+    let transformed_context = Context {
+        system_prompt: context.system_prompt.clone(),
+        messages: transformed,
+        tools: context.tools.clone(),
+    };
+    let mut messages = convert_messages(model, &transformed_context, &compat, &grammar_properties);
 
     // Cache retention (match TS `resolveCacheRetention`).
     let cache_retention = options
@@ -1478,6 +1490,13 @@ async fn stream_openai_inner(
     }
 
     let request_body = Value::Object(body);
+    // [vision-debug]
+    if std::env::var("PI_DEBUG_BODY").is_ok() {
+        let _ = std::fs::write(
+            "/tmp/pi_openai_body.json",
+            serde_json::to_string_pretty(&request_body).unwrap_or_default(),
+        );
+    }
     let mut headers: Vec<(String, String)> = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
     ];

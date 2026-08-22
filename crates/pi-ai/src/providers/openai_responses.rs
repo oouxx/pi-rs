@@ -374,67 +374,25 @@ fn convert_responses_messages(
         messages.push(json!({ "role": role, "content": sp }));
     }
 
-    let supports_images = model.input.iter().any(|i| i == "image");
     let mut msg_index = 0usize;
 
-    // Match TS `transformMessages`: tool-call ids are only normalized for
-    // messages from a *different* model (isSameModel). The mapping is used to
-    // normalize matching toolResult ids. Same-model messages keep raw ids.
-    let mut tool_call_id_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for msg in &context.messages {
-        if let Message::Assistant {
-            content,
-            provider,
-            api,
-            model: msg_model,
-            ..
-        } = msg
-        {
-            let is_same_model =
-                msg_model == &model.id && provider == &model.provider && api == &model.api;
-            if !is_same_model {
-                for b in content {
-                    if let ContentBlock::ToolCall { id, .. } = b {
-                        let normalized = normalize_tool_call_id(id, model, provider, api);
-                        if normalized != *id {
-                            tool_call_id_map.insert(id.clone(), normalized);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    // 注意：tool call id 归一化与图片降级由调用方先执行
+    // `transform_messages`（对齐 TS transformMessages），这里不再重复。
     for msg in &context.messages {
         match msg {
             Message::User { content, .. } => {
                 let mut items: Vec<Value> = Vec::new();
-                let mut previous_was_placeholder = false;
                 for b in content {
                     match b {
                         ContentBlock::Text { text, .. } => {
                             items.push(json!({ "type": "input_text", "text": text }));
-                            previous_was_placeholder =
-                                text == "(image omitted: model does not support images)";
                         }
                         ContentBlock::Image { data, mime_type } => {
-                            if !supports_images {
-                                if !previous_was_placeholder {
-                                    items.push(json!({
-                                        "type": "input_text",
-                                        "text": "(image omitted: model does not support images)",
-                                    }));
-                                }
-                                previous_was_placeholder = true;
-                            } else {
-                                items.push(json!({
-                                    "type": "input_image",
-                                    "detail": "auto",
-                                    "image_url": format!("data:{mime_type};base64,{data}"),
-                                }));
-                                previous_was_placeholder = false;
-                            }
+                            items.push(json!({
+                                "type": "input_image",
+                                "detail": "auto",
+                                "image_url": format!("data:{mime_type};base64,{data}"),
+                            }));
                         }
                         _ => {}
                     }
@@ -509,12 +467,8 @@ fn convert_responses_messages(
                             arguments,
                             ..
                         } => {
-                            // Use the pre-pass mapping (only populated for
-                            // different-model messages), otherwise the raw id.
-                            let used_id = tool_call_id_map
-                                .get(id)
-                                .cloned()
-                                .unwrap_or_else(|| id.clone());
+                            // transform_messages 已对跨模型消息归一化 id。
+                            let used_id = id.clone();
                             let (call_id, item_id_raw) =
                                 used_id.split_once('|').unwrap_or((&used_id, ""));
                             let mut item_id: Option<String> = Some(item_id_raw.to_string());
@@ -569,10 +523,8 @@ fn convert_responses_messages(
                 added_tool_names,
                 ..
             } => {
-                let used_id = tool_call_id_map
-                    .get(tool_call_id)
-                    .cloned()
-                    .unwrap_or_else(|| tool_call_id.clone());
+                // transform_messages 已归一化 toolResult 的 toolCallId。
+                let used_id = tool_call_id.clone();
                 let call_id = used_id.split('|').next().unwrap_or(&used_id).to_string();
                 let output = convert_tool_result_output(model, content);
                 if grammar_tool_input_properties.contains_key(tool_name) {
@@ -1817,7 +1769,18 @@ fn build_request_body(
     let compat = get_compat(model);
     let supports_tool_search = compat.supports_tool_search.unwrap_or(false);
     let (immediate_tools, deferred_tools) = split_deferred_tools(context, supports_tool_search);
-    let messages = convert_responses_messages(model, context, &deferred_tools, &compat)?;
+    // 对齐 TS convertResponsesMessages：先 transformMessages 再转换。
+    let transformed = crate::utils::transform::transform_messages(
+        &context.messages,
+        model,
+        &|id: &str, m: &Model, p: &str, a: &str| normalize_tool_call_id(id, m, p, a),
+    );
+    let transformed_context = Context {
+        system_prompt: context.system_prompt.clone(),
+        messages: transformed,
+        tools: context.tools.clone(),
+    };
+    let messages = convert_responses_messages(model, &transformed_context, &deferred_tools, &compat)?;
     let tools = if immediate_tools.is_empty() {
         None
     } else {

@@ -418,7 +418,11 @@ impl ModelRegistry {
                             base_url: provider_def.base_url.clone(),
                             api_key: provider_def.api_key.clone(),
                             api: provider_def.api.clone(),
-                            headers: provider_def.headers.clone(),
+                            headers: provider_def.headers.as_ref().map(|h| {
+                                let mut m = HashMap::new();
+                                apply_headers_with_deletions(&mut m, h);
+                                m
+                            }),
                             auth_header: provider_def.auth_header,
                         };
                         provider_configs.insert(provider_name.clone(), provider_config);
@@ -499,7 +503,11 @@ impl ModelRegistry {
 },
                                     context_window: model_def.context_window.unwrap_or(128000),
                                     max_tokens: model_def.max_tokens.unwrap_or(16384),
-                                    headers: model_def.headers.clone(),
+                                    headers: model_def.headers.as_ref().map(|h| {
+                                        let mut m = HashMap::new();
+                                        apply_headers_with_deletions(&mut m, h);
+                                        m
+                                    }),
                                     compat: model_def.compat.clone(),
                                 };
 
@@ -560,7 +568,7 @@ impl ModelRegistry {
                                     }
                                     if let Some(ref headers) = override_def.headers {
                                         let mut merged = model.headers.clone().unwrap_or_default();
-                                        merged.extend(headers.clone());
+                                        apply_headers_with_deletions(&mut merged, headers);
                                         model.headers = Some(merged);
                                     }
                                     if let Some(ref compat) = override_def.compat {
@@ -581,6 +589,27 @@ impl ModelRegistry {
             }
         }
         HashMap::new()
+    }
+}
+
+/// Apply a header map with `string | null` semantics (TS 0.84
+/// `ProviderHeaders`): `None` values are header-deletion markers that remove
+/// the header from the target map; `Some` values are inserted. This prevents
+/// placeholder auth headers (e.g. an OpenAI credential configured for a
+/// Cloudflare gateway) from ever reaching the wire.
+pub(crate) fn apply_headers_with_deletions(
+    target: &mut HashMap<String, String>,
+    source: &HashMap<String, Option<String>>,
+) {
+    for (name, value) in source {
+        match value {
+            Some(v) => {
+                target.insert(name.clone(), v.clone());
+            }
+            None => {
+                target.remove(name);
+            }
+        }
     }
 }
 
@@ -615,7 +644,7 @@ struct ProviderDefinition {
     #[serde(default)]
     api: Option<String>,
     #[serde(default)]
-    headers: Option<HashMap<String, String>>,
+    headers: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
     auth_header: Option<bool>,
     #[serde(default)]
@@ -650,7 +679,7 @@ struct ModelDefinition {
     #[serde(default)]
     max_tokens: Option<u64>,
     #[serde(default)]
-    headers: Option<HashMap<String, String>>,
+    headers: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
     compat: Option<pi_agent_core::pi_ai_types::ModelCompat>,
 }
@@ -674,7 +703,7 @@ struct ModelOverrideDefinition {
     #[serde(default)]
     max_tokens: Option<u64>,
     #[serde(default)]
-    headers: Option<HashMap<String, String>>,
+    headers: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
     compat: Option<pi_agent_core::pi_ai_types::ModelCompat>,
 }
@@ -1003,5 +1032,26 @@ mod tests {
         }));
         assert_eq!(registry.get_api_key_for_provider("test-provider-xyz"), Some("sk-stored-123".to_string()));
         assert_eq!(registry.get_api_key_for_provider("anthropic"), None);
+    }
+
+    /// TS 0.84 `ProviderHeaders`: `null` header values in models.json are
+    /// deletion markers — they never reach the wire, and an override `null`
+    /// removes a previously set header (placeholder credentials cannot leak).
+    #[test]
+    fn test_apply_headers_with_deletions() {
+        let mut target: HashMap<String, String> = HashMap::new();
+        target.insert("authorization".into(), "Bearer placeholder".into());
+        target.insert("x-api-key".into(), "sk-old".into());
+
+        // Some → insert/overwrite; None → delete.
+        let mut source: HashMap<String, Option<String>> = HashMap::new();
+        source.insert("authorization".into(), None);
+        source.insert("x-api-key".into(), Some("sk-new".into()));
+        source.insert("x-custom".into(), Some("v".into()));
+        apply_headers_with_deletions(&mut target, &source);
+
+        assert!(target.get("authorization").is_none(), "null marker must delete the header");
+        assert_eq!(target.get("x-api-key").map(|s| s.as_str()), Some("sk-new"));
+        assert_eq!(target.get("x-custom").map(|s| s.as_str()), Some("v"));
     }
 }

@@ -458,6 +458,7 @@ mod tests {
                 name: "bash".into(),
                 arguments: serde_json::json!({}),
                 thought_signature: None,
+                namespace: None,
             }],
             StopReason::Stop,
         )];
@@ -492,6 +493,7 @@ mod tests {
                 name: "bash".into(),
                 arguments: serde_json::json!({}),
                 thought_signature: None,
+                namespace: None,
             }],
             api: "openai-responses".into(),
             provider: "other-provider".into(),
@@ -546,6 +548,7 @@ mod tests {
                 name: "bash".into(),
                 arguments: serde_json::json!({}),
                 thought_signature: None,
+                namespace: None,
             }],
             StopReason::Stop,
         )];

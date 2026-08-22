@@ -367,6 +367,7 @@ async fn test_stream_tool_call() {
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "/tmp/x"}),
                     thought_signature: None,
+                    namespace: None,
                 }],
                 ..partial_msg("")
             },
@@ -379,6 +380,7 @@ async fn test_stream_tool_call() {
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "/tmp/x"}),
                     thought_signature: None,
+                    namespace: None,
                 }],
                 stop_reason: StopReason::ToolUse,
                 ..partial_msg("")
@@ -523,6 +525,7 @@ async fn test_stream_text_then_tool_call() {
                         name: "search".into(),
                         arguments: serde_json::json!({"query": "rust"}),
                         thought_signature: None,
+                        namespace: None,
                     },
                 ],
                 ..partial_msg("")
@@ -541,6 +544,7 @@ async fn test_stream_text_then_tool_call() {
                         name: "search".into(),
                         arguments: serde_json::json!({"query": "rust"}),
                         thought_signature: None,
+                        namespace: None,
                     },
                 ],
                 stop_reason: StopReason::ToolUse,

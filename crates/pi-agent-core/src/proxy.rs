@@ -407,6 +407,7 @@ pub fn process_proxy_event(
                     name: String::new(),
                     arguments: serde_json::Value::Object(serde_json::Map::new()),
                     thought_signature: None,
+                    namespace: None,
                 });
             }
             partial.content[content_index] = ContentBlock::ToolCall {
@@ -414,6 +415,7 @@ pub fn process_proxy_event(
                 name: tool_name,
                 arguments: serde_json::Value::Object(serde_json::Map::new()),
                 thought_signature: None,
+                namespace: None,
             };
             Some(AssistantMessageEvent::ToolCallStart {
                 content_index,
@@ -456,6 +458,7 @@ pub fn process_proxy_event(
                     name: name.clone(),
                     arguments: arguments.clone(),
                     thought_signature: None,
+                    namespace: None,
                 },
                 _ => return None,
             };

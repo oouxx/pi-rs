@@ -289,6 +289,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                     name: tool_call.name,
                                     arguments: tool_call.arguments,
                                     thought_signature: None,
+                                    namespace: None,
                                 },
                                 partial: convert_msg(partial),
                             },
@@ -348,11 +349,13 @@ fn convert_msg(
                     name,
                     arguments,
                     thought_signature,
+                    namespace,
                 } => ContentBlock::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
                     arguments: arguments.clone(),
                     thought_signature: thought_signature.clone(),
+                    namespace: namespace.clone(),
                 },
                 pi_agent_core::pi_ai::types::ContentBlock::Image { data, mime_type } => {
                     ContentBlock::Image {

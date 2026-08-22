@@ -29,6 +29,10 @@ pub enum ContentBlock {
         arguments: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
+        /// OpenAI Responses namespace for calls to dynamically loaded or
+        /// namespaced tools (TS `ToolCall.namespace`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     #[serde(rename = "image")]
     Image {
@@ -60,6 +64,8 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thought_signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl ToolCall {
@@ -71,6 +77,7 @@ impl ToolCall {
             name,
             arguments,
             thought_signature: None,
+            namespace: None,
         }
     }
 }
@@ -1173,6 +1180,7 @@ mod tests {
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "/tmp/test.txt"}),
             thought_signature: None,
+            namespace: None,
         };
         let json = serde_json::to_string(&block).unwrap();
         let parsed: ContentBlock = serde_json::from_str(&json).unwrap();

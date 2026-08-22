@@ -73,6 +73,7 @@ pub fn tool_call_block(id: String, name: String, arguments: serde_json::Value) -
         name,
         arguments,
         thought_signature: None,
+        namespace: None,
     }
 }
 

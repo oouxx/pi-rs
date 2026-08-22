@@ -310,6 +310,7 @@ impl PiMessagesConverter {
                         name: tool_name.clone(),
                         arguments: serde_json::json!({}),
                         thought_signature: None,
+                        namespace: None,
                     },
                 );
                 self.tool_json.insert(content_index, String::new());
@@ -345,6 +346,7 @@ impl PiMessagesConverter {
                     name: tool_call.name.clone(),
                     arguments: tool_call.arguments.clone(),
                     thought_signature: None,
+                    namespace: None,
                 };
                 self.tool_json.remove(&content_index);
                 AssistantMessageEvent::ToolCallEnd {
@@ -355,6 +357,7 @@ impl PiMessagesConverter {
                         name: tool_call.name,
                         arguments: tool_call.arguments,
                         thought_signature: None,
+                        namespace: None,
                     },
                     partial: self.partial.clone(),
                 }
@@ -1002,6 +1005,7 @@ mod tests {
                     name: "get_weather".into(),
                     arguments: json!({"city": "NYC"}),
                     thought_signature: None,
+                    namespace: None,
                 },
             },
             PiMessagesEvent::Done {

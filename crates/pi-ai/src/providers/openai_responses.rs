@@ -481,6 +481,7 @@ fn convert_responses_messages(
                             id,
                             name,
                             arguments,
+                            namespace,
                             ..
                         } => {
                             // transform_messages 已对跨模型消息归一化 id。
@@ -489,6 +490,10 @@ fn convert_responses_messages(
                                 used_id.split_once('|').unwrap_or((&used_id, ""));
                             let mut item_id: Option<String> = Some(item_id_raw.to_string());
                             let custom_input_property = grammar_tool_input_properties.get(name);
+                            // TS `canReplayNamespace`: same model, or the tool
+                            // is a deferred tool loaded from the transcript.
+                            let can_replay_namespace = is_same_model
+                                || deferred_tools.contains_key(name.as_str());
                             // Drop non-fc_* ids and foreign fc_* ids (unless the
                             // tool is grammar-constrained, which keeps its id).
                             // Match TS: drop iff `(!isSameModel && fc_)` OR
@@ -509,6 +514,13 @@ fn convert_responses_messages(
                                 if let Some(iid) = item_id {
                                     obj.insert("id".into(), json!(iid));
                                 }
+                                // TS 0.84.2 (#7709): replay the namespace for
+                                // dynamically loaded / namespaced tools.
+                                if can_replay_namespace {
+                                    if let Some(ns) = namespace {
+                                        obj.insert("namespace".into(), json!(ns));
+                                    }
+                                }
                                 output.push(Value::Object(obj));
                             } else {
                                 let mut obj = serde_json::Map::new();
@@ -521,6 +533,11 @@ fn convert_responses_messages(
                                 );
                                 if let Some(iid) = item_id {
                                     obj.insert("id".into(), json!(iid));
+                                }
+                                if can_replay_namespace {
+                                    if let Some(ns) = namespace {
+                                        obj.insert("namespace".into(), json!(ns));
+                                    }
                                 }
                                 output.push(Value::Object(obj));
                             }
@@ -640,7 +657,7 @@ pub(crate) struct GrammarConstrainedSampling {
 }
 
 #[derive(Debug, Clone, Default)]
-struct GrammarToolInputJsonBuffer {
+pub(crate) struct GrammarToolInputJsonBuffer {
     input: String,
     started: bool,
     closed: bool,
@@ -826,14 +843,14 @@ pub(crate) fn grammar_tool_input_properties(
 
 /// Per-streaming-slot scratch state for a grammar-constrained custom tool call
 /// (match TS `StreamingToolCall.customInput`).
-struct CustomToolCallStream {
-    property: String,
-    buffer: GrammarToolInputJsonBuffer,
+pub(crate) struct CustomToolCallStream {
+    pub(crate) property: String,
+    pub(crate) buffer: GrammarToolInputJsonBuffer,
 }
 
 /// Read the current input value out of a custom tool call's arguments
 /// (match TS `getCustomToolCallInput`).
-fn get_custom_tool_call_input(arguments: &serde_json::Value, property: &str) -> String {
+pub(crate) fn get_custom_tool_call_input(arguments: &serde_json::Value, property: &str) -> String {
     if property.is_empty() {
         return String::new();
     }
@@ -846,7 +863,7 @@ fn get_custom_tool_call_input(arguments: &serde_json::Value, property: &str) -> 
 
 /// Append a JSON delta to a custom tool call's buffered input and update the
 /// block's arguments in place (match TS `appendCustomToolCallInput`).
-fn append_custom_tool_call_input(
+pub(crate) fn append_custom_tool_call_input(
     slot: &mut CustomToolCallStream,
     arguments: &mut serde_json::Value,
     next_input: String,
@@ -1078,6 +1095,7 @@ fn create_slot(
                 name: block.name.clone(),
                 arguments: block.arguments.clone(),
                 thought_signature: None,
+                namespace: None,
             });
             let content_index = output.content.len() - 1;
             output_slots.insert(
@@ -1114,6 +1132,7 @@ fn create_slot(
                 name: block.name.clone(),
                 arguments: block.arguments.clone(),
                 thought_signature: None,
+                namespace: None,
             });
             let content_index = output.content.len() - 1;
             output_slots.insert(
@@ -1655,6 +1674,15 @@ where
                             {
                                 *args = parse_streaming_json(Some(arguments));
                             }
+                            // TS 0.84.2 (#7709): preserve the namespace for
+                            // calls to dynamically loaded / namespaced tools.
+                            if let Some(ns) = item.get("namespace").and_then(Value::as_str) {
+                                if let ContentBlock::ToolCall { namespace, .. } =
+                                    &mut output.content[content_index]
+                                {
+                                    *namespace = Some(ns.to_string());
+                                }
+                            }
                             if let Some(OutputSlot::ToolCall { partial_json, .. }) =
                                 output_slots.get_mut(&output_index)
                             {
@@ -1711,6 +1739,14 @@ where
                                     output_slots.get_mut(&output_index)
                                 {
                                     *custom_input = None;
+                                }
+                                // TS 0.84.2 (#7709): preserve the namespace.
+                                if let Some(ns) = item.get("namespace").and_then(Value::as_str) {
+                                    if let ContentBlock::ToolCall { namespace, .. } =
+                                        &mut output.content[content_index]
+                                    {
+                                        *namespace = Some(ns.to_string());
+                                    }
                                 }
                                 let tool_call = match &output.content[content_index] {
                                     ContentBlock::ToolCall {
@@ -2372,6 +2408,7 @@ mod tests {
                         name: "sample_tool".into(),
                         arguments,
                         thought_signature: None,
+                        namespace: None,
                     }],
                     api: "openai-responses".into(),
                     provider: "openai".into(),

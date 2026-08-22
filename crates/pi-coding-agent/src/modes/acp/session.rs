@@ -2434,6 +2434,7 @@ mod tests {
                                 name: "bash".into(),
                                 arguments: serde_json::json!({"command": "ls -la"}),
                                 thought_signature: None,
+                                namespace: None,
                             }],
                             api: "openai-completions".into(),
                             provider: "openai".into(),

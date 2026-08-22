@@ -1350,6 +1350,7 @@ async fn stream_anthropic_inner(
                         name,
                         arguments: input,
                         thought_signature: None,
+                        namespace: None,
                     };
                     let content_idx = blocks.len();
                     output.content.push(block.clone());
@@ -1768,6 +1769,7 @@ mod tests {
                         name: "get_weather".into(),
                         arguments: serde_json::json!({"city": "NYC"}),
                         thought_signature: None,
+                        namespace: None,
                     },
                 ],
                 api: "anthropic-messages".into(),
@@ -1849,6 +1851,7 @@ mod tests {
                 name: "test".into(),
                 arguments: serde_json::json!({}),
                 thought_signature: None,
+                namespace: None,
             }],
             api: "anthropic-messages".into(),
             provider: "anthropic".into(),

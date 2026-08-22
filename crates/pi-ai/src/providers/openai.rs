@@ -70,6 +70,11 @@ fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
     let is_nvidia = provider == "nvidia" || base_url.contains("integrate.api.nvidia.com");
     let is_ant_ling = provider == "ant-ling" || base_url.contains("api.ant-ling.com");
+    // TS 0.84.2: lowercase hostname comparison so uppercase base URLs are
+    // still detected ("DeepSeek compatibility detection for base URLs whose
+    // hostname contains uppercase letters").
+    let is_deepseek =
+        provider == "deepseek" || base_url.to_lowercase().contains("deepseek.com");
 
     let is_non_standard = is_nvidia
         || provider == "cerebras"
@@ -88,6 +93,7 @@ fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         || is_ant_ling;
 
     let use_max_tokens = base_url.contains("chutes.ai")
+        || is_deepseek
         || is_moonshot
         || is_cloudflare_ai_gateway
         || is_together
@@ -96,7 +102,6 @@ fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         || is_zai;
 
     let is_grok = provider == "xai" || base_url.contains("api.x.ai");
-    let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
     let is_openrouter_developer_role_model =
         is_openrouter && (model.id.starts_with("anthropic/") || model.id.starts_with("openai/"));
     let cache_control_format = if provider == "openrouter" && model.id.starts_with("anthropic/") {
@@ -1578,6 +1583,7 @@ async fn stream_openai_inner(
         id: String,
         name: String,
         partial_args: String,
+        custom_input: Option<super::openai_responses::CustomToolCallStream>,
     }
 
     let mut current_text: Option<(usize, String)> = None; // (content_index, text)
@@ -1782,6 +1788,26 @@ async fn stream_openai_inner(
                     .unwrap_or(0) as usize;
                 let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let tc_function = tc.get("function");
+                let tc_custom = tc.get("custom");
+                // TS 0.83 (#7288): `function.name ?? custom.name` — a delta
+                // with both a valid function payload and an empty custom
+                // object must not discard the function arguments.
+                let tc_name = tc_function
+                    .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+                    .or_else(|| tc_custom.and_then(|c| c.get("name").and_then(|v| v.as_str())))
+                    .unwrap_or("");
+                // Custom input only applies when there is no function payload
+                // (TS `toolCall.custom && !toolCall.function`).
+                let custom_input_property = if tc_custom.is_some() && tc_function.is_none() {
+                    Some(
+                        grammar_properties
+                            .get(tc_name)
+                            .cloned()
+                            .unwrap_or_else(|| "input".to_string()),
+                    )
+                } else {
+                    None
+                };
 
                 // Find or create tool call block (TS: ensureToolCallBlock)
                 let block_idx = tool_call_blocks_by_index
@@ -1801,12 +1827,12 @@ async fn stream_openai_inner(
                         block.id = tc_id.to_string();
                         tool_call_blocks_by_id.insert(block.id.clone(), bi);
                     }
+                    if !block.name.is_empty() {
+                        // keep existing name
+                    } else if !tc_name.is_empty() {
+                        block.name = tc_name.to_string();
+                    }
                     if let Some(func) = tc_function {
-                        if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
-                            if block.name.is_empty() {
-                                block.name = name.to_string();
-                            }
-                        }
                         if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
                             block.partial_args.push_str(args);
                             if let Ok(parsed) = serde_json::from_str::<Value>(&block.partial_args) {
@@ -1824,27 +1850,75 @@ async fn stream_openai_inner(
                                 partial: output.clone(),
                             });
                         }
+                    } else if let Some(custom_input) = block.custom_input.as_mut() {
+                        // Custom tool call input delta (TS
+                        // `toolCall.custom?.input` branch).
+                        if let Some(input) = tc_custom
+                            .and_then(|c| c.get("input").and_then(|v| v.as_str()))
+                        {
+                            let current_args =
+                                match &output.content[block.content_index] {
+                                    ContentBlock::ToolCall { arguments, .. } => arguments,
+                                    _ => &Value::Null,
+                                };
+                            let next_input =
+                                super::openai_responses::get_custom_tool_call_input(
+                                    current_args,
+                                    &custom_input.property,
+                                ) + input;
+                            let current_args =
+                                match &mut output.content[block.content_index] {
+                                    ContentBlock::ToolCall { arguments, .. } => arguments,
+                                    _ => &mut Value::Null,
+                                };
+                            let delta =
+                                super::openai_responses::append_custom_tool_call_input(
+                                    custom_input,
+                                    current_args,
+                                    next_input,
+                                    false,
+                                )
+                                .unwrap_or_default();
+                            if let Some(d) = delta {
+                                let _ = tx.send(AssistantMessageEvent::ToolCallDelta {
+                                    content_index: block.content_index,
+                                    delta: d,
+                                    partial: output.clone(),
+                                });
+                            }
+                        }
                     }
                 } else {
                     let ci = output.content.len();
-                    let mut name = String::new();
+                    let name = tc_name.to_string();
                     let mut first_args = String::new();
                     if let Some(func) = tc_function {
-                        if let Some(n) = func.get("name").and_then(|v| v.as_str()) {
-                            name = n.to_string();
-                        }
                         if let Some(a) = func.get("arguments").and_then(|v| v.as_str()) {
                             first_args = a.to_string();
                         }
                     }
-                    let args_val = serde_json::from_str::<Value>(&first_args)
+                    let mut args_val = serde_json::from_str::<Value>(&first_args)
                         .unwrap_or_else(|_| Value::Object(serde_json::Map::default()));
+                    let custom_stream = match custom_input_property {
+                        Some(property) => {
+                            let mut m = serde_json::Map::new();
+                            m.insert(property.clone(), Value::String(String::new()));
+                            args_val = Value::Object(m);
+                            Some(super::openai_responses::CustomToolCallStream {
+                                property,
+                                buffer:
+                                    super::openai_responses::GrammarToolInputJsonBuffer::default(),
+                            })
+                        }
+                        None => None,
+                    };
 
                     output.content.push(ContentBlock::ToolCall {
                         id: tc_id.to_string(),
                         name: name.clone(),
                         arguments: args_val,
                         thought_signature: None,
+                        namespace: None,
                     });
                     let _ = tx.send(AssistantMessageEvent::ToolCallStart {
                         content_index: ci,
@@ -1857,6 +1931,7 @@ async fn stream_openai_inner(
                         id: tc_id.to_string(),
                         name,
                         partial_args: first_args,
+                        custom_input: custom_stream,
                     });
                     tool_call_blocks_by_index.insert(stream_index, bi);
                     if !tc_id.is_empty() {
@@ -2166,6 +2241,7 @@ mod tests {
                     name: "get_weather".into(),
                     arguments: serde_json::json!({"city": "NYC"}),
                     thought_signature: None,
+                    namespace: None,
                 }],
                 api: "openai-completions".into(),
                 provider: "openai".into(),

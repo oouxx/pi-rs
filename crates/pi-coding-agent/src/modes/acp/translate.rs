@@ -954,6 +954,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         }
     }
@@ -1432,6 +1433,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let event = AgentSessionEvent::MessageUpdate {
@@ -1697,6 +1699,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let start = AgentSessionEvent::MessageUpdate {
@@ -1738,6 +1741,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let delta = AgentSessionEvent::MessageUpdate {
@@ -1820,6 +1824,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let start = AgentSessionEvent::MessageUpdate {

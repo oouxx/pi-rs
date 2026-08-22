@@ -563,6 +563,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         }
     }

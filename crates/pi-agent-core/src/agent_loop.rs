@@ -752,6 +752,7 @@ async fn stream_assistant_response(
         stop_reason: StopReason::Error,
         error_message: Some("Stream ended without done/error event".to_string()),
         raw_stop_reason: None,
+        end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     });
 
@@ -1258,6 +1259,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 1000,
         }
     }

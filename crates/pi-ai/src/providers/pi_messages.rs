@@ -168,6 +168,7 @@ impl PiMessagesConverter {
                 stop_reason: StopReason::Stop,
                 error_message: None,
                 raw_stop_reason: None,
+                end_turn: None,
                 timestamp: chrono::Utc::now().timestamp_millis(),
             },
             tool_json: HashMap::new(),
@@ -677,6 +678,7 @@ pub fn stream_pi_messages(
                 stop_reason: reason.clone(),
                 error_message: Some(e.to_string()),
                 raw_stop_reason: None,
+                end_turn: None,
                 timestamp: chrono::Utc::now().timestamp_millis(),
             };
             // Match TS `createErrorEvent`: attach a structured diagnostic for

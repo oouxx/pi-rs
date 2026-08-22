@@ -1931,6 +1931,7 @@ mod tests {
                 stop_reason: pi_agent_core::pi_ai_types::StopReason::Stop,
                 error_message: None,
                 raw_stop_reason: None,
+                end_turn: None,
                 timestamp: 0,
             },
         }
@@ -1956,6 +1957,7 @@ mod tests {
                 stop_reason: pi_agent_core::pi_ai_types::StopReason::Aborted,
                 error_message: Some("Request was aborted".to_string()),
                 raw_stop_reason: None,
+                end_turn: None,
                 timestamp: 0,
             },
         }

@@ -220,6 +220,12 @@ pub struct AssistantMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "rawStopReason")]
     pub raw_stop_reason: Option<String>,
+    /// Provider indication of whether the model explicitly ended its turn
+    /// (OpenAI Codex `end_turn`). Preserved for diagnostics and does not
+    /// currently affect agent control flow (TS 0.84.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "endTurn")]
+    pub end_turn: Option<bool>,
     pub timestamp: i64,
 }
 
@@ -1080,6 +1086,7 @@ mod tests {
                 stop_reason: StopReason::Stop,
                 error_message: None,
                 raw_stop_reason: None,
+                end_turn: None,
                 timestamp: 0,
             },
         };
@@ -1269,6 +1276,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 1_234_567_890,
         };
         let event = AssistantMessageEvent::Start { partial: msg };
@@ -1297,6 +1305,7 @@ mod tests {
             stop_reason: StopReason::Error,
             error_message: Some("prompt is too long".into()),
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 1_234_567_890,
         };
         let event = AssistantMessageEvent::Error {

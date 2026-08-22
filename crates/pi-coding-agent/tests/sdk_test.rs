@@ -306,6 +306,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                     stop_reason: pi_agent_core::pi_ai::types::StopReason::Error,
                                     error_message: Some("Unknown event".into()),
                                     raw_stop_reason: None,
+                                    end_turn: None,
                                     timestamp: 0,
                                 }),
                             },
@@ -371,6 +372,7 @@ fn convert_msg(
         stop_reason: msg.stop_reason,
         error_message: msg.error_message,
         raw_stop_reason: None,
+        end_turn: None,
         timestamp: msg.timestamp,
     }
 }

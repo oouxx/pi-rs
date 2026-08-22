@@ -378,6 +378,7 @@ pub async fn complete_summarization(
                     stop_reason: crate::pi_ai_types::StopReason::Error,
                     error_message: Some(e),
                     raw_stop_reason: None,
+                    end_turn: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 },
             }

@@ -114,6 +114,7 @@ pub fn assistant_message(
         stop_reason,
         error_message: None,
         raw_stop_reason: None,
+        end_turn: None,
         timestamp,
     }
 }
@@ -142,6 +143,7 @@ pub fn assistant_message_error(
         stop_reason,
         error_message: Some(error_message),
         raw_stop_reason: None,
+        end_turn: None,
         timestamp,
     }
 }

@@ -1697,6 +1697,12 @@ where
             "response.completed" | "response.incomplete" => {
                 saw_terminal = true;
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
+                // Preserve the Codex terminal `end_turn` signal for
+                // diagnostics (TS 0.84.2: `AssistantMessage.endTurn`); it
+                // does not affect agent control flow.
+                if let Some(Value::Bool(end_turn)) = response.get("end_turn") {
+                    output.end_turn = Some(*end_turn);
+                }
                 finalize_response(
                     &response,
                     output,
@@ -1899,6 +1905,7 @@ pub fn stream_openai_responses(
                     stop_reason: StopReason::Error,
                     error_message: Some(e.to_string()),
                     raw_stop_reason: None,
+                    end_turn: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 },
             });
@@ -2005,6 +2012,7 @@ async fn stream_openai_responses_inner(
         stop_reason: StopReason::Stop,
         error_message: None,
         raw_stop_reason: None,
+        end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     };
 
@@ -2226,6 +2234,53 @@ mod tests {
         assert_eq!(events[1]["type"], "response.completed");
     }
 
+    /// TS 0.84.2: the Codex terminal `end_turn` signal is preserved on
+    /// `AssistantMessage.endTurn` for diagnostics (no control-flow effect).
+    #[tokio::test]
+    async fn test_response_completed_preserves_end_turn() {
+        let model = Model {
+            id: "gpt-5.5-codex".into(),
+            provider: "openai-codex".into(),
+            api: "openai-responses".into(),
+            ..make_model()
+        };
+        let mut output = AssistantMessage {
+            content: vec![],
+            api: "openai-responses".into(),
+            provider: "openai-codex".into(),
+            model: "gpt-5.5-codex".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let events = vec![
+            json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "msg_1"}}),
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Hello"}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "msg_1", "content": [{"type": "output_text", "text": "Hello"}]}}),
+            json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "end_turn": true}}),
+        ];
+        process_responses_stream(
+            futures::stream::iter(events.into_iter().map(|v| Ok(Some(v)))),
+            &mut output,
+            &tx,
+            &model,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.end_turn, Some(true), "end_turn must be preserved");
+        let _ = rx;
+    }
+
     #[test]
     fn test_convert_messages_grammar_custom_tool_call() {
         // Mirrors TS `constrained-sampling.test.ts` "replays grammar calls as
@@ -2368,6 +2423,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2433,6 +2489,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2573,6 +2630,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let mut reasoning_blocks = HashMap::new();
@@ -2652,6 +2710,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

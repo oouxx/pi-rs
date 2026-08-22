@@ -3397,6 +3397,7 @@ References are relative to {}.
                                 ),
                                 error_message: error_message.clone(),
                                 raw_stop_reason: None,
+                                end_turn: None,
                                 timestamp: *timestamp,
                             };
                             pi_agent_core::pi_ai::utils::overflow::is_context_overflow(
@@ -4926,6 +4927,7 @@ async fn consume_stream_to_message(
         stop_reason: pi_agent_core::pi_ai_types::StopReason::Error,
         error_message: Some(e),
         raw_stop_reason: None,
+        end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
     };
 
@@ -5417,6 +5419,7 @@ fn is_retryable_error(message: &AgentMessage, context_window: u64) -> bool {
                 ),
                 error_message: error_message.clone(),
                 raw_stop_reason: None,
+                end_turn: None,
                 timestamp: *timestamp,
             };
             if pi_agent_core::pi_ai::utils::overflow::is_context_overflow(&msg, cw) {

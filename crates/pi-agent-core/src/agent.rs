@@ -1124,6 +1124,7 @@ mod tests {
             diagnostics: None,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 1000,
         }
     }
@@ -1165,6 +1166,7 @@ mod tests {
                         stop_reason: StopReason::Error,
                         error_message: Some(err_msg.clone()),
                         raw_stop_reason: None,
+                        end_turn: None,
                         timestamp: 1000,
                     },
                     reason: StopReason::Error,
@@ -1603,6 +1605,7 @@ mod tests {
                     stop_reason: StopReason::Stop,
                     error_message: None,
                     raw_stop_reason: None,
+                    end_turn: None,
                     timestamp: 1000,
                 };
                 let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
@@ -1624,6 +1627,7 @@ mod tests {
                                     stop_reason: StopReason::Aborted,
                                     error_message: Some("Aborted".into()),
                                     raw_stop_reason: None,
+                                    end_turn: None,
                                     timestamp: 1000,
                                 },
                                 reason: StopReason::Aborted,
@@ -1926,6 +1930,7 @@ mod tests {
                     stop_reason: StopReason::Stop,
                     error_message: None,
                     raw_stop_reason: None,
+                    end_turn: None,
                     timestamp: 1000,
                 };
                 let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
@@ -1947,6 +1952,7 @@ mod tests {
                                     stop_reason: StopReason::Aborted,
                                     error_message: Some("Aborted".into()),
                                     raw_stop_reason: None,
+                                    end_turn: None,
                                     timestamp: 1000,
                                 },
                                 reason: StopReason::Aborted,
@@ -2023,6 +2029,7 @@ mod tests {
                         stop_reason: StopReason::ToolUse,
                         error_message: None,
                         raw_stop_reason: None,
+                        end_turn: None,
                         timestamp: 1000,
                     };
                     let _ = tx.send(AssistantMessageEvent::Done {
@@ -2043,6 +2050,7 @@ mod tests {
                         stop_reason: StopReason::Stop,
                         error_message: None,
                         raw_stop_reason: None,
+                        end_turn: None,
                         timestamp: 1000,
                     };
                     let _ = tx.send(AssistantMessageEvent::Done {
@@ -2167,6 +2175,7 @@ mod tests {
                     stop_reason: StopReason::ToolUse,
                     error_message: None,
                     raw_stop_reason: None,
+                    end_turn: None,
                     timestamp: 1000,
                 };
                 let _ = tx.send(AssistantMessageEvent::Done {
@@ -2324,6 +2333,7 @@ mod tests {
                     stop_reason: StopReason::ToolUse,
                     error_message: None,
                     raw_stop_reason: None,
+                    end_turn: None,
                     timestamp: 1000,
                 };
                 let _ = tx.send(AssistantMessageEvent::Done {

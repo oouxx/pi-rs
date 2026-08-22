@@ -116,6 +116,7 @@ mod tests {
             stop_reason: StopReason::Error,
             error_message: Some(msg.into()),
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         }
     }
@@ -142,6 +143,7 @@ mod tests {
             stop_reason,
             error_message: None,
             raw_stop_reason: None,
+            end_turn: None,
             timestamp: 0,
         }
     }

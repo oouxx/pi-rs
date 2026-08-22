@@ -2256,7 +2256,7 @@ mod tests {
             .expect("build with extensions");
         let state = session.get_agent().state().await;
         let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
-        for tool in ["web_search", "web_fetch", "subagent", "get_goal", "create_goal", "update_goal"] {
+        for tool in ["web_search", "web_fetch", "subagent", "goal_complete", "goal_blocked", "goal_wait"] {
             assert!(names.contains(&tool.to_string()), "missing {tool}: {names:?}");
         }
 
@@ -2267,7 +2267,7 @@ mod tests {
             .expect("build without extensions");
         let state = session.get_agent().state().await;
         let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
-        for tool in ["web_search", "web_fetch", "subagent", "get_goal"] {
+        for tool in ["web_search", "web_fetch", "subagent", "goal_complete"] {
             assert!(!names.contains(&tool.to_string()), "unexpected {tool}: {names:?}");
         }
         // 内置基础工具不受影响。

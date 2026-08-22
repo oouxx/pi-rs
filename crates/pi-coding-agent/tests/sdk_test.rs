@@ -428,18 +428,19 @@ async fn test_create_agent_session_with_extension() {
         all_tools.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
-    // Find and invoke the `create_goal` extension tool through the active tool list.
+    // Find and invoke the `goal_wait` extension tool through the active tool list.
+    // (新 goal 扩展的 goal_wait 无 active goal 时按原版验证链拒绝——这正好
+    // 证明 extension 工具经由 agent 工具链执行并返回结构化输出。)
     let agent_state = session.get_agent().state().await;
-    let create_goal = agent_state
+    let goal_wait = agent_state
         .tools
         .iter()
-        .find(|t| t.name == "create_goal")
-        .expect("create_goal tool should be active");
-    let params =
-        serde_json::json!({ "objective": "Write a test that exercises the goal extension" });
-    let result = (create_goal.execute)("call-create-goal-1".to_string(), params, None, None)
+        .find(|t| t.name == "goal_wait")
+        .expect("goal_wait tool should be active");
+    let params = serde_json::json!({ "goal_id": "x", "reason": "exercise extension tool path" });
+    let result = (goal_wait.execute)("call-goal-wait-1".to_string(), params, None, None)
         .await
-        .expect("create_goal execute failed");
+        .expect("goal_wait execute failed");
     let goal_text = result
         .content
         .iter()
@@ -452,7 +453,11 @@ async fn test_create_agent_session_with_extension() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    println!("[dbg] create_goal result: {}", goal_text);
+    assert!(
+        goal_text.contains("goal_wait rejected: no active goal."),
+        "unexpected goal_wait result: {goal_text}"
+    );
+    println!("[dbg] goal_wait result: {}", goal_text);
 }
 
 #[tokio::test]

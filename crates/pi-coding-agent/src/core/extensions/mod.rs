@@ -88,9 +88,9 @@ mod tests {
             .map(|t| t.name.as_str())
             .collect();
         for name in [
-            "get_goal",
-            "create_goal",
-            "update_goal",
+            "goal_complete",
+            "goal_blocked",
+            "goal_wait",
             "subagent",
             "web_search",
             "web_fetch",
@@ -100,7 +100,7 @@ mod tests {
         // 来源标注正确（create_builtin_source_info -> `<builtin:{name}>`）
         for t in reg.tools() {
             let expected = match t.name.as_str() {
-                "get_goal" | "create_goal" | "update_goal" => "<builtin:goal>",
+                "goal_complete" | "goal_blocked" | "goal_wait" => "<builtin:goal>",
                 "subagent" => "<builtin:subagent>",
                 "web_search" | "web_fetch" => "<builtin:web_search>",
                 other => panic!("unexpected tool {other}"),

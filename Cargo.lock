@@ -1494,6 +1494,7 @@ name = "pi-extensions"
 version = "1.82.8"
 dependencies = [
  "async-trait",
+ "chrono",
  "pi-extension-api",
  "regex",
  "reqwest 0.12.28",
@@ -1501,6 +1502,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

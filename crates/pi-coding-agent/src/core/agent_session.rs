@@ -835,7 +835,12 @@ impl AgentSession {
         let initial_active = options
             .initial_active_tool_names
             .clone()
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                // TS 0.84.2: no explicit `tools` allowlist → fall back to the
+                // `defaultTools` setting (empty vec = no built-in tools);
+                // otherwise all built-ins stay active.
+                settings_manager.get_default_tools().unwrap_or_default()
+            });
         let custom_names: std::collections::HashSet<String> = options
             .custom_tools
             .as_ref()

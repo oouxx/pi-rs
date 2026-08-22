@@ -239,6 +239,9 @@ pub struct Settings {
     pub enabled_models: Option<Vec<String>>,
     pub thinking_budgets: Option<ThinkingBudgetsSettings>,
 
+    // Initial built-in tool selection (TS 0.84.2 `defaultTools`).
+    pub default_tools: Option<Vec<String>>,
+
     // Editor / display settings
     pub double_escape_action: Option<DoubleEscapeAction>,
     pub tree_filter_mode: Option<TreeFilterMode>,
@@ -872,6 +875,17 @@ impl SettingsManager {
 
     pub fn get_default_model(&self) -> Option<&str> {
         self.settings.default_model.as_deref()
+    }
+
+    /// Initial built-in tool selection (TS `getDefaultTools`), used when the
+    /// caller does not pass an explicit `tools` allowlist. `None` = keep the
+    /// default built-in set (read, bash, edit, write).
+    pub fn get_default_tools(&self) -> Option<Vec<String>> {
+        self.settings.default_tools.clone()
+    }
+
+    pub fn set_default_tools(&mut self, tools: Option<Vec<String>>) {
+        self.settings.default_tools = tools;
     }
 
     pub fn set_default_provider(&mut self, provider: &str) {
@@ -1590,6 +1604,30 @@ mod tests {
 
         mgr.set_default_thinking_level("high");
         assert_eq!(mgr.get_default_thinking_level(), Some("high"));
+    }
+
+    /// TS 0.84.2 `defaultTools`: the setting selects the initial built-in
+    /// tool set; `get_default_tools` returns a clone so callers cannot
+    /// mutate the stored value.
+    #[test]
+    fn test_default_tools_roundtrip() {
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let mut mgr = SettingsManager::new(
+            storage,
+            Settings {
+                default_tools: Some(vec!["read".to_string(), "bash".to_string()]),
+                ..Default::default()
+            },
+            Settings::default(),
+        );
+
+        assert_eq!(
+            mgr.get_default_tools(),
+            Some(vec!["read".to_string(), "bash".to_string()])
+        );
+        // Not configured → None (default built-in set stays active).
+        mgr.set_default_tools(None);
+        assert_eq!(mgr.get_default_tools(), None);
     }
 
     #[test]

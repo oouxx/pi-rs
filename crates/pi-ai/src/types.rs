@@ -492,6 +492,9 @@ pub struct AnthropicMessagesCompat {
     pub force_adaptive_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_empty_signature: Option<bool>,
+    /// 是否支持客户端 tool_reference block（对齐 TS
+    /// `supportsToolReferences`；默认第一方 Anthropic 除 Haiku 外为 true）。
+    pub supports_tool_references: Option<bool>,
 }
 
 // ============================================================================

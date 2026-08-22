@@ -827,7 +827,7 @@ fn append_custom_tool_call_input(
     Ok(delta)
 }
 
-fn split_deferred_tools(
+pub(crate) fn split_deferred_tools(
     context: &Context,
     enabled: bool,
 ) -> (Vec<Tool>, std::collections::HashMap<String, Tool>) {

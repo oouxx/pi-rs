@@ -64,7 +64,7 @@ enum AnthropicContent {
     Blocks(Vec<AnthropicContentBlock>),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
@@ -91,6 +91,8 @@ enum AnthropicContentBlock {
         name: String,
         input: Value,
     },
+    #[serde(rename = "tool_reference")]
+    ToolReference { tool_name: String },
     #[serde(rename = "tool_result")]
     ToolResult {
         #[serde(rename = "tool_use_id")]
@@ -106,14 +108,14 @@ enum AnthropicContentBlock {
 
 /// tool_result 的 content：字符串或 block 数组（对齐 TS
 /// `content: string | ContentBlockParam[]`，图片场景用数组）。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 enum AnthropicToolResultContent {
     String(String),
     Blocks(Vec<AnthropicContentBlock>),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicImageSource {
     #[serde(rename = "type")]
     source_type: String,
@@ -165,6 +167,9 @@ pub(crate) struct AnthropicTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "cache_control")]
     cache_control: Option<AnthropicCacheControl>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "defer_loading")]
+    defer_loading: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -312,6 +317,7 @@ fn get_anthropic_compat(model: &Model) -> AnthropicMessagesCompat {
             supports_cache_control_on_tools: None,
             allow_empty_signature: None,
             force_adaptive_thinking: None,
+            supports_tool_references: None,
         },
     }
 }
@@ -385,16 +391,46 @@ fn convert_content_blocks(content: &[ContentBlock]) -> AnthropicToolResultConten
     AnthropicToolResultContent::Blocks(blocks)
 }
 
+/// 对齐 TS `defaultSupportsToolReferences`：第一方 Anthropic 模型除
+/// Haiku（拒绝客户端 tool_reference）与早于 tool search 的模型
+/// （Claude 3.x、Opus/Sonnet 4.0、Opus 4.1）外默认支持。
+fn default_supports_tool_references(model: &Model) -> bool {
+    if model.provider != "anthropic" || model.id.contains("haiku") {
+        return false;
+    }
+    let re = match regex::Regex::new(
+        r"^claude-(?:opus|sonnet|fable)-(\d+)(?:-(\d+))?(?:-|$)",
+    ) {
+        Ok(re) => re,
+        Err(_) => return false,
+    };
+    let Some(caps) = re.captures(&model.id) else {
+        return false;
+    };
+    let major: u32 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+    let minor: u32 = caps
+        .get(2)
+        .filter(|m| m.as_str().len() < 8)
+        .and_then(|m| m.as_str().parse().ok())
+        .unwrap_or(0);
+    major > 4 || (major == 4 && minor >= 5)
+}
+
 /// Convert pi-ai messages to Anthropic API message params.
 pub(crate) fn convert_messages(
     messages: &[Message],
     model: &Model,
     cache_control: Option<&AnthropicCacheControl>,
+    deferred_tool_names: &std::collections::HashSet<String>,
 ) -> Vec<AnthropicMessageParam> {
     let allow_empty_signature = get_anthropic_compat(model)
         .allow_empty_signature
         .unwrap_or(false);
     let mut params: Vec<AnthropicMessageParam> = Vec::new();
+    // 对齐 TS convertMessages 的 loadedToolNames（跨 toolResult 跟踪已
+    // 加载的 deferred 工具，避免重复 tool_reference）。
+    let mut loaded_tool_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     let mut i = 0usize;
     while i < messages.len() {
@@ -535,30 +571,71 @@ pub(crate) fn convert_messages(
                 // 对齐 TS convertMessages toolResult 分支：合并连续
                 // toolResult 消息为一条 user 消息（z.ai 端点要求）。
                 let mut tool_results: Vec<AnthropicContentBlock> = Vec::new();
+                let mut sibling_content: Vec<AnthropicContentBlock> = Vec::new();
                 while i < messages.len() {
                     let Message::ToolResult {
                         tool_call_id,
                         content,
                         is_error,
+                        added_tool_names,
                         ..
                     } = &messages[i]
                     else {
                         break;
                     };
+                    // 对齐 TS convertToolResult：addedToolNames 中属于
+                    // deferred 且未加载的工具 → tool_reference block；
+                    // 实际内容放 siblingContent（Anthropic 拒绝 tool
+                    // reference 与普通内容混在同一 block）。
+                    let mut references: Vec<AnthropicContentBlock> = Vec::new();
+                    if let Some(names) = added_tool_names {
+                        for name in names {
+                            if !deferred_tool_names.contains(name)
+                                || loaded_tool_names.contains(name)
+                            {
+                                continue;
+                            }
+                            loaded_tool_names.insert(name.clone());
+                            references.push(AnthropicContentBlock::ToolReference {
+                                tool_name: name.clone(),
+                            });
+                        }
+                    }
                     // 对齐 TS convertContentBlocks：纯文本 → 拼接字符串；
                     // 有图 → block 数组（纯图无文本时前插占位文本）。
                     let converted = convert_content_blocks(content);
+                    let has_references = !references.is_empty();
+                    let tool_result_content = if has_references {
+                        AnthropicToolResultContent::Blocks(references)
+                    } else {
+                        converted.clone()
+                    };
                     tool_results.push(AnthropicContentBlock::ToolResult {
                         tool_use_id: tool_call_id.clone(),
-                        content: converted,
+                        content: tool_result_content,
                         is_error: if *is_error { Some(true) } else { None },
                         cache_control: None,
                     });
+                    if has_references {
+                        match converted {
+                            AnthropicToolResultContent::String(text) => {
+                                sibling_content.push(AnthropicContentBlock::Text {
+                                    text,
+                                    cache_control: None,
+                                });
+                            }
+                            AnthropicToolResultContent::Blocks(blocks) => {
+                                sibling_content.extend(blocks);
+                            }
+                        }
+                    }
                     i += 1;
                 }
+                let mut content = tool_results;
+                content.extend(sibling_content);
                 params.push(AnthropicMessageParam {
                     role: "user".to_string(),
-                    content: AnthropicContent::Blocks(tool_results),
+                    content: AnthropicContent::Blocks(content),
                 });
                 continue;
             }
@@ -605,6 +682,7 @@ pub(crate) fn convert_messages(
 pub(crate) fn convert_tools(
     tools: &[Tool],
     cache_control: Option<&AnthropicCacheControl>,
+    defer_loading: bool,
 ) -> Vec<AnthropicTool> {
     let count = tools.len();
     tools
@@ -619,6 +697,7 @@ pub(crate) fn convert_tools(
             } else {
                 None
             },
+            defer_loading: if defer_loading { Some(true) } else { None },
         })
         .collect()
 }
@@ -860,7 +939,37 @@ async fn stream_anthropic_inner(
         model,
         &|id: &str, _m: &Model, _p: &str, _a: &str| normalize_tool_call_id(id),
     );
-    let messages = convert_messages(&transformed, model, cache_control.as_ref());
+    // 对齐 TS buildParams：splitDeferredTools（按 supportsToolReferences
+    // 与消息中的 toolCall/addedToolNames 拆分 immediate/deferred 工具）。
+    let supports_tool_references = compat
+        .supports_tool_references
+        .unwrap_or_else(|| default_supports_tool_references(model));
+    let transformed_context = Context {
+        system_prompt: context.system_prompt.clone(),
+        messages: transformed.clone(),
+        tools: context.tools.clone(),
+    };
+    let (immediate_tools, deferred_tools) =
+        crate::providers::openai_responses::split_deferred_tools(
+            &transformed_context,
+            supports_tool_references,
+        );
+    let (immediate_tools, deferred_tools) = if immediate_tools.is_empty()
+        && !deferred_tools.is_empty()
+    {
+        // TS：无 immediate 工具时全部提升为 immediate。
+        (deferred_tools.into_values().collect(), std::collections::HashMap::new())
+    } else {
+        (immediate_tools, deferred_tools)
+    };
+    let deferred_tool_names: std::collections::HashSet<String> =
+        deferred_tools.keys().cloned().collect();
+    let messages = convert_messages(
+        &transformed,
+        model,
+        cache_control.as_ref(),
+        &deferred_tool_names,
+    );
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
     body.insert("messages".to_string(), serde_json::to_value(&messages)?);
@@ -888,20 +997,21 @@ async fn stream_anthropic_inner(
         );
     }
 
-    if let Some(ref tools) = context.tools {
-        if !tools.is_empty() {
-            // cache_control on the last tool (match TS convertTools) only when
-            // the provider supports it.
-            let tools_cache_control = if compat.supports_cache_control_on_tools.unwrap_or(false) {
-                cache_control.as_ref()
-            } else {
-                None
-            };
-            body.insert(
-                "tools".to_string(),
-                serde_json::to_value(convert_tools(tools, tools_cache_control))?,
-            );
-        }
+    if !immediate_tools.is_empty() || !deferred_tools.is_empty() {
+        // cache_control on the last tool (match TS convertTools) only when
+        // the provider supports it；deferred 工具带 defer_loading。
+        let tools_cache_control = if compat.supports_cache_control_on_tools.unwrap_or(false) {
+            cache_control.as_ref()
+        } else {
+            None
+        };
+        let mut all_tools = convert_tools(&immediate_tools, tools_cache_control, false);
+        all_tools.extend(convert_tools(
+            &deferred_tools.into_values().collect::<Vec<_>>(),
+            None,
+            true,
+        ));
+        body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
     }
 
     // Configure thinking mode: adaptive, budget-based, or explicitly disabled
@@ -1542,7 +1652,7 @@ mod tests {
             content: vec![ContentBlock::text("Hello")],
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -1563,7 +1673,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
     }
@@ -1581,7 +1691,7 @@ mod tests {
             added_tool_names: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -1626,7 +1736,7 @@ mod tests {
                 timestamp: 1000,
             },
         ];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert_eq!(converted.len(), 3);
         assert_eq!(converted[0].role, "user");
         assert_eq!(converted[1].role, "assistant");
@@ -1656,7 +1766,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
         // Thinking blocks should be filtered out from the API request
@@ -1669,7 +1779,7 @@ mod tests {
             content: vec![ContentBlock::text("")],
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         // Empty user messages should be skipped
         assert_eq!(converted.len(), 0);
     }
@@ -1695,7 +1805,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert_eq!(converted.len(), 1);
         if let AnthropicContent::Blocks(blocks) = &converted[0].content {
             if let AnthropicContentBlock::ToolUse { id, .. } = &blocks[0] {
@@ -1715,8 +1825,169 @@ mod tests {
     // ============================================================
 
     #[test]
+    fn test_default_supports_tool_references() {
+        let mut model = Model {
+            id: "claude-opus-4-5".into(),
+            name: "x".into(),
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec!["text".into(), "image".into()],
+            cost: ModelCost::default(),
+            context_window: 200000,
+            max_tokens: 32000,
+            headers: None,
+            compat: None,
+        };
+        // 第一方 Opus 4.5 → true
+        assert!(default_supports_tool_references(&model));
+        // Haiku → false
+        model.id = "claude-haiku-4-5".into();
+        assert!(!default_supports_tool_references(&model));
+        // 早于 tool search（Opus 4.1）→ false
+        model.id = "claude-opus-4-1".into();
+        assert!(!default_supports_tool_references(&model));
+        // 非第一方 → false
+        model.provider = "openrouter".into();
+        model.id = "claude-opus-4-5".into();
+        assert!(!default_supports_tool_references(&model));
+    }
+
+    #[test]
+    fn test_convert_tools_defer_loading() {
+        let tools = vec![Tool {
+            name: "deferred_tool".into(),
+            description: "d".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            constrained_sampling: None,
+        }];
+        let converted = convert_tools(&tools, None, true);
+        assert_eq!(converted[0].defer_loading, Some(true));
+        let converted = convert_tools(&tools, None, false);
+        assert_eq!(converted[0].defer_loading, None);
+    }
+
+    #[test]
+    fn test_convert_messages_tool_reference() {
+        // deferred 工具在 addedToolNames 中 → tool_reference + siblingContent。
+        let mut deferred = std::collections::HashSet::new();
+        deferred.insert("mcp_tool".to_string());
+        let messages = vec![Message::ToolResult {
+            tool_call_id: "call_1".into(),
+            tool_name: "bash".into(),
+            content: vec![ContentBlock::text("output text")],
+            details: None,
+            is_error: false,
+            added_tool_names: Some(vec!["mcp_tool".to_string()]),
+            usage: None,
+            timestamp: 0,
+        }];
+        let converted = convert_messages(&messages, &model_for_tests(), None, &deferred);
+        assert_eq!(converted.len(), 1);
+        if let AnthropicContent::Blocks(blocks) = &converted[0].content {
+            // tool_result block 内容为 tool_reference
+            match &blocks[0] {
+                AnthropicContentBlock::ToolResult { content, .. } => {
+                    if let AnthropicToolResultContent::Blocks(refs) = content {
+                        assert!(matches!(
+                            refs[0],
+                            AnthropicContentBlock::ToolReference { .. }
+                        ));
+                    } else {
+                        panic!("expected tool_reference blocks");
+                    }
+                }
+                _ => panic!("expected tool_result"),
+            }
+            // siblingContent 携带实际内容
+            assert!(blocks.iter().any(|b| matches!(
+                b,
+                AnthropicContentBlock::Text { text, .. } if text == "output text"
+            )));
+        } else {
+            panic!("expected blocks");
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_tool_reference_skipped_when_loaded() {
+        // 已加载的 deferred 工具不再重复 tool_reference。
+        let mut deferred = std::collections::HashSet::new();
+        deferred.insert("mcp_tool".to_string());
+        let messages = vec![
+            Message::ToolResult {
+                tool_call_id: "call_1".into(),
+                tool_name: "bash".into(),
+                content: vec![ContentBlock::text("first")],
+                details: None,
+                is_error: false,
+                added_tool_names: Some(vec!["mcp_tool".to_string()]),
+                usage: None,
+                timestamp: 0,
+            },
+            Message::ToolResult {
+                tool_call_id: "call_2".into(),
+                tool_name: "bash".into(),
+                content: vec![ContentBlock::text("second")],
+                details: None,
+                is_error: false,
+                added_tool_names: Some(vec!["mcp_tool".to_string()]),
+                usage: None,
+                timestamp: 0,
+            },
+        ];
+        let converted = convert_messages(&messages, &model_for_tests(), None, &deferred);
+        if let AnthropicContent::Blocks(blocks) = &converted[0].content {
+            // tool_reference 嵌套在 tool_result block 的 content 内。
+            let refs = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    AnthropicContentBlock::ToolResult { content, .. } => {
+                        if let AnthropicToolResultContent::Blocks(inner) = content {
+                            Some(
+                                inner
+                                    .iter()
+                                    .filter(|x| {
+                                        matches!(x, AnthropicContentBlock::ToolReference { .. })
+                                    })
+                                    .count(),
+                            )
+                        } else {
+                            Some(0)
+                        }
+                    }
+                    _ => None,
+                })
+                .sum::<usize>();
+            assert_eq!(refs, 1, "loaded tool must not repeat tool_reference");
+        } else {
+            panic!("expected blocks");
+        }
+    }
+
+    fn model_for_tests() -> Model {
+        Model {
+            id: "claude-sonnet-4-5".into(),
+            name: "x".into(),
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec!["text".into(), "image".into()],
+            cost: ModelCost::default(),
+            context_window: 200000,
+            max_tokens: 32000,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    #[test]
     fn test_convert_tools_empty() {
-        let converted = convert_tools(&[], None);
+        let converted = convert_tools(&[], None, false);
         assert!(converted.is_empty());
     }
 
@@ -1728,7 +1999,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools, None);
+        let converted = convert_tools(&tools, None, false);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].name, "read");
         assert_eq!(converted[0].description, "Read a file");
@@ -1755,7 +2026,7 @@ mod tests {
             cache_type: "ephemeral".to_string(),
             ttl: None,
         };
-        let converted = convert_tools(&tools, Some(&cc));
+        let converted = convert_tools(&tools, Some(&cc), false);
         assert!(converted[0].cache_control.is_none());
         assert!(converted[1].cache_control.is_some());
     }
@@ -1779,7 +2050,7 @@ mod tests {
             cache_type: "ephemeral".to_string(),
             ttl: Some("1h".to_string()),
         };
-        let converted = convert_messages(&messages, &model, Some(&cc));
+        let converted = convert_messages(&messages, &model, Some(&cc), &std::collections::HashSet::new());
         assert_eq!(converted.len(), 2);
         match &converted[1].content {
             AnthropicContent::Blocks(blocks) => match &blocks[0] {
@@ -1795,7 +2066,7 @@ mod tests {
             _ => panic!("expected blocks"),
         }
         // Without cache control the plain string form is preserved.
-        let converted = convert_messages(&messages, &model, None);
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
         assert!(matches!(converted[1].content, AnthropicContent::String(_)));
     }
 

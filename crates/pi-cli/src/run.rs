@@ -177,7 +177,12 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // ACP mode: speak the Agent Client Protocol over stdio (Zed, JetBrains, …)
     if app_mode == AppMode::Acp {
-        return pi_coding_agent::modes::acp::run_acp_mode(!args.no_extensions).await;
+        return pi_coding_agent::modes::acp::run_acp_mode(
+            !args.no_extensions,
+            args.provider.clone(),
+            args.model.clone(),
+        )
+        .await;
     }
 
     // Read piped stdin (matching TS `readPipedStdin`; skipped for rpc/acp).

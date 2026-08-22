@@ -29,7 +29,11 @@ use self::agent::PiAcpAgent;
 ///
 /// `enable_extensions` 对应 CLI `--no-extensions`：为 true 时新会话注册内置
 /// Rust 扩展（goal/subagent/web_search）。
-pub async fn run_acp_mode(enable_extensions: bool) -> i32 {
+pub async fn run_acp_mode(
+    enable_extensions: bool,
+    cli_provider: Option<String>,
+    cli_model: Option<String>,
+) -> i32 {
     let outgoing = tokio::io::stdout().compat_write();
     let incoming = tokio::io::stdin().compat();
 
@@ -46,7 +50,8 @@ pub async fn run_acp_mode(enable_extensions: bool) -> i32 {
             let spawn_for_agent = spawn.clone();
 
             let agent = PiAcpAgent::new(notif_tx, spawn_for_agent)
-                .with_extensions(enable_extensions);
+                .with_extensions(enable_extensions)
+                .with_model(cli_provider, cli_model);
             let (conn, handle_io) = acp::AgentSideConnection::new(
                 agent,
                 outgoing,

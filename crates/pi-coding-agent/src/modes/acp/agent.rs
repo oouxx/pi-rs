@@ -28,6 +28,9 @@ pub struct PiAcpAgent {
     /// 是否注册内置 Rust 扩展（goal/subagent/web_search），对应 CLI
     /// `--no-extensions` 语义。默认 false（测试与无扩展场景）。
     enable_extensions: bool,
+    /// CLI 指定的 provider/model（`-P`/`-m`），传给会话创建。
+    cli_provider: Option<String>,
+    cli_model: Option<String>,
 }
 
 impl PiAcpAgent {
@@ -53,7 +56,17 @@ impl PiAcpAgent {
             spawn,
             last_session_cwd: std::sync::Mutex::new(None),
             enable_extensions: false,
+            cli_provider: None,
+            cli_model: None,
         }
+    }
+
+    /// 指定 CLI 的 provider/model（`-P`/`-m`），传给会话创建。
+    #[must_use]
+    pub fn with_model(mut self, provider: Option<String>, model: Option<String>) -> Self {
+        self.cli_provider = provider;
+        self.cli_model = model;
+        self
     }
 
     /// 启用/禁用内置 Rust 扩展注册（对应 CLI `--no-extensions`）。
@@ -140,6 +153,8 @@ impl acp::Agent for PiAcpAgent {
                 self.notif_tx.clone(),
                 &self.spawn,
                 self.enable_extensions,
+                self.cli_provider.clone(),
+                self.cli_model.clone(),
             )
             .await
             .map_err(internal_err)?

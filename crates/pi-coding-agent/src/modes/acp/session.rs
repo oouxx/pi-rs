@@ -184,6 +184,8 @@ impl SessionRegistry {
         notif_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         spawn: &Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)>,
         enable_extensions: bool,
+        cli_provider: Option<String>,
+        cli_model: Option<String>,
     ) -> Result<acp::SessionId, String> {
         let session_id = acp::SessionId::new(Uuid::new_v4().to_string());
         // Persist each ACP session as its own JSONL file under the ACP dir.
@@ -207,6 +209,8 @@ impl SessionRegistry {
                 mcp_servers,
                 enable_extensions,
                 ui,
+                cli_provider,
+                cli_model,
             )
             .await?;
 
@@ -295,6 +299,8 @@ impl SessionRegistry {
                 mcp_servers,
                 self.enable_extensions,
                 ui,
+                None,
+                None,
             )
             .await?;
 
@@ -431,6 +437,8 @@ impl SessionRegistry {
         mcp_servers: &[acp::McpServer],
         enable_extensions: bool,
         ui: Option<crate::core::extensions::ExtensionUIContext>,
+        cli_provider: Option<String>,
+        cli_model: Option<String>,
     ) -> Result<(AgentSession, Vec<McpConnection>), String> {
         let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
         let custom_tools = if mcp_tools.is_empty() {
@@ -468,8 +476,8 @@ impl SessionRegistry {
                 extension_registry: crate::core::extensions::builtin_extension_registry(
                     enable_extensions,
                 ),
-                cli_provider: None,
-                cli_model: None,
+                cli_provider: cli_provider.clone(),
+                cli_model: cli_model.clone(),
                 auth_storage: None,
                 model_registry: None,
                 resource_loader: None,
@@ -1643,7 +1651,7 @@ mod tests {
         let sid;
         {
             let mut reg = SessionRegistry::with_base_dir(base_path.clone());
-            sid = reg.create("/tmp", &[], notif_tx(), &spawn, false).await.expect("create");
+            sid = reg.create("/tmp", &[], notif_tx(), &spawn, false, None, None).await.expect("create");
             let acp_dir = base_path.join("acp");
             assert!(
                 acp_dir.join(format!("{}.jsonl", sid.0)).exists(),
@@ -1694,7 +1702,7 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         let spawn = noop_spawn();
         let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
-        let sid = reg.create("/tmp", &[], notif_tx(), &spawn, false).await.expect("create");
+        let sid = reg.create("/tmp", &[], notif_tx(), &spawn, false, None, None).await.expect("create");
         let session_file = base.path().join("acp").join(format!("{}.jsonl", sid.0));
         assert!(session_file.exists(), "session file must exist");
 
@@ -2349,7 +2357,7 @@ mod tests {
 
         // 启用：工具列表含全部内置扩展工具。
         let (session, _conns) = reg
-            .build_session("/tmp", None, "/tmp", &[], true, None)
+            .build_session("/tmp", None, "/tmp", &[], true, None, None, None)
             .await
             .expect("build with extensions");
         let state = session.get_agent().state().await;
@@ -2360,7 +2368,7 @@ mod tests {
 
         // 禁用（--no-extensions）：无任何扩展工具。
         let (session, _conns) = reg
-            .build_session("/tmp", None, "/tmp", &[], false, None)
+            .build_session("/tmp", None, "/tmp", &[], false, None, None, None)
             .await
             .expect("build without extensions");
         let state = session.get_agent().state().await;

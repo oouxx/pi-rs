@@ -1376,11 +1376,14 @@ impl SessionManager {
         }
 
         if !self.flushed {
-            // First assistant message: rewrite entire file atomically
-            // Use exclusive create ("wx") to prevent overwriting existing files
+            // First assistant message: rewrite entire file atomically.
+            // 覆盖写（truncate）：文件可能已存在——ACP 模式预创建空会话文件
+            // 并已写入 header（"wx" 会因文件存在而失败，导致消息永不落盘）。
+            // file_entries 是完整状态（含从文件加载的旧条目），覆盖写安全。
             if let Ok(mut f) = fs::OpenOptions::new()
                 .write(true)
-                .create_new(true)
+                .create(true)
+                .truncate(true)
                 .open(session_file)
             {
                 for fe in &self.file_entries {

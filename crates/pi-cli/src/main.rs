@@ -57,6 +57,15 @@ async fn main() {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `pi auth ...` subcommands (TS main.ts `runAuthCommand`).
+    if args.first().map(|s| s.as_str()) == Some("auth") {
+        let exit_code = pi_cli::auth_command::run_auth_command(&args).await;
+        if exit_code >= 0 {
+            process::exit(exit_code);
+        }
+    }
+
     let parsed = pi_cli::args::parse_args(&args);
     let exit_code = pi_cli::run::run(&parsed).await;
     process::exit(exit_code);

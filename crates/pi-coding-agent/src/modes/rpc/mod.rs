@@ -20,19 +20,14 @@ use super::rpc::rpc_types::*;
 /// Mirror of TS `modes/json-event.ts` `toJsonEvent()`.
 ///
 /// The RPC wire format matches the TS `AgentSessionEvent` shape:
-/// a `type`-discriminated union with camelCase fields. The one difference
-/// from the in-memory event is that `message_update` events strip the
-/// cumulative `partial` assistant snapshot from `assistantMessageEvent`
+/// a `type`-discriminated union with camelCase fields. `message_update`
+/// events are delta-only (TS 0.84): the cumulative `message` snapshot and
+/// the `partial` snapshot inside `assistantMessageEvent` are stripped
 /// (`message_start` provides the initial message, deltas build it, and
-/// `message_end` provides the final authoritative message).
+/// `message_end` provides the final authoritative message); cumulative
+/// `usage` is kept because its size is constant.
 fn to_json_event(event: &AgentSessionEvent) -> serde_json::Value {
-    let mut value = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
-    if let Some(ame) = value.get_mut("assistantMessageEvent") {
-        if let Some(obj) = ame.as_object_mut() {
-            obj.remove("partial");
-        }
-    }
-    value
+    crate::modes::json_event::to_json_event(event)
 }
 
 /// Build the RPC-mode extension UI context, matching TS
@@ -629,16 +624,18 @@ mod tests {
         assert!(v4.get("errorMessage").is_some(), "compaction_end must use errorMessage");
     }
 
-    /// `to_json_event` strips the cumulative `partial` snapshot from
-    /// `message_update` events, mirroring TS `toJsonEvent()`.
+    /// `to_json_event` mirrors TS 0.84 `toJsonEvent()`: `message_update` is
+    /// delta-only on the wire — the cumulative `message` snapshot and the
+    /// `assistantMessageEvent.partial` snapshot are stripped, cumulative
+    /// `usage` is preserved.
     #[test]
     fn to_json_event_strips_partial() {
         let am = sample_assistant_message();
         let e = AgentSessionEvent::MessageUpdate {
             message: serde_json::from_value(serde_json::json!({
                 "role":"assistant","content":[],"api":"openai-completions","provider":"openai",
-                "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
-                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
+                "model":"gpt-5.5","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":0,
+                "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},
                 "stopReason":"stop","timestamp":0
             })).unwrap(),
             assistant_message_event: AssistantMessageEvent::TextDelta {
@@ -649,8 +646,15 @@ mod tests {
         };
         let v = to_json_event(&e);
         assert_eq!(v["type"], "message_update");
-        assert!(v["assistantMessageEvent"].get("partial").is_none(),
-            "partial must be stripped on the wire (TS toJsonEvent)");
+        assert!(
+            v.get("message").is_none(),
+            "cumulative message must be stripped on the wire (TS 0.84)"
+        );
+        assert_eq!(v["usage"]["input"], 10, "cumulative usage is preserved");
+        assert!(
+            v["assistantMessageEvent"].get("partial").is_none(),
+            "partial must be stripped on the wire (TS toJsonEvent)"
+        );
         assert_eq!(v["assistantMessageEvent"]["delta"], "hi");
     }
 }

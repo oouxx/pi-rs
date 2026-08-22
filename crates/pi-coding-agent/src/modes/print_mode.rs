@@ -205,6 +205,12 @@ async fn run_text_mode(
 }
 
 /// Run in JSON mode: newline-delimited JSON event stream.
+///
+/// Wire format mirrors TS `print-mode.ts` (mode "json"): every
+/// `AgentSessionEvent` serialized through `toJsonEvent()` (camelCase,
+/// `message_update` delta-only per TS 0.84). The pi-rs `start`/`end`
+/// sentinel lines are kept for stream framing; the event payloads between
+/// them match the TS wire shape exactly.
 async fn run_json_mode(
     session: AgentSession,
     message: &str,
@@ -219,44 +225,21 @@ async fn run_json_mode(
         serde_json::json!({"type": "start", "message": message})
     );
 
-    let listener: PrintModeListener = Arc::new(move |event: AgentEvent, _signal| {
-        let err_flag = err_flag.clone();
-        Box::pin(async move {
-            let json = match &event {
-                AgentEvent::MessageStart { .. } => {
-                    serde_json::json!({"type": "message_start"})
+    let listener: crate::core::agent_session::AgentSessionEventListener =
+        Arc::new(move |event: crate::core::agent_session::AgentSessionEvent| {
+            if let crate::core::agent_session::AgentSessionEvent::ToolExecutionEnd {
+                is_error, ..
+            } = &event
+            {
+                if *is_error {
+                    err_flag.store(true, Ordering::SeqCst);
                 }
-                AgentEvent::MessageUpdate {
-                    assistant_message_event,
-                    ..
-                } => serde_json::json!({"type": "message_update", "event": assistant_message_event}),
-                AgentEvent::MessageEnd { message: msg } => {
-                    serde_json::json!({"type": "message_end", "message": msg})
-                }
-                AgentEvent::ToolExecutionStart {
-                    tool_name,
-                    tool_call_id,
-                    args,
-                } => serde_json::json!({"type": "tool_execution_start", "tool_call_id": tool_call_id, "tool_name": tool_name, "args": args}),
-                AgentEvent::ToolExecutionEnd {
-                    tool_name,
-                    tool_call_id,
-                    result,
-                    is_error,
-                } => {
-                    if *is_error {
-                        err_flag.store(true, Ordering::SeqCst);
-                    }
-                    serde_json::json!({"type": "tool_execution_end", "tool_call_id": tool_call_id, "tool_name": tool_name, "result": result, "is_error": is_error})
-                }
-                AgentEvent::AgentEnd { .. } => serde_json::json!({"type": "agent_end"}),
-                _ => return,
-            };
+            }
+            let json = super::json_event::to_json_event(&event);
             println!("{}", serde_json::to_string(&json).unwrap_or_default());
-        })
-    });
+        });
 
-    session.get_agent().subscribe(listener).await;
+    session.subscribe_session_events(listener);
 
     // Send the first message (with images if provided).
     // 用 prompt()（内部等 agent 完成并清理 active 状态），不用 add_user_text

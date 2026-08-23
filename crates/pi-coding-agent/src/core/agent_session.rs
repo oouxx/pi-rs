@@ -2010,6 +2010,11 @@ impl AgentSession {
         self.extension_registry.clone()
     }
 
+    /// The extension UI/context object passed to extension command handlers.
+    pub fn get_extension_context(&self) -> &ExtensionContext {
+        &self.ext_ctx
+    }
+
     pub fn get_session_id(&self) -> String {
         self.session_manager
             .lock()

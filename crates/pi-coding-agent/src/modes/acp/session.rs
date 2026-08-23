@@ -23,6 +23,7 @@ use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use super::slash_commands::{
     ResolvedCommand, load_slash_commands, resolve_command, substitute_args,
 };
+use crate::core::slash_commands::parse_slash_command;
 use super::translate::EventTranslator;
 
 /// MCP connection handle. A no-op (unit) type when the `mcp` feature is off,
@@ -943,6 +944,33 @@ impl SessionTask {
     async fn start_prompt(&mut self, prompt: QueuedPrompt) {
         if prompt.images.is_empty() {
             let trimmed = prompt.text.trim_start().to_string();
+            // Extension slash commands: match the advertised invocation name
+            // (with `:N` dedup), execute the extension's handler, and settle
+            // the prompt without an LLM turn (beyond pi-acp, which does not
+            // support extension commands yet).
+            if let Some((command_name, args)) = parse_slash_command(&trimmed) {
+                if let Some(registry) = self.session.get_extension_registry() {
+                    let resolved = crate::core::slash_commands::resolve_extension_commands(
+                        registry.commands(),
+                    );
+                    if let Some(index) = resolved
+                        .iter()
+                        .position(|c| c.invocation_name == command_name)
+                    {
+                        if let Some(cmd) = registry.commands().get(index) {
+                            (cmd.execute)(
+                                args.to_string(),
+                                Some(self.session.get_extension_context()),
+                            )
+                            .await;
+                            let _ = prompt.reply.send(Ok(acp::PromptResponse::new(
+                                acp::StopReason::EndTurn,
+                            )));
+                            return;
+                        }
+                    }
+                }
+            }
             if let Some((cmd, args)) = resolve_command(&trimmed, &self.file_commands) {
                 match cmd {
                     ResolvedCommand::Builtin(name) => {
@@ -1387,14 +1415,10 @@ impl SessionTask {
             }
         };
 
-        // pi's get_commands: prompt templates + skills (no extension commands).
+        // pi's get_commands: extension commands (with `:N` dedup), prompt
+        // templates + skills. Extension commands are advertised and executed
+        // (beyond pi-acp, which does not support them yet).
         for info in self.session.get_commands_info() {
-            if matches!(
-                info.source,
-                crate::core::slash_commands::SlashCommandSource::Extension
-            ) {
-                continue;
-            }
             let description = info
                 .description
                 .unwrap_or_else(|| format!("({})", info.source_info.source));
@@ -1969,6 +1993,7 @@ mod tests {
     async fn test_agent_session(
         stream_fn: pi_agent_core::types::StreamFn,
         base_dir: &std::path::Path,
+        extension_registry: Option<crate::core::extensions::ExtensionRegistry>,
     ) -> AgentSession {
         let (session, _result) = create_agent_session(CreateAgentSessionOptions {
             cwd: "/tmp".to_string(),
@@ -1989,7 +2014,7 @@ mod tests {
             extension_flags: None,
             extension_paths: vec![],
             enable_extensions: false,
-            extension_registry: None,
+            extension_registry,
             cli_provider: None,
             cli_model: None,
             persist_session: false,
@@ -2205,7 +2230,7 @@ mod tests {
                     });
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
-                let session = test_agent_session(stream_fn, base.path()).await;
+                let session = test_agent_session(stream_fn, base.path(), None).await;
                 let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false, false);
 
                 // Prompt 1: the fake stream blocks, so the turn stays in flight.
@@ -2251,7 +2276,7 @@ mod tests {
                     });
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = delayed_completing_stream();
-                let session = test_agent_session(stream_fn, base.path()).await;
+                let session = test_agent_session(stream_fn, base.path(), None).await;
                 let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false, false);
 
                 // Prompt A: first stream call takes 200ms, so turn A is in
@@ -2307,7 +2332,7 @@ mod tests {
                     });
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
-                let session = test_agent_session(stream_fn, base.path()).await;
+                let session = test_agent_session(stream_fn, base.path(), None).await;
                 let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false, true);
 
                 // Turn A blocks until aborted (simulating a stuck turn).
@@ -2368,7 +2393,7 @@ mod tests {
                     });
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, calls) = blocking_then_completing_stream();
-                let session = test_agent_session(stream_fn, base.path()).await;
+                let session = test_agent_session(stream_fn, base.path(), None).await;
                 let (cmd_tx, _notifs) = spawn_session_task(&local, &spawn, session, false, false);
 
                 // Blocking turn in flight.
@@ -2421,7 +2446,7 @@ mod tests {
                     });
                 let base = tempfile::tempdir().expect("tempdir");
                 let (stream_fn, _calls) = blocking_then_completing_stream();
-                let session = test_agent_session(stream_fn, base.path()).await;
+                let session = test_agent_session(stream_fn, base.path(), None).await;
 
                 // Seed the session with a bash turn: assistant tool call
                 // (carrying the command) followed by its tool result.
@@ -2548,5 +2573,97 @@ mod tests {
         }
         // 内置基础工具不受影响。
         assert!(names.contains(&"bash".to_string()));
+    }
+
+    /// ACP extension slash commands: advertised in `available_commands` and
+    /// executed inline (beyond pi-acp, which does not support them yet).
+    #[tokio::test(flavor = "current_thread")]
+    async fn extension_slash_command_executes() {
+        use pi_extension_api::hook::{CommandRegistry, HookHandler};
+        use pi_extension_api::{SourceInfo, create_builtin_source_info};
+
+        struct CmdHandler(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl HookHandler for CmdHandler {
+            fn name(&self) -> &str {
+                "cmd-handler"
+            }
+
+            fn register_commands(&self, commands: &mut CommandRegistry) {
+                let flag = self.0.clone();
+                commands.register(
+                    "hello",
+                    pi_extension_api::hook::CommandRegistration {
+                        description: "Hello command".to_string(),
+                        execute: std::sync::Arc::new(move |args, _ctx| {
+                            let flag = flag.clone();
+                            Box::pin(async move {
+                                let _ = args;
+                                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            })
+                        }),
+                        get_argument_completions: None,
+                    },
+                );
+            }
+        }
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawn: Arc<dyn Fn(futures::future::LocalBoxFuture<'static, ()>)> =
+                    Arc::new(|fut| {
+                        tokio::task::spawn_local(fut);
+                    });
+                let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let mut registry = pi_extension_api::ExtensionRegistry::new();
+                registry.register(
+                    Box::new(CmdHandler(flag.clone())),
+                    create_builtin_source_info("test-ext"),
+                );
+                let base = tempfile::tempdir().expect("tempdir");
+                let (stream_fn, _calls) = blocking_then_completing_stream();
+                let session = test_agent_session(stream_fn, base.path(), Some(registry)).await;
+                let (cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, false, false);
+
+                // The ACP agent advertises extension commands in its
+                // available_commands_update (via GetCommands).
+                let (reply_tx, reply_rx) = oneshot::channel();
+                cmd_tx
+                    .send(SessionCommand::GetCommands { reply: reply_tx })
+                    .expect("send GetCommands");
+                let commands = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    reply_rx,
+                )
+                .await
+                .expect("GetCommands reply must arrive")
+                .expect("reply channel");
+                assert!(
+                    commands.iter().any(|c| c.name.as_str() == "hello"),
+                    "extension command must be advertised: {:?}",
+                    commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+                );
+
+                let reply_rx = send_prompt(&cmd_tx, "/hello world");
+                let response = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    reply_rx,
+                )
+                .await
+                .expect("prompt reply must arrive")
+                .expect("reply channel")
+                .expect("no error");
+                assert_eq!(
+                    response.stop_reason,
+                    acp::StopReason::EndTurn,
+                    "extension command settles the prompt without an LLM turn"
+                );
+                assert!(
+                    flag.load(std::sync::atomic::Ordering::SeqCst),
+                    "extension command handler must have executed"
+                );
+                let _ = notifs;
+            })
+            .await;
     }
 }

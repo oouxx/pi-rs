@@ -857,7 +857,7 @@ where
                                     if let Ok(v) = serde_json::from_value::<serde_json::Value>(res) {
                                         let block = v.get("block").and_then(|b| b.as_bool());
                                         let reason = v.get("reason").and_then(|r| r.as_str().map(String::from));
-                                        last = Some(crate::types::BeforeToolCallResult { block: block.unwrap_or(false), reason, modified_args: None });
+                                        last = Some(crate::types::BeforeToolCallResult { block: block.unwrap_or(false), reason, modified_args: None, terminate: None });
                                     }
                                 }
                             }

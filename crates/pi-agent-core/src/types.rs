@@ -310,6 +310,10 @@ pub struct BeforeToolCallResult {
     /// Modified tool arguments from extension hooks.
     /// When `Some(args)`, the tool call will use these args instead of the original.
     pub modified_args: Option<serde_json::Value>,
+    /// TS 0.84.1 (#7715): hint that the agent should stop after the current
+    /// tool batch when this call is blocked. Early termination only happens
+    /// when every finalized tool result in the batch sets this to true.
+    pub terminate: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

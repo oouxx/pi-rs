@@ -228,13 +228,21 @@ async fn prepare_tool_call(
         let result = before_fn(ctx, signal.clone()).await;
         if let Some(before_result) = result {
             if before_result.block {
+                // TS 0.84.1 (#7715): a blocked result can carry
+                // `terminate: true` to participate in the batch
+                // early-termination rule (skip the follow-up model call
+                // when every finalized result in the batch terminates).
+                let mut err_result = create_error_tool_result(
+                    before_result
+                        .reason
+                        .as_deref()
+                        .unwrap_or("Tool execution was blocked"),
+                );
+                if before_result.terminate == Some(true) {
+                    err_result.terminate = Some(true);
+                }
                 return PreparedOrImmediate::Immediate {
-                    result: create_error_tool_result(
-                        before_result
-                            .reason
-                            .as_deref()
-                            .unwrap_or("Tool execution was blocked"),
-                    ),
+                    result: err_result,
                     is_error: true,
                 };
             }
@@ -1924,6 +1932,7 @@ mod tests {
                     block: true,
                     reason: Some("not allowed".to_string()),
                     modified_args: None,
+                    terminate: None,
                 })
             })
         });
@@ -1941,6 +1950,44 @@ mod tests {
         match result {
             PreparedOrImmediate::Immediate { is_error, .. } => {
                 assert!(is_error);
+            }
+            _ => panic!("expected Immediate when blocked"),
+        }
+    }
+
+    /// TS 0.84.1 (#7715): a blocked `beforeToolCall` result with
+    /// `terminate: true` propagates the hint so the batch can skip the
+    /// follow-up model call.
+    #[tokio::test]
+    async fn test_blocked_tool_call_terminate_propagates() {
+        let ctx = dummy_context(vec![dummy_agent_tool("my_tool", serde_json::json!({"properties": {}}), None, Ok(AgentToolResult { content: vec![], details: serde_json::Value::Null, usage: None, added_tool_names: None, terminate: None }))]);
+        let before_fn: BeforeToolCallFn = Arc::new(|_ctx, _signal| {
+            Box::pin(async {
+                Some(BeforeToolCallResult {
+                    block: true,
+                    reason: Some("policy".to_string()),
+                    modified_args: None,
+                    terminate: Some(true),
+                })
+            })
+        });
+        let call = dummy_tool_call("1", "my_tool", serde_json::json!({}));
+        let result = prepare_tool_call(
+            &ctx,
+            &dummy_assistant_message(),
+            &call,
+            &Some(before_fn),
+            &None,
+        )
+        .await;
+        match result {
+            PreparedOrImmediate::Immediate { result, is_error } => {
+                assert!(is_error);
+                assert_eq!(
+                    result.terminate,
+                    Some(true),
+                    "blocked result must carry terminate for batch early termination"
+                );
             }
             _ => panic!("expected Immediate when blocked"),
         }

@@ -106,6 +106,7 @@ pub async fn dispatch_tool_call(
                 block: true,
                 reason: Some(reason),
                 modified_args: None,
+                terminate: None,
             })
         }
         crate::core::extensions::HookResult::Continue((_name, args)) => {
@@ -115,6 +116,7 @@ pub async fn dispatch_tool_call(
                     block: false,
                     reason: None,
                     modified_args: Some(args),
+                    terminate: None,
                 })
             } else {
                 None

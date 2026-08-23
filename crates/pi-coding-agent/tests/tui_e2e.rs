@@ -30,10 +30,14 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const CHILD_ENV: &str = "PI_TUI_E2E_CHILD";
 const LONG_ENV: &str = "PI_TUI_E2E_LONG_STREAM";
+const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
+const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
 const MOCK_REPLY: &str = "Hello from the mock LLM!";
 const WIDTH: u16 = 100;
 const HEIGHT: u16 = 30;
 const TIMEOUT: Duration = Duration::from_secs(20);
+/// Budget for a real LLM round-trip (network + generation).
+const REAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Mock LLM
@@ -180,6 +184,49 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     session
 }
 
+/// Model pointing at Ollama Cloud's OpenAI-compatible endpoint. The API key
+/// is provided via `OPENAI_API_KEY` in the child env (mapped from
+/// `OLLAMA_API_KEY` by the parent test — pi-ai has no `ollama` provider key).
+fn ollama_model() -> pi_agent_core::pi_ai_types::Model {
+    pi_agent_core::pi_ai_types::Model {
+        id: OLLAMA_MODEL.into(),
+        name: "Ollama Cloud (deepseek-v4-flash)".into(),
+        api: "openai-completions".into(),
+        provider: "openai".into(),
+        base_url: "https://ollama.com/v1".into(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: vec!["text".into()],
+        cost: pi_agent_core::pi_ai_types::ModelCost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            tiers: vec![],
+        },
+        context_window: 128_000,
+        max_tokens: 4096,
+        sampling_params: None,
+        headers: None,
+        compat: None,
+    }
+}
+
+/// AgentSession wired to the *real* provider stack (default stream_fn +
+/// Ollama Cloud model). Network + API key required.
+async fn create_real_session() -> pi_coding_agent::core::agent_session::AgentSession {
+    let mut opts = CreateAgentSessionOptions::default();
+    opts.cwd = std::env::temp_dir().display().to_string();
+    opts.agent_dir = Some(std::env::temp_dir().display().to_string());
+    opts.stream_fn = Some(pi_coding_agent::core::sdk::create_default_stream_fn());
+    opts.cli_provider = Some("openai".into());
+    opts.cli_model = Some(OLLAMA_MODEL.into());
+    opts.enable_extensions = false;
+    opts.model_registry = Some(ModelRegistry::new(vec![ollama_model()]));
+    let (session, _result) = create_agent_session(opts).await.expect("real session");
+    session
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Child process runner (spawned by the parent test with the PTY attached)
 // ────────────────────────────────────────────────────────────────────────────
@@ -194,9 +241,12 @@ fn child_process_runner() {
         .build()
         .expect("runtime");
     let code = runtime.block_on(async {
-        let session = create_mock_session().await;
-        let code = pi_coding_agent::modes::interactive::run_interactive_mode(session).await;
-        code
+        let session = if std::env::var(REAL_ENV).is_ok() {
+            create_real_session().await
+        } else {
+            create_mock_session().await
+        };
+        pi_coding_agent::modes::interactive::run_interactive_mode(session).await
     });
     std::process::exit(code);
 }
@@ -214,6 +264,16 @@ struct Tui {
 
 impl Tui {
     fn spawn(long_stream: bool) -> Self {
+        Self::spawn_inner(long_stream, None)
+    }
+
+    /// Spawn with the real LLM path: `real_key` is mapped to
+    /// `OPENAI_API_KEY` in the child env.
+    fn spawn_real(long_stream: bool, real_key: &str) -> Self {
+        Self::spawn_inner(long_stream, Some(real_key))
+    }
+
+    fn spawn_inner(long_stream: bool, real_key: Option<&str>) -> Self {
         let pty = native_pty_system()
             .openpty(PtySize {
                 rows: HEIGHT,
@@ -231,6 +291,10 @@ impl Tui {
         cmd.env(CHILD_ENV, "1");
         if long_stream {
             cmd.env(LONG_ENV, "1");
+        }
+        if let Some(key) = real_key {
+            cmd.env(REAL_ENV, "1");
+            cmd.env("OPENAI_API_KEY", key);
         }
         let child = pty
             .slave
@@ -391,6 +455,42 @@ fn tui_ctrl_c_aborts_long_stream() {
     tui.write(&[0x04]);
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit after abort");
+}
+
+/// End-to-end against a REAL LLM (Ollama Cloud, OpenAI-compatible endpoint).
+///
+/// Requires `OLLAMA_API_KEY`; skipped (with a note) when absent. Exercises
+/// the full stack: TUI → interactive mode → AgentSession → default
+/// stream_fn → provider HTTP → Ollama Cloud → streamed reply → render.
+#[test]
+fn tui_chat_flow_real_ollama() {
+    let Some(key) = std::env::var("OLLAMA_API_KEY").ok().filter(|k| !k.is_empty()) else {
+        eprintln!("SKIP: OLLAMA_API_KEY not set — real-LLM E2E skipped");
+        return;
+    };
+
+    let mut tui = Tui::spawn_real(false, &key);
+    assert!(
+        tui.wait_for("> ", REAL_TIMEOUT),
+        "prompt rendered; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(b"Reply with exactly: E2E-OK\r");
+    assert!(
+        tui.wait_for("assistant", REAL_TIMEOUT),
+        "assistant message appeared; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("E2E-OK", REAL_TIMEOUT),
+        "real LLM replied; got: {:?}",
+        tui.rendered().chars().rev().take(500).collect::<String>()
+    );
+
+    tui.write(&[0x04]); // Ctrl+D: quit
+    let code = tui.wait_exit(REAL_TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
 }
 
 /// Esc quits immediately with a clean terminal restore.

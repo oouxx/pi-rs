@@ -442,6 +442,120 @@ impl ResourceLoader for DefaultResourceLoader {
 // Context file loading
 // ============================================================================
 
+/// Git metadata discovered by walking up from `cwd` (TS `findGitPaths`):
+/// handles both regular repos (`.git` is a directory) and linked worktrees
+/// (`.git` is a file with `gitdir: <path>` plus an optional `commondir`).
+struct GitPaths {
+    repo_dir: String,
+    common_git_dir: String,
+}
+
+/// Mirror of TS `findGitPaths` (`core/footer-data-provider.ts`).
+fn find_git_paths(cwd: &str) -> Option<GitPaths> {
+    let mut dir: &Path = Path::new(cwd);
+    loop {
+        let git_path = dir.join(".git");
+        if git_path.exists() {
+            let meta = std::fs::metadata(&git_path).ok();
+            if let Some(m) = meta {
+                if m.is_file() {
+                    // Linked worktree: `.git` is a file containing
+                    // `gitdir: <path>`; the common git dir lives under an
+                    // optional `commondir` file.
+                    let content = std::fs::read_to_string(&git_path).ok()?;
+                    let trimmed = content.trim();
+                    if let Some(target) = trimmed.strip_prefix("gitdir: ") {
+                        let git_dir = dir.join(target.trim()).to_path_buf();
+                        let head_path = git_dir.join("HEAD");
+                        if !head_path.exists() {
+                            return None;
+                        }
+                        let common_dir_path = git_dir.join("commondir");
+                        let common_git_dir = if common_dir_path.exists() {
+                            let c = std::fs::read_to_string(&common_dir_path).ok()?;
+                            git_dir.join(c.trim()).to_path_buf()
+                        } else {
+                            git_dir
+                        };
+                        return Some(GitPaths {
+                            repo_dir: dir.to_string_lossy().to_string(),
+                            common_git_dir: common_git_dir.to_string_lossy().to_string(),
+                        });
+                    }
+                    return None;
+                }
+                if m.is_dir() {
+                    let head_path = git_path.join("HEAD");
+                    if !head_path.exists() {
+                        return None;
+                    }
+                    return Some(GitPaths {
+                        repo_dir: dir.to_string_lossy().to_string(),
+                        common_git_dir: git_path.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+        let parent = dir.parent()?;
+        if parent == dir {
+            return None;
+        }
+        dir = parent;
+    }
+}
+
+/// The main repo's context file that a nested linked worktree's own copy
+/// shadows: both occupy the same logical repository scope, so loading both
+/// applies that context twice (TS `findShadowedContextFile`, #7221). Returns
+/// `None` when nothing is shadowed, leaving normal ancestor inheritance
+/// alone. Paths are canonicalized (realpath), matching TS.
+fn find_shadowed_context_file(cwd: &str) -> Option<String> {
+    let git_paths = find_git_paths(cwd)?;
+    let common_git_dir = crate::utils::paths::canonicalize_path(&git_paths.common_git_dir);
+    let worktree_root = crate::utils::paths::canonicalize_path(&git_paths.repo_dir);
+    let main_repo_root = std::path::Path::new(&common_git_dir)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    // False for an ordinary repo (same dir) and for a sibling worktree
+    // (`git worktree add ../feat`), whose main repo is not an ancestor.
+    let sep = std::path::MAIN_SEPARATOR;
+    if !worktree_root.starts_with(&format!("{main_repo_root}{sep}")) {
+        return None;
+    }
+    // The parent of the common git dir is the main worktree root only when
+    // that dir is itself checked out from the same repo. In a bare layout
+    // (`proj/.bare` + `proj/main`) it is just the directory holding `.bare`;
+    // a submodule's gitdir has no `commondir`, so it lands under
+    // `.git/modules`.
+    let main_git = std::path::Path::new(&main_repo_root)
+        .join(".git")
+        .to_string_lossy()
+        .to_string();
+    if crate::utils::paths::canonicalize_path(&main_git) != common_git_dir {
+        return None;
+    }
+    let context_file_names = [
+        "AGENTS.override.md",
+        "AGENTS.md",
+        "AGENTS.MD",
+        "CLAUDE.md",
+        "CLAUDE.MD",
+    ];
+    for name in &context_file_names {
+        let wt = std::path::Path::new(&worktree_root).join(name);
+        if wt.is_file() {
+            return Some(
+                std::path::Path::new(&main_repo_root)
+                    .join(name)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
 /// Load context files (AGENTS.override.md, AGENTS.md, CLAUDE.md, etc.) from
 /// cwd up to filesystem root, plus from the agent directory.
 ///
@@ -491,9 +605,19 @@ fn load_context_files_ancestors(cwd: &str, agent_dir: Option<&str>) -> Vec<Conte
     let mut ancestor_files: Vec<ContextFile> = Vec::new();
     let mut current_dir = Some(Path::new(cwd).to_path_buf());
 
+    // Main repo context file shadowed by a nested linked worktree's own copy
+    // (TS `findShadowedContextFile`): skip it so the context is not loaded
+    // twice for the same logical repo scope (#7221).
+    let shadowed_context_file = find_shadowed_context_file(cwd)
+        .map(|p| crate::utils::paths::canonicalize_path(&p));
+
     while let Some(dir) = current_dir {
         if let Some((path_str, content)) = first_context_file(&dir, &context_file_names) {
-            if seen_paths.insert(path_str.clone()) {
+            let is_shadowed = shadowed_context_file
+                .as_deref()
+                .map(|s| crate::utils::paths::canonicalize_path(&path_str) == *s)
+                .unwrap_or(false);
+            if !is_shadowed && seen_paths.insert(path_str.clone()) {
                 ancestor_files.push(ContextFile {
                     path: path_str,
                     content,
@@ -609,6 +733,59 @@ mod tests {
         assert!(
             !contents.contains(&"# Regular"),
             "AGENTS.override.md must shadow AGENTS.md in the same dir: {contents:?}"
+        );
+    }
+
+    /// TS #7221: a nested linked worktree's AGENTS.md shadows the main
+    /// repo's copy (same logical repo scope) — loading from inside the
+    /// worktree must not load the main repo context twice.
+    #[test]
+    fn test_worktree_shadows_main_repo_context_file() {
+        let base = tempfile::tempdir().unwrap();
+        let main_repo = base.path().join("main");
+        fs::create_dir_all(&main_repo).unwrap();
+        // Real `git worktree add` layout: worktree nested under the main repo.
+        let git_ok = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "init", "-q"])
+            .current_dir(&main_repo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+            && std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"])
+                .current_dir(&main_repo)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+        if !git_ok {
+            eprintln!("git unavailable — skipping worktree shadow test");
+            return;
+        }
+        let worktree = main_repo.join("worktrees").join("feat");
+        let add_ok = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "feat", &worktree.to_string_lossy()])
+            .current_dir(&main_repo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !add_ok {
+            eprintln!("git worktree add failed — skipping");
+            return;
+        }
+
+        // Main repo and worktree each carry their own AGENTS.md.
+        fs::write(main_repo.join("AGENTS.md"), "# Main Context").unwrap();
+        fs::write(worktree.join("AGENTS.md"), "# Worktree Context").unwrap();
+
+        let files = load_context_files_ancestors(worktree.to_str().unwrap(), None);
+        let contents: Vec<&str> = files.iter().map(|f| f.content.as_str()).collect();
+        assert!(
+            contents.contains(&"# Worktree Context"),
+            "worktree copy must be loaded: {contents:?}"
+        );
+        assert!(
+            !contents.contains(&"# Main Context"),
+            "main repo copy is shadowed by the nested worktree and must be skipped: {contents:?}"
         );
     }
 

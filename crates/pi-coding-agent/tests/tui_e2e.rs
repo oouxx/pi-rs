@@ -26,6 +26,7 @@ use pi_agent_core::pi_ai_types::{
 use pi_agent_core::types::{StreamFn, StreamFnOptions};
 use pi_coding_agent::core::model_registry::ModelRegistry;
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
+use pi_extension_api::hook::{CommandRegistration, CommandRegistry, HookHandler};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const CHILD_ENV: &str = "PI_TUI_E2E_CHILD";
@@ -180,8 +181,41 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     opts.cli_model = Some("mock-model".into());
     opts.enable_extensions = false;
     opts.model_registry = Some(ModelRegistry::new(vec![mock_model()]));
+    let mut registry = pi_extension_api::ExtensionRegistry::new();
+    registry.register(
+        Box::new(TestCmdHandler),
+        pi_extension_api::create_builtin_source_info("test-ext"),
+    );
+    opts.extension_registry = Some(registry);
     let (session, _result) = create_agent_session(opts).await.expect("mock session");
     session
+}
+
+/// Mock extension registering a slash command. The handler writes its args
+/// to a well-known file so the E2E test can observe execution.
+struct TestCmdHandler;
+
+#[async_trait::async_trait]
+impl HookHandler for TestCmdHandler {
+    fn name(&self) -> &str {
+        "test-ext"
+    }
+
+    fn register_commands(&self, reg: &mut CommandRegistry) {
+        reg.register(
+            "testcmd",
+            CommandRegistration {
+                description: "test extension command".into(),
+                execute: std::sync::Arc::new(|args, _ctx| {
+                    Box::pin(async move {
+                        std::fs::write("/tmp/tui_ext_cmd.log", format!("ran: {args}"))
+                            .expect("write ext log");
+                    })
+                }),
+                get_argument_completions: None,
+            },
+        );
+    }
 }
 
 /// Model pointing at Ollama Cloud's OpenAI-compatible endpoint. The API key
@@ -490,6 +524,43 @@ fn tui_chat_flow_real_ollama() {
 
     tui.write(&[0x04]); // Ctrl+D: quit
     let code = tui.wait_exit(REAL_TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
+}
+
+/// Slash commands registered by extensions must be routed to the extension
+/// handler (not sent to the model as a plain message).
+#[test]
+fn tui_extension_slash_command_executes() {
+    let _ = std::fs::remove_file("/tmp/tui_ext_cmd.log");
+    let mut tui = Tui::spawn(false);
+    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+
+    tui.write(b"/testcmd hello\r");
+
+    let deadline = Instant::now() + TIMEOUT;
+    let mut executed = false;
+    while Instant::now() < deadline {
+        if let Ok(content) = std::fs::read_to_string("/tmp/tui_ext_cmd.log") {
+            if content.contains("ran: hello") {
+                executed = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(executed, "extension command handler ran with args");
+
+    // Unknown commands fall through to the model as a plain message (the
+    // user message appears on screen) rather than erroring.
+    tui.write(b"/no-such-command\r");
+    assert!(
+        tui.wait_for("no-such-command", TIMEOUT),
+        "unknown command sent as message; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(&[0x04]);
+    let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
 

@@ -39,7 +39,7 @@ enum AgentCmd {
     SendMessage(String),
     AbortBash,
     SetModel(String, String),
-    CycleModel,
+    CycleModel(String),
     CycleThinkingLevel,
     NewSession(Option<String>),
     SetSessionName(String),
@@ -80,14 +80,18 @@ struct AppState {
     model: pi_tui::Model,
     last_ctrl_c: Instant,
     quit: bool,
+    /// Names of slash commands registered by extensions (snapshot taken at
+    /// startup; used to route `/name` to the extension executor).
+    ext_commands: Vec<String>,
 }
 
 impl AppState {
-    fn new(width: u16, height: u16) -> Self {
+    fn new(width: u16, height: u16, ext_commands: Vec<String>) -> Self {
         Self {
             model: pi_tui::Model::new(width, height),
             last_ctrl_c: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
             quit: false,
+            ext_commands,
         }
     }
 }
@@ -159,9 +163,9 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             state.quit = true;
             vec![]
         }
-        // Ctrl+P: cycle model
+        // Ctrl+P: cycle model (matching original Ctrl+P behavior)
         KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
-            vec![Effect::AgentCommand(AgentCmd::CycleModel)]
+            vec![Effect::AgentCommand(AgentCmd::CycleModel("next".into()))]
         }
         // Ctrl+T: cycle thinking level
         KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL => {
@@ -201,6 +205,9 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
 
 /// Slash-command handling (pure; mirrors `interactive-mode.ts`).
 fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
+    // Slash commands consume the input (matching the original: the prompt is
+    // cleared once a command is dispatched).
+    state.model.input.clear();
     let parts: Vec<&str> = text.splitn(2, ' ').collect();
     let command = parts[0];
     let args = parts.get(1).copied().unwrap_or("");
@@ -234,7 +241,11 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             }
         }
         "/help" => {
-            system(state, "Commands: /new, /name <name>, /model <provider>/<id>, /help, /quit".into());
+            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /help, /quit".to_string();
+            if !state.ext_commands.is_empty() {
+                help.push_str(&format!("\nExtension: /{}", state.ext_commands.join(", /")));
+            }
+            system(state, help);
             vec![]
         }
         "/reload" => {
@@ -246,11 +257,11 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             vec![]
         }
         _ => {
-            // Extension commands are registered via the extension registry;
-            // with no extensions loaded, unknown commands fall through to a
-            // regular message (matching the original behavior).
+            // Extension-registered slash commands: route to the extension
+            // executor when the name matches; unknown commands fall through
+            // to a regular message (matching the original behavior).
             let cmd_name = &command[1..];
-            if is_extension_command(cmd_name) {
+            if state.ext_commands.iter().any(|c| c == cmd_name) {
                 system(state, format!("Running extension command: /{cmd_name}"));
                 vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(cmd_name.to_string(), args.to_string()))]
             } else {
@@ -261,13 +272,6 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             }
         }
     }
-}
-
-/// Extension commands are discovered from the extension registry; with the
-/// minimal TUI the registry is empty, so this is always false (the unknown
-/// command falls back to a plain message).
-fn is_extension_command(_cmd_name: &str) -> bool {
-    false
 }
 
 // ============================================================================
@@ -299,6 +303,7 @@ fn spawn_agent_command_task(
     session: Arc<Mutex<AgentSession>>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<AgentCmd>,
     exit_flag: Arc<std::sync::atomic::AtomicBool>,
+    result_tx: tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
 ) {
     tokio::spawn(async move {
         while !exit_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -334,12 +339,25 @@ fn spawn_agent_command_task(
                             };
                             let _ = sess.set_model(model).await;
                         }
-                        AgentCmd::CycleModel => {
-                            // Cycle through available models via the agent
-                            sess.abort().await;
+                        AgentCmd::CycleModel(direction) => {
+                            // Cycle through available models (real API) and
+                            // surface the result in the UI.
+                            if let Some((model, _tl, _scoped)) = sess.cycle_model(&direction).await {
+                                let _ = result_tx.send(pi_tui::Msg::SetModelName(model.id.clone()));
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    format!("Model: {}", model.id),
+                                ));
+                            }
                         }
                         AgentCmd::CycleThinkingLevel => {
-                            // Cycle through thinking levels
+                            // Cycle through thinking levels (real API).
+                            if let Some(level) = sess.cycle_thinking_level().await {
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    format!("Thinking level: {level}"),
+                                ));
+                            }
                         }
                         AgentCmd::NewSession(parent) => {
                             sess.session_mgr_new(parent.as_deref()).await;
@@ -347,10 +365,23 @@ fn spawn_agent_command_task(
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
                         }
-                        AgentCmd::ExtensionCommand(_cmd_name, _args) => {
-                            // Extension commands are handled by Rust native
-                            // extensions via the ExtensionRegistry. Dispatch
-                            // is TBD per extension.
+                        AgentCmd::ExtensionCommand(cmd_name, args) => {
+                            // Run a slash command registered by an extension:
+                            // look it up in the registry and invoke its
+                            // handler with the session's extension context
+                            // (all inside the lock so the &ctx borrow is
+                            // valid for the await).
+                            if let Some(registry) = sess.get_extension_registry() {
+                                if let Some(cmd) = registry
+                                    .commands()
+                                    .iter()
+                                    .find(|c| c.name == cmd_name)
+                                    .cloned()
+                                {
+                                    let ctx = sess.get_extension_context();
+                                    (cmd.execute)(args, Some(ctx)).await;
+                                }
+                            }
                         }
                         AgentCmd::ReloadExtensions => {
                             // Extension reload is not applicable for Rust
@@ -424,7 +455,21 @@ pub async fn run_interactive_mode(session: AgentSession) -> i32 {
     };
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let mut state = AppState::new(cols, rows);
+
+    // ── Extension command snapshot + initial model name ──────────────────
+    // (plain &self accessors — the session mutex is only needed inside the
+    // background task; the model was already resolved at session creation)
+    let (ext_commands, initial_model_name) = {
+        let cmds = session
+            .get_extension_registry()
+            .map(|r| r.commands().iter().map(|c| c.name.clone()).collect())
+            .unwrap_or_default();
+        let model_id = session.get_state().await.model.id.clone();
+        (cmds, model_id)
+    };
+
+    let mut state = AppState::new(cols, rows, ext_commands);
+    state.model.model_name = initial_model_name;
 
     let (mut input_rx, shutdown_guard) = match terminal.start() {
         Ok(r) => r,
@@ -433,11 +478,14 @@ pub async fn run_interactive_mode(session: AgentSession) -> i32 {
 
     // ── Agent command channel + background task ───────────────────────────
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<AgentCmd>();
+    // Result channel: the background task reports command outcomes (model
+    // changes, thinking level) back into the TUI event stream.
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
     let session = Arc::new(Mutex::new(session));
     let bg_session = session.clone();
     let bg_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bg_exit_flag = bg_exit.clone();
-    spawn_agent_command_task(bg_session, cmd_rx, bg_exit_flag);
+    spawn_agent_command_task(bg_session, cmd_rx, bg_exit_flag, result_tx);
 
     // ── Subscribe agent events (lock-and-release) ───────────────────────
     // Keep an `Arc<Agent>` handle for abort: `abort()` is `&self` and must
@@ -473,6 +521,7 @@ pub async fn run_interactive_mode(session: AgentSession) -> i32 {
                 Action::Key(key)
             }
             Some(msg) = agent_rx.recv() => Action::Agent(msg),
+            Some(msg) = result_rx.recv() => Action::Agent(msg),
         };
 
         let outcome = update(&mut state, action);

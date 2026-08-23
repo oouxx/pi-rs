@@ -1,3 +1,4 @@
+#![cfg(feature = "interactive")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::field_reassign_with_default)]
 
 //! TUI end-to-end tests over a pseudo-terminal (no real TTY required).
@@ -30,6 +31,7 @@ use pi_extension_api::hook::{CommandRegistration, CommandRegistry, HookHandler};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const CHILD_ENV: &str = "PI_TUI_E2E_CHILD";
+const TOOL_ENV: &str = "PI_TUI_E2E_TOOL_CALL";
 const LONG_ENV: &str = "PI_TUI_E2E_LONG_STREAM";
 const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
 const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
@@ -191,6 +193,109 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     session
 }
 
+/// Marker file the mock `write` tool call targets (relative to the session
+/// cwd, which the tool resolves against). Tests that run in parallel use
+/// distinct markers via `PI_TUI_E2E_TOOL_MARKER` so they cannot clobber
+/// each other's file.
+const APPROVAL_MARKER: &str = "tui_marker_approval.txt";
+const MARKER_ENV: &str = "PI_TUI_E2E_TOOL_MARKER";
+
+/// Marker file name for the given test (unique per test, injected into the
+/// child process through `MARKER_ENV`).
+fn marker_for(name: &str) -> String {
+    format!("tui_marker_{name}.txt")
+}
+
+/// Mock LLM that requests a `write` tool call on the first turn, then replies
+/// with plain text once the tool result is fed back. Lets the E2E drive the
+/// tool-approval gate: approve → tool runs (marker file created), deny → tool
+/// is blocked (marker file absent). The marker path comes from `MARKER_ENV`
+/// so parallel tests use disjoint files.
+fn mock_tool_call_stream_fn() -> StreamFn {
+    let marker = std::env::var(MARKER_ENV).unwrap_or_else(|_| APPROVAL_MARKER.to_string());
+    Arc::new(
+        move |_model, context, _thinking, _opts: StreamFnOptions| {
+            let has_tool_result = context.messages.iter().any(|m| {
+                matches!(m, pi_agent_core::pi_ai_types::Message::ToolResult { .. })
+            });
+            Box::pin({
+                let value = marker.clone();
+                async move {
+                    if has_tool_result {
+                        // The tool already ran/blocked — finish the turn with text.
+                        let mut msg = partial_msg("Tool finished.");
+                        msg.stop_reason = StopReason::Stop;
+                        let mut events = vec![AssistantMessageEvent::Start {
+                            partial: partial_msg(""),
+                        }];
+                        events.push(AssistantMessageEvent::TextDelta {
+                            content_index: 0,
+                            delta: "Tool finished.".into(),
+                            partial: msg.clone(),
+                        });
+                        events.push(AssistantMessageEvent::TextEnd {
+                            content_index: 0,
+                            content: "Tool finished.".into(),
+                            partial: msg.clone(),
+                        });
+                        events.push(AssistantMessageEvent::Done {
+                            reason: StopReason::Stop,
+                            message: msg,
+                        });
+                        Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+                    } else {
+                        // First turn: request the `write` tool.
+                        let msg = AssistantMessage {
+                            content: vec![ContentBlock::ToolCall {
+                                id: "tc-approval".into(),
+                                name: "write".into(),
+                                arguments: serde_json::json!({
+                                    "path": value,
+                                    "content": "approved"
+                                }),
+                                thought_signature: None,
+                                namespace: None,
+                            }],
+                            api: "mock-api".into(),
+                            provider: "mock".into(),
+                            model: "mock-model".into(),
+                            response_model: None,
+                            response_id: None,
+                            diagnostics: None,
+                            usage: Usage::default(),
+                            stop_reason: StopReason::ToolUse,
+                            error_message: None,
+                            raw_stop_reason: None,
+                            end_turn: None,
+                            timestamp: 0,
+                        };
+                        Ok(Box::new(futures::stream::iter(vec![
+                            AssistantMessageEvent::Done {
+                                reason: StopReason::ToolUse,
+                                message: msg,
+                            },
+                        ])) as StreamResponse)
+                    }
+                }
+            })
+        },
+    )
+}
+
+/// AgentSession wired to the mock that returns a `write` tool call.
+async fn create_tool_session() -> pi_coding_agent::core::agent_session::AgentSession {
+    let mut opts = CreateAgentSessionOptions::default();
+    opts.cwd = std::env::temp_dir().display().to_string();
+    opts.agent_dir = Some(std::env::temp_dir().display().to_string());
+    opts.stream_fn = Some(mock_tool_call_stream_fn());
+    opts.cli_provider = Some("mock".into());
+    opts.cli_model = Some("mock-model".into());
+    opts.enable_extensions = false;
+    opts.model_registry = Some(ModelRegistry::new(vec![mock_model()]));
+    let (session, _result) = create_agent_session(opts).await.expect("tool session");
+    session
+}
+
 /// Mock extension registering slash commands. The handlers write to
 /// well-known files so the E2E test can observe execution.
 struct TestCmdHandler;
@@ -306,6 +411,8 @@ fn child_process_runner() {
     let code = runtime.block_on(async {
         let session = if std::env::var(REAL_ENV).is_ok() {
             create_real_session().await
+        } else if std::env::var(TOOL_ENV).is_ok() {
+            create_tool_session().await
         } else {
             create_mock_session().await
         };
@@ -327,16 +434,33 @@ struct Tui {
 
 impl Tui {
     fn spawn(long_stream: bool) -> Self {
-        Self::spawn_inner(long_stream, None)
+        Self::spawn_inner(long_stream, None, false)
     }
 
     /// Spawn with the real LLM path: `real_key` is mapped to
     /// `OPENAI_API_KEY` in the child env.
     fn spawn_real(long_stream: bool, real_key: &str) -> Self {
-        Self::spawn_inner(long_stream, Some(real_key))
+        Self::spawn_inner(long_stream, Some(real_key), false)
     }
 
-    fn spawn_inner(long_stream: bool, real_key: Option<&str>) -> Self {
+    /// Spawn with the mock that returns a `write` tool call (tool-approval
+    /// closed loop). `marker` names the file the mock asks `write` to create
+    /// (disjoint per test so parallel runs cannot clobber each other).
+    fn spawn_tool(marker: &str) -> Self {
+        // The child reads MARKER_ENV when building the tool session.
+        Self::spawn_inner_env(false, None, true, &[(MARKER_ENV, marker)])
+    }
+
+    fn spawn_inner(long_stream: bool, real_key: Option<&str>, tool_call: bool) -> Self {
+        Self::spawn_inner_env(long_stream, real_key, tool_call, &[])
+    }
+
+    fn spawn_inner_env(
+        long_stream: bool,
+        real_key: Option<&str>,
+        tool_call: bool,
+        extra_env: &[(&str, &str)],
+    ) -> Self {
         let pty = native_pty_system()
             .openpty(PtySize {
                 rows: HEIGHT,
@@ -354,6 +478,12 @@ impl Tui {
         cmd.env(CHILD_ENV, "1");
         if long_stream {
             cmd.env(LONG_ENV, "1");
+        }
+        if tool_call {
+            cmd.env(TOOL_ENV, "1");
+        }
+        for (k, v) in extra_env {
+            cmd.env(*k, *v);
         }
         if let Some(key) = real_key {
             cmd.env(REAL_ENV, "1");
@@ -518,6 +648,92 @@ fn tui_ctrl_c_aborts_long_stream() {
     tui.write(&[0x04]);
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit after abort");
+}
+
+/// Tool-approval gate — approve: the `write` tool call is gated on a user
+/// decision; pressing `a` runs it (marker file appears) and the turn
+/// continues with the mock's text reply.
+#[test]
+fn tui_tool_approval_approve_runs_tool() {
+    let marker_name = marker_for("approve");
+    let marker = std::env::temp_dir().join(&marker_name);
+    let _ = std::fs::remove_file(&marker);
+    let mut tui = Tui::spawn_tool(&marker_name);
+    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+
+    tui.write(b"create the file\r");
+    assert!(
+        tui.wait_for("[a] Approve", TIMEOUT),
+        "approval hint rendered; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(b"a"); // approve
+
+    // The tool must now run: the marker file appears with the payload the
+    // mock requested.
+    let deadline = Instant::now() + TIMEOUT;
+    let mut written = false;
+    while Instant::now() < deadline {
+        if let Ok(content) = std::fs::read_to_string(&marker) {
+            if content == "approved" {
+                written = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(written, "approved tool wrote the marker file");
+
+    assert!(
+        tui.wait_for("Tool finished.", TIMEOUT),
+        "turn resumed after approval; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(&[0x04]);
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
+}
+
+/// Tool-approval gate — deny: pressing `d` blocks the tool (marker file must
+/// never appear), the tool row shows the Denied badge, and the session
+/// continues with the mock's text reply.
+#[test]
+fn tui_tool_approval_deny_blocks_tool() {
+    let marker_name = marker_for("deny");
+    let marker = std::env::temp_dir().join(&marker_name);
+    let _ = std::fs::remove_file(&marker);
+    let mut tui = Tui::spawn_tool(&marker_name);
+    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+
+    tui.write(b"create the file\r");
+    assert!(
+        tui.wait_for("[a] Approve", TIMEOUT),
+        "approval hint rendered; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(b"d"); // deny
+    assert!(
+        tui.wait_for("Denied", TIMEOUT),
+        "denied badge rendered; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("Tool finished.", TIMEOUT),
+        "turn resumed after denial; got: {:?}",
+        tui.rendered()
+    );
+
+    // The tool must never have run. Give a straggler write a beat before
+    // asserting absence.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "denied tool must not write the marker file");
+
+    tui.write(&[0x04]);
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
 }
 
 /// End-to-end against a REAL LLM (Ollama Cloud, OpenAI-compatible endpoint).

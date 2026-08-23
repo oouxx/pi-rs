@@ -8,7 +8,7 @@ use ratatui::text::Text;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::components::{Completer, Editor, Input, SelectList};
+use crate::components::{Completer, Editor, Input, Markdown, SelectList};
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -58,7 +58,23 @@ pub enum ToolCallState { Pending, Running, Done, Failed }
 pub enum ToolApproval { Pending, Approved, Denied }
 
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String } }
-pub struct Message { pub role: String, pub text: String }
+pub struct Message {
+    pub role: String,
+    pub text: String,
+    /// Streaming markdown renderer for this message's content.
+    md: Markdown,
+}
+
+impl Message {
+    /// Create a message and feed its initial text through the markdown
+    /// pipeline. `width` is the wrap width at construction; the renderer
+    /// re-wraps automatically on subsequent width changes.
+    pub fn new(role: impl Into<String>, text: impl Into<String>, width: usize) -> Self {
+        let text = text.into();
+        let md = Markdown::new(&text, width);
+        Self { role: role.into(), text, md }
+    }
+}
 
 pub struct Dialog { pub title: String, pub message: String, pub buttons: Vec<DialogButton>, pub selected: usize }
 pub struct DialogButton { pub label: &'static str, pub action: DialogAction }
@@ -123,7 +139,7 @@ pub enum Msg {
     SetGitBranch(Option<String>), SetContextUsage(u8), SetElapsed(u64), SetModelName(String),
     SetEditorText(String), ExitSelect,
     AppendToolOutput(String, String), ToggleToolExpand(String),
-    ToolApprove(String), ToolDeny(String),
+    ToolApprove(String), ToolDeny(String), ToolApprovalPending(String),
     ClearScreen, InputNewline, Cancel,
 }
 
@@ -136,8 +152,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::Key(key) => handle_key(model, key),
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
         Msg::Paste(text) => { model.input.insert_str(&text); vec![] }
-        Msg::NewMessage(role, text) => { model.messages.push(Message { role, text }); model.auto_scroll = true; vec![] }
-        Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); } vec![] }
+        Msg::NewMessage(role, text) => { model.messages.push(Message::new(role, text, model.width as usize)); model.auto_scroll = true; vec![] }
+        Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); m.md.append_text(&delta); } vec![] }
         Msg::StreamEnd => { model.is_streaming = false; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
@@ -162,6 +178,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::ToggleToolExpand(n) => { model.toggle_tool_expand(&n); vec![] }
         Msg::ToolApprove(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Approved); } vec![] }
         Msg::ToolDeny(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Denied); } vec![] }
+        Msg::ToolApprovalPending(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Pending); } vec![] }
         Msg::ClearScreen => { model.messages.clear(); model.active_tools.clear(); model.scroll_offset = 0; vec![] }
         Msg::InputNewline => { model.input.insert_char('\n'); vec![] }
         Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
@@ -244,18 +261,18 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
 // View — four-section layout
 // ============================================================================
 
-pub fn view(model: &Model, frame: &mut Frame) {
-    let area = frame.area(); let t = &model.theme;
+pub fn view(model: &mut Model, frame: &mut Frame) {
+    let area = frame.area(); let t = model.theme.clone();
     if let AppMode::Editor { editor, title, .. } = &model.mode {
-        render_editor(frame, area, editor, title, t); return;
+        render_editor(frame, area, editor, title, &t); return;
     }
     let input_h = input_height(model);
     let chunks = Layout::new(Direction::Vertical, [Constraint::Length(1), Constraint::Min(1), Constraint::Length(input_h), Constraint::Length(1)]).split(area);
-    render_header(model, frame, chunks[0], t);
-    render_body(model, frame, chunks[1], t);
-    render_input(model, frame, chunks[2], t);
-    render_status(model, frame, chunks[3], t);
-    if model.dialog.is_some() { render_dialog(model, frame, area, t); return; }
+    render_header(model, frame, chunks[0], &t);
+    render_body(model, frame, chunks[1], &t);
+    render_input(model, frame, chunks[2], &t);
+    render_status(model, frame, chunks[3], &t);
+    if model.dialog.is_some() { render_dialog(model, frame, area, &t); return; }
     if let AppMode::Select { list, .. } = &model.mode {
         let oa = Rect::new(area.width / 4, area.height / 4, area.width / 2, area.height / 2);
         frame.render_widget(Clear, oa); list.render_to_frame(frame, oa);
@@ -284,11 +301,11 @@ fn render_header(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
 // Body — fixed-position layout (no overlap)
 // ============================================================================
 
-fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
+fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let wrap_w = (area.width as usize).saturating_sub(3).max(10);
 
     // Build items with fixed heights
-    struct Item { role: String, height: u16, lines: Vec<String>, tool_name: String, tool_state: Option<ToolCallState>, tool_approval: Option<ToolApproval>, tool_output: String, tool_expanded: bool }
+    struct Item { role: String, height: u16, md_lines: Vec<Line<'static>>, tool_name: String, tool_state: Option<ToolCallState>, tool_approval: Option<ToolApproval>, tool_output: String, tool_expanded: bool }
     let mut items: Vec<Item> = Vec::new();
 
     for tool in &model.active_tools {
@@ -298,12 +315,12 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
             count + if count < tool.output.lines().count() { 1 } else { 0 }
         };
         let appr = if tool.approval.is_some() { 1 } else { 0 };
-        items.push(Item { role: "tool".into(), height: 1 + output_lines as u16 + appr, lines: vec![], tool_name: tool.name.clone(), tool_state: Some(tool.state.clone()), tool_approval: tool.approval.clone(), tool_output: tool.output.clone(), tool_expanded: tool.expanded });
+        items.push(Item { role: "tool".into(), height: 1 + output_lines as u16 + appr, md_lines: Vec::new(), tool_name: tool.name.clone(), tool_state: Some(tool.state.clone()), tool_approval: tool.approval.clone(), tool_output: tool.output.clone(), tool_expanded: tool.expanded });
     }
 
-    for msg in &model.messages {
-        let wrapped = simple_wrap(&msg.text, wrap_w);
-        items.push(Item { role: msg.role.clone(), height: 1 + wrapped.len() as u16, lines: wrapped, tool_name: String::new(), tool_state: None, tool_approval: None, tool_output: String::new(), tool_expanded: false });
+    for msg in &mut model.messages {
+        let lines = msg.md.render(wrap_w).to_vec();
+        items.push(Item { role: msg.role.clone(), height: 1 + lines.len() as u16, md_lines: lines, tool_name: String::new(), tool_state: None, tool_approval: None, tool_output: String::new(), tool_expanded: false });
     }
 
     let total_h: u16 = items.iter().map(|it| it.height).sum();
@@ -363,10 +380,10 @@ fn render_body(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
                 }
             }
         } else {
-            // Chat message text lines
-            for line in &item.lines {
+            // Chat message text — rendered through the markdown pipeline.
+            for line in &item.md_lines {
                 if ly >= area.top() as i32 && ly < area.bottom() as i32 {
-                    frame.render_widget(Paragraph::new(Line::from(Span::raw(line.clone()))), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
+                    frame.render_widget(Paragraph::new(line.clone()), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
                 }
                 ly += 1;
             }
@@ -488,58 +505,6 @@ fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
 // Helpers
 // ============================================================================
 
-/// Wrap text to display-width rows, preferring break points at spaces.
-///
-/// Char-boundary safe (never slices mid-UTF-8) and width-aware (CJK/emoji
-/// count 2 columns). A glyph wider than `width` starts its own row rather
-/// than being split.
-fn simple_wrap(text: &str, width: usize) -> Vec<String> {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if width < 2 {
-        return vec![text.to_string()];
-    }
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let mut seg = String::new();
-        let mut col = 0usize;
-        let mut last_space: Option<usize> = None; // byte offset in `seg`
-        for ch in line.chars() {
-            let w = ch.width().unwrap_or(0);
-            if ch == ' ' {
-                last_space = Some(seg.len());
-            }
-            if col + w > width {
-                if let Some(sp) = last_space {
-                    let keep = seg[..sp].trim_end().to_string();
-                    if !keep.is_empty() {
-                        out.push(keep);
-                    }
-                    // Carry the remainder (after the space) plus this char.
-                    let rest = seg[sp + 1..].to_string() + &ch.to_string();
-                    col = rest.width();
-                    seg = rest;
-                    last_space = None;
-                } else {
-                    out.push(std::mem::take(&mut seg));
-                    col = w;
-                    seg = ch.to_string();
-                    last_space = None;
-                }
-                continue;
-            }
-            seg.push(ch);
-            col += w;
-        }
-        if !seg.is_empty() {
-            out.push(seg);
-        }
-    }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
-}
-
 // ============================================================================
 // Main loop
 // ============================================================================
@@ -547,10 +512,72 @@ fn simple_wrap(text: &str, width: usize) -> Vec<String> {
 pub async fn run(mut model: Model, mut terminal: crate::terminal::Terminal, mut input_rx: tokio::sync::mpsc::UnboundedReceiver<KeyEvent>) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::time::{sleep, Duration};
     loop {
-        terminal.ratatui_terminal().draw(|frame| view(&model, frame))?;
+        terminal.ratatui_terminal().draw(|frame| view(&mut model, frame))?;
         tokio::select! {
             Some(key) = input_rx.recv() => { let cmds = update(&mut model, Msg::Key(key)); for cmd in cmds { if matches!(cmd, Cmd::Quit) { return Ok(()); } } }
             _ = sleep(Duration::from_millis(50)) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Messages must route their text through the markdown pipeline, so
+    /// markdown syntax is parsed (emphasis markers stripped) and semantic
+    /// spans carry the corresponding style.
+    #[test]
+    fn messages_render_through_markdown_pipeline() {
+        let mut model = Model::new(120, 30);
+        update(
+            &mut model,
+            Msg::NewMessage(
+                "assistant".into(),
+                "# Title\n\nSome **bold** and `code`.\n".into(),
+            ),
+        );
+        let lines = model.messages[0].md.render(80).to_vec();
+        let spans: Vec<_> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        let plain: String = spans.concat();
+        // Heading text present, but the `# ` marker is gone (parsed).
+        assert!(plain.contains("Title"), "heading rendered: {plain}");
+        assert!(!plain.contains("# Title"), "heading marker must be parsed out");
+        // Bold emphasis parsed: asterisks removed, text present.
+        assert!(plain.contains("bold"), "bold text present: {plain}");
+        assert!(!plain.contains("**"), "emphasis markers must be parsed out");
+        // Inline code present.
+        assert!(plain.contains("code"), "inline code present: {plain}");
+
+        // The bold span must carry the bold modifier (styled output).
+        assert!(
+            lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
+                s.content.contains("bold") && s.style.add_modifier.contains(Modifier::BOLD)
+            }),
+            "bold span should be styled BOLD: {lines:?}"
+        );
+    }
+
+    /// Streaming deltas must be fed into the per-message markdown renderer,
+    /// so a reply split into `NewMessage` + `StreamText` deltas still renders
+    /// as one parsed markdown document.
+    #[test]
+    fn streaming_deltas_feed_the_markdown_pipeline() {
+        let mut model = Model::new(120, 30);
+        update(&mut model, Msg::NewMessage("assistant".into(), "Hello".into()));
+        update(&mut model, Msg::StreamText(" **world**".into()));
+        assert_eq!(model.messages[0].text, "Hello **world**");
+
+        let lines = model.messages[0].md.render(80).to_vec();
+        let plain: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(plain.contains("Hello"), "initial text present: {plain}");
+        assert!(plain.contains("world"), "streamed delta present: {plain}");
+        assert!(!plain.contains("**"), "streamed emphasis parsed: {plain}");
     }
 }

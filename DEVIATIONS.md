@@ -8,6 +8,7 @@
 | ---------------------- | ---------- | -------------- | -------- | -------- |
 | 扩展系统（extension 模块整体） | `packages/coding-agent` 里扩展系统的具体实现方式（如插件加载、hook 注册的内部机制） | 内部实现方式不按原版逐行翻译，改用 Rust 生态更合适的机制（如 WASM / subprocess IPC，具体选型见 PORTING.md） | 用户决定 | 已确认保留 |
 | 扩展 UI（notify/dialog/select/input） | interactive 模式下扩展的 `ui.*` 调用显示在 TUI 上 | **2026-08-23 已接线**：interactive 模式注入 TUI 桥接（notify/set_status→system 消息，confirm→Dialog 弹窗，select→选择列表，input→编辑器，set_editor_text→输入框，set_title→终端标题）；`set_widget`（inline widget）仍 no-op；对话框阻塞等待最长 120s | TUI 恢复后的解冻项 | 已确认保留（仅 set_widget 部分） |
+| 工具执行审批门（tool approval gate，interactive 模式） | TS 原版无此功能：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | **2026-08-23 新增**：interactive 模式在 agent 的 `before_tool_call` 前置审批门——工具执行前 TUI 显示 `[a] Approve [d] Deny` 提示并阻塞等待；`a` 放行（fall-through 到扩展 dispatch）、`d`/`Esc` 拒绝（生成 error 工具结果，`Tool call denied by user`，agent 继续）；审批期间键盘归审批所有；同一时刻最多一个待审批工具（Mutex 串行化）；`Agent::prepend_before_tool_call` 组合 outer 门 + inner 扩展 hook | 有意新增的用户功能（超出 TS 原版），非对齐差异 | 已确认保留 |
 | TUI 渲染层（对应原 `packages/coding-agent` 内 TUI 组件，即 `pi-tui`） | 原版 TUI 组件的具体渲染实现 | **2026-08-23 起已纳入范围（最小可用版）**：恢复历史 Elm 架构 pi-tui（ratatui 0.29），markdown 渲染整体改用 vendored grok-build `xai-grok-markdown`（见 THIRD-PARTY-NOTICES.md），不按原版自研 | 用户决定：先恢复最小可用，后续再逐模块对齐原版 | 已确认保留 |
 
 ## 对"已确认保留"条目的额外约束

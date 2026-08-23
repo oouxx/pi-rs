@@ -220,7 +220,7 @@ pub struct Agent {
     on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
     on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
     on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
-    before_tool_call: Option<BeforeToolCallFn>,
+    before_tool_call: Arc<tokio::sync::RwLock<Option<BeforeToolCallFn>>>,
     after_tool_call: Option<AfterToolCallFn>,
     prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
     prepare_next_turn_with_context: Option<PrepareNextTurnFn>,
@@ -339,7 +339,7 @@ impl Agent {
             on_response: options.on_response,
             on_headers: options.on_headers,
             on_provider_response: options.on_provider_response,
-            before_tool_call: options.before_tool_call,
+            before_tool_call: Arc::new(tokio::sync::RwLock::new(options.before_tool_call)),
             after_tool_call: options.after_tool_call,
             prepare_next_turn: options.prepare_next_turn,
             prepare_next_turn_with_context: options.prepare_next_turn_with_context,
@@ -373,6 +373,35 @@ impl Agent {
 
     pub fn set_should_stop_after_turn(&mut self, f: ShouldStopAfterTurnFn) {
         self.should_stop_after_turn = Some(f);
+    }
+
+    /// Set the `before_tool_call` hook, replacing any existing one.
+    pub async fn set_before_tool_call(&self, f: BeforeToolCallFn) {
+        *self.before_tool_call.write().await = Some(f);
+    }
+
+    /// Wrap the existing `before_tool_call` with an outer gate: run `outer`
+    /// first; only if it does **not** block do we run the existing hook (e.g.
+    /// extension dispatch). Used by interactive mode to gate tool execution
+    /// on user approval without losing extension dispatch.
+    pub async fn prepend_before_tool_call(&self, outer: BeforeToolCallFn) {
+        let inner = self.before_tool_call.read().await.clone();
+        let combined: BeforeToolCallFn = Arc::new(move |ctx, signal| {
+            let outer = outer.clone();
+            let inner = inner.clone();
+            Box::pin(async move {
+                if let Some(r) = outer(ctx.clone(), signal.clone()).await {
+                    if r.block {
+                        return Some(r);
+                    }
+                }
+                match inner {
+                    Some(f) => f(ctx, signal).await,
+                    None => None,
+                }
+            })
+        });
+        *self.before_tool_call.write().await = Some(combined);
     }
 
     /// Subscribe to agent events.
@@ -783,7 +812,7 @@ impl Agent {
                     None
                 }
             },
-            before_tool_call: self.before_tool_call.clone(),
+            before_tool_call: self.before_tool_call.read().await.clone(),
             after_tool_call: self.after_tool_call.clone(),
             on_payload: self.on_payload.clone(),
             on_response: self.on_response.clone(),
@@ -1080,7 +1109,7 @@ pub fn create_agent(
 // ============================================================================
 
 #[cfg(test)]
-#[allow(unnameable_test_items, clippy::unwrap_used)]
+#[allow(unnameable_test_items, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1213,6 +1242,118 @@ mod tests {
         assert!(state.messages.is_empty());
         assert!(!state.is_streaming);
         assert!(state.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_prepend_before_tool_call_gates_then_delegates() {
+        use crate::types::{
+            AgentContext, AgentMessage, AgentToolCall, BeforeToolCallContext,
+            BeforeToolCallResult,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let mk_agent = || {
+            Agent::new(AgentOptions {
+                stream_fn: Some(make_ok_stream_fn("hello")),
+                convert_to_llm: Some(default_convert_to_llm()),
+                ..Default::default()
+            })
+        };
+        let ctx = || BeforeToolCallContext {
+            assistant_message: AgentMessage::Assistant {
+                content: vec![],
+                api: "test".into(),
+                provider: "test".into(),
+                model: "test".into(),
+                usage: Usage::default(),
+                stop_reason: Some(StopReason::Stop),
+                error_message: None,
+                timestamp: 0,
+            },
+            tool_call: AgentToolCall {
+                id: "1".into(),
+                name: "tool".into(),
+                arguments: serde_json::json!({}),
+            },
+            args: serde_json::json!({}),
+            context: AgentContext {
+                system_prompt: "sys".into(),
+                messages: vec![],
+                tools: None,
+            },
+        };
+
+        // 1. A blocking outer hook must surface its block and NOT run the
+        //    inner (existing, e.g. extension) hook.
+        let agent = mk_agent();
+        let inner_calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls_c = inner_calls.clone();
+        let inner: crate::types::BeforeToolCallFn = Arc::new(move |_ctx, _sig| {
+            let c = inner_calls_c.clone();
+            Box::pin(async move {
+                c.fetch_add(1, AtomicOrdering::SeqCst);
+                None
+            })
+        });
+        agent.set_before_tool_call(inner).await;
+
+        let blocking: crate::types::BeforeToolCallFn = Arc::new(|_ctx, _sig| {
+            Box::pin(async {
+                Some(BeforeToolCallResult {
+                    block: true,
+                    reason: Some("deny".into()),
+                    modified_args: None,
+                    terminate: None,
+                })
+            })
+        });
+        agent.prepend_before_tool_call(blocking).await;
+        let composed = agent
+            .before_tool_call
+            .read()
+            .await
+            .clone()
+            .expect("composed hook");
+        let r = composed(ctx(), None).await;
+        assert_eq!(
+            r.as_ref().and_then(|x| x.reason.as_deref()),
+            Some("deny"),
+            "blocking outer must surface its block"
+        );
+        assert_eq!(
+            inner_calls.load(AtomicOrdering::SeqCst),
+            0,
+            "inner must not run when outer blocks"
+        );
+
+        // 2. An approving outer must fall through to the inner hook.
+        let agent2 = mk_agent();
+        let inner_calls2 = Arc::new(AtomicUsize::new(0));
+        let inner_calls2_c = inner_calls2.clone();
+        let inner2: crate::types::BeforeToolCallFn = Arc::new(move |_ctx, _sig| {
+            let c = inner_calls2_c.clone();
+            Box::pin(async move {
+                c.fetch_add(1, AtomicOrdering::SeqCst);
+                None
+            })
+        });
+        agent2.set_before_tool_call(inner2).await;
+        let approving: crate::types::BeforeToolCallFn =
+            Arc::new(|_ctx, _sig| Box::pin(async { None }));
+        agent2.prepend_before_tool_call(approving).await;
+        let composed2 = agent2
+            .before_tool_call
+            .read()
+            .await
+            .clone()
+            .expect("composed hook");
+        let r2 = composed2(ctx(), None).await;
+        assert!(r2.is_none(), "approving outer + allowing inner ⇒ None");
+        assert_eq!(
+            inner_calls2.load(AtomicOrdering::SeqCst),
+            1,
+            "inner must run after outer approves"
+        );
     }
 
     #[tokio::test]

@@ -118,6 +118,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 2 | 数值截断 | `Math.trunc()` 向零取整；负数/小数要确认意图是"向零"还是"向下" | `as i64` 也向零截断，但若原意图是 `floor`，负数上结果不同 | 逐个数值转换点确认原意图 | #41/#42 硬编码常量（`128_000` 代替 `contextWindow ?? 0`）属同类数值取值偏差 |
 | 3 | 数组/字符串越界 | JS 越界下标返回 `undefined`，不 panic | `slice[i]` 越界 panic；TS 可能依赖越界返回 undefined 的隐式逻辑 | 显式 `.get(i)` 返回 `Option`，逐处确认是否依赖了隐式行为 | — |
 | 4 | async 并发顺序 | `Promise.all([...])` 调度细节与 `tokio::join!`/`join_all` 不完全一致 | 状态机对时序敏感处（事件流顺序）直译可能改变事件到达顺序 | 涉及并发顺序的模块做"事件序列对齐"，不能只看单测通过 | #20（双写 stdout 交错破坏 JSONL）、#21（signal handler 与主循环双重持有 session）、#62（`event.message` 指向旧引用导致持久化用错对象） |
+| 4b | **跨通道事件顺序**（async 并发顺序的变体） | TS 单一事件流（回调/订阅按序到达） | Rust 把相关事件拆到多个 channel，`tokio::select!` 同时就绪时**随机**挑一个——后续状态变更（如 badge 写入）可能在目标行创建之前到达而被静默丢弃，行为在两种到达顺序下不同（flaky） | 不依赖到达顺序：状态变更先缓存（`HashMap`），目标行创建事件到达时重放/合并；或把相关事件合到同一通道保证顺序 | #109（工具审批 badge 与 tool 行分处 UI/agent 两通道，先到先丢）、#106（输出永不静止暴露的主循环重绘时机） |
 | 5 | **serde camelCase vs snake_case** | TS wire 一律 camelCase | Rust struct 默认 snake_case，忘加 `rename_all = "camelCase"` → 字段名全错 | 任何对外序列化的 struct/enum-内部字段都加 `rename_all`（见 §3） | PORTING_MISTAKES serde naming mismatch 系列（多条） |
 | 6 | **响应格式/字段遗漏** | TS 返回完整对象，含 optional 字段、`null` vs 对象的区别 | Rust 返回简化占位（`{id, type:"entry"}` stub、总是非 null、漏 optional 字段） | 逐字段对照 TS 返回类型，optional → `Option`+`skip_serializing_if`，`T \| null` → `Option<T>` | #9, #10, #11, #12, #14, #15, #16, #17, #18, #22, #23, #24 |
 | 7 | **no-op / 缺失实现** | TS 方法有真实副作用 | Rust 返回 success 但没调用对应方法（占位忘了补） | 确认每个 handler 真正调用了对应 session 方法 | #6, #7, #8 |

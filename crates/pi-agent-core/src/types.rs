@@ -324,6 +324,7 @@ pub struct AfterToolCallResult {
     pub terminate: Option<bool>,
 }
 
+#[derive(Clone)]
 pub struct BeforeToolCallContext {
     pub assistant_message: AgentMessage,
     pub tool_call: AgentToolCall,

@@ -102,6 +102,11 @@ enum UiAction {
         reply: tokio::sync::oneshot::Sender<Option<String>>,
     },
     SetEditorText(String),
+    /// The agent wants user approval before running a tool.
+    ToolApprovalRequest {
+        tool_name: String,
+        reply: tokio::sync::oneshot::Sender<bool>,
+    },
 }
 
 /// An extension dialog the TUI is waiting for the user to answer.
@@ -109,6 +114,10 @@ enum PendingUi {
     Confirm { reply: std::sync::mpsc::Sender<bool> },
     Select { reply: tokio::sync::oneshot::Sender<Option<String>> },
     Input { reply: tokio::sync::oneshot::Sender<Option<String>> },
+    ToolApproval {
+        tool_name: String,
+        reply: tokio::sync::oneshot::Sender<bool>,
+    },
 }
 
 /// `ui.select` handler shape: title, options, payload → user choice.
@@ -144,7 +153,11 @@ type InputFn = std::sync::Arc<
 /// Build the extension UI context wired to a TUI event stream.
 /// Fire-and-forget calls (notify/status/editor text) become messages on the
 /// stream; dialogs block until the user answers in the TUI.
-fn create_tui_ui_context() -> (ExtensionUIContext, tokio::sync::mpsc::UnboundedReceiver<UiAction>) {
+fn create_tui_ui_context() -> (
+    ExtensionUIContext,
+    tokio::sync::mpsc::UnboundedSender<UiAction>,
+    tokio::sync::mpsc::UnboundedReceiver<UiAction>,
+) {
     use std::sync::Arc;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<UiAction>();
@@ -251,6 +264,7 @@ fn create_tui_ui_context() -> (ExtensionUIContext, tokio::sync::mpsc::UnboundedR
             set_title,
             set_editor_text,
         },
+        tx,
         rx,
     )
 }
@@ -268,6 +282,17 @@ struct AppState {
     ext_commands: Vec<String>,
     /// Extension dialog awaiting a user answer (at most one at a time).
     pending_ui: Option<PendingUi>,
+    /// When the current streaming/working run started (for the status-bar
+    /// elapsed timer).
+    stream_started_at: Option<Instant>,
+    /// Last time the session-derived status bar (context usage) was queried.
+    last_status_refresh: Instant,
+    /// Approval badge per tool name, applied to the tool row when it appears.
+    /// The agent emits `ToolStart` and the approval request over *separate*
+    /// channels, so either may reach the event loop first; the badge must
+    /// survive both arrival orders instead of being dropped on a row that
+    /// does not exist yet.
+    tool_approval_badges: std::collections::HashMap<String, pi_tui::app::ToolApproval>,
 }
 
 impl AppState {
@@ -278,6 +303,9 @@ impl AppState {
             quit: false,
             ext_commands,
             pending_ui: None,
+            stream_started_at: None,
+            last_status_refresh: Instant::now() - std::time::Duration::from_secs(10),
+            tool_approval_badges: std::collections::HashMap::new(),
         }
     }
 }
@@ -303,7 +331,26 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             UpdateOutcome { effects: vec![], redraw: active }
         }
         Action::Agent(msg) => {
+            let replay_badge = if let pi_tui::Msg::ToolStart(name) = &msg {
+                state
+                    .tool_approval_badges
+                    .get(name)
+                    .cloned()
+                    .map(|b| (name.clone(), b))
+            } else {
+                None
+            };
             app::update(&mut state.model, msg);
+            // The tool row may have been created only now — replay the
+            // approval badge if it was decided before the row arrived.
+            if let Some((name, badge)) = replay_badge {
+                let badge_msg = match badge {
+                    pi_tui::app::ToolApproval::Pending => pi_tui::Msg::ToolApprovalPending(name),
+                    pi_tui::app::ToolApproval::Approved => pi_tui::Msg::ToolApprove(name),
+                    pi_tui::app::ToolApproval::Denied => pi_tui::Msg::ToolDeny(name),
+                };
+                app::update(&mut state.model, badge_msg);
+            }
             UpdateOutcome { effects: vec![], redraw: true }
         }
         Action::Key(key) => {
@@ -373,6 +420,37 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
                 title,
             };
         }
+        UiAction::ToolApprovalRequest { tool_name, reply } => {
+            if state.pending_ui.is_some() {
+                let _ = reply.send(false);
+                return;
+            }
+            // Show the tool as awaiting approval so the Approve/Deny hint
+            // renders; the tool itself is blocked until the user answers.
+            state
+                .tool_approval_badges
+                .insert(tool_name.clone(), pi_tui::app::ToolApproval::Pending);
+            app::update(&mut state.model, pi_tui::Msg::ToolApprovalPending(tool_name.clone()));
+            state.pending_ui = Some(PendingUi::ToolApproval { tool_name, reply });
+        }
+    }
+}
+
+/// Resolve a pending tool approval with the user's decision.
+fn resolve_pending_tool_approval(state: &mut AppState, approved: bool) {
+    if let Some(PendingUi::ToolApproval { tool_name, reply }) = state.pending_ui.take() {
+        let badge = if approved {
+            pi_tui::app::ToolApproval::Approved
+        } else {
+            pi_tui::app::ToolApproval::Denied
+        };
+        state.tool_approval_badges.insert(tool_name.clone(), badge);
+        if approved {
+            app::update(&mut state.model, pi_tui::Msg::ToolApprove(tool_name));
+        } else {
+            app::update(&mut state.model, pi_tui::Msg::ToolDeny(tool_name));
+        }
+        let _ = reply.send(approved);
     }
 }
 
@@ -382,6 +460,17 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
 /// Enter submits, slash commands).
 fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    // A tool approval awaiting the user owns the keyboard: a/approve, d/deny,
+    // Esc/deny. Other keys are swallowed while a tool call is gated.
+    if matches!(state.pending_ui, Some(PendingUi::ToolApproval { .. })) {
+        match key.code {
+            KeyCode::Char('a') => resolve_pending_tool_approval(state, true),
+            KeyCode::Char('d') | KeyCode::Esc => resolve_pending_tool_approval(state, false),
+            _ => {}
+        }
+        return vec![];
+    }
 
     // Modal overlays own the keyboard while visible (extension dialogs).
     if state.model.dialog.is_some() {
@@ -451,7 +540,7 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 return slash_command(state, &text);
             }
             state.model.input.clear();
-            state.model.messages.push(app::Message { role: "user".into(), text: text.clone() });
+            state.model.messages.push(app::Message::new("user", text.clone(), state.model.width as usize));
             state.model.is_streaming = true;
             vec![Effect::AgentCommand(AgentCmd::SendMessage(text))]
         }
@@ -473,6 +562,7 @@ fn resolve_pending_ui_text(state: &mut AppState, value: Option<String>) {
                 let _ = reply.send(value);
             }
             PendingUi::Confirm { .. } => {}
+            PendingUi::ToolApproval { .. } => {}
         }
     }
 }
@@ -485,6 +575,7 @@ fn resolve_pending_ui_bool(state: &mut AppState, value: bool) {
                 let _ = reply.send(value);
             }
             PendingUi::Select { .. } | PendingUi::Input { .. } => {}
+            PendingUi::ToolApproval { .. } => {}
         }
     }
 }
@@ -583,7 +674,7 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
     let args = parts.get(1).copied().unwrap_or("");
 
     let system = |state: &mut AppState, msg: String| {
-        state.model.messages.push(app::Message { role: "system".into(), text: msg });
+        state.model.messages.push(app::Message::new("system", msg, state.model.width as usize));
     };
 
     match command {
@@ -636,7 +727,7 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
                 vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(cmd_name.to_string(), args.to_string()))]
             } else {
                 state.model.input.clear();
-                state.model.messages.push(app::Message { role: "user".into(), text: text.to_string() });
+                state.model.messages.push(app::Message::new("user", text.to_string(), state.model.width as usize));
                 state.model.is_streaming = true;
                 vec![Effect::AgentCommand(AgentCmd::SendMessage(text.to_string()))]
             }
@@ -847,22 +938,25 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // ── Extension command snapshot + initial model name ──────────────────
     // (plain &self accessors — the session mutex is only needed inside the
     // background task; the model was already resolved at session creation)
-    let (ext_commands, initial_model_name) = {
+    let (ext_commands, initial_model_name, cwd) = {
         let cmds = session
             .get_extension_registry()
             .map(|r| r.commands().iter().map(|c| c.name.clone()).collect())
             .unwrap_or_default();
         let model_id = session.get_state().await.model.id.clone();
-        (cmds, model_id)
+        let cwd = session.get_cwd().to_string();
+        (cmds, model_id, cwd)
     };
 
     // ── Extension UI bridge: wire dialogs/notifications to the TUI ───────
     // (must happen before the session is shared with the background task)
-    let (ui_ctx, mut ui_rx) = create_tui_ui_context();
+    let (ui_ctx, ui_tx, mut ui_rx) = create_tui_ui_context();
     session.set_extension_ui_context(ui_ctx);
 
     let mut state = AppState::new(cols, rows, ext_commands);
     state.model.model_name = initial_model_name;
+    state.model.cwd = cwd.clone();
+    state.model.git_branch = current_git_branch(&cwd);
 
     let (mut input_rx, shutdown_guard) = match terminal.start() {
         Ok(r) => r,
@@ -892,11 +986,51 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         sess.agent_handle()
     }; // Lock released — background task can now use the session
 
+    // ── Tool approval gate ────────────────────────────────────────────────
+    // Wrap the agent's before_tool_call so a tool only runs after the user
+    // approves it in the TUI (`a`/approve, `d`/Esc/deny). The request is
+    // posted on the UI stream; the hook blocks until the user answers.
+    {
+        use pi_agent_core::types::{BeforeToolCallFn, BeforeToolCallResult};
+        let approval_tx = ui_tx.clone();
+        let approval_gate = Arc::new(tokio::sync::Mutex::new(()));
+        let approval_hook: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
+            let tx = approval_tx.clone();
+            let gate = approval_gate.clone();
+            Box::pin(async move {
+                // Serialize approvals (only one tool pending at a time).
+                let _guard = gate.lock().await;
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(UiAction::ToolApprovalRequest {
+                    tool_name: ctx.tool_call.name.clone(),
+                    reply: reply_tx,
+                });
+                let approved = reply_rx.await.unwrap_or(false);
+                if approved {
+                    // Fall through to any inner (extension) before_tool_call.
+                    None
+                } else {
+                    Some(BeforeToolCallResult {
+                        block: true,
+                        reason: Some("Tool call denied by user".to_string()),
+                        modified_args: None,
+                        terminate: None,
+                    })
+                }
+            })
+        });
+        agent_handle.prepend_before_tool_call(approval_hook).await;
+    }
+
+    // Keep a session handle for the event loop to refresh status-bar data
+    // (context usage) between runs — never during a run (mutex is held).
+    let ui_session = session.clone();
+
     let mut agent_rx = spawn_agent_bridge_task(bridge_rx);
 
     // ── Event loop: Action → update → effects → execute ──────────────────
     // Event-driven rendering (Elm style): draw only when state changed.
-    let _ = terminal.ratatui_terminal().draw(|frame| app::view(&state.model, frame));
+    let _ = terminal.ratatui_terminal().draw(|frame| app::view(&mut state.model, frame));
 
     let mut tick_timer = tokio::time::interval(tokio::time::Duration::from_millis(SPINNER_TICK_MS));
     loop {
@@ -918,15 +1052,20 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             Some(action) = ui_rx.recv() => Action::Ui(action),
         };
 
+        let is_tick = matches!(&action, Action::Tick);
         let outcome = update(&mut state, action);
+        let mut redraw = outcome.redraw;
+        if is_tick {
+            redraw |= refresh_status(&mut state, &ui_session).await;
+        }
         for effect in outcome.effects {
             execute_effect(effect, &agent_handle, &cmd_tx).await;
         }
         if state.quit {
             break;
         }
-        if outcome.redraw {
-            let _ = terminal.ratatui_terminal().draw(|frame| app::view(&state.model, frame));
+        if redraw {
+            let _ = terminal.ratatui_terminal().draw(|frame| app::view(&mut state.model, frame));
         }
     }
 
@@ -938,6 +1077,65 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     crate::utils::shell::kill_tracked_detached_children();
     restore_terminal();
     0
+}
+
+/// Best-effort current git branch of `cwd` (`git rev-parse --abbrev-ref
+/// HEAD`). `None` when the directory isn't a git worktree or git is absent.
+fn current_git_branch(cwd: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Refresh status-bar data derived from the session (context usage, throttled
+/// to ~1/s) and the in-memory streaming elapsed timer. Returns true if the
+/// view changed and needs a redraw.
+async fn refresh_status(
+    state: &mut AppState,
+    session: &Arc<Mutex<AgentSession>>,
+) -> bool {
+    let mut changed = false;
+
+    // Context usage: only query between runs (the agent holds the session
+    // mutex during a run) and throttled to once per second.
+    if state.last_status_refresh.elapsed().as_secs() >= 1 {
+        state.last_status_refresh = Instant::now();
+        if let Ok(sess) = session.try_lock() {
+            if let Some(usage) = sess.get_context_usage().await {
+                let pct = usage.usage_percentage().round() as u8;
+                if pct != state.model.context_usage_pct {
+                    state.model.context_usage_pct = pct;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    // Streaming elapsed timer.
+    if state.model.is_streaming {
+        let start = *state.stream_started_at.get_or_insert_with(Instant::now);
+        let secs = start.elapsed().as_secs();
+        if secs != state.model.elapsed_secs {
+            state.model.elapsed_secs = secs;
+            changed = true;
+        }
+    } else if state.stream_started_at.take().is_some() {
+        state.model.elapsed_secs = 0;
+        changed = true;
+    }
+
+    changed
 }
 
 fn restore_terminal() {

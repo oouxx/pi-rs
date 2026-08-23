@@ -7,8 +7,9 @@
 //! and adds width-aware wrapping for the logical lines the pipeline produces.
 
 use ratatui::text::Line;
-use unicode_width::UnicodeWidthChar;
 use xai_grok_markdown::{MarkdownStyle, StreamingMarkdownRenderer, Syntect};
+
+use crate::render::wrap::{push_owned_lines, word_wrap_lines_with_joiners};
 
 /// Theme type for markdown rendering — grok-build's style configuration.
 /// A `MarkdownStyle` holds semantic styles (heading / code / table …) which
@@ -72,6 +73,11 @@ pub struct Markdown {
     syntect: Syntect,
     dirty: bool,
     wrapped: Vec<Line<'static>>,
+    /// Soft-wrap joiners (one per wrapped row, from grok-build's
+    /// `word_wrap_lines_with_joiners`) — the exact substring skipped at each
+    /// wrap boundary, for copy/selection fidelity once a scrollback layer
+    /// exists. `None` rows are hard breaks.
+    joiners: Vec<Option<String>>,
     wrap_width: usize,
 }
 
@@ -87,6 +93,7 @@ impl Markdown {
             syntect,
             dirty: true,
             wrapped: Vec::new(),
+            joiners: Vec::new(),
             wrap_width: 0,
         };
         let _ = md.render(width);
@@ -113,83 +120,19 @@ impl Markdown {
         if self.dirty || self.wrap_width != width {
             self.renderer.render(Some(&self.syntect));
             let logical = self.renderer.view().lines.to_vec();
-            self.wrapped = wrap_lines(logical, width);
+            let (wrapped, joiners) = word_wrap_lines_with_joiners(logical, width);
+            self.wrapped = wrapped;
+            self.joiners = joiners;
             self.wrap_width = width;
             self.dirty = false;
         }
         &self.wrapped
     }
-}
 
-// ────────────────────────────────────────────────────────────────────────────
-// Wrapping — unicode-width aware line breaking
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Wrap a logical line into physical rows that fit `max_width` display
-/// columns. Wide glyphs (CJK, emoji) are never split mid-glyph: if a
-/// 2-column glyph would overflow, it starts the next row.
-///
-/// Width accounting is global across spans (a later span must observe the
-/// width already consumed by earlier spans on the same row).
-///
-/// This is a simplified stand-in for grok-build's
-/// `word_wrap_line_with_joiners` (which additionally tracks continuation
-/// joiners for copy fidelity — not needed for the minimal TUI).
-fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>> {
-    let mut rows: Vec<Line<'static>> = Vec::new();
-    let mut cur_spans: Vec<ratatui::text::Span<'static>> = Vec::new();
-    let mut cur_width = 0usize;
-
-    for span in &line.spans {
-        let mut buf = String::new();
-        let mut buf_width = 0usize;
-        for ch in span.content.chars() {
-            let w = ch.width().unwrap_or(0);
-            if cur_width + buf_width + w > max_width {
-                // Commit the pending buffer to the current row, then break
-                // the row (the glyph itself moves to the next row).
-                if !buf.is_empty() {
-                    cur_spans.push(ratatui::text::Span::styled(
-                        std::mem::take(&mut buf),
-                        span.style,
-                    ));
-                    cur_width += buf_width;
-                    buf_width = 0;
-                }
-                if cur_width > 0 {
-                    rows.push(Line::from(std::mem::take(&mut cur_spans)));
-                    cur_width = 0;
-                }
-            }
-            buf.push(ch);
-            buf_width += w;
-        }
-        if !buf.is_empty() {
-            cur_spans.push(ratatui::text::Span::styled(buf, span.style));
-            cur_width += buf_width;
-        }
+    /// Soft-wrap joiners parallel to the last [`Self::render`] result.
+    pub fn joiners(&self) -> &[Option<String>] {
+        &self.joiners
     }
-    if !cur_spans.is_empty() {
-        rows.push(Line::from(cur_spans));
-    }
-    rows
-}
-
-/// Wrap a list of logical lines to `max_width`.
-fn wrap_lines(lines: Vec<Line<'static>>, max_width: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for line in lines {
-        if line.spans.is_empty() {
-            out.push(line);
-            continue;
-        }
-        if line.width() <= max_width {
-            out.push(line);
-            continue;
-        }
-        out.extend(wrap_line(&line, max_width));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -256,13 +199,20 @@ mod tests {
     }
 
     #[test]
-    fn wrap_line_direct() {
+    fn grok_wrap_respects_width_and_joiners() {
+        // The vendored grok wrap is width-aware (CJK = 2 columns) and returns
+        // joiners: the exact substring skipped at each soft-wrap boundary.
         let line = Line::from(ratatui::text::Span::raw("abc 漢字"));
-        let rows = wrap_line(&line, 6);
-        eprintln!("DIRECT rows: {:?}", rows.iter().map(|l| l.to_string()).collect::<Vec<_>>());
+        let (rows, joiners) =
+            crate::render::wrap::word_wrap_line_with_joiners(&line, 6);
         for row in &rows {
             assert!(row.to_string().width() <= 6, "row {row:?} too wide");
         }
+        // Joiners: first row hard break (None), continuation rows carry the
+        // skipped whitespace so re-joining restores the original text.
+        let rejoined: String = rows.iter().map(|l| l.to_string()).collect();
+        assert_eq!(rejoined, "abc 漢字", "chars preserved across wrap");
+        assert!(joiners[0].is_none(), "first row has no joiner");
     }
 
     #[test]

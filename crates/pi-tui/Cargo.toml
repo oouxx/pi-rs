@@ -6,12 +6,17 @@ license.workspace = true
 description = "Terminal UI framework — Elm architecture on ratatui (Rust port of @earendil-works/pi-tui)"
 
 [dependencies]
-ratatui = { workspace = true }
+ratatui = { workspace = true, features = ["unstable-widget-ref"] }
 crossterm = { workspace = true }
 # Vendored streaming markdown pipeline (grok-build's xai-grok-markdown):
 # pulldown-cmark parsing + syntect highlighting + width-aware wrapping.
 xai-grok-markdown = { path = "../vendor/xai-grok-markdown" }
+# Vendored grok-build multiline editor widget (vim-style editing, undo,
+# selection, bracket handling).
+xai-ratatui-textarea = { path = "../vendor/xai-ratatui-textarea" }
 anstyle = "1.0"
+textwrap = "0.16"
+unicode-segmentation = "1.12.0"
 unicode-width = { workspace = true }
 tokio = { version = "1", features = ["sync", "macros", "rt", "io-std", "time", "signal"] }
 futures = { workspace = true }

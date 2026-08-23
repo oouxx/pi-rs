@@ -1,0 +1,14 @@
+[package]
+name = "xai-tty-utils"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Vendored from xai-org/grok-build crates/codegen/xai-tty-utils (TTY/process utilities)"
+
+[dependencies]
+tokio = { version = "1", features = ["process", "time"] }
+nix = { version = "0.30", features = ["signal", "process"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading"] }

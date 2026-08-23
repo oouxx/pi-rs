@@ -57,7 +57,7 @@ pub enum ToolCallState { Pending, Running, Done, Failed }
 #[derive(Debug, Clone)]
 pub enum ToolApproval { Pending, Approved, Denied }
 
-pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Editor, title: String } }
+pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String } }
 pub struct Message { pub role: String, pub text: String }
 
 pub struct Dialog { pub title: String, pub message: String, pub buttons: Vec<DialogButton>, pub selected: usize }
@@ -138,7 +138,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::NewMessage(role, text) => { model.messages.push(Message { role, text }); model.auto_scroll = true; vec![] }
         Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); } vec![] }
         Msg::StreamEnd => { model.is_streaming = false; vec![] }
-        Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Editor::new(&text), title }; vec![] }
+        Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
         Msg::ToolStart(name) => { model.add_tool_call(&name); vec![] }
         Msg::ToolEnd(name, is_error) => { model.update_tool_call(&name, if is_error { ToolCallState::Failed } else { ToolCallState::Done }); vec![] }
@@ -447,8 +447,14 @@ fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
 fn render_editor(frame: &mut Frame, area: Rect, editor: &Editor, title: &str, _t: &Theme) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(format!(" {title} "));
     let inner = block.inner(area);
-    frame.render_widget(Paragraph::new(Text::raw(editor.text())).block(block), area);
-    frame.set_cursor_position((inner.x + editor.cursor_col(), inner.y + editor.cursor_row()));
+    // Render via the vendored textarea widget (wrapped-line viewport,
+    // selection, scrollbar) inside the title block. Block first so the
+    // textarea never paints over the borders.
+    frame.render_widget(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(format!(" {title} ")), area);
+    frame.render_widget_ref(editor.textarea(), inner);
+    if let Some((x, y)) = editor.textarea().cursor_pos(inner) {
+        frame.set_cursor_position((inner.x + x, inner.y + y));
+    }
 }
 
 fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {

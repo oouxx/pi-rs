@@ -38,10 +38,13 @@
   **组件层不按原版 TS 逐行复刻**（Ratatui + grok 管线替代原版自研组件库）。
 - 仍不在范围内的：原版全部组件/选择器（session/model/theme/settings
   selector 等 17k 行 TS）尚未移植，属“后续任务”，不算差异。
-- 已登记的简化：消息 wrap 是 `word_wrap_line_with_joiners` 的简化版（逐
-  字符断行、无 joiner 复制保真、无 blockquote 续行前缀对齐）——最小可用
-  档接受，后续对齐时再补。slash 命令中 `/quit`/`/exit` 静默无效、
-  `CycleModel`/`SetThinkingLevel` 等为 no-op stub——同样属最小可用简化。
+- 已登记的简化：~~消息 wrap 是 `word_wrap_line_with_joiners` 的简化版~~
+  **2026-08-23 第二轮已升级**：wrap 现为 grok 原版 joiner 实现（vendored
+  `pi-tui/src/render/wrap.rs`，含表格行保护/blockquote 续行前缀/单调游标
+  线性复杂度）；joiners 已缓存（`Markdown::joiners()`）供后续复制保真接线。
+  仍简化的：多行编辑已换 grok textarea（12.7k 行 widget）；slash 命令中
+  `/quit`/`/exit` 静默无效、`CycleModel`/`SetThinkingLevel` 等为 no-op
+  stub——属最小可用简化。
 - 一旦后续对齐检查覆盖 TUI 组件，需要单独走阶段一到阶段三；本条记录
   届时更新或移除，不要留着过期的“已确认保留”误导后续判断。
 | `reload()` / `_buildRuntime()` | TS `reload()` 调用 `_buildRuntime()` 重建整个 ExtensionRunner（重新从磁盘加载扩展文件、重建工具注册表、重新绑定所有回调） | Rust `reload()` 只调用 `settings_manager.reload()`，不重建 ExtensionRegistry | Rust 扩展通过 `Arc<ExtensionRegistry>` 在构造时一次性注册，运行时不支持热重载。TS 扩展是文件驱动的动态加载（`.ts`/`.js` 文件 → ResourceLoader → ExtensionRunner），Rust 扩展是程序化注册的静态引用（`registry.register()` → `Arc<ExtensionRegistry>`），没有"运行时重建"的概念 | 已确认保留 |

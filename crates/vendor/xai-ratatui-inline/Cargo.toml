@@ -1,0 +1,26 @@
+[package]
+name = "xai-ratatui-inline"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Vendored from xai-org/grok-build crates/codegen/xai-ratatui-inline (inline scrolling render helpers)"
+
+# Adapted from upstream: edition 2024 -> 2021, ratatui 0.29, deps pinned.
+
+[dependencies]
+anstyle-parse = "0.2"
+crossterm = "0.28"
+ratatui = "0.29"
+unicode-width = "0.2"
+
+[dev-dependencies]
+ansi-width = "0.1"
+anyhow = "1"
+colored_json = "5"
+criterion = "0.6"
+lipsum = "0.9"
+serde_json = "1"
+termwiz = { version = "0.23", default-features = false }
+
+[features]
+scrolling-regions = ["ratatui/scrolling-regions"]

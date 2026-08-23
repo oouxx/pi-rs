@@ -9,8 +9,17 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::components::{Completer, Editor, Input, Markdown, SelectList};
+use crate::scrollback::EntryLayoutInfo;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Default truncation budget for tool outputs (lines shown when not
+/// expanded).
+const MAX_TOOL_LINES: usize = 8;
+/// Messages longer than this collapse to a truncated "N more" view.
+const MAX_MSG_LINES: usize = 50;
+/// Fold threshold for truncated-mode content.
+const TRUNCATED_BUDGET: usize = 40;
 
 // ============================================================================
 // Theme
@@ -46,8 +55,9 @@ pub enum Cmd { Quit }
 
 #[derive(Debug, Clone)]
 pub struct ToolCall {
+    pub id: u64,
     pub name: String, pub state: ToolCallState,
-    pub output: String, pub expanded: bool,
+    pub output: String,
     pub approval: Option<ToolApproval>,
 }
 
@@ -57,8 +67,13 @@ pub enum ToolCallState { Pending, Running, Done, Failed }
 #[derive(Debug, Clone)]
 pub enum ToolApproval { Pending, Approved, Denied }
 
+/// How a block is currently displayed (grok scrollback `DisplayMode`).
+pub use crate::scrollback::DisplayMode;
+
 pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String } }
 pub struct Message {
+    /// Stable block id (scrollback navigation / fold state keying).
+    pub id: u64,
     pub role: String,
     pub text: String,
     /// Streaming markdown renderer for this message's content.
@@ -69,10 +84,10 @@ impl Message {
     /// Create a message and feed its initial text through the markdown
     /// pipeline. `width` is the wrap width at construction; the renderer
     /// re-wraps automatically on subsequent width changes.
-    pub fn new(role: impl Into<String>, text: impl Into<String>, width: usize) -> Self {
+    pub fn new(id: u64, role: impl Into<String>, text: impl Into<String>, width: usize) -> Self {
         let text = text.into();
         let md = Markdown::new(&text, width);
-        Self { role: role.into(), text, md }
+        Self { id, role: role.into(), text, md }
     }
 }
 
@@ -93,6 +108,13 @@ pub struct Model {
     pub cwd: String, pub git_branch: Option<String>,
     pub context_usage_pct: u8, pub elapsed_secs: u64,
     pub g_pressed: bool,
+    /// Next stable block id (messages and tool calls share one sequence).
+    next_block_id: u64,
+    /// User-expanded blocks (grok `expanded_groups` — overrides the derived
+    /// default folds).
+    pub expanded_blocks: std::collections::HashSet<u64>,
+    /// User-collapsed blocks (explicit Collapsed override).
+    pub collapsed_blocks: std::collections::HashSet<u64>,
 }
 
 impl Model {
@@ -104,11 +126,30 @@ impl Model {
             completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
             cwd: String::new(), git_branch: None, context_usage_pct: 0, elapsed_secs: 0,
             g_pressed: false,
+            next_block_id: 0,
+            expanded_blocks: std::collections::HashSet::new(),
+            collapsed_blocks: std::collections::HashSet::new(),
         }
     }
 
+    /// Allocate the next stable block id.
+    fn alloc_block_id(&mut self) -> u64 {
+        let id = self.next_block_id;
+        self.next_block_id = self.next_block_id.wrapping_add(1);
+        id
+    }
+
+    /// Push a new message, allocating a stable block id (scrollback
+    /// navigation / fold state keying) and re-attaching auto-scroll.
+    pub fn push_message(&mut self, role: impl Into<String>, text: impl Into<String>) {
+        let id = self.alloc_block_id();
+        self.messages.push(Message::new(id, role, text, self.width as usize));
+        self.auto_scroll = true;
+    }
+
     pub fn add_tool_call(&mut self, name: &str) {
-        self.active_tools.push(ToolCall { name: name.to_string(), state: ToolCallState::Running, output: String::new(), expanded: false, approval: None });
+        let id = self.alloc_block_id();
+        self.active_tools.push(ToolCall { id, name: name.to_string(), state: ToolCallState::Running, output: String::new(), approval: None });
     }
 
     pub fn update_tool_call(&mut self, name: &str, state: ToolCallState) {
@@ -119,8 +160,54 @@ impl Model {
         if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) { tool.output.push_str(text); }
     }
 
-    pub fn toggle_tool_expand(&mut self, name: &str) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.name == name) { tool.expanded = !tool.expanded; }
+    /// Toggle the nearest foldable block (from the bottom) between
+    /// collapsed and expanded — the Ctrl+F interaction. Overrides the
+    /// derived default fold for that block (grok `expanded_groups`).
+    pub fn toggle_block_fold(&mut self, id: u64) {
+        if self.collapsed_blocks.remove(&id) {
+            self.expanded_blocks.insert(id);
+            return;
+        }
+        if self.expanded_blocks.remove(&id) {
+            self.collapsed_blocks.insert(id);
+            return;
+        }
+        // No user override yet — derive the current effective mode from the
+        // default fold rules (a collapsed-looking block gets expanded, an
+        // expanded one gets collapsed).
+        if self.block_derived_collapsed(id) {
+            self.expanded_blocks.insert(id);
+        } else {
+            self.collapsed_blocks.insert(id);
+        }
+    }
+
+    /// Derived default: whether the block with this id renders collapsed
+    /// without user overrides (finished tool calls; messages don't collapse
+    /// by default).
+    fn block_derived_collapsed(&self, id: u64) -> bool {
+        self.active_tools.iter().rev().any(|t| {
+            t.id == id
+                && matches!(t.state, ToolCallState::Done | ToolCallState::Failed)
+        })
+    }
+
+    /// The nearest foldable block id from the bottom of the transcript:
+    /// finished tool calls first, then any message long enough to fold.
+    pub fn nearest_foldable_block(&self) -> Option<u64> {
+        // Bottom-up: tools are appended after messages in the transcript
+        // order, so check tools first (they are the most recent blocks).
+        for tool in self.active_tools.iter().rev() {
+            if matches!(tool.state, ToolCallState::Done | ToolCallState::Failed) {
+                return Some(tool.id);
+            }
+        }
+        for msg in self.messages.iter().rev() {
+            if msg.text.lines().count() > MAX_MSG_LINES {
+                return Some(msg.id);
+            }
+        }
+        None
     }
 }
 
@@ -138,7 +225,7 @@ pub enum Msg {
     ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
     SetGitBranch(Option<String>), SetContextUsage(u8), SetElapsed(u64), SetModelName(String),
     SetEditorText(String), ExitSelect,
-    AppendToolOutput(String, String), ToggleToolExpand(String),
+    AppendToolOutput(String, String), ToggleBlockFold(u64),
     ToolApprove(String), ToolDeny(String), ToolApprovalPending(String),
     ClearScreen, InputNewline, Cancel,
 }
@@ -152,7 +239,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::Key(key) => handle_key(model, key),
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
         Msg::Paste(text) => { model.input.insert_str(&text); vec![] }
-        Msg::NewMessage(role, text) => { model.messages.push(Message::new(role, text, model.width as usize)); model.auto_scroll = true; vec![] }
+        Msg::NewMessage(role, text) => { model.push_message(role, text); vec![] }
         Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); m.md.append_text(&delta); } vec![] }
         Msg::StreamEnd => { model.is_streaming = false; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
@@ -175,7 +262,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetEditorText(text) => { model.input.set_value(&text); vec![] }
         Msg::ExitSelect => { model.mode = AppMode::Chat; vec![] }
         Msg::AppendToolOutput(n, t) => { model.append_tool_output(&n, &t); vec![] }
-        Msg::ToggleToolExpand(n) => { model.toggle_tool_expand(&n); vec![] }
+        Msg::ToggleBlockFold(id) => { model.toggle_block_fold(id); vec![] }
         Msg::ToolApprove(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Approved); } vec![] }
         Msg::ToolDeny(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Denied); } vec![] }
         Msg::ToolApprovalPending(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Pending); } vec![] }
@@ -214,6 +301,15 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         return vec![];
     }
     if key.code != KeyCode::Char('g') { model.g_pressed = false; }
+    // Ctrl+F: fold/unfold the nearest foldable block (grok's fold key).
+    if key.code == KeyCode::Char('f') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+        if let Some(id) = model.nearest_foldable_block() {
+            model.toggle_block_fold(id);
+            // Keep the viewport anchored (user is inspecting history).
+            model.auto_scroll = false;
+        }
+        return vec![];
+    }
     match &mut model.mode {
         AppMode::Chat => match key.code {
             KeyCode::Char(c) => {
@@ -301,40 +397,137 @@ fn render_header(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
 // Body — fixed-position layout (no overlap)
 // ============================================================================
 
+/// One unified scrollback block (message or tool call) with its derived
+/// default display mode. Built by [`render_body`], consumed by the fold
+/// scan/projection and the render loop.
+struct BlockView {
+    id: u64,
+    role: &'static str,
+    default_mode: DisplayMode,
+    md_lines: Vec<Line<'static>>,
+    tool_name: String,
+    tool_state: Option<ToolCallState>,
+    tool_approval: Option<ToolApproval>,
+    tool_output: String,
+}
+
 fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let wrap_w = (area.width as usize).saturating_sub(3).max(10);
 
-    // Build items with fixed heights
-    struct Item { role: String, height: u16, md_lines: Vec<Line<'static>>, tool_name: String, tool_state: Option<ToolCallState>, tool_approval: Option<ToolApproval>, tool_output: String, tool_expanded: bool }
-    let mut items: Vec<Item> = Vec::new();
-
+    // ── 1. Unified block sequence (tools then messages, matching the
+    //        historical order) with derived default display modes. ──────
+    let mut blocks: Vec<BlockView> = Vec::new();
     for tool in &model.active_tools {
-        let output_lines = if tool.output.is_empty() { 0 } else {
-            let max = if tool.expanded { 1000usize } else { 8 };
-            let count = tool.output.lines().count().min(max);
-            count + if count < tool.output.lines().count() { 1 } else { 0 }
+        let default_mode = if matches!(tool.state, ToolCallState::Done | ToolCallState::Failed) {
+            DisplayMode::Collapsed
+        } else {
+            DisplayMode::Expanded
         };
-        let appr = if tool.approval.is_some() { 1 } else { 0 };
-        items.push(Item { role: "tool".into(), height: 1 + output_lines as u16 + appr, md_lines: Vec::new(), tool_name: tool.name.clone(), tool_state: Some(tool.state.clone()), tool_approval: tool.approval.clone(), tool_output: tool.output.clone(), tool_expanded: tool.expanded });
+        blocks.push(BlockView {
+            id: tool.id,
+            role: "tool",
+            default_mode,
+            md_lines: Vec::new(),
+            tool_name: tool.name.clone(),
+            tool_state: Some(tool.state.clone()),
+            tool_approval: tool.approval.clone(),
+            tool_output: tool.output.clone(),
+        });
     }
-
     for msg in &mut model.messages {
         let lines = msg.md.render(wrap_w).to_vec();
-        items.push(Item { role: msg.role.clone(), height: 1 + lines.len() as u16, md_lines: lines, tool_name: String::new(), tool_state: None, tool_approval: None, tool_output: String::new(), tool_expanded: false });
+        let default_mode = if lines.len() > MAX_MSG_LINES {
+            DisplayMode::Truncated
+        } else {
+            DisplayMode::Expanded
+        };
+        blocks.push(BlockView {
+            id: msg.id,
+            role: if msg.role == "user" { "user" } else if msg.role == "system" { "system" } else { "assistant" },
+            default_mode,
+            md_lines: lines,
+            tool_name: String::new(),
+            tool_state: None,
+            tool_approval: None,
+            tool_output: String::new(),
+        });
     }
 
-    let total_h: u16 = items.iter().map(|it| it.height).sum();
-    let mut skip = model.scroll_offset;
+    // ── 2. Fold scan + projection (grok scrollback groups philosophy): ──
+    //    one scan derives every fold; `project_to_layout` is the single
+    //    writer of the per-entry layout flags the renderer consumes.
+    use crate::scrollback::groups::{FoldEntry, project_to_layout, scan};
+
+    let fold_entries: Vec<FoldEntry> = blocks
+        .iter()
+        .map(|b| FoldEntry {
+            id: b.id,
+            display_mode: b.default_mode,
+            is_tool: b.role == "tool",
+            tool_finished: matches!(
+                b.tool_state,
+                Some(ToolCallState::Done | ToolCallState::Failed)
+            ),
+            total_lines: 0,
+        })
+        .collect();
+    let spans = scan(&fold_entries, 1, &model.expanded_blocks);
+
+    let mut layout = vec![EntryLayoutInfo::default(); blocks.len()];
+    // Seed heights from each block's resolved display mode (projection
+    // overrides group members afterwards).
+    for (i, b) in blocks.iter().enumerate() {
+        let resolved = resolve_mode(model, b);
+        layout[i].height = block_height(b, resolved, wrap_w);
+        layout[i].gap_after = 1;
+    }
+    project_to_layout(&spans, &mut layout, 1);
+
+    // ── 3. Render — bottom-up with fixed item heights (unchanged). ─────
+    let total_h: u16 = layout.iter().map(|l| l.height + l.gap_after).sum();
+    let max_skip = total_h.saturating_sub(area.height.max(1));
+    let mut skip = model.scroll_offset.min(max_skip as usize);
     let mut y = area.bottom() as i32 - 1;
 
-    for item in items.iter().rev() {
-        let h = item.height as i32;
+    for (idx, item) in blocks.iter().enumerate().rev() {
+        let info = layout[idx];
+        let h = (info.height + info.gap_after) as i32;
         if skip >= h as usize { skip -= h as usize; continue; }
         let item_top = y - h + 1;
         if item_top + h <= area.top() as i32 { break; }
 
         let sy = item_top.max(area.top() as i32) as u16;
         let mut ly = sy as i32;
+
+        if info.is_group_header() || info.verb_group_header {
+            // Synthetic fold header (verb run / truncation group).
+            let label = if info.verb_group_header {
+                format!(" \u{25b8} {} tool calls ", info.group_header_count)
+            } else {
+                format!(" ... {} more ", info.group_header_count)
+            };
+            if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                frame.render_widget(Paragraph::new(Line::from(Span::styled(label, Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 2, ly as u16, area.width.saturating_sub(3), 1));
+            }
+            ly += 1;
+            if info.group_collapse_header && info.verb_group_header {
+                // Expanded verb group: header + first member row below.
+                if item.role == "tool" {
+                    if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                        frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {} ", item.tool_name), Style::new().fg(t.tool_done)))), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
+                    }
+                    ly += 1;
+                }
+            }
+            y -= h;
+            skip = 0;
+            continue;
+        }
+        if info.height == 0 { y -= h; skip = 0; continue; }
+
+        // Effective display mode for this block (user overrides already
+        // folded into the layout via resolve_mode + projection).
+        let mode = resolve_mode(model, item);
 
         // Role label
         let rstyle = if item.role == "user" { Style::new().fg(t.user).add_modifier(Modifier::BOLD) }
@@ -359,8 +552,15 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
                 }
                 ly += 1;
             }
-            if !item.tool_output.is_empty() {
-                let max = if item.tool_expanded { 1000 } else { 8 };
+            if mode == DisplayMode::Collapsed {
+                // Single collapsed tool: name row only (verb groups already
+                // handled by the header path above).
+                if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                    frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" \u{25b8} {}", item.tool_name), Style::new().fg(t.tool_done)))), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
+                }
+                ly += 1;
+            } else if !item.tool_output.is_empty() {
+                let max = if mode == DisplayMode::Expanded { usize::MAX } else { MAX_TOOL_LINES };
                 let total = item.tool_output.lines().count();
                 for (i, line) in item.tool_output.lines().enumerate().take(max) {
                     if ly >= area.top() as i32 && ly < area.bottom() as i32 {
@@ -372,7 +572,7 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
                     }
                     ly += 1;
                 }
-                if total > max && !item.tool_expanded {
+                if total > max && mode != DisplayMode::Expanded {
                     if ly >= area.top() as i32 && ly < area.bottom() as i32 {
                         frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines ", total - max), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 3, ly as u16, area.width.saturating_sub(4), 1));
                     }
@@ -381,9 +581,21 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
             }
         } else {
             // Chat message text — rendered through the markdown pipeline.
-            for line in &item.md_lines {
+            let max = match mode {
+                DisplayMode::Collapsed => 1,
+                DisplayMode::Truncated => TRUNCATED_BUDGET,
+                DisplayMode::Expanded => usize::MAX,
+            };
+            let total = item.md_lines.len();
+            for line in item.md_lines.iter().take(max) {
                 if ly >= area.top() as i32 && ly < area.bottom() as i32 {
                     frame.render_widget(Paragraph::new(line.clone()), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
+                }
+                ly += 1;
+            }
+            if total > max && mode != DisplayMode::Expanded {
+                if ly >= area.top() as i32 && ly < area.bottom() as i32 {
+                    frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" ... {} more lines ", total - max), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)))), Rect::new(area.x + 1, ly as u16, area.width.saturating_sub(2), 1));
                 }
                 ly += 1;
             }
@@ -397,8 +609,52 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1));
     }
     if model.scroll_offset > 0 {
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" \u{2191} {} ", model.scroll_offset), Style::new().fg(t.muted)))), Rect::new(area.x + area.width.saturating_sub(12), area.y, 12, 1));
+        let pct = if total_h == 0 { 0 } else { (model.scroll_offset * 100 / total_h as usize).min(100) };
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(format!(" \u{2191} {pct}% "), Style::new().fg(t.muted)))), Rect::new(area.x + area.width.saturating_sub(12), area.y, 12, 1));
     }
+}
+
+/// Resolve a block's effective display mode: user overrides first, then the
+/// derived default (grok: user override wins over the fold scan).
+fn resolve_mode(model: &Model, b: &BlockView) -> DisplayMode {
+    if model.collapsed_blocks.contains(&b.id) {
+        DisplayMode::Collapsed
+    } else if model.expanded_blocks.contains(&b.id) {
+        DisplayMode::Expanded
+    } else {
+        b.default_mode
+    }
+}
+
+/// Height of a block in its resolved mode (before group projection).
+fn block_height(b: &BlockView, mode: DisplayMode, wrap_w: usize) -> u16 {
+    let role = 1u16;
+    let approval = if b.role == "tool" && b.tool_approval.is_some() { 1 } else { 0 };
+    let content: u16 = match b.role {
+        "tool" => {
+            if mode == DisplayMode::Collapsed {
+                1 // `▸ name`
+            } else {
+                let total = b.tool_output.lines().count();
+                let max = if mode == DisplayMode::Expanded { usize::MAX } else { MAX_TOOL_LINES };
+                let shown = total.min(max);
+                let more = if total > max { 1 } else { 0 };
+                (shown + more) as u16
+            }
+        }
+        _ => {
+            let total = b.md_lines.len();
+            let max = match mode {
+                DisplayMode::Collapsed => 1,
+                DisplayMode::Truncated => TRUNCATED_BUDGET,
+                DisplayMode::Expanded => usize::MAX,
+            };
+            let shown = total.min(max);
+            let more = if total > max { 1 } else { 0 };
+            (shown + more) as u16
+        }
+    };
+    role + approval + content
 }
 
 // ============================================================================
@@ -579,5 +835,59 @@ mod tests {
         assert!(plain.contains("Hello"), "initial text present: {plain}");
         assert!(plain.contains("world"), "streamed delta present: {plain}");
         assert!(!plain.contains("**"), "streamed emphasis parsed: {plain}");
+    }
+
+    /// A finished tool call folds by default (grok verb-run member); Ctrl+F
+    /// (toggle_block_fold) overrides: expand → collapse → expand.
+    #[test]
+    fn finished_tool_collapses_and_toggles() {
+        let mut model = Model::new(120, 30);
+        update(&mut model, Msg::ToolStart("read".into()));
+        update(&mut model, Msg::ToolEnd("read".into(), false));
+        let id = model.active_tools[0].id;
+
+        // Derived default: finished tool → collapsed (no user override).
+        assert!(model.block_derived_collapsed(id));
+        assert!(!model.expanded_blocks.contains(&id));
+        assert!(!model.collapsed_blocks.contains(&id));
+
+        // Ctrl+F → expand (user override wins over the derived fold).
+        model.toggle_block_fold(id);
+        assert!(model.expanded_blocks.contains(&id));
+
+        // Ctrl+F again → collapse.
+        model.toggle_block_fold(id);
+        assert!(model.collapsed_blocks.contains(&id));
+        assert!(!model.expanded_blocks.contains(&id));
+    }
+
+    /// `nearest_foldable_block` walks bottom-up and skips running tools.
+    #[test]
+    fn nearest_foldable_block_prefers_finished_tools() {
+        let mut model = Model::new(120, 30);
+        update(&mut model, Msg::ToolStart("bash".into()));
+        update(&mut model, Msg::ToolEnd("bash".into(), false));
+        update(&mut model, Msg::ToolStart("read".into())); // still running
+        let bash_id = model.active_tools[0].id;
+        assert_eq!(
+            model.nearest_foldable_block(),
+            Some(bash_id),
+            "running tool must be skipped, finished tool found"
+        );
+    }
+
+    /// A message longer than MAX_MSG_LINES is foldable; shorter ones are
+    /// not (nothing for Ctrl+F to act on).
+    #[test]
+    fn long_messages_are_foldable() {
+        let mut model = Model::new(120, 30);
+        let long = "line\n".repeat(MAX_MSG_LINES + 10);
+        update(&mut model, Msg::NewMessage("assistant".into(), long));
+        let long_id = model.messages[0].id;
+        assert_eq!(model.nearest_foldable_block(), Some(long_id));
+
+        let mut model2 = Model::new(120, 30);
+        update(&mut model2, Msg::NewMessage("assistant".into(), "short".into()));
+        assert_eq!(model2.nearest_foldable_block(), None);
     }
 }

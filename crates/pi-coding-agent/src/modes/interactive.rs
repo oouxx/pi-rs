@@ -540,7 +540,7 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 return slash_command(state, &text);
             }
             state.model.input.clear();
-            state.model.messages.push(app::Message::new("user", text.clone(), state.model.width as usize));
+            state.model.push_message("user", text.clone());
             state.model.is_streaming = true;
             vec![Effect::AgentCommand(AgentCmd::SendMessage(text))]
         }
@@ -674,7 +674,7 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
     let args = parts.get(1).copied().unwrap_or("");
 
     let system = |state: &mut AppState, msg: String| {
-        state.model.messages.push(app::Message::new("system", msg, state.model.width as usize));
+        state.model.push_message("system", msg);
     };
 
     match command {
@@ -727,7 +727,7 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
                 vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(cmd_name.to_string(), args.to_string()))]
             } else {
                 state.model.input.clear();
-                state.model.messages.push(app::Message::new("user", text.to_string(), state.model.width as usize));
+                state.model.push_message("user", text.to_string());
                 state.model.is_streaming = true;
                 vec![Effect::AgentCommand(AgentCmd::SendMessage(text.to_string()))]
             }

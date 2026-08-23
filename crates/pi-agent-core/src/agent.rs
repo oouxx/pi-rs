@@ -521,9 +521,17 @@ impl Agent {
         }
     }
 
-    /// Reset the agent to its initial state, clearing messages and aborting any active run.
-    pub async fn reset(&self) {
-        self.abort().await;
+    /// Reset the agent to its initial state, clearing messages and queued
+    /// messages. Rejects while a run is active (TS 0.84.1 #7717: reset must
+    /// not clear transcript/runtime state mid-run).
+    pub async fn reset(&self) -> Result<(), String> {
+        let active = self.active_run.lock().await;
+        if active.is_some() {
+            return Err(
+                "Agent is already processing. Wait for completion before resetting.".to_string(),
+            );
+        }
+        drop(active);
         self.clear_all_queues().await;
         let mut state = self.state.write().await;
         state.messages.clear();
@@ -531,6 +539,7 @@ impl Agent {
         state.streaming_message = None;
         state.pending_tool_calls.clear();
         state.error_message = None;
+        Ok(())
     }
 
     /// Process messages through the agent loop.
@@ -1877,12 +1886,76 @@ mod tests {
         assert!(!state.messages.is_empty());
 
         // Reset
-        agent.reset().await;
+        agent.reset().await.unwrap();
 
         let state = agent.state().await;
         assert!(state.messages.is_empty());
         assert!(!state.is_streaming);
         assert!(state.error_message.is_none());
+    }
+
+    /// TS 0.84.1 (#7717): reset rejects while a run is active instead of
+    /// clearing transcript/runtime state mid-run.
+    #[tokio::test]
+    async fn test_agent_reset_rejects_while_running() {
+        let agent = std::sync::Arc::new(Agent::new(AgentOptions {
+            stream_fn: Some(Arc::new(|_model, _context, _thinking, opts: StreamFnOptions| {
+                // Block until aborted so the run stays active.
+                let signal = opts.signal.clone();
+                Box::pin(async move {
+                    if let Some(mut rx) = signal {
+                        loop {
+                            if *rx.borrow() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    }
+                    let mut out = AssistantMessage {
+                        content: vec![],
+                        api: "openai-completions".into(),
+                        provider: "openai".into(),
+                        model: "gpt-5.5".into(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: pi_ai::types::Usage::default(),
+                        stop_reason: pi_ai::types::StopReason::Aborted,
+                        error_message: None,
+                        raw_stop_reason: None,
+                        end_turn: None,
+                        timestamp: 0,
+                    };
+                    out.content.push(ContentBlock::Text {
+                        text: "aborted".into(),
+                        text_signature: None,
+                    });
+                    Ok(Box::new(tokio_stream::once(pi_ai::types::AssistantMessageEvent::TextEnd {
+                        content_index: 0,
+                        content: "aborted".into(),
+                        partial: out,
+                    }))
+                        as crate::pi_ai_types::StreamResponse)
+                })
+            })),
+            convert_to_llm: Some(default_convert_to_llm()),
+            ..Default::default()
+        }));
+
+        let run_agent = agent.clone();
+        let run = tokio::spawn(async move { run_agent.prompt(PromptInput::Text("hello")).await });
+        // Give the run a moment to become active.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let reset_result = agent.reset().await;
+        assert!(
+            reset_result.is_err(),
+            "reset must reject while a run is active"
+        );
+        // Abort so the test can finish.
+        agent.abort().await;
+        let _ = run.await.unwrap();
+        // After idle, reset succeeds.
+        assert!(agent.reset().await.is_ok());
     }
 
     #[tokio::test]

@@ -25,6 +25,7 @@ use pi_tui::app;
 use tokio::sync::Mutex;
 
 use crate::core::agent_session::AgentSession;
+use crate::core::extensions::ExtensionUIContext;
 
 const DOUBLE_CTRL_C_WINDOW_MS: u64 = 500;
 const SPINNER_TICK_MS: u64 = 100;
@@ -56,6 +57,8 @@ enum Action {
     Key(crossterm::event::KeyEvent),
     /// Agent events already converted to pi-tui messages by the bridge.
     Agent(pi_tui::Msg),
+    /// Extension UI bridge requests (notify/dialogs/editor text).
+    Ui(UiAction),
     /// Spinner/streaming tick.
     Tick,
 }
@@ -73,7 +76,187 @@ enum Effect {
 }
 
 // ============================================================================
-// AppState — coordination state (owns the pi-tui model)
+// Extension UI bridge — requests from extensions rendered by the TUI
+// ============================================================================
+
+/// Requests the extension UI bridge sends to the event loop.
+enum UiAction {
+    Notify(String),
+    SetStatus(String, String),
+    /// Synchronous confirm: the reply uses a std channel because the
+    /// `confirm` closure is a plain `Fn` (it blocks its worker thread with
+    /// `recv_timeout`; the TUI event loop runs on another worker).
+    Confirm {
+        title: String,
+        message: String,
+        reply: std::sync::mpsc::Sender<bool>,
+    },
+    Select {
+        title: String,
+        options: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    },
+    Input {
+        title: String,
+        initial: String,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    },
+    SetEditorText(String),
+}
+
+/// An extension dialog the TUI is waiting for the user to answer.
+enum PendingUi {
+    Confirm { reply: std::sync::mpsc::Sender<bool> },
+    Select { reply: tokio::sync::oneshot::Sender<Option<String>> },
+    Input { reply: tokio::sync::oneshot::Sender<Option<String>> },
+}
+
+/// `ui.select` handler shape: title, options, payload → user choice.
+type SelectFn = std::sync::Arc<
+    dyn Fn(
+            &str,
+            &[String],
+            Option<&serde_json::Value>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>,
+        > + Send
+        + Sync,
+>;
+
+/// `ui.set_widget` handler shape (inline widgets are not rendered by the
+/// minimal TUI — no-op bridge).
+type WidgetFn = std::sync::Arc<
+    dyn Fn(&str, Option<&[String]>, Option<&serde_json::Value>) + Send + Sync,
+>;
+
+/// `ui.input` handler shape: title, initial text, payload → user text.
+type InputFn = std::sync::Arc<
+    dyn Fn(
+            &str,
+            Option<&str>,
+            Option<&serde_json::Value>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>,
+        > + Send
+        + Sync,
+>;
+
+/// Build the extension UI context wired to a TUI event stream.
+/// Fire-and-forget calls (notify/status/editor text) become messages on the
+/// stream; dialogs block until the user answers in the TUI.
+fn create_tui_ui_context() -> (ExtensionUIContext, tokio::sync::mpsc::UnboundedReceiver<UiAction>) {
+    use std::sync::Arc;
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<UiAction>();
+
+    let notify = {
+        let tx = tx.clone();
+        Arc::new(move |title: &str, _payload: &serde_json::Value| {
+            let _ = tx.send(UiAction::Notify(title.to_string()));
+        })
+    };
+    let set_status = {
+        let tx = tx.clone();
+        Arc::new(move |status: &str, message: &str| {
+            let _ = tx.send(UiAction::SetStatus(status.to_string(), message.to_string()));
+        })
+    };
+    let confirm = {
+        let tx = tx.clone();
+        Arc::new(move |title: &str, message: &serde_json::Value| {
+            let (reply, rx) = std::sync::mpsc::channel::<bool>();
+            let _ = tx.send(UiAction::Confirm {
+                title: title.to_string(),
+                message: message.to_string(),
+                reply,
+            });
+            // Blocking wait (plain Fn, no async): the TUI event loop runs on
+            // another worker thread and resolves the dialog. Times out to
+            // false so a stuck dialog cannot wedge the extension forever.
+            rx.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or(false)
+        })
+    };
+    let select = {
+        let tx = tx.clone();
+        let select: SelectFn = std::sync::Arc::new(
+            move |title: &str,
+                  options: &[String],
+                  _opts: Option<&serde_json::Value>| {
+                let tx = tx.clone();
+                let title = title.to_string();
+                let options = options.to_vec();
+                Box::pin(async move {
+                    let (reply, rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(UiAction::Select {
+                        title,
+                        options,
+                        reply,
+                    });
+                    tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                })
+            },
+        );
+        select
+    };
+    let input = {
+        let tx = tx.clone();
+        let input: InputFn = std::sync::Arc::new(
+            move |title: &str,
+                  initial: Option<&str>,
+                  _opts: Option<&serde_json::Value>| {
+                let tx = tx.clone();
+                let title = title.to_string();
+                let initial = initial.unwrap_or("").to_string();
+                Box::pin(async move {
+                    let (reply, rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(UiAction::Input {
+                        title,
+                        initial,
+                        reply,
+                    });
+                    tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                })
+            },
+        );
+        input
+    };
+    // Inline widgets are not rendered by the minimal TUI (deviation).
+    let set_widget: WidgetFn = std::sync::Arc::new(|_, _, _| {});
+    let set_title = Arc::new(|title: &str| {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title));
+    });
+    let set_editor_text = {
+        let tx = tx.clone();
+        Arc::new(move |text: &str| {
+            let _ = tx.send(UiAction::SetEditorText(text.to_string()));
+        })
+    };
+
+    (
+        ExtensionUIContext {
+            notify,
+            set_status,
+            confirm,
+            select,
+            input,
+            set_widget,
+            set_title,
+            set_editor_text,
+        },
+        rx,
+    )
+}
+
+// ============================================================================
+// AppState — shared state (owns the pi-tui model)
 // ============================================================================
 
 struct AppState {
@@ -83,6 +266,8 @@ struct AppState {
     /// Names of slash commands registered by extensions (snapshot taken at
     /// startup; used to route `/name` to the extension executor).
     ext_commands: Vec<String>,
+    /// Extension dialog awaiting a user answer (at most one at a time).
+    pending_ui: Option<PendingUi>,
 }
 
 impl AppState {
@@ -92,6 +277,7 @@ impl AppState {
             last_ctrl_c: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
             quit: false,
             ext_commands,
+            pending_ui: None,
         }
     }
 }
@@ -124,6 +310,69 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             let effects = handle_key(state, key);
             UpdateOutcome { effects, redraw: true }
         }
+        Action::Ui(action) => {
+            handle_ui_action(state, action);
+            UpdateOutcome { effects: vec![], redraw: true }
+        }
+    }
+}
+
+/// Handle an extension UI request: notifications become system messages,
+/// dialogs become TUI overlays whose answer resolves the pending request.
+fn handle_ui_action(state: &mut AppState, action: UiAction) {
+    match action {
+        UiAction::Notify(text) => {
+            app::update(&mut state.model, pi_tui::Msg::NewMessage("system".into(), text));
+        }
+        UiAction::SetStatus(status, message) => {
+            app::update(
+                &mut state.model,
+                pi_tui::Msg::NewMessage("system".into(), format!("[{status}] {message}")),
+            );
+        }
+        UiAction::SetEditorText(text) => {
+            app::update(&mut state.model, pi_tui::Msg::SetEditorText(text));
+        }
+        UiAction::Confirm { title, message, reply } => {
+            if state.pending_ui.is_some() {
+                let _ = reply.send(false);
+                return;
+            }
+            state.pending_ui = Some(PendingUi::Confirm { reply });
+            app::update(
+                &mut state.model,
+                pi_tui::Msg::ShowDialog(pi_tui::Dialog {
+                    title,
+                    message,
+                    buttons: vec![
+                        pi_tui::DialogButton { label: "Confirm", action: pi_tui::DialogAction::Confirm },
+                        pi_tui::DialogButton { label: "Cancel", action: pi_tui::DialogAction::Cancel },
+                    ],
+                    selected: 0,
+                }),
+            );
+        }
+        UiAction::Select { title: _title, options, reply } => {
+            if state.pending_ui.is_some() {
+                let _ = reply.send(None);
+                return;
+            }
+            state.pending_ui = Some(PendingUi::Select { reply });
+            state.model.mode = pi_tui::AppMode::Select {
+                list: pi_tui::SelectList::new(options),
+            };
+        }
+        UiAction::Input { title, initial, reply } => {
+            if state.pending_ui.is_some() {
+                let _ = reply.send(None);
+                return;
+            }
+            state.pending_ui = Some(PendingUi::Input { reply });
+            state.model.mode = pi_tui::AppMode::Editor {
+                editor: Box::new(pi_tui::Editor::new(&initial)),
+                title,
+            };
+        }
     }
 }
 
@@ -133,6 +382,16 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
 /// Enter submits, slash commands).
 fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    // Modal overlays own the keyboard while visible (extension dialogs).
+    if state.model.dialog.is_some() {
+        return handle_dialog_key(state, key);
+    }
+    match &state.model.mode {
+        pi_tui::AppMode::Select { .. } => return handle_select_key(state, key),
+        pi_tui::AppMode::Editor { .. } => return handle_editor_key(state, key),
+        pi_tui::AppMode::Chat => {}
+    }
 
     match key.code {
         // Ctrl+C: abort if streaming, double Ctrl+C within the window quits
@@ -203,7 +462,118 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
     }
 }
 
-/// Slash-command handling (pure; mirrors `interactive-mode.ts`).
+/// Resolve the pending extension dialog with a string answer (select/input).
+fn resolve_pending_ui_text(state: &mut AppState, value: Option<String>) {
+    if let Some(pending) = state.pending_ui.take() {
+        match pending {
+            PendingUi::Select { reply } => {
+                let _ = reply.send(value);
+            }
+            PendingUi::Input { reply } => {
+                let _ = reply.send(value);
+            }
+            PendingUi::Confirm { .. } => {}
+        }
+    }
+}
+
+/// Resolve the pending extension dialog with a boolean answer (confirm).
+fn resolve_pending_ui_bool(state: &mut AppState, value: bool) {
+    if let Some(pending) = state.pending_ui.take() {
+        match pending {
+            PendingUi::Confirm { reply } => {
+                let _ = reply.send(value);
+            }
+            PendingUi::Select { .. } | PendingUi::Input { .. } => {}
+        }
+    }
+}
+
+/// Keys while an extension confirm dialog is visible.
+fn handle_dialog_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
+    use crossterm::event::KeyCode;
+    match key.code {
+        KeyCode::Tab | KeyCode::Right => {
+            app::update(&mut state.model, pi_tui::Msg::DialogNext);
+        }
+        KeyCode::Left => {
+            app::update(&mut state.model, pi_tui::Msg::DialogPrev);
+        }
+        KeyCode::Enter => {
+            let confirmed = state
+                .model
+                .dialog
+                .as_ref()
+                .and_then(|d| d.buttons.get(d.selected))
+                .is_some_and(|b| matches!(b.action, pi_tui::DialogAction::Confirm | pi_tui::DialogAction::ConfirmAlways));
+            app::update(&mut state.model, pi_tui::Msg::DialogConfirm);
+            resolve_pending_ui_bool(state, confirmed);
+        }
+        KeyCode::Esc => {
+            app::update(&mut state.model, pi_tui::Msg::DismissDialog);
+            resolve_pending_ui_bool(state, false);
+        }
+        _ => {}
+    }
+    vec![]
+}
+
+/// Keys while an extension select dialog is visible.
+fn handle_select_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
+    use crossterm::event::KeyCode;
+    match key.code {
+        KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
+        | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown => {
+            if let pi_tui::AppMode::Select { list } = &mut state.model.mode {
+                list.handle_key(&key);
+            }
+        }
+        KeyCode::Enter => {
+            let selected = if let pi_tui::AppMode::Select { list } = &state.model.mode {
+                list.selected_item().map(ToString::to_string)
+            } else {
+                None
+            };
+            app::update(&mut state.model, pi_tui::Msg::ExitSelect);
+            resolve_pending_ui_text(state, selected);
+        }
+        KeyCode::Esc => {
+            app::update(&mut state.model, pi_tui::Msg::ExitSelect);
+            resolve_pending_ui_text(state, None);
+        }
+        _ => {}
+    }
+    vec![]
+}
+
+/// Keys while the extension input dialog (editor) is visible:
+/// Ctrl+S submits, Esc cancels, everything else edits.
+fn handle_editor_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match key.code {
+        KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+            let text = if let pi_tui::AppMode::Editor { editor, .. } = &state.model.mode {
+                editor.text()
+            } else {
+                String::new()
+            };
+            app::update(&mut state.model, pi_tui::Msg::EditorDone(String::new()));
+            resolve_pending_ui_text(state, Some(text));
+        }
+        KeyCode::Esc => {
+            app::update(&mut state.model, pi_tui::Msg::EditorDone(String::new()));
+            resolve_pending_ui_text(state, None);
+        }
+        _ => {
+            if let pi_tui::AppMode::Editor { editor, .. } = &mut state.model.mode {
+                editor.handle_key(&key);
+            }
+        }
+    }
+    vec![]
+}
+
+/// Slash-command handling (pure, mirrors `interactive-mode.ts`).
 fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
     // Slash commands consume the input (matching the original: the prompt is
     // cleared once a command is dispatched).
@@ -366,21 +736,39 @@ fn spawn_agent_command_task(
                             sess.set_session_name(&name);
                         }
                         AgentCmd::ExtensionCommand(cmd_name, args) => {
-                            // Run a slash command registered by an extension:
-                            // look it up in the registry and invoke its
-                            // handler with the session's extension context
-                            // (all inside the lock so the &ctx borrow is
-                            // valid for the await).
-                            if let Some(registry) = sess.get_extension_registry() {
-                                if let Some(cmd) = registry
-                                    .commands()
-                                    .iter()
-                                    .find(|c| c.name == cmd_name)
-                                    .cloned()
-                                {
-                                    let ctx = sess.get_extension_context();
-                                    (cmd.execute)(args, Some(ctx)).await;
+                            // Run a slash command registered by an extension.
+                            // The handler runs on a dedicated thread with its
+                            // own current-thread runtime: extensions may block
+                            // synchronously (e.g. `ui.confirm` waits for the
+                            // user), and a block must never occupy a worker of
+                            // the main runtime that drives the TUI event loop.
+                            let (cmd, ctx_opt) = {
+                                if let Some(registry) = sess.get_extension_registry() {
+                                    let cmd = registry
+                                        .commands()
+                                        .iter()
+                                        .find(|c| c.name == cmd_name)
+                                        .cloned();
+                                    (cmd, Some(sess.get_extension_context().clone()))
+                                } else {
+                                    (None, None)
                                 }
+                            };
+                            drop(sess); // release the lock before blocking
+                            if let Some(cmd) = cmd {
+                                std::thread::spawn(move || {
+                                    let rt = match tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                    {
+                                        Ok(rt) => rt,
+                                        Err(e) => {
+                                            eprintln!("extension runtime: {e}");
+                                            return;
+                                        }
+                                    };
+                                    rt.block_on((cmd.execute)(args, ctx_opt.as_ref()));
+                                });
                             }
                         }
                         AgentCmd::ReloadExtensions => {
@@ -443,7 +831,7 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
 
 /// Run the interactive TUI mode.
 /// Mirrors the original InteractiveMode.run().
-pub async fn run_interactive_mode(session: AgentSession) -> i32 {
+pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
@@ -467,6 +855,11 @@ pub async fn run_interactive_mode(session: AgentSession) -> i32 {
         let model_id = session.get_state().await.model.id.clone();
         (cmds, model_id)
     };
+
+    // ── Extension UI bridge: wire dialogs/notifications to the TUI ───────
+    // (must happen before the session is shared with the background task)
+    let (ui_ctx, mut ui_rx) = create_tui_ui_context();
+    session.set_extension_ui_context(ui_ctx);
 
     let mut state = AppState::new(cols, rows, ext_commands);
     state.model.model_name = initial_model_name;
@@ -522,6 +915,7 @@ pub async fn run_interactive_mode(session: AgentSession) -> i32 {
             }
             Some(msg) = agent_rx.recv() => Action::Agent(msg),
             Some(msg) = result_rx.recv() => Action::Agent(msg),
+            Some(action) = ui_rx.recv() => Action::Ui(action),
         };
 
         let outcome = update(&mut state, action);

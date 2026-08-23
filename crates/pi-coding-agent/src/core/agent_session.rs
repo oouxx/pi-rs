@@ -2024,6 +2024,13 @@ impl AgentSession {
         &self.ext_ctx
     }
 
+    /// Swap in a live UI context (e.g. the TUI's dialog/notify bridge) after
+    /// session construction. Headless modes leave the no-op default; the
+    /// interactive mode wires real dialogs/notifications this way.
+    pub fn set_extension_ui_context(&mut self, ui: crate::core::extensions::ExtensionUIContext) {
+        self.ext_ctx.ui = ui;
+    }
+
     pub fn get_session_id(&self) -> String {
         self.session_manager
             .lock()

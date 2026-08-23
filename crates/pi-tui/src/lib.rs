@@ -121,7 +121,7 @@ pub mod render;
 pub mod terminal;
 
 // Re-export key types
-pub use app::{Cmd, Model, Msg};
+pub use app::{AppMode, Cmd, Dialog, DialogAction, DialogButton, Message, Model, Msg};
 pub use components::{
     Completer, CompletionItem, CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown,
     MarkdownTheme, SelectList, TextComponent,

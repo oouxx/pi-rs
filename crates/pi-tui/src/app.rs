@@ -121,6 +121,7 @@ pub enum Msg {
     ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
     ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
     SetGitBranch(Option<String>), SetContextUsage(u8), SetElapsed(u64), SetModelName(String),
+    SetEditorText(String), ExitSelect,
     AppendToolOutput(String, String), ToggleToolExpand(String),
     ToolApprove(String), ToolDeny(String),
     ClearScreen, InputNewline, Cancel,
@@ -155,6 +156,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetContextUsage(p) => { model.context_usage_pct = p; vec![] }
         Msg::SetElapsed(s) => { model.elapsed_secs = s; vec![] }
         Msg::SetModelName(name) => { model.model_name = name; vec![] }
+        Msg::SetEditorText(text) => { model.input.set_value(&text); vec![] }
+        Msg::ExitSelect => { model.mode = AppMode::Chat; vec![] }
         Msg::AppendToolOutput(n, t) => { model.append_tool_output(&n, &t); vec![] }
         Msg::ToggleToolExpand(n) => { model.toggle_tool_expand(&n); vec![] }
         Msg::ToolApprove(n) => { if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.name == n) { t.approval = Some(ToolApproval::Approved); } vec![] }

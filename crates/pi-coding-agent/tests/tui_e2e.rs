@@ -191,8 +191,8 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     session
 }
 
-/// Mock extension registering a slash command. The handler writes its args
-/// to a well-known file so the E2E test can observe execution.
+/// Mock extension registering slash commands. The handlers write to
+/// well-known files so the E2E test can observe execution.
 struct TestCmdHandler;
 
 #[async_trait::async_trait]
@@ -210,6 +210,35 @@ impl HookHandler for TestCmdHandler {
                     Box::pin(async move {
                         std::fs::write("/tmp/tui_ext_cmd.log", format!("ran: {args}"))
                             .expect("write ext log");
+                    })
+                }),
+                get_argument_completions: None,
+            },
+        );
+        reg.register(
+            "uitest",
+            CommandRegistration {
+                description: "exercise the extension UI bridge".into(),
+                execute: std::sync::Arc::new(|_args, ctx| {
+                    let ctx = ctx.cloned();
+                    Box::pin(async move {
+                        // Confirm dialog → user answer recorded.
+                        if let Some(ctx) = ctx.as_ref() {
+                            let ok = (ctx.ui.confirm)("Confirm?", &serde_json::json!({"k": "v"}));
+                            std::fs::write("/tmp/tui_ui_confirm.log", format!("confirm={ok}"))
+                                .expect("write confirm log");
+                        }
+                        // Select dialog → user choice recorded.
+                        if let Some(ctx) = ctx.as_ref() {
+                            let choice = (ctx.ui.select)(
+                                "Pick one",
+                                &["alpha".to_string(), "beta".to_string()],
+                                None,
+                            )
+                            .await;
+                            std::fs::write("/tmp/tui_ui_select.log", format!("select={choice:?}"))
+                                .expect("write select log");
+                        }
                     })
                 }),
                 get_argument_completions: None,
@@ -558,6 +587,60 @@ fn tui_extension_slash_command_executes() {
         "unknown command sent as message; got: {:?}",
         tui.rendered()
     );
+
+    tui.write(&[0x04]);
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
+}
+
+/// Extension UI bridge: `ui.confirm` renders a dialog in the TUI; Tab
+/// switches to Cancel, Enter resolves it; the extension observes the result.
+/// `ui.select` renders a select list; Enter resolves the choice.
+#[test]
+fn tui_extension_ui_dialogs_work() {
+    let _ = std::fs::remove_file("/tmp/tui_ui_confirm.log");
+    let _ = std::fs::remove_file("/tmp/tui_ui_select.log");
+    let mut tui = Tui::spawn(false);
+    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+
+    // ── confirm: press Tab (→ Cancel) + Enter → false ──
+    tui.write(b"/uitest\r");
+    assert!(
+        tui.wait_for("Confirm", TIMEOUT),
+        "confirm dialog rendered; got: {:?}",
+        tui.rendered()
+    );
+    tui.write(b"\t"); // Tab → Cancel
+    tui.write(b"\r"); // Enter → resolve false
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Ok(c) = std::fs::read_to_string("/tmp/tui_ui_confirm.log") {
+            if c.contains("confirm=false") {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "confirm result never arrived");
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    // ── select: Enter picks the first option (alpha) ──
+    tui.write(b"/uitest\r");
+    assert!(
+        tui.wait_for("alpha", TIMEOUT),
+        "select dialog rendered; got: {:?}",
+        tui.rendered()
+    );
+    tui.write(b"\r"); // Enter → alpha
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Ok(s) = std::fs::read_to_string("/tmp/tui_ui_select.log") {
+            if s.contains("Some(\"alpha\")") || s.contains("Some(\"alpha\")") {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "select result never arrived");
+        std::thread::sleep(Duration::from_millis(40));
+    }
 
     tui.write(&[0x04]);
     let code = tui.wait_exit(TIMEOUT);

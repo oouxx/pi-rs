@@ -737,6 +737,10 @@ pub struct StreamOptions {
     /// keys override e.g. temperature / max_tokens). Also used for vLLM
     /// `thinking_token_budget`.
     pub sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Per-request HTTP client injection (TS 0.83 per-request `fetch`
+    /// injection): hosts can supply a custom `reqwest::Client` (proxy, TLS,
+    /// timeouts, mocks). `None` = the default client.
+    pub http_client: Option<std::sync::Arc<reqwest::Client>>,
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
     pub api_key: Option<String>,
     pub transport: Option<Transport>,
@@ -830,6 +834,7 @@ impl Clone for StreamOptions {
             temperature: self.temperature,
             max_tokens: self.max_tokens,
             sampling_params: None,
+            http_client: None,
             signal: self.signal.clone(),
             api_key: self.api_key.clone(),
             transport: self.transport.clone(),
@@ -860,6 +865,7 @@ impl Default for StreamOptions {
             temperature: None,
             max_tokens: None,
             sampling_params: None,
+            http_client: None,
             signal: None,
             api_key: None,
             transport: None,
@@ -955,6 +961,7 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
             temperature: helper.temperature,
             max_tokens: helper.max_tokens,
             sampling_params: helper.sampling_params,
+            http_client: None,
             signal: None,
             api_key: helper.api_key,
             transport: helper.transport,

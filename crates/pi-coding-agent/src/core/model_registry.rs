@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use pi_agent_core::pi_ai_types::Model;
@@ -67,7 +67,7 @@ impl ModelRegistry {
     pub fn new(builtin_models: Vec<Model>) -> Self {
         let mut models = builtin_models;
         let models_path = config::get_models_path();
-        let models_json_providers = Self::load_models_from_path(&mut models, &models_path);
+        let models_json_providers = Self::load_models_from_path(&mut models, &models_path, None);
         Self {
             models: RwLock::new(models),
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
@@ -93,7 +93,7 @@ impl ModelRegistry {
     #[cfg(test)]
     pub fn new_with_models_path(builtin_models: Vec<Model>, models_path: &std::path::Path) -> Self {
         let mut models = builtin_models;
-        let models_json_providers = Self::load_models_from_path(&mut models, models_path);
+        let models_json_providers = Self::load_models_from_path(&mut models, models_path, None);
         Self {
             models: RwLock::new(models),
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
@@ -103,25 +103,60 @@ impl ModelRegistry {
         }
     }
 
-    /// Reload models.json configuration (match TS `ModelRegistry.refresh()`, #6999).
-    /// Re-reads the models.json file and upserts its models into the registry,
-    /// so updated config (baseUrl/compat/new models) takes effect without a restart.
-    pub fn refresh(&self) {
+    /// Reload models.json configuration (TS 0.84 `ModelRegistry.refresh()`,
+    /// #6999 + `ModelsRefreshOptions`/`ModelsRefreshResult`): re-reads the
+    /// models.json file and upserts its models into the registry, so updated
+    /// config (baseUrl/compat/new models) takes effect without a restart.
+    /// `options.providers` restricts the refresh to the listed provider IDs
+    /// (unknown/static providers are ignored); a cancelled `options.signal`
+    /// short-circuits with `aborted: true`; load errors are surfaced in
+    /// `errors` instead of being discarded.
+    pub async fn refresh(&self, options: Option<&ModelsRefreshOptions>) -> ModelsRefreshResult {
+        let mut result = ModelsRefreshResult::default();
+        if let Some(rx) = options.and_then(|o| o.signal.as_ref()) {
+            if *rx.borrow() {
+                result.aborted = true;
+                return result;
+            }
+        }
+        let provider_filter = options
+            .and_then(|o| o.providers.as_ref())
+            .map(|p| p.iter().cloned().collect::<HashSet<_>>());
         let Some(path) = self.models_path.clone() else {
-            return;
+            return result;
         };
         if !path.exists() {
-            return;
+            result
+                .errors
+                .insert("_models.json".to_string(), "models.json does not exist".to_string());
+            return result;
         }
         let mut models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        let providers = Self::load_models_from_path(&mut models, &path);
+        let providers = Self::load_models_from_path(&mut models, &path, provider_filter.as_ref());
+        if let Some(rx) = options.and_then(|o| o.signal.as_ref()) {
+            if *rx.borrow() {
+                result.aborted = true;
+                return result;
+            }
+        }
         let mut models_guard = self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         *models_guard = models;
         let mut providers_guard = self
             .models_json_providers
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *providers_guard = providers;
+        // Provider-filtered refresh: merge only the refreshed entries so
+        // unlisted providers keep their previous configuration.
+        if let Some(filter) = provider_filter.as_ref() {
+            for (pid, cfg) in providers {
+                if filter.contains(&pid) {
+                    providers_guard.insert(pid, cfg);
+                }
+            }
+        } else {
+            *providers_guard = providers;
+        }
+        result
     }
 
     pub fn builtin_models_list() -> Vec<Model> {
@@ -403,6 +438,7 @@ impl ModelRegistry {
     fn load_models_from_path(
         models: &mut Vec<Model>,
         models_path: &std::path::Path,
+        provider_filter: Option<&HashSet<String>>,
     ) -> HashMap<String, ProviderConfig> {
         if !models_path.exists() {
             return HashMap::new();
@@ -412,6 +448,13 @@ impl ModelRegistry {
                 Ok(file) => {
                     let mut provider_configs = HashMap::new();
                     for (provider_name, provider_def) in file.providers {
+                        // Provider-filtered refresh: unlisted providers are
+                        // ignored (TS `ModelsRefreshOptions.providers`).
+                        if let Some(filter) = provider_filter {
+                            if !filter.contains(&provider_name) {
+                                continue;
+                            }
+                        }
                         // Store provider-level config
                         let provider_config = ProviderConfig {
                             name: provider_def.name.clone(),
@@ -622,6 +665,28 @@ pub(crate) fn apply_headers_with_deletions(
             }
         }
     }
+}
+
+/// TS 0.84 `ModelsRefreshOptions`: restrict the refresh to specific
+/// provider IDs (unknown/static providers are ignored). `signal` cancels the
+/// refresh and is reflected in the result's `aborted` flag.
+#[derive(Debug, Clone, Default)]
+pub struct ModelsRefreshOptions {
+    /// Restrict refresh to these provider IDs.
+    pub providers: Option<Vec<String>>,
+    /// Cancellation signal; when aborted, `refresh` returns early with
+    /// `aborted: true` instead of discarding the cancellation.
+    pub signal: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+/// TS 0.84 `ModelsRefreshResult`: provider errors are surfaced (not
+/// discarded) alongside the abort state.
+#[derive(Debug, Clone, Default)]
+pub struct ModelsRefreshResult {
+    pub aborted: bool,
+    /// Per-provider errors (keyed by provider id; a models.json load failure
+    /// is reported under `"_models.json"`).
+    pub errors: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1052,6 +1117,34 @@ mod tests {
         }));
         assert_eq!(registry.get_api_key_for_provider("test-provider-xyz"), Some("sk-stored-123".to_string()));
         assert_eq!(registry.get_api_key_for_provider("anthropic"), None);
+    }
+
+    /// TS 0.84 `ModelsRefreshOptions`/`ModelsRefreshResult`: a cancelled
+    /// signal short-circuits with `aborted: true`; missing models.json is
+    /// surfaced as an error instead of being silently discarded.
+    #[tokio::test]
+    async fn test_refresh_shape_signal_and_errors() {
+        let registry = ModelRegistry::new(vec![]);
+        // Cancelled signal → aborted, no error.
+        let (tx, rx) = tokio::sync::watch::channel(true);
+        let result = registry.refresh(Some(&ModelsRefreshOptions {
+            providers: None,
+            signal: Some(rx),
+        })).await;
+        assert!(result.aborted, "cancelled refresh must report aborted");
+        assert!(result.errors.is_empty());
+        drop(tx);
+
+        // Missing models.json → error surfaced, not aborted.
+        let missing = tempfile::tempdir().unwrap().path().join("nope.json");
+        let registry2 = ModelRegistry::new_with_models_path(vec![], &missing);
+        let result2 = registry2.refresh(None).await;
+        assert!(!result2.aborted);
+        assert!(
+            result2.errors.contains_key("_models.json"),
+            "missing models.json must be reported in errors: {:?}",
+            result2.errors
+        );
     }
 
     /// TS 0.84 `ProviderHeaders`: `null` header values in models.json are

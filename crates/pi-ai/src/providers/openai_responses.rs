@@ -2028,7 +2028,10 @@ async fn stream_openai_responses_inner(
     }
 
     let request_body = build_request_body(model, context, options)?;
-    let http_client = HttpClient::new();
+    // Per-request HTTP client injection (TS per-request `fetch`).
+    let http_client = options
+        .and_then(|o| o.http_client.clone())
+        .unwrap_or_else(|| std::sync::Arc::new(HttpClient::new()));
     let url = format!("{}/responses", model.base_url.trim_end_matches('/'));
 
     // Build request headers (match TS createClient): auth, session affinity,

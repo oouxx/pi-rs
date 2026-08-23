@@ -1360,7 +1360,11 @@ async fn stream_openai_inner(
     let temperature = options.and_then(|o| o.temperature);
     let signal = options.and_then(|o| o.signal.clone());
 
-    let http_client = HttpClient::new();
+    // Per-request HTTP client injection (TS per-request `fetch`): hosts can
+    // supply a custom client (proxy/TLS/timeouts/mocks).
+    let http_client = options
+        .and_then(|o| o.http_client.clone())
+        .unwrap_or_else(|| std::sync::Arc::new(HttpClient::new()));
     let compat = get_compat(model);
 
     let grammar_properties = super::openai_responses::grammar_tool_input_properties(

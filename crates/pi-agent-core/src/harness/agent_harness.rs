@@ -695,6 +695,7 @@ where
                         temperature: snapshot.temperature,
                         max_tokens: snapshot.max_tokens,
                         sampling_params: None,
+                        http_client: None,
                         signal: opts.signal.clone(),
                         api_key: auth.as_ref().map(|(k, _)| k.clone()),
                         transport: snapshot.transport.clone().map(|_| pi_ai::types::Transport::Websocket),

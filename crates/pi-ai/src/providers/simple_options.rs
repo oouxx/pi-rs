@@ -38,6 +38,7 @@ pub fn build_base_options(
         temperature: opts.base.temperature,
         max_tokens: opts.base.max_tokens,
         sampling_params,
+        http_client: opts.base.http_client.clone(),
         signal: opts.base.signal.clone(),
         api_key: api_key
             .map(std::string::ToString::to_string)
@@ -259,5 +260,42 @@ mod tests {
         assert_eq!(sp.get("temperature").unwrap(), &serde_json::json!(0.2), "request overrides model");
         assert_eq!(sp.get("repetition_penalty").unwrap(), &serde_json::json!(1.1), "model default kept");
         assert_eq!(sp.get("top_p").unwrap(), &serde_json::json!(0.9));
+    }
+
+    /// TS 0.83 per-request `fetch` injection: a custom HTTP client supplied
+    /// in the simple options flows through to the full stream options.
+    #[test]
+    fn test_build_base_options_http_client_injection() {
+        let model = crate::types::Model {
+            id: "test".into(),
+            name: "test".into(),
+            api: "openai-completions".into(),
+            provider: "test".into(),
+            base_url: String::new(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 0,
+            max_tokens: 0,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        };
+        let client = std::sync::Arc::new(reqwest::Client::new());
+        let simple = crate::types::SimpleStreamOptions {
+            base: crate::types::StreamOptions {
+                http_client: Some(client.clone()),
+                ..Default::default()
+            },
+            reasoning: None,
+            thinking_budgets: None,
+            debug: None,
+        };
+        let opts = build_base_options(&model, Some(&simple), None);
+        assert!(
+            std::sync::Arc::ptr_eq(opts.http_client.as_ref().unwrap(), &client),
+            "custom http client must be preserved"
+        );
     }
 }

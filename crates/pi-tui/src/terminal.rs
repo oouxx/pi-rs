@@ -1,12 +1,18 @@
 //! Terminal setup with ratatui and crossterm.
 //!
-//! Handles raw mode, kitty keyboard protocol, and input event streaming.
+//! Handles raw mode, bracketed paste, and input event streaming.
+//!
+//! NOTE: the kitty keyboard protocol is NOT enabled here. Enabling it
+//! unconditionally breaks Ctrl+C/Ctrl+D on terminals that do not implement
+//! the protocol (crossterm 0.28's CSI-u parsing then fails to decode the
+//! key). Proper support requires probing the terminal first (grok-build's
+//! `terminal/probe.rs` + `kitty_keyboard.rs`); until then, standard
+//! crossterm key events keep every key working everywhere.
 
 use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEvent,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use futures::StreamExt;
@@ -18,7 +24,6 @@ pub struct Terminal {
     inner: ratatui::Terminal<CrosstermBackend<Stdout>>,
     columns: u16,
     rows: u16,
-    kitty_active: bool,
 }
 
 impl Terminal {
@@ -26,29 +31,18 @@ impl Terminal {
         let backend = CrosstermBackend::new(stdout());
         let inner = ratatui::Terminal::new(backend)?;
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        Ok(Self { inner, columns: cols, rows, kitty_active: false })
+        Ok(Self { inner, columns: cols, rows })
     }
 
     pub fn columns(&self) -> u16 { self.columns }
     pub fn rows(&self) -> u16 { self.rows }
-    pub fn kitty_protocol_active(&self) -> bool { self.kitty_active }
 
-    /// Enter raw mode, enable kitty keyboard protocol, start input event loop.
+    /// Enter raw mode, enable bracketed paste, start input event loop.
     /// Returns (input_rx, shutdown_guard).
     pub fn start(&mut self) -> io::Result<(mpsc::UnboundedReceiver<KeyEvent>, ShutdownGuard)> {
         crossterm::terminal::enable_raw_mode()?;
 
-        execute!(
-            io::stdout(),
-            EnableBracketedPaste,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-            ),
-        )?;
-
-        self.kitty_active = true;
+        execute!(io::stdout(), EnableBracketedPaste)?;
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -124,12 +118,7 @@ impl ShutdownGuard {
             let _ = tx.send(());
         }
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            DisableBracketedPaste,
-            PopKeyboardEnhancementFlags,
-            crossterm::cursor::Show,
-        );
+        let _ = execute!(io::stdout(), DisableBracketedPaste, crossterm::cursor::Show);
     }
 }
 

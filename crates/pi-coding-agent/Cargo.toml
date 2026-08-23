@@ -66,6 +66,8 @@ mcp = ["dep:rmcp"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+portable-pty = "0.9"
+futures = { workspace = true }
 
 
 [lints]

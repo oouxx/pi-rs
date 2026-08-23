@@ -56,6 +56,7 @@ fn make_model() -> Model {
         cost: ModelCost::default(),
         context_window: 128000,
         max_tokens: 4096,
+        sampling_params: None,
         headers: None,
         compat: None,
     }
@@ -100,6 +101,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                     },
                     context_window: model.context_window,
                     max_tokens: model.max_tokens,
+                    sampling_params: None,
                     headers: model.headers,
                     compat: None,
                 };

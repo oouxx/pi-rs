@@ -1434,6 +1434,7 @@ mod helper_tests {
             base_url: "https://test.com".into(),
             context_window: 0,
             max_tokens: 0,
+            sampling_params: None,
             cost: crate::pi_ai_types::ModelCost::default(),
             reasoning: false,
             thinking_level_map: None,

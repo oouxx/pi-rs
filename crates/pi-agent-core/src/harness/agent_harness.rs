@@ -694,6 +694,7 @@ where
                     base: pi_ai::types::StreamOptions {
                         temperature: snapshot.temperature,
                         max_tokens: snapshot.max_tokens,
+                        sampling_params: None,
                         signal: opts.signal.clone(),
                         api_key: auth.as_ref().map(|(k, _)| k.clone()),
                         transport: snapshot.transport.clone().map(|_| pi_ai::types::Transport::Websocket),
@@ -1713,6 +1714,7 @@ mod tests {
 },
             context_window: 100_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         };
@@ -1748,6 +1750,7 @@ mod tests {
 },
             context_window: 100_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         };

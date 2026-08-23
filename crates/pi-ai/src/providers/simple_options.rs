@@ -5,22 +5,39 @@
 use crate::types::{Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets};
 
 /// Build a full `StreamOptions` from `SimpleStreamOptions` and an API key.
-#[must_use] 
+#[must_use]
 pub fn build_base_options(
-    _model: &Model,
+    model: &Model,
     options: Option<&SimpleStreamOptions>,
     api_key: Option<&str>,
 ) -> StreamOptions {
     let Some(opts) = options else {
         return StreamOptions {
             api_key: api_key.map(std::string::ToString::to_string),
+            sampling_params: model.sampling_params.clone(),
             ..Default::default()
         };
+    };
+
+    // TS `simple-options.ts`: per-request samplingParams override the
+    // model-level defaults key by key.
+    let sampling_params = match (&model.sampling_params, opts.base.sampling_params.as_ref()) {
+        (Some(m), Some(o)) => {
+            let mut merged = m.clone();
+            for (k, v) in o {
+                merged.insert(k.clone(), v.clone());
+            }
+            Some(merged)
+        }
+        (Some(m), None) => Some(m.clone()),
+        (None, Some(o)) => Some(o.clone()),
+        (None, None) => None,
     };
 
     StreamOptions {
         temperature: opts.base.temperature,
         max_tokens: opts.base.max_tokens,
+        sampling_params,
         signal: opts.base.signal.clone(),
         api_key: api_key
             .map(std::string::ToString::to_string)
@@ -189,11 +206,58 @@ mod tests {
             cost: crate::types::ModelCost::default(),
             context_window: 0,
             max_tokens: 0,
+            sampling_params: None,
             headers: None,
             compat: None,
         };
         let opts = build_base_options(&model, None, Some("key123"));
         assert_eq!(opts.api_key, Some("key123".to_string()));
         assert!(opts.temperature.is_none());
+    }
+
+    /// TS 0.84: per-request samplingParams override the model-level defaults
+    /// key by key.
+    #[test]
+    fn test_build_base_options_merges_sampling_params() {
+        let model = crate::types::Model {
+            id: "test".into(),
+            name: "test".into(),
+            api: "openai-completions".into(),
+            provider: "test".into(),
+            base_url: String::new(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 0,
+            max_tokens: 0,
+            sampling_params: Some(
+                serde_json::json!({"temperature": 0.7, "repetition_penalty": 1.1})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            headers: None,
+            compat: None,
+        };
+        let simple = crate::types::SimpleStreamOptions {
+            base: crate::types::StreamOptions {
+                sampling_params: Some(
+                    serde_json::json!({"temperature": 0.2, "top_p": 0.9})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                ..Default::default()
+            },
+            reasoning: None,
+            thinking_budgets: None,
+            debug: None,
+        };
+        let opts = build_base_options(&model, Some(&simple), None);
+        let sp = opts.sampling_params.unwrap();
+        assert_eq!(sp.get("temperature").unwrap(), &serde_json::json!(0.2), "request overrides model");
+        assert_eq!(sp.get("repetition_penalty").unwrap(), &serde_json::json!(1.1), "model default kept");
+        assert_eq!(sp.get("top_p").unwrap(), &serde_json::json!(0.9));
     }
 }

@@ -387,6 +387,7 @@ mod tests {
                 cost: pi_agent_core::pi_ai_types::ModelCost::default(),
                 context_window: 128000,
                 max_tokens: 8192,
+                sampling_params: None,
                 headers: None,
                 compat: None,
             }),

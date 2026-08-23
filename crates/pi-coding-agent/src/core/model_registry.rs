@@ -503,6 +503,7 @@ impl ModelRegistry {
 },
                                     context_window: model_def.context_window.unwrap_or(128000),
                                     max_tokens: model_def.max_tokens.unwrap_or(16384),
+                                    sampling_params: model_def.sampling_params.clone(),
                                     headers: model_def.headers.as_ref().map(|h| {
                                         let mut m = HashMap::new();
                                         apply_headers_with_deletions(&mut m, h);
@@ -562,6 +563,16 @@ impl ModelRegistry {
                                     }
                                     if let Some(ctx) = override_def.context_window {
                                         model.context_window = ctx;
+                                    }
+                                    // TS provider-composer: override samplingParams
+                                    // merge over the model defaults key by key.
+                                    if let Some(ref sp) = override_def.sampling_params {
+                                        let mut merged =
+                                            model.sampling_params.clone().unwrap_or_default();
+                                        for (k, v) in sp {
+                                            merged.insert(k.clone(), v.clone());
+                                        }
+                                        model.sampling_params = Some(merged);
                                     }
                                     if let Some(mt) = override_def.max_tokens {
                                         model.max_tokens = mt;
@@ -679,6 +690,8 @@ struct ModelDefinition {
     #[serde(default)]
     max_tokens: Option<u64>,
     #[serde(default)]
+    sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default)]
     headers: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
     compat: Option<pi_agent_core::pi_ai_types::ModelCompat>,
@@ -702,6 +715,8 @@ struct ModelOverrideDefinition {
     context_window: Option<u64>,
     #[serde(default)]
     max_tokens: Option<u64>,
+    #[serde(default)]
+    sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
     headers: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
@@ -759,6 +774,7 @@ fn get_pi_ai_models() -> Vec<Model> {
 },
                 context_window: m.context_window,
                 max_tokens: m.max_tokens,
+                sampling_params: None,
                 headers: m.headers.clone(),
                 compat: None,
             });
@@ -774,6 +790,7 @@ pub fn builtin_models() -> Vec<Model> {
         id: "free".into(),
         context_window: 128000,
         max_tokens: 16384,
+        sampling_params: None,
         cost: pi_agent_core::pi_ai_types::ModelCost {
             input: 0.0,
             output: 0.0,
@@ -948,6 +965,7 @@ mod tests {
             id: "gpt-4o".into(),
             context_window: 128000,
             max_tokens: 16384,
+            sampling_params: None,
             cost: pi_agent_core::pi_ai_types::ModelCost {
                 input: 0.0,
                 output: 0.0,
@@ -1001,6 +1019,7 @@ mod tests {
             },
             context_window: 0,
             max_tokens: 0,
+            sampling_params: None,
             headers: None,
             compat: None,
         }));
@@ -1027,6 +1046,7 @@ mod tests {
             },
             context_window: 0,
             max_tokens: 0,
+            sampling_params: None,
             headers: None,
             compat: None,
         }));

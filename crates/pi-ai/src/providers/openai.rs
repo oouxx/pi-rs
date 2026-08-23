@@ -1483,6 +1483,71 @@ async fn stream_openai_inner(
 
     apply_thinking_params(model, options, &compat, &mut body);
 
+    // vLLM caps reasoning with a top-level thinking_token_budget. Independent
+    // of thinkingFormat: reasoning and the answer share max_tokens here, so
+    // an uncapped reasoning phase can consume the whole response and leave no
+    // answer and no tool call (TS `buildParams`).
+    if compat.supports_thinking_token_budget
+        && options
+            .and_then(|o| o.reasoning_effort.as_deref())
+            .is_some()
+        && model.reasoning
+    {
+        let level = options
+            .and_then(|o| o.reasoning_effort.as_deref())
+            .map(|e| if e == "xhigh" { "high" } else { e })
+            .unwrap_or("high");
+        let budgets = crate::types::ThinkingBudgets {
+            minimal: options
+                .and_then(|o| o.thinking_budgets.as_ref())
+                .and_then(|b| b.minimal)
+                .or(Some(1024)),
+            low: options
+                .and_then(|o| o.thinking_budgets.as_ref())
+                .and_then(|b| b.low)
+                .or(Some(2048)),
+            medium: options
+                .and_then(|o| o.thinking_budgets.as_ref())
+                .and_then(|b| b.medium)
+                .or(Some(8192)),
+            high: options
+                .and_then(|o| o.thinking_budgets.as_ref())
+                .and_then(|b| b.high)
+                .or(Some(16_384)),
+        };
+        let budget_level = match level {
+            "minimal" => budgets.minimal.unwrap_or(1024),
+            "low" => budgets.low.unwrap_or(2048),
+            "medium" => budgets.medium.unwrap_or(8192),
+            _ => budgets.high.unwrap_or(16_384),
+        };
+        let ceiling = body
+            .get(compat.max_tokens_field.as_str())
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                body.get(if compat.max_tokens_field == "max_tokens" {
+                    "max_completion_tokens"
+                } else {
+                    "max_tokens"
+                })
+                .and_then(Value::as_u64)
+            })
+            .unwrap_or(model.max_tokens);
+        // Always leave room for the answer (TS MIN_ANSWER_TOKENS = 1024).
+        let budget = budget_level.min(ceiling.saturating_sub(1024));
+        if budget > 0 {
+            body.insert("thinking_token_budget".into(), Value::Number(budget.into()));
+        }
+    }
+
+    // Last so custom keys override the named request fields (TS
+    // `Object.assign(params, options.samplingParams)`).
+    if let Some(sp) = options.and_then(|o| o.sampling_params.as_ref()) {
+        for (k, v) in sp {
+            body.insert(k.clone(), v.clone());
+        }
+    }
+
     // OpenRouter provider routing preferences.
     if let Some(routing) = &compat.open_router_routing {
         body.insert("provider".to_string(), serde_json::to_value(routing)?);
@@ -1564,7 +1629,7 @@ async fn stream_openai_inner(
         response_id: None,
         diagnostics: None,
         usage: Usage::default(),
-        stop_reason: StopReason::Stop,
+        stop_reason: StopReason::Pending,
         error_message: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -2063,6 +2128,7 @@ mod tests {
             cost: crate::types::ModelCost::default(),
             context_window: 128_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         }
@@ -2187,6 +2253,7 @@ mod tests {
             },
             context_window: 128_000,
             max_tokens: 16_384,
+            sampling_params: None,
             headers: None,
             compat: None,
         }
@@ -2614,6 +2681,7 @@ mod abort_tests {
             cost: crate::types::ModelCost::default(),
             context_window: 128_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         }

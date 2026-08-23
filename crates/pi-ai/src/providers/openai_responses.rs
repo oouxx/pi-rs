@@ -1945,6 +1945,14 @@ fn build_request_body(
         );
     }
 
+    // Last so custom keys override the named request fields (TS
+    // `Object.assign(params, options.samplingParams)`).
+    if let Some(sp) = options.and_then(|o| o.sampling_params.as_ref()) {
+        for (k, v) in sp {
+            body.insert(k.clone(), v.clone());
+        }
+    }
+
     Ok(Value::Object(body))
 }
 
@@ -2092,7 +2100,7 @@ async fn stream_openai_responses_inner(
         response_id: None,
         diagnostics: None,
         usage: Usage::default(),
-        stop_reason: StopReason::Stop,
+        stop_reason: StopReason::Pending,
         error_message: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -2184,6 +2192,7 @@ mod tests {
             },
             context_window: 128_000,
             max_tokens: 16_384,
+            sampling_params: None,
             headers: None,
             compat: None,
         }
@@ -2951,6 +2960,7 @@ mod abort_tests {
             cost: crate::types::ModelCost::default(),
             context_window: 128_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         }

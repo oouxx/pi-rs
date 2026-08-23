@@ -470,6 +470,7 @@ pub async fn generate_summary(
         base: crate::pi_ai_types::StreamOptions {
             api_key: Some(api_key.to_string()),
             max_tokens: Some(max_tokens),
+            sampling_params: None,
             headers: headers.cloned().filter(|h| !h.is_empty()),
             signal,
             ..Default::default()

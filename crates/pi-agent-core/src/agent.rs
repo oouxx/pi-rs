@@ -262,6 +262,7 @@ impl Default for AgentState {
                 base_url: String::new(),
                 context_window: 0,
                 max_tokens: 0,
+                sampling_params: None,
                 cost: crate::pi_ai_types::ModelCost::default(),
                 reasoning: false,
                 thinking_level_map: None,
@@ -292,6 +293,7 @@ impl Agent {
                 base_url: String::new(),
                 context_window: 0,
                 max_tokens: 0,
+                sampling_params: None,
                 cost: ModelCost::default(),
                 reasoning: false,
                 thinking_level_map: None,
@@ -1106,6 +1108,7 @@ mod tests {
 },
             context_window: 100_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         }

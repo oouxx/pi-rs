@@ -135,6 +135,10 @@ pub struct Usage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StopReason {
+    /// Partial streaming message — the stream has not reached a terminal
+    /// state yet (TS 0.83 `"pending"`).
+    #[serde(rename = "pending")]
+    Pending,
     Stop,
     Length,
     #[serde(rename = "toolUse")]
@@ -617,6 +621,11 @@ pub struct Model {
     pub context_window: u64,
     #[serde(rename = "maxTokens")]
     pub max_tokens: u64,
+    /// Default sampling parameters for this model (TS 0.84
+    /// `Model.samplingParams`); per-request keys override these. Merged into
+    /// the request body last, so custom keys override the named fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -723,6 +732,11 @@ pub enum ToolChoiceMode {
 pub struct StreamOptions {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
+    /// Arbitrary OpenAI-compatible sampling parameters merged over the named
+    /// request fields (TS 0.84 `StreamOptions.samplingParams`; last so custom
+    /// keys override e.g. temperature / max_tokens). Also used for vLLM
+    /// `thinking_token_budget`.
+    pub sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
     pub signal: Option<tokio::sync::watch::Receiver<bool>>,
     pub api_key: Option<String>,
     pub transport: Option<Transport>,
@@ -815,6 +829,7 @@ impl Clone for StreamOptions {
         Self {
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            sampling_params: None,
             signal: self.signal.clone(),
             api_key: self.api_key.clone(),
             transport: self.transport.clone(),
@@ -844,6 +859,7 @@ impl Default for StreamOptions {
         Self {
             temperature: None,
             max_tokens: None,
+            sampling_params: None,
             signal: None,
             api_key: None,
             transport: None,
@@ -921,6 +937,7 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
         struct StreamOptionsHelper {
             temperature: Option<f64>,
             max_tokens: Option<u64>,
+            sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
             api_key: Option<String>,
             transport: Option<crate::types::Transport>,
             cache_retention: Option<crate::types::CacheRetention>,
@@ -937,6 +954,7 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
         Ok(Self {
             temperature: helper.temperature,
             max_tokens: helper.max_tokens,
+            sampling_params: helper.sampling_params,
             signal: None,
             api_key: helper.api_key,
             transport: helper.transport,
@@ -1143,6 +1161,7 @@ mod tests {
             },
             context_window: 200_000,
             max_tokens: 8192,
+            sampling_params: None,
             headers: None,
             compat: None,
         };
@@ -1396,6 +1415,7 @@ mod tests {
             },
             context_window: 128_000,
             max_tokens: 16_384,
+            sampling_params: None,
             headers: None,
             compat: Some(ModelCompat::OpenAICompletions(Box::new(
                 OpenAICompletionsCompat {

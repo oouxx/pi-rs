@@ -1200,7 +1200,7 @@ async fn stream_anthropic_inner(
         response_id: None,
         diagnostics: None,
         usage: Usage::default(),
-        stop_reason: StopReason::Stop,
+        stop_reason: StopReason::Pending,
         error_message: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -1595,6 +1595,7 @@ mod tests {
             },
             context_window: 200_000,
             max_tokens: 8192,
+            sampling_params: None,
             headers: None,
             compat: None,
         }
@@ -1897,6 +1898,7 @@ mod tests {
             cost: ModelCost::default(),
             context_window: 200000,
             max_tokens: 32000,
+            sampling_params: None,
             headers: None,
             compat: None,
         };
@@ -2039,6 +2041,7 @@ mod tests {
             cost: ModelCost::default(),
             context_window: 200000,
             max_tokens: 32000,
+            sampling_params: None,
             headers: None,
             compat: None,
         }
@@ -2172,6 +2175,7 @@ mod abort_tests {
             cost: crate::types::ModelCost::default(),
             context_window: 200_000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         }

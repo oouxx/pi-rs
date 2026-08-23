@@ -65,6 +65,7 @@ async fn create_test_session(
 },
             context_window: 128000,
             max_tokens: 4096,
+            sampling_params: None,
             headers: None,
             compat: None,
         });
@@ -474,6 +475,7 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
         },
         context_window: 128000,
         max_tokens: 4096,
+        sampling_params: None,
         headers: None,
         compat: None,
     };
@@ -602,6 +604,7 @@ async fn test_session_switch_invalidates_js_runtime() {
         cost: pi_agent_core::pi_ai_types::ModelCost::default(),
         context_window: 128000,
         max_tokens: 4096,
+        sampling_params: None,
         headers: None,
         compat: None,
     };

@@ -483,6 +483,7 @@ pub async fn create_agent_session(
                     cost: pi_agent_core::pi_ai_types::ModelCost::default(),
                     context_window: 0,
                     max_tokens: 0,
+                    sampling_params: None,
                     headers: None,
                     compat: None,
                 };

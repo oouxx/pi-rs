@@ -58,6 +58,15 @@ async fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    // Generic agent attribution markers for child processes (TS cli.ts
+    // `PI_CODING_AGENT = "true"` + `AI_AGENT = "pi"`, 0.84.0).
+    if std::env::var("PI_CODING_AGENT").is_err() {
+        std::env::set_var("PI_CODING_AGENT", "true");
+    }
+    if std::env::var("AI_AGENT").is_err() {
+        std::env::set_var("AI_AGENT", "pi");
+    }
+
     // `pi auth ...` subcommands (TS main.ts `runAuthCommand`).
     if args.first().map(|s| s.as_str()) == Some("auth") {
         let exit_code = pi_cli::auth_command::run_auth_command(&args).await;

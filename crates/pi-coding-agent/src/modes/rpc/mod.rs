@@ -244,6 +244,13 @@ pub async fn run_rpc_mode(
     cli_provider: Option<String>,
     cli_model: Option<String>,
 ) -> i32 {
+    // Generic agent attribution markers (TS rpc-entry.ts, 0.84.0).
+    if std::env::var("PI_CODING_AGENT").is_err() {
+        std::env::set_var("PI_CODING_AGENT", "true");
+    }
+    if std::env::var("AI_AGENT").is_err() {
+        std::env::set_var("AI_AGENT", "pi");
+    }
     // ── Single output channel for all stdout writes ────────────────────
     // Both event streaming and synchronous responses go through this channel,
     // ensuring no interleaving on stdout. Created before the session so the

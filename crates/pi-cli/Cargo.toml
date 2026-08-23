@@ -24,7 +24,9 @@ image = "0.25"
 tempfile = { workspace = true }
 
 [features]
-default = []
+# Interactive TUI is the default app mode for a TTY (no args) — matching
+# TS `resolveAppMode`. Build without it via `--no-default-features`.
+default = ["interactive"]
 interactive = ["pi-coding-agent/interactive"]
 
 

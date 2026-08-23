@@ -16,11 +16,9 @@ const SPINNER_TICK_MS: u64 = 100;
 
 enum AgentCmd {
     SendMessage(String),
-    Abort,
     AbortBash,
     SetModel(String, String),
     CycleModel,
-    SetThinkingLevel(String),
     CycleThinkingLevel,
     NewSession(Option<String>),
     SetSessionName(String),
@@ -30,7 +28,7 @@ enum AgentCmd {
 
 /// Run the interactive TUI mode.
 /// Mirrors the original InteractiveMode.run().
-pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
+pub async fn run_interactive_mode(session: AgentSession) -> i32 {
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
@@ -63,7 +61,6 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     let mut sess = bg_session.lock().await;
                     match cmd {
                         AgentCmd::SendMessage(text) => sess.add_user_text(&text).await,
-                        AgentCmd::Abort => sess.abort().await,
                         AgentCmd::AbortBash => sess.abort().await,
                         AgentCmd::SetModel(provider, model_id) => {
                             // Model will be resolved by the session
@@ -77,6 +74,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                                 max_tokens: 16384,
                                 reasoning: false,
                                 thinking_level_map: None,
+                                sampling_params: None,
                                 input: vec!["text".to_string()],
                                 headers: None,
                                 compat: None,
@@ -93,9 +91,6 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         AgentCmd::CycleModel => {
                             // Cycle through available models via the agent
                             sess.abort().await;
-                        }
-                        AgentCmd::SetThinkingLevel(level) => {
-                            // Thinking level is managed by agent state
                         }
                         AgentCmd::CycleThinkingLevel => {
                             // Cycle through thinking levels
@@ -121,32 +116,64 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     });
 
     // ── Subscribe agent events (lock-and-release) ───────────────────────
+    // Keep an `Arc<Agent>` handle for abort: `abort()` is `&self` and must
+    // NOT be routed through the session mutex — `add_user_text` holds the
+    // lock for the whole run, so a queued Abort command would only execute
+    // after the run finishes (never, for a long run).
     let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::unbounded_channel::<crate::modes::agent_bridge::AgentEvent>();
-    {
+    let agent_handle = {
         let mut sess = session.lock().await;
         crate::modes::agent_bridge::subscribe_agent(&mut sess, bridge_tx).await;
-    } // Lock released — background task can now use the session
+        sess.agent_handle()
+    }; // Lock released — background task can now use the session
 
     // ── Bridge events → pi_tui::Msg ──────────────────────────────────────
+    //
+    // TextDelta deltas stream into an assistant message; the message is
+    // created on the *first* delta (not on Enter) so deltas never stick to
+    // the user message. MessageEnd closes the stream; when no delta was ever
+    // seen (empty reply / tool-only turn) it creates the message with the
+    // final text instead.
     let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
     let atx = agent_tx.clone();
 
     tokio::spawn(async move {
         use crate::modes::agent_bridge::AgentEvent as BE;
+        let mut assistant_stream_open = false;
         while let Some(ev) = bridge_rx.recv().await {
-            let msg = match ev {
-                BE::TextDelta(d) => Some(pi_tui::Msg::StreamText(d)),
-                BE::MessageEnd(t) => { let _ = atx.send(pi_tui::Msg::NewMessage("assistant".into(), t)); Some(pi_tui::Msg::StreamEnd) }
-                BE::ToolStart(n) => Some(pi_tui::Msg::ToolStart(n)),
-                BE::ToolEnd(n, e) => Some(pi_tui::Msg::ToolEnd(n, e)),
-                BE::ToolOutput(n, o) => Some(pi_tui::Msg::AppendToolOutput(n, o)),
+            let msgs: Vec<pi_tui::Msg> = match ev {
+                BE::TextDelta(d) => {
+                    let mut v = Vec::new();
+                    if !assistant_stream_open {
+                        v.push(pi_tui::Msg::NewMessage("assistant".into(), String::new()));
+                        assistant_stream_open = true;
+                    }
+                    v.push(pi_tui::Msg::StreamText(d));
+                    v
+                }
+                BE::MessageEnd(t) => {
+                    let mut v = Vec::new();
+                    if !assistant_stream_open && !t.is_empty() {
+                        v.push(pi_tui::Msg::NewMessage("assistant".into(), t));
+                    }
+                    v.push(pi_tui::Msg::StreamEnd);
+                    assistant_stream_open = false;
+                    v
+                }
+                BE::ToolStart(n) => vec![pi_tui::Msg::ToolStart(n)],
+                BE::ToolEnd(n, e) => vec![pi_tui::Msg::ToolEnd(n, e)],
+                BE::ToolOutput(n, o) => vec![pi_tui::Msg::AppendToolOutput(n, o)],
             };
-            if let Some(m) = msg { if atx.send(m).is_err() { break; } }
+            for m in msgs {
+                if atx.send(m).is_err() {
+                    break;
+                }
+            }
         }
     });
 
     // ── Main event loop ──────────────────────────────────────────────────
-    let mut exit_code: i32 = 0;
+    let exit_code: i32 = 0;
     let mut last_ctrl_c = Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100);
     let mut tick_timer = tokio::time::interval(tokio::time::Duration::from_millis(SPINNER_TICK_MS));
     let mut should_quit = false;
@@ -177,7 +204,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         }
                         last_ctrl_c = now;
                         if tui_model.is_streaming || !tui_model.active_tools.is_empty() {
-                            let _ = cmd_tx.send(AgentCmd::Abort);
+                            agent_handle.abort().await;
                             tui_model.is_streaming = false;
                         }
                     }

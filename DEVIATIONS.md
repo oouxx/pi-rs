@@ -7,7 +7,7 @@
 | 位置（文件:行/函数名） | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
 | ---------------------- | ---------- | -------------- | -------- | -------- |
 | 扩展系统（extension 模块整体） | `packages/coding-agent` 里扩展系统的具体实现方式（如插件加载、hook 注册的内部机制） | 内部实现方式不按原版逐行翻译，改用 Rust 生态更合适的机制（如 WASM / subprocess IPC，具体选型见 PORTING.md） | 用户决定 | 已确认保留 |
-| TUI 渲染层（对应原 `packages/coding-agent` 内 TUI 组件，即 `pi-tui`） | 原版 TUI 组件的具体渲染实现 | 本次范围内不复刻 | 用户决定：TUI 不在 pi-coding-agent 当前移植范围内 | 已确认保留 |
+| TUI 渲染层（对应原 `packages/coding-agent` 内 TUI 组件，即 `pi-tui`） | 原版 TUI 组件的具体渲染实现 | **2026-08-23 起已纳入范围（最小可用版）**：恢复历史 Elm 架构 pi-tui（ratatui 0.29），markdown 渲染整体改用 vendored grok-build `xai-grok-markdown`（见 THIRD-PARTY-NOTICES.md），不按原版自研 | 用户决定：先恢复最小可用，后续再逐模块对齐原版 | 已确认保留 |
 
 ## 对"已确认保留"条目的额外约束
 
@@ -32,12 +32,18 @@
 
 ### TUI
 
-- 本条目只覆盖"不逐行复刻/不在本次范围内实现"这件事本身，不代表
-  TUI 以后也不需要对齐检查——一旦 TUI 部分被纳入某次任务范围，需要
-  单独走阶段一到阶段三，这条 DEVIATIONS 记录届时应该更新或移除，不
-  要留着一条过期的"已确认保留"误导后续判断
-- 在此之前，任何对齐检查、契约对照表遇到 TUI 相关的公开接口缺失，
-  视为"范围外"，不算作差异，不需要在对照表里体现
+- **2026-08-23 更新**：TUI 已以最小可用形态纳入范围（`pi-cli -i` →
+  interactive 模式 → pi-tui Elm 架构；markdown 渲染依赖 vendored
+  `xai-grok-markdown`，见 THIRD-PARTY-NOTICES.md）。本条偏差的含义收窄为：
+  **组件层不按原版 TS 逐行复刻**（Ratatui + grok 管线替代原版自研组件库）。
+- 仍不在范围内的：原版全部组件/选择器（session/model/theme/settings
+  selector 等 17k 行 TS）尚未移植，属“后续任务”，不算差异。
+- 已登记的简化：消息 wrap 是 `word_wrap_line_with_joiners` 的简化版（逐
+  字符断行、无 joiner 复制保真、无 blockquote 续行前缀对齐）——最小可用
+  档接受，后续对齐时再补。slash 命令中 `/quit`/`/exit` 静默无效、
+  `CycleModel`/`SetThinkingLevel` 等为 no-op stub——同样属最小可用简化。
+- 一旦后续对齐检查覆盖 TUI 组件，需要单独走阶段一到阶段三；本条记录
+  届时更新或移除，不要留着过期的“已确认保留”误导后续判断。
 | `reload()` / `_buildRuntime()` | TS `reload()` 调用 `_buildRuntime()` 重建整个 ExtensionRunner（重新从磁盘加载扩展文件、重建工具注册表、重新绑定所有回调） | Rust `reload()` 只调用 `settings_manager.reload()`，不重建 ExtensionRegistry | Rust 扩展通过 `Arc<ExtensionRegistry>` 在构造时一次性注册，运行时不支持热重载。TS 扩展是文件驱动的动态加载（`.ts`/`.js` 文件 → ResourceLoader → ExtensionRunner），Rust 扩展是程序化注册的静态引用（`registry.register()` → `Arc<ExtensionRegistry>`），没有"运行时重建"的概念 | 已确认保留 |
 | `bind_extensions()` | TS `bindExtensions()` 设置 `_extensionUIContext`、`_extensionMode`、`_extensionCommandContextActions`、`_extensionAbortHandler`、`_extensionShutdownHandler`、`_extensionErrorListener`，然后调用 `_applyExtensionBindings()` 和 emit `session_start` | Rust `bind_extensions()` 接受 `ExtensionBindings` 结构体，存储相关字段但不执行动态绑定 | Rust 扩展通过 `ExtensionContext` 和 `EventPublisher` 直接通信，没有 TS 的 ExtensionRunner 回调注册机制。`_applyExtensionBindings()` 的等价逻辑在构造时通过 `ExtensionContext::new()` 完成 | 已确认保留 |
 | `create_replaced_session_context()` | TS 从 `_extensionRunner.createCommandContext()` 创建 `ReplacedSessionContext`，附加 `sendMessage`/`sendUserMessage` 方法 | Rust 返回一个简化的 `ReplacedSessionContext` 结构体，包含 `send_message`/`send_user_message` 闭包 | Rust 没有 ExtensionRunner 的 `createCommandContext()` 方法。等价功能通过 `ExtensionContext` 直接暴露给扩展 | 已确认保留 |

@@ -1,0 +1,25 @@
+[package]
+name = "pi-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal UI framework — Elm architecture on ratatui (Rust port of @earendil-works/pi-tui)"
+
+[dependencies]
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+# Vendored streaming markdown pipeline (grok-build's xai-grok-markdown):
+# pulldown-cmark parsing + syntect highlighting + width-aware wrapping.
+xai-grok-markdown = { path = "../vendor/xai-grok-markdown" }
+anstyle = "1.0"
+unicode-width = { workspace = true }
+tokio = { version = "1", features = ["sync", "macros", "rt", "io-std", "time", "signal"] }
+futures = { workspace = true }
+similar = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+
+[lints]
+workspace = true

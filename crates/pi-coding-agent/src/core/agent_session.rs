@@ -1953,6 +1953,15 @@ impl AgentSession {
         self.agent.as_ref()
     }
 
+    /// Clone the underlying agent handle so long-lived tasks (e.g. a TUI
+    /// event loop) can call `abort()` without holding the session lock —
+    /// `abort()` is `&self`, but the lock is held for the whole run by
+    /// `add_user_text`, so routing abort through the session mutex would
+    /// deadlock-queue behind the active run.
+    pub fn agent_handle(&self) -> Arc<Agent> {
+        self.agent.clone()
+    }
+
     /// Get full agent state, matching TS `get state()`.
     pub async fn get_state(&self) -> AgentState {
         self.agent.state().await

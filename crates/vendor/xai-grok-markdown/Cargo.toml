@@ -1,0 +1,37 @@
+[package]
+name = "xai-grok-markdown"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Vendored from xai-org/grok-build crates/codegen/xai-grok-markdown (streaming markdown renderer for terminal UIs)"
+
+# Adapted from the upstream Cargo.toml:
+# - edition 2024 kept (upstream source uses let-chains, an edition-2024-only
+#   feature; rustc 1.85+ required — pi-rs builds with 1.97)
+# - ratatui 0.29 (matches pi-tui; upstream uses the same)
+# - removed playground feature + optional crossterm/xai-ratatui-textarea deps
+# - crate name kept as `xai-grok-markdown` to preserve upstream paths in
+#   code comments and ease future re-syncs from SOURCE_REV.
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+[dependencies]
+anstyle = "1.0"
+anstyle-lossy = "1.1.4"
+anstyle-syntect = "1.0.4"
+html-escape = "0.2"
+linkify = "0.10"
+pulldown-cmark = "0.13"
+ratatui = "0.29"
+supports-color = "3.0"
+syntect = "5.3"
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+textwrap = "0.16"
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2"
+url = "2"
+xai-grok-markdown-core = { path = "../xai-grok-markdown-core" }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

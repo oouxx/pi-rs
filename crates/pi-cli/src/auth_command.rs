@@ -146,10 +146,9 @@ fn parse_duration(value: &str) -> Option<u64> {
         (s, 1_000)
     } else if let Some(s) = lower.strip_suffix('m') {
         (s, 60_000)
-    } else if let Some(s) = lower.strip_suffix('h') {
-        (s, 3_600_000)
     } else {
-        return None;
+        let s = lower.strip_suffix('h')?;
+        (s, 3_600_000)
     };
     if amount_str.is_empty() || !amount_str.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -382,7 +381,7 @@ async fn print_credential(
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
-                            .as_millis() as u128;
+                            .as_millis();
                         if credentials.expires <= now_ms + min_expiry as u128 {
                             return Err(format!(
                                 "OAuth token for \"{provider_id}\" expires sooner than the requested --min-expiry; refresh is not supported"

@@ -1903,7 +1903,7 @@ mod tests {
                 // Block until aborted so the run stays active.
                 let signal = opts.signal.clone();
                 Box::pin(async move {
-                    if let Some(mut rx) = signal {
+                    if let Some(rx) = signal {
                         loop {
                             if *rx.borrow() {
                                 break;

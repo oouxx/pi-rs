@@ -84,10 +84,6 @@ mod tests {
         .unwrap()
     }
 
-    fn sid() -> String {
-        "s1".to_string()
-    }
-
     #[test]
     fn non_message_update_passes_through() {
         let e = AgentSessionEvent::MessageEnd {

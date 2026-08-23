@@ -1163,7 +1163,7 @@ mod tests {
         source.insert("x-custom".into(), Some("v".into()));
         apply_headers_with_deletions(&mut target, &source);
 
-        assert!(target.get("authorization").is_none(), "null marker must delete the header");
+        assert!(!target.contains_key("authorization"), "null marker must delete the header");
         assert_eq!(target.get("x-api-key").map(|s| s.as_str()), Some("sk-new"));
         assert_eq!(target.get("x-custom").map(|s| s.as_str()), Some("v"));
     }

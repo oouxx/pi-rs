@@ -2359,7 +2359,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let events = vec![
             json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "msg_1"}}),
             json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Hello"}),

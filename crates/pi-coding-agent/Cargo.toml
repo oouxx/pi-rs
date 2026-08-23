@@ -10,6 +10,8 @@ description = "Coding agent CLI with read/bash/edit/write tools and session mana
 pi-agent-core = { workspace = true }
 pi-extension-api = { workspace = true }
 pi-extensions = { workspace = true }
+pi-tui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
@@ -54,12 +56,10 @@ rmcp = { version = "1.8", optional = true, default-features = false, features = 
 libc = "0.2"
 
 [features]
-# Interactive TUI mode. The pi-tui / crossterm dependencies are currently removed
-# because pi-tui's ratatui 0.29 hard-pins unicode-width =0.2.0. Re-add once pi-tui
-# upgrades to ratatui 0.30. The interactive mode code stays gated behind
-# `#[cfg(feature = "interactive")]` and is inert until then.
+# Interactive TUI mode. Depends on pi-tui (ratatui 0.29) + crossterm.
+# Re-enabled: pi-tui restored with ratatui 0.29 (unicode-width hard-pin resolved).
 default = ["mcp"]
-interactive = []
+interactive = ["dep:pi-tui", "dep:crossterm"]
 # MCP (Model Context Protocol) client support (stdio + streamable HTTP).
 # Default-on. Disabling removes the rmcp dependency and the ACP MCP wiring.
 mcp = ["dep:rmcp"]

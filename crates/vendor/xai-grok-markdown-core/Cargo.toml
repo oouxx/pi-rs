@@ -1,0 +1,9 @@
+[package]
+name = "xai-grok-markdown-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Vendored from xai-org/grok-build crates/codegen/xai-grok-markdown-core (headless markdown analysis)"
+
+[dependencies]
+pulldown-cmark = "0.13"

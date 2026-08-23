@@ -21,7 +21,7 @@ crate 共用映射规范**。后续每一次"这段 TS 该怎么翻译成 Rust"�
 | `pi-cli`          | （coding-agent 的 CLI 入口）   | CLI 二进制入口、包管理 CLI                                |
 | `pi-extension-api`| （coding-agent 的扩展 API 抽出）| 扩展侧公开 API 类型（RegisteredCommand/Tool/Shortcut…）  |
 | `pi-extensions`   | （内置扩展实现）               | 随仓库分发的内置扩展                                      |
-| `pi-tui`          | `packages/tui`                 | 终端 UI 渲染层——**本轮不复刻**（见 DEVIATIONS.md）        |
+| `pi-tui`          | `packages/tui`                 | 终端 UI 渲染层——**2026-08-23 起最小可用形态已恢复**（Elm 架构 + ratatui 0.29 + vendored grok-build markdown 管线；组件层不复刻原版，见 DEVIATIONS.md） |
 
 **依赖方向固定为单向，禁止反向依赖：**
 
@@ -142,8 +142,10 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 
 ## 6. 不逐行复刻的部分（与 CLAUDE.md / DEVIATIONS.md 一致）
 
-- **TUI 渲染层**（`pi-tui` / `packages/tui`）本轮不复刻；但**状态机语义**（有哪
-  些状态、转移条件）必须与原版一致。
+- **TUI 渲染层**（`pi-tui` / `packages/tui`）：组件层不逐行复刻原版
+  （Ratatui + vendored `xai-grok-markdown` 管线替代原版自研组件库，见
+  DEVIATIONS.md 与 THIRD-PARTY-NOTICES.md）；**状态机语义**（有哪些状态、
+  转移条件）与原版一致；原版各 selector 组件（约 17k 行 TS）待后续任务。
 - **扩展系统内部实现**允许偏离原版（DEVIATIONS.md 顶部已确认偏差），但**对外
   interface 与函数行为**必须与原 TS 版本一致。
 - **Node.js 特定运行时行为**（process/fs API 细节）按 Rust 生态惯用法重写，不

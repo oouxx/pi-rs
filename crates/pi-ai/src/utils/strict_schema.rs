@@ -113,11 +113,10 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), String> {
         if schema.get("items").and_then(|v| v.as_array()).is_some() {
             return Err("tuple schemas are unsupported".to_string());
         }
-        make_json_schema_node_strict(
-            schema
-                .get_mut("items")
-                .expect("items present (checked above)"),
-        )?;
+        let items = schema
+            .get_mut("items")
+            .ok_or_else(|| "items present (checked above)".to_string())?;
+        make_json_schema_node_strict(items)?;
     }
 
     let is_object_schema = schema.get("type") == Some(&Value::String("object".into()));

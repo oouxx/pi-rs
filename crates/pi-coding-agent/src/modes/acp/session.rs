@@ -2580,7 +2580,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn extension_slash_command_executes() {
         use pi_extension_api::hook::{CommandRegistry, HookHandler};
-        use pi_extension_api::{SourceInfo, create_builtin_source_info};
+        use pi_extension_api::create_builtin_source_info;
 
         struct CmdHandler(std::sync::Arc<std::sync::atomic::AtomicBool>);
         impl HookHandler for CmdHandler {

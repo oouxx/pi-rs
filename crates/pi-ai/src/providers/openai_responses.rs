@@ -1180,7 +1180,12 @@ fn map_stop_reason(
         }
         Some("failed") | Some("cancelled") => (StopReason::Error, None),
         Some("in_progress") | Some("queued") => (StopReason::Stop, None),
-        other => panic!("Unhandled stop reason: {other:?}"),
+        // TS 0.83 (#7272): unmapped terminal reasons surface as provider
+        // errors instead of panicking the stream task.
+        other => (
+            StopReason::Error,
+            Some(format!("Unhandled stop reason: {other:?}")),
+        ),
     }
 }
 

@@ -22,8 +22,12 @@
 //!
 //! 有意简化（pi-rs 适配，按 DEVIATIONS 惯例）：
 //! - 工具始终注册（原版按 `toolVisibility` 默认隐藏、首次 /goal 后显现）；
-//!   未激活/无 goal 时工具按原版验证链拒绝（"no active goal" 等）
-//! - TUI menu/settings UI 不做，/goal 子命令文本化；`pi.events` 协议不做；
+//!   未激活/无 goal 时工具按原版验证链拒绝（"no active goal" 等）；
+//!   `toolVisibility` 设置仍可配置（settings 菜单），但只影响显示语义
+//! - TUI 菜单/设置 UI 已补全（对齐原版 menu.ts / settings-ui.ts）：/goal
+//!   （无参数）在 TUI 模式打开目标管理菜单（select/input/confirm 原语实现
+//!   多屏流程），Settings… 进入设置菜单（自动轮数/无进展/工具可见性/RPC，
+//!   落盘 `<agent_dir>/pi-goal.json`）；`pi.events` 协议不做；
 //!   legacy 实验性队列（多目标）不支持
 //! - token 会计用 assistant usage 增量累计（原版 total-baseline 的等价
 //!   近似）；budget wrap-up 以拒绝文本 + 状态呈现
@@ -104,6 +108,126 @@ const RETRYABLE_PATTERNS: [&str; 4] = [
     r"(?i)network.?error|connection.?(?:error|refused|lost)|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up",
     r"(?i)timed? out|timeout|terminated|websocket.?(?:closed|error)|ended without|stream ended before message_stop|http2 request did not get a response",
 ];
+
+// ============================================================================
+// 设置 — 对齐原版 settings.ts（`<agent_dir>/pi-goal.json`）
+// ============================================================================
+
+/// 设置文件名（原版 GOAL_SETTINGS_FILE）。
+const GOAL_SETTINGS_FILE: &str = "pi-goal.json";
+/// 工具可见性取值（原版 GOAL_TOOL_VISIBILITIES）。
+const GOAL_TOOL_VISIBILITIES: [&str; 2] = ["always", "after-first-goal"];
+
+/// pi-goal 设置（对齐原版 GoalSettings）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalSettings {
+    /// `"always"` 或 `"after-first-goal"`（原版 toolVisibility）。
+    #[serde(default = "default_tool_visibility")]
+    pub tool_visibility: String,
+    #[serde(default)]
+    pub rpc: GoalRpcSettings,
+    #[serde(default)]
+    pub continuation_limits: GoalContinuationLimits,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalRpcSettings {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// 延续限制（原版 continuationLimits；`None` = 不限）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalContinuationLimits {
+    /// 自动延续轮数上限（原版 automaticTurns，`null` = Unlimited）。
+    #[serde(default = "default_automatic_turns")]
+    pub automatic_turns: Option<u32>,
+    /// 无进展轮数上限（原版 noProgressTurns，`null` = 关闭）。
+    #[serde(default = "default_no_progress_turns")]
+    pub no_progress_turns: Option<u32>,
+}
+
+fn default_tool_visibility() -> String {
+    "after-first-goal".to_string()
+}
+
+fn default_automatic_turns() -> Option<u32> {
+    Some(DEFAULT_AUTOMATIC_TURNS)
+}
+
+fn default_no_progress_turns() -> Option<u32> {
+    Some(DEFAULT_NO_PROGRESS_TURNS)
+}
+
+impl Default for GoalSettings {
+    fn default() -> Self {
+        Self {
+            tool_visibility: default_tool_visibility(),
+            rpc: GoalRpcSettings { enabled: false },
+            continuation_limits: GoalContinuationLimits {
+                automatic_turns: default_automatic_turns(),
+                no_progress_turns: default_no_progress_turns(),
+            },
+        }
+    }
+}
+
+/// 设置文件路径（`<agent_dir>/pi-goal.json`）。
+fn goal_settings_path(agent_dir: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(agent_dir).join(GOAL_SETTINGS_FILE)
+}
+
+/// 读取设置；文件缺失或损坏时回退默认值（原版区分 missing/invalid，
+/// Rust 简化：损坏时用默认值并在调用方提示）。
+fn read_goal_settings(agent_dir: &str) -> GoalSettings {
+    let path = goal_settings_path(agent_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => GoalSettings::default(),
+    }
+}
+
+/// 原子写设置（临时文件 + rename，对齐原版 saveGoalSettings）。
+fn save_goal_settings(agent_dir: &str, settings: &GoalSettings) -> std::io::Result<()> {
+    let path = goal_settings_path(agent_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(settings)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, format!("{json}\n"))?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// 原版 formatAutomaticWork（设置显示用）。
+fn format_automatic_work(limit: Option<u32>) -> String {
+    match limit {
+        Some(n) => format!("{n} responses"),
+        None => "Unlimited".to_string(),
+    }
+}
+
+/// 原版 formatNoProgressProtection（设置显示用）。
+fn format_no_progress_protection(limit: Option<u32>) -> String {
+    match limit {
+        Some(n) => format!("After {n} repeated runs"),
+        None => "Off".to_string(),
+    }
+}
+
+/// 原版 visibilityLabel。
+fn visibility_label(visibility: &str) -> &'static str {
+    if visibility == GOAL_TOOL_VISIBILITIES[0] {
+        "Always"
+    } else {
+        "After first goal"
+    }
+}
+
 
 // ============================================================================
 // 状态机 — 对齐原版 GoalState / transitionGoal
@@ -416,15 +540,15 @@ fn stopped_status_label(status: GoalStatus) -> &'static str {
     }
 }
 
-/// 原版 formatStatus。
-fn format_status(goal: &GoalState) -> String {
+/// 原版 formatStatus。`automatic_limit` 为生效的自动轮数上限（None = 不限）。
+fn format_status(goal: &GoalState, automatic_limit: Option<u32>) -> String {
     if goal.status == GoalStatus::Complete {
         return "complete".to_string();
     }
-    let automatic = format!(
-        "automatic {}/{}",
-        goal.automatic_model_turns, DEFAULT_AUTOMATIC_TURNS
-    );
+    let automatic = match automatic_limit {
+        Some(limit) => format!("automatic {}/{}", goal.automatic_model_turns, limit),
+        None => format!("automatic {}", goal.automatic_model_turns),
+    };
     if let Some(w) = &goal.waiting {
         return format!("waiting {} · {automatic}", w.reason);
     }
@@ -453,8 +577,9 @@ fn format_status(goal: &GoalState) -> String {
     }
 }
 
-/// 原版 goalSummary（/goal status 用）。
-fn goal_summary(goal: &GoalState) -> String {
+/// 原版 goalSummary（/goal status 用）。`automatic_limit` 为生效的自动轮数
+/// 上限（None = 不限）。
+fn goal_summary(goal: &GoalState, automatic_limit: Option<u32>) -> String {
     let mut lines = vec![
         format!("Goal: {}", goal.text),
         format!(
@@ -465,10 +590,16 @@ fn goal_summary(goal: &GoalState) -> String {
                 .unwrap_or(goal.status.as_str())
         ),
         format!("Iteration: {}", goal.iteration),
-        format!(
-            "Automatic work: {} of {} responses",
-            goal.automatic_model_turns, DEFAULT_AUTOMATIC_TURNS
-        ),
+        match automatic_limit {
+            Some(limit) => format!(
+                "Automatic work: {} of {} responses",
+                goal.automatic_model_turns, limit
+            ),
+            None => format!(
+                "Automatic work: {} responses · Unlimited",
+                goal.automatic_model_turns
+            ),
+        },
         format!("Active elapsed: {}", format_duration(goal.time_used_seconds)),
         format!(
             "Tokens: {}",
@@ -702,6 +833,20 @@ fn tokenize(input: &str) -> Vec<String> {
     tokens
 }
 
+/// 原版 goalHelp。
+fn goal_help() -> String {
+    [
+        "Goal menu",
+        "Use the menu for guided status, edits, settings, and confirmations.",
+        "Direct routes remain available for deterministic workflows:",
+        "/goal <objective>",
+        "/goal status | pause | resume | edit | clear",
+        "/goal --tokens 100k <objective>",
+        "Escape cancels the current menu or input without changing goal state.",
+    ]
+    .join("\n")
+}
+
 /// 原版 validateObjective。
 fn validate_objective(objective: &str) -> Option<String> {
     if objective.trim().is_empty() {
@@ -844,10 +989,12 @@ struct GoalInner {
     stale_blocked: AtomicBool,
     /// waiting 到期唤醒 task。
     wait_waker: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// 自动轮数上限（测试可注入）。
-    automatic_turns: u32,
-    /// 无进展轮数上限（测试可注入）。
-    no_progress_turns: u32,
+    /// 会话设置（pi-goal.json，首次有 ctx 时惰性加载）。
+    settings: Mutex<Option<GoalSettings>>,
+    /// 自动轮数上限（测试覆盖；None = 未覆盖，用 settings）。
+    automatic_turns_override: Mutex<Option<u32>>,
+    /// 无进展轮数上限（测试覆盖；None = 未覆盖，用 settings）。
+    no_progress_turns_override: Mutex<Option<u32>>,
 }
 
 impl GoalInner {
@@ -860,9 +1007,49 @@ impl GoalInner {
             goal_recovery: Mutex::new(None),
             stale_blocked: AtomicBool::new(false),
             wait_waker: Mutex::new(None),
-            automatic_turns: DEFAULT_AUTOMATIC_TURNS,
-            no_progress_turns: DEFAULT_NO_PROGRESS_TURNS,
+            settings: Mutex::new(None),
+            automatic_turns_override: Mutex::new(None),
+            no_progress_turns_override: Mutex::new(None),
         }
+    }
+
+    /// 惰性加载会话设置（首次调用读盘，之后缓存）。
+    fn settings(&self, ctx: Option<&ExtensionContext>) -> GoalSettings {
+        let mut slot = self
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            let agent_dir = ctx
+                .map(|c| (c.runtime.get_agent_dir)())
+                .unwrap_or_default();
+            *slot = Some(read_goal_settings(&agent_dir));
+        }
+        slot.clone().unwrap_or_default()
+    }
+
+    /// 生效的自动轮数上限（测试覆盖优先；None = 不限）。
+    fn automatic_turns(&self, ctx: Option<&ExtensionContext>) -> Option<u32> {
+        if let Some(v) = *self
+            .automatic_turns_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Some(v);
+        }
+        self.settings(ctx).continuation_limits.automatic_turns
+    }
+
+    /// 生效的无进展轮数上限（测试覆盖优先；None = 关闭）。
+    fn no_progress_turns(&self, ctx: Option<&ExtensionContext>) -> Option<u32> {
+        if let Some(v) = *self
+            .no_progress_turns_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Some(v);
+        }
+        self.settings(ctx).continuation_limits.no_progress_turns
     }
 
     fn goal_snapshot(&self) -> Option<GoalState> {
@@ -921,7 +1108,7 @@ impl GoalInner {
     }
 
     fn update_status(&self, ctx: &ExtensionContext, goal: &GoalState) {
-        (ctx.ui.set_status)(STATUS_KEY, &format_status(goal));
+        (ctx.ui.set_status)(STATUS_KEY, &format_status(goal, self.automatic_turns(Some(ctx))));
     }
 
     // ── 停止与转换 ─────────────────────────────────────────
@@ -1134,48 +1321,52 @@ impl GoalInner {
 
     /// 自动轮数 / 无进展安全暂停（原版 pauseGoalForSafety 两条路径）。
     fn enforce_safety_limits(&self, ctx: &ExtensionContext, goal: &GoalState) -> bool {
-        if goal.automatic_model_turns >= self.automatic_turns {
-            let mut paused = goal.clone();
-            paused.safety_pause_cause = Some("continuation_limit".to_string());
-            self.transition_and_persist(
-                ctx,
-                paused,
-                GoalStatus::Paused,
-                Some("continuation_limit".to_string()),
-                true,
-            );
-            self.notify(
-                ctx,
-                &format!(
-                    "Automatic-work limit reached: {} of {} responses. Goal progress is saved ({} tokens). Open /goal to review and continue.",
-                    goal.automatic_model_turns,
-                    self.automatic_turns,
-                    format_token_count(goal.tokens_used)
-                ),
-                "warning",
-            );
-            return true;
+        if let Some(limit) = self.automatic_turns(Some(ctx)) {
+            if goal.automatic_model_turns >= limit {
+                let mut paused = goal.clone();
+                paused.safety_pause_cause = Some("continuation_limit".to_string());
+                self.transition_and_persist(
+                    ctx,
+                    paused,
+                    GoalStatus::Paused,
+                    Some("continuation_limit".to_string()),
+                    true,
+                );
+                self.notify(
+                    ctx,
+                    &format!(
+                        "Automatic-work limit reached: {} of {} responses. Goal progress is saved ({} tokens). Open /goal to review and continue.",
+                        goal.automatic_model_turns,
+                        limit,
+                        format_token_count(goal.tokens_used)
+                    ),
+                    "warning",
+                );
+                return true;
+            }
         }
-        if goal.tool_free_repeat_count >= self.no_progress_turns {
-            let mut paused = goal.clone();
-            paused.safety_pause_cause = Some("no_progress".to_string());
-            self.transition_and_persist(
-                ctx,
-                paused,
-                GoalStatus::Paused,
-                Some("no_progress".to_string()),
-                true,
-            );
-            self.notify(
-                ctx,
-                &format!(
-                    "Goal paused: no progress across {} automatic runs ({} tokens). Open /goal to review and continue.",
-                    goal.tool_free_repeat_count,
-                    format_token_count(goal.tokens_used)
-                ),
-                "warning",
-            );
-            return true;
+        if let Some(limit) = self.no_progress_turns(Some(ctx)) {
+            if goal.tool_free_repeat_count >= limit {
+                let mut paused = goal.clone();
+                paused.safety_pause_cause = Some("no_progress".to_string());
+                self.transition_and_persist(
+                    ctx,
+                    paused,
+                    GoalStatus::Paused,
+                    Some("no_progress".to_string()),
+                    true,
+                );
+                self.notify(
+                    ctx,
+                    &format!(
+                        "Goal paused: no progress across {} automatic runs ({} tokens). Open /goal to review and continue.",
+                        goal.tool_free_repeat_count,
+                        format_token_count(goal.tokens_used)
+                    ),
+                    "warning",
+                );
+                return true;
+            }
         }
         false
     }
@@ -1197,7 +1388,7 @@ impl GoalInner {
         };
         match parsed {
             GoalCommand::Show => match self.goal_snapshot() {
-                Some(g) => self.notify(ctx, &goal_summary(&g), "info"),
+                Some(g) => self.notify(ctx, &goal_summary(&g, self.automatic_turns(Some(ctx))), "info"),
                 None => self.notify(
                     ctx,
                     "No active goal. Start one with /goal <goal_to_complete>.",
@@ -1272,34 +1463,39 @@ impl GoalInner {
                 self.start_goal(ctx, objective, token_budget);
             }
             GoalCommand::Edit { objective, token_budget } => {
-                let Some(mut goal) = self.goal_snapshot() else {
-                    self.notify(
-                        ctx,
-                        "No active goal to edit. Start one with /goal.",
-                        "warning",
-                    );
-                    return;
-                };
-                if goal.status == GoalStatus::Complete {
-                    self.notify(ctx, "Goal is complete and cannot be edited.", "warning");
-                    return;
-                }
-                goal = goal.next_instance();
-                goal.text = objective;
-                if token_budget.is_some() {
-                    goal.token_budget = token_budget;
-                }
-                goal.status = GoalStatus::Active;
-                goal.updated_at = current_millis();
-                self.clear_stale_block();
-                self.set_goal(Some(goal.clone()));
-                self.persist_goal(ctx, &goal);
-                self.update_status(ctx, &goal);
-                let prompt = build_edited_prompt(&goal);
-                self.send_owned_prompt(ctx, goal.id.clone(), prompt, RunOrigin::Manual);
-                self.notify(ctx, &format!("Goal edited: {}", goal.text), "info");
+                self.edit_goal(ctx, objective, token_budget);
             }
         }
+    }
+
+    /// 编辑 goal（对齐原版 editGoal；菜单与 /goal edit 共用）。
+    fn edit_goal(&self, ctx: &ExtensionContext, objective: String, token_budget: Option<u64>) {
+        let Some(mut goal) = self.goal_snapshot() else {
+            self.notify(
+                ctx,
+                "No active goal to edit. Start one with /goal.",
+                "warning",
+            );
+            return;
+        };
+        if goal.status == GoalStatus::Complete {
+            self.notify(ctx, "Goal is complete and cannot be edited.", "warning");
+            return;
+        }
+        goal = goal.next_instance();
+        goal.text = objective;
+        if token_budget.is_some() {
+            goal.token_budget = token_budget;
+        }
+        goal.status = GoalStatus::Active;
+        goal.updated_at = current_millis();
+        self.clear_stale_block();
+        self.set_goal(Some(goal.clone()));
+        self.persist_goal(ctx, &goal);
+        self.update_status(ctx, &goal);
+        let prompt = build_edited_prompt(&goal);
+        self.send_owned_prompt(ctx, goal.id.clone(), prompt, RunOrigin::Manual);
+        self.notify(ctx, &format!("Goal edited: {}", goal.text), "info");
     }
 
     /// 启动 goal（对齐原版 startGoal）。
@@ -1334,6 +1530,474 @@ impl GoalInner {
         let prompt = build_goal_prompt(&goal);
         self.send_owned_prompt(ctx, goal.id.clone(), prompt, RunOrigin::Manual);
         self.notify(ctx, &format!("Goal started: {}", goal.text), "info");
+    }
+
+    // ── TUI 菜单（对齐原版 menu.ts / settings-ui.ts） ───────────
+
+    /// 菜单动作标签（原版 GOAL_MENU_ACTIONS）。
+    const MENU_START: &'static str = "Start a goal…";
+    const MENU_START_BUDGET: &'static str = "Start with token budget…";
+    const MENU_PAUSE: &'static str = "Pause goal";
+    const MENU_RESUME: &'static str = "Resume goal";
+    const MENU_REVIEW_SAFETY: &'static str = "Review and continue…";
+    const MENU_INCREASE_BUDGET: &'static str = "Increase budget and resume…";
+    const MENU_EDIT: &'static str = "Edit goal…";
+    const MENU_REPLACE: &'static str = "Replace goal…";
+    const MENU_STATUS: &'static str = "View full status";
+    const MENU_SETTINGS: &'static str = "Settings…";
+    const MENU_HELP: &'static str = "Help";
+    const MENU_CLEAR: &'static str = "Clear goal…";
+    const MENU_CLOSE: &'static str = "Close";
+
+    /// 原版 displayStatus。
+    fn display_status(status: GoalStatus) -> &'static str {
+        match status {
+            GoalStatus::UsageLimited => "Usage limited",
+            GoalStatus::BudgetLimited => "Budget limited",
+            GoalStatus::Active => "Active",
+            GoalStatus::Paused => "Paused",
+            GoalStatus::Blocked => "Blocked",
+            GoalStatus::Complete => "Complete",
+        }
+    }
+
+    /// 原版 buildGoalMenuState：菜单标题（状态/目标/用量/自动工作）+
+    /// 按 goal 状态推导的动作列表。
+    fn build_menu_state(&self, ctx: &ExtensionContext, goal: Option<&GoalState>) -> (String, Vec<String>) {
+        let settings = self.settings(Some(ctx));
+        let automatic_limit = settings.continuation_limits.automatic_turns;
+        let paused_by_automatic = goal.is_some_and(|g| {
+            g.status == GoalStatus::Paused
+                && g.safety_pause_cause.as_deref() == Some("continuation_limit")
+        });
+        let state = if paused_by_automatic {
+            "Paused — automatic-work limit reached".to_string()
+        } else if let Some(g) = goal {
+            if let Some(w) = &g.waiting {
+                format!("Waiting — {}", w.reason)
+            } else {
+                Self::display_status(g.status).to_string()
+            }
+        } else {
+            "No goal".to_string()
+        };
+        let used = goal.map(|g| g.automatic_model_turns).unwrap_or(0);
+        let automatic = match automatic_limit {
+            Some(limit) => format!("Automatic work: {used} of {limit} responses"),
+            None => format!("Automatic work: {used} responses · Unlimited"),
+        };
+        let title = match goal {
+            Some(g) => format!(
+                "Goal · {state}\n{}\nUsage: {}\n{automatic}",
+                g.text,
+                match g.token_budget {
+                    Some(_) => format_budget(g),
+                    None => format_duration(g.time_used_seconds),
+                }
+            ),
+            None => format!("Goal · {state}\nNo goal is currently set\n{automatic}"),
+        };
+
+        let mut actions: Vec<String> = Vec::new();
+        match goal {
+            None => {
+                actions.push(Self::MENU_START.to_string());
+                actions.push(Self::MENU_START_BUDGET.to_string());
+            }
+            Some(g) if g.status == GoalStatus::Complete => {
+                actions.push(Self::MENU_START.to_string());
+                actions.push(Self::MENU_START_BUDGET.to_string());
+            }
+            Some(g) if g.waiting.is_some() => actions.push(Self::MENU_RESUME.to_string()),
+            Some(g) if g.status == GoalStatus::Active => actions.push(Self::MENU_PAUSE.to_string()),
+            Some(g) if g.status == GoalStatus::BudgetLimited => {
+                actions.push(Self::MENU_INCREASE_BUDGET.to_string());
+            }
+            Some(_) if paused_by_automatic => actions.push(Self::MENU_REVIEW_SAFETY.to_string()),
+            Some(_) => actions.push(Self::MENU_RESUME.to_string()),
+        }
+        if let Some(g) = goal {
+            if g.status != GoalStatus::Complete {
+                actions.push(Self::MENU_EDIT.to_string());
+                actions.push(Self::MENU_REPLACE.to_string());
+            }
+            actions.push(Self::MENU_STATUS.to_string());
+        }
+        actions.push(Self::MENU_SETTINGS.to_string());
+        actions.push(Self::MENU_HELP.to_string());
+        if goal.is_some() {
+            actions.push(Self::MENU_CLEAR.to_string());
+        }
+        actions.push(Self::MENU_CLOSE.to_string());
+        (title, actions)
+    }
+
+    /// 原版 showGoalManager：/goal（无参数）在 TUI 模式下打开目标管理
+    /// 菜单。用 select/input/confirm 原语实现多屏流程；Esc 关闭。
+    async fn show_goal_menu(&self, ctx: &ExtensionContext) {
+        let mut last_state: Option<(String, GoalStatus)> = None;
+        loop {
+            let goal = self.goal_snapshot();
+            let (title, actions) = self.build_menu_state(ctx, goal.as_ref());
+            // 状态变化时先通知（select 弹窗只显示单行标题）。
+            let state_key = goal
+                .as_ref()
+                .map(|g| (g.id.clone(), g.status))
+                .or_else(|| Some((String::new(), GoalStatus::Complete)));
+            if last_state != state_key {
+                self.notify(ctx, &title, "info");
+                last_state = state_key;
+            }
+            let choice = (ctx.ui.select)("Goal", &actions, None).await;
+            let Some(choice) = choice else { return }; // Esc → 关闭
+            match choice.as_str() {
+                Self::MENU_START => {
+                    let objective = (ctx.ui.input)("Goal objective", None, None).await;
+                    if let Some(objective) = objective
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                    {
+                        self.start_goal(ctx, objective, None);
+                    }
+                }
+                Self::MENU_START_BUDGET => {
+                    if let Some(budget) = self.choose_budget(ctx).await {
+                        let objective = (ctx.ui.input)("Goal objective", None, None).await;
+                        if let Some(objective) = objective
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                        {
+                            self.start_goal(ctx, objective, Some(budget));
+                        }
+                    }
+                }
+                Self::MENU_PAUSE => self.handle_command("pause", Some(ctx)),
+                Self::MENU_RESUME | Self::MENU_REVIEW_SAFETY => {
+                    self.handle_command("resume", Some(ctx));
+                }
+                Self::MENU_INCREASE_BUDGET => self.increase_budget_flow(ctx).await,
+                Self::MENU_EDIT => self.edit_goal_flow(ctx).await,
+                Self::MENU_REPLACE => {
+                    let objective = (ctx.ui.input)("Goal objective", None, None).await;
+                    if let Some(objective) = objective
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                    {
+                        self.start_goal(ctx, objective, None);
+                    }
+                }
+                Self::MENU_STATUS => {
+                    match self.goal_snapshot() {
+                        Some(g) => self.notify(
+                            ctx,
+                            &goal_summary(&g, self.automatic_turns(Some(ctx))),
+                            "info",
+                        ),
+                        None => self.notify(ctx, "No goal is currently set.", "info"),
+                    }
+                }
+                Self::MENU_SETTINGS => self.show_settings_menu(ctx).await,
+                Self::MENU_HELP => self.notify(ctx, &goal_help(), "info"),
+                Self::MENU_CLEAR => {
+                    let goal = self.goal_snapshot();
+                    if let Some(g) = goal {
+                        let confirmed = (ctx.ui.confirm)(
+                            "Clear goal?",
+                            &json!({
+                                "message": format!(
+                                    "Remove this goal:\n\n{}\n\nThis cannot be undone.",
+                                    g.text
+                                )
+                            }),
+                        );
+                        if confirmed {
+                            self.handle_command("clear", Some(ctx));
+                        }
+                    }
+                }
+                Self::MENU_CLOSE => return,
+                _ => {}
+            }
+        }
+    }
+
+    /// 原版 start-budget 屏：25k/100k/300k/自定义/返回。
+    async fn choose_budget(&self, ctx: &ExtensionContext) -> Option<u64> {
+        let items = vec![
+            "25k — Lower token ceiling".to_string(),
+            "100k — Suggested".to_string(),
+            "300k — Higher token ceiling".to_string(),
+            "Set a custom budget…".to_string(),
+            "Back".to_string(),
+        ];
+        let choice = (ctx.ui.select)("Choose token budget", &items, None).await?;
+        match choice.as_str() {
+            "25k — Lower token ceiling" => Some(25_000),
+            "100k — Suggested" => Some(100_000),
+            "300k — Higher token ceiling" => Some(300_000),
+            "Set a custom budget…" => {
+                let raw = (ctx.ui.input)("Custom token budget", Some("100k"), None).await?;
+                match parse_token_budget(&raw) {
+                    Some(b) => Some(b),
+                    None => {
+                        self.notify(
+                            ctx,
+                            "Enter a positive token amount, for example 25k, 300k, or 1.5m.",
+                            "warning",
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 原版 submit-increase-budget：输入新预算 → 确认 → editGoal。
+    async fn increase_budget_flow(&self, ctx: &ExtensionContext) {
+        let Some(goal) = self.goal_snapshot() else { return };
+        let used = goal.tokens_used;
+        let suggested = Self::suggested_increased_budget(&goal);
+        let raw = (ctx.ui.input)("Increase token budget", Some(&suggested), None).await;
+        let Some(raw) = raw else { return };
+        let Some(budget) = parse_token_budget(&raw) else {
+            self.notify(
+                ctx,
+                "Enter a positive token amount, for example 300k, 1.5m, or 300000.",
+                "warning",
+            );
+            return;
+        };
+        if budget <= used {
+            self.notify(
+                ctx,
+                &format!(
+                    "Enter a new cumulative total greater than current usage ({}).",
+                    format_token_count(used)
+                ),
+                "warning",
+            );
+            return;
+        }
+        let confirmed = (ctx.ui.confirm)(
+            "Increase goal budget?",
+            &json!({
+                "message": format!(
+                    "Goal: {}\nBudget: {} → {}\nCurrent usage: {}\nThe goal will resume immediately.",
+                    goal.text,
+                    format_token_count(goal.token_budget.unwrap_or(0)),
+                    format_token_count(budget),
+                    format_token_count(used)
+                )
+            }),
+        );
+        if confirmed {
+            self.edit_goal(ctx, goal.text.clone(), Some(budget));
+        }
+    }
+
+    /// 原版 editFromMenu：编辑目标（活跃时先确认）。
+    async fn edit_goal_flow(&self, ctx: &ExtensionContext) {
+        let Some(goal) = self.goal_snapshot() else { return };
+        let initial = goal.text.clone();
+        let objective = (ctx.ui.input)("Edit goal objective", Some(&initial), None).await;
+        let Some(objective) = objective
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != &initial)
+        else {
+            return;
+        };
+        if goal.status == GoalStatus::Active {
+            let confirmed = (ctx.ui.confirm)(
+                "Apply goal edit?",
+                &json!({
+                    "message": format!(
+                        "Current goal:\n{}\n\nUpdated goal:\n{}\n\nApplying this edit starts a new guarded goal instance.",
+                        goal.text, objective
+                    )
+                }),
+            );
+            if !confirmed {
+                return;
+            }
+        }
+        self.edit_goal(ctx, objective, None);
+    }
+
+    /// 原版 suggestedIncreasedBudget。
+    fn suggested_increased_budget(goal: &GoalState) -> String {
+        let floor = goal.tokens_used.max(goal.token_budget.unwrap_or(0));
+        for suggestion in [25_000u64, 100_000, 300_000, 500_000, 1_000_000] {
+            if suggestion > floor {
+                return format_token_count(suggestion);
+            }
+        }
+        format_token_count(floor.saturating_add(1))
+    }
+
+    /// 原版 showGoalSettings：设置菜单（自动轮数/无进展/工具可见性/RPC）。
+    async fn show_settings_menu(&self, ctx: &ExtensionContext) {
+        loop {
+            let settings = self.settings(Some(ctx));
+            let items = vec![
+                format!(
+                    "Automatic-work limit: {}",
+                    format_automatic_work(settings.continuation_limits.automatic_turns)
+                ),
+                format!(
+                    "No-progress guard: {}",
+                    format_no_progress_protection(settings.continuation_limits.no_progress_turns)
+                ),
+                format!(
+                    "Goal tools: {}",
+                    visibility_label(&settings.tool_visibility)
+                ),
+                format!(
+                    "Managed run RPC: {}",
+                    if settings.rpc.enabled { "On" } else { "Off" }
+                ),
+                "Back".to_string(),
+            ];
+            let choice = (ctx.ui.select)("Pi Goal Settings", &items, None).await;
+            let Some(choice) = choice else { return };
+            match choice.as_str() {
+                c if c.starts_with("Automatic-work limit") => {
+                    if let Some(limit) = self.choose_automatic_limit(ctx).await {
+                        self.apply_settings(ctx, |s| s.continuation_limits.automatic_turns = limit);
+                    }
+                }
+                c if c.starts_with("No-progress guard") => {
+                    if let Some(limit) = self.choose_no_progress_limit(ctx).await {
+                        self.apply_settings(ctx, |s| s.continuation_limits.no_progress_turns = limit);
+                    }
+                }
+                c if c.starts_with("Goal tools") => {
+                    let choice = (ctx.ui.select)(
+                        "Goal tools",
+                        &["Always".to_string(), "After first goal".to_string(), "Back".to_string()],
+                        None,
+                    )
+                    .await;
+                    match choice.as_deref() {
+                        Some("Always") => {
+                            self.apply_settings(ctx, |s| s.tool_visibility = "always".to_string());
+                        }
+                        Some("After first goal") => {
+                            self.apply_settings(ctx, |s| {
+                                s.tool_visibility = "after-first-goal".to_string()
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                c if c.starts_with("Managed run RPC") => {
+                    let choice = (ctx.ui.select)(
+                        "Managed run RPC",
+                        &["Off".to_string(), "On".to_string(), "Back".to_string()],
+                        None,
+                    )
+                    .await;
+                    match choice.as_deref() {
+                        Some("On") => self.apply_settings(ctx, |s| s.rpc.enabled = true),
+                        Some("Off") => self.apply_settings(ctx, |s| s.rpc.enabled = false),
+                        _ => {}
+                    }
+                }
+                "Back" => return,
+                _ => {}
+            }
+        }
+    }
+
+    /// 原版 limitChoiceScreen（automaticTurns）：Set response limit… /
+    /// Unlimited。
+    async fn choose_automatic_limit(&self, ctx: &ExtensionContext) -> Option<Option<u32>> {
+        let current = self.settings(Some(ctx)).continuation_limits.automatic_turns;
+        let items = vec![
+            "Set response limit…".to_string(),
+            "Unlimited".to_string(),
+            "Back".to_string(),
+        ];
+        let choice = (ctx.ui.select)("Automatic-work limit", &items, None).await?;
+        match choice.as_str() {
+            "Unlimited" => Some(None),
+            "Set response limit…" => {
+                let raw = (ctx.ui.input)(
+                    "Response limit",
+                    Some(&format!("{}", current.unwrap_or(DEFAULT_AUTOMATIC_TURNS))),
+                    None,
+                )
+                .await?;
+                match raw.trim().parse::<u32>() {
+                    Ok(n) if n > 0 => Some(Some(n)),
+                    _ => {
+                        self.notify(
+                            ctx,
+                            "Enter a whole-number response limit greater than 0.",
+                            "warning",
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 原版 limitChoiceScreen（noProgressTurns）：default / Set threshold… /
+    /// Off。
+    async fn choose_no_progress_limit(&self, ctx: &ExtensionContext) -> Option<Option<u32>> {
+        let current = self.settings(Some(ctx)).continuation_limits.no_progress_turns;
+        let items = vec![
+            format!(
+                "After {} repeated runs (default)",
+                DEFAULT_NO_PROGRESS_TURNS
+            ),
+            "Set threshold…".to_string(),
+            "Off".to_string(),
+            "Back".to_string(),
+        ];
+        let choice = (ctx.ui.select)("No-progress guard", &items, None).await?;
+        match choice.as_str() {
+            "Off" => Some(None),
+            c if c.starts_with("After ") => Some(Some(DEFAULT_NO_PROGRESS_TURNS)),
+            "Set threshold…" => {
+                let raw = (ctx.ui.input)(
+                    "No-progress threshold",
+                    Some(&format!("{}", current.unwrap_or(DEFAULT_NO_PROGRESS_TURNS))),
+                    None,
+                )
+                .await?;
+                match raw.trim().parse::<u32>() {
+                    Ok(n) if n > 0 => Some(Some(n)),
+                    _ => {
+                        self.notify(
+                            ctx,
+                            "Enter a whole number of repeated runs greater than 0.",
+                            "warning",
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 应用并持久化设置（对齐原版 applyGoalSettings + saveGoalSettings）。
+    fn apply_settings(&self, ctx: &ExtensionContext, f: impl FnOnce(&mut GoalSettings)) {
+        let agent_dir = (ctx.runtime.get_agent_dir)();
+        let mut settings = self.settings(Some(ctx));
+        f(&mut settings);
+        if let Err(e) = save_goal_settings(&agent_dir, &settings) {
+            self.notify(ctx, &format!("Failed to save goal settings: {e}"), "warning");
+            return;
+        }
+        *self
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(settings);
+        self.notify(ctx, "Goal settings saved.", "info");
     }
 
     // ── 工具处理 ───────────────────────────────────────────
@@ -1831,7 +2495,10 @@ impl GoalInner {
 
     /// 无进展达到上限 → 暂停（enforceNoProgressLimit）。
     fn enforce_no_progress(&self, ctx: &ExtensionContext, goal: &GoalState) -> bool {
-        if goal.tool_free_repeat_count < self.no_progress_turns {
+        let Some(limit) = self.no_progress_turns(Some(ctx)) else {
+            return false; // 设置关闭（null）
+        };
+        if goal.tool_free_repeat_count < limit {
             return false;
         }
         let mut paused = goal.clone();
@@ -1923,16 +2590,22 @@ impl GoalExtension {
     #[must_use]
     pub fn with_automatic_turns(mut self, turns: Option<u32>) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.automatic_turns = turns.unwrap_or(u32::MAX);
+            *inner
+                .automatic_turns_override
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(turns.unwrap_or(u32::MAX));
         }
         self
     }
 
-    /// 覆盖无进展轮数上限（测试用）。
+    /// 覆盖无进展轮数上限（测试用；`None` = 关闭）。
     #[must_use]
-    pub fn with_no_progress_turns(mut self, turns: u32) -> Self {
+    pub fn with_no_progress_turns(mut self, turns: Option<u32>) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.no_progress_turns = turns;
+            *inner
+                .no_progress_turns_override
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = turns;
         }
         self
     }
@@ -2101,7 +2774,18 @@ impl HookHandler for GoalExtension {
                     let inner = Arc::clone(&inner);
                     let ctx_owned = ctx.cloned();
                     Box::pin(async move {
-                        inner.handle_command(&args, ctx_owned.as_ref());
+                        // 原版 command-registration：/goal（无参数）在 TUI 模式
+                        // 打开目标管理菜单；其余走文本子命令。
+                        let is_tui = ctx_owned
+                            .as_ref()
+                            .is_some_and(|c| c.mode == "tui");
+                        if args.trim().is_empty() && is_tui {
+                            if let Some(ctx) = ctx_owned.as_ref() {
+                                inner.show_goal_menu(ctx).await;
+                            }
+                        } else {
+                            inner.handle_command(&args, ctx_owned.as_ref());
+                        }
                     })
                 }),
                 get_argument_completions: None,

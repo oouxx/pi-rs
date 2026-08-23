@@ -122,6 +122,11 @@ pub struct ToolInfo {
 pub struct ExtensionContext {
     pub session_id: String,
     pub is_connected: bool,
+    /// 运行模式（对齐 TS `ctx.mode`）：`"tui"`（interactive TUI）、
+    /// `"cli"`、`"headless"`。扩展据此决定是否展示 TUI 菜单（如
+    /// pi-goal 的 /goal 菜单）。默认 `"cli"`，interactive 模式启动时
+    /// 通过 [`Self::set_mode`] 置为 `"tui"`。
+    pub mode: String,
     pub ui: ExtensionUIContext,
     pub runtime: RuntimeHandle,
 }
@@ -137,9 +142,15 @@ impl ExtensionContext {
         Self {
             session_id,
             is_connected,
+            mode: String::new(),
             ui,
             runtime,
         }
+    }
+
+    /// 设置运行模式（`"tui"` / `"cli"` / `"headless"`）。
+    pub fn set_mode(&mut self, mode: impl Into<String>) {
+        self.mode = mode.into();
     }
 }
 

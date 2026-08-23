@@ -2031,6 +2031,13 @@ impl AgentSession {
         self.ext_ctx.ui = ui;
     }
 
+    /// 设置扩展运行模式（`"tui"` / `"cli"` / `"headless"`，对齐 TS
+    /// `ctx.mode`）。interactive 模式启动时置为 `"tui"`，扩展据此决定
+    /// 是否展示 TUI 菜单。
+    pub fn set_extension_mode(&mut self, mode: &str) {
+        self.ext_ctx.set_mode(mode.to_string());
+    }
+
     pub fn get_session_id(&self) -> String {
         self.session_manager
             .lock()

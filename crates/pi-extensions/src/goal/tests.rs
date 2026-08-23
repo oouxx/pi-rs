@@ -567,3 +567,275 @@ async fn test_load_goal_from_session_restores() {
         .expect("handled");
     assert!(!out.is_error, "restored goal must be usable: {out:?}");
 }
+
+// ===========================================================================
+// 设置（pi-goal.json）与 TUI 菜单
+// ===========================================================================
+
+/// 独立临时 agent 目录（每个测试唯一，避免并行互踩）。
+fn temp_agent_dir(name: &str) -> String {
+    let dir = std::env::temp_dir().join(format!(
+        "pi-goal-test-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    dir.display().to_string()
+}
+
+/// 脚本化 UI：select/input/confirm 按队列依次返回答案，notify 记录消息。
+struct MenuHarness {
+    ctx: ExtensionContext,
+    selects: Arc<Mutex<std::collections::VecDeque<Option<String>>>>,
+    inputs: Arc<Mutex<std::collections::VecDeque<Option<String>>>>,
+    confirms: Arc<Mutex<std::collections::VecDeque<bool>>>,
+    notified: Arc<Mutex<Vec<String>>>,
+}
+
+impl MenuHarness {
+    fn new(agent_dir: &str) -> Self {
+        let selects: Arc<Mutex<std::collections::VecDeque<Option<String>>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let inputs: Arc<Mutex<std::collections::VecDeque<Option<String>>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let confirms: Arc<Mutex<std::collections::VecDeque<bool>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let notified: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut handle = RuntimeHandle::noop();
+        let dir = agent_dir.to_string();
+        handle.get_agent_dir = Arc::new(move || dir.clone());
+        handle.queue_follow_up = Arc::new(|_| {});
+        handle.append_custom_entry = Arc::new(|_, _| {});
+        handle.get_custom_entries = Arc::new(Vec::new);
+        let ui = ExtensionUIContext {
+            notify: {
+                let n = notified.clone();
+                Arc::new(move |msg: &str, _| n.lock().unwrap().push(msg.to_string()))
+            },
+            set_status: Arc::new(|_, _| {}),
+            confirm: {
+                let c = confirms.clone();
+                Arc::new(move |_, _| c.lock().unwrap().pop_front().unwrap_or(false))
+            },
+            select: {
+                let s = selects.clone();
+                Arc::new(move |_, _, _| {
+                    let v = s.lock().unwrap().pop_front().unwrap_or(None);
+                    Box::pin(async move { v })
+                })
+            },
+            input: {
+                let i = inputs.clone();
+                Arc::new(move |_, _, _| {
+                    let v = i.lock().unwrap().pop_front().unwrap_or(None);
+                    Box::pin(async move { v })
+                })
+            },
+            set_widget: Arc::new(|_, _, _| {}),
+            set_title: Arc::new(|_| {}),
+            set_editor_text: Arc::new(|_| {}),
+        };
+        let mut ctx = ExtensionContext::new("test-session".into(), false, ui, handle);
+        ctx.set_mode("tui");
+        Self { ctx, selects, inputs, confirms, notified }
+    }
+
+    fn select(&mut self, value: &str) {
+        self.selects.lock().unwrap().push_back(Some(value.to_string()));
+    }
+
+    fn select_none(&mut self) {
+        self.selects.lock().unwrap().push_back(None);
+    }
+
+    fn input(&mut self, value: &str) {
+        self.inputs.lock().unwrap().push_back(Some(value.to_string()));
+    }
+
+    fn confirm(&mut self, value: bool) {
+        self.confirms.lock().unwrap().push_back(value);
+    }
+
+    fn notified_contains(&self, needle: &str) -> bool {
+        self.notified.lock().unwrap().iter().any(|m| m.contains(needle))
+    }
+}
+
+/// 通过注册的 /goal 命令入口执行（对齐真实调用路径）。
+async fn run_goal_command(ext: &GoalExtension, args: &str, ctx: &ExtensionContext) {
+    let mut reg = pi_extension_api::CommandRegistry::new(
+        pi_extension_api::create_builtin_source_info("goal-test"),
+    );
+    ext.register_commands(&mut reg);
+    let cmd = reg
+        .into_vec()
+        .into_iter()
+        .find(|c| c.name == "goal")
+        .expect("goal command");
+    (cmd.execute)(args.to_string(), Some(ctx)).await;
+}
+
+#[tokio::test]
+async fn test_settings_default_and_roundtrip() {
+    let dir = temp_agent_dir("settings-roundtrip");
+    // 文件缺失 → 默认值。
+    let defaults = read_goal_settings(&dir);
+    assert_eq!(defaults.continuation_limits.automatic_turns, Some(25));
+    assert_eq!(defaults.continuation_limits.no_progress_turns, Some(3));
+    assert_eq!(defaults.tool_visibility, "after-first-goal");
+    assert!(!defaults.rpc.enabled);
+
+    // 保存 → 读回一致。
+    let mut custom = defaults.clone();
+    custom.continuation_limits.automatic_turns = None; // Unlimited
+    custom.continuation_limits.no_progress_turns = Some(7);
+    custom.tool_visibility = "always".to_string();
+    custom.rpc.enabled = true;
+    save_goal_settings(&dir, &custom).expect("save");
+    let loaded = read_goal_settings(&dir);
+    assert_eq!(loaded, custom, "round-trip must preserve settings");
+    // 文件内容形状对齐原版（camelCase + null = unlimited）。
+    let raw = std::fs::read_to_string(goal_settings_path(&dir)).expect("file");
+    assert!(raw.contains("\"automaticTurns\": null"), "raw: {raw}");
+    assert!(raw.contains("\"noProgressTurns\": 7"), "raw: {raw}");
+    assert!(raw.contains("\"toolVisibility\": \"always\""), "raw: {raw}");
+}
+
+#[tokio::test]
+async fn test_settings_invalid_falls_back_to_defaults() {
+    let dir = temp_agent_dir("settings-invalid");
+    std::fs::write(goal_settings_path(&dir), "{ not json !").expect("write");
+    let settings = read_goal_settings(&dir);
+    assert_eq!(settings.continuation_limits.automatic_turns, Some(25));
+}
+
+/// 设置文件里的 automaticTurns 必须驱动安全暂停（2 轮即停，而非默认 25）。
+#[tokio::test]
+async fn test_settings_automatic_turns_wire_into_safety_pause() {
+    let dir = temp_agent_dir("settings-wired");
+    let mut settings = GoalSettings::default();
+    settings.continuation_limits.automatic_turns = Some(2);
+    save_goal_settings(&dir, &settings).expect("save");
+
+    let h = CtxHarness::new();
+    // 让 ctx 的 agent_dir 指向测试目录。
+    let mut ctx = h.ctx.clone();
+    let dir2 = dir.clone();
+    ctx.runtime.get_agent_dir = Arc::new(move || dir2.clone());
+    let ext = GoalExtension::new();
+    let goal = active_goal();
+    ext.set_goal_for_test(Some(goal.clone()));
+
+    // 第一轮 agent_end：1 次自动轮 → 不暂停。
+    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
+    let mut msg = assistant_msg("stop", None, 10);
+    msg["content"] = json!([{"type": "text", "text": "progress"}]);
+    ext.on_agent_end(&[msg.clone()], Some(&ctx)).await;
+    assert_eq!(ext.goal_snapshot().unwrap().status, GoalStatus::Active);
+
+    // 第二轮：2 次自动轮 → 达到上限 → 暂停（continuation_limit）。
+    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
+    let mut msg2 = assistant_msg("stop", None, 10);
+    msg2["content"] = json!([{"type": "text", "text": "more progress"}]);
+    ext.on_agent_end(&[msg2], Some(&ctx)).await;
+    let g = ext.goal_snapshot().unwrap();
+    assert_eq!(g.status, GoalStatus::Paused, "2-turn limit from settings");
+    assert_eq!(g.safety_pause_cause.as_deref(), Some("continuation_limit"));
+}
+
+/// TUI 模式：/goal（无参数）打开菜单；选择 Start a goal… → 输入目标 → 启动。
+#[tokio::test]
+async fn test_goal_menu_start_flow() {
+    let dir = temp_agent_dir("menu-start");
+    let mut h = MenuHarness::new(&dir);
+    h.select("Start a goal…");
+    h.input("fix the menu bug");
+    h.select_none(); // 菜单循环下一次 select → Esc 关闭
+    let ext = GoalExtension::new();
+    run_goal_command(&ext, "", &h.ctx).await;
+
+    let goal = ext.goal_snapshot().expect("goal started via menu");
+    assert_eq!(goal.text, "fix the menu bug");
+    assert_eq!(goal.status, GoalStatus::Active);
+    // 菜单打开时通知了状态标题。
+    assert!(h.notified_contains("Goal · No goal"), "menu state notified");
+}
+
+/// TUI 模式：菜单 Pause → Resume → Clear（带确认）。
+#[tokio::test]
+async fn test_goal_menu_pause_resume_clear_flow() {
+    let dir = temp_agent_dir("menu-pause");
+    let mut h = MenuHarness::new(&dir);
+    let ext = GoalExtension::new();
+    let goal = active_goal();
+    ext.set_goal_for_test(Some(goal.clone()));
+
+    h.select("Pause goal");
+    h.select("Resume goal");
+    h.select("Clear goal…");
+    h.confirm(true);
+    h.select_none();
+    run_goal_command(&ext, "", &h.ctx).await;
+
+    // Pause → Resume → Clear 全链路：最终无 goal。
+    assert!(ext.goal_snapshot().is_none(), "cleared via menu");
+    assert!(h.notified_contains("Goal cleared"), "clear notified");
+}
+
+/// TUI 模式：菜单 Settings… → Automatic-work limit → Unlimited → 落盘。
+#[tokio::test]
+async fn test_goal_menu_settings_flow() {
+    let dir = temp_agent_dir("menu-settings");
+    let mut h = MenuHarness::new(&dir);
+    h.select("Settings…");
+    h.select("Automatic-work limit: 25 responses");
+    h.select("Unlimited");
+    h.select("Back");
+    h.select_none();
+    let ext = GoalExtension::new();
+    run_goal_command(&ext, "", &h.ctx).await;
+
+    let settings = read_goal_settings(&dir);
+    assert_eq!(
+        settings.continuation_limits.automatic_turns,
+        None,
+        "Unlimited persisted"
+    );
+    assert!(h.notified_contains("Goal settings saved"), "save notified");
+}
+
+/// 模式门控：非 TUI 模式 /goal（无参数）走文本状态；TUI 模式走菜单。
+#[tokio::test]
+async fn test_goal_command_mode_gating() {
+    let dir = temp_agent_dir("mode-gating");
+    // 非 TUI：bare /goal → 文本状态（notify），不弹 select。
+    let mut h = MenuHarness::new(&dir);
+    h.ctx.set_mode("cli");
+    let ext = GoalExtension::new();
+    run_goal_command(&ext, "", &h.ctx).await;
+    assert!(
+        h.notified_contains("No active goal"),
+        "cli mode shows text status"
+    );
+    assert!(h.selects.lock().unwrap().is_empty(), "no menu in cli mode");
+
+    // TUI：bare /goal → 菜单（select 被调用）。
+    let mut h2 = MenuHarness::new(&dir);
+    h2.select_none();
+    let ext2 = GoalExtension::new();
+    run_goal_command(&ext2, "", &h2.ctx).await;
+    assert!(
+        !h2.selects.lock().unwrap().is_empty() || h2.notified_contains("Goal ·"),
+        "tui mode opens the menu"
+    );
+
+    // TUI：/goal status 仍走文本子命令。
+    let h3 = MenuHarness::new(&dir);
+    let ext3 = GoalExtension::new();
+    run_goal_command(&ext3, "status", &h3.ctx).await;
+    assert!(
+        h3.notified_contains("No active goal"),
+        "status subcommand stays text"
+    );
+    assert!(h3.selects.lock().unwrap().is_empty(), "no menu for status");
+}

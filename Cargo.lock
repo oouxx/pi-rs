@@ -2531,6 +2531,7 @@ dependencies = [
  "crossterm",
  "futures",
  "ratatui",
+ "serde_json",
  "similar",
  "textwrap",
  "tokio",

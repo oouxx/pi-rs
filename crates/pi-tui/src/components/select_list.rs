@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState};
 use ratatui::Frame;
@@ -60,13 +60,17 @@ impl SelectList {
         let items: Vec<ListItem> = self.items.iter().map(|item| {
             ListItem::new(Text::raw(item.clone())).style(Style::default())
         }).collect();
+        // TS select-list theme: accent prefix/text for the selection, muted
+        // border, selectedBg highlight.
         let block = Block::default()
             .borders(Borders::ALL).border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(crate::theme::BORDER_MUTED))
+            .title_style(Style::new().fg(crate::theme::ACCENT))
             .title(if self.title.is_empty() { " Select " } else { &self.title });
         frame.render_widget(Clear, area);
         let list = List::new(items).block(block)
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD))
-            .highlight_symbol("> ");
+            .highlight_style(Style::default().fg(crate::theme::ACCENT).bg(crate::theme::SELECTED_BG).add_modifier(Modifier::BOLD))
+            .highlight_symbol("\u{2192} ");
         // Clone state for rendering
         let mut state = ListState::default();
         state.select(self.state.selected());

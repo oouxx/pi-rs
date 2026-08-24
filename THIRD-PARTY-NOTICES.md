@@ -58,15 +58,12 @@
 | 适配 | 去掉 `tool_paths`/`util` 模块依赖（`byte_offset_at_width`/`truncate_to_width` 内联）；`RtOptions` 补 `#[derive(Clone)]`；剔除搜索高亮映射函数（`byte_range_to_row_cols` 等，scrollback 搜索时再抄） |
 | 用途 | Markdown 组件的 wrap 从简化版升级为 grok joiner 版；joiners 缓存在 `Markdown::joiners()`，为复制保真预留 |
 
-## 4. pi-tui/src/scrollback/（文件级抄）
+## 4. ~~pi-tui/src/scrollback/~~（已移除，2026-08-24）
 
 | 项 | 值 |
 | --- | --- |
 | 上游 | grok-build `xai-grok-pager` 的 `src/scrollback/`（Apache-2.0，SOURCE_REV `3e620a76a5f374ce644dc7c87f7e990c68348218`） |
-| 本地 | `crates/pi-tui/src/scrollback/mod.rs`、`types.rs`、`groups.rs` |
-| 内容 | 折叠模型：`DisplayMode` 三态（Collapsed/Truncated/Expanded）、`EntryLayoutInfo`（per-entry 布局标志）；`groups.rs` 的折叠扫描 + 投影算法（`GroupSpan`/`GroupKind::VerbRun`/`GroupKind::Truncation`，一次扫描决定所有折叠、`project_to_layout` 单一写入者，用户展开覆盖 `expanded_groups`） |
-| 适配 | ①只抄 pi-rs 需要的类型与算法（types.rs 剔除了 Turn/ViewMode/BlockLine/BlockOutput/selection 等 pager 专属类型；groups.rs 剔除 subagent/thinking/动词分类（`verb_group.rs`），verb 成员简化为"已完成的工具块"，聚合标签为 "N tool calls"）；②`appearance::cache` 设置读取参数化（折叠阈值由调用方传入）；③`IndexMap<EntryId, ScrollbackEntry>` 换成 `Vec<FoldEntry>`（id 为 u64）；④无 `appearance`/`theme` 依赖 |
-| 用途 | 块折叠 + scrollback 布局派生（pi-rs 最小可用 TUI 的折叠/滚动基础） |
+| 历史 | 曾文件级抄入 `crates/pi-tui/src/scrollback/`（折叠扫描/投影、`DisplayMode` 三态、"N tool calls" 聚合）；**用户决定删除折叠功能并复刻 TS 原版后，模块整体删除**，本节仅作历史记录 |
 
 ## 5. 本仓库内其他第三方代码
 

@@ -7,7 +7,6 @@
 //! lines, table lines are never wrapped, and blockquote prefixes repeat on
 //! continuation rows. See THIRD-PARTY-NOTICES.md.
 
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use std::borrow::Cow;
 use std::ops::Range;

@@ -102,11 +102,6 @@ enum UiAction {
         reply: tokio::sync::oneshot::Sender<Option<String>>,
     },
     SetEditorText(String),
-    /// The agent wants user approval before running a tool.
-    ToolApprovalRequest {
-        tool_name: String,
-        reply: tokio::sync::oneshot::Sender<bool>,
-    },
 }
 
 /// An extension dialog the TUI is waiting for the user to answer.
@@ -114,10 +109,6 @@ enum PendingUi {
     Confirm { reply: std::sync::mpsc::Sender<bool> },
     Select { reply: tokio::sync::oneshot::Sender<Option<String>> },
     Input { reply: tokio::sync::oneshot::Sender<Option<String>> },
-    ToolApproval {
-        tool_name: String,
-        reply: tokio::sync::oneshot::Sender<bool>,
-    },
 }
 
 /// `ui.select` handler shape: title, options, payload → user choice.
@@ -287,25 +278,53 @@ struct AppState {
     stream_started_at: Option<Instant>,
     /// Last time the session-derived status bar (context usage) was queried.
     last_status_refresh: Instant,
-    /// Approval badge per tool name, applied to the tool row when it appears.
-    /// The agent emits `ToolStart` and the approval request over *separate*
-    /// channels, so either may reach the event loop first; the badge must
-    /// survive both arrival orders instead of being dropped on a row that
-    /// does not exist yet.
-    tool_approval_badges: std::collections::HashMap<String, pi_tui::app::ToolApproval>,
 }
 
 impl AppState {
     fn new(width: u16, height: u16, ext_commands: Vec<String>) -> Self {
+        let mut model = pi_tui::Model::new(width, height);
+        // Slash-command menu: builtin commands + extension-registered ones,
+        // so typing `/` opens a live completion popup (regression: the
+        // completer was never populated, so the menu never appeared).
+        let mut commands: Vec<pi_tui::CompletionItem> = [
+            ("/help", "Show commands"),
+            ("/new", "Start a new session"),
+            ("/name <name>", "Set the session name"),
+            ("/model <provider>/<id>", "Switch model"),
+            ("/reload", "Reload extensions"),
+            ("/quit", "Quit"),
+        ]
+        .iter()
+        .map(|(label, desc)| pi_tui::CompletionItem {
+            label: label.to_string(),
+            description: desc.to_string(),
+            // The inserted text is the bare command name — never the
+            // argument placeholder (`/model <provider>/<id>` must insert
+            // `model`, not the placeholder text).
+            insert_text: label
+                .split_whitespace()
+                .next()
+                .unwrap_or(label)
+                .trim_start_matches('/')
+                .to_string(),
+        })
+        .collect();
+        for cmd in &ext_commands {
+            commands.push(pi_tui::CompletionItem {
+                label: format!("/{cmd}"),
+                description: "Extension command".into(),
+                insert_text: cmd.clone(),
+            });
+        }
+        model.completer.set_commands(commands);
         Self {
-            model: pi_tui::Model::new(width, height),
+            model,
             last_ctrl_c: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
             quit: false,
             ext_commands,
             pending_ui: None,
             stream_started_at: None,
             last_status_refresh: Instant::now() - std::time::Duration::from_secs(10),
-            tool_approval_badges: std::collections::HashMap::new(),
         }
     }
 }
@@ -324,33 +343,22 @@ struct UpdateOutcome {
 fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
     match action {
         Action::Tick => {
-            let active = state.model.is_streaming || !state.model.active_tools.is_empty();
+            // The spinner only runs while the agent is working: streaming or
+            // a tool call is in flight (finished tool rows stay in the
+            // transcript but the agent is idle).
+            let active = state.model.is_streaming
+                || state
+                    .model
+                    .active_tools
+                    .iter()
+                    .any(|t| matches!(t.state, pi_tui::app::ToolCallState::Running | pi_tui::app::ToolCallState::Pending));
             if active {
                 app::update(&mut state.model, pi_tui::Msg::Tick);
             }
             UpdateOutcome { effects: vec![], redraw: active }
         }
         Action::Agent(msg) => {
-            let replay_badge = if let pi_tui::Msg::ToolStart(name) = &msg {
-                state
-                    .tool_approval_badges
-                    .get(name)
-                    .cloned()
-                    .map(|b| (name.clone(), b))
-            } else {
-                None
-            };
             app::update(&mut state.model, msg);
-            // The tool row may have been created only now — replay the
-            // approval badge if it was decided before the row arrived.
-            if let Some((name, badge)) = replay_badge {
-                let badge_msg = match badge {
-                    pi_tui::app::ToolApproval::Pending => pi_tui::Msg::ToolApprovalPending(name),
-                    pi_tui::app::ToolApproval::Approved => pi_tui::Msg::ToolApprove(name),
-                    pi_tui::app::ToolApproval::Denied => pi_tui::Msg::ToolDeny(name),
-                };
-                app::update(&mut state.model, badge_msg);
-            }
             UpdateOutcome { effects: vec![], redraw: true }
         }
         Action::Key(key) => {
@@ -399,14 +407,14 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
                 }),
             );
         }
-        UiAction::Select { title: _title, options, reply } => {
+        UiAction::Select { title, options, reply } => {
             if state.pending_ui.is_some() {
                 let _ = reply.send(None);
                 return;
             }
             state.pending_ui = Some(PendingUi::Select { reply });
             state.model.mode = pi_tui::AppMode::Select {
-                list: pi_tui::SelectList::new(options),
+                list: pi_tui::SelectList::new(options).with_title(&title),
             };
         }
         UiAction::Input { title, initial, reply } => {
@@ -420,37 +428,6 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
                 title,
             };
         }
-        UiAction::ToolApprovalRequest { tool_name, reply } => {
-            if state.pending_ui.is_some() {
-                let _ = reply.send(false);
-                return;
-            }
-            // Show the tool as awaiting approval so the Approve/Deny hint
-            // renders; the tool itself is blocked until the user answers.
-            state
-                .tool_approval_badges
-                .insert(tool_name.clone(), pi_tui::app::ToolApproval::Pending);
-            app::update(&mut state.model, pi_tui::Msg::ToolApprovalPending(tool_name.clone()));
-            state.pending_ui = Some(PendingUi::ToolApproval { tool_name, reply });
-        }
-    }
-}
-
-/// Resolve a pending tool approval with the user's decision.
-fn resolve_pending_tool_approval(state: &mut AppState, approved: bool) {
-    if let Some(PendingUi::ToolApproval { tool_name, reply }) = state.pending_ui.take() {
-        let badge = if approved {
-            pi_tui::app::ToolApproval::Approved
-        } else {
-            pi_tui::app::ToolApproval::Denied
-        };
-        state.tool_approval_badges.insert(tool_name.clone(), badge);
-        if approved {
-            app::update(&mut state.model, pi_tui::Msg::ToolApprove(tool_name));
-        } else {
-            app::update(&mut state.model, pi_tui::Msg::ToolDeny(tool_name));
-        }
-        let _ = reply.send(approved);
     }
 }
 
@@ -460,17 +437,6 @@ fn resolve_pending_tool_approval(state: &mut AppState, approved: bool) {
 /// Enter submits, slash commands).
 fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
-
-    // A tool approval awaiting the user owns the keyboard: a/approve, d/deny,
-    // Esc/deny. Other keys are swallowed while a tool call is gated.
-    if matches!(state.pending_ui, Some(PendingUi::ToolApproval { .. })) {
-        match key.code {
-            KeyCode::Char('a') => resolve_pending_tool_approval(state, true),
-            KeyCode::Char('d') | KeyCode::Esc => resolve_pending_tool_approval(state, false),
-            _ => {}
-        }
-        return vec![];
-    }
 
     // Modal overlays own the keyboard while visible (extension dialogs).
     if state.model.dialog.is_some() {
@@ -528,8 +494,28 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             state.quit = true;
             vec![]
         }
-        // Enter: submit message or slash command
+        // Enter: submit message or slash command (Shift/Alt+Enter insert a
+        // newline instead — matches the TS editor's multi-line behavior).
+        // While the slash-command menu is open, Enter picks the highlighted
+        // completion and runs it (TS dropdown behavior).
         KeyCode::Enter => {
+            if key.modifiers == KeyModifiers::SHIFT || key.modifiers == KeyModifiers::ALT {
+                app::update(&mut state.model, pi_tui::Msg::InputNewline);
+                return vec![];
+            }
+            if state.model.completer.visible {
+                if let Some(insert) = state.model.completer.selected_insert() {
+                    let current = state.model.input.value().to_string();
+                    let full = if let Some(pos) = current.rfind(['/', '@']) {
+                        let prefix = &current[..=pos];
+                        format!("{prefix}{insert} ")
+                    } else {
+                        current
+                    };
+                    state.model.input.set_value(&full);
+                }
+                state.model.completer.deactivate();
+            }
             let text = state.model.input.value().to_string();
             if text.is_empty() {
                 return vec![];
@@ -562,7 +548,6 @@ fn resolve_pending_ui_text(state: &mut AppState, value: Option<String>) {
                 let _ = reply.send(value);
             }
             PendingUi::Confirm { .. } => {}
-            PendingUi::ToolApproval { .. } => {}
         }
     }
 }
@@ -575,7 +560,6 @@ fn resolve_pending_ui_bool(state: &mut AppState, value: bool) {
                 let _ = reply.send(value);
             }
             PendingUi::Select { .. } | PendingUi::Input { .. } => {}
-            PendingUi::ToolApproval { .. } => {}
         }
     }
 }
@@ -679,6 +663,11 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
 
     match command {
         "/new" => {
+            // The session manager is swapped to a fresh session; clear the
+            // transcript so the TUI matches the new session (TS `/new`
+            // clears the chat).
+            app::update(&mut state.model, pi_tui::Msg::ClearScreen);
+            state.model.is_streaming = false;
             let parent = if args.is_empty() { None } else { Some(args.to_string()) };
             system(state, "New session created".into());
             vec![Effect::AgentCommand(AgentCmd::NewSession(parent))]
@@ -695,9 +684,13 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             if let Some(eq_idx) = args.find('/') {
                 let provider = args[..eq_idx].to_string();
                 let model_id = args[eq_idx + 1..].to_string();
-                system(state, format!("Switched to {provider}/{model_id}"));
+                system(state, format!("Switching to {provider}/{model_id}..."));
                 vec![Effect::AgentCommand(AgentCmd::SetModel(provider, model_id))]
             } else {
+                // Malformed: give the user the syntax instead of silently
+                // dropping the input (regression: the prompt used to be
+                // cleared with no feedback).
+                system(state, "Usage: /model <provider>/<model-id>".into());
                 vec![]
             }
         }
@@ -777,8 +770,8 @@ fn spawn_agent_command_task(
                         AgentCmd::SetModel(provider, model_id) => {
                             // Model will be resolved by the session
                             let model = pi_agent_core::pi_ai_types::Model {
-                                provider,
-                                id: model_id,
+                                provider: provider.clone(),
+                                id: model_id.clone(),
                                 name: String::new(),
                                 api: String::new(),
                                 base_url: String::new(),
@@ -798,13 +791,37 @@ fn spawn_agent_command_task(
                                     tiers: vec![],
                                 },
                             };
-                            let _ = sess.set_model(model).await;
+                            // Surface the outcome (the slash command already
+                            // claimed success optimistically; set_model can
+                            // fail on auth, and a silent drop left the footer
+                            // model name stale).
+                            match sess.set_model(model).await {
+                                Ok(()) => {
+                                    let _ = result_tx.send(pi_tui::Msg::SetModelName(model_id.clone()));
+                                    let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(provider.clone())));
+                                    let _ = result_tx.send(pi_tui::Msg::SetReasoning(false));
+                                    let _ = result_tx.send(pi_tui::Msg::SetContextWindow(128000));
+                                    let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                        "system".into(),
+                                        format!("Switched to {provider}/{model_id}"),
+                                    ));
+                                }
+                                Err(e) => {
+                                    let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                        "system".into(),
+                                        format!("Failed to switch model: {e}"),
+                                    ));
+                                }
+                            }
                         }
                         AgentCmd::CycleModel(direction) => {
                             // Cycle through available models (real API) and
                             // surface the result in the UI.
                             if let Some((model, _tl, _scoped)) = sess.cycle_model(&direction).await {
                                 let _ = result_tx.send(pi_tui::Msg::SetModelName(model.id.clone()));
+                                let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(model.provider.clone())));
+                                let _ = result_tx.send(pi_tui::Msg::SetReasoning(model.reasoning));
+                                let _ = result_tx.send(pi_tui::Msg::SetContextWindow(model.context_window));
                                 let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                     "system".into(),
                                     format!("Model: {}", model.id),
@@ -814,6 +831,7 @@ fn spawn_agent_command_task(
                         AgentCmd::CycleThinkingLevel => {
                             // Cycle through thinking levels (real API).
                             if let Some(level) = sess.cycle_thinking_level().await {
+                                let _ = result_tx.send(pi_tui::Msg::SetThinkingLevel(Some(level.clone())));
                                 let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                     "system".into(),
                                     format!("Thinking level: {level}"),
@@ -893,18 +911,28 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                     v.push(pi_tui::Msg::StreamText(d));
                     v
                 }
-                BE::MessageEnd(t) => {
+                BE::MessageEnd { text, thinking, stop_reason, error_message } => {
                     let mut v = Vec::new();
-                    if !assistant_stream_open && !t.is_empty() {
-                        v.push(pi_tui::Msg::NewMessage("assistant".into(), t));
+                    if !assistant_stream_open && !text.is_empty() {
+                        v.push(pi_tui::Msg::NewMessage("assistant".into(), text));
                     }
-                    v.push(pi_tui::Msg::StreamEnd);
+                    let stop = stop_reason.map(|r| match r {
+                        pi_agent_core::pi_ai_types::StopReason::Length => pi_tui::app::StopReason::Length,
+                        pi_agent_core::pi_ai_types::StopReason::Aborted => pi_tui::app::StopReason::Aborted,
+                        _ => pi_tui::app::StopReason::Error,
+                    });
+                    v.push(pi_tui::Msg::MessageEnd {
+                        thinking,
+                        stop_reason: stop,
+                        error_message,
+                    });
                     assistant_stream_open = false;
                     v
                 }
-                BE::ToolStart(n) => vec![pi_tui::Msg::ToolStart(n)],
-                BE::ToolEnd(n, e) => vec![pi_tui::Msg::ToolEnd(n, e)],
-                BE::ToolOutput(n, o) => vec![pi_tui::Msg::AppendToolOutput(n, o)],
+                BE::ToolStart(call_id, name, args) => vec![pi_tui::Msg::ToolStart(call_id, name, args)],
+                BE::ToolEnd(call_id, name, e) => vec![pi_tui::Msg::ToolEnd(call_id, name, e)],
+                BE::ToolOutput(call_id, name, o) => vec![pi_tui::Msg::SetToolOutput(call_id, name, o)],
+                BE::ToolTruncation(call_id, t) => vec![pi_tui::Msg::SetToolTruncation(call_id, t)],
             };
             for m in msgs {
                 if atx.send(m).is_err() {
@@ -950,13 +978,26 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     // ── Extension UI bridge: wire dialogs/notifications to the TUI ───────
     // (must happen before the session is shared with the background task)
-    let (ui_ctx, ui_tx, mut ui_rx) = create_tui_ui_context();
+    let (ui_ctx, _ui_tx, mut ui_rx) = create_tui_ui_context();
     session.set_extension_ui_context(ui_ctx);
+    // TUI 模式标记：扩展（如 pi-goal）据此展示 TUI 菜单（对齐 TS
+    // `ctx.mode === "tui"`）。
+    session.set_extension_mode("tui");
 
     let mut state = AppState::new(cols, rows, ext_commands);
     state.model.model_name = initial_model_name;
     state.model.cwd = cwd.clone();
     state.model.git_branch = current_git_branch(&cwd);
+    // ── TS footer data: session name + model identity (provider, reasoning,
+    //    context window, thinking level) — plain &self accessors. ────────
+    state.model.session_name = session.get_session_name();
+    {
+        let model = session.get_state().await.model;
+        state.model.provider = Some(model.provider);
+        state.model.reasoning = model.reasoning;
+        state.model.context_window = model.context_window;
+        state.model.thinking_level = Some(session.get_thinking_level().await);
+    }
 
     let (mut input_rx, shutdown_guard) = match terminal.start() {
         Ok(r) => r,
@@ -985,42 +1026,6 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         crate::modes::agent_bridge::subscribe_agent(&mut sess, bridge_tx).await;
         sess.agent_handle()
     }; // Lock released — background task can now use the session
-
-    // ── Tool approval gate ────────────────────────────────────────────────
-    // Wrap the agent's before_tool_call so a tool only runs after the user
-    // approves it in the TUI (`a`/approve, `d`/Esc/deny). The request is
-    // posted on the UI stream; the hook blocks until the user answers.
-    {
-        use pi_agent_core::types::{BeforeToolCallFn, BeforeToolCallResult};
-        let approval_tx = ui_tx.clone();
-        let approval_gate = Arc::new(tokio::sync::Mutex::new(()));
-        let approval_hook: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
-            let tx = approval_tx.clone();
-            let gate = approval_gate.clone();
-            Box::pin(async move {
-                // Serialize approvals (only one tool pending at a time).
-                let _guard = gate.lock().await;
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                let _ = tx.send(UiAction::ToolApprovalRequest {
-                    tool_name: ctx.tool_call.name.clone(),
-                    reply: reply_tx,
-                });
-                let approved = reply_rx.await.unwrap_or(false);
-                if approved {
-                    // Fall through to any inner (extension) before_tool_call.
-                    None
-                } else {
-                    Some(BeforeToolCallResult {
-                        block: true,
-                        reason: Some("Tool call denied by user".to_string()),
-                        modified_args: None,
-                        terminate: None,
-                    })
-                }
-            })
-        });
-        agent_handle.prepend_before_tool_call(approval_hook).await;
-    }
 
     // Keep a session handle for the event loop to refresh status-bar data
     // (context usage) between runs — never during a run (mutex is held).
@@ -1098,6 +1103,58 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     }
 }
 
+/// Cumulative token/cost totals from all session entries (TS
+/// `createUsageTotals` + `addUsageToTotals`): assistant messages, tool
+/// results, compaction and branch summaries.
+fn usage_totals_from_entries(entries: &[&crate::core::session_manager::SessionEntry]) -> pi_tui::app::UsageTotals {
+    let mut totals = pi_tui::app::UsageTotals::default();
+    for entry in entries {
+        let entry: &crate::core::session_manager::SessionEntry = entry;
+        let usage: Option<&serde_json::Value> = match entry {
+            crate::core::session_manager::SessionEntry::Message { message, .. } => {
+                match message.get("role").and_then(|r| r.as_str()) {
+                    Some("assistant") | Some("toolResult") => message.get("usage"),
+                    _ => None,
+                }
+            }
+            crate::core::session_manager::SessionEntry::Compaction { usage, .. }
+            | crate::core::session_manager::SessionEntry::BranchSummary { usage, .. } => {
+                usage.as_ref()
+            }
+            _ => None,
+        };
+        if let Some(u) = usage {
+            totals.input += u.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+            totals.output += u.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+            totals.cache_read += u.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0);
+            totals.cache_write += u.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0);
+            totals.cost += u
+                .get("cost")
+                .and_then(|c| c.get("total"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            // Latest assistant message's cache hit rate (TS
+            // `latestCacheHitRate`).
+            if matches!(
+                entry,
+                crate::core::session_manager::SessionEntry::Message { message, .. }
+                    if message.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            ) {
+                let input = u.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_read = u.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_write = u.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0);
+                let prompt_tokens = input + cache_read + cache_write;
+                totals.cache_hit_rate = if prompt_tokens > 0 {
+                    Some(cache_read as f64 / prompt_tokens as f64 * 100.0)
+                } else {
+                    None
+                };
+            }
+        }
+    }
+    totals
+}
+
 /// Refresh status-bar data derived from the session (context usage, throttled
 /// to ~1/s) and the in-memory streaming elapsed timer. Returns true if the
 /// view changed and needs a redraw.
@@ -1107,17 +1164,33 @@ async fn refresh_status(
 ) -> bool {
     let mut changed = false;
 
-    // Context usage: only query between runs (the agent holds the session
-    // mutex during a run) and throttled to once per second.
+    // Context usage + footer stats: only query between runs (the agent
+    // holds the session mutex during a run) and throttled to once per
+    // second.
     if state.last_status_refresh.elapsed().as_secs() >= 1 {
         state.last_status_refresh = Instant::now();
         if let Ok(sess) = session.try_lock() {
             if let Some(usage) = sess.get_context_usage().await {
-                let pct = usage.usage_percentage().round() as u8;
-                if pct != state.model.context_usage_pct {
+                let pct = usage.usage_percentage();
+                if (pct - state.model.context_usage_pct).abs() > f64::EPSILON {
                     state.model.context_usage_pct = pct;
                     changed = true;
                 }
+                if usage.context_window != state.model.context_window {
+                    state.model.context_window = usage.context_window;
+                    changed = true;
+                }
+                if !state.model.context_usage_known {
+                    state.model.context_usage_known = true;
+                    changed = true;
+                }
+            }
+            // Cumulative token/cost totals (TS FooterComponent reads the
+            // session entries on every render).
+            let totals = usage_totals_from_entries(&sess.get_session_manager().get_entries());
+            if totals != state.model.usage_totals {
+                state.model.usage_totals = totals;
+                changed = true;
             }
         }
     }

@@ -1,7 +1,7 @@
 //! Diff view — color-coded text diff using `similar`.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
@@ -20,9 +20,11 @@ impl DiffView {
     }
 
     fn compute_diff(&mut self, old: &str, new: &str) {
-        let style_added = Style::new().fg(Color::Green).bg(Color::Rgb(0x00, 0x2A, 0x00));
-        let style_removed = Style::new().fg(Color::Red).bg(Color::Rgb(0x2A, 0x00, 0x00));
-        let style_context = Style::default();
+        // TS original diff colors: toolDiffAdded / toolDiffRemoved /
+        // toolDiffContext, foreground only.
+        let style_added = Style::new().fg(crate::theme::DIFF_ADDED);
+        let style_removed = Style::new().fg(crate::theme::DIFF_REMOVED);
+        let style_context = Style::new().fg(crate::theme::DIFF_CONTEXT);
 
         let diff = TextDiff::from_lines(old, new);
         self.lines.clear();

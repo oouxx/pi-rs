@@ -9,12 +9,12 @@
 use ratatui::text::Line;
 use xai_grok_markdown::{MarkdownStyle, StreamingMarkdownRenderer, Syntect};
 
-use crate::render::wrap::{push_owned_lines, word_wrap_lines_with_joiners};
+use crate::render::wrap::word_wrap_lines_with_joiners;
 
 /// Theme type for markdown rendering — grok-build's style configuration.
 /// A `MarkdownStyle` holds semantic styles (heading / code / table …) which
 /// the pipeline maps onto ratatui styles. [`MarkdownTheme::default`] resolves
-/// to the Tokyo Night palette (see [`tokyo_night_style`]).
+/// to the TS original dark palette (see [`pi_dark_style`]).
 pub type MarkdownTheme = MarkdownStyle;
 
 /// Tokyo Night `.tmTheme` shipped with the vendored pipeline
@@ -22,6 +22,58 @@ pub type MarkdownTheme = MarkdownStyle;
 const TOKYO_NIGHT_THEME: &[u8] =
     include_bytes!("../../../vendor/xai-grok-markdown/assets/tokyo-night.tmTheme");
 
+/// The TS original dark theme markdown palette (`dark.json` md tokens),
+/// mapped onto the vendored grok pipeline's `MarkdownStyle`.
+///
+/// Reference tokens: heading `#f0c674`, link `#81a2be`, linkUrl `#666666`,
+/// code `#8abeb7`, codeBlock `#b5bd68`, quote `#808080`, hr `#808080`,
+/// listBullet `#8abeb7`, text `#d4d4d4`. Code blocks carry no background
+/// (the TS `Markdown` component colors code lines with `mdCodeBlock` only).
+pub fn pi_dark_style() -> MarkdownStyle {
+    use anstyle::{Color, RgbColor, Style as AnStyle};
+
+    let rgb = |hex: u32| {
+        RgbColor(
+            ((hex >> 16) & 0xff) as u8,
+            ((hex >> 8) & 0xff) as u8,
+            (hex & 0xff) as u8,
+        )
+    };
+    let fg = |hex: u32| AnStyle::new().fg_color(Some(Color::Rgb(rgb(hex))));
+    let hidden = AnStyle::new().hidden();
+
+    MarkdownStyle {
+        heading_inner: [fg(0xf0c674).bold(); 6],
+        heading_outer: [hidden; 6],
+        strong_inner: fg(0xd4d4d4).bold(),
+        strong_outer: hidden,
+        emphasis_inner: fg(0xd4d4d4).italic(),
+        emphasis_outer: hidden,
+        strikethrough_inner: fg(0x808080).strikethrough(),
+        strikethrough_outer: hidden,
+        inline_code_inner: fg(0x8abeb7),
+        inline_code_outer: hidden,
+        blockquote_outer: fg(0x808080).italic(),
+        task_checked: fg(0xb5bd68),
+        task_unchecked: fg(0x808080),
+        list_item: fg(0x8abeb7),
+        rule: fg(0x808080),
+        link_outer: hidden,
+        link_text: fg(0x81a2be).underline(),
+        link_url: fg(0x666666),
+        link_title: fg(0x666666),
+        code_outer: hidden,
+        code_language: hidden,
+        code_untagged: fg(0xb5bd68),
+        code_background: fg(0xb5bd68),
+        table_outer: fg(0x8abeb7).bold(),
+        text: fg(0xd4d4d4),
+        math: fg(0x81a2be),
+    }
+}
+
+/// Tokyo Night markdown style — the previous default, kept for reference
+/// (grok-build's `tokyonight` markdown palette).
 pub fn tokyo_night_style() -> MarkdownStyle {
     use anstyle::{Color, RgbColor, Style as AnStyle};
 
@@ -85,7 +137,7 @@ impl Markdown {
     /// Parse and render markdown source.
     /// The `width` is the available character width for text wrapping.
     pub fn new(source: &str, width: usize) -> Self {
-        let mut renderer = StreamingMarkdownRenderer::new(tokyo_night_style(), true);
+        let mut renderer = StreamingMarkdownRenderer::new(pi_dark_style(), true);
         renderer.push(source);
         let syntect = Syntect::new(TOKYO_NIGHT_THEME);
         let mut md = Self {

@@ -31,7 +31,7 @@ use pi_extension_api::hook::{CommandRegistration, CommandRegistry, HookHandler};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const CHILD_ENV: &str = "PI_TUI_E2E_CHILD";
-const TOOL_ENV: &str = "PI_TUI_E2E_TOOL_CALL";
+const TOOLS2_ENV: &str = "PI_TUI_E2E_TWO_TOOLS";
 const LONG_ENV: &str = "PI_TUI_E2E_LONG_STREAM";
 const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
 const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
@@ -188,111 +188,102 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
         Box::new(TestCmdHandler),
         pi_extension_api::create_builtin_source_info("test-ext"),
     );
+    // 内置 goal 扩展：/goal 菜单 E2E 需要它（TUI 模式门控）。
+    registry.register(
+        Box::new(pi_extensions::goal::GoalExtension::new()),
+        pi_extension_api::create_builtin_source_info("goal"),
+    );
     opts.extension_registry = Some(registry);
     let (session, _result) = create_agent_session(opts).await.expect("mock session");
     session
 }
 
-/// Marker file the mock `write` tool call targets (relative to the session
-/// cwd, which the tool resolves against). Tests that run in parallel use
-/// distinct markers via `PI_TUI_E2E_TOOL_MARKER` so they cannot clobber
-/// each other's file.
-const APPROVAL_MARKER: &str = "tui_marker_approval.txt";
-const MARKER_ENV: &str = "PI_TUI_E2E_TOOL_MARKER";
-
-/// Marker file name for the given test (unique per test, injected into the
-/// child process through `MARKER_ENV`).
-fn marker_for(name: &str) -> String {
-    format!("tui_marker_{name}.txt")
-}
-
-/// Mock LLM that requests a `write` tool call on the first turn, then replies
-/// with plain text once the tool result is fed back. Lets the E2E drive the
-/// tool-approval gate: approve → tool runs (marker file created), deny → tool
-/// is blocked (marker file absent). The marker path comes from `MARKER_ENV`
-/// so parallel tests use disjoint files.
-fn mock_tool_call_stream_fn() -> StreamFn {
-    let marker = std::env::var(MARKER_ENV).unwrap_or_else(|_| APPROVAL_MARKER.to_string());
-    Arc::new(
-        move |_model, context, _thinking, _opts: StreamFnOptions| {
-            let has_tool_result = context.messages.iter().any(|m| {
-                matches!(m, pi_agent_core::pi_ai_types::Message::ToolResult { .. })
-            });
-            Box::pin({
-                let value = marker.clone();
-                async move {
-                    if has_tool_result {
-                        // The tool already ran/blocked — finish the turn with text.
-                        let mut msg = partial_msg("Tool finished.");
-                        msg.stop_reason = StopReason::Stop;
-                        let mut events = vec![AssistantMessageEvent::Start {
-                            partial: partial_msg(""),
-                        }];
-                        events.push(AssistantMessageEvent::TextDelta {
-                            content_index: 0,
-                            delta: "Tool finished.".into(),
-                            partial: msg.clone(),
-                        });
-                        events.push(AssistantMessageEvent::TextEnd {
-                            content_index: 0,
-                            content: "Tool finished.".into(),
-                            partial: msg.clone(),
-                        });
-                        events.push(AssistantMessageEvent::Done {
-                            reason: StopReason::Stop,
-                            message: msg,
-                        });
-                        Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
-                    } else {
-                        // First turn: request the `write` tool.
-                        let msg = AssistantMessage {
-                            content: vec![ContentBlock::ToolCall {
-                                id: "tc-approval".into(),
-                                name: "write".into(),
-                                arguments: serde_json::json!({
-                                    "path": value,
-                                    "content": "approved"
-                                }),
-                                thought_signature: None,
-                                namespace: None,
-                            }],
-                            api: "mock-api".into(),
-                            provider: "mock".into(),
-                            model: "mock-model".into(),
-                            response_model: None,
-                            response_id: None,
-                            diagnostics: None,
-                            usage: Usage::default(),
-                            stop_reason: StopReason::ToolUse,
-                            error_message: None,
-                            raw_stop_reason: None,
-                            end_turn: None,
-                            timestamp: 0,
-                        };
-                        Ok(Box::new(futures::stream::iter(vec![
-                            AssistantMessageEvent::Done {
-                                reason: StopReason::ToolUse,
-                                message: msg,
-                            },
-                        ])) as StreamResponse)
-                    }
+/// Mock LLM that requests TWO `bash` tool calls (same tool name!) on the
+/// first two turns, then finishes with plain text. The bash tool is the
+/// real one, so it streams `ToolExecutionUpdate` snapshots of the output
+/// while running — this drives the tool-output streaming path AND the
+/// per-call-id state isolation for same-name tools.
+fn mock_two_bash_tools_stream_fn() -> StreamFn {
+    Arc::new(move |_model, context, _thinking, _opts: StreamFnOptions| {
+        let tool_results = context
+            .messages
+            .iter()
+            .filter(|m| matches!(m, pi_agent_core::pi_ai_types::Message::ToolResult { .. }))
+            .count();
+        Box::pin(async move {
+            let (msg, reason) = match tool_results {
+                0 => (
+                    AssistantMessage {
+                        content: vec![ContentBlock::ToolCall {
+                            id: "bash-1".into(),
+                            name: "bash".into(),
+                            arguments: serde_json::json!({"command": "echo hello-one"}),
+                            thought_signature: None,
+                            namespace: None,
+                        }],
+                        api: "mock-api".into(),
+                        provider: "mock".into(),
+                        model: "mock-model".into(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: Usage::default(),
+                        stop_reason: StopReason::ToolUse,
+                        error_message: None,
+                        raw_stop_reason: None,
+                        end_turn: None,
+                        timestamp: 0,
+                    },
+                    StopReason::ToolUse,
+                ),
+                1 => (
+                    AssistantMessage {
+                        content: vec![ContentBlock::ToolCall {
+                            id: "bash-2".into(),
+                            name: "bash".into(),
+                            arguments: serde_json::json!({"command": "echo hello-two"}),
+                            thought_signature: None,
+                            namespace: None,
+                        }],
+                        api: "mock-api".into(),
+                        provider: "mock".into(),
+                        model: "mock-model".into(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: Usage::default(),
+                        stop_reason: StopReason::ToolUse,
+                        error_message: None,
+                        raw_stop_reason: None,
+                        end_turn: None,
+                        timestamp: 0,
+                    },
+                    StopReason::ToolUse,
+                ),
+                _ => {
+                    let mut msg = partial_msg("All tools done.");
+                    msg.stop_reason = StopReason::Stop;
+                    (msg, StopReason::Stop)
                 }
-            })
-        },
-    )
+            };
+            Ok(Box::new(futures::stream::iter(vec![
+                AssistantMessageEvent::Done { reason, message: msg },
+            ])) as StreamResponse)
+        })
+    })
 }
 
-/// AgentSession wired to the mock that returns a `write` tool call.
-async fn create_tool_session() -> pi_coding_agent::core::agent_session::AgentSession {
+/// AgentSession wired to the two-bash-tools mock.
+async fn create_two_bash_tools_session() -> pi_coding_agent::core::agent_session::AgentSession {
     let mut opts = CreateAgentSessionOptions::default();
     opts.cwd = std::env::temp_dir().display().to_string();
     opts.agent_dir = Some(std::env::temp_dir().display().to_string());
-    opts.stream_fn = Some(mock_tool_call_stream_fn());
+    opts.stream_fn = Some(mock_two_bash_tools_stream_fn());
     opts.cli_provider = Some("mock".into());
     opts.cli_model = Some("mock-model".into());
     opts.enable_extensions = false;
     opts.model_registry = Some(ModelRegistry::new(vec![mock_model()]));
-    let (session, _result) = create_agent_session(opts).await.expect("tool session");
+    let (session, _result) = create_agent_session(opts).await.expect("two-bash session");
     session
 }
 
@@ -411,8 +402,8 @@ fn child_process_runner() {
     let code = runtime.block_on(async {
         let session = if std::env::var(REAL_ENV).is_ok() {
             create_real_session().await
-        } else if std::env::var(TOOL_ENV).is_ok() {
-            create_tool_session().await
+        } else if std::env::var(TOOLS2_ENV).is_ok() {
+            create_two_bash_tools_session().await
         } else {
             create_mock_session().await
         };
@@ -434,31 +425,28 @@ struct Tui {
 
 impl Tui {
     fn spawn(long_stream: bool) -> Self {
-        Self::spawn_inner(long_stream, None, false)
+        Self::spawn_inner(long_stream, None)
     }
 
     /// Spawn with the real LLM path: `real_key` is mapped to
     /// `OPENAI_API_KEY` in the child env.
     fn spawn_real(long_stream: bool, real_key: &str) -> Self {
-        Self::spawn_inner(long_stream, Some(real_key), false)
+        Self::spawn_inner(long_stream, Some(real_key))
     }
 
-    /// Spawn with the mock that returns a `write` tool call (tool-approval
-    /// closed loop). `marker` names the file the mock asks `write` to create
-    /// (disjoint per test so parallel runs cannot clobber each other).
-    fn spawn_tool(marker: &str) -> Self {
-        // The child reads MARKER_ENV when building the tool session.
-        Self::spawn_inner_env(false, None, true, &[(MARKER_ENV, marker)])
+    /// Spawn with the mock that runs two same-name `bash` tool calls
+    /// (tool-output streaming + per-call state isolation).
+    fn spawn_two_bash_tools() -> Self {
+        Self::spawn_inner_env(false, None, &[(TOOLS2_ENV, "1")])
     }
 
-    fn spawn_inner(long_stream: bool, real_key: Option<&str>, tool_call: bool) -> Self {
-        Self::spawn_inner_env(long_stream, real_key, tool_call, &[])
+    fn spawn_inner(long_stream: bool, real_key: Option<&str>) -> Self {
+        Self::spawn_inner_env(long_stream, real_key, &[])
     }
 
     fn spawn_inner_env(
         long_stream: bool,
         real_key: Option<&str>,
-        tool_call: bool,
         extra_env: &[(&str, &str)],
     ) -> Self {
         let pty = native_pty_system()
@@ -478,9 +466,6 @@ impl Tui {
         cmd.env(CHILD_ENV, "1");
         if long_stream {
             cmd.env(LONG_ENV, "1");
-        }
-        if tool_call {
-            cmd.env(TOOL_ENV, "1");
         }
         for (k, v) in extra_env {
             cmd.env(*k, *v);
@@ -574,8 +559,8 @@ impl Tui {
 fn tui_chat_flow_renders_mock_reply_and_quits() {
     let mut tui = Tui::spawn(false);
     assert!(
-        tui.wait_for("> ", TIMEOUT),
-        "prompt rendered; got: {:?}",
+        tui.wait_for("mock-model", TIMEOUT),
+        "footer rendered; got: {:?}",
         tui.rendered()
     );
 
@@ -583,7 +568,7 @@ fn tui_chat_flow_renders_mock_reply_and_quits() {
     // The renderer emits words via cursor-positioned spans, so assert on
     // contiguous tokens rather than the full sentence.
     assert!(
-        tui.wait_for("mock", TIMEOUT),
+        tui.wait_for("Hello", TIMEOUT),
         "mock reply streamed; got: {:?}",
         tui.rendered()
     );
@@ -610,7 +595,7 @@ fn tui_chat_flow_renders_mock_reply_and_quits() {
 #[test]
 fn tui_ctrl_c_aborts_long_stream() {
     let mut tui = Tui::spawn(true);
-    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
     tui.write(b"hello\r");
     // First chunk arrives.
     assert!(
@@ -654,40 +639,107 @@ fn tui_ctrl_c_aborts_long_stream() {
 /// decision; pressing `a` runs it (marker file appears) and the turn
 /// continues with the mock's text reply.
 #[test]
-fn tui_tool_approval_approve_runs_tool() {
-    let marker_name = marker_for("approve");
-    let marker = std::env::temp_dir().join(&marker_name);
-    let _ = std::fs::remove_file(&marker);
-    let mut tui = Tui::spawn_tool(&marker_name);
-    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+fn tui_tool_output_streams_and_same_name_tools_stay_independent() {
+    let mut tui = Tui::spawn_two_bash_tools();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
-    tui.write(b"create the file\r");
+    // The approval gate is disabled (tools run directly), so the two
+    // same-name bash calls stream into their own rows immediately.
+    tui.write(b"run the tools\r");
     assert!(
-        tui.wait_for("[a] Approve", TIMEOUT),
-        "approval hint rendered; got: {:?}",
+        tui.wait_for("hello-one", TIMEOUT),
+        "first bash output streamed into its row; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("hello-two", TIMEOUT),
+        "second same-name bash output on its own row; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("All tools done.", TIMEOUT),
+        "turn finished; got: {:?}",
+        tui.rendered()
+    );
+    // TS original: tool calls render in full — no fold aggregation. Both
+    // finished bash boxes stay fully rendered (the per-call-id isolation
+    // regression kept the first bash Running forever; now both show their
+    // own output and neither folds into a one-row ▸ box).
+    let text = tui.rendered();
+    assert!(
+        text.contains("hello-one") && text.contains("hello-two"),
+        "both tool outputs rendered in full; got: {text:?}"
+    );
+    assert!(
+        !text.contains("\u{25b8}"),
+        "no folded one-row tool boxes; got: {text:?}"
+    );
+
+    tui.write(&[0x04]);
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
+}
+
+/// Slash commands: the `/` menu appears (regression: the completer was
+/// never populated), Enter picks the highlighted command, malformed `/model`
+/// shows usage instead of silently dropping the input, a bogus provider
+/// surfaces the auth failure, and `/new` starts a fresh session.
+#[test]
+fn tui_slash_command_menu_and_feedback() {
+    let mut tui = Tui::spawn(false);
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    // `/` opens the command menu — TS-style inline rows (no border/title):
+    // the first row is `→ /help — Show commands`.
+    tui.write(b"/");
+    assert!(
+        tui.wait_for("Show commands", TIMEOUT),
+        "slash menu rendered; got: {:?}",
         tui.rendered()
     );
 
-    tui.write(b"a"); // approve
-
-    // The tool must now run: the marker file appears with the payload the
-    // mock requested.
-    let deadline = Instant::now() + TIMEOUT;
-    let mut written = false;
-    while Instant::now() < deadline {
-        if let Ok(content) = std::fs::read_to_string(&marker) {
-            if content == "approved" {
-                written = true;
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(40));
-    }
-    assert!(written, "approved tool wrote the marker file");
-
+    // Type the rest of `/help` and press Enter: the menu stays open while
+    // typing (characters are inserted), Enter executes the command.
+    tui.write(b"help\r");
     assert!(
-        tui.wait_for("Tool finished.", TIMEOUT),
-        "turn resumed after approval; got: {:?}",
+        tui.wait_for("Commands: /new", TIMEOUT),
+        "/help executed via the menu; got: {:?}",
+        tui.rendered()
+    );
+
+    // Malformed /model: usage feedback instead of a silent no-op.
+    tui.write(b"/model\r");
+    assert!(
+        tui.wait_for("Usage: /model", TIMEOUT),
+        "usage message rendered; got: {:?}",
+        tui.rendered()
+    );
+
+    // Unknown provider: the mock registry accepts any provider, so the
+    // switch succeeds — and the outcome now surfaces with feedback (the
+    // footer model name updates too; previously the result was silently
+    // dropped and the footer stayed stale). The diff painter only emits the
+    // changed cells, so assert on the repainted tail and the footer text.
+    tui.write(b"/model bogus/whatever\r");
+    assert!(
+        tui.wait_for("ed to bogus/whatever", TIMEOUT),
+        "model switch feedback rendered; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("whatev", TIMEOUT),
+        "footer model name updated; got: {:?}",
+        tui.rendered()
+    );
+
+    // /new starts a fresh session (transcript cleared, placeholder back).
+    // The system message reuses a previously painted row, so ratatui's
+    // diff skips the one unchanged cell (`New ses` + `ion created`);
+    // assert on the contiguous fragments instead of the full sentence.
+    tui.write(b"/new\r");
+    assert!(
+        tui.wait_for("New ses", TIMEOUT) && tui.wait_for("ion created", TIMEOUT),
+        "new session message rendered; got: {:?}",
         tui.rendered()
     );
 
@@ -696,42 +748,46 @@ fn tui_tool_approval_approve_runs_tool() {
     assert_eq!(code, Some(0), "clean exit code 0");
 }
 
-/// Tool-approval gate — deny: pressing `d` blocks the tool (marker file must
-/// never appear), the tool row shows the Denied badge, and the session
-/// continues with the mock's text reply.
+/// The goal extension's TUI menu: bare `/goal` in TUI mode opens the goal
+/// manager (select popup with the action list); Enter picks "Start a goal…",
+/// the objective editor opens, Ctrl+S submits, and the goal starts.
 #[test]
-fn tui_tool_approval_deny_blocks_tool() {
-    let marker_name = marker_for("deny");
-    let marker = std::env::temp_dir().join(&marker_name);
-    let _ = std::fs::remove_file(&marker);
-    let mut tui = Tui::spawn_tool(&marker_name);
-    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+fn tui_goal_menu_starts_goal() {
+    let mut tui = Tui::spawn(false);
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
-    tui.write(b"create the file\r");
+    // /goal（无参数）→ TUI 菜单（select 弹窗列出动作）。
+    tui.write(b"/goal\r");
     assert!(
-        tui.wait_for("[a] Approve", TIMEOUT),
-        "approval hint rendered; got: {:?}",
+        tui.wait_for("Start a goal", TIMEOUT),
+        "goal menu rendered; got: {:?}",
         tui.rendered()
     );
 
-    tui.write(b"d"); // deny
+    // Enter 选中第一项（Start a goal…）→ 目标编辑器打开。
+    tui.write(b"\r");
     assert!(
-        tui.wait_for("Denied", TIMEOUT),
-        "denied badge rendered; got: {:?}",
-        tui.rendered()
-    );
-    assert!(
-        tui.wait_for("Tool finished.", TIMEOUT),
-        "turn resumed after denial; got: {:?}",
+        tui.wait_for("Goal objective", TIMEOUT),
+        "objective editor opened; got: {:?}",
         tui.rendered()
     );
 
-    // The tool must never have run. Give a straggler write a beat before
-    // asserting absence.
+    // 输入目标 + Ctrl+S 提交 → goal 启动（diff 画家会拆分长文本，断言
+    // 连续片段）。
+    tui.write(b"fix the e2e goal bug");
+    tui.write(&[0x13]); // Ctrl+S
+    assert!(
+        tui.wait_for("fix the e2e goal bug", TIMEOUT),
+        "goal started via menu; got: {:?}",
+        tui.rendered()
+    );
+
+    // 菜单回到主屏（goal 已激活）→ Esc 关闭菜单，Ctrl+D 退出。
+    tui.write(&[0x1b]); // Esc: close the menu
+    // Esc+Ctrl+D back-to-back can be parsed by crossterm as one Alt+Ctrl+D
+    // key (which the select ignores), so let the menu close first.
     std::thread::sleep(Duration::from_millis(300));
-    assert!(!marker.exists(), "denied tool must not write the marker file");
-
-    tui.write(&[0x04]);
+    tui.write(&[0x04]); // Ctrl+D: quit
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
@@ -750,21 +806,16 @@ fn tui_chat_flow_real_ollama() {
 
     let mut tui = Tui::spawn_real(false, &key);
     assert!(
-        tui.wait_for("> ", REAL_TIMEOUT),
-        "prompt rendered; got: {:?}",
+        tui.wait_for("deepseek-v4-flash", REAL_TIMEOUT),
+        "footer rendered; got: {:?}",
         tui.rendered()
     );
 
     tui.write(b"Reply with exactly: E2E-OK\r");
     assert!(
-        tui.wait_for("assistant", REAL_TIMEOUT),
+        tui.wait_for("E2E-OK", REAL_TIMEOUT),
         "assistant message appeared; got: {:?}",
         tui.rendered()
-    );
-    assert!(
-        tui.wait_for("E2E-OK", REAL_TIMEOUT),
-        "real LLM replied; got: {:?}",
-        tui.rendered().chars().rev().take(500).collect::<String>()
     );
 
     tui.write(&[0x04]); // Ctrl+D: quit
@@ -778,7 +829,7 @@ fn tui_chat_flow_real_ollama() {
 fn tui_extension_slash_command_executes() {
     let _ = std::fs::remove_file("/tmp/tui_ext_cmd.log");
     let mut tui = Tui::spawn(false);
-    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
     tui.write(b"/testcmd hello\r");
 
@@ -817,7 +868,7 @@ fn tui_extension_ui_dialogs_work() {
     let _ = std::fs::remove_file("/tmp/tui_ui_confirm.log");
     let _ = std::fs::remove_file("/tmp/tui_ui_select.log");
     let mut tui = Tui::spawn(false);
-    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
     // ── confirm: press Tab (→ Cancel) + Enter → false ──
     tui.write(b"/uitest\r");
@@ -867,7 +918,7 @@ fn tui_extension_ui_dialogs_work() {
 #[test]
 fn tui_esc_quits_cleanly() {
     let mut tui = Tui::spawn(false);
-    assert!(tui.wait_for("> ", TIMEOUT), "prompt rendered");
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
     tui.write(&[0x1b]); // Esc
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "Esc quit exit code 0");

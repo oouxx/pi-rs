@@ -1,9 +1,5 @@
 //! Single-line text input with cursor tracking.
 
-use ratatui::style::Style;
-use ratatui::text::Text;
-use ratatui::widgets::Paragraph;
-
 /// A single-line text input field.
 pub struct Input {
     buffer: String,

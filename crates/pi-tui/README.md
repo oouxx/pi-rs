@@ -6,6 +6,7 @@ Rust 移植版终端 UI 框架，对应 TypeScript 原版 `@earendil-works/pi-tu
 
 ## Features
 
+- **TS 原版像素级复刻**（interactive 模式主视图）：启动 header（logo + 快捷键提示，Ctrl+O 展开）、footer 两行完整统计（`↑in ↓out Rcache Wcache CH% $cost ctx%/window (auto)` + 右对齐模型名）、用户消息全宽背景盒、工具调用按 TS renderer 分派（bash `$ cmd` + Elapsed/Took 计时 + 截断警告、read/grep/edit 紧凑标题、fallback args JSON）、assistant thinking 斜体块、终止原因提示、工具块按事件时间序穿插
 - **Component-based**: 统一的 `Component` trait（`render()` / `handle_input()` / `invalidate()`）
 - **Overlay 系统**: 叠加层支持锚点定位（9 个方向）、偏移、边距、隐藏/显示
 - **硬件光标定位**: 通过 `CURSOR_MARKER` 零宽标记在输出中标记光标位置，支持 IME
@@ -13,7 +14,8 @@ Rust 移植版终端 UI 框架，对应 TypeScript 原版 `@earendil-works/pi-tu
 - **终端内联图片**: 基于 `ratatui-image`，支持 Kitty / iTerm2 / Sixel / Halfblocks 协议
 - **Autocomplete**: 文件路径补全 + 斜杠命令 + @前缀
 - **模糊搜索**: 子序列匹配，多 token，排序
-- **238 个单元测试**，全量通过
+- **Vendored 管线**: markdown 渲染用 grok-build `xai-grok-markdown`（pulldown-cmark + syntect + 宽度感知 wrap），多行编辑用 `xai-ratatui-textarea`，wrap 用 grok joiner 实现
+- **35 个单元测试 + 13 个 PTY E2E 测试**，全量通过
 
 ## Quick Start
 

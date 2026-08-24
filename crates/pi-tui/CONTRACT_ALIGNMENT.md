@@ -1,0 +1,57 @@
+# CONTRACT_ALIGNMENT.md — pi-tui
+
+按 CLAUDE.md 阶段三的契约级对齐表记录 pi-tui 公开渲染行为与 TS 原版
+（`packages/coding-agent/src/modes/interactive` + `packages/tui`）的对照。
+"是否一致"列填"否"时必须引用 `DEVIATIONS.md` 对应条目。
+
+## 主视图（transcript + dock）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 启动 header | `builtInHeader` ExpandableText：logo `Pi v{version}`（accent 粗体 + dim）+ 紧凑提示行 + `Press ctrl+o to show full startup help...` + 空行 + onboarding；Ctrl+O 展开为 19 条完整快捷键列表 | `header_lines()` 渲染相同内容（logo/紧凑/展开/onboarding），Ctrl+O 切换 | 是 | |
+| 转录锚定 | ScrollView `follow: "end"`：内容不足一屏时 `scrollTop = 0`（顶对齐），溢出时跟随底部 | 内容不足一屏时顶对齐，溢出时跟随底部（alt screen 内裁剪，历史靠转录自身滚动） | 是 | |
+| 渲染模式 | 默认 `tuiMode: "regular"`（TuiMainScreen） | **2026-08-24 曾改为主屏幕差分渲染后回退**：当前为 alt screen + ratatui 直接渲染（对齐 HEAD 基线）；主屏幕差分渲染（`MainScreen` + 虚拟 buffer + `ESC[2K`）已移除（见 PORTING_MISTAKES #117） | 否 | 有意保留 alt screen（对齐 DEVIAITIONS.md TUI 条目 2026-08-24 用户决定；主屏模式因退出清理/ resize 问题回退） |
+| 工具块位置 | chatContainer 按事件顺序追加：工具块紧跟请求它的 assistant 消息 | blocks 按共享 block-id 时间序排序穿插 | 是 | |
+| 用户消息 | `UserMessageComponent`：全宽 `userMessageBg` 盒（padX=1, padY=1）+ markdown | `render_user_block`：全宽背景盒 + markdown 行 | 是 | |
+| 工具调用（bash） | `bash.ts` renderer：`$ {command}` 粗体标题 + muted ` (timeout Ns)`；输出未展开时预览尾部 5 视觉行（`BASH_PREVIEW_LINES`=5，`truncateToVisualLines`）+ 前导空行 + `... (N earlier lines, ctrl+o to expand)`；muted `Elapsed {x.x}s`（partial 期间每秒刷新）/ `Took {x.x}s`（完成）；截断警告 `[Truncated: ...]`/`[Full output: ...]` | `render_bash_tool_block`：`$ {command}` 标题 + timeout 后缀；尾部 5 视觉行 + 前导 earlier-lines 提示（宽度感知 wrap）；`Elapsed`/`Took {:.1}s`（tick 刷新）；warning 色截断警告（`details.truncation` 经 bridge 传入） | 是 | |
+| 工具调用（read） | `formatReadCall`：`read {path}{:range}`（`read` 粗体 + accent path + warning 范围）；`formatReadResult` 未展开返回空（仅标题） | `render_read_tool_block`：同款标题；内容仅展开时渲染（前 10 行 + 尾部提示） | 是 | |
+| 工具调用（grep） | `formatGrepCall`：`grep /{pattern}/ in {path} ({glob}) limit {n}`；输出预览 15 行 | `render_grep_tool_block`：同款标题 + 15 行预览 | 是 | |
+| 工具调用（edit） | `formatEditCall`：`edit {path}` + 专用 diff widget 渲染 | `render_edit_tool_block`：`edit {path}` 标题 + diff 文本（toolOutput 色） | 否 | diff widget（行号/着色/折叠）未复刻——diff 文本内容一致，样式为纯文本（见 DEVIATIONS.md TUI 条目） |
+| 工具调用（fallback，无 renderer） | `formatToolExecution`：toolName 粗体 + 空行 + `JSON.stringify(args, null, 2)` + 输出（`toolOutput` 色，未展开时前 10 行 + 尾部 `... (N more lines, ctrl+o to expand)`），无计时器 | `render_fallback_tool_block`：同款（10 行 + 尾部提示） | 是 | |
+| 工具输出颜色 | 统一 `toolOutput` 色（bash 与 fallback renderer 均不按 diff 着色） | 统一 `toolOutput` 色（diff +/- 着色已移除） | 是 | |
+| 工具状态色 | pending/success/error 三态背景 `toolPendingBg`/`toolSuccessBg`/`toolErrorBg` | `tool_bg()` 三态同色 | 是 | |
+| assistant 文本 | `AssistantMessageComponent`：markdown 纯文本（outputPad=1） | `render_assistant_block`：markdown 纯文本 | 是 | |
+| assistant thinking | thinking 块渲染为 `thinkingText` 色 + 斜体 markdown | `render_assistant_block` thinking 段：`thinkingText` + ITALIC | 是 | |
+| 终止原因提示 | `stopReason === "length"` → `Response was truncated before completion.`；`aborted` → `Operation aborted`/errorMessage；`error` → `Error: {msg}`（error 色，前有空行） | `StopReason` 三态同文案同色 | 是 | |
+| 系统消息 | 状态通知为 dim/muted 纯文本 | `render_system_block`：muted 纯文本 | 是 | |
+| 块间距 | 每个块前有 Spacer(1)（用户/工具/assistant 内部） | gap_after=1（user/tool/system/header），assistant 无前置空行 | 否 | 见 DEVIATIONS.md TUI 条目（assistant 前置空行未复刻，历史布局决定） |
+
+## Dock
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 状态区 | `Loader`：`["", spinner + message]`（accent spinner + muted 文案） | `render_status`：空行 + spinner 行（busy 时） | 是 | |
+| 编辑器 | `CustomEditor`：`─` 边框（borderMuted），内容随输入增长，`max(5, 30% 行高)` | `render_input`：`─` 上下边框 + 内容行 + 光标跟随 | 是 | |
+| slash 菜单 | SelectList 内联在编辑器内（无边框/标题，`→ ` accent 前缀，muted 描述对齐，最多 5 行 + `(n/m)`） | `Completer::render_rows` 同款 | 是 | |
+| footer line 1 | `pwd (branch) • sessionName`（dim，`~` 替换 HOME） | `render_footer` line 1 同款 | 是 | |
+| footer line 2 | `↑in ↓out Rcache Wcache CH% $cost ctx%/window (auto)`（dim，context 阈值着色 error>90/warning>70，`?/window` 未知态）+ 右对齐 `(provider) model • thinking`（reasoning 模型） | `render_footer` line 2 同款（`format_tokens` 与 TS `formatTokens` 逐分支一致） | 是 | |
+| footer line 3 | 扩展状态行（`getExtensionStatuses()`） | 无 | 否 | Rust 扩展系统无 footer data provider 等价物（见 DEVIATIONS.md 扩展系统条目） |
+
+## 交互
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| Ctrl+O | `app.tools.expand`：展开 header + 全部工具输出 | `Msg::ToggleToolExpansion`：切换 header 展开态 + 工具块强制 Expanded | 是 | |
+| 块折叠 / Ctrl+F | 无（工具/消息平铺渲染） | 无（已删除，2026-08-24） | 是 | 见 DEVIATIONS.md 块折叠条目（已移除） |
+| 工具输出截断 | fallback：未展开时前 10 行 + `... (N more lines, ctrl+o to expand)`（`FALLBACK_PREVIEW_LINES`=10），展开时全部 | `FALLBACK_PREVIEW_LINES`=10 + 同款提示（muted 文案 + dim 键名），Ctrl+O 展开 | 是 | |
+| 工具执行 | 无审批门：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | 无审批门：approval_hook 不安装，工具调用直接执行 | 是 | 审批门已于 2026-08-24 移除（见 DEVIATIONS.md） |
+| 滚动 | ScrollView scrollBy/scrollTo（PageUp/Down、gg/G） | `ScrollUp/ScrollDown/ScrollToBottom` + gg/G | 是 | |
+
+## 数据流（pi-coding-agent → pi-tui）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 工具 args | `ToolExecutionComponent(args)` 渲染 `JSON.stringify(args, null, 2)` | `AgentEvent::ToolStart(call_id, name, args_json)` → `Msg::ToolStart` | 是 | |
+| thinking 流 | `thinking_delta` 事件 → thinking 块 | `MessageEnd { thinking, ... }` 携带完整 thinking（非逐 delta） | 是 | 渲染结果一致；流式 thinking 逐 delta 未接线（agent 事件桥只转发 text delta） |
+| 终止原因 | `Done`/`Error` 事件携带 `stopReason`/`errorMessage` | `MessageEnd` 携带 `stop_reason`/`error_message` | 是 | |
+| footer 数据 | `FooterComponent` 从 session entries 累计 usage totals + `getContextUsage()` | `usage_totals_from_entries()` + `refresh_status()`（1s 节流，run 间查询） | 是 | 刷新节流 1s（TS 每次 message_end 更新） |

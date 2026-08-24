@@ -8,9 +8,9 @@
 | ---------------------- | ---------- | -------------- | -------- | -------- |
 | 扩展系统（extension 模块整体） | `packages/coding-agent` 里扩展系统的具体实现方式（如插件加载、hook 注册的内部机制） | 内部实现方式不按原版逐行翻译，改用 Rust 生态更合适的机制（如 WASM / subprocess IPC，具体选型见 PORTING.md） | 用户决定 | 已确认保留 |
 | 扩展 UI（notify/dialog/select/input） | interactive 模式下扩展的 `ui.*` 调用显示在 TUI 上 | **2026-08-23 已接线**：interactive 模式注入 TUI 桥接（notify/set_status→system 消息，confirm→Dialog 弹窗，select→选择列表，input→编辑器，set_editor_text→输入框，set_title→终端标题）；`set_widget`（inline widget）仍 no-op；对话框阻塞等待最长 120s | TUI 恢复后的解冻项 | 已确认保留（仅 set_widget 部分） |
-| 工具执行审批门（tool approval gate，interactive 模式） | TS 原版无此功能：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | **2026-08-23 新增**：interactive 模式在 agent 的 `before_tool_call` 前置审批门——工具执行前 TUI 显示 `[a] Approve [d] Deny` 提示并阻塞等待；`a` 放行（fall-through 到扩展 dispatch）、`d`/`Esc` 拒绝（生成 error 工具结果，`Tool call denied by user`，agent 继续）；审批期间键盘归审批所有；同一时刻最多一个待审批工具（Mutex 串行化）；`Agent::prepend_before_tool_call` 组合 outer 门 + inner 扩展 hook | 有意新增的用户功能（超出 TS 原版），非对齐差异 | 已确认保留 |
-| 块折叠 + scrollback 布局（pi-tui） | TS 原版 TUI 无折叠概念：消息/工具输出平铺，无 Ctrl+F 折叠交互 | **2026-08-23 新增（借鉴 grok-build 哲学）**：`pi-tui/src/scrollback/`（vendored 自 grok `xai-grok-pager`，见 THIRD-PARTY-NOTICES §4）——统一块模型（消息/工具块带稳定 id）、`DisplayMode` 三态、折叠扫描+投影（连续完成工具调用聚合 "N tool calls"、超长内容 "N more" 截断）、Ctrl+F 折叠/展开最近可折叠块、滚动百分比指示。行为差异：完成工具默认折叠（TS 显示 8 行截断） | 有意新增的工程特性（grok 对齐），非对齐差异 | 已确认保留 |
-| TUI 渲染层（对应原 `packages/coding-agent` 内 TUI 组件，即 `pi-tui`） | 原版 TUI 组件的具体渲染实现 | **2026-08-23 起已纳入范围（最小可用版）**：恢复历史 Elm 架构 pi-tui（ratatui 0.29），markdown 渲染整体改用 vendored grok-build `xai-grok-markdown`（见 THIRD-PARTY-NOTICES.md），不按原版自研 | 用户决定：先恢复最小可用，后续再逐模块对齐原版 | 已确认保留 |
+| 工具执行审批门（tool approval gate，interactive 模式） | TS 原版无此功能：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | **2026-08-23 新增后已移除**：曾实现 `[a] Approve [d] Deny` 审批门 + YOLO 模式（Ctrl+Y / `/yolo`）；**2026-08-24 用户决定禁用**——approval_hook 不再安装、`ToolApproval`/`yolo_mode`/`SetYolo`/`ToolApprove`/`ToolDeny`/`ToolApprovalPending` 及相关 UI（徽章、yolo footer badge、a/d 键、Ctrl+Y、`/yolo` 命令）全部删除，工具调用直接执行，行为回到 TS 原版 | 用户决定禁用（对齐 TS 原版） | 已移除 |
+| 块折叠 + scrollback 布局（pi-tui） | TS 原版 TUI 无折叠概念：消息/工具输出平铺，无 Ctrl+F 折叠交互 | **2026-08-23 新增后已移除**：曾实现 grok 式块折叠（`pi-tui/src/scrollback/`、`DisplayMode` 三态、"N tool calls" 聚合、"N more" 截断、Ctrl+F、滚动百分比）；**2026-08-24 用户决定删除并复刻 TS 原版**——`scrollback/` 模块整体删除，工具块始终完整渲染（完成工具不再折叠成一行），输出默认预览 10 行 + `... (N more lines, ctrl+o to expand)`（TS `FALLBACK_PREVIEW_LINES`=10 语义），Ctrl+O 展开全部，消息永不截断（转录滚动查看），滚动百分比指示删除 | 用户决定删除（复刻 TS 原版） | 已移除 |
+| TUI 渲染层（对应原 `packages/coding-agent` 内 TUI 组件，即 `pi-tui`） | 原版 TUI 组件的具体渲染实现 | **2026-08-23 起已纳入范围（最小可用版）**：恢复历史 Elm 架构 pi-tui（ratatui 0.29），markdown 渲染整体改用 vendored grok-build `xai-grok-markdown`（见 THIRD-PARTY-NOTICES.md），不按原版自研。**2026-08-23 第三轮（样式对齐）**：主视图布局与配色已按 TS 原版 interactive 模式复刻——dark.json 调色板（accent `#8abeb7`、text `#d4d4d4`、userMessageBg `#343541`、toolPending/Success/ErrorBg `#282832/#283228/#3c2828` 等）、用户消息全宽背景盒、工具调用状态色盒（粗体标题+灰色输出）、移除顶栏，改为 TS 式底部 dock（spinner 状态行 + `─` 边框编辑器 + 两行 footer：dim cwd(branch) + 着色 context% + 右对齐模型名）。**2026-08-23 第六轮（像素级复刻，复用 vendor）**：① 启动 header（TS `builtInHeader` ExpandableText）——logo `Pi v1.83.1`（accent 粗体 + dim）+ 紧凑/展开两态快捷键提示（`escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more`，展开列出全部 19 条），Ctrl+O（`app.tools.expand`）切换并同时展开全部工具输出；② footer 两行完整对齐 TS `FooterComponent`——line 1 `pwd (branch) • sessionName`，line 2 `↑in ↓out Rcache Wcache CH% $cost ctx%/window (auto)`（context 阈值着色 error>90/warning>70，`?/window` 未知态）+ 右对齐 `(provider) model • thinking`（reasoning 模型显示 thinking level）；③ 工具调用渲染 TS fallback 格式（粗体标题 + 空行 + `JSON.stringify(args, null, 2)` 默认色 + 输出）；④ assistant thinking 块（`thinkingText` 斜体）+ 终止原因提示（length/aborted/error 三态，error 色，对齐 TS `AssistantMessageComponent`）；⑤ 转录内容适配 TS ScrollView 锚定语义（内容不足一屏时顶对齐，溢出时跟随底部）；⑥ 状态栏/编辑器/对话框保持前几轮形态。工具输出预览 10 行 + `... (N more lines, ctrl+o to expand)` 提示（TS fallback 语义），Ctrl+O 展开。**2026-08-24 第七轮（工具块像素对齐）**：bash 工具走 TS 专用 renderer（`core/tools/bash.ts`）——`$ {command}` 粗体标题 + muted ` (timeout Ns)` 后缀、输出未展开时预览**尾部 5 视觉行** + 前导 `... (N earlier lines, ctrl+o to expand)`（`BASH_PREVIEW_LINES`=5）、muted `Elapsed {x.x}s`（运行中，tick 驱动每秒刷新）/ `Took {x.x}s`（完成，`formatDuration` 同款 `(ms/1000).toFixed(1)`）；其他工具保持 fallback（10 行尾部提示、无计时器）；**输出统一 toolOutput 色**——移除此前 Rust 增强的 diff +/- 着色（TS renderer 无此行为）。**2026-08-24 第八轮（主屏幕模式 + 工具块位置 + renderer 差距）**：①**主屏幕差分渲染**（对齐 TS `TuiMainScreen`）——移除 alternate screen，整个 UI 渲染进终端主屏幕（差分输出 + resize 清屏重放）；**2026-08-24 用户决定回退①**：主屏幕模式因退出清理缺失与 resize 尺寸错误问题回退为 alt screen + ratatui 直渲（`EnterAlternateScreen`/`LeaveAlternateScreen` + `ratatui_terminal().draw()`，恢复 HEAD 基线；详见 PORTING_MISTAKES.md #118），②③④保留；②**工具块位置**：tools 与 messages 按共享 block-id 时间序穿插（TS chatContainer 顺序——工具块紧跟请求它的 assistant 消息之后，不再全部堆在消息上方）；③**read/grep/edit 紧凑 renderCall**：read `read {path}{:range}`（accent path + warning 范围，未展开只显示标题——TS `formatReadResult` 空串）、grep `grep /{pattern}/ in {path} ({glob}) limit {n}` + 15 行预览、edit `edit {path}` + diff 文本（TS 的 diff widget 渲染未复刻，见差距）；④**bash/read 截断警告**：`[Full output: path. Truncated: showing N of M lines]` warning 色（从结果 `details.truncation` 提取）。 | 用户决定：先恢复最小可用，再逐模块对齐原版 | 已确认保留 |
 
 ## 对"已确认保留"条目的额外约束
 
@@ -39,6 +39,22 @@
   interactive 模式 → pi-tui Elm 架构；markdown 渲染依赖 vendored
   `xai-grok-markdown`，见 THIRD-PARTY-NOTICES.md）。本条偏差的含义收窄为：
   **组件层不按原版 TS 逐行复刻**（Ratatui + grok 管线替代原版自研组件库）。
+- **2026-08-23 第三轮更新（样式对齐）**：主视图（transcript + dock）的布局
+  与配色已与 TS 原版对齐（见上方表格条目）：顶栏移除，模型名/上下文占用量
+  移入底部两行 footer；输入框改为边框式编辑器（borderMuted `─`）；用户消息
+  全宽 `userMessageBg` 色块、工具调用按 pending/success/error 三态色块、
+  assistant 纯文本——与 TS interactive 模式一致。工具输出预览 10 行 + `... (N more lines, ctrl+o to expand)` 提示（TS fallback 语义），Ctrl+O 展开。
+- **2026-08-23 第四轮（bug 审查修复）**：工具状态链与 slash 命令审查修复（详见
+  PORTING_MISTAKES.md #112）：工具事件全链按 `tool_call_id` 键（同名工具不再
+  互相污染）、工具输出改为快照替换语义（修复输出从不显示/重复叠加）、bash 流式
+  输出可见；slash 菜单填充内建+扩展命令（`/` 弹出、Enter 选中即执行，对齐 TS
+  下拉行为）、`/model` 结果回传反馈（成功更新 footer/失败报错）、`/new` 清转录、
+  Shift+Enter 换行。
+- **2026-08-23 第五轮（slash 菜单样式对齐）**：slash 命令菜单改为 TS 原版
+  SelectList 样式——内联渲染在编辑器内部（无边框/标题/背景），`→ ` accent
+  前缀 + accent 选中文本、muted 描述对齐第二列（主列宽上限 32）、最多 5 行、
+  滚动 `(n/m)` 提示、无匹配 `No matching commands`；Tab 应用补全、Right 不再
+  选中（详见 PORTING_MISTAKES.md #113）。
 - 仍不在范围内的：原版全部组件/选择器（session/model/theme/settings
   selector 等 17k 行 TS）尚未移植，属“后续任务”，不算差异。
 - 已登记的简化：~~消息 wrap 是 `word_wrap_line_with_joiners` 的简化版~~

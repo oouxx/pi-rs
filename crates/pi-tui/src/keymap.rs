@@ -52,7 +52,7 @@ pub struct Keymap {
 
 impl Keymap {
     /// Default keybindings matching plans.md Section 7.
-    pub fn default() -> Self {
+    pub fn defaults() -> Self {
         let mut bindings: HashMap<Action, Vec<KeyBind>> = HashMap::new();
 
         bindings.insert(Action::SubmitMessage, vec![
@@ -137,21 +137,21 @@ mod tests {
 
     #[test]
     fn test_default_bindings() {
-        let km = Keymap::default();
+        let km = Keymap::defaults();
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(km.action_for(&ctrl_c), Some(Action::AbortStream));
     }
 
     #[test]
     fn test_abort_binding() {
-        let km = Keymap::default();
+        let km = Keymap::defaults();
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(km.action_for(&ctrl_c), Some(Action::AbortStream));
     }
 
     #[test]
     fn test_custom_binding() {
-        let mut km = Keymap::default();
+        let mut km = Keymap::defaults();
         km.bind(Action::Quit, KeyBind::new(KeyCode::Char('q'), KeyModifiers::NONE));
         let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         assert!(km.triggers(&q, Action::Quit));
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_triggers() {
-        let km = Keymap::default();
+        let km = Keymap::defaults();
         let pgup = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
         assert!(km.triggers(&pgup, Action::ScrollUp));
         assert!(!km.triggers(&pgup, Action::ScrollDown));

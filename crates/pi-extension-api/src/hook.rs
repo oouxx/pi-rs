@@ -328,12 +328,16 @@ pub trait HookHandler: Send + Sync {
     async fn on_turn_start(&self, _turn_index: u32, _timestamp: i64) {}
 
     /// Turn 结束时触发。
+    ///
+    /// `ctx` 在扩展注册到真实会话时为 `Some`（携带 runtime handle，可持久化
+    /// 状态、发送通知）；测试/无会话场景为 `None`。
     async fn on_turn_end(
         &self,
         _turn_index: u32,
         _message: &Value,
         _tool_results: &[Value],
         _timestamp: i64,
+        _ctx: Option<&crate::ExtensionContext>,
     ) {
     }
 
@@ -427,10 +431,14 @@ pub trait HookHandler: Send + Sync {
     // ── Modifying hooks（按 priority 顺序执行，可 Cancel） ──────────
 
     /// 工具调用前触发。可修改工具名称和参数，或取消调用。
+    ///
+    /// `ctx` 携带 runtime handle，扩展可在取消时中止当前 turn（对齐原版
+    /// `tool_call` 事件的 `abortCurrentTurn`）。
     async fn before_tool_call(
         &self,
         _tool_name: String,
         _args: Value,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<(String, Value)> {
         HookResult::Continue((_tool_name, _args))
     }
@@ -656,11 +664,12 @@ impl HookRunner {
         message: &Value,
         tool_results: &[Value],
         timestamp: i64,
+        ctx: Option<&crate::ExtensionContext>,
     ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_turn_end(turn_index, message, tool_results, timestamp))
+            .map(|h| h.on_turn_end(turn_index, message, tool_results, timestamp, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -891,10 +900,11 @@ impl HookRunner {
         &self,
         tool_name: String,
         args: Value,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<(String, Value)> {
         let mut current = (tool_name, args);
         for handler in &self.handlers {
-            match handler.before_tool_call(current.0.clone(), current.1.clone()).await {
+            match handler.before_tool_call(current.0.clone(), current.1.clone(), ctx).await {
                 HookResult::Continue((name, args)) => {
                     current = (name, args);
                 }
@@ -1201,7 +1211,12 @@ mod tests {
             fn priority(&self) -> i32 {
                 self.priority
             }
-            async fn before_tool_call(&self, name: String, args: Value) -> HookResult<(String, Value)> {
+            async fn before_tool_call(
+                &self,
+                name: String,
+                args: Value,
+                _ctx: &crate::ExtensionContext,
+            ) -> HookResult<(String, Value)> {
                 self.count.fetch_add(1, Ordering::SeqCst);
                 if self.should_block {
                     HookResult::Cancel("blocked".into())
@@ -1228,8 +1243,9 @@ mod tests {
             should_block: false,
         }));
 
+        let ctx = crate::ExtensionContext::new("t".into(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
         let result = runner
-            .run_before_tool_call("shell".into(), serde_json::json!({"cmd": "ls"}))
+            .run_before_tool_call("shell".into(), serde_json::json!({"cmd": "ls"}), &ctx)
             .await;
 
         assert!(result.is_cancel());
@@ -1247,8 +1263,9 @@ mod tests {
     #[tokio::test]
     async fn empty_runner_modifying_hooks_pass_through() {
         let runner = HookRunner::new();
+        let ctx = crate::ExtensionContext::new("t".into(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
         let result = runner
-            .run_before_tool_call("shell".into(), serde_json::json!({"cmd": "ls"}))
+            .run_before_tool_call("shell".into(), serde_json::json!({"cmd": "ls"}), &ctx)
             .await;
         assert!(result.is_continue());
         if let HookResult::Continue((name, _)) = result {

@@ -1350,6 +1350,17 @@ impl AgentSession {
             };
             session.ext_ctx.runtime.send_message = send_message;
             session.ext_ctx.runtime.send_user_message = send_user_message;
+            // 中止当前 run（对齐原版 ctx.abort() → agent.abort()）：取消 active
+            // run 的 CancellationToken。扩展 hook 是同步 Fn，不能 await
+            // wait_for_idle，这里 spawn 任务只做 cancel（对齐 TS
+            // abortCurrentTurn 的 best-effort 语义）。
+            let agent_for_abort = session.agent.clone();
+            session.ext_ctx.runtime.abort = std::sync::Arc::new(move || {
+                let agent = agent_for_abort.clone();
+                tokio::spawn(async move {
+                    agent.abort().await;
+                });
+            });
             // 自动延续通道：同步把一条 follow-up 入队（agent 空闲/已 settled
             // 时由 prompt() 尾部的 settled 循环消费并启动新一轮，供 /goal
             // 等扩展在 agent_settled 边界自动延续）。
@@ -1674,11 +1685,13 @@ impl AgentSession {
                                 .iter()
                                 .map(|tr| serde_json::to_value(tr).unwrap_or_default())
                                 .collect();
+                            let ext_ctx_te = ext_ctx.clone();
                             hr.fire_turn_end(
                                 ti,
                                 &msg_val,
                                 &tr_val,
                                 chrono::Utc::now().timestamp_millis(),
+                                Some(&ext_ctx_te),
                             )
                             .await;
                             *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;

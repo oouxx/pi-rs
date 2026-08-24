@@ -94,11 +94,11 @@ pub fn tool_call_payload(ctx: &BeforeToolCallContext) -> serde_json::Value {
 pub async fn dispatch_tool_call(
     registry: &ExtensionRegistry,
     ctx: &BeforeToolCallContext,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Option<BeforeToolCallResult> {
     let result = registry
         .hook_runner()
-        .run_before_tool_call(ctx.tool_call.name.clone(), ctx.args.clone())
+        .run_before_tool_call(ctx.tool_call.name.clone(), ctx.args.clone(), ext_ctx)
         .await;
     match result {
         crate::core::extensions::HookResult::Cancel(reason) => {

@@ -371,10 +371,22 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             vec![]
         }
-        Msg::Tick => { model.tick += 1; if model.auto_scroll { model.scroll_offset = 0; } vec![] }
-        Msg::ScrollUp(amount) => { model.auto_scroll = false; model.scroll_offset = model.scroll_offset.saturating_add(amount as usize); vec![] }
-        Msg::ScrollDown(amount) => { model.scroll_offset = model.scroll_offset.saturating_sub(amount as usize); if model.scroll_offset == 0 { model.auto_scroll = true; } vec![] }
-        Msg::ScrollToBottom => { model.scroll_offset = 0; model.auto_scroll = true; vec![] }
+        Msg::Tick => { model.tick += 1; vec![] }
+        // TS ScrollView: `scroll_offset` = viewport top offset in content
+        // rows (0 = top; max = bottom). ScrollUp looks at older content
+        // (offset decreases), ScrollDown newer; reaching the bottom
+        // re-engages follow (grok/TS `follow_by_overscroll` semantics —
+        // the clamp+re-engage happens in render_body).
+        Msg::ScrollUp(amount) => {
+            model.auto_scroll = false;
+            model.scroll_offset = model.scroll_offset.saturating_sub(amount as usize);
+            vec![]
+        }
+        Msg::ScrollDown(amount) => {
+            model.scroll_offset = model.scroll_offset.saturating_add(amount as usize);
+            vec![]
+        }
+        Msg::ScrollToBottom => { model.auto_scroll = true; vec![] }
         Msg::ShowDialog(d) => { model.dialog = Some(d); vec![] }
         Msg::DismissDialog => { model.dialog = None; vec![] }
         Msg::DialogNext => { if let Some(ref mut d) = model.dialog { if d.selected + 1 < d.buttons.len() { d.selected += 1; } } vec![] }
@@ -452,9 +464,9 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     match &mut model.mode {
         AppMode::Chat => match key.code {
             KeyCode::Char(c) => {
-                if c == 'g' && model.g_pressed && model.input.value().is_empty() { model.g_pressed = false; model.scroll_offset = usize::MAX; model.auto_scroll = false; return vec![]; }
+                if c == 'g' && model.g_pressed && model.input.value().is_empty() { model.g_pressed = false; model.scroll_offset = 0; model.auto_scroll = false; return vec![]; }
                 if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
-                if c == 'G' && model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; return vec![]; }
+                if c == 'G' && model.input.value().is_empty() { model.auto_scroll = true; return vec![]; }
                 if let Some(t) = Completer::should_activate(c) { model.completer.activate(t, ""); }
                 else if let Some(t) = model.completer.trigger {
                     if !c.is_whitespace() { let mut q = model.completer.query.clone(); q.push(c); model.completer.activate(t, &q); }
@@ -480,12 +492,15 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             KeyCode::Delete => model.input.delete(),
             KeyCode::Left => model.input.move_left(),
             KeyCode::Right => model.input.move_right(),
-            KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); model.auto_scroll = false; } else { model.input.move_left(); } }
-            KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); if model.scroll_offset == 0 { model.auto_scroll = true; } } else { model.input.move_right(); } }
-            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = usize::MAX; model.auto_scroll = false; } model.input.move_home(); }
-            KeyCode::End => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = true; } model.input.move_end(); }
-            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_add(20); model.auto_scroll = false; }
-            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_sub(20); if model.scroll_offset == 0 { model.auto_scroll = true; } }
+            // 空输入时方向键滚动 transcript（TS ScrollView 语义）：
+            // Up/PageUp/Home 看更早内容（offset 减），Down/PageDown/End 看
+            // 更新内容（offset 增，到底恢复跟随）。
+            KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); model.auto_scroll = false; } else { model.input.move_left(); } }
+            KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); } else { model.input.move_right(); } }
+            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = false; } model.input.move_home(); }
+            KeyCode::End => { if model.input.value().is_empty() { model.auto_scroll = true; } model.input.move_end(); }
+            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_sub(20); model.auto_scroll = false; }
+            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_add(20); }
             _ => {}
         },
         AppMode::Select { list } => { list.handle_key(&key); }
@@ -796,23 +811,35 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
         .map(|b| if b.role == "assistant" { 0 } else { 1 })
         .collect();
 
-    // Anchor at the top when the content fits the screen (TS ScrollView
-    // `scrollTop = 0`), bottom-up otherwise. In alt-screen mode the frame
-    // is the whole visible screen, so overflow is clipped by the terminal
-    // (no internal scroll clipping — history lives in the transcript
-    // itself).
+    // Scroll-window rendering (TS ScrollView semantics): `scroll_offset` is
+    // the viewport-top offset in content rows (0 = top, max = follow
+    // bottom). The content is laid out top-down; every row renderer clips
+    // to `area` (`render_body_row` / `render_boxed_row`), so rows above the
+    // viewport (negative `ly`) and below it are skipped automatically —
+    // this is the internal scrollback: the transcript lives in the model,
+    // not the terminal.
     let total_h: u16 = heights.iter().zip(&gaps).map(|(h, g)| h + g).sum();
-    let mut y = if total_h <= area.height {
-        area.top() as i32 + total_h as i32 - 1
+    let max_scroll = (total_h as usize).saturating_sub(area.height as usize);
+    // Clamp + overscroll re-engage: a scroll-down that lands at the bottom
+    // re-enables follow on this frame (grok `follow_by_overscroll`), so a
+    // fast PageDown ending there keeps streaming content pinned to bottom.
+    // Follow state mirrors the viewport position (TS ScrollView keeps
+    // scrollTop == maxScrollTop while following), so ScrollUp from the
+    // bottom starts at the real bottom rather than at 0.
+    let scroll = if model.auto_scroll {
+        model.scroll_offset = max_scroll;
+        max_scroll
     } else {
-        area.bottom() as i32 - 1
+        let clamped = model.scroll_offset.min(max_scroll);
+        if model.scroll_offset >= max_scroll {
+            model.auto_scroll = true;
+        }
+        clamped
     };
-    for (idx, item) in blocks.iter().enumerate().rev() {
+    let mut ly = area.top() as i32 - scroll as i32;
+    for (idx, item) in blocks.iter().enumerate() {
         let h = (heights[idx] + gaps[idx]) as i32;
-        let item_top = y - h + 1;
-        let ly = item_top;
-        if heights[idx] == 0 {
-            y -= h;
+        if h <= 0 {
             continue;
         }
         match item.role {
@@ -822,7 +849,7 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
             "header" => _ = render_header_block(frame, area, item, ly),
             _ => _ = render_assistant_block(frame, area, item, t, ly),
         }
-        y -= h;
+        ly += h;
     }
 
     if blocks.is_empty() {
@@ -2649,5 +2676,82 @@ mod tests {
         let notice_row = thinking_row + 2;
         assert_eq!(buf[(0, notice_row)].symbol(), "R", "notice text");
         assert_eq!(buf[(0, notice_row)].fg, theme::ERROR, "notice error color");
+    }
+
+    /// 内部 scrollback：内容超过视口时默认跟随底部（显示最新内容）；
+    /// ScrollUp 后显示更早内容（视口上移）；继续 ScrollUp 到底后不再
+    /// 变化；滚回底部恢复跟随；新消息在跟随态下追加到可见底部。
+    #[test]
+    fn internal_scrollback_follows_bottom_and_scrolls_up() {
+        let mut model = Model::new(60, 12);
+        // 造 20 条消息，让内容高度远超视口。
+        for i in 0..20 {
+            update(&mut model, Msg::NewMessage("assistant".into(), format!("line-{i:02}")));
+        }
+        // 强制低高度视口（6 行正文区）。
+        // 跟随底部：可见窗口应显示最新内容（line-19），看不到最早消息。
+        let text = render_text(&mut model, 60, 12);
+        assert!(text.contains("line-19"), "follow bottom shows newest: {text:?}");
+        assert!(!text.contains("line-00"), "follow bottom hides oldest: {text:?}");
+
+        // 向上滚 6 行：line-13 应可见（line-19 被推出视口外）。
+        update(&mut model, Msg::ScrollUp(6));
+        eprintln!("after ScrollUp(6): offset={} auto={}", model.scroll_offset, model.auto_scroll);
+        let text = render_text(&mut model, 60, 12);
+        eprintln!("scrolled text:\n{text}");
+        assert!(text.contains("line-13"), "scroll up shows earlier: {text:?}");
+        assert!(!text.contains("line-19"), "scroll up hides newest: {text:?}");
+
+        // 继续向上滚到顶：最早内容（header）出现，最新内容被推出。
+        update(&mut model, Msg::ScrollUp(100));
+        let text = render_text(&mut model, 60, 12);
+        assert!(
+            text.contains("Pi v1.83.1"),
+            "scroll to top shows oldest (header): {text:?}"
+        );
+        assert!(!text.contains("line-19"), "scroll to top hides newest: {text:?}");
+
+        // 向下滚回底部：恢复跟随（overscroll re-engage）。
+        update(&mut model, Msg::ScrollDown(100));
+        let text = render_text(&mut model, 60, 12);
+        assert!(text.contains("line-19"), "scroll down re-engages follow: {text:?}");
+
+        // 跟随态下新消息追加到可见底部。
+        update(&mut model, Msg::NewMessage("assistant".into(), "line-20".into()));
+        let text = render_text(&mut model, 60, 12);
+        assert!(text.contains("line-20"), "follow appends new content: {text:?}");
+    }
+
+    /// 内容不足一屏时：不滚动，全部可见。
+    #[test]
+    fn internal_scrollback_fits_viewport_shows_all() {
+        let mut model = Model::new(60, 12);
+        for i in 0..3 {
+            update(&mut model, Msg::NewMessage("assistant".into(), format!("msg-{i}")));
+        }
+        let text = render_text(&mut model, 60, 12);
+        for i in 0..3 {
+            assert!(text.contains(&format!("msg-{i}")), "msg-{i} visible: {text:?}");
+        }
+    }
+
+    /// 渲染辅助：TestBackend 画当前视图，返回非空行拼接文本。
+    fn render_text(model: &mut Model, w: u16, h: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+        let mut terminal = RatTerminal::new(TestBackend::new(w, h)).expect("backend");
+        terminal.draw(|frame| view(model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

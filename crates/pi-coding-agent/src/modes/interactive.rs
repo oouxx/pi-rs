@@ -1045,12 +1045,18 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
         let action = tokio::select! {
             _ = tick_timer.tick() => Action::Tick,
-            Some(key) = input_rx.recv() => {
-                use crossterm::event::KeyEventKind;
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            Some(input) = input_rx.recv() => {
+                match input {
+                    pi_tui::terminal::InputEvent::Key(key) => {
+                        use crossterm::event::KeyEventKind;
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        Action::Key(key)
+                    }
+                    pi_tui::terminal::InputEvent::ScrollUp => Action::Agent(pi_tui::Msg::ScrollUp(3)),
+                    pi_tui::terminal::InputEvent::ScrollDown => Action::Agent(pi_tui::Msg::ScrollDown(3)),
                 }
-                Action::Key(key)
             }
             Some(msg) = agent_rx.recv() => Action::Agent(msg),
             Some(msg) = result_rx.recv() => Action::Agent(msg),

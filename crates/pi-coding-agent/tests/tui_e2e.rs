@@ -772,6 +772,15 @@ fn tui_goal_text_status_and_start() {
         tui.rendered()
     );
 
+    // 扩展命令执行后必须消费 settled 队列启动 run：mock 模型的回复出现
+    // 才算 /goal 真的把 owned prompt 交给了 agent（回归：命令只 notify
+    // 不入队启动，模型永远不会收到 goal）。渲染器按词输出，断言 token。
+    assert!(
+        tui.wait_for("LLM!", TIMEOUT),
+        "goal prompt run started; got: {:?}",
+        tui.rendered()
+    );
+
     // Ctrl+D 退出。
     tui.write(&[0x04]); // Ctrl+D: quit
     let code = tui.wait_exit(TIMEOUT);

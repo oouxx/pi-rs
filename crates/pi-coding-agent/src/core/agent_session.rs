@@ -2846,7 +2846,7 @@ impl AgentSession {
             }
             // 扩展命令（如 /goal 激活）会同步入队 follow-up（自动延续）；
             // 与原版 idle 循环一致，这里消费队列启动 run 而不是直接返回。
-            self._run_settled_continuations().await;
+            self.run_settled_continuations().await;
             return Ok(());
         }
 
@@ -2992,14 +2992,18 @@ impl AgentSession {
         // 自动延续：扩展（如 /goal）在 agent_settled 边界可能同步排入
         // follow-up。循环消费直到扩展不再入队（matching TS 交互模式 idle
         // 循环消费 followUp 队列）。
-        self._run_settled_continuations().await;
+        self.run_settled_continuations().await;
         Ok(())
     }
 
     /// settled 边界的自动延续循环：agent_settled → 检查 agent follow-up
     /// 队列 → 有则 continue_run（续跑），续跑失败（如首次启动上下文为空）
     /// 则把队列消息作为新 turn 启动；post-run 处理后再 settled，直到队列空。
-    async fn _run_settled_continuations(&self) {
+    ///
+    /// 公开给 TUI 交互路径：`add_user_text` 尾部与扩展命令执行后调用
+    ///（对齐 TS 交互模式 idle 循环消费 followUp 队列），否则 /goal 等
+    /// 扩展在 agent_settled 入队的 owned prompt 永远不会启动。
+    pub async fn run_settled_continuations(&self) {
         loop {
             self._emit_agent_settled().await;
             if !self.agent.has_queued_messages().await {
@@ -3713,6 +3717,10 @@ References are relative to {}.
             mgr.set_run_prompt(&effective_text);
         }
         self.agent.process(vec![message]).await.ok();
+        // 消费扩展在 agent_settled 边界入队的 follow-up（如 /goal 的 owned
+        // prompt 与自动延续）。TUI 交互路径不走 prompt()，必须在这里收尾，
+        // 否则 goal 自动延续永远不会启动。
+        self.run_settled_continuations().await;
     }
 
     // =========================================================================

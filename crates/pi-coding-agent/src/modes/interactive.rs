@@ -846,7 +846,7 @@ fn spawn_agent_command_task(
                         }
                         AgentCmd::ExtensionCommand(cmd_name, args) => {
                             // Run a slash command registered by an extension.
-                            // The handler runs on a dedicated thread with its
+                            // The handler runs on a blocking thread with its
                             // own current-thread runtime: extensions may block
                             // synchronously (e.g. `ui.confirm` waits for the
                             // user), and a block must never occupy a worker of
@@ -865,7 +865,11 @@ fn spawn_agent_command_task(
                             };
                             drop(sess); // release the lock before blocking
                             if let Some(cmd) = cmd {
-                                std::thread::spawn(move || {
+                                // 命令执行可能同步入队 follow-up（如 /goal 的
+                                // owned prompt）。等命令结束后在 session 上下文
+                                // 里消费 settled 队列启动 run（对齐
+                                // prompt() 的 _tryExecuteExtensionCommand 尾部）。
+                                let handle = tokio::task::spawn_blocking(move || {
                                     let rt = match tokio::runtime::Builder::new_current_thread()
                                         .enable_all()
                                         .build()
@@ -878,7 +882,11 @@ fn spawn_agent_command_task(
                                     };
                                     rt.block_on((cmd.execute)(args, ctx_opt.as_ref()));
                                 });
+                                let _ = handle.await;
                             }
+                            // 消费扩展命令入队的 follow-up（对齐 TS 交互模式）。
+                            let sess = session.lock().await;
+                            sess.run_settled_continuations().await;
                         }
                         AgentCmd::ReloadExtensions => {
                             // Extension reload is not applicable for Rust

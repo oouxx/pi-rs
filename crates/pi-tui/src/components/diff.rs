@@ -13,18 +13,18 @@ pub struct DiffView {
 }
 
 impl DiffView {
-    pub fn new(old: &str, new: &str) -> Self {
+    pub fn new(old: &str, new: &str, t: &crate::theme::Theme) -> Self {
         let mut dv = Self { lines: Vec::new() };
-        dv.compute_diff(old, new);
+        dv.compute_diff(old, new, t);
         dv
     }
 
-    fn compute_diff(&mut self, old: &str, new: &str) {
+    fn compute_diff(&mut self, old: &str, new: &str, t: &crate::theme::Theme) {
         // TS original diff colors: toolDiffAdded / toolDiffRemoved /
         // toolDiffContext, foreground only.
-        let style_added = Style::new().fg(crate::theme::DIFF_ADDED);
-        let style_removed = Style::new().fg(crate::theme::DIFF_REMOVED);
-        let style_context = Style::new().fg(crate::theme::DIFF_CONTEXT);
+        let style_added = Style::new().fg(t.diff_added);
+        let style_removed = Style::new().fg(t.diff_removed);
+        let style_context = Style::new().fg(t.diff_context);
 
         let diff = TextDiff::from_lines(old, new);
         self.lines.clear();

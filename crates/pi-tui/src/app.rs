@@ -335,6 +335,9 @@ pub enum Msg {
     /// Ctrl+O (app.tools.expand): toggle the startup header and tool
     /// output expansion.
     ToggleToolExpansion,
+    /// Switch the active palette (the `/theme` command). Replaces the
+    /// `Theme` wholesale so every surface re-reads its colors next frame.
+    SetTheme(Theme),
 }
 
 // ============================================================================
@@ -407,6 +410,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.tool_output_expanded = !model.tool_output_expanded;
             vec![]
         }
+        Msg::SetTheme(theme) => { model.theme = theme; vec![] }
         Msg::SetEditorText(text) => { model.input.set_value(&text); vec![] }
         Msg::ExitSelect => { model.mode = AppMode::Chat; vec![] }
         Msg::SetToolOutput(call_id, _name, text) => { model.set_tool_output(&call_id, &text); vec![] }
@@ -537,7 +541,7 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         let oa_h = (area.height / 2).clamp(1, area.height.max(1));
         let oa_y = (area.height.saturating_sub(oa_h)) / 2;
         let oa = Rect::new(area.width / 4, oa_y, area.width / 2, oa_h);
-        frame.render_widget(Clear, oa); list.render_to_frame(frame, oa);
+        frame.render_widget(Clear, oa); list.render_to_frame(frame, oa, &t);
     }
 }
 
@@ -644,44 +648,44 @@ struct BlockView {
 /// one-line keybinding hints (compact) or the full list (expanded), and
 /// the onboarding line. Key names are dim, descriptions muted — the same
 /// split the TS `keyHint` helper produces.
-fn header_lines(expanded: bool) -> Vec<Line<'static>> {
+fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
     let hint = |key: &str, desc: &str| {
         Line::from(vec![
-            Span::styled(key.to_string(), Style::new().fg(crate::theme::DIM)),
-            Span::styled(format!(" {desc}"), Style::new().fg(crate::theme::MUTED)),
+            Span::styled(key.to_string(), Style::new().fg(t.dim)),
+            Span::styled(format!(" {desc}"), Style::new().fg(t.muted)),
         ])
     };
     let logo = Line::from(vec![
-        Span::styled("Pi", Style::new().fg(crate::theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled("Pi", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
         Span::styled(
             format!(" v{}", env!("CARGO_PKG_VERSION")),
-            Style::new().fg(crate::theme::DIM),
+            Style::new().fg(t.dim),
         ),
     ]);
     let onboarding = Line::from(Span::styled(
         "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
-        Style::new().fg(crate::theme::DIM),
+        Style::new().fg(t.dim),
     ));
     if !expanded {
         let compact = Line::from(vec![
-            Span::styled("escape", Style::new().fg(crate::theme::DIM)),
-            Span::styled(" interrupt", Style::new().fg(crate::theme::MUTED)),
-            Span::styled(" · ", Style::new().fg(crate::theme::MUTED)),
-            Span::styled("ctrl+c/ctrl+d", Style::new().fg(crate::theme::DIM)),
-            Span::styled(" clear/exit", Style::new().fg(crate::theme::MUTED)),
-            Span::styled(" · ", Style::new().fg(crate::theme::MUTED)),
-            Span::styled("/", Style::new().fg(crate::theme::DIM)),
-            Span::styled(" commands", Style::new().fg(crate::theme::MUTED)),
-            Span::styled(" · ", Style::new().fg(crate::theme::MUTED)),
-            Span::styled("!", Style::new().fg(crate::theme::DIM)),
-            Span::styled(" bash", Style::new().fg(crate::theme::MUTED)),
-            Span::styled(" · ", Style::new().fg(crate::theme::MUTED)),
-            Span::styled("ctrl+o", Style::new().fg(crate::theme::DIM)),
-            Span::styled(" more", Style::new().fg(crate::theme::MUTED)),
+            Span::styled("escape", Style::new().fg(t.dim)),
+            Span::styled(" interrupt", Style::new().fg(t.muted)),
+            Span::styled(" · ", Style::new().fg(t.muted)),
+            Span::styled("ctrl+c/ctrl+d", Style::new().fg(t.dim)),
+            Span::styled(" clear/exit", Style::new().fg(t.muted)),
+            Span::styled(" · ", Style::new().fg(t.muted)),
+            Span::styled("/", Style::new().fg(t.dim)),
+            Span::styled(" commands", Style::new().fg(t.muted)),
+            Span::styled(" · ", Style::new().fg(t.muted)),
+            Span::styled("!", Style::new().fg(t.dim)),
+            Span::styled(" bash", Style::new().fg(t.muted)),
+            Span::styled(" · ", Style::new().fg(t.muted)),
+            Span::styled("ctrl+o", Style::new().fg(t.dim)),
+            Span::styled(" more", Style::new().fg(t.muted)),
         ]);
         let press = Line::from(Span::styled(
             "Press ctrl+o to show full startup help and loaded resources.",
-            Style::new().fg(crate::theme::DIM),
+            Style::new().fg(t.dim),
         ));
         return vec![logo, compact, press, Line::raw(""), onboarding];
     }
@@ -715,14 +719,14 @@ fn header_lines(expanded: bool) -> Vec<Line<'static>> {
 /// then messages and tool calls interleaved by their shared block-id
 /// sequence (a tool call sits right after the assistant message that
 /// requested it).
-fn build_blocks(model: &mut Model, wrap_w: usize) -> Vec<BlockView> {
+fn build_blocks(model: &mut Model, wrap_w: usize, t: &Theme) -> Vec<BlockView> {
     let mut blocks: Vec<BlockView> = Vec::new();
     // Startup header first (TS documentContainer: headerContainer above
     // chatContainer — it scrolls away as content grows).
     if model.show_header {
         blocks.push(BlockView {
             role: "header",
-            md_lines: header_lines(model.tool_output_expanded),
+            md_lines: header_lines(model.tool_output_expanded, t),
             plain_lines: Vec::new(),
             tool_name: String::new(),
             tool_args: String::new(),
@@ -800,7 +804,7 @@ fn build_blocks(model: &mut Model, wrap_w: usize) -> Vec<BlockView> {
 
 fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
-    let blocks = build_blocks(model, wrap_w);
+    let blocks = build_blocks(model, wrap_w, t);
     let expanded = model.tool_output_expanded;
     let heights: Vec<u16> = blocks
         .iter()

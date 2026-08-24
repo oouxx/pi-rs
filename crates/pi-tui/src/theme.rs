@@ -72,9 +72,12 @@ pub const DIFF_REMOVED: Color = rgb(0xcc6666);
 pub const DIFF_CONTEXT: Color = rgb(0x808080);
 
 /// The full theme surface the scrollback and dialogs read. Mirrors the TS
-/// original `Theme` (dark.json): semantic names, resolved hex values.
+/// original `Theme` (dark.json / light.json): semantic names, resolved hex
+/// values. `name` is the theme's display name (`dark` / `light`) so the
+/// `/theme` command can report which palette is active.
 #[derive(Clone)]
 pub struct Theme {
+    pub name: &'static str,
     pub accent: Color,
     pub border: Color,
     pub border_accent: Color,
@@ -109,9 +112,69 @@ pub struct Theme {
     pub diff_context: Color,
 }
 
+impl Theme {
+    /// The TS original light theme (`light.json`), with `vars` resolved to
+    /// their hex values. Reference values:
+    ///
+    /// | token | hex |
+    /// | --- | --- |
+    /// | accent / borderAccent | `#5a8080` (teal) |
+    /// | border | `#547da7` (blue) |
+    /// | borderMuted | `#b0b0b0` (lightGray) |
+    /// | success / error / warning | `#588458` / `#aa5555` / `#9a7326` |
+    /// | muted / dim / text / thinkingText | `#6c6c6c` / `#767676` / `#1f2328` / `#6c6c6c` |
+    /// | selectedBg | `#d0d0e0` |
+    /// | userMessageBg / userMessageText | `#e8e8e8` / `#1f2328` |
+    /// | toolPendingBg / toolSuccessBg / toolErrorBg | `#e8e8f0` / `#e8f0e8` / `#f0e8e8` |
+    /// | toolTitle / toolOutput | `#1f2328` / `#6c6c6c` |
+    /// | mdHeading / mdLink / mdLinkUrl | `#9a7326` / `#547da7` / `#767676` |
+    /// | mdCode / mdCodeBlock / mdCodeBlockBorder | `#5a8080` / `#588458` / `#6c6c6c` |
+    /// | mdQuote / mdQuoteBorder / mdHr / mdListBullet | `#6c6c6c` / `#6c6c6c` / `#6c6c6c` / `#588458` |
+    /// | toolDiffAdded / toolDiffRemoved / toolDiffContext | `#588458` / `#aa5555` / `#6c6c6c` |
+    #[must_use]
+    pub fn light() -> Self {
+        Self {
+            name: "light",
+            accent: rgb(0x5a8080),
+            border: rgb(0x547da7),
+            border_accent: rgb(0x5a8080),
+            border_muted: rgb(0xb0b0b0),
+            success: rgb(0x588458),
+            error: rgb(0xaa5555),
+            warning: rgb(0x9a7326),
+            muted: rgb(0x6c6c6c),
+            dim: rgb(0x767676),
+            text: rgb(0x1f2328),
+            thinking_text: rgb(0x6c6c6c),
+            selected_bg: rgb(0xd0d0e0),
+            user_message_bg: rgb(0xe8e8e8),
+            user_message_text: rgb(0x1f2328),
+            tool_pending_bg: rgb(0xe8e8f0),
+            tool_success_bg: rgb(0xe8f0e8),
+            tool_error_bg: rgb(0xf0e8e8),
+            tool_title: rgb(0x1f2328),
+            tool_output: rgb(0x6c6c6c),
+            md_heading: rgb(0x9a7326),
+            md_link: rgb(0x547da7),
+            md_link_url: rgb(0x767676),
+            md_code: rgb(0x5a8080),
+            md_code_block: rgb(0x588458),
+            md_code_block_border: rgb(0x6c6c6c),
+            md_quote: rgb(0x6c6c6c),
+            md_quote_border: rgb(0x6c6c6c),
+            md_hr: rgb(0x6c6c6c),
+            md_list_bullet: rgb(0x588458),
+            diff_added: rgb(0x588458),
+            diff_removed: rgb(0xaa5555),
+            diff_context: rgb(0x6c6c6c),
+        }
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self {
+            name: "dark",
             accent: ACCENT,
             border: BORDER,
             border_accent: BORDER_ACCENT,

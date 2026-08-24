@@ -56,7 +56,7 @@ impl SelectList {
         }
     }
 
-    pub fn render_to_frame(&self, frame: &mut Frame, area: Rect) {
+    pub fn render_to_frame(&self, frame: &mut Frame, area: Rect, t: &crate::theme::Theme) {
         let items: Vec<ListItem> = self.items.iter().map(|item| {
             ListItem::new(Text::raw(item.clone())).style(Style::default())
         }).collect();
@@ -64,12 +64,12 @@ impl SelectList {
         // border, selectedBg highlight.
         let block = Block::default()
             .borders(Borders::ALL).border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(crate::theme::BORDER_MUTED))
-            .title_style(Style::new().fg(crate::theme::ACCENT))
+            .border_style(Style::new().fg(t.border_muted))
+            .title_style(Style::new().fg(t.accent))
             .title(if self.title.is_empty() { " Select " } else { &self.title });
         frame.render_widget(Clear, area);
         let list = List::new(items).block(block)
-            .highlight_style(Style::default().fg(crate::theme::ACCENT).bg(crate::theme::SELECTED_BG).add_modifier(Modifier::BOLD))
+            .highlight_style(Style::default().fg(t.accent).bg(t.selected_bg).add_modifier(Modifier::BOLD))
             .highlight_symbol("\u{2192} ");
         // Clone state for rendering
         let mut state = ListState::default();

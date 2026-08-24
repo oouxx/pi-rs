@@ -35,7 +35,7 @@ const SPINNER_TICK_MS: u64 = 100;
 // background task, which holds the lock across an agent run)
 // ============================================================================
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum AgentCmd {
     SendMessage(String),
     AbortBash,
@@ -67,6 +67,9 @@ enum Action {
 // Effect — side effects requested by `update`, executed by the event loop
 // ============================================================================
 
+// Effect 是内部私有枚举：derive Debug/PartialEq 仅为测试断言服务，
+// 无行为影响。
+#[derive(Debug, PartialEq)]
 enum Effect {
     /// Send a command to the agent background task (session-locked).
     AgentCommand(AgentCmd),
@@ -291,6 +294,7 @@ impl AppState {
             ("/new", "Start a new session"),
             ("/name <name>", "Set the session name"),
             ("/model <provider>/<id>", "Switch model"),
+            ("/theme", "Switch theme (dark/light)"),
             ("/reload", "Reload extensions"),
             ("/quit", "Quit"),
         ]
@@ -694,8 +698,46 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
                 vec![]
             }
         }
+        "/theme" => {
+            // Switch the active palette. `/theme` toggles dark/light;
+            // `/theme dark` / `/theme light` (or any prefix) picks one
+            // explicitly. Unknown names report the valid choices instead
+            // of silently doing nothing.
+            let toggled = |state: &mut AppState| {
+                let next = if state.model.theme.name == "dark" {
+                    pi_tui::Theme::light()
+                } else {
+                    pi_tui::Theme::default()
+                };
+                let name = next.name;
+                app::update(&mut state.model, pi_tui::Msg::SetTheme(next));
+                system(state, format!("Theme switched to {name}"));
+            };
+            let arg = args.trim().to_lowercase();
+            match arg.as_str() {
+                "" => toggled(state),
+                // 前缀匹配：参数是主题名的前缀即可（`/theme lig` → light），
+                // 而不是参数以主题名开头。"dark"/"light" 无公共前缀，
+                // 不会歧义；参数为 "" 已被上一分支截走。
+                a if "dark".starts_with(a) => {
+                    app::update(&mut state.model, pi_tui::Msg::SetTheme(pi_tui::Theme::default()));
+                    system(state, "Theme switched to dark".into());
+                }
+                a if "light".starts_with(a) => {
+                    app::update(&mut state.model, pi_tui::Msg::SetTheme(pi_tui::Theme::light()));
+                    system(state, "Theme switched to light".into());
+                }
+                _ => {
+                    system(
+                        state,
+                        format!("Unknown theme '{args}'. Usage: /theme [dark|light]"),
+                    );
+                }
+            }
+            vec![]
+        }
         "/help" => {
-            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /help, /quit".to_string();
+            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /theme [dark|light], /help, /quit".to_string();
             if !state.ext_commands.is_empty() {
                 help.push_str(&format!("\nExtension: /{}", state.ext_commands.join(", /")));
             }
@@ -1232,4 +1274,76 @@ fn restore_terminal() {
         crossterm::cursor::Show,
     );
     let _ = crossterm::terminal::disable_raw_mode();
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    fn state() -> AppState {
+        AppState::new(120, 80, Vec::new())
+    }
+
+    #[test]
+    fn theme_defaults_to_dark() {
+        assert_eq!(state().model.theme.name, "dark");
+    }
+
+    #[test]
+    fn theme_command_toggles_between_dark_and_light() {
+        let mut s = state();
+        // No arg toggles dark -> light.
+        let effects = slash_command(&mut s, "/theme");
+        assert_eq!(s.model.theme.name, "light", "toggle: dark -> light");
+        assert_eq!(effects, vec![]);
+        // Toggle again: light -> dark.
+        slash_command(&mut s, "/theme");
+        assert_eq!(s.model.theme.name, "dark", "toggle: light -> dark");
+        // A system notice is pushed so the switch is visible.
+        assert!(
+            s.model.messages.iter().any(|m| m.role == "system"),
+            "theme switch reports a system notice"
+        );
+    }
+
+    #[test]
+    fn theme_command_sets_named_theme_explicitly() {
+        let mut s = state();
+        slash_command(&mut s, "/theme light");
+        assert_eq!(s.model.theme.name, "light");
+        slash_command(&mut s, "/theme dark");
+        assert_eq!(s.model.theme.name, "dark");
+        // Prefix matching also works: `/theme lig` matches "light".
+        slash_command(&mut s, "/theme lig");
+        assert_eq!(s.model.theme.name, "light");
+        // Case-insensitive: args are lowercased before matching.
+        slash_command(&mut s, "/theme D");
+        assert_eq!(s.model.theme.name, "dark");
+        // A full name + junk does not match (prefix must be a real prefix).
+        slash_command(&mut s, "/theme lightx");
+        assert_eq!(s.model.theme.name, "dark", "non-prefix stays dark");
+        assert!(
+            s.model
+                .messages
+                .iter()
+                .any(|m| m.role == "system" && m.text.contains("Unknown theme")),
+            "lightx reports a usage notice"
+        );
+    }
+
+    #[test]
+    fn theme_command_reports_unknown_theme() {
+        let mut s = state();
+        slash_command(&mut s, "/theme solarized");
+        // Theme is untouched and a usage notice is pushed.
+        assert_eq!(s.model.theme.name, "dark");
+        assert!(
+            s.model
+                .messages
+                .iter()
+                .any(|m| m.role == "system" && m.text.contains("Unknown theme")),
+            "unknown theme reports a usage notice"
+        );
+    }
 }

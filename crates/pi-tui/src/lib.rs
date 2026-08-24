@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod components;
+pub mod detect;
 pub mod keymap;
 pub mod render;
 pub mod terminal;
@@ -12,6 +13,7 @@ pub mod theme;
 
 // Re-export key types
 pub use app::{AppMode, Cmd, Dialog, DialogAction, DialogButton, Message, Model, Msg};
+pub use detect::{detect_terminal_background_theme, detect_theme_from_env, TerminalTheme};
 pub use theme::Theme;
 pub use components::{
     Completer, CompletionItem, CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown,

@@ -1001,6 +1001,29 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
 /// Run the interactive TUI mode.
 /// Mirrors the original InteractiveMode.run().
 pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
+    // ── Theme auto-detection（对齐 TS `InteractiveThemeController`）──────
+    // TS：`detectTerminalBackgroundFromEnv()`（COLORFGBG）→ `applyFromSettings`
+    // 里无显式设置时 `detectTerminalBackgroundTheme`（OSC 11 查询 → env →
+    // dark fallback），high confidence 时持久化到 settings。
+    // OSC 11 查询需要 raw mode（canonical 模式 stdin 等到换行才返回，OSC
+    // 响应以 BEL 结尾）且必须在 crossterm EventStream 启动前完成（它读
+    // stdin 时会吞掉无法解析的 OSC 响应）。
+    let theme_detection = {
+        let _ = crossterm::terminal::enable_raw_mode();
+        let detection = pi_tui::detect::detect_terminal_background_theme(
+            std::time::Duration::from_millis(100),
+        );
+        let _ = crossterm::terminal::disable_raw_mode();
+        detection
+    };
+    let theme_setting = session.get_theme_setting();
+    let resolved_theme = resolve_theme_setting(theme_setting.as_deref(), theme_detection.theme);
+    // TS `applyFromSettings`：无显式设置且探测为 high confidence 时把
+    // 探测结果写入 settings（避免每次启动重复探测）。
+    if theme_setting.is_none() && theme_detection.confidence_high() {
+        session.set_theme_setting(theme_detection.theme.name());
+    }
+
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
@@ -1043,6 +1066,12 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     session.set_extension_mode("tui");
 
     let mut state = AppState::new(cols, rows, ext_commands);
+    // 探测/设置解析出的初始主题（TS `initTheme(activeThemeName)`）；
+    // 只有 "light" 内置主题名会切到浅色，其余（含自定义主题名，pi-rs
+    // 无自定义主题系统）落到 dark。
+    if resolved_theme.as_deref() == Some("light") {
+        state.model.theme = pi_tui::Theme::light();
+    }
     state.model.model_name = initial_model_name;
     state.model.cwd = cwd.clone();
     state.model.git_branch = current_git_branch(&cwd);
@@ -1284,6 +1313,52 @@ fn restore_terminal() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
+// ============================================================================
+// Theme setting resolution (TS `theme.ts` parseAutoThemeSetting /
+// resolveThemeSetting)
+// ============================================================================
+
+/// TS `parseAutoThemeSetting`: `"lightTheme/darkTheme"` (exactly one `/`,
+/// both sides non-empty) is an auto theme setting.
+fn parse_auto_theme_setting(setting: &str) -> Option<(&str, &str)> {
+    let mut parts = setting.splitn(3, '/');
+    let light = parts.next()?;
+    let dark = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let light = light.trim();
+    let dark = dark.trim();
+    if light.is_empty() || dark.is_empty() {
+        None
+    } else {
+        Some((light, dark))
+    }
+}
+
+/// TS `resolveThemeSetting`: auto setting resolves through the detected
+/// terminal theme; a setting containing `/` that is not a valid auto pair
+/// means "no explicit theme" (undefined); anything else is used verbatim.
+fn resolve_theme_setting(
+    setting: Option<&str>,
+    terminal_theme: pi_tui::detect::TerminalTheme,
+) -> Option<String> {
+    let setting = setting?;
+    if let Some((light, dark)) = parse_auto_theme_setting(setting) {
+        return Some(
+            match terminal_theme {
+                pi_tui::detect::TerminalTheme::Light => light,
+                pi_tui::detect::TerminalTheme::Dark => dark,
+            }
+            .to_string(),
+        );
+    }
+    if setting.contains('/') {
+        return None;
+    }
+    Some(setting.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1353,5 +1428,51 @@ mod tests {
                 .any(|m| m.role == "system" && m.text.contains("Unknown theme")),
             "unknown theme reports a usage notice"
         );
+    }
+
+    // ============================================================
+    // Theme setting resolution (TS parseAutoThemeSetting / resolveThemeSetting)
+    // ============================================================
+
+    #[test]
+    fn auto_theme_setting_requires_exactly_one_slash() {
+        assert_eq!(parse_auto_theme_setting("light/dark"), Some(("light", "dark")));
+        // Spaces around names are trimmed.
+        assert_eq!(parse_auto_theme_setting(" light / dark "), Some(("light", "dark")));
+        // Empty side, two slashes, no slash → not an auto setting.
+        assert_eq!(parse_auto_theme_setting("light/"), None);
+        assert_eq!(parse_auto_theme_setting("/dark"), None);
+        assert_eq!(parse_auto_theme_setting("a/b/c"), None);
+        assert_eq!(parse_auto_theme_setting("dark"), None);
+    }
+
+    #[test]
+    fn resolve_theme_setting_auto_follows_terminal_theme() {
+        use pi_tui::detect::TerminalTheme;
+        let auto = Some("solarized-light/solarized-dark");
+        assert_eq!(
+            resolve_theme_setting(auto, TerminalTheme::Light).as_deref(),
+            Some("solarized-light")
+        );
+        assert_eq!(
+            resolve_theme_setting(auto, TerminalTheme::Dark).as_deref(),
+            Some("solarized-dark")
+        );
+        // Explicit name is used verbatim, independent of the terminal theme.
+        assert_eq!(
+            resolve_theme_setting(Some("light"), TerminalTheme::Dark).as_deref(),
+            Some("light")
+        );
+        // "dark/light.json" is a *valid* auto pair in TS (lightTheme=dark,
+        // darkTheme=light.json) — resolved through the terminal theme.
+        assert_eq!(
+            resolve_theme_setting(Some("dark/light.json"), TerminalTheme::Dark).as_deref(),
+            Some("light.json")
+        );
+        // Slash values that fail parseAutoThemeSetting (two slashes) mean
+        // "no theme" (TS resolveThemeSetting returns undefined).
+        assert_eq!(resolve_theme_setting(Some("a/b/c"), TerminalTheme::Dark), None);
+        // No setting → no resolution.
+        assert_eq!(resolve_theme_setting(None, TerminalTheme::Dark), None);
     }
 }

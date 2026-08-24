@@ -2546,6 +2546,24 @@ impl AgentSession {
         }
     }
 
+    /// Current theme setting (TS `settingsManager.getThemeSetting()`).
+    /// `None` when unset — the interactive mode then auto-detects the
+    /// terminal background and persists the high-confidence result.
+    pub fn get_theme_setting(&self) -> Option<String> {
+        self.settings_manager
+            .lock()
+            .ok()
+            .and_then(|sm| sm.get_theme_setting().map(str::to_string))
+    }
+
+    /// Persist a theme name (TS `settingsManager.setTheme()`), written to
+    /// the global settings scope.
+    pub fn set_theme_setting(&self, theme: &str) {
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_theme(theme);
+        }
+    }
+
     pub fn retry_attempt(&self) -> u32 {
         *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

@@ -2530,6 +2530,7 @@ dependencies = [
  "anstyle",
  "crossterm",
  "futures",
+ "libc",
  "ratatui",
  "serde_json",
  "similar",

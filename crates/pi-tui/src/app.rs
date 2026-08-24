@@ -19,6 +19,230 @@ use ratatui::Frame;
 use crate::components::{Completer, Editor, Input, Markdown, SelectList};
 use crate::theme::Theme;
 
+// ============================================================================
+// Edit tool diff rendering (TS `components/diff.ts` `renderDiff`)
+// ============================================================================
+
+/// TS `parseDiffLine`: `^([+\-\s])(\s*\d*)\s(.*)$` — leading prefix
+/// (`+`/`-`/space), an optional line-number run (kept verbatim, including
+/// padStart spaces), then a mandatory whitespace separator, then content.
+fn parse_diff_line(line: &str) -> Option<(char, String, &str)> {
+    let mut chars = line.chars();
+    let prefix = chars.next()?;
+    if !matches!(prefix, '+' | '-' | ' ' | '\t') {
+        return None;
+    }
+    let rest = chars.as_str();
+    let bytes = rest.as_bytes();
+    // (\s*\d*): optional whitespace run, then digits.
+    let mut idx = 0;
+    while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b'\t') {
+        idx += 1;
+    }
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    // Mandatory separator whitespace before content. When the greedy
+    // `\s*\d*` run consumed everything, the regex engine backtracks:
+    // `\s*` gives up its whitespace so `\s` can match it (`- abc` →
+    // lineNum "", content "abc").
+    let separator = idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b'\t');
+    if separator {
+        let line_num = rest[..idx].to_string();
+        let content = &rest[idx + 1..];
+        Some((prefix, line_num, content))
+    } else if idx > 0 && bytes[0] == b' ' {
+        // Backtrack: `\s*` takes nothing, `\s` takes the first space.
+        Some((prefix, String::new(), &rest[idx..]))
+    } else {
+        None
+    }
+}
+
+/// TS `replaceTabs`: tabs render as three spaces.
+fn replace_tabs(text: &str) -> String {
+    text.replace('\t', "   ")
+}
+
+/// TS `renderIntraLineDiff` (word-level diff of a single removed/added line
+/// pair): changed tokens render with inverse video; leading whitespace of the
+/// first changed token is kept plain so indentation is not highlighted.
+fn intra_line_spans(
+    old: &str,
+    new: &str,
+    removed_style: Style,
+    added_style: Style,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_words(old, new);
+    let mut removed_line: Vec<Span<'static>> = Vec::new();
+    let mut added_line: Vec<Span<'static>> = Vec::new();
+    let mut first_removed = true;
+    let mut first_added = true;
+
+    for change in diff.iter_all_changes() {
+        let value = change.value();
+        match change.tag() {
+            ChangeTag::Delete => {
+                let mut v = value.to_string();
+                if first_removed {
+                    let leading_len = v.len() - v.trim_start().len();
+                    if leading_len > 0 {
+                        removed_line.push(Span::raw(v[..leading_len].to_string()));
+                        v = v[leading_len..].to_string();
+                    }
+                    first_removed = false;
+                }
+                if !v.is_empty() {
+                    removed_line.push(Span::styled(v, removed_style.add_modifier(Modifier::REVERSED)));
+                }
+            }
+            ChangeTag::Insert => {
+                let mut v = value.to_string();
+                if first_added {
+                    let leading_len = v.len() - v.trim_start().len();
+                    if leading_len > 0 {
+                        added_line.push(Span::raw(v[..leading_len].to_string()));
+                        v = v[leading_len..].to_string();
+                    }
+                    first_added = false;
+                }
+                if !v.is_empty() {
+                    added_line.push(Span::styled(v, added_style.add_modifier(Modifier::REVERSED)));
+                }
+            }
+            ChangeTag::Equal => {
+                removed_line.push(Span::raw(value.to_string()));
+                added_line.push(Span::raw(value.to_string()));
+            }
+        }
+    }
+    (removed_line, added_line)
+}
+
+/// One diff line rendered inside the edit tool box: context lines in
+/// `toolDiffContext`, `-` lines in `toolDiffRemoved`, `+` lines in
+/// `toolDiffAdded`; a single removed/added pair gets intra-line word
+/// highlighting (TS `renderDiff`). Returns the line height consumed.
+/// TS `renderDiff` 主循环的一步：渲染 `lines[i]`。`-` 行会前瞻收集连续
+/// 的 `-`/`+` 行做分组——恰好 1 删 1 增时做词级 intra-line 高亮（inverse
+/// 标记变更 token），否则整组按行着色。返回消费的行数。
+fn render_edit_diff_line(
+    frame: &mut Frame,
+    area: Rect,
+    y: i32,
+    bg: Color,
+    lines: &[&str],
+    i: usize,
+    t: &Theme,
+) -> usize {
+    let removed_style = Style::new().fg(t.diff_removed);
+    let added_style = Style::new().fg(t.diff_added);
+    let context_style = Style::new().fg(t.diff_context);
+
+    let Some((prefix, line_num, content)) = parse_diff_line(lines[i]) else {
+        // Non-diff line (blank, "..." skips, unparseable): context color, verbatim.
+        render_boxed_row(frame, area, y, bg, vec![Span::styled(lines[i].to_string(), context_style)]);
+        return 1;
+    };
+
+    match prefix {
+        '-' => {
+            // Collect consecutive removed lines, then consecutive added lines
+            // (TS groups a change block the same way).
+            let mut removed: Vec<(String, String)> = Vec::new();
+            let mut j = i;
+            while j < lines.len() {
+                let Some((p, ln, c)) = parse_diff_line(lines[j]) else { break };
+                if p != '-' { break; }
+                removed.push((ln, c.to_string()));
+                j += 1;
+            }
+            let mut added: Vec<(String, String)> = Vec::new();
+            while j < lines.len() {
+                let Some((p, ln, c)) = parse_diff_line(lines[j]) else { break };
+                if p != '+' { break; }
+                added.push((ln, c.to_string()));
+                j += 1;
+            }
+            let consumed = removed.len() + added.len();
+
+            if removed.len() == 1 && added.len() == 1 {
+                // Single-line modification: word-level diff with inverse
+                // video on the changed tokens (TS `renderIntraLineDiff`).
+                let (removed_spans, added_spans) = intra_line_spans(
+                    &replace_tabs(&removed[0].1),
+                    &replace_tabs(&added[0].1),
+                    removed_style,
+                    added_style,
+                );
+                let mut r = vec![Span::styled(format!("-{} ", removed[0].0), removed_style)];
+                r.extend(removed_spans);
+                render_boxed_row(frame, area, y, bg, r);
+                let mut a = vec![Span::styled(format!("+{} ", added[0].0), added_style)];
+                a.extend(added_spans);
+                render_boxed_row(frame, area, y + 1, bg, a);
+            } else {
+                let mut ly = y;
+                for (ln, content) in &removed {
+                    render_boxed_row(
+                        frame,
+                        area,
+                        ly,
+                        bg,
+                        vec![Span::styled(
+                            format!("-{ln} {}", replace_tabs(content)),
+                            removed_style,
+                        )],
+                    );
+                    ly += 1;
+                }
+                for (ln, content) in &added {
+                    render_boxed_row(
+                        frame,
+                        area,
+                        ly,
+                        bg,
+                        vec![Span::styled(
+                            format!("+{ln} {}", replace_tabs(content)),
+                            added_style,
+                        )],
+                    );
+                    ly += 1;
+                }
+            }
+            consumed
+        }
+        '+' => {
+            render_boxed_row(
+                frame,
+                area,
+                y,
+                bg,
+                vec![Span::styled(
+                    format!("+{line_num} {}", replace_tabs(content)),
+                    added_style,
+                )],
+            );
+            1
+        }
+        _ => {
+            render_boxed_row(
+                frame,
+                area,
+                y,
+                bg,
+                vec![Span::styled(
+                    format!(" {line_num} {}", replace_tabs(content)),
+                    context_style,
+                )],
+            );
+            1
+        }
+    }
+}
+
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Tool-output preview lines when not expanded (TS
@@ -1381,8 +1605,9 @@ fn render_grep_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
 }
 
 /// Edit renderer (TS `formatEditCall`): title `edit {path}`; the diff
-/// text renders as plain output (TS uses a dedicated diff widget — noted
-/// as a deviation).
+/// text renders with diff syntax highlighting (TS `renderDiff`:
+/// `-`/`+`/context lines in toolDiffRemoved/toolDiffAdded/toolDiffContext,
+/// single-line modifications get intra-line word highlighting).
 fn render_edit_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, _expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
     let v: serde_json::Value = serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
     let path = v
@@ -1405,9 +1630,12 @@ fn render_edit_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, _expa
     if !item.tool_output.is_empty() {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
-        for line in item.tool_output.lines() {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(line.to_string(), Style::new().fg(t.tool_output))]);
-            ly += 1;
+        let lines: Vec<&str> = item.tool_output.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let consumed = render_edit_diff_line(frame, area, ly, bg, &lines, i, t);
+            ly += consumed as i32;
+            i += consumed;
         }
     }
     ly
@@ -1850,6 +2078,74 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
     use crate::theme;
+
+    // ============================================================
+    // Edit tool diff parsing (TS `parseDiffLine` / `renderDiff`)
+    // ============================================================
+
+    #[test]
+    fn parse_diff_line_handles_padded_line_numbers() {
+        // `+123 content` / `-123 content` / ` 123 content` (generateDiffString
+        // pads line numbers to equal width).
+        assert_eq!(parse_diff_line("+123 abc"), Some(('+', "123".into(), "abc")));
+        assert_eq!(parse_diff_line("-123 abc"), Some(('-', "123".into(), "abc")));
+        assert_eq!(parse_diff_line(" 123 abc"), Some((' ', "123".into(), "abc")));
+        // Wide padding (3-digit padStart) is kept verbatim.
+        assert_eq!(parse_diff_line("-  1 abc"), Some(('-', "  1".into(), "abc")));
+        // Line number may be missing (`- content`).
+        assert_eq!(parse_diff_line("- abc"), Some(('-', String::new(), "abc")));
+        // Content may be empty (` ` context line).
+        assert_eq!(parse_diff_line(" 123 "), Some((' ', "123".into(), "")));
+    }
+
+    #[test]
+    fn parse_diff_line_rejects_non_diff_lines() {
+        // `+foo` has no separator whitespace after the number run.
+        assert_eq!(parse_diff_line("+foo"), None);
+        assert_eq!(parse_diff_line("plain text"), None);
+        assert_eq!(parse_diff_line("--- a/foo"), None);
+        assert_eq!(parse_diff_line("@@ -1,2 +1,2 @@"), None);
+        assert_eq!(parse_diff_line(""), None);
+    }
+
+    #[test]
+    fn replace_tabs_renders_three_spaces() {
+        assert_eq!(replace_tabs("a\tb"), "a   b");
+        assert_eq!(replace_tabs("no tabs"), "no tabs");
+    }
+
+    #[test]
+    fn intra_line_spans_highlight_changed_words() {
+        // "hello world" → "hello rust": only "rust" is inverted; "hello "
+        // is plain (equal part).
+        let (removed, added) = intra_line_spans(
+            "hello world",
+            "hello rust",
+            Style::new().fg(theme::Theme::default().diff_removed),
+            Style::new().fg(theme::Theme::default().diff_added),
+        );
+        let text = |s: &[Span]| s.iter().map(|sp| sp.content.as_ref()).collect::<String>();
+        assert_eq!(text(&removed), "hello world");
+        assert_eq!(text(&added), "hello rust");
+        // The changed token carries the REVERSED modifier; the equal prefix does not.
+        let inverted = |s: &[Span]| {
+            s.iter()
+                .filter(|sp| sp.style.add_modifier.contains(Modifier::REVERSED))
+                .map(|sp| sp.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(inverted(&removed), "world", "changed removed token inverted");
+        assert_eq!(inverted(&added), "rust", "changed added token inverted");
+        // Leading whitespace of the first changed token stays plain (TS strips it).
+        let (removed, _) = intra_line_spans(
+            "  foo",
+            "  bar",
+            Style::new().fg(theme::Theme::default().diff_removed),
+            Style::new().fg(theme::Theme::default().diff_added),
+        );
+        assert_eq!(text(&removed), "  foo");
+        assert_eq!(inverted(&removed), "foo", "indentation not highlighted");
+    }
 
     /// Messages must route their text through the markdown pipeline, so
     /// markdown syntax is parsed (emphasis markers stripped) and semantic

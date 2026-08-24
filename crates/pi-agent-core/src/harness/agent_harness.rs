@@ -906,7 +906,6 @@ where
             on_response: None,
             on_headers: None,
             on_provider_response: None,
-            max_consecutive_tool_calls: None,
         };
 
         let signal = Some(cancel_rx);

@@ -935,7 +935,6 @@ pub struct AgentLoopConfig {
     >,
     pub on_provider_response:
         Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
-    pub max_consecutive_tool_calls: Option<usize>,
 }
 
 pub async fn run_agent_loop(
@@ -1090,9 +1089,6 @@ async fn run_loop(
     let mut config_reasoning = initial_config.reasoning.clone();
     let mut first_turn = true;
 
-    let max_consecutive_tool_calls = initial_config.max_consecutive_tool_calls.unwrap_or(25);
-    let mut consecutive_tool_call_rounds: usize = 0;
-
     let mut pending_messages: Vec<AgentMessage> =
         if let Some(get_steering) = &initial_config.get_steering_messages {
             get_steering().await
@@ -1190,20 +1186,6 @@ async fn run_loop(
 
             let tool_calls = extract_tool_calls(&agent_msg);
             has_more_tool_calls = !tool_calls.is_empty();
-
-            if has_more_tool_calls {
-                consecutive_tool_call_rounds += 1;
-                if consecutive_tool_call_rounds > max_consecutive_tool_calls {
-                    let err_msg = format!(
-                        "Agent terminated: exceeded {} consecutive tool call rounds without producing a text response",
-                        max_consecutive_tool_calls
-                    );
-                    eprintln!("[agent_loop] {}", err_msg);
-                    break;
-                }
-            } else {
-                consecutive_tool_call_rounds = 0;
-            }
 
             // When stopReason is "length", the output was cut off by the token limit.
             // Every tool call in the message may carry truncated arguments — fail them
@@ -1504,7 +1486,6 @@ mod tests {
             on_response: None,
             on_headers: None,
             on_provider_response: None,
-            max_consecutive_tool_calls: None,
         };
 
         run_agent_loop(
@@ -2605,7 +2586,6 @@ mod tests {
             on_response: None,
             on_headers: None,
             on_provider_response: None,
-            max_consecutive_tool_calls: None,
         }
     }
 

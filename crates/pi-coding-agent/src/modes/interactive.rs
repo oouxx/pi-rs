@@ -1028,8 +1028,16 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     // ── Extension UI bridge: wire dialogs/notifications to the TUI ───────
     // (must happen before the session is shared with the background task)
-    let (ui_ctx, _ui_tx, mut ui_rx) = create_tui_ui_context();
+    let (ui_ctx, ui_tx, mut ui_rx) = create_tui_ui_context();
     session.set_extension_ui_context(ui_ctx);
+    // 扩展错误 → 系统消息（对齐 TS interactive-mode `showExtensionError`：
+    // 错误以文本形式进入聊天区，而不是写 stderr 污染备用屏幕）。
+    session.set_extension_error_listener(Some(Box::new(move |err| {
+        let _ = ui_tx.send(UiAction::Notify(format!(
+            "Extension \"{}\" error: {}",
+            err.extension_path, err.error
+        )));
+    })));
     // TUI 模式标记：扩展（如 pi-goal）据此展示 TUI 菜单（对齐 TS
     // `ctx.mode === "tui"`）。
     session.set_extension_mode("tui");

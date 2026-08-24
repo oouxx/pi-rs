@@ -376,7 +376,7 @@ fn convert_messages(
     context: &Context,
     compat: &ResolvedOpenAICompletionsCompat,
     grammar_properties: &std::collections::HashMap<String, String>,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
     let mut params: Vec<Value> = Vec::new();
 
     if let Some(sp) = &context.system_prompt {
@@ -532,50 +532,46 @@ fn convert_messages(
                     msg_obj.insert("content".into(), json!(assistant_text));
                 }
 
-                let tool_calls: Vec<Value> = content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                            ..
-                        } => {
-                            let custom_property = grammar_properties.get(name);
-                            let normalized_id = if is_same_model {
-                                id.clone()
-                            } else {
-                                normalize_tool_call_id(id, model)
-                            };
-                            if normalized_id != *id {
-                                tool_call_id_map.insert(id.clone(), normalized_id.clone());
-                            }
-                            if let Some(property) = custom_property {
-                                let input = match super::openai_responses::get_grammar_tool_input(
-                                    name, arguments, property,
-                                ) {
-                                    Ok(input) => input,
-                                    Err(e) => {
-                                        eprintln!("[pi-ai] {e}");
-                                        String::new()
-                                    }
-                                };
-                                Some(json!({
-                                    "id": normalized_id,
-                                    "type": "custom",
-                                    "custom": { "name": name, "input": input },
-                                }))
-                            } else {
-                                Some(json!({
-                                    "id": normalized_id,
-                                    "type": "function",
-                                    "function": { "name": name, "arguments": arguments.to_string() },
-                                }))
-                            }
-                        }
-                        _ => None,
-                    })
-                    .collect();
+                // TS convertMessages 对 custom 工具调用直接调 getGrammarToolInput，
+                // 参数缺失时抛错并向上传播（流化为 stream error，走事件流），
+                // 而不是静默降级为空字符串。
+                let mut tool_calls: Vec<Value> = Vec::new();
+                for block in content {
+                    let ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } = block
+                    else {
+                        continue;
+                    };
+                    let custom_property = grammar_properties.get(name);
+                    let normalized_id = if is_same_model {
+                        id.clone()
+                    } else {
+                        normalize_tool_call_id(id, model)
+                    };
+                    if normalized_id != *id {
+                        tool_call_id_map.insert(id.clone(), normalized_id.clone());
+                    }
+                    if let Some(property) = custom_property {
+                        let input = super::openai_responses::get_grammar_tool_input(
+                            name, arguments, property,
+                        )?;
+                        tool_calls.push(json!({
+                            "id": normalized_id,
+                            "type": "custom",
+                            "custom": { "name": name, "input": input },
+                        }));
+                    } else {
+                        tool_calls.push(json!({
+                            "id": normalized_id,
+                            "type": "function",
+                            "function": { "name": name, "arguments": arguments.to_string() },
+                        }));
+                    }
+                }
                 if !tool_calls.is_empty() {
                     msg_obj.insert("tool_calls".into(), json!(tool_calls));
                     let reasoning_details: Vec<Value> = content
@@ -723,7 +719,10 @@ fn convert_messages(
                         // standard content field.
                         let mut kimi = serde_json::Map::new();
                         kimi.insert("role".into(), json!("system"));
-                        kimi.insert("tools".into(), json!(convert_tools(&deferred_tools, compat)));
+                        kimi.insert(
+                            "tools".into(),
+                            json!(convert_tools(&deferred_tools, compat)?),
+                        );
                         params.push(Value::Object(kimi));
                     }
                 }
@@ -732,18 +731,22 @@ fn convert_messages(
         i += 1;
     }
 
-    params
+    Ok(params)
 }
 
 /// Convert pi-ai tools to `OpenAI` tool definitions (match TS `convertTools`).
-fn convert_tools(tools: &[Tool], compat: &ResolvedOpenAICompletionsCompat) -> Vec<Value> {
+///
+/// 与 TS 一致：constrained-sampling 解析失败（grammar 无可用变体 /
+/// json_schema 必须 strict 但不受支持）时抛错传播（流化为 stream error，
+/// 走事件流），而不是静默跳过或 eprintln。
+fn convert_tools(tools: &[Tool], compat: &ResolvedOpenAICompletionsCompat) -> Result<Vec<Value>, String> {
     let mut result = Vec::new();
     for tool in tools {
-        if let Ok(Some(grammar)) =
+        if let Some(grammar) =
             super::openai_responses::resolve_grammar_constrained_sampling(
                 tool,
                 compat.supports_openai_grammar_tools,
-            )
+            )?
         {
             result.push(json!({
                 "type": "custom",
@@ -761,16 +764,11 @@ fn convert_tools(tools: &[Tool], compat: &ResolvedOpenAICompletionsCompat) -> Ve
             }));
             continue;
         }
-        let strict = match super::openai_responses::resolve_json_schema_strict_sampling(
-            tool,
-            compat.supports_strict_mode,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[pi-ai] {e}");
-                None
-            }
-        };
+        let strict =
+            super::openai_responses::resolve_json_schema_strict_sampling(
+                tool,
+                compat.supports_strict_mode,
+            )?;
         let mut function = serde_json::Map::new();
         function.insert("name".into(), json!(tool.name));
         function.insert("description".into(), json!(tool.description));
@@ -783,7 +781,7 @@ fn convert_tools(tools: &[Tool], compat: &ResolvedOpenAICompletionsCompat) -> Ve
             "function": function,
         }));
     }
-    result
+    Ok(result)
 }
 
 /// Map `OpenAI` finish reason to pi-ai `StopReason`.
@@ -1383,7 +1381,8 @@ async fn stream_openai_inner(
         messages: transformed,
         tools: context.tools.clone(),
     };
-    let mut messages = convert_messages(model, &transformed_context, &compat, &grammar_properties);
+    let mut messages =
+        convert_messages(model, &transformed_context, &compat, &grammar_properties)?;
 
     // Cache retention (match TS `resolveCacheRetention`).
     let cache_retention = options
@@ -1436,7 +1435,7 @@ async fn stream_openai_inner(
             None
         }
     } else {
-        Some(convert_tools(&active_tools, &compat))
+        Some(convert_tools(&active_tools, &compat)?)
     };
 
     // Anthropic-style cache control on messages/tools.
@@ -2275,7 +2274,8 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+            .unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "user");
         assert_eq!(converted[0]["content"], "Hello");
@@ -2294,7 +2294,8 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+            .unwrap();
         assert_eq!(converted.len(), 2);
         assert_eq!(converted[0]["role"], "developer");
         assert_eq!(converted[0]["content"], "You are helpful");
@@ -2327,7 +2328,8 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+            .unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "assistant");
         let tcs = converted[0]["tool_calls"].as_array().unwrap();
@@ -2366,7 +2368,8 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+            .unwrap();
         assert_eq!(converted[0]["role"], "assistant");
         assert_eq!(converted[0]["content"], "answer");
         assert_eq!(converted[0]["reasoning_content"], "reasoning text");
@@ -2390,7 +2393,8 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+            .unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "tool");
         assert_eq!(converted[0]["tool_call_id"], "call_1");
@@ -2408,7 +2412,8 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new());
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+            .unwrap();
         assert_eq!(converted.len(), 0);
     }
 
@@ -2468,10 +2473,87 @@ mod tests {
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools, &compat);
+        let converted = convert_tools(&tools, &compat).unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["type"], "function");
         assert_eq!(converted[0]["function"]["name"], "read");
+    }
+
+    /// 回归保护：grammar 无可用变体时错误必须传播（对齐 TS 抛错，流化为
+    /// stream error 走事件流），而不是静默跳过工具定义。
+    #[test]
+    fn test_convert_tools_grammar_error_propagates() {
+        let model = make_test_model();
+        let mut compat = get_compat(&model);
+        compat.supports_openai_grammar_tools = true;
+        let tools = vec![Tool {
+            name: "weird".into(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: Some(crate::types::ConstrainedSamplingConfig::Grammar {
+                variants: crate::types::GrammarVariants {
+                    openai_lark: None,
+                    openai_regex: None,
+                },
+            }),
+        }];
+        let err = convert_tools(&tools, &compat).unwrap_err();
+        assert!(err.contains("no supported grammar variant"), "unexpected error: {err}");
+    }
+
+    /// 回归保护：strict json_schema 必须但不受支持时错误传播（TS
+    /// `resolveJsonSchemaStrictSampling` 抛错），不能 eprintln + 静默降级。
+    #[test]
+    fn test_convert_tools_strict_require_unsupported_propagates() {
+        let model = make_test_model();
+        let mut compat = get_compat(&model);
+        compat.supports_strict_mode = false;
+        let tools = vec![Tool {
+            name: "strictly".into(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: Some(crate::types::ConstrainedSamplingConfig::JsonSchema {
+                strict: crate::types::JsonSchemaStrict::Require,
+            }),
+        }];
+        let err = convert_tools(&tools, &compat).unwrap_err();
+        assert!(err.contains("requires JSON-schema"), "unexpected error: {err}");
+    }
+
+    /// 回归保护：grammar 工具调用的 input 参数缺失时错误传播（TS
+    /// `getGrammarToolInput` 抛错），不能 eprintln + 空字符串降级。
+    #[test]
+    fn test_convert_messages_grammar_input_missing_propagates() {
+        let model = make_test_model();
+        let compat = get_compat(&model);
+        let mut grammar_properties = std::collections::HashMap::new();
+        grammar_properties.insert("grammar_tool".to_string(), "input".to_string());
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::Assistant {
+                content: vec![ContentBlock::ToolCall {
+                    id: "call_1".into(),
+                    name: "grammar_tool".into(),
+                    arguments: serde_json::json!({}),
+                    thought_signature: None,
+                    namespace: None,
+                }],
+                api: "test".into(),
+                provider: "test".into(),
+                model: "test".into(),
+                usage: Usage::default(),
+                stop_reason: StopReason::ToolUse,
+                error_message: None,
+                diagnostics: None,
+                response_id: None,
+                response_model: None,
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let err = convert_messages(&model, &context, &compat, &grammar_properties)
+            .unwrap_err();
+        assert!(err.contains("requires argument \"input\""), "unexpected error: {err}");
     }
 
     // ============================================================

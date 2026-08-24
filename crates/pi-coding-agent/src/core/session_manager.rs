@@ -2309,13 +2309,15 @@ impl SessionManager {
     ///
     /// Called before starting a new agent interaction turn to pick up any
     /// external changes to the session file (e.g. entries appended by another
-    /// process or after a compaction/rewrite).
-    pub fn refresh_config(&mut self) -> Result<(), String> {
+    /// process or after a compaction/rewrite). Infallible: a missing/unreadable
+    /// file simply leaves the in-memory entries untouched (TS `e547bb9` refresh
+    /// is in-memory and has no error path).
+    pub fn refresh_config(&mut self) {
         if self.flushed {
             // The file was rewritten from the in-memory tree, so disk is
             // already in sync — no need to re-read.
             self.flushed = false;
-            return Ok(());
+            return;
         }
 
         if let Some(ref session_file) = self.session_file.clone() {
@@ -2328,8 +2330,6 @@ impl SessionManager {
                 }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -2979,9 +2979,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        let result = mgr.refresh_config();
         // Should not fail even with non-existent config file
-        assert!(result.is_ok());
+        mgr.refresh_config();
     }
 
     // ============================================================

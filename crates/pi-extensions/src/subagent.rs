@@ -8,6 +8,7 @@
 //!   `{agent_dir}/subagent-runs/{run_id}/status.json`，可用 action=status 查询
 //! - 深度限制（防无限递归）
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -420,7 +421,7 @@ impl SubagentExtension {
             "runId": run_id,
             "startedAt": ts,
         });
-        write_status(&run_dir, &status);
+        write_status(&run_dir, &status, &ctx.ui.notify);
 
         // ── spawn 子进程，stdout 重定向到 output.jsonl ──
         let mut cmd = Command::new(&self.pi_binary);
@@ -451,7 +452,7 @@ impl SubagentExtension {
                     "runId": run_id,
                     "error": format!("failed to create output.jsonl: {e}"),
                 });
-                write_status(&run_dir, &status);
+                write_status(&run_dir, &status, &ctx.ui.notify);
                 return error_output(format!(
                     "subagent: failed to create output.jsonl: {e}"
                 ));
@@ -470,7 +471,7 @@ impl SubagentExtension {
                     "runId": run_id,
                     "error": format!("failed to spawn pi: {e}"),
                 });
-                write_status(&run_dir, &status);
+                write_status(&run_dir, &status, &ctx.ui.notify);
                 return error_output(format!(
                     "subagent: failed to spawn pi: {e} (binary: {})",
                     self.pi_binary
@@ -483,6 +484,7 @@ impl SubagentExtension {
         // 不退出），status 标记为 timeout。
         let run_dir_owned = run_dir.clone();
         let run_id_owned = run_id.clone();
+        let notify = ctx.ui.notify.clone();
         tokio::spawn(async move {
             let wait_result = tokio::time::timeout(timeout_dur, child.wait()).await;
             let timed_out = wait_result.is_err();
@@ -519,7 +521,7 @@ impl SubagentExtension {
                     "output": final_text,
                 })
             };
-            write_status(&run_dir_owned, &status);
+            write_status(&run_dir_owned, &status, &notify);
         });
 
         ToolCallOutput {
@@ -601,12 +603,21 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// 写 status.json；失败时打印警告（后台 run 的状态是核心契约，
-/// 静默吞错会让 query_run 报 "run not found" 掩盖真实原因）。
-fn write_status(run_dir: &std::path::Path, status: &Value) {
+/// 写 status.json；失败时通过扩展 UI notify 上报（TUI 模式显示为系统消息，
+/// CLI 模式落到 stderr），不静默吞错——否则 query_run 会报 "run not found"
+/// 掩盖真实原因。
+#[allow(clippy::type_complexity)]
+fn write_status(
+    run_dir: &std::path::Path,
+    status: &Value,
+    notify: &Arc<dyn Fn(&str, &Value) + Send + Sync>,
+) {
     let path = run_dir.join("status.json");
     let body = serde_json::to_string_pretty(status).unwrap_or_default();
     if let Err(e) = std::fs::write(&path, body) {
-        eprintln!("[pi] subagent: failed to write {}: {e}", path.display());
+        notify(
+            &format!("[subagent] failed to write {}: {e}", path.display()),
+            &json!({}),
+        );
     }
 }

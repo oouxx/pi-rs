@@ -2320,6 +2320,17 @@ impl AgentSession {
         self.emit_session_start("startup").await;
     }
 
+    /// Set the extension error listener directly (matching TS
+    /// `ExtensionRunner.onError`). `bind_extensions` also wires it via
+    /// `ExtensionBindings.on_error`; interactive mode uses this setter
+    /// without the rest of the bind flow.
+    pub fn set_extension_error_listener(&self, listener: Option<ErrorListener>) {
+        *self
+            .extension_error_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+    }
+
     /// Report an extension error to the bound error listener (matching TS
     /// `ExtensionRunner.emitError`). No-op when no listener is bound.
     pub fn emit_extension_error(&self, extension_path: &str, event: &str, error: &str) {
@@ -2729,8 +2740,15 @@ impl AgentSession {
                             .as_deref()
                             .and_then(|o| serde_json::from_str(o).ok());
                         if let Err(e) = self.send_user_message(&content, opts).await {
-                            // Matches TS sendUserMessage().catch((err) => runner.emitError(...)).
-                            eprintln!("[pi] send_user_message failed: {e}");
+                            // Matches TS sendUserMessage().catch((err) =>
+                            // runner.emitError(...)) — 走扩展错误监听器
+                            // （interactive 模式绑定后以系统消息展示），不
+                            // 直接写 stderr。
+                            self.emit_extension_error(
+                                "<runtime>",
+                                "send_user_message",
+                                &e.to_string(),
+                            );
                         }
                     }
                     ExtensionAction::AppendEntry { custom_type, data_json } => {
@@ -2822,15 +2840,11 @@ impl AgentSession {
     /// (RPC/ACP modes) must surface the error to the client instead of reporting a
     /// generic "run failed" failure.
     pub async fn prompt(&self, text: &str, options: Option<PromptOptions>) -> Result<(), String> {
-        // Refresh session state before starting the next turn
-        if let Err(e) = self
-            .session_manager
+        // Refresh session state before starting the next turn.
+        self.session_manager
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .refresh_config()
-        {
-            eprintln!("[pi] Failed to refresh session state before next turn: {e}");
-        }
+            .refresh_config();
         // Apply queued JS extension actions before the turn starts.
         self.drain_extension_actions().await;
 

@@ -139,7 +139,6 @@ pub struct AgentOptions {
     pub service_tier: Option<String>,
     pub metadata: Option<serde_json::Value>,
     pub tool_execution: Option<crate::pi_ai_types::ToolExecutionMode>,
-    pub max_consecutive_tool_calls: Option<usize>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -175,7 +174,6 @@ impl Default for AgentOptions {
             service_tier: None,
             metadata: None,
             tool_execution: None,
-            max_consecutive_tool_calls: None,
         }
     }
 }
@@ -241,7 +239,6 @@ pub struct Agent {
     service_tier: Option<String>,
     metadata: Option<serde_json::Value>,
     tool_execution: crate::pi_ai_types::ToolExecutionMode,
-    max_consecutive_tool_calls: Option<usize>,
     /// Notified when the agent becomes idle (finishes a run or streaming ends).
     idle_notify: Arc<Notify>,
 }
@@ -366,7 +363,6 @@ impl Agent {
             tool_execution: options
                 .tool_execution
                 .unwrap_or(crate::pi_ai_types::ToolExecutionMode::Parallel),
-            max_consecutive_tool_calls: options.max_consecutive_tool_calls,
             idle_notify: Arc::new(Notify::new()),
         }
     }
@@ -818,7 +814,6 @@ impl Agent {
             on_response: self.on_response.clone(),
             on_headers: self.on_headers.clone(),
             on_provider_response: self.on_provider_response.clone(),
-            max_consecutive_tool_calls: self.max_consecutive_tool_calls,
         };
 
         let signal = Some(cancel_rx);

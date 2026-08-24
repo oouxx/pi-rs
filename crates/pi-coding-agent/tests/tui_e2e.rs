@@ -748,45 +748,31 @@ fn tui_slash_command_menu_and_feedback() {
     assert_eq!(code, Some(0), "clean exit code 0");
 }
 
-/// The goal extension's TUI menu: bare `/goal` in TUI mode opens the goal
-/// manager (select popup with the action list); Enter picks "Start a goal…",
-/// the objective editor opens, Ctrl+S submits, and the goal starts.
+/// The goal extension (simplified, no TUI menu): bare `/goal` in TUI mode
+/// shows the text status; `/goal <objective>` starts a goal and the status
+/// bar reflects it.
 #[test]
-fn tui_goal_menu_starts_goal() {
+fn tui_goal_text_status_and_start() {
     let mut tui = Tui::spawn(false);
     assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
-    // /goal（无参数）→ TUI 菜单（select 弹窗列出动作）。
+    // /goal（无参数）→ 文本状态（无菜单弹窗）。
     tui.write(b"/goal\r");
     assert!(
-        tui.wait_for("Start a goal", TIMEOUT),
-        "goal menu rendered; got: {:?}",
+        tui.wait_for("No goal is currently set", TIMEOUT),
+        "text status rendered; got: {:?}",
         tui.rendered()
     );
 
-    // Enter 选中第一项（Start a goal…）→ 目标编辑器打开。
-    tui.write(b"\r");
-    assert!(
-        tui.wait_for("Goal objective", TIMEOUT),
-        "objective editor opened; got: {:?}",
-        tui.rendered()
-    );
-
-    // 输入目标 + Ctrl+S 提交 → goal 启动（diff 画家会拆分长文本，断言
-    // 连续片段）。
-    tui.write(b"fix the e2e goal bug");
-    tui.write(&[0x13]); // Ctrl+S
+    // /goal <objective> → goal 启动（diff 画家会拆分长文本，断言连续片段）。
+    tui.write(b"/goal fix the e2e goal bug\r");
     assert!(
         tui.wait_for("fix the e2e goal bug", TIMEOUT),
-        "goal started via menu; got: {:?}",
+        "goal started; got: {:?}",
         tui.rendered()
     );
 
-    // 菜单回到主屏（goal 已激活）→ Esc 关闭菜单，Ctrl+D 退出。
-    tui.write(&[0x1b]); // Esc: close the menu
-    // Esc+Ctrl+D back-to-back can be parsed by crossterm as one Alt+Ctrl+D
-    // key (which the select ignores), so let the menu close first.
-    std::thread::sleep(Duration::from_millis(300));
+    // Ctrl+D 退出。
     tui.write(&[0x04]); // Ctrl+D: quit
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");

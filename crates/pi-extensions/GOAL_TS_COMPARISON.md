@@ -137,42 +137,60 @@ C1-C12、C13 的 complete-during-wrap-up、C15/C16、D1/D2/D3/D5、E 类全部�
 
 ## 6. 修复状态（2026-08-24 对齐修复后）
 
+> **2026-08-24 简化（用户确认，对齐 codex /goal 风格）**：per-goal 预算
+> 限制整体删除、TUI 菜单/设置 UI 整体删除、自动轮数限制删除、设置文件
+> 删除、tokens_used 统计删除。以下状态表按简化后口径更新。
+
 | 项 | 状态 | 说明 |
 |----|------|------|
-| B1 | ✅ 已修 | 自动轮数改在 turn_end 计数（每模型响应 +1，aborted 不计）；达上限 turn_end 安全暂停 + abort；settled 分发前复查上限 |
-| B2 | ✅ 已修 | resume/edit/用户输入重置安全纪元（自动轮数/无进展/指纹/原因） |
+| B1 | ✅ 已修（后随简化删除） | 自动轮数计数/上限已按 turn_end 对齐，随后用户确认删除（codex 无此机制） |
+| B2 | ✅ 已修 | resume/edit/用户输入重置安全纪元（无进展/指纹/原因） |
 | B3 | ✅ 已修 | 无进展计数仅对 automatic run |
-| B4 | 已登记保留 | 增量累计近似（头注释） |
-| B5 | ✅ 已修 | before_agent_start 无归属 run 归属 goal；唤醒后 agent_end 记 usage + 续发 |
+| B4 | 已登记保留（后随简化删除） | token 会计/tokens_used 统计已随简化删除 |
+| B5 | ✅ 已修 | before_agent_start 无归属 run 归属 goal；唤醒后 agent_end 续发 |
 | B6 | ✅ 已修 | waker 直接 dispatchDueGoalWait（owned continuation）；idle 检查/重试/exhausted 因无 is_idle API 保留为偏差 |
 | B7 | ✅ 已修 | 已有 continuation work 时跳过 iteration+1 |
 | B8 | ✅ 已修 | requested_ms 不再持久化 |
 | B9 | ✅ 已修 | 浮点秒累加 + 恢复重置时钟起点 |
-| C1 | ✅ 已修 | resume 预算 guard |
+| C1 | ✅ 已修（后随简化删除） | resume 预算 guard 已按原版对齐，随后随预算删除 |
 | C2 | ✅ 已修 | resume prompt 用真实 stoppedStatus |
 | C3 | ✅ 已修 | waiting goal resume（命令 + 菜单） |
-| C4 | ✅ 已修 | edit 状态保持 + 预算 guard + waiting/continuation 清理 |
+| C4 | ✅ 已修 | edit 状态保持 + waiting/continuation 清理（预算 guard 随简化删除） |
 | C5 | ✅ 已修 | clear 持久化 {goal:null} + 清状态栏 + 无 goal 也清 |
 | C6 | ✅ 已修（部分） | 先记用量再显示；print/json 模式改为 warning 通知（无错误通道，见 DEVIATIONS.md） |
 | C7 | ✅ 已修 | goalSummary 加 Waiting/Resume deadline/Commands 行 |
-| C8 | ✅ 已修 | waiting reason 消毒 + continuation_limit 三种文案 |
+| C8 | ✅ 已修 | waiting reason 消毒 + paused 原因显示（continuation_limit 文案随自动轮数删除） |
 | C9 | ✅ 已修 | complete 状态栏 8s 后清空 |
 | C10 | ✅ 已修 | details 全 snake_case |
 | C11 | ✅ 已修 | goal_wait 拒绝 notify |
 | C12 | ✅ 已修 | terminalReason = reason |
-| C13 | 部分登记 | wrap-up 呈现方式已登记；complete-during-wrap-up 未实现（依赖 custom-message 通道）→ 待确认 |
+| C13 | 随简化删除 | 预算 wrap-up 整体随预算删除（不再需要） |
 | C14 | 已登记保留 | 不做 context-overflow 判定 |
 | C15 | ✅ 已修 | UTF-16 code units 口径 |
 | C16 | 已登记保留 | 指纹不做 NFKC/sha256 |
-| D1 | ✅ 已修 | 无效设置 notify "pi-goal settings ignored"（一次） |
-| D2 | ✅ 已修 | save 合并保留未知字段，损坏拒绝保存 |
+| D1 | ✅ 已修（后随简化删除） | 设置文件整体删除，无进展阈值硬编码 |
+| D2 | ✅ 已修（后随简化删除） | 同上 |
 | D3 | ✅ 已修 | 逐字段归一化恢复 |
 | D4 | 已登记保留 | legacy 队列不支持 |
-| D5 | ✅ 已修 | session_start 重读设置 |
-| E 类 | ✅ 已修 | 14 条规则、预算行格式、buildWaitingResumePrompt、continuation marker 含 UUID |
+| D5 | ✅ 已修（后随简化删除） | 设置文件整体删除 |
+| E 类 | ✅ 已修 | 14 条规则、buildWaitingResumePrompt、continuation marker 含 UUID（预算行随简化删除） |
 | A1 | ✅ 已修 | before_agent_start 注入 buildGoalSystemPrompt（每次 run） |
 | A2 | 已登记保留 | prompt marker 所有权机制不做（pending_run + active 归属兜底） |
 | A3 | ✅ 已修 | before_tool_call（新增 ctx）stale 时 block 所有工具 + abort |
 | A4 | ✅ 已修 | pause/budget/safety/agent_interruption 停止路径 abort（RuntimeHandle.abort 已接线） |
 | A5 | 已登记保留 | session_start/compact 等事件无 ctx / 无 post-compact；首轮恢复延迟 |
 | A6 | 已登记保留 | 工具始终注册 |
+
+## 7. 简化记录（2026-08-24，用户确认）
+
+对齐 codex /goal 风格（codex 无 per-goal 预算、无菜单、无自动轮数上限）：
+
+| 删除项 | 涉及代码 |
+|--------|----------|
+| per-goal 预算 | `--tokens` 参数、`GoalState.token_budget`、`GoalStatus::BudgetLimited`（6 态→5 态）、`limit_for_budget`、`BUDGET_WRAP_UP_PROMPT`、prompt 预算行、resume/edit 预算 guard、`format_budget`/`format_token_count`/`parse_token_budget` |
+| TUI 菜单/设置 UI | `show_goal_menu`/`build_menu_state`/`display_status`/MENU_*、`show_settings_menu`/`choose_*`/`apply_settings`、`choose_budget`/`increase_budget_flow`/`edit_goal_flow`、`is_tui` 分支（/goal 无参数直接文本 status） |
+| 自动轮数限制 | `automatic_turns`、`automatic_model_turns` 计数、`on_turn_end` 计数、`enforce_automatic_limit`、`continuation_limit` 暂停原因、状态栏 `automatic X/Y` |
+| 设置文件 | `pi-goal.json` 读写（`GoalSettings`/`read_goal_settings`/`save_goal_settings`/`settings()` 缓存），无进展阈值硬编码 `NO_PROGRESS_TURNS=3` |
+| token 统计 | `tokens_used`/`baseline_tokens`/`cumulative_assistant_tokens`/`assistant_usage_tokens` |
+
+**保留**：edit 文本命令、无进展抑制（codex spin 抑制等价物）、3 个工具、自动延续状态机、waiting 机制、goal_id guard、stale 拦截、abort 停止路径、系统 prompt 注入。

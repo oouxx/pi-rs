@@ -27,3 +27,17 @@
 | goal.rs 设置缓存 | D5：扩展生命周期内缓存一次，不随 session_start 重读 | 生命周期错误 | on_session_start 作废设置缓存 |
 | goal.rs agent_end 无进展持久化 | B3 附带：非自动 run 的 no-progress 更新前未先 set_goal | 顺序问题 | 更新后先 set_goal 再 enforce |
 | goal.rs 规则文案 | E：goal_mode_rules 缺 3 条（fresh blocker audit、Never use it merely、resume_after_ms bounded、ordinary unfinished work），预算行多空行 | 文案偏差 | 全 14 条对齐；`\nToken budget: X.` 紧贴 block；新增 buildWaitingResumePrompt |
+
+## 简化删除记录（2026-08-24，用户确认，对齐 codex /goal 风格）
+
+以下条目是上一轮对齐修复的成果，随后因用户确认的简化（无 per-goal 预算、
+无 UI、无自动轮数、无设置文件、无 token 统计）被整体删除，**不是回归**：
+
+| 位置 | 原修复 | 简化后状态 |
+| ---- | ------ | ---------- |
+| goal.rs resume/edit 预算 guard（C1/C4） | 预算耗尽拒绝 | 随预算删除 |
+| goal.rs limit_for_budget / BudgetLimited / BUDGET_WRAP_UP_PROMPT | budget_limited 状态机 | 随预算删除 |
+| goal.rs 自动轮数（B1） | turn_end 计数 + 上限暂停 | 随自动轮数删除 |
+| goal.rs 设置文件（D1/D2/D5） | 合并保存/issue 通知/session 重读 | 随设置文件删除 |
+| goal.rs token 会计（B4） | 增量累计近似 | 随 tokens_used 删除 |
+| goal.rs TUI 菜单/设置 UI | menu.ts / settings-ui.ts 移植 | 随 UI 删除 |

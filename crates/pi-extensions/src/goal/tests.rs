@@ -50,7 +50,7 @@ impl CtxHarness {
 }
 
 fn active_goal() -> GoalState {
-    GoalState::create("fix the bug".into(), None)
+    GoalState::create("fix the bug".into())
 }
 
 /// 构造带 stop_reason/usage 的 assistant 消息（fire_agent_end 的 messages 形状）。
@@ -86,29 +86,14 @@ fn test_parse_goal_command_variants() {
     assert_eq!(parse_goal_command("stop"), Ok(GoalCommand::Clear));
     assert_eq!(
         parse_goal_command("edit fix the lints"),
-        Ok(GoalCommand::Edit { objective: "fix the lints".into(), token_budget: None })
+        Ok(GoalCommand::Edit { objective: "fix the lints".into() })
     );
-    assert_eq!(
-        parse_goal_command("--tokens 100k add tests"),
-        Ok(GoalCommand::Start { objective: "add tests".into(), token_budget: Some(100_000) })
-    );
-    assert!(parse_goal_command("--tokens 5x add tests").is_err());
     assert!(parse_goal_command("pause extra").is_err());
     // 引号分词
     assert_eq!(
         parse_goal_command(r#"edit "two words" goal"#),
-        Ok(GoalCommand::Edit { objective: "two words goal".into(), token_budget: None })
+        Ok(GoalCommand::Edit { objective: "two words goal".into() })
     );
-}
-
-#[test]
-fn test_parse_token_budget() {
-    assert_eq!(parse_token_budget("100k"), Some(100_000));
-    assert_eq!(parse_token_budget("1m"), Some(1_000_000));
-    assert_eq!(parse_token_budget("500"), Some(500));
-    assert_eq!(parse_token_budget("0"), None);
-    assert_eq!(parse_token_budget("abc"), None);
-    assert_eq!(parse_token_budget("-5k"), None);
 }
 
 // ============================================================================
@@ -116,28 +101,15 @@ fn test_parse_token_budget() {
 // ============================================================================
 
 #[test]
-fn test_transition_budget_limit() {
-    let goal = GoalState {
-        tokens_used: 10_000,
-        token_budget: Some(10_000),
-        ..GoalState::create("x".into(), Some(10_000))
-    };
-    // 请求 active 但预算耗尽 → budget_limited
-    let next = goal.transition(GoalStatus::Active, 0);
-    assert_eq!(next.status, GoalStatus::BudgetLimited);
-    assert!(next.waiting.is_none());
-}
-
-#[test]
 fn test_next_instance_rotates_guard_id() {
-    let g = GoalState::create("x".into(), None);
+    let g = GoalState::create("x".into());
     let next = g.clone().next_instance();
     assert_ne!(g.id, next.id);
 }
 
 #[test]
 fn test_goal_id_rejection() {
-    let g = GoalState::create("x".into(), None);
+    let g = GoalState::create("x".into());
     assert_eq!(goal_id_rejection_reason(&g, ""), Some("missing goal_id".into()));
     assert_eq!(
         goal_id_rejection_reason(&g, &"a".repeat(MAX_GOAL_ID_LENGTH + 1)),
@@ -386,45 +358,24 @@ async fn test_goal_tools_no_active_goal() {
 #[tokio::test]
 async fn test_resume_resets_safety_epoch() {
     let h = CtxHarness::new();
-    let ext = GoalExtension::new().with_automatic_turns(Some(25));
+    let ext = GoalExtension::new();
     let goal = GoalState {
         status: GoalStatus::Paused,
-        automatic_model_turns: 25,
         tool_free_repeat_count: 3,
         last_tool_free_output_fingerprint: Some("abc".to_string()),
-        safety_pause_cause: Some("continuation_limit".to_string()),
+        safety_pause_cause: Some("no_progress".to_string()),
         ..active_goal()
     };
     ext.set_goal_for_test(Some(goal.clone()));
     ext.inner.handle_command("resume", Some(&h.ctx));
     let g = ext.goal_snapshot().unwrap();
     assert_eq!(g.status, GoalStatus::Active);
-    assert_eq!(g.automatic_model_turns, 0, "resume must reset automatic turns");
     assert_eq!(g.tool_free_repeat_count, 0);
     assert!(g.last_tool_free_output_fingerprint.is_none());
     assert!(g.safety_pause_cause.is_none());
     let prompt = &h.queued.lock().unwrap()[0];
     // C2：prompt 用真实 stoppedStatus。
     assert!(prompt.contains("paused /goal"), "prompt: {prompt}");
-}
-
-/// C1：预算耗尽的 goal resume 被拒（状态不变、不发 prompt）。
-#[tokio::test]
-async fn test_resume_rejects_exhausted_budget() {
-    let h = CtxHarness::new();
-    let ext = GoalExtension::new();
-    let goal = GoalState {
-        status: GoalStatus::BudgetLimited,
-        tokens_used: 10_000,
-        token_budget: Some(10_000),
-        ..active_goal()
-    };
-    ext.set_goal_for_test(Some(goal.clone()));
-    ext.inner.handle_command("resume", Some(&h.ctx));
-    let g = ext.goal_snapshot().unwrap();
-    assert_eq!(g.status, GoalStatus::BudgetLimited, "budget guard keeps state");
-    assert_eq!(g.id, goal.id, "no guard rotation on rejected resume");
-    assert_eq!(h.queued.lock().unwrap().len(), 0, "no prompt on rejected resume");
 }
 
 /// C3：/goal resume 唤醒 waiting goal（专用 prompt + 清 wait）。
@@ -472,31 +423,6 @@ async fn test_edit_keeps_paused_status() {
     assert_eq!(h.queued.lock().unwrap().len(), 0, "no prompt for non-active edit");
     // 安全原因保留（原版 editGoal 只对 active 重置）。
     assert_eq!(g.safety_pause_cause.as_deref(), Some("no_progress"));
-}
-
-/// C4：budget_limited 编辑不抬预算 → 拒绝；抬预算 → 转 active 发 prompt。
-#[tokio::test]
-async fn test_edit_budget_limited_guard() {
-    let h = CtxHarness::new();
-    let ext = GoalExtension::new();
-    let goal = GoalState {
-        status: GoalStatus::BudgetLimited,
-        tokens_used: 10_000,
-        token_budget: Some(10_000),
-        ..active_goal()
-    };
-    ext.set_goal_for_test(Some(goal.clone()));
-    // 不抬预算 → 拒绝。
-    ext.inner.handle_command("edit same budget", Some(&h.ctx));
-    assert_eq!(ext.goal_snapshot().unwrap().status, GoalStatus::BudgetLimited);
-    assert_eq!(h.queued.lock().unwrap().len(), 0);
-    // 抬预算 → active + prompt + 安全纪元重置。
-    ext.inner.handle_command("edit --tokens 100k raised budget", Some(&h.ctx));
-    let g = ext.goal_snapshot().unwrap();
-    assert_eq!(g.status, GoalStatus::Active);
-    assert_eq!(g.token_budget, Some(100_000));
-    assert_eq!(g.automatic_model_turns, 0, "edit resets safety epoch (B2)");
-    assert_eq!(h.queued.lock().unwrap().len(), 1);
 }
 
 /// C5：clear 持久化 {goal: null} + 清状态栏 + 无 goal 也清。
@@ -651,10 +577,9 @@ async fn test_user_input_wakes_waiting_and_continues() {
 
     // agent_start：pending → agent_run（真实事件序）。
     ext.on_agent_start().await;
-    // agent_end：记 usage + 续发 continuation。
+    // agent_end：续发 continuation。
     let msgs = vec![assistant_msg("stop", None, 50)];
     ext.on_agent_end(&msgs, Some(&h.ctx)).await;
-    assert_eq!(ext.goal_snapshot().unwrap().tokens_used, 50);
     ext.on_agent_settled(Some(&h.ctx)).await;
     assert_eq!(h.queued.lock().unwrap().len(), 1, "woken goal continues");
 }
@@ -670,15 +595,15 @@ fn test_goal_summary_waiting_lines() {
         }),
         ..active_goal()
     };
-    let s = goal_summary(&goal, Some(25));
+    let s = goal_summary(&goal);
     assert!(s.contains("Waiting: awaiting"), "{s}");
     assert!(s.contains("Resume deadline: "), "{s}");
     assert!(s.contains("Commands: /goal resume"), "{s}");
 }
 
-/// C8：waiting reason 剥终端转义/折叠空白；continuation_limit 暂停有专用文案。
+/// C8：waiting reason 剥终端转义/折叠空白；paused 显示安全原因。
 #[test]
-fn test_format_status_sanitized_and_limit_copy() {
+fn test_format_status_sanitized_and_pause_cause() {
     let goal = GoalState {
         waiting: Some(GoalWaiting {
             reason: "  a\u{1b}[31mred\u{1b}[0m   reason\n  ".into(),
@@ -687,40 +612,21 @@ fn test_format_status_sanitized_and_limit_copy() {
         }),
         ..active_goal()
     };
-    let s = format_status(&goal, Some(25));
+    let s = format_status(&goal);
     assert!(s.contains("waiting ared reason"), "sanitized: {s}");
     assert!(!s.contains("\u{1b}"), "escape stripped: {s}");
 
-    let limited = GoalState {
+    let paused = GoalState {
         status: GoalStatus::Paused,
-        safety_pause_cause: Some("continuation_limit".into()),
-        automatic_model_turns: 25,
+        safety_pause_cause: Some("no_progress".into()),
         ..active_goal()
     };
-    assert!(
-        format_status(&limited, Some(25)).contains("paused · automatic limit 25/25"),
-        "limit reached copy"
-    );
-    let below = GoalState {
+    assert!(format_status(&paused).contains("paused · no_progress"), "cause shown");
+    let plain = GoalState {
         status: GoalStatus::Paused,
-        safety_pause_cause: Some("continuation_limit".into()),
-        automatic_model_turns: 10,
         ..active_goal()
     };
-    assert!(
-        format_status(&below, Some(25)).contains("paused · automatic 10/25"),
-        "below limit copy"
-    );
-    let unlimited = GoalState {
-        status: GoalStatus::Paused,
-        safety_pause_cause: Some("continuation_limit".into()),
-        automatic_model_turns: 10,
-        ..active_goal()
-    };
-    assert!(
-        format_status(&unlimited, None).contains("paused · previous automatic limit at 10"),
-        "unlimited copy"
-    );
+    assert_eq!(format_status(&plain), "paused");
 }
 
 /// C12：goal_blocked 的 terminalReason 只存 reason（不含 evidence）。
@@ -801,43 +707,18 @@ fn test_normalize_loaded_goal_resets_active_clock() {
     assert!(g3.active_started_at.is_none(), "clock paused while waiting");
 }
 
-/// E 类：goal prompt 预算行格式对齐原版（`\nToken budget: X.`）。
+/// E 类：goal prompt 结构（无预算行；规则数 = 原版 14 条 + 标题）。
 #[test]
-fn test_goal_prompt_budget_line_format() {
-    let goal = GoalState {
-        token_budget: Some(100_000),
-        ..active_goal()
-    };
+fn test_goal_prompt_structure() {
+    let goal = active_goal();
     let p = build_goal_prompt(&goal);
     assert!(p.contains("</goal_id>\nThis goal_id is only the goal_complete tool stale-turn guard"), "{p}");
-    assert!(p.contains("Token budget: 100k."), "{p}");
-    // 原版：budget 行紧贴 goal block，无多余空行。
-    assert!(p.contains("</goal_id>\nThis goal_id is only the goal_complete tool stale-turn guard, not part of the objective. If and only if the goal is fully complete, pass this exact goal_id to goal_complete with the completion summary.\nToken budget: 100k.\n\nGoal-mode rules:"), "budget line placement: {p}");
+    assert!(!p.contains("Token budget"), "no budget line: {p}");
     // 规则数 = 原版 14 条 + 标题。
     let rules = goal_mode_rules("this goal");
     assert_eq!(rules.lines().count(), 15, "rule count: {rules}");
 }
 
-/// C13 保持：budget_limited 的 goal_complete 仍被拒（wrap-up 期间的 complete
-/// 通道未实现，见 DEVIATIONS.md）。
-#[tokio::test]
-async fn test_complete_rejected_when_budget_limited() {
-    let h = CtxHarness::new();
-    let goal = GoalState {
-        status: GoalStatus::BudgetLimited,
-        ..active_goal()
-    };
-    let ext = set_goal(&goal);
-    let out = ext
-        .handle_tool_call(
-            GOAL_COMPLETE_TOOL,
-            json!({ "goal_id": goal.id, "summary": "done" }),
-            &h.ctx,
-        )
-        .await
-        .expect("handled");
-    assert!(out.is_error);
-}
 
 fn begin_goal_run(ext: &GoalExtension, goal_id: &str, origin: RunOrigin) {
     *ext.inner.pending_run.lock().unwrap() = Some(PendingRun {
@@ -864,8 +745,6 @@ async fn test_agent_end_normal_requests_continuation() {
     let msgs = vec![assistant_msg("stop", None, 100)];
     ext.on_agent_end(&msgs, Some(&h.ctx)).await;
 
-    // usage 累计
-    assert_eq!(ext.goal_snapshot().unwrap().tokens_used, 100);
     // continuation 待发（agent_settled 时消费）
     ext.on_agent_settled(Some(&h.ctx)).await;
     assert_eq!(h.queued.lock().unwrap().len(), 1);
@@ -914,64 +793,6 @@ async fn test_agent_end_aborted_pauses() {
     let msgs = vec![assistant_msg("aborted", None, 0)];
     ext.on_agent_end(&msgs, Some(&h.ctx)).await;
     assert_eq!(ext.goal_snapshot().unwrap().status, GoalStatus::Paused);
-}
-
-/// 直接触发一次 turn_end（对齐真实事件：agent_run 已归属后每个模型响应）。
-fn fire_turn_end(ext: &GoalExtension, ctx: &ExtensionContext, msg: &Value) {
-    ext.inner.on_turn_end_impl(ctx, msg);
-}
-
-#[tokio::test]
-async fn test_automatic_turn_limit_pauses_at_turn_end() {
-    let h = CtxHarness::new();
-    let goal = GoalState {
-        automatic_model_turns: 24,
-        ..active_goal()
-    };
-    let ext = GoalExtension::new().with_automatic_turns(Some(25));
-    ext.set_goal_for_test(Some(goal.clone()));
-    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
-
-    // B1：自动轮数在 turn_end（模型每轮响应）计数；第 25 轮达到上限 →
-    // 安全暂停 + abort 当前 turn。
-    let msgs = vec![assistant_msg("stop", None, 0)];
-    fire_turn_end(&ext, &h.ctx, &msgs[0]);
-    let state = ext.goal_snapshot().unwrap();
-    assert_eq!(state.status, GoalStatus::Paused);
-    assert_eq!(state.safety_pause_cause.as_deref(), Some("continuation_limit"));
-    assert_eq!(state.automatic_model_turns, 25);
-    assert!(h.aborted.load(Ordering::SeqCst), "limit pause must abort the turn");
-    // 暂停后不再延续。
-    ext.on_agent_end(&msgs, Some(&h.ctx)).await;
-    ext.on_agent_settled(Some(&h.ctx)).await;
-    assert_eq!(h.queued.lock().unwrap().len(), 0);
-}
-
-/// B1：一轮含多个模型响应时，每个响应都计入自动轮数（非 agent_end 一次）。
-#[tokio::test]
-async fn test_automatic_turns_count_per_model_response() {
-    let h = CtxHarness::new();
-    let goal = active_goal();
-    let ext = GoalExtension::new().with_automatic_turns(Some(25));
-    ext.set_goal_for_test(Some(goal.clone()));
-    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
-
-    // 一轮 run 内 3 个模型响应（如 2 轮工具调用 + 1 轮收尾）。
-    for _ in 0..3 {
-        fire_turn_end(&ext, &h.ctx, &assistant_msg("stop", None, 10));
-    }
-    assert_eq!(ext.goal_snapshot().unwrap().automatic_model_turns, 3);
-    assert_eq!(ext.goal_snapshot().unwrap().status, GoalStatus::Active);
-
-    // 手动 run 不计自动轮数。
-    begin_goal_run(&ext, &goal.id, RunOrigin::Manual);
-    fire_turn_end(&ext, &h.ctx, &assistant_msg("stop", None, 10));
-    assert_eq!(ext.goal_snapshot().unwrap().automatic_model_turns, 3);
-
-    // aborted 响应不计。
-    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
-    fire_turn_end(&ext, &h.ctx, &assistant_msg("aborted", None, 0));
-    assert_eq!(ext.goal_snapshot().unwrap().automatic_model_turns, 3);
 }
 
 #[tokio::test]
@@ -1070,291 +891,3 @@ async fn test_load_goal_from_session_restores() {
 // ===========================================================================
 // 设置（pi-goal.json）与 TUI 菜单
 // ===========================================================================
-
-/// 独立临时 agent 目录（每个测试唯一，避免并行互踩）。
-fn temp_agent_dir(name: &str) -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "pi-goal-test-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
-    dir.display().to_string()
-}
-
-/// 脚本化 UI：select/input/confirm 按队列依次返回答案，notify 记录消息。
-struct MenuHarness {
-    ctx: ExtensionContext,
-    selects: Arc<Mutex<std::collections::VecDeque<Option<String>>>>,
-    inputs: Arc<Mutex<std::collections::VecDeque<Option<String>>>>,
-    confirms: Arc<Mutex<std::collections::VecDeque<bool>>>,
-    notified: Arc<Mutex<Vec<String>>>,
-}
-
-impl MenuHarness {
-    fn new(agent_dir: &str) -> Self {
-        let selects: Arc<Mutex<std::collections::VecDeque<Option<String>>>> =
-            Arc::new(Mutex::new(std::collections::VecDeque::new()));
-        let inputs: Arc<Mutex<std::collections::VecDeque<Option<String>>>> =
-            Arc::new(Mutex::new(std::collections::VecDeque::new()));
-        let confirms: Arc<Mutex<std::collections::VecDeque<bool>>> =
-            Arc::new(Mutex::new(std::collections::VecDeque::new()));
-        let notified: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let mut handle = RuntimeHandle::noop();
-        let dir = agent_dir.to_string();
-        handle.get_agent_dir = Arc::new(move || dir.clone());
-        handle.queue_follow_up = Arc::new(|_| {});
-        handle.append_custom_entry = Arc::new(|_, _| {});
-        handle.get_custom_entries = Arc::new(Vec::new);
-        let ui = ExtensionUIContext {
-            notify: {
-                let n = notified.clone();
-                Arc::new(move |msg: &str, _| n.lock().unwrap().push(msg.to_string()))
-            },
-            set_status: Arc::new(|_, _| {}),
-            confirm: {
-                let c = confirms.clone();
-                Arc::new(move |_, _| c.lock().unwrap().pop_front().unwrap_or(false))
-            },
-            select: {
-                let s = selects.clone();
-                Arc::new(move |_, _, _| {
-                    let v = s.lock().unwrap().pop_front().unwrap_or(None);
-                    Box::pin(async move { v })
-                })
-            },
-            input: {
-                let i = inputs.clone();
-                Arc::new(move |_, _, _| {
-                    let v = i.lock().unwrap().pop_front().unwrap_or(None);
-                    Box::pin(async move { v })
-                })
-            },
-            set_widget: Arc::new(|_, _, _| {}),
-            set_title: Arc::new(|_| {}),
-            set_editor_text: Arc::new(|_| {}),
-        };
-        let mut ctx = ExtensionContext::new("test-session".into(), false, ui, handle);
-        ctx.set_mode("tui");
-        Self { ctx, selects, inputs, confirms, notified }
-    }
-
-    fn select(&mut self, value: &str) {
-        self.selects.lock().unwrap().push_back(Some(value.to_string()));
-    }
-
-    fn select_none(&mut self) {
-        self.selects.lock().unwrap().push_back(None);
-    }
-
-    fn input(&mut self, value: &str) {
-        self.inputs.lock().unwrap().push_back(Some(value.to_string()));
-    }
-
-    fn confirm(&mut self, value: bool) {
-        self.confirms.lock().unwrap().push_back(value);
-    }
-
-    fn notified_contains(&self, needle: &str) -> bool {
-        self.notified.lock().unwrap().iter().any(|m| m.contains(needle))
-    }
-}
-
-/// 通过注册的 /goal 命令入口执行（对齐真实调用路径）。
-async fn run_goal_command(ext: &GoalExtension, args: &str, ctx: &ExtensionContext) {
-    let mut reg = pi_extension_api::CommandRegistry::new(
-        pi_extension_api::create_builtin_source_info("goal-test"),
-    );
-    ext.register_commands(&mut reg);
-    let cmd = reg
-        .into_vec()
-        .into_iter()
-        .find(|c| c.name == "goal")
-        .expect("goal command");
-    (cmd.execute)(args.to_string(), Some(ctx)).await;
-}
-
-#[tokio::test]
-async fn test_settings_default_and_roundtrip() {
-    let dir = temp_agent_dir("settings-roundtrip");
-    // 文件缺失 → 默认值。
-    let (defaults, issue) = read_goal_settings(&dir);
-    assert!(issue.is_none(), "missing file has no load issue: {issue:?}");
-    assert_eq!(defaults.continuation_limits.automatic_turns, Some(25));
-    assert_eq!(defaults.continuation_limits.no_progress_turns, Some(3));
-    assert_eq!(defaults.tool_visibility, "after-first-goal");
-    assert!(!defaults.rpc.enabled);
-
-    // 保存 → 读回一致。
-    let mut custom = defaults.clone();
-    custom.continuation_limits.automatic_turns = None; // Unlimited
-    custom.continuation_limits.no_progress_turns = Some(7);
-    custom.tool_visibility = "always".to_string();
-    custom.rpc.enabled = true;
-    save_goal_settings(&dir, &custom).expect("save");
-    let (loaded, issue) = read_goal_settings(&dir);
-    assert!(issue.is_none(), "round-trip issue: {issue:?}");
-    assert_eq!(loaded, custom, "round-trip must preserve settings");
-    // 文件内容形状对齐原版（camelCase + null = unlimited）。
-    let raw = std::fs::read_to_string(goal_settings_path(&dir)).expect("file");
-    assert!(raw.contains("\"automaticTurns\": null"), "raw: {raw}");
-    assert!(raw.contains("\"noProgressTurns\": 7"), "raw: {raw}");
-    assert!(raw.contains("\"toolVisibility\": \"always\""), "raw: {raw}");
-}
-
-/// D2：save 合并原文件保留未知字段（原版 saveGoalSettings 行为）。
-#[tokio::test]
-async fn test_settings_save_preserves_unknown_fields() {
-    let dir = temp_agent_dir("settings-merge");
-    std::fs::write(
-        goal_settings_path(&dir),
-        "{\n  \"toolVisibility\": \"after-first-goal\",\n  \"futureField\": 42,\n  \"rpc\": { \"enabled\": false, \"extra\": \"keep\" }\n}\n",
-    )
-    .expect("write");
-    let mut custom = GoalSettings::default();
-    custom.continuation_limits.no_progress_turns = Some(7);
-    save_goal_settings(&dir, &custom).expect("save");
-    let raw = std::fs::read_to_string(goal_settings_path(&dir)).expect("file");
-    assert!(raw.contains("\"futureField\": 42"), "unknown top field lost: {raw}");
-    assert!(raw.contains("\"extra\": \"keep\""), "unknown rpc subfield lost: {raw}");
-    assert!(raw.contains("\"noProgressTurns\": 7"), "known field not saved: {raw}");
-}
-
-#[tokio::test]
-async fn test_settings_invalid_falls_back_to_defaults() {
-    let dir = temp_agent_dir("settings-invalid");
-    std::fs::write(goal_settings_path(&dir), "{ not json !").expect("write");
-    let (settings, issue) = read_goal_settings(&dir);
-    assert_eq!(settings.continuation_limits.automatic_turns, Some(25));
-    assert!(issue.is_some(), "invalid file must report an issue (D1)");
-}
-
-/// 设置文件里的 automaticTurns 必须驱动安全暂停（2 轮即停，而非默认 25）。
-#[tokio::test]
-async fn test_settings_automatic_turns_wire_into_safety_pause() {
-    let dir = temp_agent_dir("settings-wired");
-    let mut settings = GoalSettings::default();
-    settings.continuation_limits.automatic_turns = Some(2);
-    save_goal_settings(&dir, &settings).expect("save");
-
-    let h = CtxHarness::new();
-    // 让 ctx 的 agent_dir 指向测试目录。
-    let mut ctx = h.ctx.clone();
-    let dir2 = dir.clone();
-    ctx.runtime.get_agent_dir = Arc::new(move || dir2.clone());
-    let ext = GoalExtension::new();
-    let goal = active_goal();
-    ext.set_goal_for_test(Some(goal.clone()));
-
-    // 第一轮 turn_end：1 次自动轮 → 不暂停。
-    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
-    let msg = assistant_msg("stop", None, 10);
-    fire_turn_end(&ext, &ctx, &msg);
-    assert_eq!(ext.goal_snapshot().unwrap().status, GoalStatus::Active);
-    assert_eq!(ext.goal_snapshot().unwrap().automatic_model_turns, 1);
-
-    // 第二轮：2 次自动轮 → 达到上限 → 暂停（continuation_limit）。
-    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
-    let msg2 = assistant_msg("stop", None, 10);
-    fire_turn_end(&ext, &ctx, &msg2);
-    let g = ext.goal_snapshot().unwrap();
-    assert_eq!(g.status, GoalStatus::Paused, "2-turn limit from settings");
-    assert_eq!(g.safety_pause_cause.as_deref(), Some("continuation_limit"));
-}
-
-/// TUI 模式：/goal（无参数）打开菜单；选择 Start a goal… → 输入目标 → 启动。
-#[tokio::test]
-async fn test_goal_menu_start_flow() {
-    let dir = temp_agent_dir("menu-start");
-    let mut h = MenuHarness::new(&dir);
-    h.select("Start a goal…");
-    h.input("fix the menu bug");
-    h.select_none(); // 菜单循环下一次 select → Esc 关闭
-    let ext = GoalExtension::new();
-    run_goal_command(&ext, "", &h.ctx).await;
-
-    let goal = ext.goal_snapshot().expect("goal started via menu");
-    assert_eq!(goal.text, "fix the menu bug");
-    assert_eq!(goal.status, GoalStatus::Active);
-    // 菜单打开时通知了状态标题。
-    assert!(h.notified_contains("Goal · No goal"), "menu state notified");
-}
-
-/// TUI 模式：菜单 Pause → Resume → Clear（带确认）。
-#[tokio::test]
-async fn test_goal_menu_pause_resume_clear_flow() {
-    let dir = temp_agent_dir("menu-pause");
-    let mut h = MenuHarness::new(&dir);
-    let ext = GoalExtension::new();
-    let goal = active_goal();
-    ext.set_goal_for_test(Some(goal.clone()));
-
-    h.select("Pause goal");
-    h.select("Resume goal");
-    h.select("Clear goal…");
-    h.confirm(true);
-    h.select_none();
-    run_goal_command(&ext, "", &h.ctx).await;
-
-    // Pause → Resume → Clear 全链路：最终无 goal。
-    assert!(ext.goal_snapshot().is_none(), "cleared via menu");
-    assert!(h.notified_contains("Goal cleared"), "clear notified");
-}
-
-/// TUI 模式：菜单 Settings… → Automatic-work limit → Unlimited → 落盘。
-#[tokio::test]
-async fn test_goal_menu_settings_flow() {
-    let dir = temp_agent_dir("menu-settings");
-    let mut h = MenuHarness::new(&dir);
-    h.select("Settings…");
-    h.select("Automatic-work limit: 25 responses");
-    h.select("Unlimited");
-    h.select("Back");
-    h.select_none();
-    let ext = GoalExtension::new();
-    run_goal_command(&ext, "", &h.ctx).await;
-
-    let (settings, _) = read_goal_settings(&dir);
-    assert_eq!(
-        settings.continuation_limits.automatic_turns,
-        None,
-        "Unlimited persisted"
-    );
-    assert!(h.notified_contains("Goal settings saved"), "save notified");
-}
-
-/// 模式门控：非 TUI 模式 /goal（无参数）走文本状态；TUI 模式走菜单。
-#[tokio::test]
-async fn test_goal_command_mode_gating() {
-    let dir = temp_agent_dir("mode-gating");
-    // 非 TUI：bare /goal → 文本状态（notify），不弹 select。
-    let mut h = MenuHarness::new(&dir);
-    h.ctx.set_mode("cli");
-    let ext = GoalExtension::new();
-    run_goal_command(&ext, "", &h.ctx).await;
-    assert!(
-        h.notified_contains("No goal is currently set"),
-        "cli mode shows text status"
-    );
-    assert!(h.selects.lock().unwrap().is_empty(), "no menu in cli mode");
-
-    // TUI：bare /goal → 菜单（select 被调用）。
-    let mut h2 = MenuHarness::new(&dir);
-    h2.select_none();
-    let ext2 = GoalExtension::new();
-    run_goal_command(&ext2, "", &h2.ctx).await;
-    assert!(
-        !h2.selects.lock().unwrap().is_empty() || h2.notified_contains("Goal ·"),
-        "tui mode opens the menu"
-    );
-
-    // TUI：/goal status 仍走文本子命令。
-    let h3 = MenuHarness::new(&dir);
-    let ext3 = GoalExtension::new();
-    run_goal_command(&ext3, "status", &h3.ctx).await;
-    assert!(
-        h3.notified_contains("No goal is currently set"),
-        "status subcommand stays text"
-    );
-    assert!(h3.selects.lock().unwrap().is_empty(), "no menu for status");
-}

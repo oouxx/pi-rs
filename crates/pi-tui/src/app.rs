@@ -1033,13 +1033,15 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
         "user" => BOX_PAD_Y + b.md_lines.len() as u16 + BOX_PAD_Y,
         "system" => b.plain_lines.len() as u16,
         _ => {
-            // Assistant: text lines + thinking section (blank separator +
-            // thinking lines) + stop-reason notice (blank separator +
-            // notice line) — TS AssistantMessageComponent layout.
-            let mut h = b.md_lines.len() as u16;
+            // Assistant: thinking section FIRST (blank + thinking lines +
+            // trailing blank — TS renders content in order, thinking before
+            // text), then text lines, then stop-reason notice (blank +
+            // notice line).
+            let mut h = 0u16;
             if !b.thinking_lines.is_empty() {
-                h += 1 + b.thinking_lines.len() as u16;
+                h += 1 + b.thinking_lines.len() as u16 + 1;
             }
+            h += b.md_lines.len() as u16;
             if b.stop_reason.is_some() {
                 h += 2; // blank separator + notice line
             }
@@ -1438,13 +1440,11 @@ fn render_user_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &Theme,
 /// italic (TS `AssistantMessageComponent`), and a terminal stop reason
 /// renders a TS-style notice in the error color.
 fn render_assistant_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
-    for line in &item.md_lines {
-        render_body_row(frame, area, ly, Paragraph::new(line.clone()));
-        ly += 1;
-    }
-    // Thinking section: blank separator + thinking lines in thinkingText
-    // italic (TS: `Markdown(thinking, pad, 0, { color: thinkingText,
-    // italic: true })`).
+    // Thinking section FIRST (TS `AssistantMessageComponent.updateContent`
+    // renders `message.content` in order — the model emits thinking blocks
+    // before the text, so thinking renders above the body). Blank separator
+    // + thinking lines in thinkingText italic (TS `Markdown(thinking, pad,
+    // 0, { color: thinkingText, italic: true })`).
     if !item.thinking_lines.is_empty() {
         render_body_row(frame, area, ly, Paragraph::new(Line::raw("")));
         ly += 1;
@@ -1461,6 +1461,13 @@ fn render_assistant_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &T
             render_body_row(frame, area, ly, Paragraph::new(l));
             ly += 1;
         }
+        // TS: Spacer(1) after the thinking run when body text follows.
+        render_body_row(frame, area, ly, Paragraph::new(Line::raw("")));
+        ly += 1;
+    }
+    for line in &item.md_lines {
+        render_body_row(frame, area, ly, Paragraph::new(line.clone()));
+        ly += 1;
     }
     // Stop-reason notice (TS: Spacer + Text in error color).
     if let Some(reason) = item.stop_reason {
@@ -2665,15 +2672,16 @@ mod tests {
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
         let buf = terminal.backend().buffer();
 
-        // Text row.
-        let text_row = (0..24).find(|&y| buf[(0, y)].symbol() == "A").expect("text row");
-        // Blank separator, then thinking in thinkingText italic.
-        let thinking_row = text_row + 2;
-        assert_eq!(buf[(0, thinking_row)].symbol(), "L", "thinking text");
+        // Thinking FIRST (TS renders content in order — thinking before
+        // text): blank separator, then thinking in thinkingText italic.
+        let thinking_row = (0..24).find(|&y| buf[(0, y)].symbol() == "L").expect("thinking row");
         assert_eq!(buf[(0, thinking_row)].fg, theme::THINKING_TEXT, "thinking color");
         assert!(buf[(0, thinking_row)].modifier.contains(Modifier::ITALIC), "thinking italic");
+        // Trailing blank, then the text row.
+        let text_row = (0..24).find(|&y| buf[(0, y)].symbol() == "A").expect("text row");
+        assert!(text_row > thinking_row, "text below thinking");
         // Blank separator, then the length notice in error color.
-        let notice_row = thinking_row + 2;
+        let notice_row = text_row + 2;
         assert_eq!(buf[(0, notice_row)].symbol(), "R", "notice text");
         assert_eq!(buf[(0, notice_row)].fg, theme::ERROR, "notice error color");
     }

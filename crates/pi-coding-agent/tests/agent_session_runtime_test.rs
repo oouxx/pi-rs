@@ -157,6 +157,40 @@ async fn create_test_runtime() -> (AgentSessionRuntime, tempfile::TempDir) {
 // Tests
 // ============================================================================
 
+/// runtime.queue_follow_up（扩展自动延续通道，/goal 续跑用它）会把文本
+/// 推入 follow-up 镜像：Esc 中断时 TUI 通过 clear_all_queues 拿到它并还原
+/// 回编辑器（对齐 TS `_queueFollowUp` 推入 `_followUpMessages`）。
+#[tokio::test]
+async fn test_extension_queue_follow_up_mirrors_text_for_editor_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let session_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_manager =
+        SessionManager::new(&cwd, &session_dir.to_string_lossy(), None, false, None);
+    let (session, _services) = create_test_session(&cwd, session_manager).await;
+
+    let ctx = session.get_extension_context().clone();
+    (ctx.runtime.queue_follow_up)("queued continuation".to_string());
+
+    // 镜像已记录文本（message_start 消费时才会移除）。
+    assert_eq!(
+        session.get_follow_up_messages(),
+        vec!["queued continuation".to_string()]
+    );
+    assert_eq!(session.pending_message_count(), 1);
+
+    // Esc 中断后 TUI 的 RestoreQueuedToEditor 路径：clear_all_queues 拿回
+    // 文本并清空镜像。
+    let (steering, follow_up) = session.clear_all_queues().await;
+    assert!(steering.is_empty());
+    assert_eq!(
+        follow_up,
+        vec!["queued continuation".to_string()]
+    );
+    assert_eq!(session.pending_message_count(), 0);
+}
+
 #[tokio::test]
 async fn test_runtime_creation() {
     let (runtime, _dir) = create_test_runtime().await;

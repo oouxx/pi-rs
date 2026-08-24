@@ -46,6 +46,10 @@ enum AgentCmd {
     SetSessionName(String),
     ExtensionCommand(String, String),
     ReloadExtensions,
+    /// Esc 中断后：把排队 steering/follow-up 文本（+ 当前编辑器文本）还原
+    /// 回编辑器（TS `restoreQueuedMessagesToEditor` 的编辑器部分）。参数为
+    /// Esc 按下时输入框里的文本。
+    RestoreQueuedToEditor(String),
 }
 
 // ============================================================================
@@ -76,6 +80,10 @@ enum Effect {
     /// Abort the running agent directly (never through the session mutex —
     /// the lock is held for the whole run by `add_user_text`).
     Abort,
+    /// Esc 中断（参数为按下时编辑器里已有的文本）：先清掉 agent 队列再中止
+    /// run，随后把排队 steering/follow-up 文本还原回编辑器（对齐 TS
+    /// `restoreQueuedMessagesToEditor({ abort: true })`）。
+    AbortAndClearQueues(String),
 }
 
 // ============================================================================
@@ -270,6 +278,10 @@ fn create_tui_ui_context() -> (
 struct AppState {
     model: pi_tui::Model,
     last_ctrl_c: Instant,
+    /// TS `lastEscapeTime`：空编辑器双击 Esc（500ms 内）触发
+    /// double-escape action（TS 默认弹 tree 选择器；本 port 未实现，
+    /// 见 DEVIATIONS）。
+    last_esc: Instant,
     quit: bool,
     /// Names of slash commands registered by extensions (snapshot taken at
     /// startup; used to route `/name` to the extension executor).
@@ -324,6 +336,7 @@ impl AppState {
         Self {
             model,
             last_ctrl_c: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
+            last_esc: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
             quit: false,
             ext_commands,
             pending_ui: None,
@@ -437,8 +450,8 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
 
 /// Key dispatch — pure: mutates model/state and returns effects.
 /// Mirrors the key handling from TS `interactive-mode.ts` (Ctrl+C abort with
-/// double-press quit, Ctrl+L clear, Ctrl+D/Esc quit, Ctrl+P/T/B commands,
-/// Enter submits, slash commands).
+/// double-press quit, Ctrl+L clear, Ctrl+D quit, Esc interrupt, Ctrl+P/T/B
+/// commands, Enter submits, slash commands).
 fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -493,10 +506,41 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
         KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
             vec![Effect::AgentCommand(AgentCmd::AbortBash)]
         }
-        // Esc: quit
+        // Esc: 对齐 TS `onEscape`（interactive-mode.ts setupKeyHandlers）——
+        // **不退出**（退出是 Ctrl+D / 双击 Ctrl+C / /quit）：
+        // 1) 流式/运行中 → 中断 + 清排队 follow-up（TS restoreQueuedMessagesToEditor）
+        // 2) bash 运行中 → abort bash
+        // 3) 空编辑器双击 Esc → TS 弹 tree/fork 选择器（本 port 未实现，见
+        //    DEVIATIONS）→ 无操作，仅记录时间。
         KeyCode::Esc => {
-            state.quit = true;
-            vec![]
+            // 补全弹窗打开时 Esc 只关闭弹窗（app.rs Completer 语义），不
+            // 触发 onEscape 链。
+            if state.model.completer.visible {
+                state.model.completer.deactivate();
+                return vec![];
+            }
+            let now = Instant::now();
+            let elapsed = now.duration_since(state.last_esc).as_millis() as u64;
+            state.last_esc = now;
+            if state.model.is_streaming || !state.model.active_tools.is_empty() {
+                // Immediate UI feedback; the agent event stream then closes
+                // via Done → MessageEnd → StreamEnd.
+                state.model.is_streaming = false;
+                // 当前编辑器文本随 effect 带出，用于还原时与队列文本合并
+                // （TS `[queuedText, currentText].join("\n\n")`）。
+                let current = state.model.input.value().to_string();
+                vec![Effect::AbortAndClearQueues(current)]
+            } else if state.model.active_tools.iter().any(|t| {
+                t.name == "bash"
+                    && matches!(t.state, pi_tui::app::ToolCallState::Running)
+            }) {
+                vec![Effect::AgentCommand(AgentCmd::AbortBash)]
+            } else {
+                // 空编辑器双击 Esc（500ms 内）：TS 默认 "tree" 选择器；本
+                // port 未实现 → no-op（不退出、不清编辑器）。
+                let _ = elapsed;
+                vec![]
+            }
         }
         // Enter: submit message or slash command (Shift/Alt+Enter insert a
         // newline instead — matches the TS editor's multi-line behavior).
@@ -785,6 +829,17 @@ async fn execute_effect(
         Effect::Abort => {
             agent_handle.abort().await;
         }
+        Effect::AbortAndClearQueues(current_text) => {
+            // 对齐 TS restoreQueuedMessagesToEditor({abort:true}) 的顺序：
+            // 先清 agent 队列（防止中止后 settled 循环消费排队 follow-up
+            // 自动续跑），再中断当前 run。agent 队列与 session 锁无关，可在
+            // 后台任务持有 session 锁期间安全调用；队列文本的镜像保存在
+            // session 上，由随后的 RestoreQueuedToEditor 命令（run 结束后
+            // 拿到锁）还原回编辑器。
+            agent_handle.clear_all_queues().await;
+            agent_handle.abort().await;
+            let _ = cmd_tx.send(AgentCmd::RestoreQueuedToEditor(current_text));
+        }
         Effect::AgentCommand(cmd) => {
             let _ = cmd_tx.send(cmd);
         }
@@ -929,6 +984,24 @@ fn spawn_agent_command_task(
                             // 消费扩展命令入队的 follow-up（对齐 TS 交互模式）。
                             let sess = session.lock().await;
                             sess.run_settled_continuations().await;
+                        }
+                        AgentCmd::RestoreQueuedToEditor(current_text) => {
+                            // TS restoreQueuedMessagesToEditor：clearAllQueues
+                            // 拿回排队文本（镜像在 Esc 时未被清，仍保留），与
+                            // 当前编辑器文本合并后还原。
+                            let (steering, follow_up) = sess.clear_all_queues().await;
+                            let mut parts: Vec<String> = steering
+                                .into_iter()
+                                .chain(follow_up)
+                                .filter(|t| !t.trim().is_empty())
+                                .collect();
+                            if !current_text.trim().is_empty() {
+                                parts.push(current_text);
+                            }
+                            let combined = parts.join("\n\n");
+                            if !combined.is_empty() {
+                                let _ = result_tx.send(pi_tui::Msg::SetEditorText(combined));
+                            }
                         }
                         AgentCmd::ReloadExtensions => {
                             // Extension reload is not applicable for Rust
@@ -1366,6 +1439,65 @@ mod tests {
 
     fn state() -> AppState {
         AppState::new(120, 80, Vec::new())
+    }
+
+
+    // ── Esc 行为（对齐 TS onEscape：不退出，流式→中断+还原队列文本）──────
+
+    /// Esc 流式中：不退出，立即停 spinner，返回带当前编辑器文本的
+    /// AbortAndClearQueues（队列文本还原由后台任务完成）。
+    #[test]
+    fn esc_while_streaming_aborts_with_current_editor_text() {
+        let mut s = state();
+        s.model.is_streaming = true;
+        s.model.input.set_value("half-typed");
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let effects = handle_key(&mut s, key);
+        assert!(!s.quit, "Esc 不能退出 TUI");
+        assert!(!s.model.is_streaming, "UI 立即停止 spinner");
+        assert_eq!(
+            effects,
+            vec![Effect::AbortAndClearQueues("half-typed".to_string())]
+        );
+    }
+
+    /// Esc 空闲时（第一下/500ms 内第二下）：不退出、无副作用
+    /// （TS 默认弹 tree/fork 选择器，本 port 未实现 → no-op）。
+    #[test]
+    fn esc_while_idle_does_not_quit() {
+        let mut s = state();
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let first = handle_key(&mut s, key);
+        assert!(!s.quit, "第一下 Esc 不退出");
+        assert_eq!(first, vec![]);
+        let second = handle_key(&mut s, key);
+        assert!(!s.quit, "双击 Esc 不退出（选择器未实现）");
+        assert_eq!(second, vec![]);
+    }
+
+    /// 补全弹窗打开时 Esc 只关弹窗，不触发 onEscape 链也不退出。
+    #[test]
+    fn esc_closes_completer_popup_without_quitting() {
+        let mut s = state();
+        s.model.completer.activate(
+            pi_tui::components::completer::CompletionTrigger::Slash,
+            "",
+        );
+        assert!(s.model.completer.visible);
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let effects = handle_key(&mut s, key);
+        assert!(!s.model.completer.visible, "Esc 关闭补全弹窗");
+        assert!(!s.quit);
+        assert_eq!(effects, vec![]);
     }
 
     #[test]

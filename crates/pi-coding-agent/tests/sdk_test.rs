@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::type_complexity)]
 
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pi_agent_core::agent::PromptInput;
 use pi_agent_core::pi_ai_types::{
@@ -13,7 +13,7 @@ use pi_agent_core::types::{AgentMessage, StreamFn};
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use pi_coding_agent::core::model_registry::{ModelRegistry, ProviderConfig};
 
-use pi_extension_api::{create_builtin_source_info, ExtensionRegistry};
+use pi_extension_api::{create_builtin_source_info, ExtensionRegistry, ExtensionUIContext};
 
 /// Create an `ExtensionRegistry` with the goal + web_search extensions
 /// (exercises the extension-tool path alongside the built-in tools).
@@ -466,6 +466,107 @@ async fn test_create_agent_session_with_extension() {
         "unexpected goal_wait result: {goal_text}"
     );
     println!("[dbg] goal_wait result: {}", goal_text);
+}
+
+/// Regression: interactive 模式在会话创建**之后**通过
+/// `set_extension_ui_context` 替换扩展 UI。扩展工具调用（如 goal_*）走的
+/// 是构造期捕获的共享 ExtensionContext，若只替换 `get_extension_context()`
+/// 的 ui，notify 会落回默认 `eprintln!("[pi] ...")`，在 TUI raw mode 下
+/// 直接打进备用屏幕/输入框。本测试断言工具调用路径的 notify 到达替换后
+/// 的 UI 上下文。
+#[tokio::test]
+async fn test_extension_tool_notify_uses_swapped_ui_context() {
+    let ext_registry = create_registry();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (mut session, _result) = create_agent_session(CreateAgentSessionOptions {
+        cwd: ".".to_string(),
+        agent_dir: Some(tmp.path().to_string_lossy().to_string()),
+        model: Some(make_model()),
+        thinking_level: None,
+        scoped_models: None,
+        no_tools: None,
+        tools: None,
+        exclude_tools: None,
+        custom_prompt: None,
+        append_system_prompt: None,
+        session_name: None,
+        stream_fn: None,
+        convert_to_llm: None,
+        custom_tools: None,
+        tools_options: None,
+        extension_flags: None,
+        extension_paths: Vec::new(),
+        enable_extensions: true,
+        extension_registry: Some(ext_registry),
+        cli_provider: None,
+        cli_model: None,
+        persist_session: true,
+        session_file: None,
+        fork_from: None,
+        session_dir: None,
+        auth_storage: None,
+        model_registry: None,
+        resource_loader: None,
+        session_manager: None,
+        settings_manager: None,
+        session_start_event: None,
+        // 模拟 interactive 模式：会话创建时不带 UI，之后才 swap。
+        ui_context: None,
+    })
+    .await
+    .expect("create_agent_session failed");
+
+    // TUI 桥：notify 记录到内存而不是 eprintln。
+    let notified: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let notified_for_closure = Arc::clone(&notified);
+    let ui_ctx = ExtensionUIContext {
+        notify: Arc::new(move |msg, _level| {
+            notified_for_closure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(msg.to_string());
+        }),
+        ..ExtensionUIContext::noop()
+    };
+    session.set_extension_ui_context(ui_ctx);
+
+    // 通过 agent 工具链执行扩展工具（与 TUI 中 LLM 调用 goal_complete 同路径）。
+    let agent_state = session.get_agent().state().await;
+    let goal_wait = agent_state
+        .tools
+        .iter()
+        .find(|t| t.name == "goal_wait")
+        .expect("goal_wait tool should be active");
+    let params = serde_json::json!({ "goal_id": "x", "reason": "exercise extension tool path" });
+    let result = (goal_wait.execute)("call-goal-wait-1".to_string(), params, None, None)
+        .await
+        .expect("goal_wait execute failed");
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = c {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("goal_wait rejected: no active goal."),
+        "unexpected goal_wait result: {text}"
+    );
+
+    let msgs = notified
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("goal_wait rejected: no active goal.")),
+        "extension tool notify did not reach the swapped UI context; got: {msgs:?}"
+    );
 }
 
 #[tokio::test]

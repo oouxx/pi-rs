@@ -448,6 +448,12 @@ pub struct AgentSession {
     extension_registry: Option<Arc<ExtensionRegistry>>,
     /// Cached extension context for dispatch calls.
     ext_ctx: ExtensionContext,
+    /// 实时扩展 UI 绑定（对齐 TS `ExtensionRunner.uiContext`，见
+    /// `delegating_ui`）。interactive 模式在会话构造后通过
+    /// `set_extension_ui_context` 换 UI；工具调用/钩子闭包捕获的上下文都
+    /// 从这里的实时值读取，换绑后立即生效（否则扩展工具 notify 会一直走
+    /// 构造期的默认 eprintln，打进 TUI 屏幕）。
+    extension_ui_binding: Arc<std::sync::RwLock<crate::core::extensions::ExtensionUIContext>>,
     /// Full tool registry (all available tools, not just active ones),
     /// matching TS `_toolRegistry`. Used by `set_active_tools_by_name()`.
     tool_registry: Vec<Arc<pi_agent_core::types::DynTool>>,
@@ -534,6 +540,134 @@ fn default_extension_ui() -> crate::core::extensions::ExtensionUIContext {
     }
 }
 
+/// 构造一个把每次调用都转发到 `binding` 中**当前** UI 的 `ExtensionUIContext`。
+///
+/// 对齐 TS `ExtensionRunner.createContext()`：TS 的 `ctx.ui` 是 getter
+/// （`get ui() { return runner.uiContext; }`），interactive 模式在会话构造
+/// **之后**经 `bindExtensions({ uiContext })` 换 UI，此后每次 dispatch
+/// （工具调用/钩子/命令）都能读到新 UI。Rust 侧工具/钩子闭包在构造期就
+/// 捕获了共享上下文，若 ui 是构造期快照，`set_extension_ui_context` 换 UI
+/// 后扩展工具调用仍会走旧默认值（如 `eprintln!("[pi] ...")` 直接打进
+/// TUI 备用屏幕/输入框）。这里让 `ctx.ui` 的每个方法调用时实时读取
+/// `binding`，等价于 TS 的 getter 语义。
+fn delegating_ui(
+    binding: Arc<
+        std::sync::RwLock<crate::core::extensions::ExtensionUIContext>,
+    >,
+) -> crate::core::extensions::ExtensionUIContext {
+    use crate::core::extensions::ExtensionUIContext;
+
+    let notify = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |msg: &str, payload: &serde_json::Value| {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.notify)(msg, payload);
+        })
+    };
+    let set_status = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |key: &str, text: &str| {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.set_status)(key, text);
+        })
+    };
+    let confirm = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |title: &str, message: &serde_json::Value| -> bool {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.confirm)(title, message)
+        })
+    };
+    let select = {
+        let binding = Arc::clone(&binding);
+        Arc::new(
+            move |title: &str,
+                  options: &[String],
+                  opts: Option<&serde_json::Value>|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<String>> + Send>,
+            > {
+                let ui = binding
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let inner = ui.select.clone();
+                // future 需 'static：把参数拷成 owned 再进 async 块。
+                let title = title.to_string();
+                let options = options.to_vec();
+                let opts = opts.cloned();
+                Box::pin(async move { inner(&title, &options, opts.as_ref()).await })
+            },
+        )
+    };
+    let input = {
+        let binding = Arc::clone(&binding);
+        Arc::new(
+            move |title: &str,
+                  initial: Option<&str>,
+                  opts: Option<&serde_json::Value>|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<String>> + Send>,
+            > {
+                let ui = binding
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let inner = ui.input.clone();
+                // 返回需 'static：把参数拷成 owned 再返回 async 块。
+                let title = title.to_string();
+                let initial = initial.map(str::to_owned);
+                let opts = opts.cloned();
+                Box::pin(async move { inner(&title, initial.as_deref(), opts.as_ref()).await })
+            },
+        )
+    };
+    let set_widget = {
+        let binding = Arc::clone(&binding);
+        Arc::new(
+            move |key: &str, items: Option<&[String]>, opts: Option<&serde_json::Value>| {
+                let ui = binding
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (ui.set_widget)(key, items, opts);
+            },
+        )
+    };
+    let set_title = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |title: &str| {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.set_title)(title);
+        })
+    };
+    let set_editor_text = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |text: &str| {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.set_editor_text)(text);
+        })
+    };
+
+    ExtensionUIContext {
+        notify,
+        set_status,
+        confirm,
+        select,
+        input,
+        set_widget,
+        set_title,
+        set_editor_text,
+    }
+}
+
 impl AgentSession {
     pub async fn new(
         session_manager: SessionManager,
@@ -563,8 +697,18 @@ impl AgentSession {
                 }
             }
         });
-        let ui = options.ui_context.clone().unwrap_or_else(default_extension_ui);
-        let ext_ctx = ExtensionContext::new(options.cwd.clone(), false, ui, ext_runtime_handle);
+        // 实时 UI 绑定：构造期值等于 options.ui_context（或默认 eprintln），
+        // interactive 模式之后通过 set_extension_ui_context 换绑；两个扩展
+        // 上下文都从这里实时读取（对齐 TS runner.uiContext + getter）。
+        let extension_ui_binding = Arc::new(std::sync::RwLock::new(
+            options.ui_context.clone().unwrap_or_else(default_extension_ui),
+        ));
+        let ext_ctx = ExtensionContext::new(
+            options.cwd.clone(),
+            false,
+            delegating_ui(Arc::clone(&extension_ui_binding)),
+            ext_runtime_handle,
+        );
         let shared_ext_ctx = Arc::new(ext_ctx);
 
         // ── Build tool list ──
@@ -1175,9 +1319,15 @@ impl AgentSession {
                         }
                     }
                 });
-                let ui = options.ui_context.clone().unwrap_or_else(default_extension_ui);
-                ExtensionContext::new(session_cwd_for_ext.clone(), false, ui, ext_runtime_handle)
+                ExtensionContext::new(
+                    session_cwd_for_ext.clone(),
+                    false,
+                    delegating_ui(Arc::clone(&extension_ui_binding)),
+                    ext_runtime_handle,
+                )
             },
+            // 实时 UI 绑定（工具/钩子闭包共享的上下文也通过它读取）。
+            extension_ui_binding,
             tool_registry,
             tool_definitions,
             resources: options.resources,
@@ -1365,6 +1515,10 @@ impl AgentSession {
             // 时由 prompt() 尾部的 settled 循环消费并启动新一轮，供 /goal
             // 等扩展在 agent_settled 边界自动延续）。
             let agent_for_queue = session.agent.clone();
+            // 镜像队列文本（对齐 TS `_queueFollowUp` 推入 `_followUpMessages`）：
+            // Esc 中断时 TUI 靠它把排队消息还原回编辑器，且 message_start
+            // 消费时会从镜像移除，不会残留。
+            let follow_up_mirror = session.follow_up_messages.clone();
             session.ext_ctx.runtime.queue_follow_up = std::sync::Arc::new(
                 move |content: String| {
                     let message = AgentMessage::User {
@@ -1374,6 +1528,10 @@ impl AgentSession {
                     // 同步入队（settled 时队列空闲；极端竞争下 try_lock 失败
                     // 则丢弃——下一轮延续会重新评估）。
                     if let Ok(mut q) = agent_for_queue.follow_up_queue_try_lock() {
+                        follow_up_mirror
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(content.clone());
                         q.enqueue(message);
                     }
                 },
@@ -2041,7 +2199,12 @@ impl AgentSession {
     /// session construction. Headless modes leave the no-op default; the
     /// interactive mode wires real dialogs/notifications this way.
     pub fn set_extension_ui_context(&mut self, ui: crate::core::extensions::ExtensionUIContext) {
-        self.ext_ctx.ui = ui;
+        // 换绑实时 UI：所有扩展上下文（含工具调用/钩子闭包在构造期捕获的
+        // 共享上下文）的 ui 都是 delegating_ui，调用时从这里实时读取。
+        *self
+            .extension_ui_binding
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ui;
     }
 
     /// 设置扩展运行模式（`"tui"` / `"cli"` / `"headless"`，对齐 TS

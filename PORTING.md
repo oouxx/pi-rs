@@ -135,6 +135,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 17 | **数据结构 in-place 语义** | TS 对象引用被原地替换，后续读取已是新值 | Rust `Vec` 替换元素后，旧引用仍指向旧对象 | 替换后**重新读取**，不要复用旧引用 | #62 |
 | 18 | **缺失前置检查 / 逻辑分支** | TS 在发送前/出错时做前置检查（context overflow 检测、pre-prompt compaction、retry 前清理） | Rust 漏掉该分支，错误直达或被忽略 | 逐个对照 TS 的 if/前置 guard，补齐对应检查与处理 | #44, #45 |
 | 19 | **快照克隆被当作共享状态写入** | TS `this.session.model = x` 直接改共享对象 | 调用某个 `state()`/`getState()` 返回**克隆快照**（如 `Arc<RwLock<T>>` 的 `read().await.clone()`），在其上赋值/`push` 后丢弃——编译通过、行为静默丢失 | 写状态必须用真正的 setter 或 `update_state(&mut)` 写锁；任何 `let mut state = x.state().await` 后出现赋值/push 都要怀疑是克隆丢写 | #75（`set_model`/`set_thinking_level`/`set_active_tools_by_name`/`send_custom_message`/`_flush_pending_bash_messages`/`cycle_model`/`record_bash_result` 共 7 处） |
+| 20 | **执行时上下文 vs 构造期快照** | TS `ExtensionRunner.createContext()` 每次 dispatch 新建 context，`ui`/`mode` 等字段是 getter，调用时实时读 runner 上可变的绑定（`bindExtensions({ uiContext })` 换绑后全部路径立即生效） | Rust 在构造期把整个上下文（含 ui/runtime）快照进长期存活的闭包 `Arc`，宿主事后换绑（如 TUI `set_extension_ui_context`）只改了另一个 context——编译通过，行为静默走旧默认值（如 `eprintln!("[pi] ...")` 打进 TUI 屏幕） | 需要"事后换绑"的字段用实时读取的委托/绑定（`RwLock` + delegating context，等价 TS getter），不要把可变绑定快照进长期存活闭包 | #93（bash session 环境变量）、#119（TUI 换绑 UI 后扩展工具 notify 仍走默认 eprintln） |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。

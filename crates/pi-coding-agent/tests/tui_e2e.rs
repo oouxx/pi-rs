@@ -909,16 +909,69 @@ fn tui_extension_ui_dialogs_work() {
     assert_eq!(code, Some(0), "clean exit code 0");
 }
 
-/// Esc quits immediately with a clean terminal restore.
+/// Esc 不退出：对齐 TS `onEscape`——空闲时第一下只记录 double-escape
+/// 时间（TS 默认弹 tree/fork 选择器，本 port 未实现，见 DEVIATIONS），
+/// TUI 保持可用，Ctrl+D 才退出。
 #[test]
-fn tui_esc_quits_cleanly() {
+fn tui_esc_does_not_quit_and_ctrl_d_still_quits() {
     let mut tui = Tui::spawn(false);
     assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
-    tui.write(&[0x1b]); // Esc
+    tui.write(&[0x1b]); // Esc —— 不退出
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        tui.rendered().contains("mock-model"),
+        "TUI still alive after Esc; tail: {:?}",
+        tui.rendered().chars().rev().take(200).collect::<String>()
+    );
+    tui.write(&[0x04]); // Ctrl+D: quit
     let code = tui.wait_exit(TIMEOUT);
-    assert_eq!(code, Some(0), "Esc quit exit code 0");
+    assert_eq!(code, Some(0), "Ctrl+D quit exit code 0");
     assert!(
         tui.rendered().contains("\x1b[?1049l"),
-        "terminal restored after Esc"
+        "terminal restored after quit"
     );
+}
+
+/// Esc 中断长流（对齐 TS `onEscape` 的 streaming 分支）：流式输出停止增长、
+/// TUI 保持响应，Ctrl+D 正常退出。
+#[test]
+fn tui_esc_aborts_long_stream() {
+    let mut tui = Tui::spawn(true);
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+    tui.write(b"hello\r");
+    assert!(
+        tui.wait_for("chunk", TIMEOUT),
+        "long stream started; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(&[0x1b]); // Esc: interrupt
+
+    // Output must stop growing within ~2s (stream aborted, spinner stopped).
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut last_len = tui.rendered().len();
+    let mut stable_rounds = 0;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        let len = tui.rendered().len();
+        if len == last_len {
+            stable_rounds += 1;
+            if stable_rounds >= 3 {
+                break;
+            }
+        } else {
+            stable_rounds = 0;
+            last_len = len;
+        }
+    }
+    assert!(
+        stable_rounds >= 3,
+        "output stopped after Esc; tail: {:?}",
+        tui.rendered().chars().rev().take(400).collect::<String>()
+    );
+
+    // Still responsive: Ctrl+D quits.
+    tui.write(&[0x04]);
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit after Esc interrupt");
 }

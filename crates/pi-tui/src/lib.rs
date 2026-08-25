@@ -4,7 +4,9 @@
 //! Model / Msg / update / view pattern.
 
 pub mod app;
+pub mod completion;
 pub mod components;
+pub mod fuzzy;
 pub mod detect;
 pub mod keymap;
 pub mod render;
@@ -16,8 +18,8 @@ pub use app::{AppMode, Cmd, Dialog, DialogAction, DialogButton, Message, Model, 
 pub use detect::{detect_terminal_background_theme, detect_theme_from_env, TerminalTheme};
 pub use theme::Theme;
 pub use components::{
-    Completer, CompletionItem, CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown,
-    MarkdownTheme, SelectList, TextComponent,
+    ArgumentCompletionsFn, Completer, CompletionCommand, CompletionItem, CompletionRequest,
+    CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown, MarkdownTheme, SelectList, TextComponent,
 };
 pub use keymap::{Action, KeyBind, Keymap};
 pub use terminal::{ShutdownGuard, Terminal};

@@ -84,6 +84,8 @@ enum Effect {
     /// run，随后把排队 steering/follow-up 文本还原回编辑器（对齐 TS
     /// `restoreQueuedMessagesToEditor({ abort: true })`）。
     AbortAndClearQueues(String),
+    /// 异步计算补全候选（slash fuzzy / 命令参数 / `@` 文件走查）。
+    RequestCompletion(pi_tui::CompletionRequest),
 }
 
 // ============================================================================
@@ -282,6 +284,9 @@ struct AppState {
     /// double-escape action（TS 默认弹 tree 选择器；本 port 未实现，
     /// 见 DEVIATIONS）。
     last_esc: Instant,
+    /// app::update 产生的 pi-tui Cmd（当前只有补全请求），由 update 收集
+    /// 成 Effect 交给事件循环执行。
+    pending_cmds: Vec<pi_tui::Cmd>,
     quit: bool,
     /// Names of slash commands registered by extensions (snapshot taken at
     /// startup; used to route `/name` to the extension executor).
@@ -297,46 +302,12 @@ struct AppState {
 
 impl AppState {
     fn new(width: u16, height: u16, ext_commands: Vec<String>) -> Self {
-        let mut model = pi_tui::Model::new(width, height);
-        // Slash-command menu: builtin commands + extension-registered ones,
-        // so typing `/` opens a live completion popup (regression: the
-        // completer was never populated, so the menu never appeared).
-        let mut commands: Vec<pi_tui::CompletionItem> = [
-            ("/help", "Show commands"),
-            ("/new", "Start a new session"),
-            ("/name <name>", "Set the session name"),
-            ("/model <provider>/<id>", "Switch model"),
-            ("/theme", "Switch theme (dark/light)"),
-            ("/reload", "Reload extensions"),
-            ("/quit", "Quit"),
-        ]
-        .iter()
-        .map(|(label, desc)| pi_tui::CompletionItem {
-            label: label.to_string(),
-            description: desc.to_string(),
-            // The inserted text is the bare command name — never the
-            // argument placeholder (`/model <provider>/<id>` must insert
-            // `model`, not the placeholder text).
-            insert_text: label
-                .split_whitespace()
-                .next()
-                .unwrap_or(label)
-                .trim_start_matches('/')
-                .to_string(),
-        })
-        .collect();
-        for cmd in &ext_commands {
-            commands.push(pi_tui::CompletionItem {
-                label: format!("/{cmd}"),
-                description: "Extension command".into(),
-                insert_text: cmd.clone(),
-            });
-        }
-        model.completer.set_commands(commands);
+        let model = pi_tui::Model::new(width, height);
         Self {
             model,
             last_ctrl_c: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
             last_esc: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
+            pending_cmds: Vec::new(),
             quit: false,
             ext_commands,
             pending_ui: None,
@@ -379,7 +350,13 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             UpdateOutcome { effects: vec![], redraw: true }
         }
         Action::Key(key) => {
-            let effects = handle_key(state, key);
+            let mut effects = handle_key(state, key);
+            // app.rs 的独立 run() 循环才用 Cmd::Quit；interactive 模式只会
+            // 产生补全请求，防御性忽略其它 Cmd。
+            effects.extend(state.pending_cmds.drain(..).filter_map(|cmd| match cmd {
+                pi_tui::Cmd::RequestCompletion(req) => Some(Effect::RequestCompletion(req)),
+                pi_tui::Cmd::Quit => None,
+            }));
             UpdateOutcome { effects, redraw: true }
         }
         Action::Ui(action) => {
@@ -552,17 +529,29 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 return vec![];
             }
             if state.model.completer.visible {
-                if let Some(insert) = state.model.completer.selected_insert() {
-                    let current = state.model.input.value().to_string();
-                    let full = if let Some(pos) = current.rfind(['/', '@']) {
-                        let prefix = &current[..=pos];
-                        format!("{prefix}{insert} ")
-                    } else {
-                        current
-                    };
-                    state.model.input.set_value(&full);
+                let trigger = state.model.completer.trigger;
+                // 只应用"与当前输入一致"的新鲜结果（对齐 TS：Enter 应用的是
+                // 当前文本对应的列表；过期/空结果视为无补全，按普通输入提交）。
+                if state.model.completer.has_fresh_results() {
+                    // 对齐 TS applyCompletion：替换整段前缀（slash 命令补全后
+                    // 加空格；`@` 文件目录不加空格、文件加空格；参数不加）。
+                    if let Some(new_value) = state
+                        .model
+                        .completer
+                        .apply_selected(state.model.input.value())
+                    {
+                        state.model.input.set_value(&new_value);
+                    }
+                    state.model.completer.deactivate();
+                    // 对齐 TS：仅 `/` 补全应用后继续走（提交执行命令）；
+                    // `@`/文件补全应用后停留编辑，不提交消息。
+                    if trigger != Some(pi_tui::components::CompletionTrigger::Slash) {
+                        return vec![];
+                    }
+                } else {
+                    // 过期/空结果：视为没有补全，正常提交当前输入。
+                    state.model.completer.deactivate();
                 }
-                state.model.completer.deactivate();
             }
             let text = state.model.input.value().to_string();
             if text.is_empty() {
@@ -579,7 +568,8 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             vec![Effect::AgentCommand(AgentCmd::SendMessage(text))]
         }
         _ => {
-            app::update(&mut state.model, pi_tui::Msg::Key(key));
+            let cmds = app::update(&mut state.model, pi_tui::Msg::Key(key));
+            state.pending_cmds.extend(cmds);
             vec![]
         }
     }
@@ -818,12 +808,154 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
 // effects executor (grok `app/effects.rs`)
 // ============================================================================
 
+// ============================================================================
+// 补全（对齐 TS completion：命令 fuzzy / 命令参数 / `@` 文件走查）
+// ============================================================================
+
+/// 补全所需的不变数据快照：命令列表（含参数补全回调）+ cwd。
+struct CompletionSources {
+    commands: Vec<pi_tui::CompletionCommand>,
+    cwd: String,
+}
+
+/// `/model <provider>/<id>` 参数补全（对齐 TS `createBaseAutocompleteProvider`
+/// 里 modelCommand.getArgumentCompletions：fuzzy 过滤可用模型快照）。
+fn model_argument_completions(models: Vec<pi_agent_core::pi_ai_types::Model>) -> pi_tui::ArgumentCompletionsFn {
+    // TS getModelSearchText：`id provider provider/id provider id name`。
+    let search: Vec<String> = models
+        .iter()
+        .map(|m| {
+            let name = if m.name.is_empty() { String::new() } else { format!(" {}", m.name) };
+            format!("{} {} {}/{} {} {}{name}", m.id, m.provider, m.provider, m.id, m.provider, m.id)
+        })
+        .collect();
+    let items: Vec<pi_tui::CompletionItem> = models
+        .iter()
+        .map(|m| pi_tui::CompletionItem::new(format!("{}/{}", m.provider, m.id), m.id.clone(), m.provider.clone()))
+        .collect();
+    std::sync::Arc::new(move |prefix: String| {
+        let search = search.clone();
+        let items = items.clone();
+        Box::pin(async move {
+            // fuzzy_filter_indices 用 search 文本排序，再映射回 item。
+            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&search, &prefix, |t| t.clone());
+            if idx.is_empty() {
+                None
+            } else {
+                Some(idx.into_iter().map(|(i, _)| items[i].clone()).collect())
+            }
+        })
+    })
+}
+
+/// 包装扩展命令的 `get_argument_completions`（pi-extension-api → pi-tui 类型）。
+fn wrap_extension_argument_completions(
+    f: pi_extension_api::ArgumentCompletionsFn,
+) -> pi_tui::ArgumentCompletionsFn {
+    std::sync::Arc::new(move |prefix: String| {
+        let f = f.clone();
+        Box::pin(async move {
+            f(prefix).await.map(|items| {
+                items
+                    .into_iter()
+                    .map(|i| pi_tui::CompletionItem {
+                        value: i.value,
+                        label: i.label,
+                        description: i.description.unwrap_or_default(),
+                    })
+                    .collect()
+            })
+        })
+    })
+}
+
+/// 构建补全命令列表（对齐 TS `createBaseAutocompleteProvider`）：
+/// 内建命令（`/model` 带模型参数补全）+ 扩展命令（带各自参数补全）。
+fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCommand> {
+    let mut commands = vec![
+        pi_tui::CompletionCommand::new("/help", "Show commands", "help"),
+        pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
+        pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name"),
+        pi_tui::CompletionCommand::new("/quit", "Quit", "quit"),
+        pi_tui::CompletionCommand::new("/theme [dark|light]", "Switch theme (dark/light)", "theme"),
+        pi_tui::CompletionCommand::new("/reload", "Reload extensions", "reload"),
+    ];
+    // `/model`：参数补全 = 可用模型列表（对齐 TS modelCommand.getArgumentCompletions）。
+    let models = session.get_model_registry().get_available();
+    commands.push(
+        pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
+            .with_argument_completions(model_argument_completions(models)),
+    );
+    if let Some(registry) = session.get_extension_registry() {
+        for rc in registry.commands() {
+            let mut cmd = pi_tui::CompletionCommand::new(
+                format!("/{}", rc.name),
+                rc.description.clone(),
+                rc.name.clone(),
+            );
+            if let Some(ac) = rc.get_argument_completions.clone() {
+                cmd = cmd.with_argument_completions(wrap_extension_argument_completions(ac));
+            }
+            commands.push(cmd);
+        }
+    }
+    commands
+}
+
+/// 解析一次补全请求（slash fuzzy / 命令参数 / `@` 文件走查）。
+async fn resolve_completion(
+    sources: &CompletionSources,
+    req: &pi_tui::CompletionRequest,
+) -> Vec<pi_tui::CompletionItem> {
+    use pi_tui::components::CompletionTrigger;
+    match req.trigger {
+        CompletionTrigger::Slash => {
+            // TS：命令 fuzzy 过滤（name = 命令名）。
+            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&sources.commands, &req.query, |c| c.insert_text.clone());
+            idx.into_iter()
+                .map(|(i, _)| {
+                    let c = &sources.commands[i];
+                    pi_tui::CompletionItem::new(c.insert_text.clone(), c.label.clone(), c.description.clone())
+                })
+                .collect()
+        }
+        CompletionTrigger::Argument => {
+            let Some(name) = &req.command else { return Vec::new() };
+            let Some(cmd) = sources.commands.iter().find(|c| c.insert_text == *name) else {
+                return Vec::new();
+            };
+            let Some(f) = &cmd.argument_completions else {
+                return Vec::new();
+            };
+            f(req.query.clone()).await.unwrap_or_default()
+        }
+        CompletionTrigger::At => {
+            // `@` 附件 → fuzzy 走查（ignore ≈ fd）；Tab 强制普通路径 → readdir。
+            let cwd = sources.cwd.clone();
+            let prefix = req.prefix.clone();
+            let (raw, is_at, is_quoted) = pi_tui::completion::parse_path_prefix(&prefix);
+            let is_at = is_at || req.force;
+            tokio::task::spawn_blocking(move || {
+                if is_at {
+                    pi_tui::completion::fuzzy_file_suggestions(&cwd, &raw, is_quoted, true, 20)
+                } else {
+                    pi_tui::completion::file_suggestions(&cwd, &prefix)
+                }
+            })
+            .await
+            .unwrap_or_default()
+        }
+    }
+}
+
 /// Run one effect. This is the only place that performs I/O / touches the
 /// agent. `Abort` bypasses the session mutex deliberately (see [`Effect`]).
 async fn execute_effect(
     effect: Effect,
     agent_handle: &Arc<Agent>,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCmd>,
+    completion_sources: &Arc<CompletionSources>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
 ) {
     match effect {
         Effect::Abort => {
@@ -842,6 +974,19 @@ async fn execute_effect(
         }
         Effect::AgentCommand(cmd) => {
             let _ = cmd_tx.send(cmd);
+        }
+        Effect::RequestCompletion(req) => {
+            // 异步补全（对齐 TS requestAutocomplete + debounce + abort）：
+            // 过期结果由 Completer 的 request_seq 丢弃。
+            let sources = Arc::clone(completion_sources);
+            let result_tx = result_tx.clone();
+            tokio::spawn(async move {
+                if req.debounce_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(req.debounce_ms)).await;
+                }
+                let items = resolve_completion(&sources, &req).await;
+                let _ = result_tx.send(pi_tui::Msg::CompletionResults { seq: req.seq, items });
+            });
         }
     }
 }
@@ -1139,6 +1284,22 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     session.set_extension_mode("tui");
 
     let mut state = AppState::new(cols, rows, ext_commands);
+
+    // ── 补全（对齐 TS createBaseAutocompleteProvider + autocompleteMaxVisible）──
+    let completion_commands = build_completion_commands(&session);
+    state
+        .model
+        .completer
+        .set_commands(completion_commands.clone());
+    state
+        .model
+        .completer
+        .set_max_visible(session.get_autocomplete_max_visible() as usize);
+    let completion_sources = Arc::new(CompletionSources {
+        commands: completion_commands,
+        cwd: cwd.clone(),
+    });
+
     // 探测/设置解析出的初始主题（TS `initTheme(activeThemeName)`）；
     // 只有 "light" 内置主题名会切到浅色，其余（含自定义主题名，pi-rs
     // 无自定义主题系统）落到 dark。
@@ -1173,7 +1334,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     let bg_session = session.clone();
     let bg_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bg_exit_flag = bg_exit.clone();
-    spawn_agent_command_task(bg_session, cmd_rx, bg_exit_flag, result_tx);
+    spawn_agent_command_task(bg_session, cmd_rx, bg_exit_flag, result_tx.clone());
 
     // ── Subscribe agent events (lock-and-release) ───────────────────────
     // Keep an `Arc<Agent>` handle for abort: `abort()` is `&self` and must
@@ -1230,7 +1391,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             redraw |= refresh_status(&mut state, &ui_session).await;
         }
         for effect in outcome.effects {
-            execute_effect(effect, &agent_handle, &cmd_tx).await;
+            execute_effect(effect, &agent_handle, &cmd_tx, &completion_sources, &result_tx).await;
         }
         if state.quit {
             break;
@@ -1481,12 +1642,80 @@ mod tests {
         assert_eq!(second, vec![]);
     }
 
+    // ── 补全应用（对齐 TS applyCompletion）──────────────────────────────
+
+    /// Enter 应用 slash 补全后**继续提交**（TS：`/` 前缀应用后 fall
+    /// through 到 submit，执行命令）。
+    #[test]
+        fn enter_applies_slash_completion_then_submits() {
+        let mut s = state();
+        s.model.completer.set_commands(vec![
+            pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
+        ]);
+        s.model.input.set_value("/n");
+        s.model
+            .completer
+            .begin(pi_tui::components::CompletionTrigger::Slash, "/n", "n");
+        s.model.completer.apply_results(
+            1,
+            vec![pi_tui::CompletionItem::new("new", "/new", "Start a new session")],
+        );
+        assert!(s.model.completer.visible);
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let effects = handle_key(&mut s, key);
+        // "/new " 提交 → slash_command 清空输入并返回 NewSession 命令。
+        assert_eq!(
+            effects,
+            vec![Effect::AgentCommand(AgentCmd::NewSession(None))]
+        );
+        assert_eq!(s.model.input.value(), "", "提交后输入被清空");
+        assert!(!s.model.completer.visible);
+    }
+
+    /// Enter 应用 `@` 文件补全后**不提交**（对齐 TS：非 `/` 前缀应用后
+    /// 停留编辑），且插入完整路径（从最后的 '@' 替换，不丢 @src/ 前缀、
+    /// 不加强制空格）。
+    #[test]
+    fn enter_applies_at_completion_without_submitting() {
+        let mut s = state();
+        s.model.input.set_value("@src/mai");
+        s.model
+            .completer
+            .begin(pi_tui::components::CompletionTrigger::At, "@src/mai", "mai");
+        s.model.completer.apply_results(
+            1,
+            vec![pi_tui::CompletionItem::new(
+                "@src/main.rs",
+                "main.rs",
+                "src/main.rs",
+            )],
+        );
+        assert!(s.model.completer.visible);
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let effects = handle_key(&mut s, key);
+        assert_eq!(effects, vec![], "@ 补全应用后不提交消息");
+        // TS @ 分支：文件加一个空格，目录不加（可继续补全）。
+        assert_eq!(
+            s.model.input.value(),
+            "@src/main.rs ",
+            "插入完整路径，文件后跟空格"
+        );
+        assert!(!s.model.completer.visible);
+    }
+
     /// 补全弹窗打开时 Esc 只关弹窗，不触发 onEscape 链也不退出。
     #[test]
     fn esc_closes_completer_popup_without_quitting() {
         let mut s = state();
-        s.model.completer.activate(
-            pi_tui::components::completer::CompletionTrigger::Slash,
+        s.model.completer.begin(
+            pi_tui::components::CompletionTrigger::Slash,
+            "",
             "",
         );
         assert!(s.model.completer.visible);
@@ -1498,6 +1727,126 @@ mod tests {
         assert!(!s.model.completer.visible, "Esc 关闭补全弹窗");
         assert!(!s.quit);
         assert_eq!(effects, vec![]);
+    }
+
+    // ── 补全解析（对齐 TS autocomplete.ts）─────────────────────────────
+
+    /// slash 命令候选：fuzzy 过滤 + 值 = 命令名。
+    #[tokio::test]
+    async fn resolve_slash_completion_fuzzy_filters_commands() {
+        let sources = CompletionSources {
+            commands: vec![
+                pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
+                pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
+            ],
+            cwd: ".".into(),
+        };
+        let req = pi_tui::CompletionRequest {
+            seq: 1,
+            trigger: pi_tui::components::CompletionTrigger::Slash,
+            prefix: "/mod".into(),
+            query: "mod".into(),
+            command: None,
+            debounce_ms: 0,
+            force: false,
+        };
+        let items = resolve_completion(&sources, &req).await;
+        assert_eq!(items.len(), 1, "只有 /model 匹配 mod: {items:?}");
+        assert_eq!(items[0].value, "model");
+        assert_eq!(items[0].label, "/model <provider>/<id>");
+    }
+
+    /// 命令参数补全：走命令注册的回调（对齐 TS getArgumentCompletions）。
+    #[tokio::test]
+    async fn resolve_argument_completion_calls_callback() {
+        let f: pi_tui::ArgumentCompletionsFn = std::sync::Arc::new(|prefix: String| {
+            Box::pin(async move {
+                Some(vec![pi_tui::CompletionItem::new(
+                    format!("openai/{prefix}"),
+                    prefix.clone(),
+                    "openai",
+                )])
+            })
+        });
+        let sources = CompletionSources {
+            commands: vec![pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
+                .with_argument_completions(f)],
+            cwd: ".".into(),
+        };
+        let req = pi_tui::CompletionRequest {
+            seq: 1,
+            trigger: pi_tui::components::CompletionTrigger::Argument,
+            prefix: "g".into(),
+            query: "g".into(),
+            command: Some("model".into()),
+            debounce_ms: 0,
+            force: false,
+        };
+        let items = resolve_completion(&sources, &req).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].value, "openai/g");
+    }
+
+    /// 未注册参数补全的命令：返回空（对齐 TS getSuggestions 返回 null）。
+    #[tokio::test]
+    async fn resolve_argument_completion_missing_callback_returns_empty() {
+        let sources = CompletionSources {
+            commands: vec![pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name")],
+            cwd: ".".into(),
+        };
+        let req = pi_tui::CompletionRequest {
+            seq: 1,
+            trigger: pi_tui::components::CompletionTrigger::Argument,
+            prefix: "x".into(),
+            query: "x".into(),
+            command: Some("name".into()),
+            debounce_ms: 0,
+            force: false,
+        };
+        assert!(resolve_completion(&sources, &req).await.is_empty());
+    }
+
+    /// `/model` 参数补全：fuzzy 过滤可用模型（对齐 TS createFuzzyAutocompleteItems）。
+    #[tokio::test]
+    async fn model_argument_completions_fuzzy_filter_models() {
+        let models = vec![
+            pi_agent_core::pi_ai_types::Model {
+                id: "gpt-4o".into(),
+                name: "GPT-4o".into(),
+                api: "openai".into(),
+                provider: "openai".into(),
+                base_url: "http://localhost".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec!["text".into()],
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                context_window: 128000,
+                max_tokens: 4096,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            },
+            pi_agent_core::pi_ai_types::Model {
+                id: "gpt-4o-mini".into(),
+                name: "GPT-4o mini".into(),
+                api: "openai".into(),
+                provider: "openai".into(),
+                base_url: "http://localhost".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec!["text".into()],
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                context_window: 128000,
+                max_tokens: 4096,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            },
+        ];
+        let f = model_argument_completions(models);
+        let items = f("gpt-4o-m".to_string()).await.expect("模型补全");
+        assert_eq!(items.len(), 1, "gpt-4o-m 只匹配 gpt-4o-mini: {items:?}");
+        assert_eq!(items[0].value, "openai/gpt-4o-mini");
     }
 
     #[test]

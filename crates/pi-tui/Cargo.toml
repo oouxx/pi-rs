@@ -22,12 +22,16 @@ unicode-width = { workspace = true }
 tokio = { version = "1", features = ["sync", "macros", "rt", "io-std", "time", "signal"] }
 futures = { workspace = true }
 similar = { workspace = true }
+# gitignore-aware directory walking for `@` file completion（对齐 TS 的 fd 语义）
+ignore = "0.4"
+dirs = "6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+tempfile = "3"
 
 
 [lints]

@@ -2727,6 +2727,15 @@ impl AgentSession {
         }
     }
 
+    /// TS `settingsManager.getAutocompleteMaxVisible()`：补全弹窗最大可见行数
+    ///（默认 5，clamp 3..=20 在 settings 层完成）。
+    pub fn get_autocomplete_max_visible(&self) -> u32 {
+        self.settings_manager
+            .lock()
+            .map(|sm| sm.get_autocomplete_max_visible())
+            .unwrap_or(5)
+    }
+
     pub fn retry_attempt(&self) -> u32 {
         *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

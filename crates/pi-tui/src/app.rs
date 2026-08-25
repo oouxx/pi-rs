@@ -16,7 +16,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::components::{Completer, Editor, Input, Markdown, SelectList};
+use crate::components::{
+    Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger, Editor, Input, Markdown, SelectList,
+};
 use crate::theme::Theme;
 
 // ============================================================================
@@ -266,7 +268,12 @@ const CTX_WARNING_PCT: u8 = 70;
 // Cmd
 // ============================================================================
 
-pub enum Cmd { Quit }
+#[derive(Debug)]
+pub enum Cmd {
+    Quit,
+    /// 请求宿主异步计算补全候选（slash 命令 fuzzy / 命令参数 / `@` 文件走查）。
+    RequestCompletion(CompletionRequest),
+}
 
 /// Cumulative token/cost totals for the footer stats line (TS
 /// `createUsageTotals()` + `addUsageToTotals()`).
@@ -562,6 +569,9 @@ pub enum Msg {
     /// Switch the active palette (the `/theme` command). Replaces the
     /// `Theme` wholesale so every surface re-reads its colors next frame.
     SetTheme(Theme),
+    /// 宿主异步计算的补全候选回填（`seq` 对齐 [`crate::components::Completer::request_seq`]，
+    /// 过期结果被丢弃，等价 TS AbortController）。
+    CompletionResults { seq: u64, items: Vec<CompletionItem> },
 }
 
 // ============================================================================
@@ -570,7 +580,24 @@ pub enum Msg {
 
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
-        Msg::Key(key) => handle_key(model, key),
+        Msg::Key(key) => {
+            let mut cmds = handle_key(model, key);
+            if let Some(cmd) = completion_request_after_key(model, &key) {
+                cmds.push(cmd);
+            }
+            cmds
+        }
+        Msg::CompletionResults { seq, items } => {
+            if items.is_empty() {
+                if seq == model.completer.request_seq {
+                    // 对齐 TS getSuggestions 返回 null：无候选 → 关闭弹窗。
+                    model.completer.deactivate();
+                }
+            } else {
+                model.completer.apply_results(seq, items);
+            }
+            vec![]
+        }
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
         Msg::Paste(text) => { model.input.insert_str(&text); vec![] }
         Msg::NewMessage(role, text) => { model.push_message(role, text); vec![] }
@@ -661,14 +688,14 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     { return vec![]; }
     if model.completer.visible {
         match key.code {
-            KeyCode::Tab | KeyCode::Down => { model.completer.next(); return vec![]; }
+            KeyCode::Down => { model.completer.next(); return vec![]; }
             KeyCode::Up => { model.completer.prev(); return vec![]; }
-            KeyCode::Enter => {
-                if let Some(text) = model.completer.selected_insert() {
-                    let current = model.input.value().to_string();
-                    if let Some(pos) = current.rfind(['/', '@']) {
-                        let prefix = &current[..=pos];
-                        model.input.clear(); model.input.insert_str(&format!("{prefix}{text} "));
+            // TS `tui.input.tab` / `tui.select.confirm`：Tab/Enter 都应用
+            // 选中项（TS 中 Tab 是"应用"，不是"下一个"；Down 才是下一个）。
+            KeyCode::Tab | KeyCode::Enter => {
+                if model.completer.has_fresh_results() {
+                    if let Some(new_value) = model.completer.apply_selected(model.input.value()) {
+                        model.input.set_value(&new_value);
                     }
                 }
                 model.completer.deactivate();
@@ -676,9 +703,8 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             }
             KeyCode::Esc => { model.completer.deactivate(); return vec![]; }
             // Typing/editing keys fall through to the normal path below,
-            // which inserts the character AND keeps the completion query
-            // in sync (regression: characters used to be swallowed while
-            // the popup was visible, so a populated menu broke typing).
+            // which inserts the character; `completion_request_after_key`
+            // then re-queries（等价 TS updateAutocomplete）。
             _ => {}
         }
     }
@@ -695,23 +721,15 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 if c == 'g' && model.g_pressed && model.input.value().is_empty() { model.g_pressed = false; model.scroll_offset = 0; model.auto_scroll = false; return vec![]; }
                 if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
                 if c == 'G' && model.input.value().is_empty() { model.auto_scroll = true; return vec![]; }
-                if let Some(t) = Completer::should_activate(c) { model.completer.activate(t, ""); }
-                else if let Some(t) = model.completer.trigger {
-                    if !c.is_whitespace() { let mut q = model.completer.query.clone(); q.push(c); model.completer.activate(t, &q); }
-                }
-                else { model.completer.deactivate(); }
                 model.input.insert_char(c);
             }
             KeyCode::Backspace => {
                 model.input.backspace();
-                if let Some(t) = model.completer.trigger {
-                    let current = model.input.value();
-                    if let Some(pos) = current.rfind(['/', '@']) {
-                        model.completer.activate(t, &current[pos + 1..]);
-                    } else { model.completer.deactivate(); }
-                }
             }
-            KeyCode::Tab => { if !model.completer.visible { for _ in 0..4 { model.input.insert_char(' '); } } }
+            KeyCode::Tab => {
+                // Tab 触发补全（对齐 TS `handleTabCompletion`）：请求在
+                // `completion_request_after_key` 里按 force 处理。
+            }
             KeyCode::Enter => {
                 if key.modifiers == crossterm::event::KeyModifiers::SHIFT || key.modifiers == crossterm::event::KeyModifiers::ALT {
                     model.input.insert_char('\n');
@@ -735,6 +753,145 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         AppMode::Editor { editor, .. } => { editor.handle_key(&key); }
     }
     vec![]
+}
+
+// ============================================================================
+// Completion trigger context（对齐 TS editor.ts 触发规则 + getSuggestions）
+// ============================================================================
+
+/// 从当前输入文本推断补全上下文（TS `getSuggestions` 的前缀判定）。
+/// 返回 `(trigger, prefix, query, command, debounce_ms)`；`None` = 不应补全。
+fn completion_context(
+    text: &str,
+    force: bool,
+) -> Option<(CompletionTrigger, String, String, Option<String>, u64)> {
+    // `/` 行首：命令名（无空格）或命令参数（有空格）。
+    if let Some(after) = text.strip_prefix('/') {
+        if let Some(space) = after.find(' ') {
+            let (cmd, arg) = (&after[..space], &after[space + 1..]);
+            return Some((
+                CompletionTrigger::Argument,
+                arg.to_string(),
+                arg.to_string(),
+                Some(cmd.to_string()),
+                0,
+            ));
+        }
+        return Some((CompletionTrigger::Slash, text.to_string(), after.to_string(), None, 0));
+    }
+
+    // `@` token（行首或空白后，对齐 TS `extractAtPrefix` + token 边界触发）。
+    if let Some((prefix, raw)) = at_token_prefix(text) {
+        return Some((CompletionTrigger::At, prefix, raw, None, 20));
+    }
+
+    // Tab 强制：非 slash 上下文 → 路径/附件补全（TS forceFileAutocomplete）。
+    if force {
+        let last = crate::completion::find_last_delimiter(text);
+        let start = last.map_or(0, |i| i + 1);
+        let token = &text[start..];
+        if !token.is_empty() {
+            return Some((CompletionTrigger::At, token.to_string(), token.to_string(), None, 0));
+        }
+    }
+    None
+}
+
+/// `@` token 前缀（对齐 TS `extractAtPrefix`）：`@"..."` 或 token 边界 `@...`。
+fn at_token_prefix(text: &str) -> Option<(String, String)> {
+    if let Some(q) = crate::completion::extract_quoted_prefix(text) {
+        if let Some(raw) = q.strip_prefix("@\"") {
+            let prefix = q.clone();
+            return Some((prefix, raw.to_string()));
+        }
+    }
+    let last = crate::completion::find_last_delimiter(text);
+    let start = last.map_or(0, |i| i + 1);
+    if text.as_bytes().get(start) == Some(&b'@') {
+        let prefix = text[start..].to_string();
+        return Some((prefix.clone(), prefix[1..].to_string()));
+    }
+    None
+}
+
+/// 输入变化后：若补全上下文成立则发起一次异步请求；不成立则关闭弹窗。
+fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd> {
+    let force = key.code == crossterm::event::KeyCode::Tab;
+    let text = model.input.value().to_string();
+    let Some((trigger, prefix, query, command, debounce_ms)) = completion_context(&text, force) else {
+        if model.completer.visible {
+            model.completer.deactivate();
+        }
+        return None;
+    };
+
+    // 命令参数状态变化：命令不存在或没注册参数补全 → 不弹（对齐 TS 返回 null）。
+    if trigger == CompletionTrigger::Argument {
+        let has = command
+            .as_ref()
+            .and_then(|name| {
+                model
+                    .completer
+                    .commands
+                    .iter()
+                    .find(|c| c.insert_text == *name)
+            })
+            .is_some_and(|c| c.argument_completions.is_some());
+        if !has {
+            if model.completer.visible {
+                model.completer.deactivate();
+            }
+            return None;
+        }
+    }
+
+    // 同状态（如方向键/无变化）不重复请求。
+    if model.completer.visible
+        && model.completer.trigger == Some(trigger)
+        && model.completer.prefix == prefix
+    {
+        return None;
+    }
+
+    // Slash 命令候选在内存里，同步算出并回填——避免输入速度快于异步结果
+    // 时 Enter 应用到过期选中项（TS 侧 debounce 为 0 且 fuzzy 同步，行为
+    // 等价；这里直接同步更稳）。
+    if trigger == CompletionTrigger::Slash {
+        let items = slash_completion_items(&model.completer.commands, &query);
+        if items.is_empty() {
+            if model.completer.visible {
+                model.completer.deactivate();
+            }
+            return None;
+        }
+        model.completer.begin(trigger, &prefix, &query);
+        let seq = model.completer.request_seq;
+        model.completer.apply_results(seq, items);
+        return None;
+    }
+
+    model.completer.begin(trigger, &prefix, &query);
+    let seq = model.completer.request_seq;
+    Some(Cmd::RequestCompletion(CompletionRequest {
+        seq,
+        trigger,
+        prefix,
+        query,
+        command,
+        debounce_ms,
+        force,
+    }))
+}
+
+/// slash 命令候选：fuzzy 过滤（对齐 TS `fuzzyFilter` on command name）。
+fn slash_completion_items(commands: &[CompletionCommand], query: &str) -> Vec<CompletionItem> {
+    let idx = crate::fuzzy::fuzzy_filter_indices(commands, query, |c| c.insert_text.clone());
+    idx.into_iter()
+        .map(|(i, _)| {
+            let c = &commands[i];
+            CompletionItem::new(c.insert_text.clone(), c.label.clone(), c.description.clone())
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -2432,14 +2589,22 @@ mod tests {
         let mut model = Model::new(100, 30);
         model.model_name = "mock-model".into();
         model.completer.set_commands(vec![
-            crate::components::CompletionItem { label: "/help".into(), description: "Show commands".into(), insert_text: "help".into() },
-            crate::components::CompletionItem { label: "/new".into(), description: "Start a new session".into(), insert_text: "new".into() },
-            crate::components::CompletionItem { label: "/name <name>".into(), description: "Set the session name".into(), insert_text: "name".into() },
-            crate::components::CompletionItem { label: "/model <provider>/<id>".into(), description: "Switch model".into(), insert_text: "model".into() },
-            crate::components::CompletionItem { label: "/reload".into(), description: "Reload extensions".into(), insert_text: "reload".into() },
-            crate::components::CompletionItem { label: "/quit".into(), description: "Quit".into(), insert_text: "quit".into() },
+            crate::components::CompletionCommand::new("/help", "Show commands", "help"),
+            crate::components::CompletionCommand::new("/new", "Start a new session", "new"),
+            crate::components::CompletionCommand::new("/name <name>", "Set the session name", "name"),
+            crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
+            crate::components::CompletionCommand::new("/reload", "Reload extensions", "reload"),
+            crate::components::CompletionCommand::new("/quit", "Quit", "quit"),
         ]);
-        model.completer.activate(crate::components::CompletionTrigger::Slash, "");
+        model.completer.begin(crate::components::CompletionTrigger::Slash, "", "");
+        model.completer.apply_results(1, vec![
+            CompletionItem::new("help", "/help", "Show commands"),
+            CompletionItem::new("new", "/new", "Start a new session"),
+            CompletionItem::new("name", "/name <name>", "Set the session name"),
+            CompletionItem::new("model", "/model <provider>/<id>", "Switch model"),
+            CompletionItem::new("reload", "/reload", "Reload extensions"),
+            CompletionItem::new("quit", "/quit", "Quit"),
+        ]);
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
@@ -2475,6 +2640,143 @@ mod tests {
         assert_eq!(buf[(50, scroll_row + 1)].symbol(), "\u{2500}", "editor bottom border below menu");
     }
 
+    /// Tab 应用选中补全（对齐 TS `tui.input.tab`）：Tab 不是"下一个"，
+    /// 而是把选中项插进输入框并关闭弹窗；Down 才是"下一个"。
+    #[test]
+    fn tab_applies_selected_completion() {
+        let mut model = Model::new(100, 30);
+        model.completer.set_commands(vec![
+            crate::components::CompletionCommand::new("/new", "Start a new session", "new"),
+        ]);
+        model.input.set_value("/n");
+        model.completer.begin(CompletionTrigger::Slash, "/n", "n");
+        model.completer.apply_results(1, vec![CompletionItem::new("new", "/new", "Start a new session")]);
+        let tab = KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE);
+        let _cmds = update(&mut model, Msg::Key(tab));
+        assert_eq!(model.input.value(), "/new ", "Tab 应用选中项并加空格");
+        assert!(!model.completer.visible, "应用后弹窗关闭");
+    }
+
+    /// Tab 在无弹窗时触发补全（对齐 TS `handleTabCompletion`）：行首 `/`
+    /// → slash 命令列表（同步），而不是插入 4 个空格。
+    #[test]
+    fn tab_without_popup_triggers_slash_completion() {
+        let mut model = Model::new(100, 30);
+        model.completer.set_commands(vec![
+            crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
+        ]);
+        model.input.set_value("/mo");
+        let tab = KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE);
+        let _cmds = update(&mut model, Msg::Key(tab));
+        assert!(model.completer.visible, "Tab 打开 slash 补全");
+        assert_eq!(model.completer.query, "mo");
+        assert_eq!(model.completer.results.len(), 1, "fuzzy mo → /model");
+        assert_eq!(model.input.value(), "/mo", "不插入空格");
+    }
+
+    // ── 补全触发上下文（对齐 TS editor.ts 触发规则）────────────────────
+
+    /// 行首 `/` 触发 slash 命令补全：候选同步算出（fuzzy），弹窗立即可见，
+    /// 不需要异步请求（对齐 TS 的 fuzzyFilter；同步实现避免 Enter 竞态）。
+    #[test]
+    fn typing_slash_triggers_command_completion_request() {
+        let mut model = Model::new(100, 30);
+        model.completer.set_commands(vec![
+            crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
+            crate::components::CompletionCommand::new("/new", "Start a new session", "new"),
+        ]);
+        let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('/'), crossterm::event::KeyModifiers::NONE)));
+        assert!(model.completer.visible);
+        assert_eq!(cmds.len(), 0, "slash 补全同步完成，无异步请求: {cmds:?}");
+        assert_eq!(model.completer.results.len(), 2, "全部命令列出");
+        // 继续输入 query 做 fuzzy 过滤。
+        update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('m'), crossterm::event::KeyModifiers::NONE)));
+        assert_eq!(model.completer.results.len(), 1, "fuzzy 'm' 只留 /model");
+        assert_eq!(model.completer.results[0].value, "model");
+    }
+
+    /// `@` 在 token 边界（行首/空白后）触发附件补全，带 20ms debounce。
+    #[test]
+    fn at_at_token_boundary_triggers_with_debounce() {
+        let mut model = Model::new(100, 30);
+        let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('@'), crossterm::event::KeyModifiers::NONE)));
+        assert!(model.completer.visible, "@ 打开文件补全");
+        let req = cmds.iter().find_map(|c| match c {
+            Cmd::RequestCompletion(r) => Some(r),
+            _ => None,
+        });
+        let req = req.expect("at 请求");
+        assert_eq!(req.trigger, CompletionTrigger::At);
+        assert_eq!(req.debounce_ms, 20, "附件补全 debounce 对齐 TS ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS");
+    }
+
+    /// `@` 在词中间不触发（对齐 TS token 边界）。
+    #[test]
+    fn at_mid_word_does_not_trigger() {
+        let mut model = Model::new(100, 30);
+        for ch in ['a', 'b', 'c', '@'] {
+            update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+        }
+        assert!(!model.completer.visible, "abc@ 不应触发 @ 补全");
+        assert_eq!(model.input.value(), "abc@");
+    }
+
+    /// `/cmd `（空格后）触发命令参数补全；未注册参数补全的命令不触发。
+    #[test]
+    fn slash_argument_completion_only_when_registered() {
+        let mut model = Model::new(100, 30);
+        let with_args = crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
+            .with_argument_completions(std::sync::Arc::new(|_p: String| {
+                Box::pin(async { Some(Vec::new()) })
+            }));
+        model.completer.set_commands(vec![
+            with_args,
+            crate::components::CompletionCommand::new("/name <name>", "Set the session name", "name"),
+        ]);
+        // `/cmd g` → Argument 请求。
+        let mut last = Vec::new();
+        for ch in ['/', 'm', 'o', 'd', 'e', 'l', ' ', 'g'] {
+            last = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+        }
+        let req = last.iter().find_map(|c| match c {
+            Cmd::RequestCompletion(r) => Some(r),
+            _ => None,
+        });
+        let req = req.expect("model 参数请求");
+        assert_eq!(req.trigger, CompletionTrigger::Argument);
+        assert_eq!(req.command.as_deref(), Some("model"));
+        assert_eq!(req.query, "g");
+
+        // `/name x` → 无参数补全注册 → 弹窗关闭、无请求。
+        let mut model2 = Model::new(100, 30);
+        model2.completer.set_commands(vec![
+            crate::components::CompletionCommand::new("/new <name>", "Set the session name", "name"),
+        ]);
+        for ch in ['/', 'n', 'a', 'm', 'e', ' ', 'x'] {
+            update(&mut model2, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+        }
+        assert!(!model2.completer.visible, "无参数补全不弹窗");
+    }
+
+    /// Tab 在非 slash 上下文触发强制路径补全（对齐 TS handleTabCompletion）。
+    #[test]
+    fn tab_forces_path_completion() {
+        let mut model = Model::new(100, 30);
+        for ch in ['s', 'r', 'c'] {
+            update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+        }
+        let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE)));
+        assert!(model.completer.visible, "Tab 打开路径补全");
+        let req = cmds.iter().find_map(|c| match c {
+            Cmd::RequestCompletion(r) => Some(r),
+            _ => None,
+        });
+        let req = req.expect("path 请求");
+        assert_eq!(req.trigger, CompletionTrigger::At);
+        assert!(req.force, "Tab = force");
+        assert_eq!(req.prefix, "src");
+        assert_eq!(req.debounce_ms, 0);
+    }
     /// The footer stats line matches the TS FooterComponent: token totals
     /// (`↑in ↓out Rcache Wcache`), cost, and the context display
     /// `{pct}%/{window} (auto)` colorized by threshold; the model label is
@@ -3014,7 +3316,7 @@ mod tests {
         update(&mut model, Msg::ScrollUp(100));
         let text = render_text(&mut model, 60, 12);
         assert!(
-            text.contains("Pi v1.83.1"),
+            text.contains("Pi v1.83"),
             "scroll to top shows oldest (header): {text:?}"
         );
         assert!(!text.contains("line-19"), "scroll to top hides newest: {text:?}");

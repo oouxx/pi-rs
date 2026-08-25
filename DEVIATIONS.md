@@ -55,6 +55,25 @@
   前缀 + accent 选中文本、muted 描述对齐第二列（主列宽上限 32）、最多 5 行、
   滚动 `(n/m)` 提示、无匹配 `No matching commands`；Tab 应用补全、Right 不再
   选中（详见 PORTING_MISTAKES.md #113）。
+- **2026-08-25 第六轮（补全对齐）**：Tab 改为**应用选中项**（与 TS
+  `tui.input.tab` 一致、Down 才是下一个）、Enter 对 `/` 补全应用后提交 / 对
+  `@` 补全应用后不提交、Tab 无弹窗时触发补全（不再插 4 个空格）、应用时替换
+  整段前缀（对齐 TS `applyCompletion`）。
+- **2026-08-25 第七轮（补全功能补齐）**：
+  ① `@` 文件补全——`pi-tui/src/completion.rs` 用 `ignore` 遍历（gitignore/
+  hidden/follow/排除 `.git`，对齐 TS 的 fd 语义）+ `scoreEntry` 打分 + 目录优先
+  + 引号/`~`/`./`/绝对路径 + 目录不加空格可继续补全；② 命令参数补全——
+  `/model` 用可用模型快照 fuzzy 过滤（对齐 TS `getModelSearchText`），扩展命令
+  走其 `get_argument_completions`（pi-extension-api 原有回调，此处接线）；
+  `/login` 参数补全未做（Rust 无 `/login` 命令，见下方"待确认"）；③ fuzzy 匹配：
+  移植 `fuzzy.ts`（子序列打分 + 数字字母换位回退），slash 命令与 `/model`
+  参数共用；④ 触发上下文——行首 `/`、`@` 仅 token 边界（行首/空白后）触发、
+  附件补全 20ms debounce（TS `ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS`）、Tab
+  强制路径补全；⑤ `autocompleteMaxVisible` 设置接线（session settings →
+  completer `max_visible`，clamp 3..=20）。实现细节：slash 命令候选同步算出
+  （TS 侧 fuzzy 同步、debounce 0，行为等价；同步消除 Enter 竞态）；`@`/参数
+  结果异步回填 + `request_seq` 丢弃过期 + `has_fresh_results`（Enter/Tab 只
+  应用与当前输入一致的结果）。详见 PORTING_MISTAKES.md #121/#122。
 - 仍不在范围内的：原版全部组件/选择器（session/model/theme/settings
   selector 等 17k 行 TS）尚未移植，属“后续任务”，不算差异。
 - 已登记的简化：~~消息 wrap 是 `word_wrap_line_with_joiners` 的简化版~~

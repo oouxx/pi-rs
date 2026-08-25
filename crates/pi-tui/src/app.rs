@@ -1499,14 +1499,16 @@ fn render_body_row(frame: &mut Frame, area: Rect, y: i32, widget: impl ratatui::
     }
 }
 
-/// Which TS tool renderer applies (`core/tools/{bash,read,grep,edit}.ts`);
-/// tools without a registered renderer use the generic fallback.
+/// Which TS `renderCall`/`renderResult` applies (`core/tools/{bash,read,
+/// grep,edit,write}.ts`); tools without a registered renderer use the
+/// generic fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolRenderer {
     Bash,
     Read,
     Grep,
     Edit,
+    Write,
     Fallback,
 }
 
@@ -1516,6 +1518,7 @@ fn tool_renderer(b: &BlockView) -> ToolRenderer {
         "read" => ToolRenderer::Read,
         "grep" => ToolRenderer::Grep,
         "edit" => ToolRenderer::Edit,
+        "write" => ToolRenderer::Write,
         _ => ToolRenderer::Fallback,
     }
 }
@@ -1857,6 +1860,9 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
                     let total = b.tool_output.lines().count();
                     BOX_PAD_Y + 1 + 1 + total as u16 + BOX_PAD_Y
                 }
+                ToolRenderer::Write => {
+                    BOX_PAD_Y + 1 + write_content_height(b, expanded, wrap_w) + BOX_PAD_Y
+                }
                 ToolRenderer::Fallback => {
                     // fallback renderer: title + (blank + wrapped args) +
                     // (blank + wrapped output preview + hint).
@@ -1959,6 +1965,7 @@ fn render_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: 
         ToolRenderer::Read => ly = render_read_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Grep => ly = render_grep_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Edit => ly = render_edit_tool_block(frame, area, item, expanded, t, ly, bg),
+        ToolRenderer::Write => ly = render_write_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Fallback => ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
     }
     // Bottom padding.
@@ -2281,6 +2288,203 @@ fn render_grep_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
         ly += 1;
     }
     ly
+}
+
+/// Write `content` display arg (TS `str()` in render-utils.ts): a non-string
+/// non-null value is invalid → `[invalid content arg - expected string]`; a
+/// string (possibly empty) renders normally.
+enum WriteContentArg {
+    Invalid,
+    Text(String),
+}
+
+/// Write path display arg: `str(args?.file_path ?? args?.path)` (TS
+/// `renderToolPath`). Non-string non-null → `[invalid arg]`.
+enum WritePathArg {
+    Invalid,
+    Text(String),
+}
+
+/// Extract `file_path ?? path` / `content` from the write args JSON.
+/// `file_path` wins over `path` but only when non-null (TS
+/// `args?.file_path ?? args?.path`), and a present-but-non-string value is
+/// used as-is (the `??` only falls back on null/undefined) → `Invalid`.
+/// `str()` maps null/undefined to `""` (empty renders `...`/title-only),
+/// not to an invalid arg.
+fn write_call_args(args: &str) -> (WritePathArg, WriteContentArg) {
+    let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    let path = match v
+        .get("file_path")
+        .filter(|p| !p.is_null())
+        .or_else(|| v.get("path"))
+    {
+        Some(p) if p.is_string() => WritePathArg::Text(p.as_str().unwrap_or("").to_string()),
+        Some(p) if p.is_null() => WritePathArg::Text(String::new()),
+        Some(_) => WritePathArg::Invalid,
+        None => WritePathArg::Text(String::new()),
+    };
+    let content = match v.get("content") {
+        Some(c) if c.is_string() => WriteContentArg::Text(c.as_str().unwrap_or("").to_string()),
+        Some(c) if c.is_null() => WriteContentArg::Text(String::new()),
+        Some(_) => WriteContentArg::Invalid,
+        None => WriteContentArg::Text(String::new()),
+    };
+    (path, content)
+}
+
+/// Write renderer (TS `formatWriteCall`/`formatWriteResult`): the title is
+/// `write {path}` (`write` bold, path accent via `renderToolPath`), then a
+/// blank line and the first 10 content lines (from `args.content`, not the
+/// result output) word-wrapped with a trailing `... (N more lines, M total,
+/// ctrl+o to expand)` hint. Content renders without syntax highlighting
+/// (TS only highlights when `getLanguageFromPath` resolves a lang; the Rust
+/// tool renderers resolve none). An invalid `content` arg renders the error
+/// `[invalid content arg - expected string]`; an error result renders the
+/// output in `error` color (TS `formatWriteResult`).
+fn render_write_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+    let (path_arg, content_arg) = write_call_args(&item.tool_args);
+    // Title: `write` bold + ` {path}` (TS `renderToolPath`).
+    let path_display = match path_arg {
+        WritePathArg::Invalid => Span::styled("[invalid arg]", Style::new().fg(t.error)),
+        WritePathArg::Text(p) if p.is_empty() => {
+            Span::styled("...", Style::new().fg(t.tool_output))
+        }
+        WritePathArg::Text(p) => Span::styled(shorten_path(&p, &item.cwd), Style::new().fg(t.accent)),
+    };
+    render_boxed_row(
+        frame,
+        area,
+        ly,
+        bg,
+        vec![
+            Span::styled("write", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            path_display,
+        ],
+    );
+    ly += 1;
+    match content_arg {
+        WriteContentArg::Invalid => {
+            render_boxed_row(frame, area, ly, bg, vec![]);
+            ly += 1;
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(
+                    "[invalid content arg - expected string]",
+                    Style::new().fg(t.error),
+                )],
+            );
+            ly += 1;
+        }
+        WriteContentArg::Text(content) if !content.is_empty() => {
+            // TS: `normalizeDisplayText` (drop \r) → split on \n → trim
+            // trailing empty lines; each shown line gets `replaceTabs`.
+            let display = content.replace('\r', "");
+            let mut lines: Vec<&str> = display.split('\n').collect();
+            while matches!(lines.last(), Some(l) if l.is_empty()) {
+                lines.pop();
+            }
+            let total = lines.len();
+            render_boxed_row(frame, area, ly, bg, vec![]);
+            ly += 1;
+            let shown = if expanded { total } else { total.min(10) };
+            for line in lines.iter().take(shown) {
+                let replaced = line.replace('\t', "   ");
+                for row in visual_lines(&replaced, wrap_w) {
+                    render_boxed_row(
+                        frame,
+                        area,
+                        ly,
+                        bg,
+                        vec![Span::styled(row, Style::new().fg(t.tool_output))],
+                    );
+                    ly += 1;
+                }
+            }
+            let remaining = total - shown;
+            if remaining > 0 {
+                render_boxed_row(
+                    frame,
+                    area,
+                    ly,
+                    bg,
+                    vec![
+                        Span::styled(
+                            format!("... ({remaining} more lines, {total} total, "),
+                            Style::new().fg(t.muted),
+                        ),
+                        Span::styled("ctrl+o", Style::new().fg(t.dim)),
+                        Span::styled(" to expand)", Style::new().fg(t.muted)),
+                    ],
+                );
+                ly += 1;
+            }
+        }
+        WriteContentArg::Text(_) => {}
+    }
+    // Error result (TS `formatWriteResult`): a blank line + the output in
+    // error color; a successful result renders nothing extra.
+    if matches!(item.tool_state, Some(ToolCallState::Failed)) && !item.tool_output.trim().is_empty() {
+        render_boxed_row(frame, area, ly, bg, vec![]);
+        ly += 1;
+        for row in visual_lines(item.tool_output.trim(), wrap_w) {
+            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.error))]);
+            ly += 1;
+        }
+    }
+    ly
+}
+
+/// Write content preview: (wrapped rows, remaining hidden lines, whether
+/// the `content` arg was invalid, whether the content string was non-empty).
+/// TS `formatWriteCall` shows the first 10 (or all when expanded) content
+/// lines with a trailing more-hint; a non-empty content string always adds
+/// the blank separator (even when it normalizes to zero lines, matching TS
+/// `\n\n` + empty join).
+fn write_preview(b: &BlockView, expanded: bool, wrap_w: usize) -> (usize, usize, bool, bool) {
+    let (_path, content) = write_call_args(&b.tool_args);
+    match content {
+        WriteContentArg::Invalid => (1, 0, true, false),
+        WriteContentArg::Text(c) if c.is_empty() => (0, 0, false, false),
+        WriteContentArg::Text(c) => {
+            let display = c.replace('\r', "");
+            let mut lines: Vec<&str> = display.split('\n').collect();
+            while matches!(lines.last(), Some(l) if l.is_empty()) {
+                lines.pop();
+            }
+            let total = lines.len();
+            let shown = if expanded { total } else { total.min(10) };
+            let mut rows = 0usize;
+            for line in lines.iter().take(shown) {
+                rows += visual_lines(&line.replace('\t', "   "), wrap_w).len();
+            }
+            (rows, total - shown, false, true)
+        }
+    }
+}
+
+/// Height of the write block content below the title row — mirrors
+/// `render_write_tool_block` row-for-row (blank separators, wrapped content
+/// lines, more hint, invalid-arg error, error-result output).
+fn write_content_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
+    let (rows, remaining, invalid, non_empty) = write_preview(b, expanded, wrap_w);
+    let mut h = if invalid {
+        // blank + error line.
+        2
+    } else if non_empty {
+        // blank separator + wrapped lines + optional more-hint.
+        1 + rows + if remaining > 0 { 1 } else { 0 }
+    } else {
+        0
+    };
+    // Error result (TS `formatWriteResult`): blank + error output rows.
+    if matches!(b.tool_state, Some(ToolCallState::Failed)) && !b.tool_output.trim().is_empty() {
+        h += 1 + visual_lines(b.tool_output.trim(), wrap_w).len();
+    }
+    h as u16
 }
 
 /// Edit renderer (TS `formatEditCall`): title `edit {path}`; the diff
@@ -2934,9 +3138,9 @@ mod tests {
         model.context_usage_known = true;
         let output: String = (1..=14).map(|i| format!("line{i}\n")).collect();
         // Tool without a registered renderer → TS fallback path.
-        update(&mut model, Msg::ToolStart("tc-1".into(), "write".into(), String::new()));
-        update(&mut model, Msg::SetToolOutput("tc-1".into(), "write".into(), output.clone()));
-        update(&mut model, Msg::ToolEnd("tc-1".into(), "write".into(), false));
+        update(&mut model, Msg::ToolStart("tc-1".into(), "search".into(), String::new()));
+        update(&mut model, Msg::SetToolOutput("tc-1".into(), "search".into(), output.clone()));
+        update(&mut model, Msg::ToolEnd("tc-1".into(), "search".into(), false));
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
@@ -2946,7 +3150,7 @@ mod tests {
         // Locate by the tool box background (header text can contain the
         // same letters); the finished tool uses the success background.
         let title_row = (0..20)
-            .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "w")
+            .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "s")
             .expect("tool title");
 
         assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "title bold");
@@ -2973,7 +3177,7 @@ mod tests {
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..24)
-            .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "w")
+            .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "s")
             .expect("title after expand");
         assert_eq!(buf[(1, title_row + 14)].symbol(), "l", "output line 14 after expand");
         assert_ne!(buf[(1, title_row + 15)].symbol(), ".", "no hint after expand");
@@ -3488,7 +3692,7 @@ mod tests {
             &mut model,
             Msg::ToolStart(
                 "tc-1".into(),
-                "write".into(),
+                "search".into(),
                 "{\n  \"path\": \"a.txt\"\n}".into(),
             ),
         );
@@ -3497,8 +3701,10 @@ mod tests {
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
         let buf = terminal.backend().buffer();
 
-        // Title row: `write` bold on toolPendingBg.
-        let title_row = (0..24).find(|&y| buf[(1, y)].symbol() == "w").expect("title row");
+        // Title row: `search` bold on toolPendingBg.
+        let title_row = (0..24)
+            .find(|&y| buf[(1, y)].bg == theme::TOOL_PENDING_BG && buf[(1, y)].symbol() == "s")
+            .expect("title row");
         assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "title bold");
         // Blank separator row.
         assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank after title");
@@ -4102,6 +4308,289 @@ mod tests {
         assert_eq!(buf[(13, warn_row)].symbol(), "1", "match count 1");
         assert_eq!(buf[(14, warn_row)].symbol(), "0", "match count 0");
         assert_eq!(buf[(15, warn_row)].symbol(), "0", "match count 0");
+    }
+
+    /// The write renderer (TS `formatWriteCall`): title `write {path}`
+    /// (`write` bold, path accent via `renderToolPath`), a blank line, then
+    /// the first 10 `args.content` lines in toolOutput color with a
+    /// trailing `... (N more lines, M total, ctrl+o to expand)` hint. The
+    /// content is read from the call args, not the result output — TS
+    /// `formatWriteResult` renders nothing on success.
+    #[test]
+    fn write_tool_renders_title_path_and_content_preview() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        model.cwd = "/work".into();
+        let content: String = (1..=12).map(|i| format!("line{i}\n")).collect();
+        let args = serde_json::json!({"path": "/work/src/main.ts", "content": content}).to_string();
+        update(&mut model, Msg::ToolStart("tc-w".into(), "write".into(), args));
+        update(&mut model, Msg::ToolEnd("tc-w".into(), "write".into(), false));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_SUCCESS_BG)
+            .expect("write title");
+        assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "write bold");
+        assert_eq!(buf[(7, title_row)].symbol(), "/", "path starts");
+        assert_eq!(buf[(7, title_row)].fg, theme::ACCENT, "path accent");
+        // Blank separator, then the first 10 content lines in toolOutput.
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank after title");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "l", "content line 1");
+        assert_eq!(buf[(1, title_row + 2)].fg, theme::TOOL_OUTPUT, "content toolOutput");
+        assert_eq!(buf[(1, title_row + 11)].symbol(), "l", "content line 10");
+        // More-hint (muted, dim key): `... (2 more lines, 12 total, ctrl+o
+        // to expand)`.
+        let hint = title_row + 12;
+        assert_eq!(buf[(1, hint)].symbol(), ".", "hint starts");
+        assert_eq!(buf[(1, hint)].fg, theme::MUTED, "hint muted");
+        assert_eq!(buf[(6, hint)].symbol(), "2", "remaining count");
+        assert_eq!(buf[(20, hint)].symbol(), "1", "total first digit");
+        assert_eq!(buf[(21, hint)].symbol(), "2", "total second digit");
+        assert_eq!(buf[(30, hint)].symbol(), "c", "expand key");
+        assert_eq!(buf[(30, hint)].fg, theme::DIM, "expand key dim");
+        // A successful result renders no extra output rows.
+        assert_eq!(buf[(1, hint + 1)].symbol(), " ", "no success result output");
+    }
+
+    /// A non-string `content` arg renders `[invalid content arg - expected
+    /// string]` in the error color below the title (TS `formatWriteCall`
+    /// `str()` returning null).
+    #[test]
+    fn write_tool_renders_invalid_content_arg() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w".into(),
+                "write".into(),
+                "{\"path\": \"a.txt\", \"content\": 123}".into(),
+            ),
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title");
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank before invalid");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "[", "invalid arg text");
+        assert_eq!(buf[(1, title_row + 2)].fg, theme::ERROR, "invalid arg error color");
+    }
+
+    /// A non-string non-null `path` arg renders `[invalid arg]` in the
+    /// error color on the title line (TS `renderToolPath`); a missing/empty
+    /// path renders `...` in toolOutput.
+    #[test]
+    fn write_tool_renders_invalid_and_empty_path() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        // Invalid path (number) → `[invalid arg]`.
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w".into(),
+                "write".into(),
+                "{\"path\": 7, \"content\": \"x\"}".into(),
+            ),
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title");
+        assert_eq!(buf[(7, title_row)].symbol(), "[", "invalid path");
+        assert_eq!(buf[(7, title_row)].fg, theme::ERROR, "invalid path error");
+
+        // Empty path → `...` in toolOutput.
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w2".into(),
+                "write".into(),
+                "{\"content\": \"x\"}".into(),
+            ),
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title");
+        assert_eq!(buf[(7, title_row)].symbol(), ".", "empty path ellipsis");
+        assert_eq!(buf[(7, title_row)].fg, theme::TOOL_OUTPUT, "empty path toolOutput");
+    }
+
+    /// TS `??`/`str()` null semantics: `file_path: null` falls back to
+    /// `path` (accent), and `content: null` renders `""` → title only (not
+    /// an invalid-arg error).
+    #[test]
+    fn write_tool_null_args_fall_back_like_ts() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        model.cwd = "/work".into();
+        // file_path null → path used; content null → empty.
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w".into(),
+                "write".into(),
+                "{\"file_path\": null, \"path\": \"/work/b.rs\", \"content\": null}".into(),
+            ),
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title");
+        assert_eq!(buf[(7, title_row)].symbol(), "/", "file_path null → path used");
+        assert_eq!(buf[(7, title_row)].fg, theme::ACCENT, "path accent");
+        // content null → empty string → title only (no invalid-arg error).
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "no invalid-arg text");
+    }
+
+    /// A failed write renders the result output in the error color (TS
+    /// `formatWriteResult`: `\n` + error-colored text). The call content is
+    /// shown first, then a blank line + the error output.
+    #[test]
+    fn write_tool_renders_error_result_in_error_color() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w".into(),
+                "write".into(),
+                "{\"path\": \"a.txt\", \"content\": \"abc\"}".into(),
+            ),
+        );
+        update(&mut model, Msg::SetToolOutput("tc-w".into(), "write".into(), "Write error: boom\n".into()));
+        update(&mut model, Msg::ToolEnd("tc-w".into(), "write".into(), true));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_ERROR_BG)
+            .expect("write title");
+        // Call content: blank + `abc`.
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank before content");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "a", "content");
+        // Error result: blank + `Write error: boom` in error color.
+        assert_eq!(buf[(1, title_row + 3)].symbol(), " ", "blank before error result");
+        assert_eq!(buf[(1, title_row + 4)].symbol(), "W", "error result");
+        assert_eq!(buf[(1, title_row + 4)].fg, theme::ERROR, "error result color");
+    }
+
+    /// TS `normalizeDisplayText` (drop `\r`), `trimTrailingEmptyLines` and
+    /// `replaceTabs` (→ 3 spaces) apply to the write content preview; an
+    /// empty `content` renders just the title.
+    #[test]
+    fn write_tool_normalizes_and_trims_content() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        // `\r` stripped, trailing blank lines trimmed, tabs → 3 spaces.
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w".into(),
+                "write".into(),
+                "{\"path\": \"a.txt\", \"content\": \"a\\r\\nb\\tc\\n\\n\"}".into(),
+            ),
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title");
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "a", "line 1");
+        assert_eq!(buf[(1, title_row + 3)].symbol(), "b", "line 2 tab start");
+        assert_eq!(buf[(5, title_row + 3)].symbol(), "c", "tab expanded to 3 spaces");
+        // Trailing blank lines trimmed: no extra rows after line 2.
+        assert_eq!(buf[(1, title_row + 4)].symbol(), " ", "no trailing blank content");
+
+        // Empty content → title only (TS `else if (fileContent)` is falsy).
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-x".into(),
+                "write".into(),
+                "{\"path\": \"a.txt\", \"content\": \"\"}".into(),
+            ),
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title empty");
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "empty content renders title only");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), " ", "no content rows after");
+    }
+
+    /// A non-empty content string that normalizes to zero lines (all blank)
+    /// still renders the blank separator after the title, matching TS
+    /// `\n\n` + empty `join("\n")` — and the block height matches so the
+    /// next block doesn't collide.
+    #[test]
+    fn write_tool_all_blank_content_renders_blank_separator_only() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-w".into(),
+                "write".into(),
+                "{\"path\": \"a.txt\", \"content\": \"\\n\\n\"}".into(),
+            ),
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..24u16)
+            .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("write title");
+        // Title, blank separator, then nothing more (box bottom padding).
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank separator");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), " ", "no content lines");
     }
 
     /// `stripAnsi` (TS utils/ansi.ts) removes CSI and OSC sequences but

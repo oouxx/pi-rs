@@ -1435,13 +1435,6 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         };
 
         let is_tick = matches!(&action, Action::Tick);
-        // ratatui 的 diff 只对比自己内部 buffer，不知道真实终端物理屏上
-        // 的内容：收缩再放大后，内部 buffer 被截断并以空 cell 重新填充，
-        // diff 认为"空 == 空"不输出任何内容，物理屏上 resize 前的内容就
-        // 残留下来（正文/代码块被裁剪后旧内容未清除）。尺寸变化时先
-        // `Terminal::clear()`（清空物理屏 + 重置 back buffer），下一次
-        // draw 的 diff 就会把整帧重新输出。
-        let is_resize = matches!(&action, Action::Agent(pi_tui::Msg::Resize(..)));
         let outcome = update(&mut state, action);
         let mut redraw = outcome.redraw;
         if is_tick {
@@ -1454,9 +1447,15 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             break;
         }
         if redraw {
-            if is_resize {
-                let _ = terminal.ratatui_terminal().clear();
-            }
+            // 每帧先清空物理屏再整帧重绘：不依赖 ratatui diff 对终端的保真度。
+            // 某些终端（tmux / Windows Terminal / CJK 宽字符局部覆盖处理有
+            // 缺陷的终端）对 diff 输出的局部 cell 更新应用不一致，会在屏幕上
+            // 留下"每帧固定在原位"的陈旧字符（滚动时表现为一长串残留）。
+            // `clear()` = 2J + 重置 back buffer，下一次 draw 的 diff 对空
+            // buffer 输出整帧——任何终端上都不会残留。代价：每帧输出量等于
+            // 整屏（约 30 行 × 100 列，帧率下可接受）；终端把 2J + 重绘批
+            // 处理为单帧呈现，无闪烁。
+            let _ = terminal.ratatui_terminal().clear();
             let _ = terminal.ratatui_terminal().draw(|frame| app::view(&mut state.model, frame));
         }
     }

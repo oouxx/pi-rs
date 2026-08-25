@@ -2733,6 +2733,14 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::time::{sleep, Duration};
     loop {
+        // 每帧先清空物理屏再整帧重绘：不依赖 ratatui diff 对终端的保真度。
+        // 某些终端（tmux / Windows Terminal / CJK 宽字符局部覆盖处理有缺陷
+        // 的终端）对 diff 输出的局部 cell 更新应用不一致，会在屏幕上留下
+        // “每帧固定在原位”的陈旧字符（滚动时表现为一长串残留）。
+        // `clear()` = 2J + 重置 back buffer，下一次 draw 的 diff 对空 buffer
+        // 输出整帧——任何终端上都不会残留（代价：每帧输出量等于整屏，
+        // 本 TUI 帧率下可接受；终端会把 2J + 重绘批处理为单帧呈现，无闪烁）。
+        terminal.ratatui_terminal().clear()?;
         terminal.ratatui_terminal().draw(|frame| view(&mut model, frame))?;
         tokio::select! {
             Some(key) = input_rx.recv() => {

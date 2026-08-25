@@ -339,8 +339,14 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub enum ToolCallState { Pending, Running, Done, Failed }
 
-/// Bash/read truncation metadata (TS `TruncationResult` + full output
-/// path) — renders the warning line inside the tool box.
+/// TS `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES` (tools/truncate.ts) —
+/// fallbacks for the truncation warning text when a tool's details omit
+/// `maxBytes` / `maxLines` (TS `?? DEFAULT_MAX_BYTES` / `?? DEFAULT_MAX_LINES`).
+const DEFAULT_MAX_BYTES: u64 = 50 * 1024;
+const DEFAULT_MAX_LINES: u64 = 2000;
+
+/// Bash/read/grep truncation metadata (TS `TruncationResult` + the tool
+/// `details` fields) — renders the warning lines inside the tool box.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ToolTruncation {
     pub truncated: bool,
@@ -350,6 +356,12 @@ pub struct ToolTruncation {
     pub max_lines: u64,
     pub max_bytes: u64,
     pub full_output_path: Option<String>,
+    /// read: first line exceeded the byte limit (TS `firstLineExceedsLimit`).
+    pub first_line_exceeds_limit: bool,
+    /// grep: match limit reached (TS `details.matchLimitReached`).
+    pub match_limit_reached: Option<u64>,
+    /// grep: some lines were truncated (TS `details.linesTruncated`).
+    pub lines_truncated: Option<bool>,
 }
 
 /// Format a byte count like TS `formatSize` (`B` / `KB` / `MB`).
@@ -361,6 +373,139 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// Strip ANSI escape sequences (TS `stripAnsi` in utils/ansi.ts): CSI
+/// (`ESC [ ... final`) and OSC (`ESC ] ... ST` where ST is BEL, `ESC \`,
+/// or `0x9C`).
+fn strip_ansi(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\u{1b}' || c == '\u{9b}' {
+            // OSC: `ESC ]` ... ST (BEL / `ESC \` / `0x9C`).
+            if c == '\u{1b}' && i + 1 < chars.len() && chars[i + 1] == ']' {
+                i += 2;
+                while i < chars.len() {
+                    let s = chars[i];
+                    if s == '\u{07}' || s == '\u{9c}' {
+                        i += 1;
+                        break;
+                    }
+                    if s == '\u{1b}' && i + 1 < chars.len() && chars[i + 1] == '\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            // CSI: optional intro bytes `[\]()#;?`, optional params
+            // `\d{1,4}([;:]\d{0,4})*`, then one final byte
+            // `[\dA-PR-TZcf-nq-uy=><~]`.
+            let mut j = i + 1;
+            if c == '\u{1b}' {
+                if j < chars.len() && chars[j] == '[' {
+                    j += 1;
+                } else {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+            }
+            while j < chars.len() && matches!(chars[j], '[' | ']' | '(' | ')' | '#' | ';' | '?') {
+                j += 1;
+            }
+            if j < chars.len() && chars[j].is_ascii_digit() {
+                let mut digits = 0usize;
+                while j < chars.len() && chars[j].is_ascii_digit() && digits < 4 {
+                    j += 1;
+                    digits += 1;
+                }
+                loop {
+                    if j < chars.len() && (chars[j] == ';' || chars[j] == ':') {
+                        j += 1;
+                        digits = 0;
+                        while j < chars.len() && chars[j].is_ascii_digit() && digits < 4 {
+                            j += 1;
+                            digits += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if j < chars.len() && is_csi_final(chars[j]) {
+                i = j + 1;
+            } else {
+                // Not a valid CSI sequence — keep the ESC/CSI introducer.
+                out.push(c);
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// CSI final byte class from the TS `stripAnsi` regex
+/// (`[\dA-PR-TZcf-nq-uy=><~]` — `cf-nq` is `c` plus `f..=n` plus `q`, so
+/// the common SGR final byte `m` is included).
+fn is_csi_final(c: char) -> bool {
+    matches!(
+        c,
+        '0'..='9'
+            | 'A'..='P'
+            | 'R'..='T'
+            | 'Z'
+            | 'c'
+            | 'f'..='n'
+            | 'q'
+            | 'u'..='y'
+            | '='
+            | '>'
+            | '<'
+            | '~'
+    )
+}
+
+/// Drop control characters that would break terminal rendering, keeping
+/// `\t` `\n` `\r` (TS `sanitizeBinaryOutput` in utils/shell.ts).
+fn sanitize_binary_output(input: &str) -> String {
+    input
+        .chars()
+        .filter(|&c| {
+            let code = c as u32;
+            if code == 0x09 || code == 0x0A || code == 0x0D {
+                return true;
+            }
+            if code <= 0x1F {
+                return false;
+            }
+            if (0xFFF9..=0xFFFB).contains(&code) {
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// Sanitize tool output for display (TS `getTextOutput` in
+/// tools/render-utils.ts): `sanitizeBinaryOutput(stripAnsi(text))` then
+/// drop `\r`.
+fn sanitize_output_text(text: &str) -> String {
+    sanitize_binary_output(&strip_ansi(text)).replace('\r', "")
+}
+
+/// Format a duration like TS `formatDuration` (`(ms / 1000).toFixed(1) +
+/// "s"`): one decimal plus the unit, rounding half away from zero (JS
+/// `toFixed`).
+fn format_duration(ms: u128) -> String {
+    format!("{:.1}s", (ms as f64 / 1000.0 * 10.0).round() / 10.0)
 }
 
 
@@ -526,8 +671,14 @@ impl Model {
 
     /// Replace a tool row's output with a full snapshot (the bridge sends
     /// the accumulated text on every update — appending would duplicate).
+    /// The text is sanitized for display exactly like the TS renderers'
+    /// `getTextOutput` (strip ANSI, drop binary control characters, remove
+    /// `\r`) — the raw tool result keeps ANSI for the model, only the TUI
+    /// display cleans it.
     pub fn set_tool_output(&mut self, call_id: &str, text: &str) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) { tool.output = text.to_string(); }
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
+            tool.output = sanitize_output_text(text);
+        }
     }
 }
 
@@ -1183,6 +1334,35 @@ fn build_blocks(model: &mut Model, wrap_w: usize, t: &Theme) -> Vec<BlockView> {
     blocks
 }
 
+/// Inter-block blank rows, mirroring the TS `addMessageToChat` spacers.
+///
+/// Returns `(gaps, leads)`:
+/// - `gaps[i]`: a trailing blank after each non-assistant block. TS boxes
+///   (user / tool) are followed by the assistant response, which itself
+///   opens with an internal `Spacer(1)` when it has visible content.
+/// - `leads[i]`: a leading blank before a user block that directly follows
+///   an assistant block. TS inserts `new Spacer(1)` *before* a user message
+///   whenever the chat already has content — i.e. a blank line at the turn
+///   boundary (end of the previous assistant message -> start of the next
+///   user message). Without it, consecutive turns render back to back with
+///   no separation, unlike the TS original.
+fn block_gaps(blocks: &[BlockView]) -> (Vec<u16>, Vec<u16>) {
+    let gaps: Vec<u16> = blocks
+        .iter()
+        .map(|b| if b.role == "assistant" { 0 } else { 1 })
+        .collect();
+    let leads: Vec<u16> = std::iter::once(0)
+        .chain(blocks.windows(2).map(|w| {
+            if w[1].role == "user" && w[0].role == "assistant" {
+                1
+            } else {
+                0
+            }
+        }))
+        .collect();
+    (gaps, leads)
+}
+
 fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
     let blocks = build_blocks(model, wrap_w, t);
@@ -1191,10 +1371,7 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
         .iter()
         .map(|b| block_height(b, expanded, wrap_w))
         .collect();
-    let gaps: Vec<u16> = blocks
-        .iter()
-        .map(|b| if b.role == "assistant" { 0 } else { 1 })
-        .collect();
+    let (gaps, leads) = block_gaps(&blocks);
 
     // Scroll-window rendering (TS ScrollView semantics): `scroll_offset` is
     // the viewport-top offset in content rows (0 = top, max = follow
@@ -1203,7 +1380,12 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     // viewport (negative `ly`) and below it are skipped automatically —
     // this is the internal scrollback: the transcript lives in the model,
     // not the terminal.
-    let total_h: u16 = heights.iter().zip(&gaps).map(|(h, g)| h + g).sum();
+    let total_h: u16 = heights
+        .iter()
+        .zip(&gaps)
+        .zip(&leads)
+        .map(|((h, g), l)| h + g + l)
+        .sum();
     let max_scroll = (total_h as usize).saturating_sub(area.height as usize);
     // Clamp + overscroll re-engage: a scroll-down that lands at the bottom
     // re-enables follow on this frame (grok `follow_by_overscroll`), so a
@@ -1223,16 +1405,19 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     };
     let mut ly = area.top() as i32 - scroll as i32;
     for (idx, item) in blocks.iter().enumerate() {
-        let h = (heights[idx] + gaps[idx]) as i32;
+        let h = (heights[idx] + gaps[idx] + leads[idx]) as i32;
         if h <= 0 {
             continue;
         }
+        // Render at the block's top offset by its leading gap (the TS blank
+        // at the assistant->user turn boundary).
+        let render_y = ly + leads[idx] as i32;
         match item.role {
-            "tool" => _ = render_tool_block(frame, area, item, expanded, t, ly, wrap_w),
-            "user" => _ = render_user_block(frame, area, item, t, ly),
-            "system" => _ = render_system_block(frame, area, item, t, ly),
-            "header" => _ = render_header_block(frame, area, item, ly),
-            _ => _ = render_assistant_block(frame, area, item, t, ly),
+            "tool" => _ = render_tool_block(frame, area, item, expanded, t, render_y, wrap_w),
+            "user" => _ = render_user_block(frame, area, item, t, render_y),
+            "system" => _ = render_system_block(frame, area, item, t, render_y),
+            "header" => _ = render_header_block(frame, area, item, render_y),
+            _ => _ = render_assistant_block(frame, area, item, t, render_y),
         }
         ly += h;
     }
@@ -1274,40 +1459,173 @@ fn tool_renderer(b: &BlockView) -> ToolRenderer {
     }
 }
 
+/// Bash `command` display arg (TS `str()` in render-utils.ts: a non-string
+/// value is invalid → `[invalid arg]`, missing/empty → `...`).
+enum BashCommandArg {
+    /// Non-string `command` value (TS `str()` returns null → `[invalid arg]`).
+    Invalid,
+    /// String value (possibly empty — TS renders empty/missing as `...`).
+    Text(String),
+}
+
 /// Extract `command` / `timeout` from the bash args JSON (TS `bashSchema`).
-fn bash_call_args(args: &str) -> (Option<String>, Option<u64>) {
+///
+/// `timeout` keeps the exact JSON number (fractional seconds allowed) and is
+/// `None` when missing or falsy — TS `formatBashCall` uses a truthy check
+/// (`timeout ? \` (timeout ${timeout}s)\` : ""`), so `0` renders no suffix
+/// and `1.5` renders ` (timeout 1.5s)`.
+fn bash_call_args(args: &str) -> (BashCommandArg, Option<f64>) {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
-    let command = v.get("command").and_then(|c| c.as_str()).map(str::to_string);
-    let timeout = v.get("timeout").and_then(|t| t.as_u64());
+    let command = match v.get("command") {
+        Some(c) if c.is_string() => BashCommandArg::Text(c.as_str().unwrap_or("").to_string()),
+        Some(_) => BashCommandArg::Invalid,
+        None => BashCommandArg::Text(String::new()),
+    };
+    let timeout = v
+        .get("timeout")
+        .and_then(|t| t.as_f64())
+        .filter(|t| *t != 0.0 && t.is_finite());
     (command, timeout)
 }
 
-/// Wrap output lines into display-width visual lines (TS
-/// `truncateToVisualLines` uses the Text renderer's width-aware wrap;
-/// this is the greedy per-column equivalent — CJK-aware, never splitting
-/// a glyph).
+/// Visible display width of a text run (CJK wide glyphs count two columns;
+/// tabs are already expanded by the caller). Equivalent to TS `visibleWidth`.
+fn visible_width(text: &str) -> usize {
+    text.chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum()
+}
+
+/// Break an over-long token into pieces each fitting `width` columns,
+/// never splitting a wide glyph (TS `breakLongWord`).
+fn break_long_token(token: &str, width: usize) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut start = 0usize;
+    let mut col = 0usize;
+    for (idx, ch) in token.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col + w > width && col > 0 {
+            pieces.push(token[start..idx].to_string());
+            start = idx;
+            col = 0;
+        }
+        col += w;
+    }
+    pieces.push(token[start..].to_string());
+    pieces
+}
+
+/// Word-wrap tool output into display-width visual lines, mirroring the TS
+/// `Text` renderer (`wrapTextWithAnsi` + `truncateToVisualLines`):
+///
+/// - tabs expand to 3 spaces (TS `Text.render`),
+/// - lines break at word boundaries; an over-long token breaks at the
+///   column limit (CJK-aware),
+/// - every visual line is right-trimmed,
+/// - empty input yields no lines (TS `truncateToVisualLines` returns `[]`).
 fn visual_lines(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
+    if text.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    for line in text.split('\n') {
-        if line.is_empty() {
-            out.push(String::new());
+    for raw_line in text.split('\n') {
+        let line = raw_line.replace('\t', "   ");
+        if visible_width(&line) <= width {
+            out.push(line.trim_end().to_string());
             continue;
         }
-        let mut start = 0usize;
-        let mut col = 0usize;
-        for (idx, ch) in line.char_indices() {
-            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if col + w > width && col > 0 {
-                out.push(line[start..idx].to_string());
-                start = idx;
-                col = 0;
-            }
-            col += w;
+        // Tokenize into whitespace / non-whitespace runs (TS
+        // `splitIntoTokensWithAnsi` on ANSI-free text).
+        let mut tokens: Vec<&str> = Vec::new();
+        let mut rest: &str = &line;
+        while !rest.is_empty() {
+            let is_ws = rest.starts_with(char::is_whitespace);
+            let idx = rest
+                .find(|c: char| c.is_whitespace() != is_ws)
+                .unwrap_or(rest.len());
+            tokens.push(&rest[..idx]);
+            rest = &rest[idx..];
         }
-        out.push(line[start..].to_string());
+        let mut current = String::new();
+        let mut current_w = 0usize;
+        let mut wrapped: Vec<String> = Vec::new();
+        for token in tokens {
+            let token_w = visible_width(token);
+            let is_ws = token.chars().all(|c| c.is_whitespace());
+            if token_w > width && !is_ws {
+                // Flush the current line, then break the long token; the
+                // last piece becomes the current line (TS `breakLongWord`).
+                if !current.is_empty() {
+                    wrapped.push(current.trim_end().to_string());
+                    current.clear();
+                }
+                let pieces = break_long_token(token, width);
+                if let Some((last, rest)) = pieces.split_last() {
+                    for p in rest {
+                        wrapped.push(p.clone());
+                    }
+                    current = last.clone();
+                    current_w = visible_width(&current);
+                }
+                continue;
+            }
+            if current_w + token_w > width && current_w > 0 {
+                wrapped.push(current.trim_end().to_string());
+                if is_ws {
+                    current.clear();
+                    current_w = 0;
+                } else {
+                    current = token.to_string();
+                    current_w = token_w;
+                }
+            } else {
+                current.push_str(token);
+                current_w += token_w;
+            }
+        }
+        if !current.is_empty() {
+            wrapped.push(current.trim_end().to_string());
+        }
+        out.extend(wrapped);
     }
     out
+}
+
+/// First `limit` raw lines of `text`, word-wrapped into display rows, plus
+/// the number of raw lines hidden beyond the limit. TS tool renderers
+/// (read/grep/fallback) count the preview budget in *raw* lines but the
+/// `Text` component word-wraps each one at render width.
+fn preview_wrapped(text: &str, wrap_w: usize, limit: usize) -> (Vec<String>, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let shown = total.min(limit);
+    let mut rows = Vec::new();
+    for line in lines.iter().take(shown) {
+        rows.extend(visual_lines(line, wrap_w));
+    }
+    (rows, total - shown)
+}
+
+/// Bash display text: TS `rebuildBashResultRenderComponent` trims the
+/// output and strips the model-facing truncation footer
+/// (`\n\n[Showing ... Full output: path]`) when the truncation metadata
+/// carries the full output path — the warning line is re-rendered from
+/// `details` instead of showing the footer twice.
+fn bash_display_text(b: &BlockView) -> String {
+    let mut output = b.tool_output.trim().to_string();
+    if let Some(t) = &b.tool_truncation {
+        if t.truncated && t.full_output_path.is_some() && output.ends_with(']') {
+            if let Some(footer_start) = output.rfind("\n\n[") {
+                let footer = &output[footer_start..];
+                let path = t.full_output_path.as_deref().unwrap_or("");
+                if footer.contains(path) {
+                    output = output[..footer_start].trim_end().to_string();
+                }
+            }
+        }
+    }
+    output
 }
 
 /// Warning rows for the truncation metadata (blank separator + the
@@ -1337,22 +1655,81 @@ fn bash_warning_text(b: &BlockView) -> Option<String> {
                 t.output_lines, t.total_lines
             ));
         } else {
+            // TS falls back to DEFAULT_MAX_BYTES when maxBytes is missing.
+            let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
             warnings.push(format!(
                 "Truncated: {} lines shown ({} limit)",
                 t.output_lines,
-                format_size(t.max_bytes)
+                format_size(max_bytes)
             ));
         }
     }
     Some(format!("[{}]", warnings.join(". ")))
 }
 
+/// Whether the read block shows its content: TS `formatReadResult` returns
+/// "" when collapsed, but always renders when the tool errored.
+fn read_content_visible(b: &BlockView, expanded: bool) -> bool {
+    (expanded || matches!(b.tool_state, Some(ToolCallState::Failed)))
+        && !b.tool_output.trim().is_empty()
+}
+
+/// read truncation warnings (TS `formatReadResult`): `[First line exceeds
+/// X limit]`, `[Truncated: showing N of M lines (N line limit)]`, or
+/// `[Truncated: N lines shown (X limit)]`.
+fn read_warning_text(b: &BlockView) -> Option<String> {
+    let t = b.tool_truncation.as_ref()?;
+    if !t.truncated {
+        return None;
+    }
+    if t.first_line_exceeds_limit {
+        let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
+        return Some(format!("[First line exceeds {} limit]", format_size(max_bytes)));
+    }
+    if t.truncated_by.as_deref() == Some("lines") {
+        let max_lines = if t.max_lines != 0 { t.max_lines } else { DEFAULT_MAX_LINES };
+        return Some(format!(
+            "[Truncated: showing {} of {} lines ({} line limit)]",
+            t.output_lines, t.total_lines, max_lines
+        ));
+    }
+    let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
+    Some(format!(
+        "[Truncated: {} lines shown ({} limit)]",
+        t.output_lines,
+        format_size(max_bytes)
+    ))
+}
+
+/// grep truncation warnings (TS `formatGrepResult`): `[Truncated: ...]`
+/// with the parts joined by ", ".
+fn grep_warning_text(b: &BlockView) -> Option<String> {
+    let t = b.tool_truncation.as_ref()?;
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some(ml) = t.match_limit_reached {
+        warnings.push(format!("{ml} matches limit"));
+    }
+    if t.truncated {
+        let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
+        warnings.push(format!("{} limit", format_size(max_bytes)));
+    }
+    if t.lines_truncated == Some(true) {
+        warnings.push("some lines truncated".to_string());
+    }
+    if warnings.is_empty() {
+        None
+    } else {
+        Some(format!("[Truncated: {}]", warnings.join(", ")))
+    }
+}
+
 /// Bash output preview (TS `BASH_PREVIEW_LINES` = 5): the *tail* visual
 /// lines are kept when not expanded; `skipped` counts the hidden leading
 /// lines (shown as an `... (N earlier lines, ctrl+o to expand)` hint).
+/// The model-facing truncation footer is stripped first (TS
+/// `rebuildBashResultRenderComponent`).
 fn bash_preview(b: &BlockView, wrap_w: usize, expanded: bool) -> (usize, usize) {
-    // TS bash renderResult trims the output before rendering.
-    let visual = visual_lines(b.tool_output.trim(), wrap_w);
+    let visual = visual_lines(&bash_display_text(b), wrap_w);
     if expanded || visual.len() <= BASH_PREVIEW_LINES {
         (visual.len(), 0)
     } else {
@@ -1372,34 +1749,47 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
         "tool" => {
             match tool_renderer(b) {
                 ToolRenderer::Bash => {
-                    // bash renderer: title + blank + (blank + hint +) tail
-                    // preview + warnings + blank + Elapsed/Took line.
+                    // bash renderer: title + (blank + hint + tail preview
+                    // when output non-empty) + warnings + blank +
+                    // Elapsed/Took line.
                     let (_shown, skipped) = bash_preview(b, wrap_w, expanded);
                     let hint = if skipped > 0 { 1 } else { 0 };
                     let warns = bash_warning_rows(b);
-                    BOX_PAD_Y + 1 + 1 + hint as u16 + _shown as u16 + warns + 1 + 1 + BOX_PAD_Y
+                    let out_rows = if bash_display_text(b).is_empty() {
+                        0
+                    } else {
+                        1 + hint as u16 + _shown as u16
+                    };
+                    BOX_PAD_Y + 1 + out_rows + warns + 1 + 1 + BOX_PAD_Y
                 }
                 ToolRenderer::Read => {
-                    // read renderer: title only when collapsed (TS
-                    // `formatReadResult` returns "" unless expanded); the
-                    // content (blank + up to 10 lines + more hint) only
-                    // when expanded.
-                    let content = if expanded && !b.tool_output.is_empty() {
-                        let total = b.tool_output.lines().count();
-                        let shown = total.min(10);
-                        let more = if total > shown { 1 } else { 0 };
-                        1 + shown as u16 + more
+                    // read renderer: title only when collapsed and not an
+                    // error (TS `formatReadResult` returns ""); when
+                    // visible: blank + up to 10 wrapped raw lines + more
+                    // hint + truncation warnings.
+                    let content = if read_content_visible(b, expanded) {
+                        let (rows, remaining) =
+                            preview_wrapped(b.tool_output.trim_end(), wrap_w, 10);
+                        let more = if remaining > 0 { 1 } else { 0 };
+                        let warns = if read_warning_text(b).is_some() { 2 } else { 0 };
+                        1 + rows.len() as u16 + more + warns
                     } else {
                         0
                     };
                     BOX_PAD_Y + 1 + content + BOX_PAD_Y
                 }
                 ToolRenderer::Grep => {
-                    // grep renderer: title + blank + up to 15 lines + hint.
-                    let total = b.tool_output.lines().count();
-                    let shown = if expanded { total } else { total.min(15) };
-                    let more = if total > shown { 1 } else { 0 };
-                    BOX_PAD_Y + 1 + 1 + shown as u16 + more + BOX_PAD_Y
+                    // grep renderer: title + (blank + up to 15 wrapped raw
+                    // lines + hint + warnings when output non-empty).
+                    let mut content = 0u16;
+                    if !b.tool_output.trim().is_empty() {
+                        let limit = if expanded { usize::MAX } else { 15 };
+                        let (rows, remaining) = preview_wrapped(b.tool_output.trim(), wrap_w, limit);
+                        let more = if remaining > 0 { 1 } else { 0 };
+                        let warns = if grep_warning_text(b).is_some() { 2 } else { 0 };
+                        content = 1 + rows.len() as u16 + more + warns;
+                    }
+                    BOX_PAD_Y + 1 + content + BOX_PAD_Y
                 }
                 ToolRenderer::Edit => {
                     // edit renderer: title + blank + diff text.
@@ -1407,11 +1797,27 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
                     BOX_PAD_Y + 1 + 1 + total as u16 + BOX_PAD_Y
                 }
                 ToolRenderer::Fallback => {
-                let args_lines = if b.tool_args.is_empty() { 0 } else { 1 + b.tool_args.lines().count() };
-                let total = b.tool_output.lines().count();
-                let shown = if expanded { total } else { total.min(FALLBACK_PREVIEW_LINES) };
-                let more = if total > shown { 1 } else { 0 };
-                BOX_PAD_Y + 1 + args_lines as u16 + shown as u16 + more + BOX_PAD_Y
+                    // fallback renderer: title + (blank + wrapped args) +
+                    // (blank + wrapped output preview + hint).
+                    let mut content = 0u16;
+                    if !b.tool_args.is_empty() {
+                        let args_rows: usize = b
+                            .tool_args
+                            .lines()
+                            .map(|l| visual_lines(l, wrap_w).len())
+                            .sum();
+                        content += 1 + args_rows as u16;
+                    }
+                    if !b.tool_output.is_empty() {
+                        let limit = if expanded { usize::MAX } else { FALLBACK_PREVIEW_LINES };
+                        let (rows, remaining) = preview_wrapped(&b.tool_output, wrap_w, limit);
+                        let more = if remaining > 0 { 1 } else { 0 };
+                        // TS `formatToolExecution` separates args and output
+                        // with a blank line.
+                        let blank = if b.tool_args.is_empty() { 0 } else { 1 };
+                        content += blank + rows.len() as u16 + more;
+                    }
+                    BOX_PAD_Y + 1 + content + BOX_PAD_Y
                 }
             }
         }
@@ -1489,10 +1895,10 @@ fn render_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: 
     ly += 1;
     match tool_renderer(item) {
         ToolRenderer::Bash => ly = render_bash_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
-        ToolRenderer::Read => ly = render_read_tool_block(frame, area, item, expanded, t, ly, bg),
-        ToolRenderer::Grep => ly = render_grep_tool_block(frame, area, item, expanded, t, ly, bg),
+        ToolRenderer::Read => ly = render_read_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
+        ToolRenderer::Grep => ly = render_grep_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Edit => ly = render_edit_tool_block(frame, area, item, expanded, t, ly, bg),
-        ToolRenderer::Fallback => ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, bg),
+        ToolRenderer::Fallback => ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
     }
     // Bottom padding.
     render_bg_row(frame, area, ly, bg);
@@ -1501,22 +1907,39 @@ fn render_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: 
 
 /// Bash renderer rows (title through the timer line).
 fn render_bash_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
-    // Title: `$ {command}` bold, muted ` (timeout Ns)` suffix.
+    // Title: `$ {command}` bold (+ `...` in toolOutput when empty/missing,
+    // `[invalid arg]` in error when non-string), muted ` (timeout Ns)`
+    // suffix (TS `formatBashCall`).
     let (command, timeout) = bash_call_args(&item.tool_args);
-    let command_display = command.filter(|c| !c.is_empty()).unwrap_or_else(|| "...".to_string());
-    let mut spans = vec![Span::styled(
-        format!("$ {command_display}"),
-        Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
-    )];
+    let title_bold = Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD);
+    let mut spans = match &command {
+        BashCommandArg::Invalid => vec![
+            Span::styled("$ ", title_bold),
+            Span::styled(
+                "[invalid arg]",
+                Style::new().fg(t.error).add_modifier(Modifier::BOLD),
+            ),
+        ],
+        BashCommandArg::Text(c) if c.is_empty() => vec![
+            Span::styled("$ ", title_bold),
+            Span::styled(
+                "...",
+                Style::new().fg(t.tool_output).add_modifier(Modifier::BOLD),
+            ),
+        ],
+        BashCommandArg::Text(c) => vec![Span::styled(format!("$ {c}"), title_bold)],
+    };
     if let Some(secs) = timeout {
         spans.push(Span::styled(format!(" (timeout {secs}s)"), Style::new().fg(t.muted)));
     }
     render_boxed_row(frame, area, ly, bg, spans);
     ly += 1;
-    // Blank line, then the output (TS renderResult prepends a newline).
-    render_boxed_row(frame, area, ly, bg, vec![]);
-    ly += 1;
-    if !item.tool_output.is_empty() {
+    // Blank line, then the output — only when the trimmed output is
+    // non-empty (TS renderResult prepends a newline inside the output Text).
+    let output = bash_display_text(item);
+    if !output.is_empty() {
+        render_boxed_row(frame, area, ly, bg, vec![]);
+        ly += 1;
         let (shown, skipped) = bash_preview(item, wrap_w, expanded);
         if skipped > 0 {
             // Leading hint (TS: `["", hint, ...tail]`).
@@ -1533,7 +1956,7 @@ fn render_bash_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
             );
             ly += 1;
         }
-        let visual = visual_lines(item.tool_output.trim(), wrap_w);
+        let visual = visual_lines(&output, wrap_w);
         let start = visual.len() - shown;
         for line in visual.into_iter().skip(start) {
             render_boxed_row(frame, area, ly, bg, vec![Span::styled(line, Style::new().fg(t.tool_output))]);
@@ -1572,7 +1995,7 @@ fn render_bash_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
         ly,
         bg,
         vec![Span::styled(
-            format!("{} {:.1}s", if finished { "Took" } else { "Elapsed" }, ms as f64 / 1000.0),
+            format!("{} {}", if finished { "Took" } else { "Elapsed" }, format_duration(ms)),
             Style::new().fg(t.muted),
         )],
     );
@@ -1594,7 +2017,7 @@ fn shorten_path(path: &str, cwd: &str) -> String {
 /// Fallback renderer rows (no registered tool renderer — TS
 /// `formatToolExecution`): bold tool-name title, blank + args JSON, first
 /// 10 output lines + trailing `... (N more lines, ctrl+o to expand)`.
-fn render_fallback_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
+fn render_fallback_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     // Title row.
     render_boxed_row(
         frame,
@@ -1604,31 +2027,40 @@ fn render_fallback_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, e
         vec![Span::styled(item.tool_name.clone(), Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD))],
     );
     ly += 1;
-    // Args (TS fallback: blank line + JSON in the default text color).
+    // Args (TS fallback: blank line + JSON in the default text color,
+    // word-wrapped by the Text renderer).
     if !item.tool_args.is_empty() {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
         for line in item.tool_args.lines() {
-            render_boxed_row(frame, area, ly, bg, vec![Span::raw(line.to_string())]);
-            ly += 1;
+            for row in visual_lines(line, wrap_w) {
+                render_boxed_row(frame, area, ly, bg, vec![Span::raw(row)]);
+                ly += 1;
+            }
         }
     }
-    // Output rows.
+    // Output rows (TS `formatToolExecution` separates args and output with
+    // a blank line; the output previews the first 10 raw lines, each
+    // word-wrapped like the Text renderer).
     if !item.tool_output.is_empty() {
-        let total = item.tool_output.lines().count();
-        let shown = if expanded { total } else { total.min(FALLBACK_PREVIEW_LINES) };
-        for line in item.tool_output.lines().take(shown) {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(line.to_string(), Style::new().fg(t.tool_output))]);
+        if !item.tool_args.is_empty() {
+            render_boxed_row(frame, area, ly, bg, vec![]);
             ly += 1;
         }
-        if total > shown {
+        let limit = if expanded { usize::MAX } else { FALLBACK_PREVIEW_LINES };
+        let (rows, remaining) = preview_wrapped(&item.tool_output, wrap_w, limit);
+        for row in rows {
+            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
+            ly += 1;
+        }
+        if remaining > 0 {
             render_boxed_row(
                 frame,
                 area,
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({} more lines, ", total - shown), Style::new().fg(t.muted)),
+                    Span::styled(format!("... ({remaining} more lines, "), Style::new().fg(t.muted)),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
@@ -1654,9 +2086,11 @@ fn read_call_args(args: &str) -> (Option<String>, Option<u64>, Option<u64>) {
 
 /// Read renderer (TS `formatReadCall`/`formatReadResult`): the title is
 /// `read {path}{:range}` — `read` bold, path accent, range warning — and
-/// the content only renders when expanded (collapsed shows just the
-/// title, matching TS `formatReadResult` returning "" unless expanded).
-fn render_read_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
+/// the content only renders when expanded or the tool errored (collapsed
+/// success shows just the title, matching TS `formatReadResult` returning
+/// "" unless expanded). Content lines are word-wrapped like the TS Text
+/// renderer, and truncation warnings render below the preview.
+fn render_read_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     let (path, offset, limit) = read_call_args(&item.tool_args);
     let path_display = match path {
         Some(p) if !p.is_empty() => shorten_path(&p, &item.cwd),
@@ -1677,26 +2111,38 @@ fn render_read_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
     }
     render_boxed_row(frame, area, ly, bg, spans);
     ly += 1;
-    if expanded && !item.tool_output.is_empty() {
+    if read_content_visible(item, expanded) {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
-        let total = item.tool_output.lines().count();
-        let shown = total.min(10);
-        for line in item.tool_output.lines().take(shown) {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(line.to_string(), Style::new().fg(t.tool_output))]);
+        let (rows, remaining) = preview_wrapped(item.tool_output.trim_end(), wrap_w, 10);
+        for row in rows {
+            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
             ly += 1;
         }
-        if total > shown {
+        if remaining > 0 {
             render_boxed_row(
                 frame,
                 area,
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({} more lines, ", total - shown), Style::new().fg(t.muted)),
+                    Span::styled(format!("... ({remaining} more lines, "), Style::new().fg(t.muted)),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
+            );
+            ly += 1;
+        }
+        // read truncation warnings (TS `formatReadResult`).
+        if let Some(warn) = read_warning_text(item) {
+            render_boxed_row(frame, area, ly, bg, vec![]);
+            ly += 1;
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(warn, Style::new().fg(t.warning))],
             );
             ly += 1;
         }
@@ -1705,9 +2151,10 @@ fn render_read_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
 }
 
 /// Grep renderer (TS `formatGrepCall`/`formatGrepResult`): title
-/// `grep /{pattern}/ in {path} ({glob}) limit {n}` and the output
-/// previewed to 15 lines.
-fn render_grep_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
+/// `grep /{pattern}/ in {path} ({glob}) limit {n}`, the output previewed
+/// to 15 wrapped raw lines, and the truncation warning
+/// `[Truncated: ...]` when the match/byte/line limits were hit.
+fn render_grep_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     let v: serde_json::Value = serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
     let pattern = v.get("pattern").and_then(|p| p.as_str()).map(str::to_string);
     let path = v
@@ -1734,29 +2181,43 @@ fn render_grep_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
     }
     render_boxed_row(frame, area, ly, bg, spans);
     ly += 1;
-    if !item.tool_output.is_empty() {
+    let output = item.tool_output.trim();
+    if !output.is_empty() {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
-        let total = item.tool_output.lines().count();
-        let shown = if expanded { total } else { total.min(15) };
-        for line in item.tool_output.lines().take(shown) {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(line.to_string(), Style::new().fg(t.tool_output))]);
+        let limit = if expanded { usize::MAX } else { 15 };
+        let (rows, remaining) = preview_wrapped(output, wrap_w, limit);
+        for row in rows {
+            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
             ly += 1;
         }
-        if total > shown {
+        if remaining > 0 {
             render_boxed_row(
                 frame,
                 area,
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({} more lines, ", total - shown), Style::new().fg(t.muted)),
+                    Span::styled(format!("... ({remaining} more lines, "), Style::new().fg(t.muted)),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
             );
             ly += 1;
         }
+    }
+    // grep truncation warnings (TS `formatGrepResult`).
+    if let Some(warn) = grep_warning_text(item) {
+        render_boxed_row(frame, area, ly, bg, vec![]);
+        ly += 1;
+        render_boxed_row(
+            frame,
+            area,
+            ly,
+            bg,
+            vec![Span::styled(warn, Style::new().fg(t.warning))],
+        );
+        ly += 1;
     }
     ly
 }
@@ -3222,6 +3683,7 @@ mod tests {
                     max_lines: 2000,
                     max_bytes: 51200,
                     full_output_path: Some("/tmp/pi-out.txt".into()),
+                    ..ToolTruncation::default()
                 }),
             ),
         );
@@ -3248,6 +3710,347 @@ mod tests {
             .find(|&y| buf[(1, y)].symbol() == "T" && buf[(1, y)].fg == theme::MUTED)
             .expect("Took line");
         assert!(took_row > warn_row, "timer below the warning");
+    }
+
+    /// TS `rebuildBashResultRenderComponent` strips the model-facing
+    /// truncation footer (`\n\n[Showing ... Full output: path]`) from the
+    /// displayed output and re-renders the warning from `details` — without
+    /// the strip the footer would show twice (once as output text, once as
+    /// the warning line).
+    #[test]
+    fn bash_tool_strips_truncation_footer_from_output() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        let footer = "\n\n[Showing lines 6-10 of 10. Full output: /tmp/pi-bash-x.log]";
+        update(
+            &mut model,
+            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"make\"}".into()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput(
+                "tc-b".into(),
+                "bash".into(),
+                format!("alpha\nbeta{footer}"),
+            ),
+        );
+        update(
+            &mut model,
+            Msg::SetToolTruncation(
+                "tc-b".into(),
+                Some(ToolTruncation {
+                    truncated: true,
+                    truncated_by: Some("lines".into()),
+                    output_lines: 5,
+                    total_lines: 10,
+                    max_lines: 2000,
+                    max_bytes: 51200,
+                    full_output_path: Some("/tmp/pi-bash-x.log".into()),
+                    ..ToolTruncation::default()
+                }),
+            ),
+        );
+        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..20u16)
+            .find(|&y| buf[(1, y)].symbol() == "$")
+            .expect("bash title");
+        // The footer must not appear as output text: `S` (Showing) would be
+        // its first char, but the only `[` in the block is the warning line.
+        let output_row = title_row + 2;
+        assert_eq!(buf[(1, output_row)].symbol(), "a", "alpha first output line");
+        let footer_start = (0..30u16).find(|&y| buf[(1, y)].symbol() == "S");
+        assert_eq!(footer_start, None, "footer stripped from output");
+        // The warning line still renders from details (one `[` row only).
+        let warn_row = (0..30u16)
+            .find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING)
+            .expect("warning line");
+        assert_eq!(buf[(2, warn_row)].symbol(), "F", "warning starts Full output");
+    }
+
+    /// Tool output is sanitized for display exactly like the TS renderers'
+    /// `getTextOutput`: ANSI escape codes stripped, `\r` removed, binary
+    /// control characters dropped (the raw tool result keeps ANSI for the
+    /// model — only the TUI display cleans it).
+    #[test]
+    fn tool_output_strips_ansi_and_control_chars() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"echo hi\"}".into()),
+        );
+        // `\x1b[31mred\x1b[0m`, a CRLF, and a raw NUL control char.
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), "\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok".into()),
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..20u16)
+            .find(|&y| buf[(1, y)].symbol() == "$" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
+            .expect("bash title");
+        // Output starts with the visible text `red` (no `\x1b[` garbage).
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "r", "ANSI stripped");
+        assert_eq!(buf[(2, title_row + 2)].symbol(), "e", "second char");
+        assert_eq!(buf[(3, title_row + 2)].symbol(), "d", "third char");
+        // The CRLF collapsed to a single newline → `ok` on the next row
+        // (no raw `\r` cell).
+        assert_eq!(buf[(1, title_row + 3)].symbol(), "o", "CRLF collapsed");
+        assert_eq!(buf[(2, title_row + 3)].symbol(), "k", "NUL removed");
+    }
+
+    /// Word-wrap matches the TS `Text` renderer: lines break at word
+    /// boundaries (not mid-word), long tokens break at the column limit,
+    /// tabs expand to 3 spaces, and every line is right-trimmed.
+    #[test]
+    fn visual_lines_wrap_at_word_boundaries() {
+        // `aaaa bbbb` at width 4: TS `wrapTextWithAnsi` keeps the space
+        // with the first line → `["aaaa","bbbb"]` (the old greedy
+        // per-column wrap produced `["aaaa"," bbb","b"]`).
+        assert_eq!(visual_lines("aaaa bbbb", 4), vec!["aaaa", "bbbb"]);
+        // Long token breaks at the column limit (CJK wide glyph = 2 cols):
+        // chunks of ≤6 columns → "你好世"(6) / "界hell"(6) / "o"(1).
+        assert_eq!(visual_lines("你好世界hello", 6), vec!["你好世", "界hell", "o"]);
+        // Tabs expand to 3 spaces (TS `Text.render`).
+        assert_eq!(visual_lines("a\tb", 20), vec!["a   b"]);
+        // Trailing whitespace is trimmed.
+        assert_eq!(visual_lines("foo   ", 20), vec!["foo"]);
+        // Empty input → no lines (TS `truncateToVisualLines`).
+        assert!(visual_lines("", 20).is_empty());
+    }
+
+    /// `formatBashCall` arg handling: a non-string `command` renders
+    /// `[invalid arg]` in the error color, an empty/missing command renders
+    /// `...` in the toolOutput color, and a fractional timeout keeps its
+    /// exact value while `0` renders no suffix (TS truthy check).
+    #[test]
+    fn bash_title_handles_invalid_command_and_timeout() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-1".into(),
+                "bash".into(),
+                "{\"command\": 123, \"timeout\": 0}".into(),
+            ),
+        );
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-2".into(),
+                "bash".into(),
+                "{\"command\": \"\", \"timeout\": 1.5}".into(),
+            ),
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let rows: Vec<u16> = (0..24u16)
+            .filter(|&y| buf[(1, y)].symbol() == "$")
+            .collect();
+        assert_eq!(rows.len(), 2, "two bash titles");
+        // tc-1: `[invalid arg]` in error color; timeout 0 → no suffix.
+        let r1 = rows[0];
+        assert_eq!(buf[(3, r1)].symbol(), "[", "invalid arg bracket");
+        assert_eq!(buf[(3, r1)].fg, theme::ERROR, "invalid arg error color");
+        assert_eq!(buf[(16, r1)].symbol(), " ", "no timeout suffix for 0");
+        // tc-2: `...` in toolOutput color; fractional timeout 1.5 kept.
+        let r2 = rows[1];
+        assert_eq!(buf[(3, r2)].symbol(), ".", "empty command ellipsis");
+        assert_eq!(buf[(3, r2)].fg, theme::TOOL_OUTPUT, "ellipsis toolOutput");
+        assert_eq!(buf[(7, r2)].symbol(), "(", "timeout suffix");
+        assert_eq!(buf[(17, r2)].symbol(), ".", "fractional timeout dot");
+        assert_eq!(buf[(19, r2)].symbol(), "s", "timeout unit");
+    }
+
+    /// A running bash tool with no output renders the timer without a
+    /// stray blank after the title (TS only prepends the newline inside the
+    /// output Text when output exists), and whitespace-only output renders
+    /// no output rows either.
+    #[test]
+    fn bash_tool_no_output_has_no_extra_blank() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"true\"}".into()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), "\n  \n".into()),
+        );
+        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..20u16)
+            .find(|&y| buf[(1, y)].symbol() == "$")
+            .expect("bash title");
+        // Whitespace-only output: no blank/output rows, timer directly
+        // after the title (title + blank + timer).
+        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank before timer");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "T", "Took directly after");
+    }
+
+    /// read truncation warnings (TS `formatReadResult`): expanded read with
+    /// `details.truncation` renders `[Truncated: showing N of M lines (N
+    /// line limit)]` in the warning color.
+    #[test]
+    fn read_tool_renders_truncation_warning() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-r".into(),
+                "read".into(),
+                "{\"file_path\": \"/tmp/a.rs\"}".into(),
+            ),
+        );
+        update(&mut model, Msg::SetToolOutput("tc-r".into(), "read".into(), "line1\nline2\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolTruncation(
+                "tc-r".into(),
+                Some(ToolTruncation {
+                    truncated: true,
+                    truncated_by: Some("lines".into()),
+                    output_lines: 2,
+                    total_lines: 500,
+                    max_lines: 2000,
+                    max_bytes: 51200,
+                    full_output_path: None,
+                    ..ToolTruncation::default()
+                }),
+            ),
+        );
+        update(&mut model, Msg::ToolEnd("tc-r".into(), "read".into(), false));
+
+        // Collapsed: no content, no warning (TS `formatReadResult` = "").
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let _title_row = (0..20u16)
+            .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_SUCCESS_BG)
+            .expect("read title");
+        let warn = (0..30u16).find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING);
+        assert_eq!(warn, None, "no warning while collapsed");
+
+        // Expanded: content + warning line.
+        update(&mut model, Msg::ToggleToolExpansion);
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let title_row = (0..20u16)
+            .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_SUCCESS_BG)
+            .expect("read title expanded");
+        assert_eq!(buf[(1, title_row + 2)].symbol(), "l", "content visible");
+        let warn_row = (0..30u16)
+            .find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING)
+            .expect("warning line expanded");
+        assert_eq!(buf[(2, warn_row)].symbol(), "T", "Truncated");
+        assert_eq!(buf[(36, warn_row)].symbol(), "(", "line limit paren");
+    }
+
+    /// grep truncation warnings (TS `formatGrepResult`): `[Truncated: N
+    /// matches limit, ...]` joined with ", " in the warning color.
+    #[test]
+    fn grep_tool_renders_truncation_warning() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-g".into(),
+                "grep".into(),
+                "{\"pattern\": \"TODO\", \"path\": \"src\"}".into(),
+            ),
+        );
+        update(&mut model, Msg::SetToolOutput("tc-g".into(), "grep".into(), "src/a.rs:1:TODO\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolTruncation(
+                "tc-g".into(),
+                Some(ToolTruncation {
+                    truncated: false,
+                    truncated_by: None,
+                    output_lines: 0,
+                    total_lines: 0,
+                    max_lines: 0,
+                    max_bytes: 0,
+                    full_output_path: None,
+                    match_limit_reached: Some(100),
+                    ..ToolTruncation::default()
+                }),
+            ),
+        );
+        update(&mut model, Msg::ToolEnd("tc-g".into(), "grep".into(), false));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let warn_row = (0..30u16)
+            .find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING)
+            .expect("grep warning");
+        // `[Truncated: 100 matches limit]`
+        assert_eq!(buf[(2, warn_row)].symbol(), "T", "Truncated");
+        assert_eq!(buf[(13, warn_row)].symbol(), "1", "match count 1");
+        assert_eq!(buf[(14, warn_row)].symbol(), "0", "match count 0");
+        assert_eq!(buf[(15, warn_row)].symbol(), "0", "match count 0");
+    }
+
+    /// `stripAnsi` (TS utils/ansi.ts) removes CSI and OSC sequences but
+    /// keeps plain text; `sanitize_output_text` additionally drops binary
+    /// control characters and `\r` (TS `getTextOutput`).
+    #[test]
+    fn strip_ansi_and_sanitize_match_ts() {
+        assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m"), "red");
+        assert_eq!(strip_ansi("\u{1b}[38;5;196mhi\u{1b}[m"), "hi");
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{07}plain"), "plain");
+        assert_eq!(strip_ansi("no codes"), "no codes");
+        assert_eq!(sanitize_output_text("\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok"), "red\nok");
+    }
+
+    /// `formatDuration` matches TS `(ms/1000).toFixed(1)`: one decimal,
+    /// rounding half away from zero (1250ms → 1.25 → "1.3s", while Rust's
+    /// default `{:.1}` rounds half to even and would give "1.2s").
+    #[test]
+    fn format_duration_matches_ts_tofixed() {
+        assert_eq!(format_duration(0), "0.0s");
+        assert_eq!(format_duration(1250), "1.3s");
+        assert_eq!(format_duration(1249), "1.2s");
+        assert_eq!(format_duration(999), "1.0s");
     }
 
     /// Assistant thinking content renders below the text in thinkingText
@@ -3363,5 +4166,47 @@ mod tests {
             .filter(|l| !l.is_empty())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// 构造一个最小 BlockView（默认字段为空）。
+    fn bv(role: &'static str) -> BlockView {
+        BlockView {
+            role,
+            md_lines: Vec::new(),
+            plain_lines: Vec::new(),
+            tool_name: String::new(),
+            tool_args: String::new(),
+            cwd: String::new(),
+            tool_state: None,
+            tool_output: String::new(),
+            tool_truncation: None,
+            tool_started_at: None,
+            tool_ended_at: None,
+            thinking_lines: Vec::new(),
+            stop_reason: None,
+            error_message: None,
+        }
+    }
+
+    /// 对齐 TS：上一轮 assistant 结束与新一轮 user 开始之间必须有一个空行。
+    /// 这个空行是 user 块的前置空行（仅当它紧跟一个 assistant 块时），
+    /// 而当前逻辑原有的 trailing gap 只把空行放在 user 块之后，导致轮次边界无分隔。
+    #[test]
+    fn block_gaps_blank_at_turn_boundary() {
+        // 一次正常对话的块顺序：user -> assistant -> user(新轮) -> assistant。
+        let blocks = [bv("user"), bv("assistant"), bv("user"), bv("assistant")];
+        let (gaps, leads) = block_gaps(&blocks);
+        // trailing gaps：每个非 assistant 块（user）之后一个空行（分隔 box 与其后的回复）。
+        assert_eq!(gaps, vec![1, 0, 1, 0]);
+        // leading gaps：只有紧跟 assistant 的 user 块（新轮次开头）获得前置空行。
+        assert_eq!(leads, vec![0, 0, 1, 0]);
+    }
+
+    /// 首个 user 块（前面没有 assistant）不应获得轮次边界空行。
+    #[test]
+    fn block_gaps_first_user_has_no_leading_blank() {
+        let blocks = [bv("user"), bv("assistant")];
+        let (_gaps, leads) = block_gaps(&blocks);
+        assert_eq!(leads, vec![0, 0]);
     }
 }

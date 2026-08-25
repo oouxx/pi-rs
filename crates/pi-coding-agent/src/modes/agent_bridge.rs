@@ -49,14 +49,28 @@ pub enum AgentEvent {
 /// blocks, falling back to `details.stdout`/`stderr`/`output` and
 /// `details.diff`). Returns the full accumulated text for snapshot
 /// semantics.
-/// Extract truncation metadata from a tool result value: bash/read put
-/// `details.truncation` + `details.fullOutputPath` on the result.
+/// Extract truncation metadata from a tool result value: bash puts
+/// `details.truncation` + `details.fullOutputPath` on the result, read puts
+/// `details.truncation`, and grep puts `details.matchLimitReached` /
+/// `details.linesTruncated` next to `details.truncation`.
 fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::ToolTruncation> {
     let obj = value.as_object()?;
     let details = obj.get("details")?.as_object()?;
     let trunc = details.get("truncation")?.as_object()?;
     let truncated = trunc.get("truncated").and_then(|t| t.as_bool()).unwrap_or(false);
-    if !truncated && details.get("fullOutputPath").is_none() {
+    let full_output_path = details
+        .get("fullOutputPath")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let match_limit_reached = details.get("match_limit_reached").and_then(|v| v.as_u64());
+    let lines_truncated = details.get("lines_truncated").and_then(|v| v.as_bool());
+    // Nothing to warn about (TS renderers only add a warning when one of
+    // these is present).
+    if !truncated
+        && full_output_path.is_none()
+        && match_limit_reached.is_none()
+        && lines_truncated != Some(true)
+    {
         return None;
     }
     Some(pi_tui::app::ToolTruncation {
@@ -69,10 +83,13 @@ fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::ToolTruncat
         total_lines: trunc.get("total_lines").and_then(|v| v.as_u64()).unwrap_or(0),
         max_lines: trunc.get("max_lines").and_then(|v| v.as_u64()).unwrap_or(0),
         max_bytes: trunc.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-        full_output_path: details
-            .get("fullOutputPath")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        full_output_path,
+        first_line_exceeds_limit: trunc
+            .get("first_line_exceeds_limit")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        match_limit_reached,
+        lines_truncated,
     })
 }
 

@@ -1,0 +1,16 @@
+# PORTING_MISTAKES.md — pi-tui
+
+本文件归档 pi-tui 工具块渲染对齐检查中修复的回归 bug（翻译遗漏/实现错误，
+非有意保留的偏差）。根因模式尽量归到阶段一"高危陷阱"表的分类。
+
+| # | 位置 | 现象 | 根因模式 | 修复方式 |
+|---|------|------|---------|---------|
+| 1 | `app.rs:render_bash_tool_block` + `agent_bridge.rs:tool_result_text` | bash 截断成功时，结果文本里的 footer（`\n\n[Showing lines X-Y of Z. Full output: path]`）原样渲染进输出，且 warning 行又从 `details.truncation` 单独渲染一次——同一信息显示两遍 | 翻译遗漏：TS `rebuildBashResultRenderComponent`（bash.ts:254-262）渲染前剥 footer，Rust 没实现 | 新增 `bash_display_text()`：输出 trim 后，若 `truncated && fullOutputPath` 且以 `]` 结尾，用 `rfind("\n\n[")` 剥掉含 fullOutputPath 的 footer 再 trimEnd；渲染与 `block_height` 共用 |
+| 2 | `app.rs:set_tool_output` | bash/read/grep/fallback 输出里的 ANSI 转义序列、`\r`、二进制控制字符原样进 TUI（ratatui 不解释 ANSI，按字面字符渲染并污染宽度/预览） | 翻译遗漏：TS 渲染层 `getTextOutput` 做 `sanitizeBinaryOutput(stripAnsi(x)).replace(/\r/g, "")`，Rust TUI 链路无清洗 | 在 `set_tool_output` 统一 `sanitize_output_text()`（新增 `strip_ansi` + `sanitize_binary_output`，镜像 TS ansi.ts/shell.ts）；模型侧结果文本保持原样 |
+| 3 | `app.rs:visual_lines` | 换行是逐列贪心硬断，TS `Text`/`wrapTextWithAnsi` 是词边界换行——同一输出视觉行数与断行位置不同，`... (N earlier lines)` 计数与预览内容对不上 | 高危陷阱"数组/字符串越界"类语义差异（wrap 算法行为不同但都能编译） | 重写为 TS 词边界 wrap：tab→3 空格、空白/非空白 token 化、超长 token 按显示宽度拆（`break_long_token` CJK 感知）、每行 trimEnd |
+| 4 | `app.rs:bash_call_args` | 非字符串 `command`（如 `{"command":123}`）显示 `...` 而不是 error 色 `[invalid arg]`；空命令 `...` 颜色是 toolTitle 而不是 toolOutput；timeout 用 `as_u64()` 导致小数/浮点（1.5、2.0）后缀整个丢失、`0` 反而显示后缀 | 翻译遗漏 + 数值截断陷阱：TS `str()` 区分 null/非字符串，`timeout ? ...` 是 truthy 判断且保留原数字 | `bash_call_args` 返回 `BashCommandArg{Invalid,Text}` + `Option<f64>`；标题拆 span（`$ ` toolTitle+bold，`[invalid arg]` error+bold，`...` toolOutput+bold）；timeout 过滤 `0/NaN` 后按 f64 Display 输出 |
+| 5 | `app.rs:render_bash_tool_block` | 标题后空行无条件渲染；纯空白输出也渲染空行——TS 只在输出非空时才有空行（空行是输出 Text 的 `\n` 前缀） | 翻译遗漏（渲染结构差异） | 空行移入 `if !bash_display_text().is_empty()` 分支；`block_height` 同步改为条件空行 |
+| 6 | `app.rs:render_read_tool_block` | read 工具块的截断警告（`[First line exceeds ...]`/`[Truncated: ...]`）完全没渲染（DEVIATIONS 声称已实现）；错误态折叠时不显示内容（TS `!expanded && !isError` 才返回空） | 翻译遗漏 | 新增 `read_warning_text()`（三种变体 + maxBytes/maxLines 回退）、`read_content_visible()`（展开或 Failed）；渲染与 `block_height` 同步 |
+| 7 | `app.rs:render_grep_tool_block` | grep 工具块的截断警告（`[Truncated: N matches limit, ...]`）完全没渲染；`details.matchLimitReached`/`linesTruncated` 未接线 | 翻译遗漏 | `ToolTruncation` 增加 `match_limit_reached`/`lines_truncated`，bridge `tool_truncation` 从 details 提取；新增 `grep_warning_text()`（", " 连接） |
+| 8 | `app.rs:format_duration` | 计时 `{:.1}` 是 Rust 半到偶数舍入，TS `(ms/1000).toFixed(1)` 是半进位（1250ms → JS "1.3s" vs Rust "1.2s"） | 高危陷阱"数值截断"类（舍入规则不同） | 新增 `format_duration()`：`(ms/1000*10).round()/10` 后再 `{:.1}`，半进位对齐 toFixed |
+| 9 | `app.rs:bash_warning_text` + `read_warning_text` + `grep_warning_text` | warning 文案直接取 `t.max_bytes`/`t.max_lines`，TS 用 `?? DEFAULT_MAX_BYTES`/`?? DEFAULT_MAX_LINES` 兜底（缺失时 Rust 会显示 `0B limit`/`0 line limit`） | 翻译遗漏（`??` 兜底语义） | 新增 `DEFAULT_MAX_BYTES`(50KB)/`DEFAULT_MAX_LINES`(2000) 常量，`max_bytes != 0`/`max_lines != 0` 时回退 |

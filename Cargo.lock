@@ -1846,7 +1846,7 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "636860251af8963cc40f6b4baadee105f02e21b28131d76eba8e40ce84ab8064"
 dependencies = [
- "rand 0.8.7",
+ "rand 0.8.8",
  "rand_chacha 0.3.1",
 ]
 
@@ -2382,7 +2382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared",
- "rand 0.8.7",
+ "rand 0.8.8",
 ]
 
 [[package]]
@@ -2409,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "pi-agent-core"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2431,12 +2431,12 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
- "rand 0.8.7",
+ "rand 0.8.8",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "pi-cli"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "base64",
  "colored",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -2498,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extension-api"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "async-trait",
  "futures",
@@ -2509,7 +2509,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extensions"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "pi-tui"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "anstyle",
  "crossterm",
@@ -2859,9 +2859,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -5058,7 +5058,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.83.4"
+version = "1.83.5"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",

@@ -294,6 +294,9 @@ struct AppState {
     /// Names of slash commands registered by extensions (snapshot taken at
     /// startup; used to route `/name` to the extension executor).
     ext_commands: Vec<String>,
+    /// Names of `/skill:<name>` commands (snapshot taken at startup; used by
+    /// `/help` to list available skills).
+    skill_commands: Vec<String>,
     /// Extension dialog awaiting a user answer (at most one at a time).
     pending_ui: Option<PendingUi>,
     /// When the current streaming/working run started (for the status-bar
@@ -307,7 +310,7 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(width: u16, height: u16, ext_commands: Vec<String>) -> Self {
+    fn new(width: u16, height: u16, ext_commands: Vec<String>, skill_commands: Vec<String>) -> Self {
         let model = pi_tui::Model::new(width, height);
         Self {
             model,
@@ -316,6 +319,7 @@ impl AppState {
             pending_cmds: Vec::new(),
             quit: false,
             ext_commands,
+            skill_commands,
             pending_ui: None,
             stream_started_at: None,
             last_status_refresh: Instant::now() - std::time::Duration::from_secs(10),
@@ -794,6 +798,9 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             if !state.ext_commands.is_empty() {
                 help.push_str(&format!("\nExtension: /{}", state.ext_commands.join(", /")));
             }
+            if !state.skill_commands.is_empty() {
+                help.push_str(&format!("\nSkills: /{}", state.skill_commands.join(", /")));
+            }
             system(state, help);
             vec![]
         }
@@ -895,7 +902,8 @@ fn wrap_extension_argument_completions(
 }
 
 /// 构建补全命令列表（对齐 TS `createBaseAutocompleteProvider`）：
-/// 内建命令（`/model` 带模型参数补全）+ 扩展命令（带各自参数补全）。
+/// 内建命令（`/model` 带模型参数补全）+ prompt template + 扩展命令
+/// + skill 命令（受 `enableSkillCommands` 控制）。
 fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCommand> {
     let mut commands = vec![
         pi_tui::CompletionCommand::new("/help", "Show commands", "help"),
@@ -911,6 +919,8 @@ fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCo
         pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
             .with_argument_completions(model_argument_completions(models)),
     );
+    // Prompt template 命令（对齐 TS `templateCommands`）。
+    commands.extend(template_completion_commands(&session.prompt_templates()));
     if let Some(registry) = session.get_extension_registry() {
         for rc in registry.commands() {
             let mut cmd = pi_tui::CompletionCommand::new(
@@ -924,7 +934,38 @@ fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCo
             commands.push(cmd);
         }
     }
+    // Skill 命令（对齐 TS `skillCommandList`，受 `enableSkillCommands` 控制，默认 true）。
+    if session.get_enable_skill_commands() {
+        if let Some(resources) = session.resource_loader() {
+            commands.extend(skill_completion_commands(&resources.skills));
+        }
+    }
     commands
+}
+
+/// Prompt template → 补全命令（对齐 TS `templateCommands`）。
+fn template_completion_commands(templates: &[crate::core::prompt_templates::PromptTemplate]) -> Vec<pi_tui::CompletionCommand> {
+    templates
+        .iter()
+        .map(|t| {
+            pi_tui::CompletionCommand::new(
+                format!("/{}", t.name),
+                t.description.clone(),
+                t.name.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Skill → `/skill:<name>` 补全命令（对齐 TS `skillCommandList`）。
+fn skill_completion_commands(skills: &[crate::core::skills::Skill]) -> Vec<pi_tui::CompletionCommand> {
+    skills
+        .iter()
+        .map(|s| {
+            let name = format!("skill:{}", s.name);
+            pi_tui::CompletionCommand::new(format!("/{name}"), s.description.clone(), name)
+        })
+        .collect()
 }
 
 /// 解析一次补全请求（slash fuzzy / 命令参数 / `@` 文件走查）。
@@ -1297,14 +1338,22 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // ── Extension command snapshot + initial model name ──────────────────
     // (plain &self accessors — the session mutex is only needed inside the
     // background task; the model was already resolved at session creation)
-    let (ext_commands, initial_model_name, cwd) = {
+    let (ext_commands, skill_commands, initial_model_name, cwd) = {
         let cmds = session
             .get_extension_registry()
             .map(|r| r.commands().iter().map(|c| c.name.clone()).collect())
             .unwrap_or_default();
+        let skills = if session.get_enable_skill_commands() {
+            session
+                .resource_loader()
+                .map(|r| r.skills.iter().map(|s| format!("skill:{}", s.name)).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let model_id = session.get_state().await.model.id.clone();
         let cwd = session.get_cwd().to_string();
-        (cmds, model_id, cwd)
+        (cmds, skills, model_id, cwd)
     };
 
     // ── Extension UI bridge: wire dialogs/notifications to the TUI ───────
@@ -1323,7 +1372,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // `ctx.mode === "tui"`）。
     session.set_extension_mode("tui");
 
-    let mut state = AppState::new(cols, rows, ext_commands);
+    let mut state = AppState::new(cols, rows, ext_commands, skill_commands);
 
     // ── 补全（对齐 TS createBaseAutocompleteProvider + autocompleteMaxVisible）──
     let completion_commands = build_completion_commands(&session);
@@ -1671,7 +1720,7 @@ mod tests {
     use super::*;
 
     fn state() -> AppState {
-        AppState::new(120, 80, Vec::new())
+        AppState::new(120, 80, Vec::new(), Vec::new())
     }
 
 
@@ -1826,6 +1875,67 @@ mod tests {
         assert_eq!(items.len(), 1, "只有 /model 匹配 mod: {items:?}");
         assert_eq!(items[0].value, "model");
         assert_eq!(items[0].label, "/model <provider>/<id>");
+    }
+
+    /// skill 命令补全：每个 skill 生成 `/skill:<name>` 命令（对齐 TS
+    /// `skillCommandList`），insert_text 为 `skill:<name>`（不带 `/`）。
+    #[test]
+    fn skill_completion_commands_build_skill_slash_commands() {
+        use crate::core::skills::{create_skill_source_info, Skill};
+        let skills = vec![
+            Skill {
+                name: "review".into(),
+                description: "Review the diff".into(),
+                file_path: "/tmp/review/SKILL.md".into(),
+                base_dir: "/tmp/review".into(),
+                source_info: create_skill_source_info("/tmp/review/SKILL.md", "/tmp/review", "user"),
+                disable_model_invocation: false,
+            },
+            Skill {
+                name: "test".into(),
+                description: "Run tests".into(),
+                file_path: "/tmp/test/SKILL.md".into(),
+                base_dir: "/tmp/test".into(),
+                source_info: create_skill_source_info("/tmp/test/SKILL.md", "/tmp/test", "user"),
+                disable_model_invocation: false,
+            },
+        ];
+        let cmds = skill_completion_commands(&skills);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].insert_text, "skill:review");
+        assert_eq!(cmds[0].label, "/skill:review");
+        assert_eq!(cmds[0].description, "Review the diff");
+        assert_eq!(cmds[1].insert_text, "skill:test");
+        assert_eq!(cmds[1].label, "/skill:test");
+    }
+
+    /// prompt template 命令补全：每个 template 生成 `/name` 命令（对齐 TS
+    /// `templateCommands`）。
+    #[test]
+    fn template_completion_commands_build_template_slash_commands() {
+        use crate::core::prompt_templates::{PromptSource, PromptTemplate};
+        use pi_extension_api::source_info::create_source_info;
+        let templates = vec![
+            PromptTemplate {
+                name: "fix".into(),
+                description: "Fix the issue".into(),
+                file_path: "/tmp/fix.md".into(),
+                source: PromptSource::User,
+                append: false,
+                source_info: create_source_info(
+                    "/tmp/fix.md".into(),
+                    "local".into(),
+                    pi_extension_api::source_info::SourceScope::User,
+                    pi_extension_api::source_info::SourceOrigin::TopLevel,
+                    None,
+                ),
+            },
+        ];
+        let cmds = template_completion_commands(&templates);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].insert_text, "fix");
+        assert_eq!(cmds[0].label, "/fix");
+        assert_eq!(cmds[0].description, "Fix the issue");
     }
 
     /// 命令参数补全：走命令注册的回调（对齐 TS getArgumentCompletions）。

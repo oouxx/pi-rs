@@ -797,20 +797,25 @@ fn tui_slash_command_menu_and_feedback() {
         tui.rendered()
     );
 
-    // Unknown provider: the mock registry accepts any provider, so the
-    // switch succeeds — and the outcome now surfaces with feedback (the
-    // footer model name updates too; previously the result was silently
-    // dropped and the footer stayed stale). The diff painter only emits the
-    // changed cells, so assert on the repainted tail and the footer text.
-    tui.write(b"/model bogus/whatever\r");
+    // Valid model: the switch succeeds and the outcome surfaces with
+    // feedback (previously the result was silently dropped and the footer
+    // stayed stale). The diff painter only emits the changed cells, so
+    // assert on the repainted tail.
+    tui.write(b"/model mock/mock-model\r");
     assert!(
-        tui.wait_for("ed to bogus/whatever", TIMEOUT),
+        tui.wait_for("Switched to mock/mock-model", TIMEOUT),
         "model switch feedback rendered; got: {:?}",
         tui.rendered()
     );
+
+    // Unknown model: the registry has no `bogus/whatever`, so the switch
+    // is rejected with feedback (matching TS `findExactModelMatch` which
+    // opens a selector when the model is not found) instead of silently
+    // constructing a broken model.
+    tui.write(b"/model bogus/whatever\r");
     assert!(
-        tui.wait_for("whatev", TIMEOUT),
-        "footer model name updated; got: {:?}",
+        tui.wait_for("Model not found: bogus/whatever", TIMEOUT),
+        "unknown model feedback rendered; got: {:?}",
         tui.rendered()
     );
 

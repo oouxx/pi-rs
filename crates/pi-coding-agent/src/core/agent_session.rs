@@ -2709,6 +2709,15 @@ impl AgentSession {
         }
     }
 
+    /// Whether skills are registered as `/skill:<name>` commands, matching
+    /// TS `settingsManager.getEnableSkillCommands()` (default true).
+    pub fn get_enable_skill_commands(&self) -> bool {
+        self.settings_manager
+            .lock()
+            .map(|sm| sm.get_enable_skill_commands())
+            .unwrap_or(true)
+    }
+
     /// Current theme setting (TS `settingsManager.getThemeSetting()`).
     /// `None` when unset — the interactive mode then auto-detects the
     /// terminal background and persists the high-confidence result.

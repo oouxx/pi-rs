@@ -616,6 +616,9 @@ pub struct Model {
     /// Last Ctrl+C press time — two presses within 500ms quit (TS
     /// `handleCtrlC`); the first press clears the editor.
     pub last_ctrl_c: Option<std::time::Instant>,
+    /// Hardware cursor position captured by `view()` for the line-level
+    /// renderer (`line_screen`); consumed by the host after each frame.
+    pub cursor_pos: Option<(u16, u16)>,
 }
 
 impl Model {
@@ -639,6 +642,7 @@ impl Model {
             show_header: true,
             tool_output_expanded: false,
             last_ctrl_c: None,
+            cursor_pos: None,
         }
     }
 
@@ -2502,6 +2506,9 @@ fn render_input(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let cursor_visible = cursor_row - scroll;
     let cx = (area.x + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
     let cy = area.y + 1 + cursor_visible as u16;
+    // 行级渲染器（line_screen）需要光标位置：view() 里 set_cursor_position
+    // 只对 ratatui 的 draw 生效，自定义渲染路径从 model 读取。
+    model.cursor_pos = Some((cx, cy));
     frame.set_cursor_position((cx, cy));
 }
 
@@ -2715,6 +2722,7 @@ fn render_fullscreen_editor(model: &mut Model, frame: &mut Frame, area: Rect, ti
     let inner = area.inner(ratatui::layout::Margin::new(1, 1));
     frame.render_widget_ref(editor.textarea(), inner);
     if let Some((x, y)) = editor.textarea().cursor_pos(inner) {
+        model.cursor_pos = Some((inner.x + x, inner.y + y));
         frame.set_cursor_position((inner.x + x, inner.y + y));
     }
 }
@@ -2732,16 +2740,17 @@ pub async fn run(
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<KeyEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::time::{sleep, Duration};
+    // 行级差分渲染（对齐 TS TuiAltScreen.doRender）：整行比较、整行重写，
+    // 只在首帧/尺寸变化时全量清屏重绘——不依赖 cell 级 diff 对终端的保真度。
+    let mut line_screen = crate::line_screen::LineScreen::new();
     loop {
-        // 每帧先清空物理屏再整帧重绘：不依赖 ratatui diff 对终端的保真度。
-        // 某些终端（tmux / Windows Terminal / CJK 宽字符局部覆盖处理有缺陷
-        // 的终端）对 diff 输出的局部 cell 更新应用不一致，会在屏幕上留下
-        // “每帧固定在原位”的陈旧字符（滚动时表现为一长串残留）。
-        // `clear()` = 2J + 重置 back buffer，下一次 draw 的 diff 对空 buffer
-        // 输出整帧——任何终端上都不会残留（代价：每帧输出量等于整屏，
-        // 本 TUI 帧率下可接受；终端会把 2J + 重绘批处理为单帧呈现，无闪烁）。
-        terminal.ratatui_terminal().clear()?;
-        terminal.ratatui_terminal().draw(|frame| view(&mut model, frame))?;
+        let mut frame = terminal.ratatui_terminal().get_frame();
+        let area = frame.area();
+        view(&mut model, &mut frame);
+        let cursor = model.cursor_pos.take();
+        let lines = crate::line_screen::buffer_to_lines(frame.buffer_mut());
+        line_screen.render(&lines, cursor, area.width, area.height)?;
+        terminal.ratatui_terminal().swap_buffers();
         tokio::select! {
             Some(key) = input_rx.recv() => {
                 let cmds = update(&mut model, Msg::Key(key));

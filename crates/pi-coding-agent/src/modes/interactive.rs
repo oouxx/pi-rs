@@ -301,6 +301,9 @@ struct AppState {
     stream_started_at: Option<Instant>,
     /// Last time the session-derived status bar (context usage) was queried.
     last_status_refresh: Instant,
+    /// 行级差分渲染器（对齐 TS TuiAltScreen.doRender）：整行比较、整行
+    /// 重写，首帧/尺寸变化时全量清屏重绘。
+    line_screen: pi_tui::line_screen::LineScreen,
 }
 
 impl AppState {
@@ -316,6 +319,7 @@ impl AppState {
             pending_ui: None,
             stream_started_at: None,
             last_status_refresh: Instant::now() - std::time::Duration::from_secs(10),
+            line_screen: pi_tui::line_screen::LineScreen::new(),
         }
     }
 }
@@ -1402,7 +1406,19 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     // ── Event loop: Action → update → effects → execute ──────────────────
     // Event-driven rendering (Elm style): draw only when state changed.
-    let _ = terminal.ratatui_terminal().draw(|frame| app::view(&mut state.model, frame));
+    // 首次渲染（行级差分渲染器，见下方主循环）。
+    {
+        let _ = terminal.ratatui_terminal().autoresize();
+        let mut frame = terminal.ratatui_terminal().get_frame();
+        let area = frame.area();
+        app::view(&mut state.model, &mut frame);
+        let cursor = state.model.cursor_pos.take();
+        let lines = pi_tui::line_screen::buffer_to_lines(frame.buffer_mut());
+        let _ = state
+            .line_screen
+            .render(&lines, cursor, area.width, area.height);
+        terminal.ratatui_terminal().swap_buffers();
+    }
 
     let mut tick_timer = tokio::time::interval(tokio::time::Duration::from_millis(SPINNER_TICK_MS));
     loop {
@@ -1447,16 +1463,23 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             break;
         }
         if redraw {
-            // 每帧先清空物理屏再整帧重绘：不依赖 ratatui diff 对终端的保真度。
-            // 某些终端（tmux / Windows Terminal / CJK 宽字符局部覆盖处理有
-            // 缺陷的终端）对 diff 输出的局部 cell 更新应用不一致，会在屏幕上
-            // 留下"每帧固定在原位"的陈旧字符（滚动时表现为一长串残留）。
-            // `clear()` = 2J + 重置 back buffer，下一次 draw 的 diff 对空
-            // buffer 输出整帧——任何终端上都不会残留。代价：每帧输出量等于
-            // 整屏（约 30 行 × 100 列，帧率下可接受）；终端把 2J + 重绘批
-            // 处理为单帧呈现，无闪烁。
-            let _ = terminal.ratatui_terminal().clear();
-            let _ = terminal.ratatui_terminal().draw(|frame| app::view(&mut state.model, frame));
+            // 行级差分渲染（对齐 TS TuiAltScreen.doRender / grok-build）：
+            // 整行比较、整行重写（`ESC[{row};1H` + `ESC[2K` + 整行），只在
+            // 首帧/尺寸变化时全量清屏重绘，更新批次用 synchronized output
+            // 包裹。整行重写不存在 cell 级局部更新，宽字符（CJK）不会被
+            // 半个覆盖——终端上不会留下"每帧固定在原位"的陈旧字符。
+            // `get_frame()` 不触发 autoresize（`draw()` 才会），尺寸变化
+            // 必须手动同步 buffer，否则渲染仍按旧尺寸输出。
+            let _ = terminal.ratatui_terminal().autoresize();
+            let mut frame = terminal.ratatui_terminal().get_frame();
+            let area = frame.area();
+            app::view(&mut state.model, &mut frame);
+            let cursor = state.model.cursor_pos.take();
+            let lines = pi_tui::line_screen::buffer_to_lines(frame.buffer_mut());
+            let _ = state
+                .line_screen
+                .render(&lines, cursor, area.width, area.height);
+            terminal.ratatui_terminal().swap_buffers();
         }
     }
 

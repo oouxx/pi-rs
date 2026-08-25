@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod clipboard;
+pub mod line_screen;
 pub mod completion;
 pub mod components;
 pub mod fuzzy;

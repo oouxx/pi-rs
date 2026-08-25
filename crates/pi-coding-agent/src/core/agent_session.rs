@@ -2127,8 +2127,9 @@ impl AgentSession {
     /// Clone the underlying agent handle so long-lived tasks (e.g. a TUI
     /// event loop) can call `abort()` without holding the session lock —
     /// `abort()` is `&self`, but the lock is held for the whole run by
-    /// `add_user_text`, so routing abort through the session mutex would
-    /// deadlock-queue behind the active run.
+    /// `prompt()` (which runs the agent synchronously under the lock), so
+    /// routing abort through the session mutex would deadlock-queue behind
+    /// the active run.
     pub fn agent_handle(&self) -> Arc<Agent> {
         self.agent.clone()
     }
@@ -3213,7 +3214,7 @@ impl AgentSession {
     /// 队列 → 有则 continue_run（续跑），续跑失败（如首次启动上下文为空）
     /// 则把队列消息作为新 turn 启动；post-run 处理后再 settled，直到队列空。
     ///
-    /// 公开给 TUI 交互路径：`add_user_text` 尾部与扩展命令执行后调用
+    /// 公开给 TUI 交互路径：`prompt()` 尾部与扩展命令执行后调用
     ///（对齐 TS 交互模式 idle 循环消费 followUp 队列），否则 /goal 等
     /// 扩展在 agent_settled 入队的 owned prompt 永远不会启动。
     pub async fn run_settled_continuations(&self) {
@@ -3858,82 +3859,6 @@ References are relative to {}.
             mgr.set_run_prompt(&text);
         }
         self.agent.process(vec![message]).await.ok();
-    }
-
-    pub async fn add_user_text(&self, text: &str) {
-        *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        // Dispatch input event to extensions before processing.
-        // If an extension handles the input, skip processing entirely.
-        // If an extension transforms the text, use the transformed text.
-        let (effective_text, effective_images) = if let Some(ref registry) = self.extension_registry
-        {
-            match crate::core::extensions::dispatcher::dispatch_input(
-                crate::core::extensions::dispatcher::DispatchInputParams {
-                    registry,
-                    text,
-                    source: "interactive",
-                    images: None,
-                    streaming_behavior: None,
-                    ext_ctx: &self.ext_ctx,
-                },
-            )
-            .await
-            {
-                crate::core::extensions::dispatcher::InputEventResult::Handled => return,
-                crate::core::extensions::dispatcher::InputEventResult::Continue {
-                    text: t,
-                    images,
-                } => (t, images),
-            }
-        } else {
-            (text.to_string(), None)
-        };
-
-        // Dispatch before_agent_start to extensions before the agent loop starts.
-        // Extensions can cancel the agent start or modify the system prompt.
-        if let Some(ref registry) = self.extension_registry {
-            let state = self.agent.state().await;
-            let base_prompt = self
-                .base_system_prompt
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            let result = crate::core::extensions::dispatcher::dispatch_before_agent_start(
-                crate::core::extensions::dispatcher::DispatchBeforeAgentStartParams {
-                    registry,
-                    system_prompt: &base_prompt,
-                    messages: &state.messages,
-                    images: None,
-                    system_prompt_options: None,
-                    ext_ctx: &self.ext_ctx,
-                },
-            )
-            .await;
-            if result.cancelled {
-                *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
-                return;
-            }
-            // Apply the modified system prompt from extensions
-            if result.system_prompt != state.system_prompt {
-                self.agent.set_system_prompt(result.system_prompt).await;
-            }
-        }
-
-        let timestamp = chrono::Utc::now().timestamp_millis();
-        let mut content = vec![ContentBlock::text(&effective_text)];
-        if let Some(images) = effective_images {
-            content.extend(images);
-        }
-        let message = AgentMessage::User { content, timestamp };
-        // User message is persisted by the event subscriber on MessageEnd
-        if let Ok(mut mgr) = self.session_manager.lock() {
-            mgr.set_run_prompt(&effective_text);
-        }
-        self.agent.process(vec![message]).await.ok();
-        // 消费扩展在 agent_settled 边界入队的 follow-up（如 /goal 的 owned
-        // prompt 与自动延续）。TUI 交互路径不走 prompt()，必须在这里收尾，
-        // 否则 goal 自动延续永远不会启动。
-        self.run_settled_continuations().await;
     }
 
     // =========================================================================

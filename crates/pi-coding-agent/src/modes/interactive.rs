@@ -81,7 +81,7 @@ enum Effect {
     /// Send a command to the agent background task (session-locked).
     AgentCommand(AgentCmd),
     /// Abort the running agent directly (never through the session mutex —
-    /// the lock is held for the whole run by `add_user_text`).
+    /// the lock is held for the whole run by `prompt()`).
     Abort,
     /// Esc 中断（参数为按下时编辑器里已有的文本）：先清掉 agent 队列再中止
     /// run，随后把排队 steering/follow-up 文本还原回编辑器（对齐 TS
@@ -1073,7 +1073,29 @@ fn spawn_agent_command_task(
                 Some(cmd) = cmd_rx.recv() => {
                     let mut sess = session.lock().await;
                     match cmd {
-                        AgentCmd::SendMessage(text) => sess.add_user_text(&text).await,
+                        AgentCmd::SendMessage(text) => {
+                            // TUI 也走 session.prompt()（与 ACP/print/RPC 一致），而不是
+                            // 一条 Rust 专属的轻量路径。prompt() 内部做扩展命令执行、
+                            // skill/template 展开、streaming 排队、compact 检查、
+                            // post-agent-run 重试与 /goal 自动延续，并返回 Result
+                            //（可把错误回显到 UI），还正确清理 is_agent_run_active。
+                            let result = sess
+                                .prompt(
+                                    &text,
+                                    Some(crate::core::agent_session::PromptOptions {
+                                        expand_prompt_templates: Some(true),
+                                        source: Some("interactive".into()),
+                                        ..Default::default()
+                                    }),
+                                )
+                                .await;
+                            if let Err(e) = result {
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    e,
+                                ));
+                            }
+                        }
                         AgentCmd::AbortBash => sess.abort().await,
                         AgentCmd::SetModel(provider, model_id) => {
                             // Resolve the full model (api/base_url/etc.) from the
@@ -1427,7 +1449,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     // ── Subscribe agent events (lock-and-release) ───────────────────────
     // Keep an `Arc<Agent>` handle for abort: `abort()` is `&self` and must
-    // NOT be routed through the session mutex — `add_user_text` holds the
+    // NOT be routed through the session mutex — `prompt()` holds the
     // lock for the whole run, so a queued Abort command would only execute
     // after the run finishes (never, for a long run).
     let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel::<crate::modes::agent_bridge::AgentEvent>();

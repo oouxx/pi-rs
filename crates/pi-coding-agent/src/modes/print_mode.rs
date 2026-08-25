@@ -170,9 +170,8 @@ async fn run_text_mode(
     session.get_agent().subscribe(listener).await;
 
     // Send the first message (with images if provided).
-    // 用 prompt()（内部等 agent 完成并清理 active 状态），不用 add_user_text
-    // + wait_for_idle（add_user_text 不清理 is_agent_run_active，流式错误时
-    // wait_for_idle 会永久卡住，子进程不退出）。
+    // 用 prompt()（内部等 agent 完成并清理 is_agent_run_active 状态），
+    // 因此无需额外的 wait_for_idle；流式错误时也不会永久卡住。
     let opts = if images.is_empty() {
         None
     } else {
@@ -242,9 +241,8 @@ async fn run_json_mode(
     session.subscribe_session_events(listener);
 
     // Send the first message (with images if provided).
-    // 用 prompt()（内部等 agent 完成并清理 active 状态），不用 add_user_text
-    // + wait_for_idle（add_user_text 不清理 is_agent_run_active，流式错误时
-    // wait_for_idle 会永久卡住，子进程不退出）。
+    // 用 prompt()（内部等 agent 完成并清理 is_agent_run_active 状态），
+    // 因此无需额外的 wait_for_idle；流式错误时也不会永久卡住。
     let opts = if images.is_empty() {
         None
     } else {

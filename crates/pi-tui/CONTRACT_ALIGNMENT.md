@@ -44,6 +44,11 @@
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | Ctrl+O | `app.tools.expand`：展开 header + 全部工具输出 | `Msg::ToggleToolExpansion`：切换 header 展开态 + 工具块强制 Expanded | 是 | |
+| Ctrl+C | `app.clear` → `handleCtrlC`：500ms 内连按两次 shutdown，否则清空编辑器（setText 同时 cancelAutocomplete） | 同款（仅 Chat 模式）：第一次清空 + 关补全弹窗，500ms 内第二次返回 `Cmd::Quit`；对话框/选择器聚焦时不拦截 | 是 | |
+| Ctrl+D | 空编辑器时 `app.exit` → shutdown（CustomEditor 非空时交给编辑器 deleteCharForward，默认绑定 ctrl+d） | 空输入返回 `Cmd::Quit`；非空 `delete()`（删除光标后一字符）；仅 Chat 模式 | 是 | |
+| Ctrl+V | `app.clipboard.pasteImage` → `handleClipboardPaste`：先读图片（有则插入临时文件路径），否则读文本插入光标处；失败静默 | 仅文本路径：`read_clipboard_text()` 插入光标处，失败静默；仅 Chat 模式 | 否 | 图片粘贴未复刻（见 DEVIATIONS.md 剪贴板条目） |
+| Ctrl+X | `app.message.copy` → `handleCopyCommand`（复制最后一条 assistant 消息；alt screen 上 flash "Copied!"） | `Cmd::CopyLastMessage` → interactive 模式 agent 任务执行，system 消息回显三态结果；仅 Chat 模式 | 是 | flash 换成 system 消息（Rust 无 flash 概念） |
+| `/copy` | slash 命令 → `handleCopyCommand`（清空编辑器） | slash_command 清空编辑器 → 同一 `AgentCmd::CopyLastMessage` 任务 | 是 | |
 | 块折叠 / Ctrl+F | 无（工具/消息平铺渲染） | 无（已删除，2026-08-24） | 是 | 见 DEVIATIONS.md 块折叠条目（已移除） |
 | 工具输出截断 | fallback：未展开时前 10 行 + `... (N more lines, ctrl+o to expand)`（`FALLBACK_PREVIEW_LINES`=10），展开时全部 | `FALLBACK_PREVIEW_LINES`=10 + 同款提示（muted 文案 + dim 键名），Ctrl+O 展开 | 是 | |
 | 工具执行 | 无审批门：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | 无审批门：approval_hook 不安装，工具调用直接执行 | 是 | 审批门已于 2026-08-24 移除（见 DEVIATIONS.md） |
@@ -57,3 +62,16 @@
 | thinking 流 | `thinking_delta` 事件 → thinking 块 | `MessageEnd { thinking, ... }` 携带完整 thinking（非逐 delta） | 是 | 渲染结果一致；流式 thinking 逐 delta 未接线（agent 事件桥只转发 text delta） |
 | 终止原因 | `Done`/`Error` 事件携带 `stopReason`/`errorMessage` | `MessageEnd` 携带 `stop_reason`/`error_message` | 是 | |
 | footer 数据 | `FooterComponent` 从 session entries 累计 usage totals + `getContextUsage()` | `usage_totals_from_entries()` + `refresh_status()`（1s 节流，run 间查询） | 是 | 刷新节流 1s（TS 每次 message_end 更新） |
+
+## 剪贴板（`src/clipboard.rs`，2026-08-25 新增）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 写（macOS） | 原生 addon setText → pbcopy | `pipe_to("pbcopy")`（远程会话先 OSC 52） | 是（有意偏差） | 通道顺序差异见 DEVIATIONS.md 剪贴板条目 |
+| 写（Windows） | 原生 addon setText → clip | `pipe_to("clip")` | 是（有意偏差） | 同上 |
+| 写（Linux） | termux-clipboard-set（TERMUX_VERSION）→ wl-copy（Wayland，spawn + 等退出码）→ xclip → xsel（X11，需 DISPLAY） | 同款顺序；无 DISPLAY 也试 xclip/xsel | 是（有意偏差） | 同上 |
+| 写（OSC 52） | `\x1b]52;c;{base64}\x07`，`Buffer.toString("base64")`，>100k 编码字符丢弃；远程或全失败时发出 | 同款序列 + 手写 RFC 4648 base64（测试向量对齐），>100k 丢弃 | 是 | |
+| 读（macOS/Windows） | 原生 addon getText（null on fail） | pbpaste / `powershell Get-Clipboard -Raw`（None on fail） | 是（有意偏差） | 见 DEVIATIONS.md 剪贴板条目 |
+| 读（Linux） | Wayland：wl-paste --no-newline --type text；否则原生 addon | wl-paste → xclip → xsel | 是（有意偏差） | 同上 |
+| 失败语义 | 读静默 null；写全通道失败 throw `Error("Failed to copy to clipboard")` | 读静默 None；写全通道失败 `Err` → interactive 模式 system 消息 | 是 | |
+| 对话框 Editor（AppMode::Editor）剪贴板 | TS dialog editor 自身处理 ctrl+c/v/x（复制选区/粘贴/剪切） | vendored textarea 原生处理（`SystemClipboard` provider：ctrl+v 粘贴、ctrl+x 剪切选区、鼠标选复制），应用级快捷键不拦截 | 是 | |

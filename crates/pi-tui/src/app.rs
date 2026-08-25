@@ -273,6 +273,9 @@ pub enum Cmd {
     Quit,
     /// 请求宿主异步计算补全候选（slash 命令 fuzzy / 命令参数 / `@` 文件走查）。
     RequestCompletion(CompletionRequest),
+    /// Ctrl+X（TS `app.message.copy`）：复制最后一条 assistant 消息到系统
+    /// 剪贴板——由宿主（interactive 模式）在 agent 任务里执行。
+    CopyLastMessage,
 }
 
 /// Cumulative token/cost totals for the footer stats line (TS
@@ -610,6 +613,9 @@ pub struct Model {
     pub show_header: bool,
     /// Ctrl+O (app.tools.expand): expands the header and all tool outputs.
     pub tool_output_expanded: bool,
+    /// Last Ctrl+C press time — two presses within 500ms quit (TS
+    /// `handleCtrlC`); the first press clears the editor.
+    pub last_ctrl_c: Option<std::time::Instant>,
 }
 
 impl Model {
@@ -632,6 +638,7 @@ impl Model {
             reasoning: false,
             show_header: true,
             tool_output_expanded: false,
+            last_ctrl_c: None,
         }
     }
 
@@ -866,6 +873,54 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         model.tool_output_expanded = !model.tool_output_expanded;
         return vec![];
     }
+    // 应用级快捷键（Ctrl+C/Ctrl+D/Ctrl+V/Ctrl+X）只在下栏编辑器聚焦时生效
+    // ——TS 把它们注册在 defaultEditor（CustomEditor.handleInput）上；对话框/
+    // 选择器各自处理自己的键（对话框 Editor 的 ctrl+d/v/x 由 textarea 原生
+    // 处理：delete-char-forward / 剪贴板粘贴 / 剪切选区）。
+    if matches!(model.mode, AppMode::Chat) {
+        // Ctrl+X: app.message.copy（TS `handleCopyCommand`）——复制最后一条
+        // assistant 消息，执行在宿主（interactive 模式）的 agent 任务里。
+        if key.code == KeyCode::Char('x') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+            return vec![Cmd::CopyLastMessage];
+        }
+        // Ctrl+C: app.clear（对齐 TS `handleCtrlC`）——500ms 内连按两次退出，
+        // 否则清空编辑器并关闭补全弹窗（TS setText 会 cancelAutocomplete）。
+        if key.code == KeyCode::Char('c') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+            let now = std::time::Instant::now();
+            if model
+                .last_ctrl_c
+                .map(|t| now.duration_since(t) < std::time::Duration::from_millis(500))
+                .unwrap_or(false)
+            {
+                model.last_ctrl_c = None;
+                return vec![Cmd::Quit];
+            }
+            model.last_ctrl_c = Some(now);
+            model.input.clear();
+            model.completer.deactivate();
+            return vec![];
+        }
+        // Ctrl+D: app.exit（对齐 TS `handleCtrlD`，CustomEditor 只在空编辑器
+        // 时触发）——编辑器为空时退出；非空时是 delete-char-forward（删除
+        // 光标后的字符），不是插入字面 'd'。
+        if key.code == KeyCode::Char('d') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+            if model.input.value().is_empty() {
+                return vec![Cmd::Quit];
+            }
+            model.input.delete();
+            return vec![];
+        }
+        // Ctrl+V: app.clipboard.pasteImage 的文本路径（对齐 TS
+        // `handleClipboardPaste` → `readClipboardText`）——从系统剪贴板读
+        // 文本插入光标处；读不到时静默忽略。图片路径（readClipboardImage）
+        // 未复刻，见 DEVIATIONS.md。
+        if key.code == KeyCode::Char('v') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+            if let Some(text) = crate::clipboard::read_clipboard_text() {
+                model.input.insert_str(&text);
+            }
+            return vec![];
+        }
+    }
     match &mut model.mode {
         AppMode::Chat => match key.code {
             KeyCode::Char(c) => {
@@ -1051,6 +1106,11 @@ fn slash_completion_items(commands: &[CompletionCommand], query: &str) -> Vec<Co
 
 pub fn view(model: &mut Model, frame: &mut Frame) {
     let area = frame.area(); let t = model.theme.clone();
+    // ratatui 0.29 的 `Terminal` 每帧不重置当前 buffer：diff 渲染只重绘
+    // 变化的 cell，未重绘的 cell 会保留两个帧前写入的内容。正文/工具块/
+    // dock 的行高变化或 Span 被裁剪后，被空出的行必须显式清除，否则旧
+    // 字符会残留。整屏先 Clear（缓冲写入，diff 仍只输出变化 cell）。
+    frame.render_widget(Clear, area);
     if matches!(&model.mode, AppMode::Editor { .. }) {
         let title = if let AppMode::Editor { title, .. } = &model.mode {
             title.clone()
@@ -1423,10 +1483,7 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     }
 
     if blocks.is_empty() {
-        // Wipe stale cells: after /clear or /new the model is empty but
-        // ratatui's diff would keep the previously painted content on
-        // screen forever (unchanged cells are never repainted).
-        frame.render_widget(Clear, area);
+        // 空转录提示行。view() 开头已整屏 Clear，这里无需再擦除。
         frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + BOX_PAD_X, area.y + 1, area.width.saturating_sub(2), 1));
     }
 }
@@ -4040,6 +4097,285 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}]0;title\u{07}plain"), "plain");
         assert_eq!(strip_ansi("no codes"), "no codes");
         assert_eq!(sanitize_output_text("\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok"), "red\nok");
+    }
+
+    /// ratatui 0.29 的 `Terminal` 每帧**不重置 buffer**：diff 渲染只重绘
+    /// 变化的 cell，未重绘的 cell 保留两个帧前写入的内容。当一个 Span/行
+    /// 被裁剪（内容变短或整行消失）后，旧内容会在 A/B 两个 buffer 里
+    /// 交替残留，导致屏幕上旧字符反复"回魂"。本测试复现：bash 输出从
+    /// 3 行缩成 1 行后，第 3 帧仍不能出现被裁剪掉的旧行。
+    #[test]
+    fn body_clears_stale_cells_after_output_shrinks() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(&mut model, Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"make\"}".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), "alpha\nbeta\ngamma\n".into()),
+        );
+        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+
+        // Frame 1: full output (3 rows) visible.
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let beta_row = (0..30u16)
+            .find(|&y| buf[(1, y)].symbol() == "b" && buf[(2, y)].symbol() == "e")
+            .expect("beta row frame 1");
+
+        // Output shrinks to one line (snapshot replacement semantics).
+        update(&mut model, Msg::SetToolOutput("tc-b".into(), "bash".into(), "alpha\n".into()));
+
+        // Frame 2: stale rows must be erased.
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(1, beta_row)].symbol(), " ", "beta erased frame 2");
+
+        // Frame 3: the erased rows must STAY erased (the old buffer must not
+        // resurface the clipped content).
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(1, beta_row)].symbol(), " ", "beta stays erased frame 3");
+    }
+
+    /// 暴力残留检查：把同一最终状态渲染进（a）经历过多次增量绘制的
+    /// live terminal 与（b）只绘制一次的全新 terminal，逐行比较。若 diff
+    /// 渲染在正文/工具块留下了旧 Buffer 内容，两者会不一致。
+    #[test]
+    fn body_frames_match_fresh_render_no_residue() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        fn build() -> (Model, RatTerminal<TestBackend>) {
+            let mut model = Model::new(70, 24);
+            model.context_usage_known = true;
+            update(&mut model, Msg::NewMessage("user".into(), "**bold** and `code` line with 中文".into()));
+            update(&mut model, Msg::NewMessage("assistant".into(), "Start".into()));
+            update(&mut model, Msg::StreamText(" streaming more words here to wrap across several rows and re-flow as it grows".into()));
+            update(&mut model, Msg::StreamEnd);
+            update(&mut model, Msg::ToolStart("tc-1".into(), "bash".into(), "{\"command\":\"make\"}".into()));
+            update(&mut model, Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\ngamma\n".into()));
+            update(&mut model, Msg::ToolEnd("tc-1".into(), "bash".into(), false));
+            let terminal = RatTerminal::new(TestBackend::new(70, 24)).expect("backend");
+            (model, terminal)
+        }
+
+        fn grid(term: &RatTerminal<TestBackend>) -> Vec<String> {
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                .collect()
+        }
+
+        // Live: draw a few frames with mutations between draws.
+        let (mut live, mut term) = build();
+        let mut seq = vec![
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\n".into()),
+            Msg::StreamText(" MORE".into()),
+            Msg::ToggleToolExpansion,
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\n".into()),
+            Msg::ToggleToolExpansion,
+            Msg::ScrollDown(3),
+            Msg::ScrollToBottom,
+        ];
+        term.draw(|f| view(&mut live, f)).expect("draw1");
+        for m in seq.drain(..) {
+            update(&mut live, m);
+            term.draw(|f| view(&mut live, f)).expect("draw");
+        }
+
+        // Fresh: same message sequence, drawn once.
+        let (mut fresh, mut fterm) = build();
+        update(&mut fresh, Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\n".into()));
+        update(&mut fresh, Msg::StreamText(" MORE".into()));
+        update(&mut fresh, Msg::ToggleToolExpansion);
+        update(&mut fresh, Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\n".into()));
+        update(&mut fresh, Msg::ToggleToolExpansion);
+        update(&mut fresh, Msg::ScrollDown(3));
+        update(&mut fresh, Msg::ScrollToBottom);
+        fterm.draw(|f| view(&mut fresh, f)).expect("fresh draw");
+
+        let (g1, g2) = (grid(&term), grid(&fterm));
+        for (y, (a, b)) in g1.iter().zip(g2.iter()).enumerate() {
+            assert_eq!(a, b, "row {y} residue: live={a:?} fresh={b:?}");
+        }
+        assert_eq!(g1.len(), g2.len());
+    }
+
+    /// 用户报告的残留场景：markdown 正文里混排正文 + 代码块，流式增量
+    /// 渲染。每个中间帧都与"同一状态全新渲染一次"逐行比对，检查旧 Buffer
+    /// 用户报告的残留场景：markdown 正文里混排正文 + 代码块，流式增量
+    /// 渲染。每个中间帧都与"同一状态全新渲染一次"逐行比对，检查旧 Buffer
+    /// 内容（尤其是被裁剪的超长代码行 / 高亮 span）是否残留。
+    #[test]
+    fn mixed_text_code_streaming_matches_fresh_render() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        const W: u16 = 60;
+        const H: u16 = 24;
+
+        // 同一状态全新渲染一次，返回逐行字符串。
+        fn fresh_grid(deltas: &[&str]) -> Vec<String> {
+            let mut model = Model::new(W, H);
+            model.context_usage_known = true;
+            update(&mut model, Msg::NewMessage("user".into(), "please".into()));
+            update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+            for d in deltas {
+                update(&mut model, Msg::StreamText((*d).into()));
+            }
+            update(&mut model, Msg::StreamEnd);
+            let mut term = RatTerminal::new(TestBackend::new(W, H)).expect("backend");
+            term.draw(|f| view(&mut model, f)).expect("fresh draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                .collect()
+        }
+
+        // 一次真实的流式序列：正文 + fenced rust 代码块 + 超长代码行。
+        let deltas = [
+            "Let me show you",
+            " how to use ",
+            "`std::fs`.\n\n",
+            "```rust\n",
+            "fn main() { println!(\"this is a deliberately long line that far exceeds the terminal width and gets clipped\"); }\n",
+            "let x = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];\n",
+            "```\n\n",
+            "Done with 中文 and *emphasis*.",
+        ];
+
+        let mut model = Model::new(W, H);
+        model.context_usage_known = true;
+        update(&mut model, Msg::NewMessage("user".into(), "please".into()));
+        update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+
+        let mut term = RatTerminal::new(TestBackend::new(W, H)).expect("backend");
+        term.draw(|f| view(&mut model, f)).expect("draw0");
+
+        let mut seen: Vec<&str> = Vec::new();
+        for d in deltas {
+            update(&mut model, Msg::StreamText(d.into()));
+            seen.push(d);
+            term.draw(|f| view(&mut model, f)).expect("draw");
+            let live = {
+                let buf = term.backend().buffer();
+                (0..buf.area.height)
+                    .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                    .collect::<Vec<String>>()
+            };
+            let fresh = fresh_grid(&seen);
+            for (y, (a, b)) in live.iter().zip(fresh.iter()).enumerate() {
+                assert_eq!(a, b, "step {d:?} row {y} residue:\n live={a:?}\n fresh={b:?}");
+            }
+        }
+    }
+
+
+
+    /// resize 残留检查：同一模型先以 60 列渲染（正文 + 代码块 + 超长代码
+    /// 行被裁剪），再以 40 列渲染——结果必须与"全新模型直接以 40 列渲染"
+    /// 完全一致，不能残留 60 列布局下的旧内容。
+    #[test]
+    fn body_resize_repaints_clean_at_new_width() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let md = "Text before the code block.\n\n```rust\nfn main() { println!(\"a long code line that overflows the narrower terminal and gets clipped\"); }\n```\n\nDone.";
+        let build = |w: u16| {
+            let mut model = Model::new(w, 20);
+            model.context_usage_known = true;
+            update(&mut model, Msg::NewMessage("assistant".into(), md.into()));
+            model
+        };
+        let grid = |term: &RatTerminal<TestBackend>| -> Vec<String> {
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                .collect()
+        };
+
+        // 同一个 model：先画 60 列，再画 40 列。
+        let mut model = build(60);
+        let mut t60 = RatTerminal::new(TestBackend::new(60, 20)).expect("backend");
+        t60.draw(|f| view(&mut model, f)).expect("draw 60");
+        let mut t40 = RatTerminal::new(TestBackend::new(40, 20)).expect("backend");
+        t40.draw(|f| view(&mut model, f)).expect("draw 40");
+
+        // 全新模型直接以 40 列渲染。
+        let mut fresh = build(40);
+        let mut tfresh = RatTerminal::new(TestBackend::new(40, 20)).expect("backend");
+        tfresh.draw(|f| view(&mut fresh, f)).expect("fresh 40");
+
+        let (a, b) = (grid(&t40), grid(&tfresh));
+        for (y, (x1, x2)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(x1, x2, "resize residue at row {y}:\n live(40)={x1:?}\n fresh(40)={x2:?}");
+        }
+    }
+
+    /// 剪贴板快捷键（对齐 TS）：Ctrl+C 清空编辑器（500ms 内连按两次退出）、
+    /// Ctrl+D 空输入退出（非空时 delete-char-forward）、Ctrl+V 从系统剪贴板
+    /// 粘贴文本、Ctrl+X 复制最后一条 assistant 消息。这些应用级快捷键只
+    /// 在下栏编辑器聚焦（Chat 模式）时生效——对话框/选择器各自处理自己的键。
+    #[test]
+    fn clipboard_shortcuts_match_ts() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+
+        let mut model = Model::new(100, 30);
+        model.input.set_value("hello");
+        // Ctrl+C 第一次：清空编辑器、关闭补全弹窗，不退出。
+        model.completer.visible = true;
+        let cmds = handle_key(&mut model, ctrl('c'));
+        assert!(cmds.is_empty(), "first ctrl+c must not quit");
+        assert_eq!(model.input.value(), "", "ctrl+c clears the editor");
+        assert!(!model.completer.visible, "ctrl+c closes the completer (TS setText cancels autocomplete)");
+        // 500ms 内再按：退出。
+        let cmds = handle_key(&mut model, ctrl('c'));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Quit)), "second ctrl+c within 500ms quits");
+
+        // Ctrl+D：空输入退出；非空输入是 delete-char-forward（删除光标后的
+        // 字符）——TS CustomEditor 空编辑器才触发 app.exit，非空时交给编辑器
+        // 的 deleteCharForward（默认绑定 ctrl+d）。
+        let mut model = Model::new(100, 30);
+        model.input.set_value("abcde");
+        model.input.move_left();
+        model.input.move_left(); // cursor 在 'c' 与 'd' 之间
+        let cmds = handle_key(&mut model, ctrl('d'));
+        assert!(cmds.is_empty(), "ctrl+d with non-empty input must not quit");
+        assert_eq!(model.input.value(), "abce", "ctrl+d deletes the char after the cursor");
+        model.input.clear();
+        let cmds = handle_key(&mut model, ctrl('d'));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Quit)), "ctrl+d with empty input quits");
+
+        // Ctrl+V：不插入字面 'v'，且不 panic（剪贴板读取失败时静默忽略）。
+        let mut model = Model::new(100, 30);
+        model.input.set_value("");
+        let cmds = handle_key(&mut model, ctrl('v'));
+        assert!(cmds.is_empty());
+        assert_ne!(model.input.value(), "v", "ctrl+v must not insert a literal v");
+
+        // Ctrl+X：请求宿主复制最后一条 assistant 消息（TS `app.message.copy`）。
+        let mut model = Model::new(100, 30);
+        let cmds = handle_key(&mut model, ctrl('x'));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)), "ctrl+x requests copy");
+
+        // 门控：对话框（AppMode::Editor）打开时，Ctrl+C 不清聊天输入、
+        // Ctrl+D 不退出——键交给对话框的 textarea 原生处理。
+        let mut model = Model::new(100, 30);
+        model.input.set_value("chat");
+        update(&mut model, Msg::OpenEditor("rename".into(), "dialog".into()));
+        let cmds = handle_key(&mut model, ctrl('c'));
+        assert!(cmds.is_empty());
+        assert_eq!(model.input.value(), "chat", "ctrl+c in dialog mode leaves the chat input alone");
+        let cmds = handle_key(&mut model, ctrl('d'));
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::Quit)), "ctrl+d in dialog mode must not quit");
+        let cmds = handle_key(&mut model, ctrl('x'));
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)), "ctrl+x in dialog mode is not app.message.copy");
     }
 
     /// `formatDuration` matches TS `(ms/1000).toFixed(1)`: one decimal,

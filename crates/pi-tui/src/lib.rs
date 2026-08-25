@@ -4,6 +4,7 @@
 //! Model / Msg / update / view pattern.
 
 pub mod app;
+pub mod clipboard;
 pub mod completion;
 pub mod components;
 pub mod fuzzy;

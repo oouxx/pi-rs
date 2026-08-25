@@ -88,6 +88,14 @@ impl Terminal {
                                     _ => {}
                                 }
                             }
+                            // 终端 resize 必须转发：不转发的话应用不感知尺寸
+                            // 变化，ratatui 只 resize 自己的内部 buffer，真实
+                            // 终端上收缩再放大后，diff 对比不到物理屏上残留的
+                            // 旧行，正文/代码块会出现旧内容残留（Span 被裁剪
+                            // 后旧 Buffer 内容没有完全清除）。
+                            Some(Ok(Event::Resize(cols, rows))) => {
+                                let _ = input_tx.send(InputEvent::Resize(cols, rows));
+                            }
                             Some(Ok(_)) => {}
                             Some(Err(_)) => break,
                             None => break,
@@ -130,6 +138,9 @@ pub enum InputEvent {
     Key(KeyEvent),
     ScrollUp,
     ScrollDown,
+    /// Terminal resize (crossterm `Event::Resize`) — must reach the model so
+    /// the transcript re-wraps and the screen fully repaints.
+    Resize(u16, u16),
 }
 
 pub struct ShutdownGuard {

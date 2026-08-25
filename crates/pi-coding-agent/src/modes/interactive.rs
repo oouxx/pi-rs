@@ -50,6 +50,9 @@ enum AgentCmd {
     /// 回编辑器（TS `restoreQueuedMessagesToEditor` 的编辑器部分）。参数为
     /// Esc 按下时输入框里的文本。
     RestoreQueuedToEditor(String),
+    /// `/copy`：复制最后一条 assistant 消息到系统剪贴板（TS
+    /// `handleCopyCommand`）。
+    CopyLastMessage,
 }
 
 // ============================================================================
@@ -351,12 +354,24 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
         }
         Action::Key(key) => {
             let mut effects = handle_key(state, key);
-            // app.rs 的独立 run() 循环才用 Cmd::Quit；interactive 模式只会
-            // 产生补全请求，防御性忽略其它 Cmd。
+            // Ctrl+C 连按两次 / Ctrl+D（空输入）→ app.rs 返回 Cmd::Quit，
+            // 这里置退出标志（对齐 TS `handleCtrlC`/`handleCtrlD`）。
+            let mut quit = false;
             effects.extend(state.pending_cmds.drain(..).filter_map(|cmd| match cmd {
                 pi_tui::Cmd::RequestCompletion(req) => Some(Effect::RequestCompletion(req)),
-                pi_tui::Cmd::Quit => None,
+                // Ctrl+X（TS `app.message.copy`）→ 和 `/copy` 同一个 agent
+                // 任务路径（读最后一条 assistant 消息 + 写系统剪贴板）。
+                pi_tui::Cmd::CopyLastMessage => {
+                    Some(Effect::AgentCommand(AgentCmd::CopyLastMessage))
+                }
+                pi_tui::Cmd::Quit => {
+                    quit = true;
+                    None
+                }
             }));
+            if quit {
+                state.quit = true;
+            }
             UpdateOutcome { effects, redraw: true }
         }
         Action::Ui(action) => {
@@ -782,6 +797,12 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             system(state, "Reloading extensions...".into());
             vec![Effect::AgentCommand(AgentCmd::ReloadExtensions)]
         }
+        "/copy" => {
+            // 复制在 agent 任务里执行（需要 session 读最后一条 assistant
+            // 消息），结果经 result_tx 回显状态（对齐 TS `handleCopyCommand`：
+            // 成功/失败/空消息三态提示，无中间状态）。
+            vec![Effect::AgentCommand(AgentCmd::CopyLastMessage)]
+        }
         "/quit" | "/exit" => {
             state.quit = true;
             vec![]
@@ -1086,6 +1107,31 @@ fn spawn_agent_command_task(
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
                         }
+                        AgentCmd::CopyLastMessage => {
+                            // `/copy`（TS `handleCopyCommand`）：复制最后一条
+                            // assistant 消息；没有消息时给错误提示。
+                            match sess.get_last_assistant_text().await {
+                                Some(text) => {
+                                    if let Err(e) = pi_tui::clipboard::copy_to_clipboard(&text) {
+                                        let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                            "system".into(),
+                                            format!("Failed to copy to clipboard: {e}"),
+                                        ));
+                                    } else {
+                                        let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                            "system".into(),
+                                            "Copied last agent message to clipboard".into(),
+                                        ));
+                                    }
+                                }
+                                None => {
+                                    let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                        "system".into(),
+                                        "No agent messages to copy yet.".into(),
+                                    ));
+                                }
+                            }
+                        }
                         AgentCmd::ExtensionCommand(cmd_name, args) => {
                             // Run a slash command registered by an extension.
                             // The handler runs on a blocking thread with its
@@ -1377,6 +1423,10 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     }
                     pi_tui::terminal::InputEvent::ScrollUp => Action::Agent(pi_tui::Msg::ScrollUp(3)),
                     pi_tui::terminal::InputEvent::ScrollDown => Action::Agent(pi_tui::Msg::ScrollDown(3)),
+                    // 尺寸变化：更新模型 + 强制全量重绘（见下方 resize 分支）。
+                    pi_tui::terminal::InputEvent::Resize(w, h) => {
+                        Action::Agent(pi_tui::Msg::Resize(w, h))
+                    }
                 }
             }
             Some(msg) = agent_rx.recv() => Action::Agent(msg),
@@ -1385,6 +1435,13 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         };
 
         let is_tick = matches!(&action, Action::Tick);
+        // ratatui 的 diff 只对比自己内部 buffer，不知道真实终端物理屏上
+        // 的内容：收缩再放大后，内部 buffer 被截断并以空 cell 重新填充，
+        // diff 认为"空 == 空"不输出任何内容，物理屏上 resize 前的内容就
+        // 残留下来（正文/代码块被裁剪后旧内容未清除）。尺寸变化时先
+        // `Terminal::clear()`（清空物理屏 + 重置 back buffer），下一次
+        // draw 的 diff 就会把整帧重新输出。
+        let is_resize = matches!(&action, Action::Agent(pi_tui::Msg::Resize(..)));
         let outcome = update(&mut state, action);
         let mut redraw = outcome.redraw;
         if is_tick {
@@ -1397,6 +1454,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             break;
         }
         if redraw {
+            if is_resize {
+                let _ = terminal.ratatui_terminal().clear();
+            }
             let _ = terminal.ratatui_terminal().draw(|frame| app::view(&mut state.model, frame));
         }
     }

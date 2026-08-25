@@ -890,6 +890,24 @@ mod tests {
         assert!(m.reasoning);
     }
 
+    /// 回归：`/model` 切换后立即发消息不能 panic。
+    /// 旧实现手工构造 Model 时 `api` 为空串，`pi_ai::stream::resolve_api_provider`
+    /// 会对空 api `panic!`。从 registry 解析出的模型必须带非空 `api`，
+    /// 才能被 pi-ai 的 provider 分发正常处理。
+    #[test]
+    fn test_registry_model_has_nonempty_api() {
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
+        let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+        for model in registry.get_models() {
+            assert!(
+                !model.api.is_empty(),
+                "model {}/{} resolved from registry must have a non-empty `api` (empty api panics in pi_ai::stream::resolve_api_provider)",
+                model.provider,
+                model.id
+            );
+        }
+    }
+
     #[test]
     fn test_model_registry_not_found() {
         let registry = ModelRegistry::new(builtin_models());

@@ -1035,28 +1035,18 @@ fn spawn_agent_command_task(
                         AgentCmd::SendMessage(text) => sess.add_user_text(&text).await,
                         AgentCmd::AbortBash => sess.abort().await,
                         AgentCmd::SetModel(provider, model_id) => {
-                            // Model will be resolved by the session
-                            let model = pi_agent_core::pi_ai_types::Model {
-                                provider: provider.clone(),
-                                id: model_id.clone(),
-                                name: String::new(),
-                                api: String::new(),
-                                base_url: String::new(),
-                                context_window: 128000,
-                                max_tokens: 16384,
-                                reasoning: false,
-                                thinking_level_map: None,
-                                sampling_params: None,
-                                input: vec!["text".to_string()],
-                                headers: None,
-                                compat: None,
-                                cost: pi_agent_core::pi_ai_types::ModelCost {
-                                    input: 0.0,
-                                    output: 0.0,
-                                    cache_read: 0.0,
-                                    cache_write: 0.0,
-                                    tiers: vec![],
-                                },
+                            // Resolve the full model (api/base_url/etc.) from the
+                            // model registry, matching TS `findExactModelMatch`.
+                            // Constructing a Model by hand with an empty `api`
+                            // used to panic in pi-ai's `resolve_api_provider`
+                            // when a message was sent right after the switch.
+                            let model = sess.get_model_registry().find(&provider, &model_id);
+                            let Some(model) = model else {
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    format!("Model not found: {provider}/{model_id}"),
+                                ));
+                                continue;
                             };
                             // Surface the outcome (the slash command already
                             // claimed success optimistically; set_model can

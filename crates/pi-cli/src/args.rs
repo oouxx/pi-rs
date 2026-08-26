@@ -139,6 +139,15 @@ pub fn print_help() {
     println!("    -h, --help            Show this help");
     println!("    -v, --version         Show version");
     println!();
+    println!("SUBCOMMANDS:");
+    println!("    install <source>      Install a package/extension");
+    println!("    remove <name>         Remove an extension");
+    println!("    list                  List installed extensions");
+    println!("    update                Update {} to the latest GitHub release", config::APP_NAME);
+    println!("    update --all          Update all extensions");
+    println!("    config                Manage configuration");
+    println!("    refresh               Refresh the remote model catalog");
+    println!();
     println!("EXAMPLES:");
     println!("    {name} \"write a fibonacci function in rust\"");
     println!("    {name} -p \"explain this\" < file.rs");

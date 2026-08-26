@@ -659,6 +659,17 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
 
+    // `pi update` (bare, or with self-update flags --check/--force/--help)
+    // updates the application binary itself; `pi update --all` / `pi update
+    // <source>` target extensions and are delegated to the package manager.
+    if cmd == "update" {
+        let ext_update = args.iter().any(|a| a == "--all" || a == "-a")
+            || args.iter().any(|a| !a.starts_with('-'));
+        if !ext_update {
+            return crate::update::run_update(args).await;
+        }
+    }
+
     // Reconstruct full args so the shared module can re-parse them
     let mut full_args = vec![cmd.to_string()];
     full_args.extend(args.iter().cloned());

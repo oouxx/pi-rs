@@ -1,4 +1,3 @@
-#![cfg(feature = "interactive")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::field_reassign_with_default)]
 
 //! TUI end-to-end tests over a pseudo-terminal (no real TTY required).

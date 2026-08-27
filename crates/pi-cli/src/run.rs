@@ -144,15 +144,7 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // Interactive TUI mode creates its own session
     if app_mode == AppMode::Interactive {
-        #[cfg(feature = "interactive")]
-        {
-            return run_interactive_mode_with_session(&cwd, &agent_dir.to_string_lossy(), args).await;
-        }
-        #[cfg(not(feature = "interactive"))]
-        {
-            eprintln!("{} Interactive TUI mode requires building with the `interactive` feature.", "Error:".red().bold());
-            return EXIT_FAILURE;
-        }
+        return run_interactive_mode_with_session(&cwd, &agent_dir.to_string_lossy(), args).await;
     }
 
     // RPC mode creates its own session internally
@@ -346,7 +338,6 @@ pub async fn run(args: &CliArgs) -> i32 {
 }
 
 /// Run interactive TUI mode with a session.
-#[cfg(feature = "interactive")]
 async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &CliArgs) -> i32 {
     let (persist_session, session_file, fork_from, session_dir, session_manager) =
         resolve_session_opts(args, cwd).await;

@@ -10,7 +10,7 @@
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | 启动 header | `builtInHeader` ExpandableText：logo `Pi v{version}`（accent 粗体 + dim）+ 紧凑提示行 + `Press ctrl+o to show full startup help...` + 空行 + onboarding；Ctrl+O 展开为 19 条完整快捷键列表 | `header_lines()` 渲染相同内容（logo/紧凑/展开/onboarding），Ctrl+O 切换 | 是 | |
 | 转录锚定 | ScrollView `follow: "end"`：内容不足一屏时 `scrollTop = 0`（顶对齐），溢出时跟随底部 | 内容不足一屏时顶对齐，溢出时跟随底部（alt screen 内裁剪，历史靠转录自身滚动） | 是 | |
-| 渲染模式 | 默认 `tuiMode: "regular"`（TuiMainScreen，虚拟 buffer 差分渲染） | **2026-08-24 曾改为主屏幕差分渲染后回退**：alt screen + ratatui 直接渲染（对齐 HEAD 基线）；**2026-08-25 起每帧 `Terminal::clear()` + 整帧重绘**（不依赖 diff 保真度，见 DEVIATIONS.md 渲染策略条目；`view()` 内仍保留缓冲 Clear，TestBackend 单测不变） | 否 | 有意保留 alt screen + 全量重绘（见 DEVIATIONS.md；主屏模式因退出清理/ resize 问题回退） |
+| 渲染模式 | 默认 `tuiMode: "regular"`（TuiMainScreen，虚拟 buffer 差分渲染） | alt screen + ratatui 直接渲染；每帧 `Terminal::clear()` + 整帧重绘（不依赖 diff 保真度，见 DEVIATIONS.md 渲染策略条目；`view()` 内仍保留缓冲 Clear，TestBackend 单测不变） | 否 | 有意保留 alt screen + 全量重绘（见 DEVIATIONS.md） |
 | 工具块位置 | chatContainer 按事件顺序追加：工具块紧跟请求它的 assistant 消息 | blocks 按共享 block-id 时间序排序穿插 | 是 | |
 | 用户消息 | `UserMessageComponent`：全宽 `userMessageBg` 盒（padX=1, padY=1）+ markdown | `render_user_block`：全宽背景盒 + markdown 行 | 是 | |
 | 工具调用（bash） | `bash.ts` renderer：`$ {command}` 粗体标题（非字符串 command → error 色 `[invalid arg]`，空/缺失 → toolOutput 色 `...`）+ muted ` (timeout Ns)`（truthy 判断，保留小数）；输出未展开时预览尾部 5 视觉行（`BASH_PREVIEW_LINES`=5，`truncateToVisualLines` 词边界 wrap）+ 前导空行 + `... (N earlier lines, ctrl+o to expand)`；渲染前剥离结果文本里的截断 footer（`\n\n[Showing ... Full output: path]`，避免与 warning 行重复）；muted `Elapsed {x.x}s`（partial 期间每秒刷新）/ `Took {x.x}s`（完成，`formatDuration` = `(ms/1000).toFixed(1)`，半进位舍入）；截断警告 `[Truncated: ...]`/`[Full output: ...]` | `render_bash_tool_block`：同款标题（`BashCommandArg` 三态 + f64 timeout）；`bash_display_text` 先剥 footer 再尾部 5 视觉行（`visual_lines` 词边界 wrap，tab→3 空格）；`Elapsed`/`Took` + `format_duration`（tick 刷新）；warning 色截断警告（`details.truncation` 经 bridge 传入，maxBytes 缺省回退 50KB）；输出为空（含纯空白）时不渲染标题后空行 | 是 | |
@@ -50,9 +50,9 @@
 | Ctrl+V | `app.clipboard.pasteImage` → `handleClipboardPaste`：先读图片（有则插入临时文件路径），否则读文本插入光标处；失败静默 | 仅文本路径：`read_clipboard_text()` 插入光标处，失败静默；仅 Chat 模式 | 否 | 图片粘贴未复刻（见 DEVIATIONS.md 剪贴板条目） |
 | Ctrl+X | `app.message.copy` → `handleCopyCommand`（复制最后一条 assistant 消息；alt screen 上 flash "Copied!"） | `Cmd::CopyLastMessage` → interactive 模式 agent 任务执行，system 消息回显三态结果；仅 Chat 模式 | 是 | flash 换成 system 消息（Rust 无 flash 概念） |
 | `/copy` | slash 命令 → `handleCopyCommand`（清空编辑器） | slash_command 清空编辑器 → 同一 `AgentCmd::CopyLastMessage` 任务 | 是 | |
-| 块折叠 / Ctrl+F | 无（工具/消息平铺渲染） | 无（已删除，2026-08-24） | 是 | 见 DEVIATIONS.md 块折叠条目（已移除） |
+| 块折叠 / Ctrl+F | 无（工具/消息平铺渲染） | 无（已移除） | 是 | 见 DEVIATIONS.md 块折叠条目 |
 | 工具输出截断 | fallback：未展开时前 10 行 + `... (N more lines, ctrl+o to expand)`（`FALLBACK_PREVIEW_LINES`=10），展开时全部 | `FALLBACK_PREVIEW_LINES`=10 + 同款提示（muted 文案 + dim 键名），Ctrl+O 展开 | 是 | |
-| 工具执行 | 无审批门：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | 无审批门：approval_hook 不安装，工具调用直接执行 | 是 | 审批门已于 2026-08-24 移除（见 DEVIATIONS.md） |
+| 工具执行 | 无审批门：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | 无审批门：approval_hook 不安装，工具调用直接执行 | 是 | 无审批门（见 DEVIATIONS.md） |
 | 滚动 | ScrollView scrollBy/scrollTo（PageUp/Down、gg/G） | `ScrollUp/ScrollDown/ScrollToBottom` + gg/G | 是 | |
 
 ## 数据流（pi-coding-agent → pi-tui）
@@ -64,7 +64,7 @@
 | 终止原因 | `Done`/`Error` 事件携带 `stopReason`/`errorMessage` | `MessageEnd` 携带 `stop_reason`/`error_message` | 是 | |
 | footer 数据 | `FooterComponent` 从 session entries 累计 usage totals + `getContextUsage()` | `usage_totals_from_entries()` + `refresh_status()`（1s 节流，run 间查询） | 是 | 刷新节流 1s（TS 每次 message_end 更新） |
 
-## 剪贴板（`src/clipboard.rs`，2026-08-25 新增）
+## 剪贴板（`src/clipboard.rs`）
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |

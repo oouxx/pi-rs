@@ -5,9 +5,8 @@ crate 共用映射规范**。后续每一次"这段 TS 该怎么翻译成 Rust"�
 文件的映射表与陷阱表，而不是每个模块重新拍板——否则同一种 TS 模式在不同文件里
 会被翻成不一致的 Rust 写法。
 
-本文件由 CLAUDE.md 阶段一要求落盘。项目移植已进入阶段四（收尾对齐），本文件是
-**回溯性归档**：模式映射来自现有 Rust 代码实际采用的约定，高危陷阱表来自
-`PORTING_MISTAKES.md` 里真实出现并修复过的回归 bug（每条标注对应编号，便于回溯）。
+模式映射来自现有 Rust 代码实际采用的约定；
+高危陷阱表来自 `PORTING_MISTAKES.md` 里登记过的回归 bug（每条标注对应编号，便于回溯）。
 
 ---
 
@@ -21,7 +20,7 @@ crate 共用映射规范**。后续每一次"这段 TS 该怎么翻译成 Rust"�
 | `pi-cli`          | （coding-agent 的 CLI 入口）   | CLI 二进制入口、包管理 CLI                                |
 | `pi-extension-api`| （coding-agent 的扩展 API 抽出）| 扩展侧公开 API 类型（RegisteredCommand/Tool/Shortcut…）  |
 | `pi-extensions`   | （内置扩展实现）               | 随仓库分发的内置扩展                                      |
-| `pi-tui`          | `packages/tui`                 | 终端 UI 渲染层——**2026-08-23 起最小可用形态已恢复**（Elm 架构 + ratatui 0.29 + vendored grok-build markdown 管线；组件层不复刻原版，见 DEVIATIONS.md） |
+| `pi-tui`          | `packages/tui`                 | 终端 UI 渲染层——最小可用形态（Elm 架构 + ratatui 0.29 + vendored grok-build markdown 管线；组件层不复刻原版，见 DEVIATIONS.md） |
 
 **依赖方向固定为单向，禁止反向依赖：**
 

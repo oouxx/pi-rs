@@ -28,10 +28,9 @@
 | goal.rs agent_end 无进展持久化 | B3 附带：非自动 run 的 no-progress 更新前未先 set_goal | 顺序问题 | 更新后先 set_goal 再 enforce |
 | goal.rs 规则文案 | E：goal_mode_rules 缺 3 条（fresh blocker audit、Never use it merely、resume_after_ms bounded、ordinary unfinished work），预算行多空行 | 文案偏差 | 全 14 条对齐；`\nToken budget: X.` 紧贴 block；新增 buildWaitingResumePrompt |
 
-## 简化删除记录（2026-08-24，用户确认，对齐 codex /goal 风格）
+## 简化删除记录（对齐 codex /goal 风格）
 
-以下条目是上一轮对齐修复的成果，随后因用户确认的简化（无 per-goal 预算、
-无 UI、无自动轮数、无设置文件、无 token 统计）被整体删除，**不是回归**：
+以下条目是已实现、随后因简化（无 per-goal 预算、无 UI、无自动轮数、无设置文件、无 token 统计）被整体删除的修复，**不是回归**：
 
 | 位置 | 原修复 | 简化后状态 |
 | ---- | ------ | ---------- |

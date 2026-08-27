@@ -2,8 +2,7 @@
 
 > 针对 goal 扩展公开 API（工具、命令、状态机事件）的行为对照。
 > 依据：`@narumitw/pi-goal` v0.52.2 源码 + GOAL_TS_COMPARISON.md。
-> 复核日期：2026-08-24（简化后：无预算、无 UI、无自动轮数，对齐 codex
-> /goal 风格）。"否"的差异必须引用 DEVIATIONS.md。
+> 简化后：无预算、无 UI、无自动轮数，对齐 codex /goal 风格。"否"的差异必须引用 DEVIATIONS.md。
 
 ## 工具契约
 

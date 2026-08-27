@@ -2328,11 +2328,18 @@ impl AgentSession {
                         // Skip aborted and error messages
                         if stop_reason != Some("aborted") && stop_reason != Some("error") {
                             if let Some(usage) = message.get("usage") {
+                                // TS `calculateContextTokens`: use `totalTokens`
+                                // when present, else sum the components.
                                 let total_tokens = usage
                                     .get("totalTokens")
                                     .and_then(|t| t.as_u64())
                                     .unwrap_or(0);
-                                if total_tokens > 0 {
+                                let sum_tokens = usage.get("input").and_then(|v| v.as_u64()).unwrap_or(0)
+                                    + usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0)
+                                    + usage.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0)
+                                    + usage.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let context_tokens = if total_tokens > 0 { total_tokens } else { sum_tokens };
+                                if context_tokens > 0 {
                                     has_post_compaction_usage = true;
                                     break;
                                 }
@@ -2348,9 +2355,10 @@ impl AgentSession {
         }
         drop(mgr);
 
-        // Estimate tokens from current messages
+        // TS `estimateContextTokens`: use the last valid assistant usage as
+        // the base and estimate only the trailing messages after it.
         let messages = &state.messages;
-        let total_tokens = crate::core::compaction::estimate_agent_messages_tokens(messages);
+        let total_tokens = crate::core::compaction::estimate_context_tokens(messages).tokens;
 
         Some(ContextUsage {
             total_tokens,

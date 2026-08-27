@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pi_agent_core::pi_ai_types::{ContentBlock, Message};
+use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason, Usage};
 use pi_agent_core::types::AgentMessage;
 use serde::Serialize;
 
@@ -426,6 +426,80 @@ pub fn calculate_context_tokens(messages: &[pi_agent_core::pi_ai_types::Message]
 pub fn estimate_agent_messages_tokens(messages: &[pi_agent_core::types::AgentMessage]) -> u64 {
     let llm_messages = crate::core::messages::convert_to_llm(messages);
     calculate_context_tokens(&llm_messages)
+}
+
+/// TS `calculateContextTokens(usage)`: use the native `totalTokens` field
+/// when present, else fall back to the sum of the components.
+pub fn calculate_context_tokens_from_usage(usage: &Usage) -> u64 {
+    if usage.total_tokens > 0 {
+        usage.total_tokens
+    } else {
+        usage.input + usage.output + usage.cache_read + usage.cache_write
+    }
+}
+
+/// TS `ContextUsageEstimate` result of `estimateContextTokens`.
+pub struct ContextUsageEstimate {
+    pub tokens: u64,
+    pub usage_tokens: u64,
+    pub trailing_tokens: u64,
+    pub last_usage_index: Option<usize>,
+}
+
+/// TS `getAssistantUsageInfo`: last assistant message with valid usage.
+/// Skips aborted / error / all-zero-usage messages, which carry no usable
+/// usage data.
+fn get_last_assistant_usage_info(
+    messages: &[AgentMessage],
+) -> Option<(usize, u64)> {
+    for (i, msg) in messages.iter().enumerate().rev() {
+        if let AgentMessage::Assistant {
+            usage,
+            stop_reason,
+            ..
+        } = msg
+        {
+            if matches!(
+                stop_reason,
+                Some(StopReason::Aborted) | Some(StopReason::Error)
+            ) {
+                continue;
+            }
+            let context_tokens = calculate_context_tokens_from_usage(usage);
+            if context_tokens > 0 {
+                return Some((i, context_tokens));
+            }
+        }
+    }
+    None
+}
+
+/// TS `estimateContextTokens(messages)`: use the last valid assistant usage
+/// as the base (actual LLM-reported tokens) and estimate only the trailing
+/// messages after it. If no assistant usage exists, estimate everything.
+/// The last assistant usage reflects the real context size, so this is far
+/// more accurate than re-estimating the whole transcript from scratch.
+pub fn estimate_context_tokens(
+    messages: &[AgentMessage],
+) -> ContextUsageEstimate {
+    if let Some((idx, usage_tokens)) = get_last_assistant_usage_info(messages) {
+        let trailing = &messages[idx + 1..];
+        let trailing_tokens = estimate_agent_messages_tokens(trailing);
+        ContextUsageEstimate {
+            tokens: usage_tokens + trailing_tokens,
+            usage_tokens,
+            trailing_tokens,
+            last_usage_index: Some(idx),
+        }
+    } else {
+        let tokens = estimate_agent_messages_tokens(messages);
+        ContextUsageEstimate {
+            tokens,
+            usage_tokens: 0,
+            trailing_tokens: tokens,
+            last_usage_index: None,
+        }
+    }
 }
 
 // ============================================================================
@@ -1092,4 +1166,102 @@ fn test_estimate_agent_messages_tokens_basic() {
     }];
     let tokens = estimate_agent_messages_tokens(&messages);
     assert!(tokens > 0);
+}
+
+// ============================================================
+// estimate_context_tokens (TS estimateContextTokens)
+// ============================================================
+
+#[cfg(test)]
+fn assistant_with_usage(total_tokens: u64, stop_reason: Option<StopReason>) -> AgentMessage {
+    AgentMessage::Assistant {
+        content: vec![ContentBlock::text("hi")],
+        api: "test".into(),
+        provider: "test".into(),
+        model: "test".into(),
+        usage: Usage {
+            total_tokens,
+            ..Default::default()
+        },
+        stop_reason,
+        error_message: None,
+        timestamp: 2,
+    }
+}
+
+/// TS `estimateContextTokens` uses the last valid assistant usage as the
+/// base and estimates only the trailing messages after it.
+#[test]
+fn test_estimate_context_tokens_uses_last_assistant_usage_as_base() {
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello world")],
+            timestamp: 1,
+        },
+        assistant_with_usage(1000, Some(StopReason::Stop)),
+        AgentMessage::User {
+            content: vec![ContentBlock::text("trailing text")],
+            timestamp: 3,
+        },
+    ];
+    let est = estimate_context_tokens(&messages);
+    // Base is the actual usage (1000), not a re-estimate of the whole
+    // transcript; only the trailing user message is estimated.
+    assert_eq!(est.usage_tokens, 1000);
+    assert_eq!(est.last_usage_index, Some(1));
+    assert!(est.trailing_tokens > 0);
+    assert_eq!(est.tokens, 1000 + est.trailing_tokens);
+}
+
+/// TS `getAssistantUsageInfo` skips aborted / error assistant messages, so
+/// they are not used as the usage base.
+#[test]
+fn test_estimate_context_tokens_skips_aborted_assistant() {
+    let messages = vec![
+        assistant_with_usage(1000, Some(StopReason::Aborted)),
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 3,
+        },
+    ];
+    let est = estimate_context_tokens(&messages);
+    assert_eq!(est.last_usage_index, None);
+    assert_eq!(est.usage_tokens, 0);
+    // No valid usage → everything is estimated.
+    assert_eq!(est.tokens, est.trailing_tokens);
+}
+
+/// TS `getAssistantUsageInfo` skips all-zero usage messages.
+#[test]
+fn test_estimate_context_tokens_skips_zero_usage() {
+    let messages = vec![assistant_with_usage(0, Some(StopReason::Stop))];
+    let est = estimate_context_tokens(&messages);
+    assert_eq!(est.last_usage_index, None);
+    assert_eq!(est.usage_tokens, 0);
+}
+
+/// TS `calculateContextTokens` falls back to the component sum when
+/// `totalTokens` is absent (0).
+#[test]
+fn test_estimate_context_tokens_falls_back_to_component_sum() {
+    let messages = vec![AgentMessage::Assistant {
+        content: vec![ContentBlock::text("hi")],
+        api: "test".into(),
+        provider: "test".into(),
+        model: "test".into(),
+        usage: Usage {
+            input: 300,
+            output: 200,
+            cache_read: 100,
+            cache_write: 50,
+            total_tokens: 0,
+            ..Default::default()
+        },
+        stop_reason: Some(StopReason::Stop),
+        error_message: None,
+        timestamp: 2,
+    }];
+    let est = estimate_context_tokens(&messages);
+    assert_eq!(est.usage_tokens, 300 + 200 + 100 + 50);
+    assert_eq!(est.last_usage_index, Some(0));
 }

@@ -47,7 +47,7 @@
 | Ctrl+O | `app.tools.expand`：展开 header + 全部工具输出 | `Msg::ToggleToolExpansion`：切换 header 展开态 + 工具块强制 Expanded | 是 | |
 | Ctrl+C | `app.clear` → `handleCtrlC`：500ms 内连按两次 shutdown，否则清空编辑器（setText 同时 cancelAutocomplete） | 同款（仅 Chat 模式）：第一次清空 + 关补全弹窗，500ms 内第二次返回 `Cmd::Quit`；对话框/选择器聚焦时不拦截 | 是 | |
 | Ctrl+D | 空编辑器时 `app.exit` → shutdown（CustomEditor 非空时交给编辑器 deleteCharForward，默认绑定 ctrl+d） | 空输入返回 `Cmd::Quit`；非空 `delete()`（删除光标后一字符）；仅 Chat 模式 | 是 | |
-| Ctrl+V | `app.clipboard.pasteImage` → `handleClipboardPaste`：先读图片（有则插入临时文件路径），否则读文本插入光标处；失败静默 | 仅文本路径：`read_clipboard_text()` 插入光标处，失败静默；仅 Chat 模式 | 否 | 图片粘贴未复刻（见 DEVIATIONS.md 剪贴板条目） |
+| Ctrl+V | `app.clipboard.pasteImage` → `handleClipboardPaste`：先读图片（有则插入临时文件路径），否则读文本 → `handlePaste`（归一化换行/制表符、过滤非打印字符、文件路径前补空格、>10 行或 >1000 字符折叠成 `[paste #N +N lines]` marker，提交时展开）；失败静默 | 仅文本路径：`read_clipboard_text()` → `handle_paste`（同款归一化/过滤/路径空格/大段折叠 marker，提交时展开）；图片路径未复刻；仅 Chat 模式 | 否 | 图片粘贴未复刻（见 DEVIATIONS.md 剪贴板条目） |
 | Ctrl+X | `app.message.copy` → `handleCopyCommand`（复制最后一条 assistant 消息；alt screen 上 flash "Copied!"） | `Cmd::CopyLastMessage` → interactive 模式 agent 任务执行，system 消息回显三态结果；仅 Chat 模式 | 是 | flash 换成 system 消息（Rust 无 flash 概念） |
 | `/copy` | slash 命令 → `handleCopyCommand`（清空编辑器） | slash_command 清空编辑器 → 同一 `AgentCmd::CopyLastMessage` 任务 | 是 | |
 | 块折叠 / Ctrl+F | 无（工具/消息平铺渲染） | 无（已移除） | 是 | 见 DEVIATIONS.md 块折叠条目 |

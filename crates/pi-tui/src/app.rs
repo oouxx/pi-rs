@@ -761,7 +761,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             vec![]
         }
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
-        Msg::Paste(text) => { model.input.insert_str(&text); vec![] }
+        Msg::Paste(text) => { model.input.handle_paste(&text); vec![] }
         Msg::NewMessage(role, text) => { model.push_message(role, text); vec![] }
         Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); m.md.append_text(&delta); } vec![] }
         Msg::MessageEnd { thinking, stop_reason, error_message } => {
@@ -915,12 +915,13 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
         // Ctrl+V: app.clipboard.pasteImage 的文本路径（对齐 TS
-        // `handleClipboardPaste` → `readClipboardText`）——从系统剪贴板读
-        // 文本插入光标处；读不到时静默忽略。图片路径（readClipboardImage）
-        // 未复刻，见 DEVIATIONS.md。
+        // `handleClipboardPaste` → `readClipboardText` → `handlePaste`）——从
+        // 系统剪贴板读文本，经 `handle_paste` 归一化/过滤/大段折叠后插入光标
+        // 处；读不到时静默忽略。图片路径（readClipboardImage）未复刻，见
+        // DEVIATIONS.md。
         if key.code == KeyCode::Char('v') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
             if let Some(text) = crate::clipboard::read_clipboard_text() {
-                model.input.insert_str(&text);
+                model.input.handle_paste(&text);
             }
             return vec![];
         }

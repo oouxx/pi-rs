@@ -576,7 +576,7 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                     state.model.completer.deactivate();
                 }
             }
-            let text = state.model.input.value().to_string();
+            let text = state.model.input.expanded_value();
             if text.is_empty() {
                 return vec![];
             }
@@ -1500,6 +1500,10 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     }
                     pi_tui::terminal::InputEvent::ScrollUp => Action::Agent(pi_tui::Msg::ScrollUp(3)),
                     pi_tui::terminal::InputEvent::ScrollDown => Action::Agent(pi_tui::Msg::ScrollDown(3)),
+                    // Bracketed paste → editor `handle_paste` (TS `handlePaste`).
+                    pi_tui::terminal::InputEvent::Paste(text) => {
+                        Action::Agent(pi_tui::Msg::Paste(text))
+                    }
                     // 尺寸变化：更新模型 + 强制全量重绘（见下方 resize 分支）。
                     pi_tui::terminal::InputEvent::Resize(w, h) => {
                         Action::Agent(pi_tui::Msg::Resize(w, h))

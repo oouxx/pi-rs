@@ -67,14 +67,11 @@ impl Terminal {
                                 let _ = input_tx.send(InputEvent::Key(key_event));
                             }
                             Some(Ok(Event::Paste(text))) => {
-                                // Forward pasted text (IME composition, clipboard) as char-by-char key events
-                                for ch in text.chars() {
-                                    let ev = KeyEvent::new(
-                                        crossterm::event::KeyCode::Char(ch),
-                                        crossterm::event::KeyModifiers::NONE,
-                                    );
-                                    let _ = input_tx.send(InputEvent::Key(ev));
-                                }
+                                // Forward bracketed paste as a single event so
+                                // the editor can run TS `handlePaste` (normalize,
+                                // filter, large-paste marker) instead of
+                                // inserting char-by-char.
+                                let _ = input_tx.send(InputEvent::Paste(text));
                             }
                             Some(Ok(Event::Mouse(m))) => {
                                 // 滚轮 → 滚动事件（wheelScrollLines = 1，对齐 TS）。
@@ -133,7 +130,7 @@ impl Terminal {
 /// Guard that shuts down the terminal input loop on drop.
 /// Unified input event: keys plus mouse-wheel scroll (the internal
 /// scrollback's input source).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     Key(KeyEvent),
     ScrollUp,
@@ -141,6 +138,9 @@ pub enum InputEvent {
     /// Terminal resize (crossterm `Event::Resize`) — must reach the model so
     /// the transcript re-wraps and the screen fully repaints.
     Resize(u16, u16),
+    /// Bracketed paste (crossterm `Event::Paste`) — routed through the
+    /// editor's `handle_paste` (TS `handlePaste`).
+    Paste(String),
 }
 
 pub struct ShutdownGuard {

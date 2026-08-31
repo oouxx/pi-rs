@@ -1,11 +1,20 @@
 //! Single-line text input with cursor tracking.
+//!
+//! All editing (grapheme/word movement, deletions, readline chords) is
+//! delegated to the vendored editor kernel: `xai_ratatui_textarea::EditBuffer`
+//! and `classify_key_event`. This component only adds the TS-compatible
+//! paste-marker handling on top.
 
 use std::collections::HashMap;
 
+use xai_ratatui_textarea::{EditBuffer, EditCommand, classify_key_event};
+
 /// A single-line text input field.
 pub struct Input {
-    buffer: String,
-    cursor: usize,
+    /// Line text + cursor. Edited through the vendored [`EditBuffer`] so
+    /// every movement/deletion shares its grapheme and word-boundary
+    /// semantics (same kernel as the multi-line editor).
+    buf: EditBuffer,
     /// Large-paste storage (TS editor `pastes` map): paste id -> full text.
     /// A large paste (>10 lines or >1000 chars) is stored here and the
     /// editor shows a compact `[paste #N +N lines]` marker instead.
@@ -16,27 +25,49 @@ pub struct Input {
 
 impl Input {
     pub fn new() -> Self {
-        Self { buffer: String::new(), cursor: 0, pastes: HashMap::new(), paste_counter: 0 }
+        Self { buf: EditBuffer::new(), pastes: HashMap::new(), paste_counter: 0 }
     }
 
-    pub fn value(&self) -> &str { &self.buffer }
-    pub fn cursor_pos(&self) -> usize { self.cursor }
+    pub fn value(&self) -> &str { self.buf.text() }
+    pub fn cursor_pos(&self) -> usize { self.buf.cursor_byte() }
 
     /// Cursor position in display columns (CJK = 2, ASCII = 1).
     pub fn cursor_display_col(&self) -> u16 {
-        let prefix = &self.buffer[..self.cursor];
-        let width = unicode_width::UnicodeWidthStr::width(prefix);
+        let width = unicode_width::UnicodeWidthStr::width(&self.buf[..self.buf.cursor_byte()]);
         width as u16
     }
 
+    /// Route a Ctrl/Alt-modified chord through the vendored readline keymap
+    /// (`classify_key_event`): Ctrl+A/E line start/end, Ctrl+B/F grapheme
+    /// moves, Alt+B/F word moves, Ctrl+W/U/K/H/D deletions,
+    /// Alt+Backspace/Alt+D word deletions, Ctrl/Alt+Arrow word moves — all
+    /// classified and executed by the vendored editor kernel, nothing
+    /// implemented here. Unmapped chords are consumed silently so modified
+    /// letters are never inserted literally (e.g. Ctrl+F used to type "f").
+    ///
+    /// Returns `true` when the key was consumed.
+    pub fn handle_readline_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            return true; // Enhanced-protocol release events: consume silently.
+        }
+        match classify_key_event(key) {
+            Some(command) => {
+                let _ = self.buf.apply(command);
+                true
+            }
+            // Chords with no readline meaning (Ctrl+G, Ctrl+O, …): swallowed
+            // by the caller — never fall through to literal insertion.
+            None => true,
+        }
+    }
+
     pub fn insert_char(&mut self, c: char) {
-        self.buffer.insert(self.cursor, c);
-        self.cursor += c.len_utf8(); // advance by UTF-8 byte length
+        let mut encoded = [0u8; 4];
+        let _ = self.buf.insert_str(c.encode_utf8(&mut encoded));
     }
 
     pub fn insert_str(&mut self, s: &str) {
-        self.buffer.insert_str(self.cursor, s);
-        self.cursor += s.len();
+        let _ = self.buf.insert_str(s);
     }
 
     /// TS `handlePaste`: normalize line endings + expand tabs, filter
@@ -58,7 +89,7 @@ impl Input {
         // 3. File-path space prepending (TS: starts with / ~ . and the char
         //    before the cursor is a word char).
         if normalized.starts_with('/') || normalized.starts_with('~') || normalized.starts_with('.') {
-            let char_before = self.buffer[..self.cursor].chars().next_back();
+            let char_before = self.buf[..self.buf.cursor_byte()].chars().next_back();
             if let Some(c) = char_before {
                 if c.is_ascii_alphanumeric() || c == '_' {
                     normalized = format!(" {normalized}");
@@ -87,14 +118,14 @@ impl Input {
     /// their stored full text. Used when submitting the input.
     pub fn expanded_value(&self) -> String {
         if self.pastes.is_empty() {
-            return self.buffer.clone();
+            return self.buf.text().to_string();
         }
-        let mut result = String::with_capacity(self.buffer.len());
+        let mut result = String::with_capacity(self.buf.text().len());
         let mut i = 0usize;
-        let bytes = self.buffer.as_bytes();
+        let bytes = self.buf.text().as_bytes();
         while i < bytes.len() {
             if bytes[i..].starts_with(b"[paste #") {
-                if let Some((id, marker_len)) = parse_paste_marker(&self.buffer[i..]) {
+                if let Some((id, marker_len)) = parse_paste_marker(&self.buf.text()[i..]) {
                     if let Some(content) = self.pastes.get(&id) {
                         result.push_str(content);
                         i += marker_len;
@@ -102,7 +133,7 @@ impl Input {
                     }
                 }
             }
-            let ch = self.buffer[i..].chars().next().unwrap_or('\u{FFFD}');
+            let ch = self.buf.text()[i..].chars().next().unwrap_or('\u{FFFD}');
             result.push(ch);
             i += ch.len_utf8();
         }
@@ -115,15 +146,16 @@ impl Input {
         self.paste_counter = 0;
     }
 
-    /// Backspace over the previous *character* (CJK-safe: steps back to a
-    /// UTF-8 char boundary, never into a continuation byte). If the text
-    /// before the cursor ends with a paste marker, the whole marker is
-    /// removed and its paste entry is dropped (TS `handleBackspace`).
+    /// Backspace over the previous *grapheme* (vendored kernel semantics,
+    /// CJK/emoji-cluster safe). If the text before the cursor ends with a
+    /// paste marker, the whole marker is deleted along with its stored paste
+    /// (TS `handleBackspace`).
     pub fn backspace(&mut self) {
-        if self.cursor == 0 {
+        let cursor = self.buf.cursor_byte();
+        if cursor == 0 {
             return;
         }
-        let before = &self.buffer[..self.cursor];
+        let before = &self.buf[..cursor];
         if let Some((target_id, marker_len)) = marker_before_cursor(before) {
             // Drop the paste, decrement the counter, shift higher ids down
             // and renumber markers (TS `handleBackspace`).
@@ -137,74 +169,61 @@ impl Input {
                     self.pastes.insert(id - 1, content);
                 }
             }
-            self.renumber_markers_after(target_id);
-            self.buffer.replace_range(self.cursor - marker_len..self.cursor, "");
-            self.cursor -= marker_len;
+            let old_text = self.buf.text().to_string();
+            let mut new_text = old_text.clone();
+            new_text.replace_range(cursor - marker_len..cursor, "");
+            let renumbered = renumber_markers_after(&new_text, target_id);
+            self.buf = EditBuffer::from_parts(renumbered, cursor - marker_len);
             return;
         }
-        let prev = before
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        self.buffer.remove(prev);
-        self.cursor = prev;
-    }
-
-    /// Renumber paste markers with id > `target_id` down by one (TS
-    /// `handleBackspace` renumbers markers after a removed paste).
-    fn renumber_markers_after(&mut self, target_id: u64) {
-        let mut new_buffer = String::with_capacity(self.buffer.len());
-        let mut i = 0usize;
-        let bytes = self.buffer.as_bytes();
-        while i < bytes.len() {
-            if bytes[i..].starts_with(b"[paste #") {
-                if let Some((id, marker_len)) = parse_paste_marker(&self.buffer[i..]) {
-                    if id > target_id {
-                        let marker = &self.buffer[i..i + marker_len];
-                        let new_marker =
-                            marker.replacen(&format!("#{id}"), &format!("#{}", id - 1), 1);
-                        new_buffer.push_str(&new_marker);
-                        i += marker_len;
-                        continue;
-                    }
-                }
-            }
-            let ch = self.buffer[i..].chars().next().unwrap_or('\u{FFFD}');
-            new_buffer.push(ch);
-            i += ch.len_utf8();
-        }
-        self.buffer = new_buffer;
+        let _ = self.buf.apply(EditCommand::DeleteGraphemeBackward);
     }
 
     pub fn delete(&mut self) {
-        if self.cursor < self.buffer.len() {
-            self.buffer.remove(self.cursor);
-        }
+        let _ = self.buf.apply(EditCommand::DeleteGraphemeForward);
     }
 
-    /// Move left by one character (char-boundary safe).
+    /// Move left by one grapheme (vendored kernel: CJK/emoji-cluster safe).
     pub fn move_left(&mut self) {
-        self.cursor = self.buffer[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+        let _ = self.buf.apply(EditCommand::MoveGraphemeLeft);
     }
 
-    /// Move right by one character (char-boundary safe; previously this did
-    /// nothing until the end of the buffer).
+    /// Move right by one grapheme (vendored kernel).
     pub fn move_right(&mut self) {
-        if self.cursor < self.buffer.len() {
-            if let Some(c) = self.buffer[self.cursor..].chars().next() {
-                self.cursor += c.len_utf8();
+        let _ = self.buf.apply(EditCommand::MoveGraphemeRight);
+    }
+    pub fn move_home(&mut self) { let _ = self.buf.set_cursor_byte(0); }
+    pub fn move_end(&mut self) {
+        let end = self.buf.text().len();
+        let _ = self.buf.set_cursor_byte(end);
+    }
+    pub fn clear(&mut self) { self.buf = EditBuffer::new(); self.clear_pastes(); }
+    pub fn set_value(&mut self, value: &str) { self.buf = EditBuffer::from_text(value); self.clear_pastes(); }
+}
+
+/// Renumber paste markers with id > `target_id` down by one (TS
+/// `handleBackspace` renumbers markers after a removed paste).
+fn renumber_markers_after(text: &str, target_id: u64) -> String {
+    let mut new_buffer = String::with_capacity(text.len());
+    let mut i = 0usize;
+    let bytes = text.as_bytes();
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"[paste #") {
+            if let Some((id, marker_len)) = parse_paste_marker(&text[i..]) {
+                if id > target_id {
+                    let marker = &text[i..i + marker_len];
+                    let new_marker = marker.replacen(&format!("#{id}"), &format!("#{}", id - 1), 1);
+                    new_buffer.push_str(&new_marker);
+                    i += marker_len;
+                    continue;
+                }
             }
         }
+        let ch = text[i..].chars().next().unwrap_or('\u{FFFD}');
+        new_buffer.push(ch);
+        i += ch.len_utf8();
     }
-    pub fn move_home(&mut self) { self.cursor = 0; }
-    pub fn move_end(&mut self) { self.cursor = self.buffer.len(); }
-    pub fn clear(&mut self) { self.buffer.clear(); self.cursor = 0; self.clear_pastes(); }
-    pub fn set_value(&mut self, value: &str) { self.buffer = value.to_string(); self.cursor = self.buffer.len(); self.clear_pastes(); }
+    new_buffer
 }
 
 /// Parse a paste marker at the start of `s`. Returns `(paste_id, byte_len)`.
@@ -405,5 +424,128 @@ mod tests {
         input.clear();
         assert_eq!(input.value(), "");
         assert_eq!(input.expanded_value(), "");
+    }
+
+    // ============================================================================
+    // Readline chords — routed through the vendored `classify_key_event`
+    // ============================================================================
+
+    mod readline {
+        use super::*;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        fn ctrl(c: char) -> KeyEvent {
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+        }
+
+        fn alt(c: char) -> KeyEvent {
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+        }
+
+        /// Ctrl+F / Ctrl+B move the cursor; they no longer insert "f"/"b".
+        #[test]
+        fn ctrl_b_f_move_cursor_without_inserting_letters() {
+            let mut input = Input::new();
+            input.insert_str("ab");
+            input.move_home();
+            assert!(input.handle_readline_key(&ctrl('f')));
+            assert_eq!(input.cursor_pos(), 1, "Ctrl+F moves right");
+            assert!(input.handle_readline_key(&ctrl('b')));
+            assert_eq!(input.cursor_pos(), 0, "Ctrl+B moves left");
+
+            // Empty buffer + Ctrl+F: consumed as a chord, nothing inserted.
+            let mut empty = Input::new();
+            assert!(empty.handle_readline_key(&ctrl('f')));
+            assert_eq!(empty.value(), "");
+            assert_eq!(empty.cursor_pos(), 0);
+        }
+
+        /// Ctrl+A / Ctrl+E jump to line start/end (readline semantics).
+        #[test]
+        fn ctrl_a_e_are_home_end() {
+            let mut input = Input::new();
+            input.insert_str("hello");
+            assert!(input.handle_readline_key(&ctrl('a')));
+            assert_eq!(input.cursor_pos(), 0);
+            assert!(input.handle_readline_key(&ctrl('e')));
+            assert_eq!(input.cursor_pos(), input.value().len());
+        }
+
+        /// Ctrl+K deletes to end of line, Ctrl+U deletes to line start,
+        /// Ctrl+W deletes the previous word (whitespace-delimited).
+        #[test]
+        fn ctrl_k_u_delete_from_cursor() {
+            let mut input = Input::new();
+            input.insert_str("hello world");
+            input.move_left();
+            assert!(input.handle_readline_key(&ctrl('k')));
+            assert_eq!(input.value(), "hello worl");
+            assert!(input.handle_readline_key(&ctrl('u')));
+            assert_eq!(input.value(), "");
+
+            let mut input = Input::new();
+            input.insert_str("one two three");
+            input.move_end();
+            assert!(input.handle_readline_key(&ctrl('w')));
+            assert_eq!(input.value(), "one two ", "Ctrl+W kills 'three'");
+        }
+
+        /// Ctrl+H / Ctrl+D: single-grapheme backward/forward delete.
+        #[test]
+        fn ctrl_h_d_delete_single_grapheme() {
+            let mut input = Input::new();
+            input.insert_str("abc");
+            input.move_end();
+            assert!(input.handle_readline_key(&ctrl('h')));
+            assert_eq!(input.value(), "ab");
+            input.move_home();
+            assert!(input.handle_readline_key(&ctrl('d')));
+            assert_eq!(input.value(), "b");
+            assert_eq!(input.cursor_pos(), 0);
+        }
+
+        /// Alt+B / Alt+F move by words (readline small-word semantics).
+        #[test]
+        fn alt_b_f_move_by_words() {
+            let mut input = Input::new();
+            input.insert_str("one two");
+            assert!(input.handle_readline_key(&alt('b')));
+            assert_eq!(input.cursor_pos(), 4, "Alt+B back to 'two' start");
+            assert!(input.handle_readline_key(&alt('b')));
+            assert_eq!(input.cursor_pos(), 0);
+            assert!(input.handle_readline_key(&alt('f')));
+            assert_eq!(input.cursor_pos(), 3, "Alt+F over 'one'");
+            assert!(input.handle_readline_key(&alt('f')));
+            assert_eq!(input.cursor_pos(), 7, "Alt+F to end");
+        }
+
+        /// Unmapped chords (Ctrl+J etc.) are swallowed, never inserted.
+        #[test]
+        fn unmapped_chords_are_swallowed() {
+            let mut input = Input::new();
+            assert!(input.handle_readline_key(&ctrl('j')));
+            assert_eq!(input.value(), "", "Ctrl+J must not insert 'j'");
+            assert!(input.handle_readline_key(&ctrl('g')));
+            assert_eq!(input.value(), "", "Ctrl+G must not insert 'g'");
+        }
+
+        /// Ctrl+Arrow word moves (terminal enhanced-protocol encodings go
+        /// through the same vendored keymap). Emacs/readline semantics: M-f
+        /// lands after the word, M-b at its start.
+        #[test]
+        fn ctrl_arrow_moves_by_words() {
+            let mut input = Input::new();
+            input.insert_str("one two");
+            let left = KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL);
+            let right = KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL);
+            assert!(input.handle_readline_key(&left));
+            assert_eq!(input.cursor_pos(), 4);
+            assert!(input.handle_readline_key(&left));
+            assert_eq!(input.cursor_pos(), 0);
+            assert!(input.handle_readline_key(&right));
+            assert_eq!(input.cursor_pos(), 3, "end of 'one'");
+            assert!(input.handle_readline_key(&right));
+            assert_eq!(input.cursor_pos(), 7, "end of buffer");
+        }
     }
 }

@@ -927,7 +927,23 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
     }
     match &mut model.mode {
-        AppMode::Chat => match key.code {
+        AppMode::Chat => {
+            // Ctrl/Alt-modified Character chords route through the vendored
+            // readline keymap (Ctrl+A/E/B/F/K/U/W/D/H, Alt+B/F/W, word
+            // moves/deletes); `classify_key_event` owns classification and the
+            // vendored EditBuffer does the editing — unmapped chords are
+            // swallowed, never inserted as literal letters (e.g. Ctrl+F used
+            // to type "f"). (Ctrl+B abort-bash is handled upstream by
+            // pi-coding-agent before reaching here.)
+            let editing_chord = matches!(key.code, KeyCode::Char(_))
+                && key.modifiers.intersects(
+                    crossterm::event::KeyModifiers::CONTROL
+                        | crossterm::event::KeyModifiers::ALT,
+                );
+            if editing_chord && model.input.handle_readline_key(&key) {
+                return vec![];
+            }
+            match key.code {
             KeyCode::Char(c) => {
                 if c == 'g' && model.g_pressed && model.input.value().is_empty() { model.g_pressed = false; model.scroll_offset = 0; model.auto_scroll = false; return vec![]; }
                 if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
@@ -959,7 +975,8 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_sub(20); model.auto_scroll = false; }
             KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_add(20); }
             _ => {}
-        },
+            }
+        }
         AppMode::Select { list } => { list.handle_key(&key); }
         AppMode::Editor { editor, .. } => { editor.handle_key(&key); }
     }

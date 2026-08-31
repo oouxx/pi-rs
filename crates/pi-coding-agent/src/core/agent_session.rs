@@ -1286,12 +1286,28 @@ impl AgentSession {
         // Clone registry ref for extension provider registration (before it's moved into self)
         let model_registry_for_ext = model_registry.clone();
 
+        // Sync the runtime compaction settings from the settings manager so the
+        // interactive session honors configured compaction `enabled` /
+        // `reserveTokens` / `keepRecentTokens` (matching TS
+        // `settingsManager.getCompactionSettings()`). `keepRecentTokens` drives
+        // the cut-point selection in `_compact_inner`.
+        let compaction_runtime_settings = {
+            let reserve = settings_manager.get_compaction_reserve_tokens();
+            let enabled = settings_manager.get_compaction_enabled();
+            let keep_recent = settings_manager.get_compaction_keep_recent_tokens();
+            CompactionSettings {
+                reserve_tokens: reserve,
+                compact_on_threshold: enabled,
+                keep_recent_tokens: keep_recent,
+            }
+        };
+
         let mut session = Self {
             agent,
             session_manager: session_manager.clone(),
             settings_manager: Arc::new(std::sync::Mutex::new(settings_manager)),
             model_registry,
-            compaction_settings: Arc::new(std::sync::Mutex::new(CompactionSettings::default())),
+            compaction_settings: Arc::new(std::sync::Mutex::new(compaction_runtime_settings)),
             cwd: session_cwd.clone(),
             scoped_models: Vec::new(),
             initial_active_tool_names,
@@ -4273,10 +4289,32 @@ References are relative to {}.
             }
         }
 
-        let state = self.agent.state().await;
-        let messages = state.messages;
-        let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
-        let context_window = state.model.context_window.max(1);
+        let (path_entries, context_window) = {
+            let state = self.agent.state().await;
+            let context_window = state.model.context_window.max(1);
+            let path_entries = self
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_branch(None);
+            (path_entries, context_window)
+        };
+
+        let compaction_settings = {
+            let settings = self
+                .compaction_settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            settings.clone()
+        };
+
+        // Prepare compaction from the session branch (matching TS
+        // `prepareCompaction`). Returns None when not applicable.
+        let prepared = match compaction::prepare_compaction(&path_entries, &compaction_settings) {
+            Some(p) => p,
+            None => return Err("Nothing to compact (session too small)".to_string()),
+        };
+        let total_tokens = prepared.tokens_before;
 
         {
             let settings = self
@@ -4295,119 +4333,82 @@ References are relative to {}.
         // compaction is not needed.
         self._emit(AgentSessionEvent::CompactionStart { reason });
 
-        let keep_recent_turns = 5usize;
-        let cut_point = compaction::find_compaction_cut_point(&messages, keep_recent_turns);
+        let retry_reason = if custom_instructions.is_some() {
+            "manual"
+        } else {
+            "threshold"
+        };
 
-        let compaction_settings = {
-            let settings = self
-                .compaction_settings
+        // Generate the summary (matching TS `compact()`): a single history
+        // summary, or - for split turns - a history summary plus a separate
+        // turn-prefix summary that are merged.
+        let history_text = if prepared.messages_to_summarize.is_empty() {
+            "No prior history.".to_string()
+        } else {
+            let prompt = compaction::build_summarization_prompt(
+                &prepared.messages_to_summarize,
+                prepared.previous_summary.as_deref(),
+                custom_instructions,
+            );
+            self._summarize_for_compaction(prompt, prepared.messages_to_summarize.len(), retry_reason)
+                .await
+        };
+
+        let summary = if prepared.is_split_turn && !prepared.turn_prefix_messages.is_empty() {
+            let prefix_prompt =
+                compaction::build_turn_prefix_summarization_prompt(&prepared.turn_prefix_messages);
+            let prefix_text = self
+                ._summarize_for_compaction(
+                    prefix_prompt,
+                    prepared.turn_prefix_messages.len(),
+                    retry_reason,
+                )
+                .await;
+            format!(
+                "{}\n\n---\n\n**Turn Context (split turn):**\n\n{}",
+                history_text, prefix_text
+            )
+        } else {
+            history_text
+        };
+
+        let first_kept_entry_id = prepared.first_kept_entry_id.clone().unwrap_or_default();
+
+        // Record compaction in session manager with the real first-kept entry
+        // UUID (matching TS `sessionManager.appendCompaction`).
+        {
+            let mut mgr = self
+                .session_manager
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            settings.clone()
-        };
-        let prepared = compaction::prepare_compaction(
-            &messages,
-            keep_recent_turns,
-            compaction_settings,
-        );
-
-        // Build the summarization prompt
-        let summarization_prompt = compaction::build_summarization_prompt(
-            &prepared.messages_to_summarize,
-            prepared.previous_summary.as_deref(),
-            custom_instructions,
-        );
-
-        // Generate summary using the LLM if a stream_fn is available.
-        // Wrapped in retryAssistantCall (match TS `completeSummarization`) so
-        // transient stream drops honor the configured retry policy.
-        let summary = if let Some(stream_fn) = self.agent.get_stream_fn() {
-            let model = self.agent.state().await.model;
-            let llm_context = pi_agent_core::pi_ai_types::Context {
-                system_prompt: Some(compaction::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
-                messages: vec![pi_agent_core::pi_ai_types::Message::User {
-                    content: vec![pi_agent_core::pi_ai_types::ContentBlock::text(
-                        &summarization_prompt,
-                    )],
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                }],
-                tools: None,
-            };
-
-            // Retry policy from settings (match TS settingsManager.getRetrySettings())
-            let retry_settings = self
-                .settings_manager
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_retry_settings();
-            let retry_policy = pi_agent_core::pi_ai_types::RetryPolicy {
-                enabled: retry_settings.enabled.unwrap_or(true),
-                max_retries: retry_settings.max_retries.unwrap_or(0),
-                base_delay_ms: retry_settings.base_delay_ms.unwrap_or(1000),
-            };
-            let callbacks = self._summarization_retry_callbacks(
-                "compaction",
-                Some(if custom_instructions.is_some() {
-                    "manual".to_string()
-                } else {
-                    "threshold".to_string()
-                }),
-            );
-
-            let produce = || {
-                let stream_fn = stream_fn.clone();
-                let model = model.clone();
-                let llm_context = llm_context.clone();
-                async move {
-                    // Summaries are standalone requests: fresh routing session ID
-                    // + cacheRetention "none" (match TS #6618).
-                    let fn_options = pi_agent_core::types::StreamFnOptions {
-                        cache_retention: Some(pi_agent_core::pi_ai_types::CacheRetention::None),
-                        session_id: Some(pi_agent_core::pi_ai_types::uuid_v7()),
-                        ..Default::default()
-                    };
-                    consume_stream_to_message(stream_fn, model, llm_context, fn_options).await
-                }
-            };
-            let result = pi_agent_core::pi_ai_types::retry_assistant_call(
-                produce,
-                Some(retry_policy),
-                None,
-                Some(&callbacks),
-            )
-            .await;
-
-            // Extract text from the final message
-            let mut full_text = String::new();
-            for block in &result.content {
-                if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
-                    full_text.push_str(text);
-                }
-            }
-            if full_text.trim().is_empty() {
-                format!(
-                    "Compacted {} messages (summary generation unavailable)",
-                    messages.len()
-                )
-            } else {
-                full_text
-            }
-        } else {
-            format!("Compacted {} messages", messages.len())
-        };
-
-        // Record compaction in session manager
-        {
-            let mut mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             mgr.append_compaction(
                 &summary,
-                &cut_point.first_kept_entry_index.to_string(),
+                &first_kept_entry_id,
                 total_tokens,
                 None,
                 None,
                 None,
             );
         }
+
+        // Rebuild the in-memory agent context from the new session context,
+        // matching TS `this.agent.state.messages = sessionManager.buildSessionContext().messages`.
+        // Without this the transcript never shrinks, so the next turn
+        // re-triggers compaction and token usage is not actually reduced.
+        let (context_messages, estimated_tokens_after) = {
+            let mgr = self
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ctx_entries = mgr.build_context_entries();
+            let msgs: Vec<AgentMessage> = ctx_entries
+                .iter()
+                .flat_map(compaction::session_entry_to_context_messages)
+                .collect();
+            let est = compaction::estimate_agent_messages_tokens(&msgs);
+            (msgs, est)
+        };
+        self.agent.set_initial_messages(context_messages).await;
 
         // Dispatch session_compact to extensions after compaction.
         if let Some(ref registry) = self.extension_registry {
@@ -4424,11 +4425,90 @@ References are relative to {}.
 
         Ok(crate::core::compaction::CompactionResult {
             summary,
-            first_kept_entry_id: cut_point.first_kept_entry_index.to_string(),
+            first_kept_entry_id,
             tokens_before: total_tokens,
-            estimated_tokens_after: None,
+            estimated_tokens_after: Some(estimated_tokens_after),
             details: Some(crate::core::compaction::CompactionDetails::default()),
         })
+    }
+
+    /// Run a single compaction summarization LLM call, honoring the configured
+    /// retry policy (matching TS `completeSummarization`). Returns the summary
+    /// text, or a fallback string when no stream function is available.
+    async fn _summarize_for_compaction(
+        &self,
+        summarization_prompt: String,
+        fallback_message_count: usize,
+        reason: &str,
+    ) -> String {
+        use crate::core::compaction;
+
+        let Some(stream_fn) = self.agent.get_stream_fn() else {
+            return format!("Compacted {} messages", fallback_message_count);
+        };
+
+        let model = self.agent.state().await.model;
+        let llm_context = pi_agent_core::pi_ai_types::Context {
+            system_prompt: Some(compaction::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
+            messages: vec![pi_agent_core::pi_ai_types::Message::User {
+                content: vec![pi_agent_core::pi_ai_types::ContentBlock::text(
+                    &summarization_prompt,
+                )],
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            }],
+            tools: None,
+        };
+
+        // Retry policy from settings (match TS settingsManager.getRetrySettings()).
+        let retry_settings = self
+            .settings_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_retry_settings();
+        let retry_policy = pi_agent_core::pi_ai_types::RetryPolicy {
+            enabled: retry_settings.enabled.unwrap_or(true),
+            max_retries: retry_settings.max_retries.unwrap_or(0),
+            base_delay_ms: retry_settings.base_delay_ms.unwrap_or(1000),
+        };
+        let callbacks = self._summarization_retry_callbacks("compaction", Some(reason.to_string()));
+
+        let produce = || {
+            let stream_fn = stream_fn.clone();
+            let model = model.clone();
+            let llm_context = llm_context.clone();
+            async move {
+                // Summaries are standalone requests: fresh routing session ID
+                // + cacheRetention "none" (match TS #6618).
+                let fn_options = pi_agent_core::types::StreamFnOptions {
+                    cache_retention: Some(pi_agent_core::pi_ai_types::CacheRetention::None),
+                    session_id: Some(pi_agent_core::pi_ai_types::uuid_v7()),
+                    ..Default::default()
+                };
+                consume_stream_to_message(stream_fn, model, llm_context, fn_options).await
+            }
+        };
+        let result = pi_agent_core::pi_ai_types::retry_assistant_call(
+            produce,
+            Some(retry_policy),
+            None,
+            Some(&callbacks),
+        )
+        .await;
+
+        let mut full_text = String::new();
+        for block in &result.content {
+            if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = block {
+                full_text.push_str(text);
+            }
+        }
+        if full_text.trim().is_empty() {
+            format!(
+                "Compacted {} messages (summary generation unavailable)",
+                fallback_message_count
+            )
+        } else {
+            full_text
+        }
     }
 
     // =========================================================================
@@ -5410,17 +5490,23 @@ impl AgentSession {
     }
 
     /// Set auto-compaction enabled, matching TS setAutoCompactionEnabled().
+    /// Persists the preference and updates the runtime compaction settings that
+    /// the trigger check (`check_auto_compact` -> `should_compact`) actually
+    /// reads, so the toggle takes effect immediately.
     pub fn set_auto_compaction_enabled(&self, enabled: bool) {
         if let Ok(mut sm) = self.settings_manager.lock() {
             sm.set_compaction_enabled(enabled);
+        }
+        if let Ok(mut s) = self.compaction_settings.lock() {
+            s.compact_on_threshold = enabled;
         }
     }
 
     /// Whether auto-compaction is enabled, matching TS `get autoCompactionEnabled()`.
     pub fn auto_compaction_enabled(&self) -> bool {
-        self.settings_manager
+        self.compaction_settings
             .lock()
-            .map(|sm| sm.get_compaction_enabled())
+            .map(|s| s.compact_on_threshold)
             .unwrap_or(true)
     }
 

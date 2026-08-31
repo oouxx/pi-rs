@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason, Usage};
-use pi_agent_core::types::AgentMessage;
+use pi_agent_core::types::{AgentMessage, CustomContent};
 use serde::Serialize;
 
 use crate::core::messages;
+use crate::core::session_manager::SessionEntry;
 
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a summarization assistant. Your job is to create concise summaries of coding agent conversations.
 
@@ -41,17 +42,22 @@ Be concise. Focus on what's needed to understand the kept suffix."#;
 
 #[derive(Debug, Clone)]
 pub struct CompactionSettings {
+    // Tokens reserved for the LLM's response. Compaction triggers once the
+    // context grows within this margin of the window (matches TS default 16384).
     pub reserve_tokens: u64,
+    // Whether automatic threshold compaction is enabled (TS `enabled`).
     pub compact_on_threshold: bool,
-    pub threshold_ratio: f64,
+    // Recent-context tokens to retain (not summarized), matching TS
+    // `keepRecentTokens` (default 20000).
+    pub keep_recent_tokens: u64,
 }
 
 impl Default for CompactionSettings {
     fn default() -> Self {
         Self {
-            reserve_tokens: 30000,
+            reserve_tokens: 16384,
             compact_on_threshold: true,
-            threshold_ratio: 0.8,
+            keep_recent_tokens: 20000,
         }
     }
 }
@@ -107,85 +113,297 @@ pub fn should_compact(
     if !settings.compact_on_threshold {
         return false;
     }
-    let threshold = (context_window as f64 * settings.threshold_ratio) as u64;
-    total_tokens >= threshold
+    // Matches TS `shouldCompact`: contextTokens > contextWindow - reserveTokens.
+    let threshold = context_window.saturating_sub(settings.reserve_tokens);
+    total_tokens > threshold
 }
 
-pub fn find_compaction_cut_point(
-    messages: &[AgentMessage],
-    keep_recent_turns: usize,
-) -> CompactionCutPoint {
-    let mut turn_starts: Vec<usize> = Vec::new();
+/// Map a session entry to its contribution to the LLM context, matching TS
+/// `sessionEntryToContextMessages`. Entry types that don't contribute context
+/// (model changes, thinking-level changes, labels, etc.) produce no messages.
+pub fn session_entry_to_context_messages(entry: &SessionEntry) -> Vec<AgentMessage> {
+    match entry {
+        SessionEntry::Message { message, .. } => match serde_json::from_value(message.clone()) {
+            Ok(m) => vec![m],
+            Err(_) => Vec::new(),
+        },
+        SessionEntry::Compaction {
+            summary,
+            tokens_before,
+            timestamp,
+            ..
+        } => vec![AgentMessage::CompactionSummary {
+            summary: summary.clone(),
+            tokens_before: *tokens_before,
+            timestamp: entry_timestamp_ms(timestamp),
+        }],
+        SessionEntry::BranchSummary {
+            summary,
+            from_id,
+            timestamp,
+            ..
+        } => vec![AgentMessage::BranchSummary {
+            summary: summary.clone(),
+            from_id: from_id.clone(),
+            timestamp: entry_timestamp_ms(timestamp),
+        }],
+        SessionEntry::CustomMessage {
+            custom_type,
+            content,
+            display,
+            details,
+            timestamp,
+            ..
+        } => {
+            let content = match content {
+                serde_json::Value::String(s) => CustomContent::Text(s.clone()),
+                other => CustomContent::Blocks(
+                    serde_json::from_value(other.clone()).unwrap_or_default(),
+                ),
+            };
+            vec![AgentMessage::Custom {
+                custom_type: custom_type.clone(),
+                content,
+                display: *display,
+                details: details.clone(),
+                timestamp: entry_timestamp_ms(timestamp),
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
 
-    for (i, msg) in messages.iter().enumerate() {
-        match msg {
-            AgentMessage::User { .. } => {
-                turn_starts.push(i);
-            }
-            AgentMessage::BranchSummary { .. } | AgentMessage::CompactionSummary { .. } => {
-                turn_starts.push(i);
-            }
-            _ => {}
+fn entry_timestamp_ms(ts: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
+}
+
+fn is_turn_start_msg(msg: &AgentMessage) -> bool {
+    matches!(
+        msg,
+        AgentMessage::User { .. }
+            | AgentMessage::BashExecution { .. }
+            | AgentMessage::Custom { .. }
+            | AgentMessage::BranchSummary { .. }
+            | AgentMessage::CompactionSummary { .. }
+    )
+}
+
+fn is_cut_point_msg(msg: &AgentMessage) -> bool {
+    matches!(
+        msg,
+        AgentMessage::User { .. }
+            | AgentMessage::Assistant { .. }
+            | AgentMessage::BashExecution { .. }
+            | AgentMessage::Custom { .. }
+            | AgentMessage::BranchSummary { .. }
+            | AgentMessage::CompactionSummary { .. }
+    )
+}
+
+fn is_turn_start_entry(entry: &SessionEntry) -> bool {
+    session_entry_to_context_messages(entry)
+        .iter()
+        .any(is_turn_start_msg)
+}
+
+/// Find the context-visible turn-starting index for the entry at
+/// `entry_index`, searching back to `start`. Returns -1 when none is found.
+fn find_turn_start_index(entries: &[SessionEntry], entry_index: usize, start: usize) -> i64 {
+    for i in (start..=entry_index).rev() {
+        if is_turn_start_entry(&entries[i]) {
+            return i as i64;
         }
     }
+    -1
+}
 
-    if turn_starts.len() <= keep_recent_turns || keep_recent_turns == 0 {
+/// Find valid cut points: entry indices whose context-visible messages can be
+/// cut at. Never cut at tool results (they must stay with their tool call).
+fn find_valid_cut_points(entries: &[SessionEntry], start: usize, end: usize) -> Vec<usize> {
+    (start..end)
+        .filter(|&i| {
+            session_entry_to_context_messages(&entries[i])
+                .iter()
+                .any(is_cut_point_msg)
+        })
+        .collect()
+}
+
+/// Find the compaction cut point that keeps approximately `keep_recent_tokens`
+/// of recent context (matching TS `findCutPoint`).
+pub fn find_cut_point(
+    entries: &[SessionEntry],
+    start_index: usize,
+    end_index: usize,
+    keep_recent_tokens: u64,
+) -> CompactionCutPoint {
+    let cut_points = find_valid_cut_points(entries, start_index, end_index);
+
+    if cut_points.is_empty() {
         return CompactionCutPoint {
             turn_start_index: 0,
-            first_kept_entry_index: 0,
+            first_kept_entry_index: start_index,
             is_split_turn: false,
         };
     }
 
-    let cut_turn = turn_starts.len() - keep_recent_turns;
-    let turn_start_index = turn_starts[cut_turn];
+    let mut accumulated_tokens: u64 = 0;
+    let mut cut_index = cut_points[0];
+
+    for i in (start_index..end_index).rev() {
+        let message_tokens: u64 = session_entry_to_context_messages(&entries[i])
+            .iter()
+            .map(|m| estimate_agent_messages_tokens(std::slice::from_ref(m)))
+            .sum();
+        if message_tokens == 0 {
+            continue;
+        }
+        accumulated_tokens += message_tokens;
+        if accumulated_tokens >= keep_recent_tokens {
+            for &c in &cut_points {
+                if c >= i {
+                    cut_index = c;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    // Scan backwards from cut_index to include adjacent metadata entries that
+    // do not contribute context (matching TS).
+    while cut_index > start_index {
+        let prev = &entries[cut_index - 1];
+        if matches!(prev, SessionEntry::Compaction { .. })
+            || !session_entry_to_context_messages(prev).is_empty()
+        {
+            break;
+        }
+        cut_index -= 1;
+    }
+
+    let cut_entry = &entries[cut_index];
+    let starts_turn = is_turn_start_entry(cut_entry);
+    let turn_start_index = if starts_turn {
+        -1
+    } else {
+        find_turn_start_index(entries, cut_index, start_index)
+    };
 
     CompactionCutPoint {
-        turn_start_index: 0,
-        first_kept_entry_index: turn_start_index,
-        is_split_turn: false,
+        turn_start_index: if turn_start_index < 0 {
+            0
+        } else {
+            turn_start_index as usize
+        },
+        first_kept_entry_index: cut_index,
+        is_split_turn: !starts_turn && turn_start_index >= 0,
     }
 }
 
+/// Prepare compaction from session branch entries, matching TS
+/// `prepareCompaction`. Returns `None` when compaction is not applicable (the
+/// leaf is already a compaction, or there is nothing to summarize).
 pub fn prepare_compaction(
-    messages: &[AgentMessage],
-    keep_recent_turns: usize,
-    settings: CompactionSettings,
-) -> CompactionPreparation {
-    let cut_point = find_compaction_cut_point(messages, keep_recent_turns);
+    path_entries: &[SessionEntry],
+    settings: &CompactionSettings,
+) -> Option<CompactionPreparation> {
+    if path_entries
+        .last()
+        .is_some_and(|e| matches!(e, SessionEntry::Compaction { .. }))
+    {
+        return None;
+    }
 
-    let messages_to_summarize: Vec<AgentMessage> = messages[..cut_point.first_kept_entry_index]
+    let mut prev_compaction_index: i64 = -1;
+    for (i, e) in path_entries.iter().enumerate().rev() {
+        if matches!(e, SessionEntry::Compaction { .. }) {
+            prev_compaction_index = i as i64;
+            break;
+        }
+    }
+
+    let mut previous_summary: Option<String> = None;
+    let mut boundary_start = 0usize;
+    if prev_compaction_index >= 0 {
+        let prev = &path_entries[prev_compaction_index as usize];
+        if let SessionEntry::Compaction {
+            summary,
+            first_kept_entry_id,
+            ..
+        } = prev
+        {
+            previous_summary = Some(summary.clone());
+            let first_kept_global =
+                path_entries.iter().position(|e| e.id() == *first_kept_entry_id);
+            boundary_start = match first_kept_global {
+                Some(i) => i,
+                None => prev_compaction_index as usize + 1,
+            };
+        }
+    }
+    let boundary_end = path_entries.len();
+
+    let context_messages: Vec<AgentMessage> = path_entries
         .iter()
-        .filter_map(|m| match m {
-            AgentMessage::BashExecution {
-                exclude_from_context,
-                ..
-            } if exclude_from_context.unwrap_or(false) => None,
-            _ => Some(m.clone()),
-        })
+        .flat_map(session_entry_to_context_messages)
         .collect();
+    let tokens_before = estimate_agent_messages_tokens(&context_messages);
 
-    let previous_summary = messages.iter().find_map(|m| match m {
-        AgentMessage::CompactionSummary { summary, .. } => Some(summary.clone()),
-        _ => None,
-    });
+    let cut = find_cut_point(
+        path_entries,
+        boundary_start,
+        boundary_end,
+        settings.keep_recent_tokens,
+    );
 
-    let file_ops = extract_file_operations(messages, None);
+    let first_kept_entry_id = path_entries
+        .get(cut.first_kept_entry_index)
+        .map(|e| e.id().to_string())?;
 
-    let first_kept_entry_id = messages
-        .get(cut_point.first_kept_entry_index)
-        .map(|_| format!("entry-{}", cut_point.first_kept_entry_index));
+    let history_end = if cut.is_split_turn {
+        cut.turn_start_index
+    } else {
+        cut.first_kept_entry_index
+    };
+    let history_lo = boundary_start.min(history_end);
+    let history_hi = history_end.max(boundary_start).min(boundary_end);
 
-    CompactionPreparation {
-        first_kept_entry_id,
+    let mut messages_to_summarize: Vec<AgentMessage> = Vec::new();
+    for e in &path_entries[history_lo..history_hi] {
+        if matches!(e, SessionEntry::Compaction { .. }) {
+            continue;
+        }
+        messages_to_summarize.extend(session_entry_to_context_messages(e));
+    }
+
+    let turn_prefix_messages: Vec<AgentMessage> = if cut.is_split_turn {
+        path_entries[cut.turn_start_index..cut.first_kept_entry_index]
+            .iter()
+            .flat_map(session_entry_to_context_messages)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if messages_to_summarize.is_empty() && turn_prefix_messages.is_empty() {
+        return None;
+    }
+
+    let file_ops = extract_file_operations(&messages_to_summarize, None);
+
+    Some(CompactionPreparation {
+        first_kept_entry_id: Some(first_kept_entry_id),
         messages_to_summarize,
-        turn_prefix_messages: Vec::new(),
-        is_split_turn: cut_point.is_split_turn,
-        tokens_before: 0,
+        turn_prefix_messages,
+        is_split_turn: cut.is_split_turn,
+        tokens_before,
         previous_summary,
         file_ops,
-        settings,
-    }
+        settings: settings.clone(),
+    })
 }
 
 fn extract_file_operations(
@@ -292,6 +510,37 @@ pub fn build_summarization_prompt(
     ));
 
     prompt
+}
+
+/// Build the summarization prompt for a split turn's prefix (matching TS
+/// `TURN_PREFIX_SUMMARIZATION_PROMPT`).
+pub fn build_turn_prefix_summarization_prompt(messages: &[AgentMessage]) -> String {
+    let llm_messages = messages::convert_to_llm(messages);
+    let conversation_text = serialize_conversation(&llm_messages);
+    format!(
+        "<conversation>\n{}\n</conversation>\n\n{}",
+        conversation_text, TURN_PREFIX_SUMMARIZATION_PROMPT
+    )
+}
+
+#[cfg(test)]
+fn messages_to_entries(messages: Vec<AgentMessage>) -> Vec<SessionEntry> {
+    let mut previous: Option<String> = None;
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let id = format!("entry-{}", i);
+            let entry = SessionEntry::Message {
+                id: id.clone(),
+                parent_id: previous.clone(),
+                timestamp: format!("t{}", i),
+                message: serde_json::to_value(m).unwrap(),
+            };
+            previous = Some(id);
+            entry
+        })
+        .collect()
 }
 
 fn serialize_conversation(messages: &[Message]) -> String {
@@ -656,9 +905,10 @@ mod tests {
 
     #[test]
     fn test_should_compact() {
-        let settings = CompactionSettings::default();
-        assert!(should_compact(80000, 100000, &settings));
-        assert!(!should_compact(50000, 100000, &settings));
+        let settings = CompactionSettings::default(); // reserve_tokens = 16384
+        // threshold = 100_000 - 16_384 = 83_616
+        assert!(should_compact(90_000, 100_000, &settings));
+        assert!(!should_compact(80_000, 100_000, &settings));
     }
 
     #[test]
@@ -671,8 +921,8 @@ mod tests {
     }
 
     #[test]
-    fn test_find_compaction_cut_point() {
-        let messages = vec![
+    fn test_find_cut_point_respects_token_budget() {
+        let entries = messages_to_entries(vec![
             AgentMessage::User {
                 content: vec![ContentBlock::text("hello")],
                 timestamp: 1,
@@ -701,10 +951,17 @@ mod tests {
                 error_message: None,
                 timestamp: 4,
             },
-        ];
+        ]);
 
-        let cut = find_compaction_cut_point(&messages, 1);
+        // Small budget cuts into the history (keeps only the recent part).
+        let cut = find_cut_point(&entries, 0, entries.len(), 2);
         assert_eq!(cut.first_kept_entry_index, 2);
+        assert!(!cut.is_split_turn);
+
+        // Huge budget keeps everything.
+        let cut = find_cut_point(&entries, 0, entries.len(), u64::MAX);
+        assert_eq!(cut.first_kept_entry_index, 0);
+        assert!(!cut.is_split_turn);
     }
 
     #[test]
@@ -910,7 +1167,7 @@ mod tests {
 
 #[test]
 fn test_prepare_compaction_basic() {
-    let messages = vec![
+    let entries = messages_to_entries(vec![
         AgentMessage::User {
             content: vec![ContentBlock::text("hello")],
             timestamp: 1,
@@ -939,65 +1196,104 @@ fn test_prepare_compaction_basic() {
             error_message: None,
             timestamp: 4,
         },
-    ];
+    ]);
 
-    let settings = CompactionSettings::default();
-    let prep = prepare_compaction(&messages, 1, settings);
-    assert_eq!(prep.first_kept_entry_id, Some("entry-2".to_string()));
+    let settings = CompactionSettings {
+        keep_recent_tokens: 2,
+        ..Default::default()
+    };
+    let prep = prepare_compaction(&entries, &settings).expect("should prepare");
+    assert_eq!(prep.first_kept_entry_id.as_deref(), Some("entry-2"));
     assert_eq!(prep.messages_to_summarize.len(), 2);
     assert!(prep.previous_summary.is_none());
 }
 
 #[test]
 fn test_prepare_compaction_with_previous_summary() {
-    let messages = vec![
-        AgentMessage::User {
-            content: vec![ContentBlock::text("old user msg")],
-            timestamp: 1,
+    let entries = vec![
+        SessionEntry::Message {
+            id: "entry-0".into(),
+            parent_id: None,
+            timestamp: "t0".into(),
+            message: serde_json::to_value(AgentMessage::User {
+                content: vec![ContentBlock::text("first user message with plenty of context")],
+                timestamp: 1,
+            })
+            .unwrap(),
         },
-        AgentMessage::Assistant {
-            content: vec![ContentBlock::text("old assistant msg")],
-            api: "test".into(),
-            provider: "test".into(),
-            model: "test".into(),
-            usage: Default::default(),
-            stop_reason: None,
-            error_message: None,
-            timestamp: 2,
+        SessionEntry::Message {
+            id: "entry-1".into(),
+            parent_id: Some("entry-0".into()),
+            timestamp: "t1".into(),
+            message: serde_json::to_value(AgentMessage::Assistant {
+                content: vec![ContentBlock::text("first assistant reply too")],
+                api: "test".into(),
+                provider: "test".into(),
+                model: "test".into(),
+                usage: Default::default(),
+                stop_reason: None,
+                error_message: None,
+                timestamp: 2,
+            })
+            .unwrap(),
         },
-        AgentMessage::CompactionSummary {
+        SessionEntry::Compaction {
+            id: "entry-c".into(),
+            parent_id: Some("entry-1".into()),
+            timestamp: "t2".into(),
             summary: "Previous summary text".into(),
+            first_kept_entry_id: "entry-0".into(),
             tokens_before: 10000,
-            timestamp: 3,
+            details: None,
+            usage: None,
+            from_hook: None,
         },
-        AgentMessage::User {
-            content: vec![ContentBlock::text("new user msg")],
-            timestamp: 4,
+        SessionEntry::Message {
+            id: "entry-2".into(),
+            parent_id: Some("entry-c".into()),
+            timestamp: "t3".into(),
+            message: serde_json::to_value(AgentMessage::User {
+                content: vec![ContentBlock::text("new user msg")],
+                timestamp: 4,
+            })
+            .unwrap(),
         },
-        AgentMessage::Assistant {
-            content: vec![ContentBlock::text("new assistant msg")],
-            api: "test".into(),
-            provider: "test".into(),
-            model: "test".into(),
-            usage: Default::default(),
-            stop_reason: None,
-            error_message: None,
-            timestamp: 5,
+        SessionEntry::Message {
+            id: "entry-3".into(),
+            parent_id: Some("entry-2".into()),
+            timestamp: "t4".into(),
+            message: serde_json::to_value(AgentMessage::Assistant {
+                content: vec![ContentBlock::text("new assistant msg")],
+                api: "test".into(),
+                provider: "test".into(),
+                model: "test".into(),
+                usage: Default::default(),
+                stop_reason: None,
+                error_message: None,
+                timestamp: 5,
+            })
+            .unwrap(),
         },
     ];
 
-    let settings = CompactionSettings::default();
-    let prep = prepare_compaction(&messages, 1, settings);
+    let settings = CompactionSettings {
+        keep_recent_tokens: 2,
+        ..Default::default()
+    };
+    let prep = prepare_compaction(&entries, &settings).expect("should prepare");
     assert_eq!(
-        prep.previous_summary,
-        Some("Previous summary text".to_string())
+        prep.previous_summary.as_deref(),
+        Some("Previous summary text")
     );
-    assert!(prep.messages_to_summarize.len() >= 2);
+    assert!(!prep.messages_to_summarize.is_empty());
+    assert!(prep.first_kept_entry_id.is_some());
 }
 
 #[test]
-fn test_prepare_compaction_keep_all() {
-    let messages = vec![
+fn test_prepare_compaction_nothing_to_compact() {
+    // Tiny conversation and a huge budget means nothing falls outside the
+    // keepRecentTokens window, so there is nothing to summarize.
+    let entries = messages_to_entries(vec![
         AgentMessage::User {
             content: vec![ContentBlock::text("hello")],
             timestamp: 1,
@@ -1012,27 +1308,51 @@ fn test_prepare_compaction_keep_all() {
             error_message: None,
             timestamp: 2,
         },
-    ];
+    ]);
 
-    let settings = CompactionSettings::default();
-    let prep = prepare_compaction(&messages, 5, settings);
-    // With keep_recent_turns=5 and only 2 messages, everything should be kept
-    assert_eq!(prep.first_kept_entry_id, Some("entry-0".to_string()));
-    assert_eq!(prep.messages_to_summarize.len(), 0);
+    let settings = CompactionSettings {
+        keep_recent_tokens: 1_000_000,
+        ..Default::default()
+    };
+    assert!(prepare_compaction(&entries, &settings).is_none());
 }
 
 #[test]
-fn test_prepare_compaction_excludes_bash_execution() {
-    // Test that bash execution messages with exclude_from_context=true
-    // are filtered out from messages_to_summarize
+fn test_prepare_compaction_returns_none_when_leaf_is_compaction() {
+    let mut entries = messages_to_entries(vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hello")],
+            timestamp: 1,
+        },
+    ]);
+    entries.push(SessionEntry::Compaction {
+        id: "entry-c".into(),
+        parent_id: Some("entry-0".into()),
+        timestamp: "t1".into(),
+        summary: "summary".into(),
+        first_kept_entry_id: "entry-0".into(),
+        tokens_before: 5,
+        details: None,
+        usage: None,
+        from_hook: None,
+    });
+
+    let settings = CompactionSettings::default();
+    assert!(prepare_compaction(&entries, &settings).is_none());
+}
+
+#[test]
+fn test_summarization_prompt_excludes_excluded_bash() {
+    // Bash executions marked exclude_from_context are dropped at LLM conversion,
+    // so they must not leak into the summarization prompt.
     let messages = vec![
         AgentMessage::User {
             content: vec![ContentBlock::text("hello")],
             timestamp: 1,
         },
         AgentMessage::BashExecution {
-            command: "echo hello".into(),
-            output: "hello".into(),
+            command: "secret".into(),
+            output: "TOP_SECRET_OUTPUT".into(),
             exit_code: Some(0),
             timestamp: 2,
             exclude_from_context: Some(true),
@@ -1044,70 +1364,26 @@ fn test_prepare_compaction_excludes_bash_execution() {
             content: vec![ContentBlock::text("do something")],
             timestamp: 3,
         },
-        AgentMessage::Assistant {
-            content: vec![ContentBlock::text("done")],
-            api: "test".into(),
-            provider: "test".into(),
-            model: "test".into(),
-            usage: Default::default(),
-            stop_reason: None,
-            error_message: None,
-            timestamp: 4,
-        },
     ];
-
-    let settings = CompactionSettings::default();
-    let prep = prepare_compaction(&messages, 1, settings);
-    // With keep_recent_turns=1, the last user+assistant turn is kept (index 2-3),
-    // so messages_to_summarize has messages[0..2] = [User, BashExecution]
-    // BashExecution with exclude_from_context=true is filtered out, leaving 1
-    assert_eq!(prep.messages_to_summarize.len(), 1);
-    // The remaining message should be the user message, not the bash execution
-    match &prep.messages_to_summarize[0] {
-        AgentMessage::User { .. } => {} // expected
-        _ => panic!("Expected User message"),
-    }
+    let prompt = build_summarization_prompt(&messages, None, None);
+    assert!(!prompt.contains("TOP_SECRET_OUTPUT"));
 }
 
 // ============================================================
-// findCompactionCutPoint edge cases
+// findCutPoint edge cases
 // ============================================================
 
 #[test]
-fn test_find_compaction_cut_point_keep_all() {
-    let messages = vec![
-        AgentMessage::User {
-            content: vec![ContentBlock::text("hello")],
-            timestamp: 1,
-        },
-        AgentMessage::Assistant {
-            content: vec![ContentBlock::text("hi")],
-            api: "test".into(),
-            provider: "test".into(),
-            model: "test".into(),
-            usage: Default::default(),
-            stop_reason: None,
-            error_message: None,
-            timestamp: 2,
-        },
-    ];
-
-    let cut = find_compaction_cut_point(&messages, 5);
+fn test_find_cut_point_empty() {
+    let entries: Vec<SessionEntry> = vec![];
+    let cut = find_cut_point(&entries, 0, entries.len(), 5);
     assert_eq!(cut.first_kept_entry_index, 0);
     assert!(!cut.is_split_turn);
 }
 
 #[test]
-fn test_find_compaction_cut_point_empty() {
-    let messages: Vec<AgentMessage> = vec![];
-    let cut = find_compaction_cut_point(&messages, 1);
-    assert_eq!(cut.first_kept_entry_index, 0);
-    assert!(!cut.is_split_turn);
-}
-
-#[test]
-fn test_find_compaction_cut_point_with_branch_summary() {
-    let messages = vec![
+fn test_find_cut_point_treats_branch_summary_as_turn_start() {
+    let entries = messages_to_entries(vec![
         AgentMessage::BranchSummary {
             summary: "branch summary".into(),
             from_id: "entry-0".into(),
@@ -1141,11 +1417,13 @@ fn test_find_compaction_cut_point_with_branch_summary() {
             error_message: None,
             timestamp: 5,
         },
-    ];
+    ]);
 
-    // keep_recent_turns=1 should keep the last user+assistant pair
-    let cut = find_compaction_cut_point(&messages, 1);
+    // Small budget cuts before the last user turn, keeping the branch summary
+    // plus the recent tail.
+    let cut = find_cut_point(&entries, 0, entries.len(), 2);
     assert_eq!(cut.first_kept_entry_index, 3);
+    assert!(!cut.is_split_turn);
 }
 
 // ============================================================

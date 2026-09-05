@@ -619,6 +619,37 @@ pub struct Model {
     /// Hardware cursor position captured by `view()` for the line-level
     /// renderer (`line_screen`); consumed by the host after each frame.
     pub cursor_pos: Option<(u16, u16)>,
+    // ── TS pendingMessagesContainer（排队消息展示，dock 顶部）────────
+    /// 会话层排队中的 steering 文本（TS `session.getSteeringMessages()` 镜像，
+    /// 由 QueueUpdate 事件驱动更新）。
+    pub pending_steering: Vec<String>,
+    /// 会话层排队中的 follow-up 文本（TS `session.getFollowUpMessages()`）。
+    pub pending_follow_up: Vec<String>,
+    /// TUI 层压缩期间排队等待的消息（TS `compactionQueuedMessages`：
+    /// `(text, follow_up)` — follow_up=true 为 Alt+Enter 排队，false 为 Enter）。
+    pub compaction_queue: Vec<(String, bool)>,
+    /// 压缩进行中（TS CompactionStatusIndicator，status 区显示标签，
+    /// Esc 中止压缩）。
+    pub is_compacting: bool,
+    /// 压缩原因（TS CompactionStatusIndicator 标签文案：manual /
+    /// overflow / 其他）。
+    pub compaction_manual: bool,
+    pub compaction_overflow: bool,
+    /// 重试倒计时（TS RetryStatusIndicator + CountdownTimer）：auto_retry_start /
+    /// summarization_retry_scheduled 期间在 status 区显示，逐秒递减。
+    pub retry_status: Option<RetryStatus>,
+}
+
+/// 重试倒计时状态（TS RetryStatusIndicator）：`esc_aborts` 仅在 agent 自动
+/// 重试（auto_retry_start，TS 会替换 onEscape → abortRetry）时为真；压缩/
+/// 分支摘要的重试倒计时期间 Esc 仍走原链（TS 不替换 onEscape，压缩场景
+/// 下 abortCompaction）。
+pub struct RetryStatus {
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub delay_ms: u64,
+    pub started_at: std::time::Instant,
+    pub esc_aborts: bool,
 }
 
 impl Model {
@@ -643,6 +674,13 @@ impl Model {
             tool_output_expanded: false,
             last_ctrl_c: None,
             cursor_pos: None,
+            pending_steering: Vec::new(),
+            pending_follow_up: Vec::new(),
+            compaction_queue: Vec::new(),
+            is_compacting: false,
+            compaction_manual: false,
+            compaction_overflow: false,
+            retry_status: None,
         }
     }
 
@@ -718,6 +756,10 @@ pub enum Msg {
     SetToolOutput(String, String, String),
     SetToolTruncation(String, Option<ToolTruncation>),
     ClearScreen, InputNewline, Cancel,
+    /// Agent run 生命周期（TS `isStreaming = _isAgentRunActive`）：run 开始
+    /// 置位（含排队消息消费触发的续跑），结束复位。MessageEnd 只停单条
+    /// 消息的 spinner，run 级别的 spinner 由这两个事件驱动。
+    AgentStart, AgentEnd,
     // ── TS footer/header data ────────────────────────────────────────────
     SetSessionName(Option<String>),
     SetUsageTotals(UsageTotals),
@@ -734,6 +776,39 @@ pub enum Msg {
     /// 宿主异步计算的补全候选回填（`seq` 对齐 [`crate::components::Completer::request_seq`]，
     /// 过期结果被丢弃，等价 TS AbortController）。
     CompletionResults { seq: u64, items: Vec<CompletionItem> },
+    // ── TS 排队消息 / 压缩状态（消息排队对齐）──────────────────────────
+    /// 会话层排队镜像更新（TS `queue_update` 事件 → `updatePendingMessagesDisplay`）。
+    SetPendingQueues { steering: Vec<String>, follow_up: Vec<String> },
+    /// 压缩期间排队一条消息（TS `queueCompactionMessage`：入 TUI 层
+    /// compaction 队列，压缩结束后 flush）。
+    QueueCompactionMessage { text: String, follow_up: bool },
+    /// 压缩开始（TS `compaction_start` → CompactionStatusIndicator）。
+    CompactionStart { manual: bool, overflow: bool },
+    /// 压缩结束（TS `compaction_end` → 恢复 onEscape + 状态提示 +
+    /// flushCompactionQueue）。
+    CompactionEnd {
+        will_retry: bool,
+        aborted: bool,
+        manual: bool,
+        error_message: Option<String>,
+    },
+    /// 重试倒计时（TS RetryStatusIndicator + CountdownTimer：
+    /// `auto_retry_start` / `summarization_retry_scheduled`；后者附带
+    /// error_message 需要 showError）。
+    RetryCountdown {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: Option<String>,
+        esc_aborts: bool,
+    },
+    /// 重试结束（TS `auto_retry_end`：清指示器；失败时 showError）。
+    RetryEnd { success: bool, attempt: u32, final_error: Option<String> },
+    /// 摘要重试的一次尝试开始（TS `summarization_retry_attempt_start`：清
+    /// 倒计时，回落压缩指示器）。
+    RetryAttemptStart,
+    /// 摘要重试循环结束（TS `summarization_retry_finished`：清倒计时）。
+    RetryLoopEnd,
 }
 
 // ============================================================================
@@ -773,10 +848,42 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 m.stop_reason = stop_reason;
                 m.error_message = error_message;
             }
-            model.is_streaming = false;
+            // is_streaming 由 AgentStart/AgentEnd（run 级生命周期，TS
+            // `isStreaming = _isAgentRunActive`）驱动：同一 run 的多条消息
+            // 与工具执行之间保持 spinner，不随单条 MessageEnd 复位。
             vec![]
         }
         Msg::StreamEnd => { model.is_streaming = false; vec![] }
+        Msg::AgentStart => { model.is_streaming = true; vec![] }
+        Msg::AgentEnd => { model.is_streaming = false; vec![] }
+        Msg::SetPendingQueues { steering, follow_up } => {
+            model.pending_steering = steering;
+            model.pending_follow_up = follow_up;
+            vec![]
+        }
+        Msg::QueueCompactionMessage { text, follow_up } => {
+            model.compaction_queue.push((text, follow_up));
+            vec![]
+        }
+        Msg::CompactionStart { manual, overflow } => {
+            model.is_compacting = true;
+            model.compaction_manual = manual;
+            model.compaction_overflow = overflow;
+            vec![]
+        }
+        Msg::CompactionEnd { .. } => { model.is_compacting = false; vec![] }
+        Msg::RetryCountdown { attempt, max_attempts, delay_ms, error_message: _, esc_aborts } => {
+            model.retry_status = Some(RetryStatus {
+                attempt,
+                max_attempts,
+                delay_ms,
+                started_at: std::time::Instant::now(),
+                esc_aborts,
+            });
+            vec![]
+        }
+        Msg::RetryEnd { .. } => { model.retry_status = None; vec![] }
+        Msg::RetryAttemptStart | Msg::RetryLoopEnd => { model.retry_status = None; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
         Msg::ToolStart(call_id, name, args) => { model.add_tool_call(&call_id, &name, &args); vec![] }
@@ -1142,12 +1249,13 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         render_fullscreen_editor(model, frame, area, &title, &t);
         return;
     }
-    let (status_h, editor_h, footer_h) = dock_heights(model, area);
-    let chunks = Layout::new(Direction::Vertical, [Constraint::Min(1), Constraint::Length(status_h), Constraint::Length(editor_h), Constraint::Length(footer_h)]).split(area);
+    let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
+    let chunks = Layout::new(Direction::Vertical, [Constraint::Min(1), Constraint::Length(pending_h), Constraint::Length(status_h), Constraint::Length(editor_h), Constraint::Length(footer_h)]).split(area);
     render_body(model, frame, chunks[0], &t);
-    render_status(model, frame, chunks[1], &t);
-    render_input(model, frame, chunks[2], &t);
-    render_footer(model, frame, chunks[3], &t);
+    render_pending_messages(model, frame, chunks[1], &t);
+    render_status(model, frame, chunks[2], &t);
+    render_input(model, frame, chunks[3], &t);
+    render_footer(model, frame, chunks[4], &t);
     if model.dialog.is_some() { render_dialog(model, frame, area, &t); return; }
     if let AppMode::Select { list, .. } = &model.mode {
         // Overlays center inside the terminal area (alt screen = the
@@ -1165,7 +1273,8 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
 /// borders, the footer is two rows. The transcript keeps at least one row.
 /// While the completion menu is open it renders inside the editor (TS
 /// SelectList), so the editor grows by the menu rows too.
-fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16) {
+fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16, u16) {
+    let pending_h = pending_rows(model);
     let status_h = 2u16;
     let footer_h = 2u16;
     let content = input_layout_rows(&model.input, editor_layout_width(area.width)).0.len() as u16;
@@ -1176,9 +1285,51 @@ fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16) {
     let visible = content.clamp(1, max_visible);
     let completion = completer_rows(&model.completer);
     let editor_h = 1 + visible + completion + 1;
-    let available = area.height.saturating_sub(1).saturating_sub(status_h + footer_h);
+    let available = area.height.saturating_sub(1).saturating_sub(status_h + footer_h + pending_h);
     let editor_h = editor_h.min(available.max(3));
-    (status_h, editor_h.max(3), footer_h)
+    (pending_h, status_h, editor_h.max(3), footer_h)
+}
+
+/// Rows for the queued-messages area (TS `pendingMessagesContainer`: the
+/// first dock slot above the status line). Each entry renders as one
+/// truncated dim line; a spacer row leads and the dequeue hint trails.
+/// Zero height when nothing is queued (TS `minSize: 0`).
+fn pending_rows(model: &Model) -> u16 {
+    let n = model.pending_steering.len()
+        + model.pending_follow_up.len()
+        + model.compaction_queue.len();
+    if n == 0 { 0 } else { (1 + n + 1) as u16 }
+}
+
+/// TS `updatePendingMessagesDisplay`: dim `Steering: …` / `Follow-up: …`
+/// lines (session queues first, then the compaction queue split by mode,
+/// matching `getAllQueuedMessages` order) + the `↳ alt+up` dequeue hint.
+fn render_pending_messages(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
+    if area.height == 0 { return; }
+    let dim = Style::new().fg(t.dim);
+    // Leading spacer row (TS `new Spacer(1)` before the first entry).
+    if area.height > 1 {
+        frame.render_widget(Paragraph::new(Line::raw("")), Rect::new(area.x, area.y, area.width, 1));
+    }
+    let mut y = area.y + 1;
+    let put = |y: &mut u16, text: String, frame: &mut Frame| {
+        if *y >= area.y + area.height.saturating_sub(1) { return; }
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), Rect::new(area.x, *y, area.width, 1));
+        *y += 1;
+    };
+    for msg in &model.pending_steering {
+        put(&mut y, format!("Steering: {msg}"), frame);
+    }
+    for (msg, follow_up) in &model.compaction_queue {
+        if !*follow_up { put(&mut y, format!("Steering: {msg}"), frame); }
+    }
+    for msg in &model.pending_follow_up {
+        put(&mut y, format!("Follow-up: {msg}"), frame);
+    }
+    for (msg, follow_up) in &model.compaction_queue {
+        if *follow_up { put(&mut y, format!("Follow-up: {msg}"), frame); }
+    }
+    put(&mut y, "↳ alt+up to edit all queued messages".to_string(), frame);
 }
 
 /// Rows the completion menu occupies inside the editor (TS SelectList:
@@ -1207,13 +1358,44 @@ fn editor_layout_width(area_width: u16) -> usize {
 fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     if area.height == 0 { return; }
     let busy = model.is_streaming
+        || model.is_compacting
+        || model.retry_status.is_some()
         || model
             .active_tools
             .iter()
             .any(|t| matches!(t.state, ToolCallState::Running | ToolCallState::Pending));
     // Row 0 is a blank spacer row (TS Loader renders `["", spinner line]`).
     if area.height > 1 {
-        let line = if busy {
+        let line = if let Some(retry) = &model.retry_status {
+            // TS RetryStatusIndicator + CountdownTimer：warning 色 spinner +
+            // 逐秒递减的 `Retrying (n/m) in Xs... (esc to cancel)`。
+            let elapsed = retry.started_at.elapsed().as_millis() as u64;
+            let remaining = retry.delay_ms.saturating_sub(elapsed).div_ceil(1000);
+            let label = format!(
+                "Retrying ({}/{}) in {}s... (esc to cancel)",
+                retry.attempt, retry.max_attempts, remaining
+            );
+            let ch = SPINNER[(model.tick / 3) as usize % SPINNER.len()];
+            Line::from(vec![
+                Span::styled(format!("{ch} "), Style::new().fg(t.warning)),
+                Span::styled(label, Style::new().fg(t.muted)),
+            ])
+        } else if model.is_compacting {
+            // TS CompactionStatusIndicator: manual / overflow / auto labels
+            // with the interrupt hint.
+            let label = if model.compaction_manual {
+                "Compacting context... (esc to cancel)".to_string()
+            } else if model.compaction_overflow {
+                "Context overflow detected, Auto-compacting... (esc to cancel)".to_string()
+            } else {
+                "Auto-compacting... (esc to cancel)".to_string()
+            };
+            let ch = SPINNER[(model.tick / 3) as usize % SPINNER.len()];
+            Line::from(vec![
+                Span::styled(format!("{ch} "), Style::new().fg(t.accent)),
+                Span::styled(label, Style::new().fg(t.muted)),
+            ])
+        } else if busy {
             let ch = SPINNER[(model.tick / 3) as usize % SPINNER.len()];
             Line::from(vec![
                 Span::styled(format!("{ch} "), Style::new().fg(t.accent)),

@@ -407,6 +407,65 @@ pub enum AgentSessionEvent {
 /// Listener function for agent session events.
 pub type AgentSessionEventListener = Arc<dyn Fn(AgentSessionEvent) + Send + Sync>;
 
+/// 队列镜像句柄（与 [`AgentSession`] 的 steering/follow-up 镜像共享同一
+/// Arc），供 TUI 按键时刻无锁入队。
+pub type QueueMirrorHandle = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// 无锁压缩中止句柄（对齐 TS `session.abortCompaction()`）：压缩运行在持有
+/// session tokio 锁的后台任务里，经命令通道中止会排在锁后面永远执行不到；
+/// 句柄只碰 std Mutex + watch sender，TUI Esc 可即时中止。字段与
+/// [`AgentSession`] 的 `compaction_abort` / `auto_compaction_abort` 共享同一
+/// Arc，句柄中止即会话中止。
+#[derive(Clone, Default)]
+pub struct CompactionAbortHandle {
+    compaction: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    auto_compaction: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+}
+
+impl CompactionAbortHandle {
+    /// Cancel in-progress compaction (manual or auto), matching TS abortCompaction().
+    pub fn abort(&self) {        if let Some(sender) = self
+            .compaction
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = sender.send(true);
+        }
+        if let Some(sender) = self
+            .auto_compaction
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = sender.send(true);
+        }
+    }
+}
+
+/// 无锁重试中止句柄（对齐 TS `session.abortRetry()`）：重试退避运行在持有
+/// session tokio 锁的任务里，经命令通道中止会排在锁后面；句柄只碰 std
+/// Mutex + watch sender，TUI Esc 可即时中止。中止时 `_prepare_retry` 的
+/// watch 分支会发出 `AutoRetryEnd(success=false)` 清理 UI。
+#[derive(Clone, Default)]
+pub struct RetryAbortHandle {
+    retry: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+}
+
+impl RetryAbortHandle {
+    /// Cancel in-progress retry backoff, matching TS abortRetry().
+    pub fn abort(&self) {
+        if let Some(sender) = self
+            .retry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = sender.send(true);
+        }
+    }
+}
+
 /// Handle returned by [`AgentSession::subscribe_session_events`].
 /// Call `unsubscribe()` to stop receiving events.
 pub struct SessionEventUnsubscribeHandle {
@@ -3088,6 +3147,22 @@ impl AgentSession {
             return Ok(());
         }
 
+        // TS prompt(): a prompt submitted while a MANUAL compaction is in
+        // progress throws — the interactive TUI queues submissions at its own
+        // level (compactionQueuedMessages) instead of calling prompt(); RPC /
+        // programmatic callers surface this error to the client.
+        if self
+            .compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            return Err(
+                "Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry."
+                    .to_string(),
+            );
+        }
+
         // Emit input event for extension interception (before skill/template expansion),
         // matching TS prompt() which emits input event before expansion.
         let (current_text, current_images) = if let Some(ref registry) = self.extension_registry {
@@ -4251,11 +4326,46 @@ References are relative to {}.
         // isn't processed / persisted).
         self._disconnect_from_agent().await;
         self.abort().await;
+        // Register the manual-compaction abort signal (matching TS
+        // `_compactionAbortController = new AbortController()`): makes
+        // `is_compacting()` true, lets `abort_compaction()` cancel it, and
+        // makes `prompt()` throw while it runs (TS parity). The
+        // summarization request itself is not cancellable mid-flight in
+        // this port; the signal is checked after the call (matching TS
+        // `signal.aborted` handling in compact()).
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        *self
+            .compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
         let result = self
             ._compact_inner(custom_instructions, CompactionReason::Manual)
             .await;
+        let aborted = *rx.borrow();
+        // Clear before emitting compaction_end so listeners see
+        // isCompacting == false (matching TS #3852cb2b8).
+        self.compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        // Emit compaction_end (matching TS compact()'s finally-block emit;
+        // the auto path emits its own).
+        let (result_value, error_message) = match &result {
+            Ok(r) => (Some(r.clone()), None),
+            Err(e) => (None, Some(e.clone())),
+        };
+        self._emit(AgentSessionEvent::CompactionEnd {
+            reason: CompactionReason::Manual,
+            result: result_value,
+            aborted,
+            will_retry: false,
+            error_message,
+        });
         // Reconnect (matching TS _reconnectToAgent() in the finally block).
         self._reconnect_to_agent().await;
+        if aborted {
+            return Err("Compaction cancelled".to_string());
+        }
         result
     }
 
@@ -4743,6 +4853,16 @@ References are relative to {}.
         (steering, follow_up)
     }
 
+    /// Lock-free queue mirror handles for the interactive TUI: the command
+    /// task holds the session mutex for the whole run, so keypress-time
+    /// queueing (TS synchronous isStreaming check → `_queueSteer`/
+    /// `_queueFollowUp`) must bypass it. The handles share the same Arcs as
+    /// the session mirrors, keeping consumption matching and QueueUpdate
+    /// events accurate.
+    pub fn queue_mirror_handles(&self) -> (QueueMirrorHandle, QueueMirrorHandle) {
+        (self.steering_messages.clone(), self.follow_up_messages.clone())
+    }
+
     /// Retry the last turn, matching original retry().
     /// Returns the new messages on success.
     pub async fn retry(
@@ -4763,11 +4883,27 @@ References are relative to {}.
 
     /// Cancel in-progress compaction (manual or auto), matching TS abortCompaction().
     pub fn abort_compaction(&self) {
-        if let Some(sender) = self.compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = sender.send(true);
+        self.compaction_abort_handle().abort();
+    }
+
+    /// Lock-free abort handle for the TUI: compaction runs while the command
+    /// task holds the session mutex, so an abort routed through the command
+    /// channel would queue behind the lock; the handle touches only sync
+    /// mutexes and can cancel immediately.
+    pub fn compaction_abort_handle(&self) -> CompactionAbortHandle {
+        CompactionAbortHandle {
+            compaction: self.compaction_abort.clone(),
+            auto_compaction: self.auto_compaction_abort.clone(),
         }
-        if let Some(sender) = self.auto_compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = sender.send(true);
+    }
+
+    /// Lock-free retry-abort handle for the TUI (see [`RetryAbortHandle`]).
+    /// Aborting makes `_prepare_retry`'s watch branch fire
+    /// `AutoRetryEnd(success=false)`, which clears the countdown and
+    /// surfaces "Retry cancelled" (TS parity).
+    pub fn retry_abort_handle(&self) -> RetryAbortHandle {
+        RetryAbortHandle {
+            retry: self.retry_abort.clone(),
         }
     }
 

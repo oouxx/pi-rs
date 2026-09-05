@@ -33,6 +33,12 @@ const CHILD_ENV: &str = "PI_TUI_E2E_CHILD";
 const TOOLS2_ENV: &str = "PI_TUI_E2E_TWO_TOOLS";
 const LONG_ENV: &str = "PI_TUI_E2E_LONG_STREAM";
 const BIG_ENV: &str = "PI_TUI_E2E_BIG_STREAM";
+/// Queue-stream mock: round 1 streams slowly (follow-up queueing window);
+/// rounds 2+ answer instantly with the round number in the reply.
+const QUEUE_ENV: &str = "PI_TUI_E2E_QUEUE_STREAM";
+/// Retry mock: first stream call fails with a retryable 503; later calls
+/// answer instantly (provider-retry display + Esc aborts the backoff).
+const RETRY_ENV: &str = "PI_TUI_E2E_RETRY_STREAM";
 const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
 const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
 const MOCK_REPLY: &str = "Hello from the mock LLM!";
@@ -210,6 +216,110 @@ fn mock_big_stream_fn() -> StreamFn {
     })
 }
 
+/// Queue-stream mock: round 1 streams 15 deltas at 150 ms (a window for
+/// the parent to queue follow-ups mid-run); rounds 2+ answer instantly.
+/// The reply text encodes the round number so the parent can tell turns
+/// apart ("Reply number 1" = first run, etc.).
+fn queue_mock_stream_fn() -> StreamFn {
+    let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Arc::new(move |_model, _context, _thinking, _options: StreamFnOptions| {
+        let round = round.clone();
+        Box::pin(async move {
+            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n == 1 {
+                let stream = futures::stream::unfold(
+                    (false, String::new(), 0u32, false),
+                    move |(mut started, mut text, mut i, mut done)| {
+                        Box::pin(async move {
+                            if done {
+                                return None;
+                            }
+                            let ev = if i >= 15 {
+                                done = true;
+                                let mut final_msg = partial_msg(&text);
+                                final_msg.stop_reason = StopReason::Stop;
+                                AssistantMessageEvent::Done {
+                                    reason: StopReason::Stop,
+                                    message: final_msg,
+                                }
+                            } else if !started {
+                                started = true;
+                                AssistantMessageEvent::Start {
+                                    partial: partial_msg(""),
+                                }
+                            } else {
+                                i += 1;
+                                text.push_str("slow ");
+                                AssistantMessageEvent::TextDelta {
+                                    content_index: 0,
+                                    delta: "slow ".to_string(),
+                                    partial: partial_msg(&text),
+                                }
+                            };
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                            Some((ev, (started, text, i, done)))
+                        })
+                    },
+                );
+                Ok(Box::new(stream) as StreamResponse)
+            } else {
+                let reply = format!("Reply number {n}");
+                let mut final_msg = partial_msg(&reply);
+                final_msg.stop_reason = StopReason::Stop;
+                let events = vec![
+                    AssistantMessageEvent::Start {
+                        partial: partial_msg(""),
+                    },
+                    AssistantMessageEvent::TextEnd {
+                        content_index: 0,
+                        content: reply.clone(),
+                        partial: partial_msg(&reply),
+                    },
+                    AssistantMessageEvent::Done {
+                        reason: StopReason::Stop,
+                        message: final_msg,
+                    },
+                ];
+                Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+            }
+        })
+    })
+}
+
+/// Retry mock: stream call 1 fails with a retryable provider error (503),
+/// later calls succeed instantly with `Reply number {n}`. Exercises the
+/// auto-retry countdown display and Esc-abort (TS RetryStatusIndicator).
+fn retry_mock_stream_fn() -> StreamFn {
+    let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Arc::new(move |_model, _context, _thinking, _options: StreamFnOptions| {
+        let round = round.clone();
+        Box::pin(async move {
+            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n == 1 {
+                return Err("provider returned error: 503 service unavailable".into());
+            }
+            let reply = format!("Reply number {n}");
+            let mut final_msg = partial_msg(&reply);
+            final_msg.stop_reason = StopReason::Stop;
+            let events = vec![
+                AssistantMessageEvent::Start {
+                    partial: partial_msg(""),
+                },
+                AssistantMessageEvent::TextEnd {
+                    content_index: 0,
+                    content: reply.clone(),
+                    partial: partial_msg(&reply),
+                },
+                AssistantMessageEvent::Done {
+                    reason: StopReason::Stop,
+                    message: final_msg,
+                },
+            ];
+            Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+        })
+    })
+}
+
 /// Create an AgentSession wired to the mock LLM.
 async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSession {
     let mut opts = CreateAgentSessionOptions::default();
@@ -217,6 +327,10 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     opts.agent_dir = Some(std::env::temp_dir().display().to_string());
     opts.stream_fn = Some(if std::env::var(BIG_ENV).is_ok() {
         mock_big_stream_fn()
+    } else if std::env::var(QUEUE_ENV).is_ok() {
+        queue_mock_stream_fn()
+    } else if std::env::var(RETRY_ENV).is_ok() {
+        retry_mock_stream_fn()
     } else {
         mock_stream_fn(std::env::var(LONG_ENV).is_ok())
     });
@@ -482,6 +596,16 @@ impl Tui {
         Self::spawn_inner_env(false, None, &[(TOOLS2_ENV, "1")])
     }
 
+    /// Spawn with the queue-stream mock (slow first round for queueing).
+    fn spawn_queue_stream() -> Self {
+        Self::spawn_inner_env(false, None, &[(QUEUE_ENV, "1")])
+    }
+
+    /// Spawn with the retry mock (first call fails with a retryable 503).
+    fn spawn_retry_stream() -> Self {
+        Self::spawn_inner_env(false, None, &[(RETRY_ENV, "1")])
+    }
+
     /// Spawn with the big-stream mock (a large self-completing reply).
     fn spawn_big_stream() -> Self {
         Self::spawn_inner_env(false, None, &[(BIG_ENV, "1")])
@@ -634,6 +758,18 @@ impl Tui {
 // E2E tests
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Probe: slow mock alone — does run 1 complete without any queueing?
+#[test]
+fn tui_probe_slow_stream_completes() {
+    let mut tui = Tui::spawn_queue_stream();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+    tui.write(b"first\r");
+    assert!(tui.wait_for("slow", TIMEOUT), "streaming started");
+    assert!(tui.wait_settled(TIMEOUT), "run 1 settled");
+    tui.write(&[0x04]);
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
+}
+
 /// Full chat flow: launch → prompt visible → send message → mock reply
 /// streams in → Ctrl+D quits → clean exit code 0.
 #[test]
@@ -714,6 +850,139 @@ fn tui_ctrl_c_aborts_long_stream() {
     tui.write(&[0x04]);
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit after abort");
+}
+
+/// Message queueing flow (TS `handleFollowUp` / `handleDequeue` / pending
+/// display): queue follow-ups with Alt+Enter while the agent streams, see
+/// the dim pending lines, dequeue them back into the editor with Alt+Up
+/// ("\n\n"-joined), then submit the restored text as one message.
+#[test]
+fn tui_message_queueing_flow() {
+    let mut tui = Tui::spawn_queue_stream();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+    let mut screen = TermScreen::new(WIDTH, HEIGHT, false);
+
+    // Run 1: slow stream (a window for queueing follow-ups).
+    tui.write(b"first\r");
+    assert!(
+        tui.wait_for("slow", TIMEOUT),
+        "run 1 streaming; got: {:?}",
+        tui.rendered().chars().rev().take(400).collect::<String>()
+    );
+
+    // Queue a follow-up while streaming (Alt+Enter = legacy ESC+CR).
+    tui.write(b"second");
+    std::thread::sleep(Duration::from_millis(120));
+    tui.write(b"\x1b\r");
+    assert!(
+        tui.wait_for("Follow-up: second", TIMEOUT),
+        "pending follow-up line; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+
+    // A second follow-up: both pending lines visible.
+    tui.write(b"third");
+    std::thread::sleep(Duration::from_millis(120));
+    tui.write(b"\x1b\r");
+    assert!(tui.wait_for("Follow-up: third", TIMEOUT), "second pending line");
+
+    // Alt+Up restores all queued texts to the editor and clears the
+    // pending area (byte history still contains the old rows — assert on
+    // the live screen snapshot).
+    tui.write(b"\x1b[1;3A");
+    std::thread::sleep(Duration::from_millis(250));
+    pump(&mut tui, &mut screen);
+    let snap = screen.snapshot();
+    assert!(
+        !snap.iter().any(|r| r.contains("Follow-up:")),
+        "pending area cleared after dequeue: {snap:?}"
+    );
+    assert!(
+        snap.iter().any(|r| r.contains("second")) && snap.iter().any(|r| r.contains("third")),
+        "queued texts restored to the editor: {snap:?}"
+    );
+
+    // Run 1 finishes; queues were cleared so nothing continues.
+    assert!(tui.wait_settled(TIMEOUT), "run 1 settled");
+
+    // Enter submits the restored editor text as one message → round 2.
+    tui.write(b"\r");
+    assert!(
+        tui.wait_for("Reply number 2", TIMEOUT),
+        "restored message ran as one prompt; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+
+    // Consumed messages become user bubbles (bridge MessageStart(User),
+    // TS message_start role==user → addMessageToChat) and the pending
+    // area stays empty.
+    std::thread::sleep(Duration::from_millis(300));
+    pump(&mut tui, &mut screen);
+    let snap = screen.snapshot();
+    assert!(!snap.iter().any(|r| r.contains("Follow-up:")), "pending area empty");
+    assert!(snap.iter().any(|r| r.contains("second")), "user bubble rendered");
+    assert!(snap.iter().any(|r| r.contains("Reply number 2")), "reply rendered");
+
+    tui.write(&[0x04]); // Ctrl+D: quit
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
+}
+
+/// `/compact` routes through session.compact(): on a tiny session the
+/// compaction is not needed, the error surfaces via the CompactionEnd event
+/// (TS: errors are emitted as events, handleCompactCommand ignores the
+/// return value).
+#[test]
+fn tui_compact_command_surfaces_not_needed_error() {
+    let mut tui = Tui::spawn(false);
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    tui.write(b"/compact\r");
+    assert!(
+        tui.wait_for("Nothing to compact (session too small)", TIMEOUT),
+        "compact error surfaced via event; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+
+    tui.write(&[0x04]); // Ctrl+D: quit
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
+}
+
+/// Provider-retry display (TS RetryStatusIndicator + abortRetry): the mock's
+/// first stream call fails with a retryable 503 → the status area shows the
+/// `Retrying (1/3) in 2s... (esc to cancel)` countdown; Esc aborts the
+/// backoff ("Retry failed after 1 attempts: Retry cancelled"); the next
+/// message runs normally.
+#[test]
+fn tui_retry_countdown_and_esc_abort() {
+    let mut tui = Tui::spawn_retry_stream();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    tui.write(b"first\r");
+    assert!(
+        tui.wait_for("Retrying (1/3)", TIMEOUT),
+        "retry countdown shown after provider error; got: {:?}",
+        tui.rendered().chars().rev().take(500).collect::<String>()
+    );
+
+    // Esc aborts the backoff (TS abortRetry) → AutoRetryEnd(false) with
+    // "Retry cancelled" → the failure line is surfaced.
+    tui.write(b"\x1b");
+    assert!(
+        tui.wait_for("Retry failed after 1 attempts: Retry cancelled", TIMEOUT),
+        "esc aborted the retry; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+
+    // The session is usable: the next message runs (round 2 succeeds).
+    tui.write(b"go\r");
+    assert!(
+        tui.wait_for("Reply number 2", TIMEOUT),
+        "next message runs after retry abort; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+
+    tui.write(&[0x04]); // Ctrl+D: quit
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
 }
 
 /// Tool-approval gate — approve: the `write` tool call is gated on a user

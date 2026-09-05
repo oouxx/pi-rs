@@ -24,6 +24,15 @@ use crate::core::agent_session::AgentSession;
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     TextDelta(String),
+    /// 用户消息进入 transcript（TS `message_start` role==user →
+    /// `addMessageToChat`）：排队中的 steering/follow-up 被消费、或新
+    /// prompt 启动时发出。TUI 不在提交时自己画用户气泡（对齐 TS：排队
+    /// 消息只在 pending 区显示，被消费后才进聊天区）。
+    UserMessage(String),
+    /// Run 生命周期（TS isStreaming = _isAgentRunActive）：排队消息消费
+    /// 触发的续跑也走这两个事件，TUI spinner 据此启停。
+    AgentRunStart,
+    AgentRunEnd,
     /// Final assistant message: text, thinking content, terminal stop
     /// reason and provider error message (TS `Done`/`Error` events).
     MessageEnd {
@@ -165,6 +174,30 @@ pub async fn subscribe_agent(
             let tx = tx_clone.clone();
             Box::pin(async move {
                 match &event {
+                    CoreAgentEvent::MessageStart {
+                        message: pi_agent_core::types::AgentMessage::User { content, .. },
+                        ..
+                    } => {
+                        let text: String = content
+                            .iter()
+                            .filter_map(|b| {
+                                if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = b {
+                                    Some(text.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if !text.is_empty() {
+                            let _ = tx.send(AgentEvent::UserMessage(text));
+                        }
+                    }
+                    CoreAgentEvent::AgentStart => {
+                        let _ = tx.send(AgentEvent::AgentRunStart);
+                    }
+                    CoreAgentEvent::AgentEnd { .. } => {
+                        let _ = tx.send(AgentEvent::AgentRunEnd);
+                    }
                     CoreAgentEvent::MessageUpdate {
                         assistant_message_event:
                             AssistantMessageEvent::TextDelta { delta, .. },

@@ -24,7 +24,7 @@ use pi_agent_core::agent::Agent;
 use pi_tui::app;
 use tokio::sync::Mutex;
 
-use crate::core::agent_session::AgentSession;
+use crate::core::agent_session::{AgentSession, AgentSessionEvent, CompactionReason};
 use crate::core::extensions::ExtensionUIContext;
 
 const DOUBLE_CTRL_C_WINDOW_MS: u64 = 500;
@@ -53,6 +53,19 @@ enum AgentCmd {
     /// `/copy`：复制最后一条 assistant 消息到系统剪贴板（TS
     /// `handleCopyCommand`）。
     CopyLastMessage,
+    /// 排队消息在无活动 run 时入队（按键到 effect 执行之间的窗口）：触发
+    /// settled 续跑消费队列（TS 由 run 自己的 settled 循环消费）。
+    RunSettledContinuations,
+    /// `/compact [instructions]`（TS `handleCompactCommand` →
+    /// `session.compact()`）：压缩会发 CompactionStart/End 事件（错误也经
+    /// 事件回显，TS 忽略返回值）。经 Effect 先 abort 在飞 run（TS
+    /// compact() 同款）再由任务排队执行。
+    Compact { instructions: Option<String> },
+    /// 压缩结束后按序投递压缩期间排队的消息（TS `flushCompactionQueue`）。
+    FlushCompactionQueue { messages: Vec<(String, bool)>, will_retry: bool },
+    /// Alt+Up（TS `app.message.dequeue`）取回队列文本后：同步清空会话层
+    /// 队列镜像并发出 QueueUpdate（把 pending 显示归零）。
+    SyncQueueMirrors,
 }
 
 // ============================================================================
@@ -87,6 +100,28 @@ enum Effect {
     /// run，随后把排队 steering/follow-up 文本还原回编辑器（对齐 TS
     /// `restoreQueuedMessagesToEditor({ abort: true })`）。
     AbortAndClearQueues(String),
+    /// Alt+Up 取回排队消息（TS `handleDequeue` →
+    /// `restoreQueuedMessagesToEditor` 无 abort 变体）：清空 agent 队列 +
+    /// 会话队列镜像，pending 显示同步归零。
+    ClearAgentQueues,
+    /// Esc 在压缩进行中（TS compaction_start 把 onEscape 换成
+    /// `abortCompaction`）：无锁中止压缩请求本身，不碰 run。
+    AbortCompaction,
+    /// Esc 在自动重试退避中（TS auto_retry_start 把 onEscape 换成
+    /// `abortRetry`）：无锁中止退避，`AutoRetryEnd(success=false)` 清 UI。
+    AbortRetry,
+    /// `/compact [instructions]`（TS `handleCompactCommand`）：先无锁 abort
+    /// 在飞 run（TS compact() 同款）再由任务执行压缩。
+    Compact { instructions: Option<String> },
+    /// 按键时刻的 steering 入队（TS Enter-streaming →
+    /// `prompt(text, { streamingBehavior: "steer" })` → `_queueSteer`）。
+    /// 必须绕过 session 锁：命令任务在整个 run 期间持有锁，经通道排队会
+    /// 排到 run 结束之后，is_streaming 判定与 pending 显示都会失效。
+    QueueSteer(String),
+    /// 按键时刻的 follow-up 入队（TS Alt+Enter →
+    /// `prompt(text, { streamingBehavior: "followUp" })` →
+    /// `_queueFollowUp`，等当前 run 结束后再作为新 prompt 运行）。
+    QueueFollowUp(String),
     /// 异步计算补全候选（slash fuzzy / 命令参数 / `@` 文件走查）。
     RequestCompletion(pi_tui::CompletionRequest),
 }
@@ -346,6 +381,8 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             // a tool call is in flight (finished tool rows stay in the
             // transcript but the agent is idle).
             let active = state.model.is_streaming
+                || state.model.is_compacting
+                || state.model.retry_status.is_some()
                 || state
                     .model
                     .active_tools
@@ -357,8 +394,85 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             UpdateOutcome { effects: vec![], redraw: active }
         }
         Action::Agent(msg) => {
-            app::update(&mut state.model, msg);
-            UpdateOutcome { effects: vec![], redraw: true }
+            // TS compaction_end → flushCompactionQueue / aborted 提示、
+            // queueCompactionMessage → 状态提示，都在事件进入 pi-tui 前
+            // 由宿主层处理（可能产生 effect / 额外系统消息）。
+            let mut effects: Vec<Effect> = Vec::new();
+            match msg {
+                pi_tui::Msg::QueueCompactionMessage { text, follow_up } => {
+                    app::update(
+                        &mut state.model,
+                        pi_tui::Msg::QueueCompactionMessage { text: text.clone(), follow_up },
+                    );
+                    // TS queueCompactionMessage：showStatus("Queued message
+                    // for after compaction")（编辑器文本已由提交路径清空）。
+                    state.model.push_message("system", "Queued message for after compaction");
+                }
+                pi_tui::Msg::CompactionEnd { will_retry, aborted, manual, error_message } => {
+                    let error_display = error_message.clone();
+                    app::update(
+                        &mut state.model,
+                        pi_tui::Msg::CompactionEnd { will_retry, aborted, manual, error_message },
+                    );
+                    // TS compaction_end：aborted → "Compaction cancelled" /
+                    // "Auto-compaction cancelled"；错误 → showError / 错误
+                    // 文本进聊天区。全部以系统消息呈现（TS showStatus/
+                    // showError 均为转录区 dim/muted 行）。
+                    if aborted {
+                        state.model.push_message(
+                            "system",
+                            if manual { "Compaction cancelled" } else { "Auto-compaction cancelled" },
+                        );
+                    } else if let Some(err) = error_display {
+                        state.model.push_message("system", err);
+                    }
+                    // 压缩结束后 flush 排队消息（TS flushCompactionQueue；
+                    // aborted 时同样 flush）。
+                    if !state.model.compaction_queue.is_empty() {
+                        let messages = std::mem::take(&mut state.model.compaction_queue);
+                        effects.push(Effect::AgentCommand(AgentCmd::FlushCompactionQueue {
+                            messages,
+                            will_retry,
+                        }));
+                    }
+                }
+                pi_tui::Msg::RetryCountdown { attempt, max_attempts, delay_ms, error_message, esc_aborts } => {
+                    // TS summarization_retry_scheduled：先 showError 再显示
+                    // 倒计时（auto_retry_start 无 error_message）。
+                    if let Some(err) = &error_message {
+                        state.model.push_message("system", err.clone());
+                    }
+                    app::update(
+                        &mut state.model,
+                        pi_tui::Msg::RetryCountdown { attempt, max_attempts, delay_ms, error_message, esc_aborts },
+                    );
+                }
+                pi_tui::Msg::RetryEnd { success, attempt, final_error } => {
+                    let error_display = final_error.clone();
+                    app::update(
+                        &mut state.model,
+                        pi_tui::Msg::RetryEnd { success, attempt, final_error },
+                    );
+                    // TS auto_retry_end：仅最终失败时 showError（成功则正常
+                    // 显示响应）。
+                    if !success {
+                        state.model.push_message(
+                            "system",
+                            format!(
+                                "Retry failed after {attempt} attempts: {}",
+                                error_display.unwrap_or_else(|| "Unknown error".to_string())
+                            ),
+                        );
+                    }
+                }
+                pi_tui::Msg::RetryAttemptStart | pi_tui::Msg::RetryLoopEnd => {
+                    app::update(&mut state.model, msg);
+                }
+                msg => {
+                    app::update(&mut state.model, msg);
+                }
+            }
+            UpdateOutcome { effects, redraw: true }
         }
         Action::Key(key) => {
             let mut effects = handle_key(state, key);
@@ -508,9 +622,11 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
         }
         // Esc: 对齐 TS `onEscape`（interactive-mode.ts setupKeyHandlers）——
         // **不退出**（退出是 Ctrl+D / 双击 Ctrl+C / /quit）：
-        // 1) 流式/运行中 → 中断 + 清排队 follow-up（TS restoreQueuedMessagesToEditor）
-        // 2) bash 运行中 → abort bash
-        // 3) 空编辑器双击 Esc → TS 弹 tree/fork 选择器（本 port 未实现，见
+        // 1) 压缩进行中 → 中止压缩（TS compaction_start 把 onEscape 换成
+        //    abortCompaction，优先于其他分支）
+        // 2) 流式/运行中 → 中断 + 清排队 follow-up（TS restoreQueuedMessagesToEditor）
+        // 3) bash 运行中 → abort bash
+        // 4) 空编辑器双击 Esc → TS 弹 tree/fork 选择器（本 port 未实现，见
         //    DEVIATIONS）→ 无操作，仅记录时间。
         KeyCode::Esc => {
             // 补全弹窗打开时 Esc 只关闭弹窗（app.rs Completer 语义），不
@@ -522,10 +638,31 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             let now = Instant::now();
             let elapsed = now.duration_since(state.last_esc).as_millis() as u64;
             state.last_esc = now;
+            // 自动重试退避中：TS auto_retry_start 把 onEscape 换成
+            // abortRetry（优先于其他分支）。注意压缩/分支摘要的重试倒计时
+            // （esc_aborts=false）不替换 onEscape —— Esc 仍走 abortCompaction。
+            if state
+                .model
+                .retry_status
+                .as_ref()
+                .is_some_and(|r| r.esc_aborts)
+            {
+                return vec![Effect::AbortRetry];
+            }
+            if state.model.is_compacting {
+                // 无锁中止压缩（压缩运行在持有 session 锁的任务里，命令通
+                // 道中止会排在锁后面）。
+                return vec![Effect::AbortCompaction];
+            }
             if state.model.is_streaming || !state.model.active_tools.is_empty() {
                 // Immediate UI feedback; the agent event stream then closes
                 // via Done → MessageEnd → StreamEnd.
                 state.model.is_streaming = false;
+                // pending 区排队项随即从显示中移除（权威清空由
+                // RestoreQueuedToEditor 里的 clear_all_queues 发出的
+                // QueueUpdate 事件确认）。
+                state.model.pending_steering.clear();
+                state.model.pending_follow_up.clear();
                 // 当前编辑器文本随 effect 带出，用于还原时与队列文本合并
                 // （TS `[queuedText, currentText].join("\n\n")`）。
                 let current = state.model.input.value().to_string();
@@ -542,14 +679,18 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 vec![]
             }
         }
-        // Enter: submit message or slash command (Shift/Alt+Enter insert a
-        // newline instead — matches the TS editor's multi-line behavior).
-        // While the slash-command menu is open, Enter picks the highlighted
-        // completion and runs it (TS dropdown behavior).
+        // Enter: submit message or slash command (Shift+Enter inserts a
+        // newline — TS `tui.input.newLine`; Alt+Enter is the follow-up queue
+        // keybinding, TS `app.message.followUp`). While the slash-command
+        // menu is open, Enter picks the highlighted completion and runs it
+        // (TS dropdown behavior).
         KeyCode::Enter => {
-            if key.modifiers == KeyModifiers::SHIFT || key.modifiers == KeyModifiers::ALT {
+            if key.modifiers == KeyModifiers::SHIFT {
                 app::update(&mut state.model, pi_tui::Msg::InputNewline);
                 return vec![];
+            }
+            if key.modifiers == KeyModifiers::ALT {
+                return handle_follow_up_key(state);
             }
             if state.model.completer.visible {
                 let trigger = state.model.completer.trigger;
@@ -580,15 +721,61 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             if text.is_empty() {
                 return vec![];
             }
-            if text.starts_with('/') {
-                // Slash commands are pure too: they push system messages and
-                // return the corresponding agent effect.
-                return slash_command(state, &text);
+            submit_input(state, text, false)
+        }
+        // Alt+Up：TS `app.message.dequeue`（handleDequeue →
+        // restoreQueuedMessagesToEditor）——取回全部排队消息合并进编辑器。
+        KeyCode::Up if key.modifiers == KeyModifiers::ALT && !state.model.completer.visible => {
+            // TS getAllQueuedMessages 顺序：session steering + compaction
+            // steer，然后 session follow-up + compaction follow-up。
+            let mut queued: Vec<String> = state.model.pending_steering.clone();
+            queued.extend(
+                state
+                    .model
+                    .compaction_queue
+                    .iter()
+                    .filter(|(_, follow_up)| !*follow_up)
+                    .map(|(text, _)| text.clone()),
+            );
+            queued.extend(state.model.pending_follow_up.clone());
+            queued.extend(
+                state
+                    .model
+                    .compaction_queue
+                    .iter()
+                    .filter(|(_, follow_up)| *follow_up)
+                    .map(|(text, _)| text.clone()),
+            );
+            let count = queued.len();
+            let current = state.model.input.value().to_string();
+            // TS clearAllQueues：清掉 TUI 层队列镜像；会话层队列由
+            // ClearAgentQueues 同步清空（随后的 QueueUpdate 事件把 pending
+            // 显示归零）。
+            state.model.pending_steering.clear();
+            state.model.pending_follow_up.clear();
+            state.model.compaction_queue.clear();
+            if count == 0 {
+                // TS handleDequeue：showStatus("No queued messages to restore")。
+                state.model.push_message("system", "No queued messages to restore");
+                return vec![];
             }
-            state.model.input.clear();
-            state.model.push_message("user", text.clone());
-            state.model.is_streaming = true;
-            vec![Effect::AgentCommand(AgentCmd::SendMessage(text))]
+            // TS restoreQueuedMessagesToEditor：`[queuedText,
+            // currentText].filter(trim).join("\n\n")`。
+            let mut parts: Vec<String> =
+                queued.into_iter().filter(|t| !t.trim().is_empty()).collect();
+            if !current.trim().is_empty() {
+                parts.push(current);
+            }
+            let combined = parts.join("\n\n");
+            app::update(&mut state.model, pi_tui::Msg::SetEditorText(combined));
+            state.model.push_message(
+                "system",
+                format!(
+                    "Restored {count} queued message{plural} to editor",
+                    plural = if count > 1 { "s" } else { "" }
+                ),
+            );
+            vec![Effect::ClearAgentQueues]
         }
         _ => {
             let cmds = app::update(&mut state.model, pi_tui::Msg::Key(key));
@@ -596,6 +783,90 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             vec![]
         }
     }
+}
+
+/// 提交路径（TS `handleSubmit` 尾部 + `handleFollowUp` 的 isStreaming/
+/// isCompacting 分支）：
+/// - 压缩中 → 入 TUI 层 compaction 队列（压缩结束 flush，TS
+///   `queueCompactionMessage`；扩展命令已由 slash_command 提前路由立即
+///   执行）；
+/// - streaming → 按键时刻直接入队：steering（Enter）或 follow-up
+///   （Alt+Enter），对齐 TS `prompt(text, { streamingBehavior })` ——
+///   经 `Effect::QueueSteer/QueueFollowUp` 绕过 session 锁（命令任务在
+///   整个 run 期间持有锁，经通道会排到 run 结束后，判定与 pending 显示
+///   都会失效）；
+/// - 空闲 → 新 run。
+///
+/// 输入框总是清空；用户气泡不由提交路径直接绘制——bridge 把 agent 的
+/// `MessageStart(User)` 转成聊天区消息（TS `message_start` 语义：排队中
+/// 的消息只出现在 pending 区，被消费后才进转录）。
+fn submit_message(state: &mut AppState, text: String, follow_up: bool) -> Vec<Effect> {
+    state.model.input.clear();
+    if state.model.is_compacting {
+        // TS queueCompactionMessage：入 compaction 队列 + 状态提示
+        // （压缩结束后 CompactionEnd → flushCompactionQueue 投递）。
+        state.model.compaction_queue.push((text, follow_up));
+        state.model.push_message("system", "Queued message for after compaction");
+        return vec![];
+    }
+    if state.model.is_streaming {
+        // TS：排队中的消息只进 pending 区（TS updatePendingMessagesDisplay），
+        // 镜像与 agent 队列入队由 effect 完成。
+        if follow_up {
+            state.model.pending_follow_up.push(text.clone());
+            return vec![Effect::QueueFollowUp(text)];
+        }
+        state.model.pending_steering.push(text.clone());
+        return vec![Effect::QueueSteer(text)];
+    }
+    state.model.is_streaming = true;
+    vec![Effect::AgentCommand(AgentCmd::SendMessage(text))]
+}
+
+/// TS `isExtensionCommand`（按键时刻判定，使用启动时的命令快照）：压缩/
+/// streaming 中扩展命令必须立即执行，而命令任务在 run 期间不可达。
+fn is_ext_command_snapshot(state: &AppState, text: &str) -> bool {
+    if !text.starts_with('/') {
+        return false;
+    }
+    let name = match text.find(' ') {
+        Some(idx) => &text[1..idx],
+        None => &text[1..],
+    };
+    state.ext_commands.iter().any(|c| c == name)
+}
+
+/// Enter 尾部提交路径：slash 命令路由（builtins/扩展命令在 streaming/
+/// 压缩中同样立即执行，对齐 TS onSubmit 顺序）+ 普通消息。
+fn submit_input(state: &mut AppState, text: String, from_follow_up: bool) -> Vec<Effect> {
+    if text.starts_with('/') {
+        return slash_command(state, &text);
+    }
+    submit_message(state, text, from_follow_up)
+}
+
+/// Alt+Enter（TS `handleFollowUp` / `app.message.followUp`）：
+/// - 压缩中：入 compaction 队列（followUp 模式）；扩展命令立即执行
+/// - streaming：排 follow-up 队列（等当前 run 结束后再作为新 prompt）
+/// - 空闲：等同 Enter（完整提交路径，含命令路由）。
+fn handle_follow_up_key(state: &mut AppState) -> Vec<Effect> {
+    // TS getExpandedText：粘贴 marker 展开（不做补全应用）。
+    let text = state.model.input.expanded_value();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return vec![];
+    }
+    if state.model.is_compacting || state.model.is_streaming {
+        // TS handleFollowUp → session.prompt(followUp)：prompt 先执行扩展
+        // 命令再判 streaming —— 扩展命令立即执行；其余（含内建/未知命令
+        // 文本）排队。
+        if is_ext_command_snapshot(state, &text) {
+            return slash_command(state, &text);
+        }
+        return submit_message(state, text, true);
+    }
+    // TS：空闲时 `this.editor.onSubmit(text)`。
+    submit_input(state, text, true)
 }
 
 /// Resolve the pending extension dialog with a string answer (select/input).
@@ -727,6 +998,12 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             // The session manager is swapped to a fresh session; clear the
             // transcript so the TUI matches the new session (TS `/new`
             // clears the chat).
+            // TS renderCurrentSessionState：会话重建/切换时清空 pending
+            // 区与 compaction 队列。
+            state.model.pending_steering.clear();
+            state.model.pending_follow_up.clear();
+            state.model.compaction_queue.clear();
+            state.model.is_compacting = false;
             app::update(&mut state.model, pi_tui::Msg::ClearScreen);
             state.model.is_streaming = false;
             let parent = if args.is_empty() { None } else { Some(args.to_string()) };
@@ -793,8 +1070,15 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             }
             vec![]
         }
+        "/compact" => {
+            // TS handleCompactCommand：错误/结果经 CompactionEnd 事件回显
+            //（TUI 显示 + flush 队列）；先 abort 在飞 run（TS compact() 同
+            // 款），压缩任务在 run 结束后执行。
+            let instructions = if args.is_empty() { None } else { Some(args.to_string()) };
+            vec![Effect::Compact { instructions }]
+        }
         "/help" => {
-            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /theme [dark|light], /help, /quit".to_string();
+            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /compact [instructions], /theme [dark|light], /help, /quit".to_string();
             if !state.ext_commands.is_empty() {
                 help.push_str(&format!("\nExtension: /{}", state.ext_commands.join(", /")));
             }
@@ -827,10 +1111,10 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
                 system(state, format!("Running extension command: /{cmd_name}"));
                 vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(cmd_name.to_string(), args.to_string()))]
             } else {
-                state.model.input.clear();
-                state.model.push_message("user", text.to_string());
-                state.model.is_streaming = true;
-                vec![Effect::AgentCommand(AgentCmd::SendMessage(text.to_string()))]
+                // Unknown command → sent as a regular message (TS
+                // onSubmit tail). Queued per streaming/compaction state,
+                // matching the TS prompt(steer) routing.
+                submit_message(state, text.to_string(), false)
             }
         }
     }
@@ -839,6 +1123,15 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
 // ============================================================================
 // effects executor (grok `app/effects.rs`)
 // ============================================================================
+
+/// Lock-free queue mirror handles（与 session 镜像共享同一 Arc）：按键时刻
+/// 的排队必须绕过 session 锁（命令任务整个 run 期间持有锁），同时保持
+/// 消费匹配与 QueueUpdate 事件准确。
+#[derive(Clone)]
+struct QueueMirrors {
+    steering: Arc<std::sync::Mutex<Vec<String>>>,
+    follow_up: Arc<std::sync::Mutex<Vec<String>>>,
+}
 
 // ============================================================================
 // 补全（对齐 TS completion：命令 fuzzy / 命令参数 / `@` 文件走查）
@@ -909,6 +1202,7 @@ fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCo
         pi_tui::CompletionCommand::new("/help", "Show commands", "help"),
         pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
         pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name"),
+        pi_tui::CompletionCommand::new("/compact [instructions]", "Manually compact the session context", "compact"),
         pi_tui::CompletionCommand::new("/quit", "Quit", "quit"),
         pi_tui::CompletionCommand::new("/theme [dark|light]", "Switch theme (dark/light)", "theme"),
         pi_tui::CompletionCommand::new("/reload", "Reload extensions", "reload"),
@@ -1019,6 +1313,9 @@ async fn resolve_completion(
 async fn execute_effect(
     effect: Effect,
     agent_handle: &Arc<Agent>,
+    compaction_abort: &crate::core::agent_session::CompactionAbortHandle,
+    retry_abort: &crate::core::agent_session::RetryAbortHandle,
+    mirrors: &QueueMirrors,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCmd>,
     completion_sources: &Arc<CompletionSources>,
     result_tx: &tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
@@ -1037,6 +1334,39 @@ async fn execute_effect(
             agent_handle.clear_all_queues().await;
             agent_handle.abort().await;
             let _ = cmd_tx.send(AgentCmd::RestoreQueuedToEditor(current_text));
+        }
+        Effect::ClearAgentQueues => {
+            // TS handleDequeue → clearAllQueues 的会话层部分：清空 agent
+            // 队列（编辑器还原已在按键处理里用镜像文本完成），镜像由
+            // SyncQueueMirrors 清空并发 QueueUpdate（pending 显示归零）。
+            agent_handle.clear_all_queues().await;
+            let _ = cmd_tx.send(AgentCmd::SyncQueueMirrors);
+        }
+        Effect::AbortCompaction => {
+            // TS compaction_start 把 onEscape 换成 abortCompaction：仅中止
+            // 压缩请求本身，不碰当前 run；压缩结束的 CompactionEnd 事件随
+            // 后触发状态提示与队列 flush。
+            compaction_abort.abort();
+        }
+        Effect::AbortRetry => {
+            // TS auto_retry_start 把 onEscape 换成 abortRetry：中止���避，
+            // `_prepare_retry` 的 watch 分支发 AutoRetryEnd(success=false)
+            // 清倒计时并提示 Retry cancelled。
+            retry_abort.abort();
+        }
+        Effect::Compact { instructions } => {
+            // TS handleCompactCommand → session.compact()：compact() 先
+            // abort 在飞 run（TS _disconnectFromAgent + abort），这里同样
+            // 先无锁中止再排队压缩任务。错误经 CompactionEnd 事件回显
+            //（TS 忽略返回值）。
+            agent_handle.abort().await;
+            let _ = cmd_tx.send(AgentCmd::Compact { instructions });
+        }
+        Effect::QueueSteer(text) => {
+            enqueue_queued(agent_handle, mirrors, cmd_tx, text, true).await;
+        }
+        Effect::QueueFollowUp(text) => {
+            enqueue_queued(agent_handle, mirrors, cmd_tx, text, false).await;
         }
         Effect::AgentCommand(cmd) => {
             let _ = cmd_tx.send(cmd);
@@ -1057,9 +1387,238 @@ async fn execute_effect(
     }
 }
 
+/// TS `_queueSteer`/`_queueFollowUp`：镜像推入 + agent 队列入队。全部绕过
+/// session 锁（命令任务整个 run 期间持锁，按键时刻的排队必须即时生效，
+/// 否则 is_streaming 判定与 pending 显示都会失效）。按键到 effect 执行之
+/// 间 run 可能已结束：此时无人消费队列，触发 settled 续跑。
+async fn enqueue_queued(
+    agent_handle: &Arc<Agent>,
+    mirrors: &QueueMirrors,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCmd>,
+    text: String,
+    steer: bool,
+) {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let message = pi_agent_core::types::AgentMessage::User {
+        content: vec![pi_agent_core::pi_ai_types::ContentBlock::text(text.clone())],
+        timestamp,
+    };
+    {
+        let mut mirror = if steer {
+            mirrors.steering.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        } else {
+            mirrors.follow_up.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        mirror.push(text);
+    }
+    if steer {
+        agent_handle.steer(message).await;
+    } else {
+        agent_handle.follow_up(message).await;
+    }
+    if !agent_handle.state().await.is_streaming {
+        let _ = cmd_tx.send(AgentCmd::RunSettledContinuations);
+    }
+}
+
 // ============================================================================
 // Agent command background task (session-locked commands)
 // ============================================================================
+
+/// TS `isExtensionCommand`：`/name`（可带参数）命中扩展注册的命令。
+fn is_extension_command(sess: &AgentSession, text: &str) -> bool {
+    if !text.starts_with('/') {
+        return false;
+    }
+    let command_name = match text.find(' ') {
+        Some(idx) => &text[1..idx],
+        None => &text[1..],
+    };
+    sess.get_extension_registry()
+        .map(|r| r.commands().iter().any(|c| c.name == command_name))
+        .unwrap_or(false)
+}
+
+/// 以默认选项执行一次提交（扩展命令立即执行路径；错误回显到 UI）。
+async fn run_prompt_default(sess: &AgentSession, result_tx: &tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>, text: &str) {
+    let result = sess
+        .prompt(
+            text,
+            Some(crate::core::agent_session::PromptOptions {
+                expand_prompt_templates: Some(true),
+                source: Some("interactive".into()),
+                ..Default::default()
+            }),
+        )
+        .await;
+    if let Err(e) = result {
+        let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), e));
+    }
+}
+
+/// TS `flushCompactionQueue`：压缩结束后按序投递压缩期间排队的消息。
+///
+/// - willRetry 且仍在 streaming：全部按模式入 steer/followUp 队列（重试
+///   回合消费；扩展命令立即执行）。
+/// - 否则：扩展命令先立即执行；第一条非命令消息作为新 prompt（带其模
+///   式）；其余按模式入 steer/followUp。
+///
+/// Rust `prompt()` 会阻塞整个 run，所以空闲时先排队剩余消息（run 的首个
+/// turn 边界消费 steering 队列；follow-up 由 run 结束后的 settled 循环消
+/// 费）再启动第一条 prompt —— 与 TS "prompt 启动 + 其余排队" 等价。任一
+/// 步失败：清会话队列，全部消息还原回 TUI compaction 队列并提示（TS
+/// `restoreQueue`）。
+async fn flush_compaction_queue(
+    sess: &AgentSession,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
+    messages: Vec<(String, bool)>,
+    will_retry: bool,
+) {
+    if messages.is_empty() {
+        return;
+    }
+
+    let streaming = sess.is_streaming().await;
+
+    let restore_queue = |error: String| {
+        // TS restoreQueue：清会话队列，全部消息还原回 compaction 队列
+        // （逆序回填保持原顺序），并提示失败原因。
+        for (text, follow_up) in messages.iter().rev() {
+            let _ = result_tx.send(pi_tui::Msg::QueueCompactionMessage {
+                text: text.clone(),
+                follow_up: *follow_up,
+            });
+        }
+        let _ = result_tx.send(pi_tui::Msg::NewMessage(
+            "system".into(),
+            format!(
+                "Failed to send queued message{}: {error}",
+                if messages.len() > 1 { "s" } else { "" }
+            ),
+        ));
+    };
+
+    if will_retry && streaming {
+        for (text, follow_up) in &messages {
+            let outcome = if is_extension_command(sess, text) {
+                Some(sess
+                    .prompt(
+                        text,
+                        Some(crate::core::agent_session::PromptOptions {
+                            expand_prompt_templates: Some(true),
+                            source: Some("interactive".into()),
+                            ..Default::default()
+                        }),
+                    )
+                    .await)
+            } else if *follow_up {
+                let _ = sess.follow_up(text, None).await;
+                None
+            } else {
+                let _ = sess.steer(text, None).await;
+                None
+            };
+            if let Some(Err(e)) = outcome {
+                let _ = sess.clear_all_queues().await;
+                restore_queue(e);
+                return;
+            }
+        }
+        return;
+    }
+
+    // 第一条非扩展命令消息作为新 prompt（TS firstPromptIndex）。
+    let first_prompt_index = messages
+        .iter()
+        .position(|(text, _)| !is_extension_command(sess, text));
+    let Some(first_prompt_index) = first_prompt_index else {
+        // 全部是扩展命令：逐个立即执行（TS：execute them all）。
+        for (text, _) in &messages {
+            if sess
+                .prompt(
+                    text,
+                    Some(crate::core::agent_session::PromptOptions {
+                        expand_prompt_templates: Some(true),
+                        source: Some("interactive".into()),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .is_err()
+            {
+                let _ = sess.clear_all_queues().await;
+                restore_queue("prompt failed".to_string());
+                return;
+            }
+        }
+        return;
+    };
+
+    for (text, _) in &messages[..first_prompt_index] {
+        if sess
+            .prompt(
+                text,
+                Some(crate::core::agent_session::PromptOptions {
+                    expand_prompt_templates: Some(true),
+                    source: Some("interactive".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .is_err()
+        {
+            let _ = sess.clear_all_queues().await;
+            restore_queue("prompt failed".to_string());
+            return;
+        }
+    }
+
+    let (first_text, first_mode) = &messages[first_prompt_index];
+    let rest = &messages[first_prompt_index + 1..];
+    if !streaming {
+        // 空闲：先处理剩余消息，再启动第一条 prompt（见上方说明）。
+        // 扩展命令立即执行（TS flushCompactionQueue 对 rest 的 ext 分支）。
+        for (text, follow_up) in rest {
+            if is_extension_command(sess, text) {
+                run_prompt_default(sess, result_tx, text).await;
+            } else if *follow_up {
+                let _ = sess.follow_up(text, None).await;
+            } else {
+                let _ = sess.steer(text, None).await;
+            }
+        }
+    }
+    let behavior = if *first_mode { "followUp" } else { "steer" };
+    let prompt_result = sess
+        .prompt(
+            first_text,
+            Some(crate::core::agent_session::PromptOptions {
+                expand_prompt_templates: Some(true),
+                source: Some("interactive".into()),
+                streaming_behavior: Some(behavior.into()),
+                ..Default::default()
+            }),
+        )
+        .await;
+    if let Err(e) = prompt_result {
+        let _ = sess.clear_all_queues().await;
+        restore_queue(e);
+        return;
+    }
+    if streaming {
+        // 已在 streaming：prompt(first) 实际按模式入队并立即返回，剩余
+        // 消息此刻排队（顺序保持）。
+        for (text, follow_up) in rest {
+            if is_extension_command(sess, text) {
+                run_prompt_default(sess, result_tx, text).await;
+            } else if *follow_up {
+                let _ = sess.follow_up(text, None).await;
+            } else {
+                let _ = sess.steer(text, None).await;
+            }
+        }
+    }
+}
 
 fn spawn_agent_command_task(
     session: Arc<Mutex<AgentSession>>,
@@ -1095,6 +1654,25 @@ fn spawn_agent_command_task(
                                     e,
                                 ));
                             }
+                        }
+                        AgentCmd::RunSettledContinuations => {
+                            // 排队消息在无活动 run 时入队（按键到 effect 执行
+                            // 之间的窗口）：触发 settled 续跑消费队列（对齐
+                            // ExtensionCommand 尾部的同款调用）。
+                            sess.run_settled_continuations().await;
+                        }
+                        AgentCmd::Compact { instructions } => {
+                            // TS handleCompactCommand：忽略返回值，错误/结果
+                            // 经 CompactionEnd 事件回显（TUI 显示 + flush）。
+                            let _ = sess.compact(instructions.as_deref()).await;
+                        }
+                        AgentCmd::FlushCompactionQueue { messages, will_retry } => {
+                            flush_compaction_queue(&sess, &result_tx, messages, will_retry).await;
+                        }
+                        AgentCmd::SyncQueueMirrors => {
+                            // TS clearAllQueues 的会话层部分：清空队列镜像 +
+                            // agent 队列并发出 QueueUpdate（pending 显示归零）。
+                            let _ = sess.clear_all_queues().await;
                         }
                         AgentCmd::AbortBash => sess.abort().await,
                         AgentCmd::SetModel(provider, model_id) => {
@@ -1300,6 +1878,9 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                     assistant_stream_open = false;
                     v
                 }
+                BE::UserMessage(text) => vec![pi_tui::Msg::NewMessage("user".into(), text)],
+                BE::AgentRunStart => vec![pi_tui::Msg::AgentStart],
+                BE::AgentRunEnd => vec![pi_tui::Msg::AgentEnd],
                 BE::ToolStart(call_id, name, args) => vec![pi_tui::Msg::ToolStart(call_id, name, args)],
                 BE::ToolEnd(call_id, name, e) => vec![pi_tui::Msg::ToolEnd(call_id, name, e)],
                 BE::ToolOutput(call_id, name, o) => vec![pi_tui::Msg::SetToolOutput(call_id, name, o)],
@@ -1442,6 +2023,93 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // changes, thinking level) back into the TUI event stream.
     let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
     let session = Arc::new(Mutex::new(session));
+    // ── 会话事件订阅（对齐 TS session.subscribe）：queue_update → pending
+    // 显示；compaction_start/end → 压缩状态 + 队列 flush 触发。 ──
+    // 无锁压缩中止句柄：压缩运行在持有 session 锁的任务里，命令通道中止
+    // 会排在锁后面；句柄只碰 std Mutex，Esc 可即时中止（TS abortCompaction）。
+    let compaction_abort = session.lock().await.compaction_abort_handle();
+    let retry_abort = session.lock().await.retry_abort_handle();
+    let queue_mirrors = {
+        let (steering, follow_up) = session.lock().await.queue_mirror_handles();
+        QueueMirrors {
+            steering,
+            follow_up,
+        }
+    };
+    {
+        let ev_tx = result_tx.clone();
+        session
+            .lock()
+            .await
+            .subscribe_session_events(std::sync::Arc::new(move |event| {
+                let msg = match event {
+                    AgentSessionEvent::QueueUpdate { steering, follow_up } => {
+                        Some(pi_tui::Msg::SetPendingQueues { steering, follow_up })
+                    }
+                    AgentSessionEvent::CompactionStart { reason } => Some(pi_tui::Msg::CompactionStart {
+                        manual: matches!(reason, CompactionReason::Manual),
+                        overflow: matches!(reason, CompactionReason::Overflow),
+                    }),
+                    AgentSessionEvent::CompactionEnd {
+                        reason,
+                        will_retry,
+                        aborted,
+                        error_message,
+                        ..
+                    } => Some(pi_tui::Msg::CompactionEnd {
+                        will_retry,
+                        aborted,
+                        manual: matches!(reason, CompactionReason::Manual),
+                        error_message,
+                    }),
+                    AgentSessionEvent::AutoRetryStart {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        ..
+                    } => Some(pi_tui::Msg::RetryCountdown {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        error_message: None,
+                        esc_aborts: true,
+                    }),
+                    AgentSessionEvent::AutoRetryEnd {
+                        success,
+                        attempt,
+                        final_error,
+                        ..
+                    } => Some(pi_tui::Msg::RetryEnd {
+                        success,
+                        attempt,
+                        final_error,
+                    }),
+                    AgentSessionEvent::SummarizationRetryScheduled {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        error_message,
+                        ..
+                    } => Some(pi_tui::Msg::RetryCountdown {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        error_message: Some(error_message),
+                        // TS summarization_retry_scheduled 不替换 onEscape：
+                        // Esc 仍走 abortCompaction。
+                        esc_aborts: false,
+                    }),
+                    AgentSessionEvent::SummarizationRetryAttemptStart { .. }
+                    | AgentSessionEvent::SummarizationRetryFinished {} => {
+                        Some(pi_tui::Msg::RetryAttemptStart)
+                    }
+                    _ => None,
+                };
+                if let Some(m) = msg {
+                    let _ = ev_tx.send(m);
+                }
+            }));
+    }
     let bg_session = session.clone();
     let bg_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bg_exit_flag = bg_exit.clone();
@@ -1522,7 +2190,17 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             redraw |= refresh_status(&mut state, &ui_session).await;
         }
         for effect in outcome.effects {
-            execute_effect(effect, &agent_handle, &cmd_tx, &completion_sources, &result_tx).await;
+            execute_effect(
+                effect,
+                &agent_handle,
+                &compaction_abort,
+                &retry_abort,
+                &queue_mirrors,
+                &cmd_tx,
+                &completion_sources,
+                &result_tx,
+            )
+            .await;
         }
         if state.quit {
             break;
@@ -2117,6 +2795,452 @@ mod tests {
                 .any(|m| m.role == "system" && m.text.contains("Unknown theme")),
             "unknown theme reports a usage notice"
         );
+    }
+
+    // ============================================================
+    // 消息排队对齐（TS handleSubmit / handleFollowUp / handleDequeue /
+    // queueCompactionMessage / flushCompactionQueue）
+    // ============================================================
+
+    fn key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, mods)
+    }
+
+    use crossterm::event::KeyModifiers as KM;
+
+    /// Alt+Enter streaming：按键时刻排 follow-up 队列（TS
+    /// prompt(followUp)），不推用户气泡（气泡由 bridge 的
+    /// MessageStart(User) 画）。
+    #[test]
+    fn alt_enter_while_streaming_queues_follow_up() {
+        let mut s = state();
+        s.model.is_streaming = true;
+        s.model.input.set_value("later");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::ALT));
+        assert_eq!(effects, vec![Effect::QueueFollowUp("later".into())]);
+        assert_eq!(s.model.input.value(), "", "编辑器清空");
+        assert!(s.model.is_streaming, "仍处于 streaming");
+        assert_eq!(s.model.pending_follow_up, vec!["later"], "pending 区立即显示");
+        assert!(s.model.messages.is_empty(), "排队消息不进气泡（TS：被消费后才进转录）");
+    }
+
+    /// Alt+Enter 空闲：等同 Enter（完整提交路径）。
+    #[test]
+    fn alt_enter_when_idle_submits_like_enter() {
+        let mut s = state();
+        s.model.input.set_value("hello");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::ALT));
+        assert_eq!(effects, vec![Effect::AgentCommand(AgentCmd::SendMessage("hello".into()))]);
+        assert!(s.model.is_streaming);
+        assert_eq!(s.model.input.value(), "");
+    }
+
+    /// Alt+Enter 空闲 + 命令文本：走完整提交路径（TS onSubmit 含命令路由）。
+    #[test]
+    fn alt_enter_when_idle_routes_slash_commands() {
+        let mut s = state();
+        s.model.input.set_value("/name bot");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::ALT));
+        assert_eq!(
+            effects,
+            vec![Effect::AgentCommand(AgentCmd::SetSessionName("bot".into()))]
+        );
+    }
+
+    /// Alt+Enter 压缩中：入 compaction 队列（followUp 模式，TS
+    /// queueCompactionMessage(text, "followUp")）。
+    #[test]
+    fn alt_enter_during_compaction_queues_compaction_message() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        s.model.input.set_value("after compaction");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::ALT));
+        assert_eq!(effects, vec![]);
+        assert_eq!(
+            s.model.compaction_queue,
+            vec![("after compaction".to_string(), true)]
+        );
+        assert_eq!(s.model.input.value(), "");
+    }
+
+    /// Enter streaming：按键时刻排 steering 队列（TS prompt(steer)），
+    /// 不推气泡。
+    #[test]
+    fn enter_while_streaming_queues_steering_without_bubble() {
+        let mut s = state();
+        s.model.is_streaming = true;
+        s.model.input.set_value("steer me");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::NONE));
+        assert_eq!(effects, vec![Effect::QueueSteer("steer me".into())]);
+        assert_eq!(s.model.input.value(), "");
+        assert!(s.model.is_streaming);
+        assert_eq!(s.model.pending_steering, vec!["steer me"]);
+        assert!(s.model.messages.is_empty(), "排队消息不进气泡");
+    }
+
+    /// Enter 压缩中：入 compaction 队列（steer 模式，TS
+    /// queueCompactionMessage(text, "steer")，压缩结束后 flush）。
+    #[test]
+    fn enter_during_compaction_queues_compaction_message() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        s.model.input.set_value("x");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::NONE));
+        assert_eq!(effects, vec![], "压缩中入队是纯 UI 操作，无 effect");
+        assert_eq!(s.model.compaction_queue, vec![("x".to_string(), false)]);
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text == "Queued message for after compaction"));
+    }
+
+    /// Enter 压缩中 + 扩展命令：立即执行（TS isCompacting 分支里
+    /// isExtensionCommand → session.prompt 立即执行）。
+    #[test]
+    fn enter_during_compaction_runs_extension_command_immediately() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        s.ext_commands = vec!["goal".into()];
+        s.model.input.set_value("/goal run");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::NONE));
+        assert_eq!(
+            effects,
+            vec![Effect::AgentCommand(AgentCmd::ExtensionCommand("goal".into(), "run".into()))]
+        );
+    }
+
+    /// Alt+Up：按 TS getAllQueuedMessages 顺序（session steering +
+    /// compaction steer，然后 session follow-up + compaction follow-up）
+    /// 取回全部排队文本合并进编辑器，并清空队列。
+    #[test]
+    fn alt_up_restores_all_queued_in_ts_order() {
+        let mut s = state();
+        s.model.pending_steering = vec!["a".into()];
+        s.model.compaction_queue = vec![("c".into(), false), ("f".into(), true)];
+        s.model.pending_follow_up = vec!["b".into()];
+        s.model.input.set_value("draft");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Up, KM::ALT));
+        assert_eq!(effects, vec![Effect::ClearAgentQueues]);
+        // queuedText = "a\n\nc\n\nb\n\nf"；combined = [queuedText,
+        // current].filter(trim).join("\n\n")。
+        assert_eq!(s.model.input.value(), "a\n\nc\n\nb\n\nf\n\ndraft");
+        assert!(s.model.pending_steering.is_empty());
+        assert!(s.model.pending_follow_up.is_empty());
+        assert!(s.model.compaction_queue.is_empty());
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text.contains("Restored 4 queued messages")));
+    }
+
+    /// Alt+Up 无排队：状态提示，不动编辑器，无 effect。
+    #[test]
+    fn alt_up_without_queued_shows_status_only() {
+        let mut s = state();
+        s.model.input.set_value("keep");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Up, KM::ALT));
+        assert_eq!(effects, vec![]);
+        assert_eq!(s.model.input.value(), "keep", "无排队时编辑器不动（TS 提前 return）");
+        assert!(
+            s.model
+                .messages
+                .iter()
+                .any(|m| m.role == "system" && m.text == "No queued messages to restore")
+        );
+    }
+
+    /// Shift+Enter 仍然是换行（TS tui.input.newLine）。
+    #[test]
+    fn shift_enter_inserts_newline() {
+        let mut s = state();
+        s.model.input.set_value("one");
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::SHIFT));
+        assert_eq!(effects, vec![]);
+        assert_eq!(s.model.input.value(), "one\n");
+    }
+
+    /// Esc 压缩中：中止压缩（TS compaction_start 把 onEscape 换成
+    /// abortCompaction），优先于其他分支。
+    #[test]
+    fn esc_during_compaction_aborts_compaction() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Esc, KM::NONE));
+        assert_eq!(effects, vec![Effect::AbortCompaction]);
+        assert!(!s.quit);
+    }
+
+    /// QueueUpdate 事件 → pending 显示数据更新（TS
+    /// updatePendingMessagesDisplay）。
+    #[test]
+    fn queue_update_msg_updates_pending_display() {
+        let mut s = state();
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::SetPendingQueues {
+                steering: vec!["s1".into()],
+                follow_up: vec!["f1".into()],
+            }),
+        );
+        assert_eq!(s.model.pending_steering, vec!["s1"]);
+        assert_eq!(s.model.pending_follow_up, vec!["f1"]);
+    }
+
+    /// QueueCompactionMessage 消息 → 入 compaction 队列 + 状态提示。
+    #[test]
+    fn queue_compaction_message_msg_enqueues_and_notifies() {
+        let mut s = state();
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::QueueCompactionMessage {
+                text: "held".into(),
+                follow_up: false,
+            }),
+        );
+        assert_eq!(s.model.compaction_queue, vec![("held".to_string(), false)]);
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text == "Queued message for after compaction"));
+    }
+
+    /// CompactionEnd → is_compacting 复位 + flush 排队消息（TS
+    /// compaction_end → flushCompactionQueue；aborted 时也 flush）。
+    #[test]
+    fn compaction_end_flushes_compaction_queue() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        s.model.compaction_queue = vec![("x".into(), false)];
+        let outcome = update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::CompactionEnd {
+                will_retry: false,
+                aborted: false,
+                manual: false,
+                error_message: None,
+            }),
+        );
+        assert!(!s.model.is_compacting);
+        assert!(s.model.compaction_queue.is_empty());
+        assert_eq!(
+            outcome.effects,
+            vec![Effect::AgentCommand(AgentCmd::FlushCompactionQueue {
+                messages: vec![("x".to_string(), false)],
+                will_retry: false,
+            })]
+        );
+    }
+
+    /// CompactionStart/End → 压缩状态标签数据（TS CompactionStatusIndicator）。
+    #[test]
+    fn compaction_start_end_toggle_indicator() {
+        let mut s = state();
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::CompactionStart { manual: false, overflow: true }),
+        );
+        assert!(s.model.is_compacting);
+        assert!(!s.model.compaction_manual);
+        assert!(s.model.compaction_overflow);
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::CompactionEnd {
+                will_retry: false,
+                aborted: true,
+                manual: false,
+                error_message: None,
+            }),
+        );
+        assert!(!s.model.is_compacting);
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text == "Auto-compaction cancelled"));
+    }
+
+    /// /new 清空 pending 显示与 compaction 队列（TS
+    /// renderCurrentSessionState）。
+    #[test]
+    fn new_session_clears_pending_and_compaction_queues() {
+        let mut s = state();
+        s.model.pending_steering = vec!["a".into()];
+        s.model.compaction_queue = vec![("c".into(), true)];
+        s.model.is_compacting = true;
+        slash_command(&mut s, "/new");
+        assert!(s.model.pending_steering.is_empty());
+        assert!(s.model.compaction_queue.is_empty());
+        assert!(!s.model.is_compacting);
+    }
+
+    // ============================================================
+    // /compact 与 provider 重试显示（TS handleCompactCommand /
+    // RetryStatusIndicator / abortRetry）
+    // ============================================================
+
+    /// /compact：Effect::Compact（无参）。
+    #[test]
+    fn compact_command_routes_effect() {
+        let mut s = state();
+        let effects = slash_command(&mut s, "/compact");
+        assert_eq!(effects, vec![Effect::Compact { instructions: None }]);
+    }
+
+    /// /compact 带自定义指令：Effect::Compact(Some(...))。
+    #[test]
+    fn compact_command_with_instructions() {
+        let mut s = state();
+        let effects = slash_command(&mut s, "/compact focus on the auth module");
+        assert_eq!(
+            effects,
+            vec![Effect::Compact {
+                instructions: Some("focus on the auth module".into()),
+            }]
+        );
+    }
+
+    /// /compact 在压缩中同样路由（TS 内建命令先于 isCompacting 分支）。
+    #[test]
+    fn compact_command_works_during_compaction() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        let effects = slash_command(&mut s, "/compact");
+        assert_eq!(effects, vec![Effect::Compact { instructions: None }]);
+    }
+
+    /// 自动重试退避中：Esc = 中止重试（TS auto_retry_start 替换 onEscape）。
+    #[test]
+    fn esc_during_auto_retry_aborts_retry() {
+        let mut s = state();
+        s.model.retry_status = Some(pi_tui::app::RetryStatus {
+            attempt: 1,
+            max_attempts: 3,
+            delay_ms: 2000,
+            started_at: Instant::now(),
+            esc_aborts: true,
+        });
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Esc, KM::NONE));
+        assert_eq!(effects, vec![Effect::AbortRetry]);
+        assert!(!s.quit);
+    }
+
+    /// 压缩重试倒计时中：Esc 仍走 abortCompaction（TS
+    /// summarization_retry_scheduled 不替换 onEscape）。
+    #[test]
+    fn esc_during_summarization_retry_aborts_compaction() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        s.model.retry_status = Some(pi_tui::app::RetryStatus {
+            attempt: 2,
+            max_attempts: 3,
+            delay_ms: 4000,
+            started_at: Instant::now(),
+            esc_aborts: false,
+        });
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Esc, KM::NONE));
+        assert_eq!(effects, vec![Effect::AbortCompaction]);
+    }
+
+    /// AutoRetryStart → 倒计时状态；AutoRetryEnd → 清除；失败时错误提示
+    /// （TS auto_retry_end 仅最终失败时 showError）。
+    #[test]
+    fn retry_events_drive_countdown_and_error() {
+        let mut s = state();
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::RetryCountdown {
+                attempt: 1,
+                max_attempts: 3,
+                delay_ms: 2000,
+                error_message: None,
+                esc_aborts: true,
+            }),
+        );
+        let rs = s.model.retry_status.as_ref().expect("countdown set");
+        assert_eq!(rs.attempt, 1);
+        assert_eq!(rs.max_attempts, 3);
+        assert!(rs.esc_aborts);
+        assert!(s.model.messages.is_empty(), "auto_retry_start 不报错");
+
+        // 失败：清除 + 错误提示（TS 文案）。
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::RetryEnd {
+                success: false,
+                attempt: 3,
+                final_error: Some("boom".into()),
+            }),
+        );
+        assert!(s.model.retry_status.is_none());
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text == "Retry failed after 3 attempts: boom"));
+
+        // 成功：清除，无错误提示。
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::RetryCountdown {
+                attempt: 1,
+                max_attempts: 3,
+                delay_ms: 2000,
+                error_message: None,
+                esc_aborts: true,
+            }),
+        );
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::RetryEnd { success: true, attempt: 1, final_error: None }),
+        );
+        assert!(s.model.retry_status.is_none());
+    }
+
+    /// 压缩重试倒计时：附带的错误先入转录（TS
+    /// summarization_retry_scheduled → showError），Esc 不中止重试。
+    #[test]
+    fn summarization_retry_scheduled_shows_error_and_countdown() {
+        let mut s = state();
+        update(
+            &mut s,
+            Action::Agent(pi_tui::Msg::RetryCountdown {
+                attempt: 2,
+                max_attempts: 3,
+                delay_ms: 4000,
+                error_message: Some("Compaction failed: 503".into()),
+                esc_aborts: false,
+            }),
+        );
+        assert!(s.model.retry_status.is_some());
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text == "Compaction failed: 503"));
+        // Esc：esc_aborts=false → 走压缩链（is_compacting 时 abortCompaction）。
+        s.model.is_compacting = true;
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Esc, KM::NONE));
+        assert_eq!(effects, vec![Effect::AbortCompaction]);
+    }
+
+    /// 摘要重试 attempt_start / finished 清除倒计时（回落压缩指示器）。
+    #[test]
+    fn summarization_retry_attempt_start_clears_countdown() {
+        let mut s = state();
+        s.model.is_compacting = true;
+        s.model.retry_status = Some(pi_tui::app::RetryStatus {
+            attempt: 1,
+            max_attempts: 3,
+            delay_ms: 2000,
+            started_at: Instant::now(),
+            esc_aborts: false,
+        });
+        update(&mut s, Action::Agent(pi_tui::Msg::RetryAttemptStart));
+        assert!(s.model.retry_status.is_none(), "倒计时清除，回落压缩标签");
+        assert!(s.model.is_compacting);
     }
 
     // ============================================================

@@ -110,7 +110,7 @@
 | 23 | v0.81.0 #f1c587dde | 避免重复 session 读取（启动延迟优化） | 未核对 | B | ✅ 已修（`open()` 读一次复用 entries） |
 | 24 | v0.81.0 #c889eb880/#b14250412 | 模型目录网络刷新移出启动初始化 | pi-rs 手动 `pi refresh`，已确认保留 | D | 已确认保留（见 DEVIATIONS #10） |
 | 25 | v0.81.0 #54fad505b | 持久化远程目录不覆盖更新的 bundled 目录（Last-Modified 比较） | `remote_catalog.rs` 无 bundled 比较 | D | 已确认保留（见 DEVIATIONS #10） |
-| 26 | v0.81.0 #35a0d5d62 | 压缩期间消息队列保持 steering/follow-up 投递 | interactive-mode（TUI 层）改动 | C | 范围外（TUI） |
+| 26 | v0.81.0 #35a0d5d62 | 压缩期间消息队列保持 steering/follow-up 投递 | interactive-mode（TUI 层）改动 | C | ✅ 已修（2026-09-05 TUI 层消息排队对齐：compaction 队列 + flushCompactionQueue + Esc 中止压缩 + pending 显示，见 DEVIATIONS TUI 行第十轮） |
 | 27 | v0.81.0 #a2c5ee33e | read 工具错误不做语法高亮 | TUI 渲染层改动 | C | 范围外（TUI） |
 | 28 | v0.81.0 #31dc078bf | brace-expansion 5.0.7 | 纯依赖更新 | C | 范围外 |
 

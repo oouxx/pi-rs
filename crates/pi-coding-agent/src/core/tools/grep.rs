@@ -139,6 +139,7 @@ pub fn create_grep_tool(
     let operations = opts.operations.clone();
 
     AgentTool {
+        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "grep".to_string(),
         description: format!(
             "Search for patterns in files using regex or literal matching. \

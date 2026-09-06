@@ -239,6 +239,7 @@ pub fn create_edit_tool(
     let operations = opts.operations.clone();
 
     AgentTool {
+        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "edit".to_string(),
         description: "Edit a file by performing targeted replacements. Each edit replaces exact text matches with fuzzy fallback.".to_string(),
         label: "edit".to_string(),

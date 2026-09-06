@@ -145,6 +145,10 @@ where
     pub name: String,
     pub description: String,
     pub label: String,
+    /// Optional provider-side constrained sampling config (match TS
+    /// `Tool.constrainedSampling`). `None` = not set; providers without
+    /// strict-tool support fall back to plain schema sampling.
+    pub constrained_sampling: Option<crate::pi_ai_types::ConstrainedSamplingConfig>,
     /// Short system-prompt contribution for this tool (matching TS
     /// `ToolDefinition.promptSnippet`), injected into the system prompt so the
     /// model knows what each enabled tool is for.
@@ -202,6 +206,7 @@ where
             prompt_snippet: self.prompt_snippet.clone(),
             prompt_guidelines: self.prompt_guidelines.clone(),
             parameters_schema: self.parameters_schema.clone(),
+            constrained_sampling: self.constrained_sampling.clone(),
             execution_mode: self.execution_mode,
             prepare_arguments: self.prepare_arguments.clone(),
             execute: self.execute.clone(),

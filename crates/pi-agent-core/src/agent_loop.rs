@@ -755,7 +755,7 @@ async fn stream_assistant_response(
                     name: t.name.clone(),
                     description: t.description.clone(),
                     parameters: t.parameters_schema.clone(),
-                    constrained_sampling: None,
+                    constrained_sampling: t.constrained_sampling.clone(),
                 })
                 .collect()
         }),
@@ -1371,6 +1371,7 @@ mod tests {
         > = vec![execute_result];
         let exec_results = std::sync::Mutex::new(results);
         Arc::new(AgentTool {
+            constrained_sampling: None,
             name: name.to_string(),
             description: String::new(),
             label: name.to_string(),
@@ -2481,6 +2482,7 @@ mod tests {
     async fn test_dispatcher_tool_level_sequential_forces_sequential() {
         // Tool with execution_mode = Sequential should force sequential even if mode is Parallel
         let seq_tool = Arc::new(AgentTool {
+            constrained_sampling: None,
             name: "seq".to_string(),
             description: String::new(),
             label: "seq".to_string(),

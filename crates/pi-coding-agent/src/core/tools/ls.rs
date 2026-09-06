@@ -147,6 +147,7 @@ pub fn create_ls_tool(
     let operations = opts.operations.clone();
 
     AgentTool {
+        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "ls".to_string(),
         description: format!(
             "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. \

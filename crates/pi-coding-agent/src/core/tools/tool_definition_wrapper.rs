@@ -99,6 +99,7 @@ where
         prompt_guidelines: definition.prompt_guidelines,
         parameters_schema: params,
         execution_mode: exec_mode,
+        constrained_sampling: definition.constrained_sampling,
         prepare_arguments: None,
         execute,
     }
@@ -128,6 +129,7 @@ pub fn create_tool_definition_from_agent_tool(
         prompt_snippet: tool.prompt_snippet.clone(),
         prompt_guidelines: tool.prompt_guidelines.clone(),
         parameters: Some(tool.parameters_schema.clone()),
+        constrained_sampling: tool.constrained_sampling.clone(),
         render_shell: None,
         execution_mode: tool.execution_mode.map(|m| match m {
             pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential => "sequential".into(),
@@ -146,6 +148,7 @@ mod tests {
     #[test]
     fn test_wrap_tool_definition() {
         let def = ToolDefinition {
+            constrained_sampling: None,
             name: "test_tool".into(),
             label: Some("Test Tool".into()),
             description: "A test tool".into(),
@@ -173,6 +176,7 @@ mod tests {
     fn test_wrap_multiple_definitions() {
         let defs = vec![
             ToolDefinition {
+                constrained_sampling: None,
                 name: "tool1".into(),
                 label: None,
                 description: "First tool".into(),
@@ -185,6 +189,7 @@ mod tests {
             source_info: None,
             },
             ToolDefinition {
+                constrained_sampling: None,
                 name: "tool2".into(),
                 label: None,
                 description: "Second tool".into(),
@@ -208,6 +213,7 @@ mod tests {
     fn test_create_definition_from_tool() {
         use std::sync::Arc;
         let tool = AgentTool {
+            constrained_sampling: None,
             name: "my_tool".into(),
             description: "My custom tool".into(),
             label: "My Tool".into(),
@@ -231,6 +237,7 @@ mod tests {
     #[test]
     fn test_wrap_definition_without_params() {
         let def = ToolDefinition {
+            constrained_sampling: None,
             name: "simple_tool".into(),
             label: None,
             description: "A tool with no params".into(),

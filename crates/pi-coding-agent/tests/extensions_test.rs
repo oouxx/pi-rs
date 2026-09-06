@@ -13,6 +13,7 @@ use pi_coding_agent::core::extensions::ToolDefinition;
 /// Create a basic tool definition for testing.
 fn make_tool_def(name: &str, description: &str) -> ToolDefinition {
     ToolDefinition {
+        constrained_sampling: None,
         name: name.to_string(),
         label: None,
         description: description.to_string(),
@@ -42,6 +43,7 @@ fn test_tool_definition_serialization_roundtrip() {
 #[test]
 fn test_tool_definition_minimal_serialization() {
     let def = ToolDefinition {
+        constrained_sampling: None,
         name: "minimal".into(),
         label: None,
         description: String::new(),
@@ -62,6 +64,7 @@ fn test_tool_definition_minimal_serialization() {
 #[test]
 fn test_tool_definition_with_execution_mode() {
     let def = ToolDefinition {
+        constrained_sampling: None,
         name: "sequential_tool".into(),
         label: None,
         description: "A sequential tool".into(),
@@ -81,6 +84,7 @@ fn test_tool_definition_with_execution_mode() {
 #[test]
 fn test_tool_definition_with_parallel_mode() {
     let def = ToolDefinition {
+        constrained_sampling: None,
         name: "parallel_tool".into(),
         label: None,
         description: "A parallel tool".into(),

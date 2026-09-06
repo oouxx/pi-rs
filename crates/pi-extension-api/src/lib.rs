@@ -55,6 +55,10 @@ pub struct ToolDefinition {
     pub prompt_guidelines: Option<Vec<String>>,
     #[serde(default)]
     pub parameters: Option<serde_json::Value>,
+    /// Optional provider-side constrained sampling config (match TS
+    /// `ToolDefinition.constrainedSampling`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constrained_sampling: Option<pi_ai::types::ConstrainedSamplingConfig>,
     #[serde(default)]
     pub render_shell: Option<String>,
     #[serde(default)]

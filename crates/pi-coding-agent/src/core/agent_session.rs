@@ -868,6 +868,7 @@ impl AgentSession {
                     })
                 };
                 tool_list.push(pi_agent_core::types::AgentTool {
+                    constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
                     name: def.name.clone(),
                     description: def.description.clone(),
                     label: def.label.clone().unwrap_or_default(),
@@ -929,6 +930,7 @@ impl AgentSession {
                     })
                 });
                 tool_list.push(pi_agent_core::types::AgentTool {
+                    constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
                     name: def.name,
                     description: def.description,
                     label: def.label.unwrap_or_default(),

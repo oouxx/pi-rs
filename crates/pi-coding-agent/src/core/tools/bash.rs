@@ -818,6 +818,7 @@ pub fn create_bash_tool(
     let shell_path = opts.shell_path.clone();
 
     AgentTool {
+        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "bash".to_string(),
         description: format!(
             "Execute a bash command in the current working directory. Returns stdout and stderr. \

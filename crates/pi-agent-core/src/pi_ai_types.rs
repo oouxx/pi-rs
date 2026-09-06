@@ -8,11 +8,11 @@ pub use pi_ai::utils::retry::{retry_assistant_call, RetryCallbacks, RetryPolicy}
 pub use pi_ai::utils::uuid::uuid_v7;
 pub use pi_ai::types::{
     AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent,
-    CacheRetention, ContentBlock, Context, ImagesModel, Message, Model, ModelCompat, ModelCost,
-    OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting, ProviderResponse,
-    SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets, ThinkingLevel,
-    ThinkingLevelMap, Tool, ToolCall, ToolChoice, ToolChoiceMode, Transport, Usage, UsageCost,
-    VercelGatewayRouting,
+    CacheRetention, ConstrainedSamplingConfig, ContentBlock, Context, ImagesModel, Message, Model,
+    ModelCompat, ModelCost, OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting,
+    ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets,
+    ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolChoice, ToolChoiceMode, Transport,
+    Usage, UsageCost, VercelGatewayRouting,
 };
 
 pub use pi_ai::models::{

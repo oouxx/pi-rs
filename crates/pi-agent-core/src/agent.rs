@@ -2290,6 +2290,7 @@ mod tests {
         // Register a noop tool so the tool call can be executed
         use crate::types::AgentTool;
         let noop_tool = AgentTool {
+            constrained_sampling: None,
             name: "noop".into(),
             label: "Noop".into(),
             prompt_snippet: None,
@@ -2331,6 +2332,7 @@ mod tests {
         // Create a tool that captures the onUpdate callback
         use crate::types::AgentTool;
         let delayed_tool = AgentTool {
+            constrained_sampling: None,
             name: "delayed_tool".into(),
             label: "Delayed Tool".into(),
             prompt_snippet: None,
@@ -2462,6 +2464,7 @@ mod tests {
         // Settled tool: finishes quickly, captures onUpdate
         use crate::types::AgentTool;
         let settled_tool = AgentTool {
+            constrained_sampling: None,
             name: "settled_tool".into(),
             label: "Settled Tool".into(),
             prompt_snippet: None,
@@ -2493,6 +2496,7 @@ mod tests {
         let slow_release_for_move = slow_release.clone();
         // Slow tool: hangs until released
         let slow_tool = AgentTool {
+            constrained_sampling: None,
             name: "slow_tool".into(),
             label: "Slow Tool".into(),
             prompt_snippet: None,

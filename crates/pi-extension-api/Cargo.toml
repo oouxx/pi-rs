@@ -6,6 +6,7 @@ license.workspace = true
 description = "Extension API trait and types for pi-rs"
 
 [dependencies]
+pi-ai = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

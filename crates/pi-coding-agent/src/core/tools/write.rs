@@ -129,6 +129,7 @@ pub fn create_write_tool(
     let operations = opts.operations.clone();
 
     AgentTool {
+        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "write".to_string(),
         description: "Write content to a file. Creates the file and any parent directories if they don't exist."
             .to_string(),

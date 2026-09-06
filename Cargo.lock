@@ -2488,6 +2488,7 @@ dependencies = [
  "ignore",
  "libc",
  "pi-agent-core",
+ "pi-ai",
  "pi-extension-api",
  "pi-extensions",
  "pi-tui",
@@ -2514,6 +2515,7 @@ version = "1.83.10"
 dependencies = [
  "async-trait",
  "futures",
+ "pi-ai",
  "serde",
  "serde_json",
  "tokio",

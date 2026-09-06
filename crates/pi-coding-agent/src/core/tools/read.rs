@@ -137,6 +137,7 @@ pub fn create_read_tool(
     let operations = opts.operations.clone();
 
     AgentTool {
+        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "read".to_string(),
         description: format!(
             "Read the contents of a file. Returns the file content with line numbers. \

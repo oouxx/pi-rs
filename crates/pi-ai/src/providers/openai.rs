@@ -1388,7 +1388,13 @@ async fn stream_openai_inner(
     let cache_retention = options
         .and_then(|o| o.cache_retention.clone())
         .unwrap_or_else(|| {
-            if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
+            if crate::env_api_keys::get_provider_env_value(
+                "PI_CACHE_RETENTION",
+                options.and_then(|o| o.env.as_ref()),
+            )
+            .as_deref()
+                == Some("long")
+            {
                 CacheRetention::Long
             } else {
                 CacheRetention::Short

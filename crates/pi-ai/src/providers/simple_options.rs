@@ -100,6 +100,7 @@ pub fn build_base_options(
             opts.base.max_tokens.unwrap_or(model.max_tokens),
         )),
         sampling_params,
+        env: opts.base.env.clone(),
         http_client: opts.base.http_client.clone(),
         signal: opts.base.signal.clone(),
         api_key: api_key
@@ -322,6 +323,28 @@ mod tests {
         assert_eq!(result.max_tokens, 16_384);
         assert!(result.thinking_budget < 16_384);
         assert!(result.thinking_budget >= 1024);
+    }
+
+    /// `build_base_options` forwards the provider env overlay (match TS).
+    #[test]
+    fn test_build_base_options_forwards_env() {
+        let model = test_model(200_000, 64_000);
+        let mut env = std::collections::HashMap::new();
+        env.insert("PI_CACHE_RETENTION".to_string(), "long".to_string());
+        let simple = crate::types::SimpleStreamOptions {
+            base: crate::types::StreamOptions {
+                env: Some(env),
+                ..Default::default()
+            },
+            reasoning: None,
+            thinking_budgets: None,
+            debug: None,
+        };
+        let opts = build_base_options(&model, &empty_context(), Some(&simple), None);
+        assert_eq!(
+            opts.env.as_ref().and_then(|e| e.get("PI_CACHE_RETENTION")).map(String::as_str),
+            Some("long")
+        );
     }
 
     #[test]

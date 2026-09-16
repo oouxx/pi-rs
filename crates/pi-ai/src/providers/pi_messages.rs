@@ -622,7 +622,13 @@ fn resolve_cache_retention(options: Option<&StreamOptions>) -> Option<String> {
     if let Some(CacheRetention::Long) = options.and_then(|o| o.cache_retention.as_ref()) {
         return Some("long".to_string());
     }
-    if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
+    if crate::env_api_keys::get_provider_env_value(
+        "PI_CACHE_RETENTION",
+        options.and_then(|o| o.env.as_ref()),
+    )
+    .as_deref()
+        == Some("long")
+    {
         return Some("long".to_string());
     }
     None

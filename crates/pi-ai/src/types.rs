@@ -813,6 +813,10 @@ pub struct StreamOptions {
     /// keys override e.g. temperature / max_tokens). Also used for vLLM
     /// `thinking_token_budget`.
     pub sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Provider-scoped environment overlay (match TS `StreamOptions.env`).
+    /// Providers consult it before the process environment when resolving
+    /// provider env values (e.g. `PI_CACHE_RETENTION`).
+    pub env: Option<std::collections::HashMap<String, String>>,
     /// Per-request HTTP client injection (TS 0.83 per-request `fetch`
     /// injection): hosts can supply a custom `reqwest::Client` (proxy, TLS,
     /// timeouts, mocks). `None` = the default client.
@@ -909,8 +913,9 @@ impl Clone for StreamOptions {
         Self {
             temperature: self.temperature,
             max_tokens: self.max_tokens,
-            sampling_params: None,
-            http_client: None,
+            sampling_params: self.sampling_params.clone(),
+            env: self.env.clone(),
+            http_client: self.http_client.clone(),
             signal: self.signal.clone(),
             api_key: self.api_key.clone(),
             transport: self.transport.clone(),
@@ -941,6 +946,7 @@ impl Default for StreamOptions {
             temperature: None,
             max_tokens: None,
             sampling_params: None,
+            env: None,
             http_client: None,
             signal: None,
             api_key: None,
@@ -1037,6 +1043,7 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
             temperature: helper.temperature,
             max_tokens: helper.max_tokens,
             sampling_params: helper.sampling_params,
+            env: None,
             http_client: None,
             signal: None,
             api_key: helper.api_key,
@@ -1111,6 +1118,27 @@ pub struct ImagesModel {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// `StreamOptions::clone` must preserve `sampling_params` / `http_client`
+    /// (the manual Clone impl used to drop them) and `env`.
+    #[test]
+    fn test_stream_options_clone_preserves_fields() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("PI_CACHE_RETENTION".to_string(), "long".to_string());
+        let opts = StreamOptions {
+            sampling_params: Some(serde_json::json!({"temperature": 0.5}).as_object().unwrap().clone()),
+            env: Some(env),
+            http_client: Some(std::sync::Arc::new(reqwest::Client::new())),
+            ..Default::default()
+        };
+        let cloned = opts.clone();
+        assert!(cloned.sampling_params.is_some());
+        assert!(cloned.http_client.is_some());
+        assert_eq!(
+            cloned.env.as_ref().and_then(|e| e.get("PI_CACHE_RETENTION")).map(String::as_str),
+            Some("long")
+        );
+    }
 
     #[test]
     fn test_content_block_text() {

@@ -75,6 +75,7 @@ pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::St
                     max_retries: options.max_retries,
                     max_retry_delay_ms: options.max_retry_delay_ms,
                     metadata: options.metadata,
+                    env: options.env,
                     tool_choice: options.tool_choice,
                     service_tier: options.service_tier,
                     reasoning_effort: thinking,

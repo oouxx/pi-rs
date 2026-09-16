@@ -152,7 +152,13 @@ fn get_cache_control(
         return None;
     }
     let long = retention == Some(&CacheRetention::Long)
-        || (retention.is_none() && std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long"));
+        || (retention.is_none()
+            && crate::env_api_keys::get_provider_env_value(
+                "PI_CACHE_RETENTION",
+                options.and_then(|o| o.env.as_ref()),
+            )
+            .as_deref()
+                == Some("long"));
     let ttl = if long && get_anthropic_compat(model).supports_long_cache_retention.unwrap_or(false) {
         Some("1h".to_string())
     } else {
@@ -800,20 +806,6 @@ pub fn map_stop_reason(
 // ============================================================================
 // Cache control resolution
 // ============================================================================
-
-#[allow(dead_code)]
-fn resolve_cache_retention(retention: Option<&CacheRetention>) -> CacheRetention {
-    retention.map_or_else(
-        || {
-            if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
-                CacheRetention::Long
-            } else {
-                CacheRetention::Short
-            }
-        },
-        std::clone::Clone::clone,
-    )
-}
 
 // ============================================================================
 // StreamAnthropic: main streaming function
@@ -2461,28 +2453,6 @@ mod tests {
         assert!(matches!(converted[1].content, AnthropicContent::String(_)));
     }
 
-    // ============================================================
-    // resolve_cache_retention tests
-    // ============================================================
-
-    #[test]
-    fn test_resolve_cache_retention_explicit() {
-        let retention = resolve_cache_retention(Some(&CacheRetention::Long));
-        assert_eq!(retention, CacheRetention::Long);
-    }
-
-    #[test]
-    fn test_resolve_cache_retention_none() {
-        let retention = resolve_cache_retention(Some(&CacheRetention::None));
-        assert_eq!(retention, CacheRetention::None);
-    }
-
-    #[test]
-    fn test_resolve_cache_retention_default() {
-        // Default when not specified and no env var
-        let retention = resolve_cache_retention(None);
-        assert_eq!(retention, CacheRetention::Short);
-    }
 }
 
 #[cfg(test)]

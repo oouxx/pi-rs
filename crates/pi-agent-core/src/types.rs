@@ -403,6 +403,8 @@ pub struct StreamFnOptions {
     pub tool_choice: Option<crate::pi_ai_types::ToolChoice>,
     pub service_tier: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    /// Provider-scoped environment overlay (match TS `SimpleStreamOptions.env`).
+    pub env: Option<std::collections::HashMap<String, String>>,
     pub on_payload: Option<
         Arc<
             dyn Fn(

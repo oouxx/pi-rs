@@ -716,11 +716,13 @@ where
                         reasoning_effort: None,
                         thinking_budgets: None,
                         debug: None,
-                        on_payload: None,
-                        on_headers: None,
-                        on_provider_response: None,
-
-
+                        env: opts.env.clone(),
+                        // Forward the caller's hooks (match TS harness
+                        // `assistant.ts`, which passes onPayload/onResponse
+                        // into `streamSimple`) instead of dropping them.
+                        on_payload: opts.on_payload.clone(),
+                        on_headers: opts.on_headers.clone(),
+                        on_provider_response: opts.on_provider_response.clone(),
                     },
                     reasoning: reasoning.clone(),
                     thinking_budgets: opts.thinking_budgets.clone(),

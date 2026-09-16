@@ -348,3 +348,4 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 密钥输入掩码 | `{ type: "secret" }`，不回显 | `AppMode::Secret` 每字符 `•`，不进转录 | 是 | |
 | `/logout [provider]` | 已存凭据选择器 → 删除 | 参数式删除；无参列出已存凭据并给出 TS 同款提示文案 | 是（有界子集） | 见 DEVIATIONS.md #21 |
 | OAuth 登录 | 浏览器回调 / device code | 未实现（`AuthStorage::login` 未实现） | 否 | 见 DEVIATIONS.md #21（范围外） |
+| `/login` 可用 provider 列表 | `getLoginProviderOptions` 遍历已注册 provider（含模型目录暂空的动态 provider） | `login_providers_for`：内建 provider 显示名全集 ∪ 注册表 provider（模型目录为空的 `opencode-go` 等也在列） | 是 | 修复见 PORTING_MISTAKES.md |

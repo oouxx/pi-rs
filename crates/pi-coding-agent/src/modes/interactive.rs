@@ -1271,6 +1271,25 @@ fn logout_command(args: &str) -> Vec<Effect> {
     })]
 }
 
+/// Providers offered by `/login`: every known built-in provider (match TS
+/// `getLoginProviderOptions`, which iterates the registered provider set, not
+/// just providers with a populated model catalog) plus any extra provider seen
+/// in the registry (models.json / remote catalog). Sorted by id.
+fn login_providers_for(
+    registry: &crate::core::model_registry::ModelRegistry,
+) -> Vec<(String, String)> {
+    let mut map: std::collections::BTreeMap<String, String> =
+        crate::core::provider_display_names::BUILT_IN_PROVIDER_DISPLAY_NAMES
+            .iter()
+            .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
+            .collect();
+    for id in registry.get_providers() {
+        map.entry(id.clone())
+            .or_insert_with(|| get_provider_display_name(&id).unwrap_or("").to_string());
+    }
+    map.into_iter().collect()
+}
+
 // ============================================================================
 // effects executor (grok `app/effects.rs`)
 // ============================================================================
@@ -1393,15 +1412,7 @@ fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCo
             .with_argument_completions(model_argument_completions(models)),
     );
     // `/login`：参数补全 = 可登录 provider（对齐 TS loginCommand.getArgumentCompletions）。
-    let login_providers: Vec<(String, String)> = session
-        .get_model_registry()
-        .get_providers()
-        .into_iter()
-        .map(|id| {
-            let name = get_provider_display_name(&id).unwrap_or("").to_string();
-            (id, name)
-        })
-        .collect();
+    let login_providers: Vec<(String, String)> = login_providers_for(session.get_model_registry());
     commands.push(
         pi_tui::CompletionCommand::new("/login <provider>", "Configure provider authentication", "login")
             .with_argument_completions(provider_argument_completions(login_providers)),
@@ -2251,19 +2262,11 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     let mut state = AppState::new(cols, rows, ext_commands, skill_commands);
 
-    // `/login` provider snapshot (match TS `getLoginProviderOptions`): every
-    // registered provider is login-able with an API key in pi-rs (OAuth-only
-    // providers are not ported).
-    state.login_providers = session
-        .get_model_registry()
-        .get_providers()
-        .into_iter()
-        .map(|id| {
-            let name = get_provider_display_name(&id).unwrap_or("").to_string();
-            (id, name)
-        })
-        .collect();
-    state.login_providers.sort_by(|a, b| a.0.cmp(&b.0));
+    // `/login` provider snapshot (match TS `getLoginProviderOptions`, which
+    // iterates all *registered* providers regardless of whether their model
+    // catalog is currently populated) — so built-ins with no bundled models
+    // (e.g. `opencode-go`) are login-able too.
+    state.login_providers = login_providers_for(session.get_model_registry());
 
     // ── 补全（对齐 TS createBaseAutocompleteProvider + autocompleteMaxVisible）──
     let completion_commands = build_completion_commands(&session);
@@ -3578,6 +3581,26 @@ mod tests {
     }
 
     // ── /login /logout（A1 API-key 认证）────────────────────────────────
+
+    /// `/login` offers every known built-in provider, not only those whose
+    /// bundled model catalog is currently populated (`opencode-go` ships no
+    /// models — TS lists registered providers regardless of catalog state).
+    #[test]
+    fn login_providers_include_builtins_without_models() {
+        let registry = crate::core::model_registry::ModelRegistry::new(Vec::new());
+        let providers = login_providers_for(&registry);
+        assert!(
+            providers
+                .iter()
+                .any(|(id, name)| id == "opencode-go" && name == "OpenCode Go"),
+            "opencode-go must be login-able: {providers:?}"
+        );
+        assert!(providers.iter().any(|(id, _)| id == "anthropic"));
+        // Sorted by id (BTreeMap order) so the list is stable.
+        let mut sorted = providers.clone();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(providers, sorted);
+    }
 
     /// `/login` provider argument completion fuzzy-filters by id/display name.
     #[tokio::test]

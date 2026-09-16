@@ -221,7 +221,13 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // ── Resolve session options from CLI args ────────────────────────────
     let (persist_session, session_file, fork_from, session_dir, session_manager) =
-        resolve_session_opts(args, &cwd).await;
+        match resolve_session_opts(args, &cwd).await {
+            Ok(opts) => opts,
+            Err(e) => {
+                eprintln!("{} {e}", "Error:".red().bold());
+                return EXIT_FAILURE;
+            }
+        };
 
     // Build the model registry, registering the `--api-key` provider if given
     // (matching TS `modelRuntime.setRuntimeApiKey`).
@@ -340,7 +346,13 @@ pub async fn run(args: &CliArgs) -> i32 {
 /// Run interactive TUI mode with a session.
 async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &CliArgs) -> i32 {
     let (persist_session, session_file, fork_from, session_dir, session_manager) =
-        resolve_session_opts(args, cwd).await;
+        match resolve_session_opts(args, cwd).await {
+            Ok(opts) => opts,
+            Err(e) => {
+                eprintln!("{} {e}", "Error:".red().bold());
+                return EXIT_FAILURE;
+            }
+        };
 
     let model_registry = match build_model_registry(args) {
         Ok(r) => r,
@@ -404,36 +416,38 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
     pi_coding_agent::modes::interactive::run_interactive_mode(session).await
 }
 
+/// Resolved session options returned by [`resolve_session_opts`]:
+/// `(persist_session, session_file, fork_from, session_dir, session_manager)`.
+type ResolvedSessionOpts = (
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<SessionManager>,
+);
+
 /// Resolve session persistence options from CLI arguments.
 ///
-/// Returns `(persist_session, session_file, fork_from, session_dir,
-/// session_manager)`. A `session_manager` is returned only when `--session-id`
-/// is given (matching TS `createSessionManager`).
-async fn resolve_session_opts(
-    args: &CliArgs,
-    cwd: &str,
-) -> (bool, Option<String>, Option<String>, Option<String>, Option<SessionManager>) {
-    let persist_session = if args.no_session {
-        false
-    } else if args.session.is_some() || args.fork.is_some() || args.continue_session || args.resume_session {
-        true
-    } else {
-        // Persistent by default in interactive mode
-        args.mode == OutputMode::Interactive
-    };
+/// A `session_manager` is returned only when `--session-id` is given (matching
+/// TS `createSessionManager`).
+///
+/// Errors when `--session` / `--fork` names a session id that matches no
+/// session for this project (TS `resolveSessionPath` → "No session found"),
+/// instead of silently treating the id as a path and creating a new session.
+async fn resolve_session_opts(args: &CliArgs, cwd: &str) -> Result<ResolvedSessionOpts, String> {
+    // TS `createSessionManager` persists for every mode (interactive, print,
+    // json) unless `--no-session` is given. The session manager is in-memory
+    // only for `--no-session` (and `--help` / `--list-models`, which never
+    // reach this path).
+    let persist_session = !args.no_session;
 
     // --session <arg>: a path, or a session id prefix resolved against the
     // local session list (matching TS `resolveSessionPath`).
     let session_file = if let Some(ref s) = args.session {
-        if s.contains('/') || s.contains('\\') || s.ends_with(".jsonl") {
+        if is_session_path_arg(s) {
             Some(pi_coding_agent::config::resolve_path(s))
         } else {
-            let sessions = SessionManager::list(cwd, args.session_dir.as_deref()).await;
-            sessions
-                .iter()
-                .find(|si| si.id == *s || si.id.starts_with(s))
-                .map(|si| si.path.to_string_lossy().to_string())
-                .or_else(|| Some(s.to_string()))
+            Some(resolve_session_id(cwd, args.session_dir.as_deref(), s).await?)
         }
     } else if (args.continue_session || args.resume_session) && !args.no_session {
         let sessions = SessionManager::list(cwd, args.session_dir.as_deref()).await;
@@ -447,15 +461,10 @@ async fn resolve_session_opts(
     } else if let Some(ref f) = args.fork {
         // `--fork` accepts a path or a session id prefix (matching TS
         // `resolveSessionPath`).
-        if f.contains('/') || f.contains('\\') || f.ends_with(".jsonl") {
+        if is_session_path_arg(f) {
             Some(pi_coding_agent::config::resolve_path(f))
         } else {
-            let sessions = SessionManager::list(cwd, args.session_dir.as_deref()).await;
-            sessions
-                .iter()
-                .find(|si| si.id == *f || si.id.starts_with(f))
-                .map(|si| si.path.to_string_lossy().to_string())
-                .or_else(|| Some(f.to_string()))
+            Some(resolve_session_id(cwd, args.session_dir.as_deref(), f).await?)
         }
     } else {
         None
@@ -492,7 +501,29 @@ async fn resolve_session_opts(
         None
     };
 
-    (persist_session, session_file, fork_from, session_dir, session_manager)
+    Ok((persist_session, session_file, fork_from, session_dir, session_manager))
+}
+
+/// Whether `--session` / `--fork` should be treated as a file path rather than
+/// a session id (matching TS `resolveSessionPath`).
+fn is_session_path_arg(arg: &str) -> bool {
+    arg.contains('/') || arg.contains('\\') || arg.ends_with(".jsonl")
+}
+
+/// Resolve a session id (exact, then prefix) to its file path in the current
+/// project, mirroring the local branch of TS `resolveSessionPath`.
+async fn resolve_session_id(
+    cwd: &str,
+    session_dir: Option<&str>,
+    arg: &str,
+) -> Result<String, String> {
+    let sessions = SessionManager::list(cwd, session_dir).await;
+    sessions
+        .iter()
+        .find(|si| si.id == arg)
+        .or_else(|| sessions.iter().find(|si| si.id.starts_with(arg)))
+        .map(|si| si.path.to_string_lossy().to_string())
+        .ok_or_else(|| format!("No session found matching '{arg}'"))
 }
 
 /// Build the model registry, registering the `--api-key` provider if given
@@ -832,4 +863,57 @@ async fn list_available_models(search: Option<&str>) -> i32 {
     );
 
     crate::list_models::list_models(&model_registry, search).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 默认参数（无 `--no-session`）必须持久化会话：交互模式默认走的是
+    /// `OutputMode::Text`，之前用 `args.mode == Interactive` 判断导致默认
+    /// 运行被当成内存会话，会话文件从不落盘，退出时的 resume 提示也随之
+    /// 永远不出现。
+    #[tokio::test]
+    async fn default_args_persist_session() {
+        let args = CliArgs::default();
+        let (persist, ..) = resolve_session_opts(&args, "/tmp/pi-rs-persist-test")
+            .await
+            .unwrap();
+        assert!(persist, "默认运行必须持久化会话");
+    }
+
+    /// `--no-session` 明确关闭持久化（TS 的 in-memory 分支）。
+    #[tokio::test]
+    async fn no_session_disables_persistence() {
+        let args = CliArgs {
+            no_session: true,
+            ..CliArgs::default()
+        };
+        let (persist, ..) = resolve_session_opts(&args, "/tmp/pi-rs-persist-test")
+            .await
+            .unwrap();
+        assert!(!persist, "--no-session 必须关闭持久化");
+    }
+
+    /// 未知 session id 必须报错，而不是被当作路径、静默新建会话。
+    #[tokio::test]
+    async fn unknown_session_id_errors_instead_of_creating_session() {
+        let err = resolve_session_id(
+            "/tmp/pi-rs-persist-test",
+            None,
+            "definitely-not-a-session-xyz",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("No session found matching"), "got: {err}");
+    }
+
+    /// 路径形态的 `--session` / `--fork` 参数识别。
+    #[test]
+    fn session_path_args_are_detected() {
+        assert!(is_session_path_arg("./foo.jsonl"));
+        assert!(is_session_path_arg("a/b"));
+        assert!(is_session_path_arg("a\\b"));
+        assert!(!is_session_path_arg("sess_123"));
+    }
 }

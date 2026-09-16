@@ -2517,6 +2517,17 @@ impl AgentSession {
         self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Shared handle to the current session manager.
+    ///
+    /// `/new`, `/resume`, and `/fork` swap the `SessionManager` in place
+    /// behind this same `Arc`, so a clone observes whichever session is
+    /// current when it is read. This lets callers (e.g. the interactive
+    /// resume hint) read session state without holding the outer session
+    /// mutex, which may be held for the duration of an agent run.
+    pub fn session_manager_handle(&self) -> Arc<std::sync::Mutex<SessionManager>> {
+        self.session_manager.clone()
+    }
+
     pub fn get_model_registry(&self) -> &ModelRegistry {
         &self.model_registry
     }

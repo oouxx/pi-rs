@@ -17,10 +17,13 @@
 //! pi-tui Elm `Model`) and returns a list of `Effect`s for the event loop to
 //! run. The event loop is the only place that touches channels / the agent.
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crossterm::style::Stylize;
 use pi_agent_core::agent::Agent;
+use pi_agent_core::types::AgentMessage;
 use pi_tui::app;
 use tokio::sync::Mutex;
 
@@ -29,6 +32,7 @@ use crate::core::auth_storage::{AuthCredential, AuthStorage};
 use crate::core::extensions::ExtensionUIContext;
 use crate::core::model_resolver::DEFAULT_MODEL_PER_PROVIDER;
 use crate::core::provider_display_names::get_provider_display_name;
+use crate::core::session_manager::SessionManager;
 
 const DOUBLE_CTRL_C_WINDOW_MS: u64 = 500;
 const SPINNER_TICK_MS: u64 = 100;
@@ -2419,6 +2423,13 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         state.model.thinking_level = Some(session.get_thinking_level().await);
     }
 
+    // ── TS `rebuildChatFromMessages`：恢复会话时把历史渲染进转录区 ──
+    // （否则 agent 上下文恢复了、TUI 却是空的；只对有持久化上下文的会话做）。
+    let restored_items = transcript_items_from_session(&session);
+    if !restored_items.is_empty() {
+        state.model.hydrate_transcript(&restored_items);
+    }
+
     let (mut input_rx, shutdown_guard) = match terminal.start() {
         Ok(r) => r,
         Err(e) => { restore_terminal(); eprintln!("Failed to start terminal input: {e}"); return 1; }
@@ -2429,6 +2440,10 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // Result channel: the background task reports command outcomes (model
     // changes, thinking level) back into the TUI event stream.
     let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
+    // Shared session-manager handle for the exit resume hint. Captured before
+    // the session is wrapped in the outer mutex so the hint can be built on
+    // quit without waiting for a possibly in-flight agent run to release it.
+    let exit_session_manager = session.session_manager_handle();
     let session = Arc::new(Mutex::new(session));
     // ── 会话事件订阅（对齐 TS session.subscribe）：queue_update → pending
     // 显示；compaction_start/end → 压缩状态 + 队列 flush 触发。 ──
@@ -2646,6 +2661,17 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // TS interactive-mode shutdown which calls `killTrackedDetachedChildren()`).
     crate::utils::shell::kill_tracked_detached_children();
     restore_terminal();
+    // TS `InteractiveMode.shutdown`: after the TUI has left the alternate
+    // screen, print the resume hint to the parent terminal so it survives
+    // process exit. `formatResumeCommand` returns `None` for TTY-less stdout,
+    // in-memory sessions, or a not-yet-written session file.
+    if let Some(resume_command) = format_resume_command(
+        &exit_session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    ) {
+        println!("{} {resume_command}", "To resume this session:".dim());
+    }
     0
 }
 
@@ -2776,6 +2802,232 @@ async fn refresh_status(
     changed
 }
 
+/// Build the restored-transcript items for the current session (TS
+/// `rebuildChatFromMessages` → `renderSessionEntries` → `renderSessionItems`).
+///
+/// Walks the compaction-aware context entries and converts each to UI items:
+/// user/assistant messages, tool rows (results matched back by `tool_call_id`),
+/// and compaction/branch summaries as system notices.
+fn transcript_items_from_session(session: &AgentSession) -> Vec<app::TranscriptItem> {
+    let entries = session.get_session_manager().build_context_entries();
+    transcript_items_from_entries(&entries)
+}
+
+/// Convert compaction-aware context entries into transcript items.
+fn transcript_items_from_entries(
+    entries: &[crate::core::session_manager::SessionEntry],
+) -> Vec<app::TranscriptItem> {
+    let mut items = Vec::new();
+    for entry in entries {
+        for message in crate::core::compaction::session_entry_to_context_messages(entry) {
+            append_message_items(&mut items, &message);
+        }
+    }
+    items
+}
+
+/// Convert one context message into transcript items, mirroring the TS
+/// `renderSessionItems` assistant/toolResult handling.
+fn append_message_items(items: &mut Vec<app::TranscriptItem>, message: &AgentMessage) {
+    use pi_agent_core::pi_ai_types::{ContentBlock, StopReason};
+
+    fn texts(content: &[ContentBlock]) -> String {
+        content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+    fn thinking_text(content: &[ContentBlock]) -> String {
+        content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Thinking { thinking, .. } => Some(thinking.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    match message {
+        AgentMessage::User { content, .. } => {
+            let text = texts(content);
+            if !text.is_empty() {
+                items.push(message_item("user", text));
+            }
+        }
+        AgentMessage::Assistant {
+            content,
+            stop_reason,
+            error_message,
+            ..
+        } => {
+            let text = texts(content);
+            let thinking = thinking_text(content);
+            if !text.is_empty() || !thinking.is_empty() {
+                items.push(app::TranscriptItem::Message {
+                    role: "assistant".to_string(),
+                    text,
+                    thinking,
+                    stop_reason: stop_reason.as_ref().and_then(tui_stop_reason),
+                    error_message: error_message.clone(),
+                });
+            }
+            // TS: aborted/error assistant messages mark their tool components
+            // as failed with the stop message, instead of waiting for results.
+            let failed = matches!(
+                stop_reason,
+                Some(StopReason::Aborted) | Some(StopReason::Error)
+            );
+            for block in content {
+                if let ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } = block
+                {
+                    items.push(app::TranscriptItem::ToolStart {
+                        call_id: id.clone(),
+                        name: name.clone(),
+                        args: serde_json::to_string_pretty(arguments).unwrap_or_default(),
+                    });
+                    if failed {
+                        let output = match stop_reason {
+                            Some(StopReason::Aborted) => "Operation aborted".to_string(),
+                            _ => error_message.clone().unwrap_or_else(|| "Error".to_string()),
+                        };
+                        items.push(app::TranscriptItem::ToolResult {
+                            call_id: id.clone(),
+                            is_error: true,
+                            output,
+                            truncation: None,
+                        });
+                    }
+                }
+            }
+        }
+        AgentMessage::ToolResult {
+            tool_call_id,
+            is_error,
+            ..
+        } => {
+            // Reuse the live bridge's result extraction (content blocks /
+            // details.diff / stdout+stderr) and truncation metadata.
+            let value = serde_json::to_value(message).unwrap_or(serde_json::Value::Null);
+            items.push(app::TranscriptItem::ToolResult {
+                call_id: tool_call_id.clone(),
+                is_error: *is_error,
+                output: crate::modes::agent_bridge::tool_result_text(&value),
+                truncation: crate::modes::agent_bridge::tool_truncation(&value),
+            });
+        }
+        AgentMessage::BashExecution {
+            command, output, ..
+        } => {
+            items.push(message_item("system", format!("$ {command}\n{output}")));
+        }
+        AgentMessage::CompactionSummary {
+            summary,
+            tokens_before,
+            ..
+        } => {
+            items.push(message_item(
+                "system",
+                format!("[compaction] Compacted from {tokens_before} tokens\n\n{summary}"),
+            ));
+        }
+        AgentMessage::BranchSummary { summary, .. } => {
+            items.push(message_item(
+                "system",
+                format!("[branch summary]\n\n{summary}"),
+            ));
+        }
+        AgentMessage::Custom {
+            display, content, ..
+        } => {
+            // TS renders custom messages only when `display` is set; the Rust
+            // TUI has no extension message renderer, so use a muted system line.
+            if *display {
+                let text = match content {
+                    pi_agent_core::types::CustomContent::Text(s) => s.clone(),
+                    pi_agent_core::types::CustomContent::Blocks(blocks) => texts(blocks),
+                };
+                if !text.is_empty() {
+                    items.push(message_item("system", text));
+                }
+            }
+        }
+    }
+}
+
+fn message_item(role: &str, text: String) -> app::TranscriptItem {
+    app::TranscriptItem::Message {
+        role: role.to_string(),
+        text,
+        thinking: String::new(),
+        stop_reason: None,
+        error_message: None,
+    }
+}
+
+/// Map a core stop reason to the TUI's renderable subset (TS `StopReason`
+/// post-content notices: length/aborted/error only).
+fn tui_stop_reason(reason: &pi_agent_core::pi_ai_types::StopReason) -> Option<app::StopReason> {
+    use pi_agent_core::pi_ai_types::StopReason;
+    match reason {
+        StopReason::Length => Some(app::StopReason::Length),
+        StopReason::Aborted => Some(app::StopReason::Aborted),
+        StopReason::Error => Some(app::StopReason::Error),
+        _ => None,
+    }
+}
+
+/// TS `formatResumeCommand`: build the shell command that resumes the
+/// current session. Returns `None` when stdout is not a TTY, when the
+/// session is not persisted (in-memory), or when its file has not been
+/// written to disk yet.
+fn format_resume_command(session_manager: &SessionManager) -> Option<String> {
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    build_resume_command(session_manager)
+}
+
+/// TTY-independent part of [`format_resume_command`].
+fn build_resume_command(session_manager: &SessionManager) -> Option<String> {
+    if !session_manager.is_persisted() {
+        return None;
+    }
+    if !session_manager.get_session_file()?.exists() {
+        return None;
+    }
+    let mut args = vec![crate::config::APP_NAME.to_string()];
+    if !session_manager.uses_default_session_dir() {
+        args.push("--session-dir".to_string());
+        args.push(quote_if_needed(
+            &session_manager.get_session_dir().to_string_lossy(),
+        ));
+    }
+    args.push("--session".to_string());
+    args.push(session_manager.get_session_id().to_string());
+    Some(args.join(" "))
+}
+
+/// TS `quoteIfNeeded`: leave a value unquoted when it contains only safe
+/// shell characters, otherwise single-quote it and escape embedded quotes.
+fn quote_if_needed(value: &str) -> String {
+    let safe = !value.is_empty()
+        && !value
+            .chars()
+            .any(|c| !c.is_ascii_alphanumeric() && !"_-./~:@".contains(c));
+    if safe {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn restore_terminal() {
     let _ = crossterm::execute!(
         std::io::stdout(),
@@ -2840,6 +3092,225 @@ mod tests {
         AppState::new(120, 80, Vec::new(), Vec::new())
     }
 
+    // ── 退出 resume 提示（对齐 TS `formatResumeCommand`）──────────────
+
+    /// 持久化且会话文件已落盘、session-dir 非默认时：命令带 `--session-dir`
+    /// （含空格需要 shell 引号）和 `--session <id>`。
+    #[test]
+    fn format_resume_command_includes_quoted_non_default_session_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let session_dir = root.path().join("my sessions");
+        let mgr = SessionManager::new(
+            "/tmp/resume-proj",
+            &session_dir.to_string_lossy(),
+            None,
+            true,
+            None,
+        );
+        std::fs::write(mgr.get_session_file().unwrap(), "{}").unwrap();
+
+        let command = build_resume_command(&mgr).unwrap();
+        assert_eq!(
+            command,
+            format!(
+                "pi-rs --session-dir '{}' --session {}",
+                session_dir.display(),
+                mgr.get_session_id()
+            )
+        );
+    }
+
+    /// 非持久化（内存）会话：没有可恢复的会话文件，返回 `None`。
+    #[test]
+    fn format_resume_command_none_when_not_persisted() {
+        let mgr = SessionManager::new(
+            "/tmp/resume-proj",
+            "/tmp/resume-sessions",
+            None,
+            false,
+            None,
+        );
+        assert_eq!(build_resume_command(&mgr), None);
+    }
+
+    /// 持久化但会话文件尚未写入：此时恢复命令无效，返回 `None`。
+    #[test]
+    fn format_resume_command_none_when_session_file_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(
+            "/tmp/resume-proj",
+            &root.path().to_string_lossy(),
+            None,
+            true,
+            None,
+        );
+        assert!(!mgr.get_session_file().unwrap().exists());
+        assert_eq!(build_resume_command(&mgr), None);
+    }
+
+    /// `quoteIfNeeded`：安全字符集原样返回，其余单引号包裹并转义内嵌单引号。
+    #[test]
+    fn quote_if_needed_matches_shell_safe_set() {
+        assert_eq!(quote_if_needed("/a/b-c_d.e~f:g@h1"), "/a/b-c_d.e~f:g@h1");
+        assert_eq!(quote_if_needed("a b"), "'a b'");
+        assert_eq!(quote_if_needed("it's"), "'it'\\''s'");
+        assert_eq!(quote_if_needed(""), "''");
+    }
+
+    /// 首条 assistant 消息触发会话文件落盘，此后 resume 命令即可生成。
+    /// 验证的是真实持久化路径（`append_message` → `persist_entry_str`），
+    /// 而不是手工写文件——防止“会话没落盘所以提示永远不出现”的回归。
+    #[test]
+    fn assistant_message_persists_file_and_enables_resume_command() {
+        let root = tempfile::tempdir().unwrap();
+        let session_dir = root.path().join("sessions");
+        let mut mgr = SessionManager::new(
+            "/tmp/resume-proj",
+            &session_dir.to_string_lossy(),
+            None,
+            true,
+            None,
+        );
+        let session_file = mgr.get_session_file().unwrap().to_path_buf();
+        assert!(!session_file.exists(), "首条 assistant 前不写文件");
+        assert_eq!(build_resume_command(&mgr), None);
+
+        mgr.append_message(serde_json::json!({"role": "assistant", "content": []}));
+
+        assert!(session_file.exists(), "首条 assistant 后会话文件必须落盘");
+        assert!(build_resume_command(&mgr).is_some());
+    }
+
+    // ── 恢复会话的转录重建（TS rebuildChatFromMessages）──────────────────
+
+    /// user / assistant（含 toolCall）/ toolResult 依序变成：user 消息、
+    /// assistant 消息、工具行、工具结果（按 call_id 回填）。
+    #[test]
+    fn transcript_items_rebuild_user_assistant_and_tool_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let mut mgr = SessionManager::new(
+            "/tmp/hydrate-proj",
+            &root.path().to_string_lossy(),
+            None,
+            true,
+            None,
+        );
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "run it"}],
+            "timestamp": 0
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "on it"},
+                {"type": "toolCall", "id": "tc-1", "name": "bash", "arguments": {"command": "ls"}}
+            ],
+            "api": "anthropic",
+            "provider": "anthropic",
+            "model": "claude",
+            "usage": {},
+            "stop_reason": "toolUse",
+            "timestamp": 0
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "toolResult",
+            "tool_call_id": "tc-1",
+            "tool_name": "bash",
+            "content": [{"type": "text", "text": "file.txt\n"}],
+            "details": {},
+            "is_error": false,
+            "timestamp": 0
+        }));
+
+        let items = transcript_items_from_entries(&mgr.build_context_entries());
+        assert_eq!(
+            items.len(),
+            4,
+            "user + assistant + tool start + tool result"
+        );
+        match &items[0] {
+            app::TranscriptItem::Message { role, text, .. } => {
+                assert_eq!(role, "user");
+                assert_eq!(text, "run it");
+            }
+            other => panic!("expected user message, got {other:?}"),
+        }
+        match &items[1] {
+            app::TranscriptItem::Message { role, text, .. } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(text, "on it");
+            }
+            other => panic!("expected assistant message, got {other:?}"),
+        }
+        match &items[2] {
+            app::TranscriptItem::ToolStart {
+                call_id,
+                name,
+                args,
+            } => {
+                assert_eq!(call_id, "tc-1");
+                assert_eq!(name, "bash");
+                assert!(args.contains("\"command\""));
+            }
+            other => panic!("expected tool start, got {other:?}"),
+        }
+        match &items[3] {
+            app::TranscriptItem::ToolResult {
+                call_id,
+                is_error,
+                output,
+                ..
+            } => {
+                assert_eq!(call_id, "tc-1");
+                assert!(!is_error);
+                assert_eq!(output, "file.txt\n");
+            }
+            other => panic!("expected tool result, got {other:?}"),
+        }
+    }
+
+    /// abort/error 的 assistant 消息：其 toolCall 立即标记为失败结果（TS
+    /// `renderSessionItems` 不再等 toolResult），不留下永远 pending 的工具行。
+    #[test]
+    fn transcript_items_mark_tools_failed_when_assistant_aborted() {
+        let root = tempfile::tempdir().unwrap();
+        let mut mgr = SessionManager::new(
+            "/tmp/hydrate-proj",
+            &root.path().to_string_lossy(),
+            None,
+            true,
+            None,
+        );
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "toolCall", "id": "tc-9", "name": "bash", "arguments": {}}
+            ],
+            "api": "anthropic",
+            "provider": "anthropic",
+            "model": "claude",
+            "usage": {},
+            "stop_reason": "aborted",
+            "timestamp": 0
+        }));
+
+        let items = transcript_items_from_entries(&mgr.build_context_entries());
+        assert_eq!(items.len(), 2, "tool start + synthetic failure result");
+        match &items[1] {
+            app::TranscriptItem::ToolResult {
+                call_id,
+                is_error,
+                output,
+                ..
+            } => {
+                assert_eq!(call_id, "tc-9");
+                assert!(is_error);
+                assert_eq!(output, "Operation aborted");
+            }
+            other => panic!("expected synthetic tool failure, got {other:?}"),
+        }
+    }
 
     // ── Esc 行为（对齐 TS onEscape：不退出，流式→中断+还原队列文本）──────
 

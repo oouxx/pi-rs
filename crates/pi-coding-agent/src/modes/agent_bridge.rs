@@ -62,7 +62,7 @@ pub enum AgentEvent {
 /// `details.truncation` + `details.fullOutputPath` on the result, read puts
 /// `details.truncation`, and grep puts `details.matchLimitReached` /
 /// `details.linesTruncated` next to `details.truncation`.
-fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::ToolTruncation> {
+pub(crate) fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::ToolTruncation> {
     let obj = value.as_object()?;
     let details = obj.get("details")?.as_object()?;
     let trunc = details.get("truncation")?.as_object()?;
@@ -102,7 +102,7 @@ fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::ToolTruncat
     })
 }
 
-fn tool_result_text(value: &serde_json::Value) -> String {
+pub(crate) fn tool_result_text(value: &serde_json::Value) -> String {
     if value.is_null() {
         return String::new();
     }

@@ -39,6 +39,9 @@ const QUEUE_ENV: &str = "PI_TUI_E2E_QUEUE_STREAM";
 /// Retry mock: first stream call fails with a retryable 503; later calls
 /// answer instantly (provider-retry display + Esc aborts the backoff).
 const RETRY_ENV: &str = "PI_TUI_E2E_RETRY_STREAM";
+/// Restored-session mock: the child opens this session file so the TUI must
+/// render its persisted history on startup (TS `rebuildChatFromMessages`).
+const RESUME_ENV: &str = "PI_TUI_E2E_RESUME_FILE";
 const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
 const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
 const MOCK_REPLY: &str = "Hello from the mock LLM!";
@@ -337,6 +340,12 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     opts.cli_provider = Some("mock".into());
     opts.cli_model = Some("mock-model".into());
     opts.enable_extensions = false;
+    // Restored-session path: open an existing session file so the TUI has
+    // persisted history to render on startup.
+    if let Ok(path) = std::env::var(RESUME_ENV) {
+        opts.session_file = Some(path);
+        opts.persist_session = true;
+    }
     opts.model_registry = Some(ModelRegistry::new(vec![mock_model()]));
     let mut registry = pi_extension_api::ExtensionRegistry::new();
     registry.register(
@@ -611,6 +620,11 @@ impl Tui {
         Self::spawn_inner_env(false, None, &[(BIG_ENV, "1")])
     }
 
+    /// Spawn with a pre-existing session file (restored-history rendering).
+    fn spawn_resume(session_file: &str) -> Self {
+        Self::spawn_inner_env(false, None, &[(RESUME_ENV, session_file)])
+    }
+
     fn spawn_inner(long_stream: bool, real_key: Option<&str>) -> Self {
         Self::spawn_inner_env(long_stream, real_key, &[])
     }
@@ -805,6 +819,41 @@ fn tui_chat_flow_renders_mock_reply_and_quits() {
         "alternate screen restored on quit: {:?}",
         out.chars().rev().take(200).collect::<String>()
     );
+}
+
+/// Restored session: the TUI must render the persisted history on startup
+/// (TS `rebuildChatFromMessages`) — otherwise the agent context is restored
+/// but the transcript looks empty.
+#[test]
+fn tui_resume_renders_restored_history() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session_file = dir
+        .path()
+        .join("2026-01-01T00-00-00-000000+00-00_resume-e2e.jsonl");
+    let contents = concat!(
+        r#"{"type":"session","version":3,"id":"resume-e2e","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp"}"#,
+        "\n",
+        r#"{"type":"message","id":"m1","parent_id":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"ResumedHistoryMarker"}],"timestamp":1}}"#,
+        "\n",
+        r#"{"type":"message","id":"m2","parent_id":"m1","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"ResumedReplyMarker"}],"api":"mock-api","provider":"mock","model":"mock-model","usage":{},"stop_reason":"stop","timestamp":2}}"#,
+        "\n",
+    );
+    std::fs::write(&session_file, contents).expect("write session file");
+
+    let mut tui = Tui::spawn_resume(session_file.to_str().expect("utf8 path"));
+    assert!(
+        tui.wait_for("ResumedHistoryMarker", TIMEOUT),
+        "restored user message rendered; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("ResumedReplyMarker", TIMEOUT),
+        "restored assistant message rendered; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.write(&[0x04]); // Ctrl+D: quit
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit code 0");
 }
 
 /// Ctrl+C mid-stream must abort the long mock stream: output stops growing

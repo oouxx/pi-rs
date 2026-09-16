@@ -1,0 +1,10 @@
+# PORTING_MISTAKES.md — pi-cli
+
+对齐检查中修复的真回归 bug（非有意偏差）。"根因模式"尽量归到
+`PORTING.md` 的"高危陷阱"表分类。
+
+| # | 位置 | 现象 | 根因模式 | 修复方式 |
+|---|------|------|---------|---------|
+| 1 | `run.rs:resolve_session_opts` | 默认运行 `pi-rs`（无 `--no-session`/`--session` 等）时 `persist_session=false`，会话变成内存会话、从不落盘；退出时 `formatResumeCommand` 因此永远返回 `None`，`To resume this session:` 提示从不出现。 | **用"原始参数"推断"解析后的模式"**：`resolve_session_opts` 拿 `args.mode`（默认 `OutputMode::Text`）判断是否 interactive，而真正的模式由 `resolve_app_mode`（`Text` + TTY → `Interactive`）决定。TS 侧 `createSessionManager` 在所有非 `--no-session` 路径都持久化，与 mode 无关。 | `persist_session = !args.no_session`（对齐 TS）；补单测 `default_args_persist_session` / `no_session_disables_persistence`，以及端到端持久化链测试 `assistant_message_persists_file_and_enables_resume_command`。 |
+| 2 | `core/sdk.rs:create_agent_session`（默认 session dir） | 新建会话的默认目录用 `SessionManager::default_session_dir` = `{agent_dir}/sessions`（裸根目录），而 `uses_default_session_dir()` / `SessionManager::list()` 用 `config::get_default_session_dir` = `sessions/--<encoded-cwd>--`。两者永远不相等，导致：①resume 提示总是多打 `--session-dir`；②按 id 查找会话时本地列表找不到（列的是 encoded 子目录，会话却建在根目录）。 | **同一语义有两个不同实现**：TS 只有 `getDefaultSessionDir`，Rust 移植时分裂出 `SessionManager::default_session_dir`（返回 sessions 根），创建与比较各用一个。 | sdk 默认目录改用 `config::get_default_session_dir(&cwd, Some(&agent_dir))`，与比较/列目录一致；补测试 `assistant_message_persists_file_and_enables_resume_command` + pty 实测 resume 提示为 `pi-rs --session <id>`（无 `--session-dir`）。 |
+| 3 | `run.rs:resolve_session_opts`（`--session` / `--fork` 解析） | 传入的 session id 在本地列表匹配不到时，`.or_else(|| Some(s.to_string()))` 把 id 当作**文件路径**交给 `SessionManager::new`；路径不存在 → `new_session()` → **静默新建一个会话**，看起来就是"resume 没生效"。 | **静默 fallback 掩盖查找失败**：TS `resolveSessionPath` 匹配不到时返回 `not_found` 并报 `No session found matching '<arg>'`，从不把 id 当路径。 | 新增 `resolve_session_id`（精确→前缀，找不到返回 `Err`）与 `is_session_path_arg`（仅含 `/`/`\`/`.jsonl` 当路径）；`resolve_session_opts` 改返回 `Result`，两个调用方打印错误并 `EXIT_FAILURE`；补单测 `unknown_session_id_errors_instead_of_creating_session`、`session_path_args_are_detected`。 |

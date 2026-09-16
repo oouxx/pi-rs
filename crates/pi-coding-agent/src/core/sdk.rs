@@ -551,11 +551,16 @@ pub async fn create_agent_session(
         }
     };
 
-    // Resolve session directory: --session-dir overrides default
-    let session_dir = options
-        .session_dir
-        .clone()
-        .unwrap_or_else(|| SessionManager::default_session_dir(&cwd, &agent_dir));
+    // Resolve session directory: --session-dir overrides default. The default
+    // is the encoded-cwd subdirectory (`sessions/--<encoded-cwd>--`), matching
+    // TS `getDefaultSessionDir`. Using the bare `sessions/` root here made
+    // `usesDefaultSessionDir()` never true (so the resume hint always printed
+    // `--session-dir`) and made id lookups miss sessions created by default.
+    let session_dir = options.session_dir.clone().unwrap_or_else(|| {
+        crate::config::get_default_session_dir(&cwd, Some(&agent_dir))
+            .to_string_lossy()
+            .to_string()
+    });
 
     // Create or restore session manager
     let session_manager = if let Some(sm) = options.session_manager {

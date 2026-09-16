@@ -342,6 +342,36 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub enum ToolCallState { Pending, Running, Done, Failed }
 
+/// One item of restored session history, used by
+/// [`Model::hydrate_transcript`] (TS `renderSessionItems`). The interactive
+/// host converts persisted session entries into these so a resumed session
+/// renders its existing conversation instead of an empty chat.
+#[derive(Debug, Clone)]
+pub enum TranscriptItem {
+    /// A message block (`role` is `"user"` / `"assistant"` / `"system"`).
+    Message {
+        role: String,
+        text: String,
+        thinking: String,
+        stop_reason: Option<StopReason>,
+        error_message: Option<String>,
+    },
+    /// A tool call row (TS `ToolExecutionComponent` construction).
+    ToolStart {
+        call_id: String,
+        name: String,
+        args: String,
+    },
+    /// The result for a tool row added by a previous
+    /// [`TranscriptItem::ToolStart`] (TS `component.updateResult`).
+    ToolResult {
+        call_id: String,
+        is_error: bool,
+        output: String,
+        truncation: Option<ToolTruncation>,
+    },
+}
+
 /// TS `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES` (tools/truncate.ts) —
 /// fallbacks for the truncation warning text when a tool's details omit
 /// `maxBytes` / `maxLines` (TS `?? DEFAULT_MAX_BYTES` / `?? DEFAULT_MAX_LINES`).
@@ -728,6 +758,67 @@ impl Model {
         if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
             tool.output = sanitize_output_text(text);
         }
+    }
+
+    /// Rebuild the transcript from restored session history (TS
+    /// `rebuildChatFromMessages` → `renderSessionItems`). Clears the current
+    /// messages/tools and reprocesses `items` in order, so block ids — and
+    /// therefore the interleaving of assistant messages and their tool rows
+    /// — match a live run.
+    pub fn hydrate_transcript(&mut self, items: &[TranscriptItem]) {
+        self.messages.clear();
+        self.active_tools.clear();
+        self.next_block_id = 0;
+        for item in items {
+            match item {
+                TranscriptItem::Message {
+                    role,
+                    text,
+                    thinking,
+                    stop_reason,
+                    error_message,
+                } => {
+                    let id = self.alloc_block_id();
+                    let mut msg =
+                        Message::new(id, role.clone(), text.clone(), self.width as usize);
+                    if !thinking.is_empty() {
+                        msg.append_thinking(thinking);
+                    }
+                    msg.stop_reason = *stop_reason;
+                    msg.error_message = error_message.clone();
+                    self.messages.push(msg);
+                }
+                TranscriptItem::ToolStart {
+                    call_id,
+                    name,
+                    args,
+                } => {
+                    self.add_tool_call(call_id, name, args);
+                }
+                TranscriptItem::ToolResult {
+                    call_id,
+                    is_error,
+                    output,
+                    truncation,
+                } => {
+                    if let Some(tool) = self
+                        .active_tools
+                        .iter_mut()
+                        .rev()
+                        .find(|t| t.call_id == *call_id)
+                    {
+                        tool.state = if *is_error {
+                            ToolCallState::Failed
+                        } else {
+                            ToolCallState::Done
+                        };
+                        tool.output = sanitize_output_text(output);
+                        tool.truncation = truncation.clone();
+                    }
+                }
+            }
+        }
+        self.auto_scroll = true;
     }
 }
 
@@ -3417,6 +3508,72 @@ mod tests {
         assert_eq!(first.output, "step1\nstep2\n", "first output is the last snapshot, not doubled");
         assert!(matches!(second.state, ToolCallState::Running), "second bash still running");
         assert_eq!(second.output, "other\n", "second output lands on its own row");
+    }
+
+    /// `hydrate_transcript` rebuilds restored history in order (assistant
+    /// message before its tool row, result matched by `call_id`) and clears
+    /// any pre-existing live state first.
+    #[test]
+    fn hydrate_transcript_rebuilds_history_in_order() {
+        let mut model = Model::new(120, 80);
+        // Pre-existing live state must be cleared by hydration.
+        update(&mut model, Msg::NewMessage("user".into(), "stale".into()));
+
+        model.hydrate_transcript(&[
+            TranscriptItem::Message {
+                role: "user".into(),
+                text: "hello".into(),
+                thinking: String::new(),
+                stop_reason: None,
+                error_message: None,
+            },
+            TranscriptItem::Message {
+                role: "assistant".into(),
+                text: "hi".into(),
+                thinking: "weighing".into(),
+                stop_reason: Some(StopReason::Length),
+                error_message: None,
+            },
+            TranscriptItem::ToolStart {
+                call_id: "tc-1".into(),
+                name: "bash".into(),
+                args: "{}".into(),
+            },
+            TranscriptItem::ToolResult {
+                call_id: "tc-1".into(),
+                is_error: false,
+                output: "file.txt\n".into(),
+                truncation: Some(ToolTruncation {
+                    truncated: true,
+                    output_lines: 1,
+                    total_lines: 5,
+                    ..ToolTruncation::default()
+                }),
+            },
+        ]);
+
+        assert_eq!(
+            model.messages.len(),
+            2,
+            "stale message cleared, two restored"
+        );
+        assert_eq!(model.messages[0].role, "user");
+        assert_eq!(model.messages[0].text, "hello");
+        assert_eq!(model.messages[1].text, "hi");
+        assert_eq!(model.messages[1].thinking, "weighing");
+        assert_eq!(model.messages[1].stop_reason, Some(StopReason::Length));
+
+        let tool = model
+            .active_tools
+            .iter()
+            .find(|t| t.call_id == "tc-1")
+            .expect("tool row restored");
+        assert!(matches!(tool.state, ToolCallState::Done), "result marks the row done");
+        assert_eq!(tool.output, "file.txt\n");
+        assert_eq!(tool.truncation.as_ref().map(|t| t.total_lines), Some(5));
+        // The assistant message block precedes its tool row in the shared id
+        // sequence, so the transcript interleaves them like a live run.
+        assert!(model.messages[1].id < tool.id, "assistant before its tool row");
     }
 
     /// TS tool-output preview: a tool with more than `FALLBACK_PREVIEW_LINES`

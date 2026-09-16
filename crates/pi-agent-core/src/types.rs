@@ -413,7 +413,6 @@ pub struct StreamFnOptions {
                 + Sync,
         >,
     >,
-    pub on_response: Option<Arc<dyn Fn(&crate::pi_ai_types::AssistantMessage) + Send + Sync>>,
     /// Callback invoked before provider HTTP request headers are sent.
     /// Receives the current headers map and returns the (possibly modified) headers.
     pub on_headers: Option<

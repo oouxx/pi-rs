@@ -903,7 +903,6 @@ where
                 })
             })),
             on_payload: None,
-            on_response: None,
             on_headers: None,
             on_provider_response: None,
         };

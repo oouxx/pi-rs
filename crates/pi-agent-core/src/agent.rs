@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{watch, Mutex, Notify, RwLock};
 
 use crate::pi_ai_types::{
-    AssistantMessage, ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage,
+    ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage,
 };
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
@@ -114,7 +114,6 @@ pub struct AgentOptions {
     pub stream_fn: Option<StreamFn>,
     pub get_api_key: Option<GetApiKeyFn>,
     pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
-    pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
     pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
     pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     pub before_tool_call: Option<BeforeToolCallFn>,
@@ -151,7 +150,6 @@ impl Default for AgentOptions {
             stream_fn: None,
             get_api_key: None,
             on_payload: None,
-            on_response: None,
             on_headers: None,
             on_provider_response: None,
             before_tool_call: None,
@@ -215,7 +213,6 @@ pub struct Agent {
     stream_fn: StreamFn,
     get_api_key: Option<GetApiKeyFn>,
     on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
-    on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
     on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
     on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     before_tool_call: Arc<tokio::sync::RwLock<Option<BeforeToolCallFn>>>,
@@ -333,7 +330,6 @@ impl Agent {
             stream_fn,
             get_api_key: options.get_api_key,
             on_payload: options.on_payload,
-            on_response: options.on_response,
             on_headers: options.on_headers,
             on_provider_response: options.on_provider_response,
             before_tool_call: Arc::new(tokio::sync::RwLock::new(options.before_tool_call)),
@@ -811,7 +807,6 @@ impl Agent {
             before_tool_call: self.before_tool_call.read().await.clone(),
             after_tool_call: self.after_tool_call.clone(),
             on_payload: self.on_payload.clone(),
-            on_response: self.on_response.clone(),
             on_headers: self.on_headers.clone(),
             on_provider_response: self.on_provider_response.clone(),
         };

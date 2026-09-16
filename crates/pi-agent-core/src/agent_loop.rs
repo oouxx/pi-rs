@@ -919,7 +919,6 @@ pub struct AgentLoopConfig {
                 + Sync,
         >,
     >,
-    pub on_response: Option<Arc<dyn Fn(&AssistantMessage) + Send + Sync>>,
     pub on_headers: Option<
         Arc<
             dyn Fn(
@@ -1145,7 +1144,6 @@ async fn run_loop(
                 service_tier: initial_config.service_tier.clone(),
                 metadata: initial_config.metadata.clone(),
                 on_payload: initial_config.on_payload.clone(),
-                on_response: initial_config.on_response.clone(),
                 on_headers: initial_config.on_headers.clone(),
                 on_provider_response: initial_config.on_provider_response.clone(),
                 ..Default::default()
@@ -1484,7 +1482,6 @@ mod tests {
             before_tool_call: None,
             after_tool_call: None,
             on_payload: None,
-            on_response: None,
             on_headers: None,
             on_provider_response: None,
         };
@@ -2585,7 +2582,6 @@ mod tests {
             before_tool_call: None,
             after_tool_call: None,
             on_payload: None,
-            on_response: None,
             on_headers: None,
             on_provider_response: None,
         }

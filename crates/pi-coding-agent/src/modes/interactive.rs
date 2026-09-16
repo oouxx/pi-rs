@@ -1235,14 +1235,62 @@ fn login_command(state: &mut AppState, args: &str) -> Vec<Effect> {
     };
 
     let display = if name.is_empty() { provider.clone() } else { name };
+    let label = provider_api_key_label(&provider, &display);
     state.pending_ui = Some(PendingUi::LoginApiKey {
         provider: provider.clone(),
     });
+    // Match the original `LoginDialogComponent`: title `Login to {provider}`,
+    // prompt `Enter {auth name}` (the provider's api-key auth name).
     app::update(
         &mut state.model,
-        pi_tui::Msg::OpenSecretInput(format!("Enter {display} API key")),
+        pi_tui::Msg::OpenSecretInput(format!("Login to {display}"), format!("Enter {label}")),
     );
     vec![]
+}
+
+/// The provider's api-key auth name (match the original `ApiKeyAuth.name`,
+/// e.g. `"Anthropic API key"`, `"GitHub Copilot token"`).
+fn provider_api_key_label(provider: &str, display: &str) -> String {
+    let label = match provider {
+        "ant-ling" => "Ant Ling API key",
+        "anthropic" => "Anthropic API key",
+        "amazon-bedrock" => "Bedrock API key or AWS credentials",
+        "azure-openai-responses" => "Azure OpenAI API key",
+        "baseten" => "Baseten API key",
+        "cerebras" => "Cerebras API key",
+        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => "Cloudflare API key",
+        "deepseek" => "DeepSeek API key",
+        "fireworks" => "Fireworks API key",
+        "github-copilot" => "GitHub Copilot token",
+        "google" => "Gemini API key",
+        "google-vertex" => "Google Cloud API key",
+        "groq" => "Groq API key",
+        "huggingface" => "Hugging Face token",
+        "kimi-coding" => "Kimi API key",
+        "minimax" => "MiniMax API key",
+        "minimax-cn" => "MiniMax CN API key",
+        "mistral" => "Mistral API key",
+        "moonshotai" | "moonshotai-cn" => "Moonshot AI API key",
+        "nvidia" => "NVIDIA API key",
+        "openai" => "OpenAI API key",
+        "opencode" | "opencode-go" => "OpenCode API key",
+        "openrouter" => "OpenRouter API key",
+        "qwen-token-plan" => "Qwen Token Plan API key",
+        "qwen-token-plan-cn" => "Qwen Token Plan CN API key",
+        "qwen-token-plan-individual" => "Qwen Token Plan Individual API key",
+        "radius" => "Radius API key",
+        "together" => "Together API key",
+        "vercel-ai-gateway" => "Vercel AI Gateway API key",
+        "xai" => "xAI API key",
+        "xiaomi" => "Xiaomi API key",
+        "xiaomi-token-plan-ams" => "Xiaomi Token Plan AMS API key",
+        "xiaomi-token-plan-cn" => "Xiaomi Token Plan CN API key",
+        "xiaomi-token-plan-sgp" => "Xiaomi Token Plan SGP API key",
+        "zai" => "Z.AI API key",
+        "zai-coding-cn" => "Z.AI Coding CN API key",
+        _ => return format!("{display} API key"),
+    };
+    label.to_string()
 }
 
 /// `id (Name)` list used by `/login` for its usage / unknown-provider hints.
@@ -3740,8 +3788,10 @@ mod tests {
         let mut s = login_state();
         let effects = slash_command(&mut s, "/login anthropic");
         assert!(effects.is_empty());
-        assert!(matches!(&s.model.mode, pi_tui::AppMode::Secret { title, value }
-            if title.contains("Anthropic") && value.is_empty()));
+        assert!(matches!(&s.model.mode, pi_tui::AppMode::Secret { title, message, value }
+            if title == "Login to Anthropic"
+                && message == "Enter Anthropic API key"
+                && value.is_empty()));
         assert!(matches!(s.pending_ui, Some(PendingUi::LoginApiKey { .. })));
     }
 

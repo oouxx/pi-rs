@@ -512,7 +512,7 @@ fn format_duration(ms: u128) -> String {
 }
 
 
-pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String }, Secret { title: String, value: String } }
+pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String }, Secret { title: String, message: String, value: String } }
 /// Terminal stop reason of an assistant message (TS `StopReason`), used to
 /// render the TS post-content notices (truncated/aborted/error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -748,7 +748,7 @@ pub enum Msg {
     OpenEditor(String, String), EditorDone(String),
     /// Open a masked single-line input (e.g. `/login` API keys): the value is
     /// captured in memory and rendered as one bullet per character.
-    OpenSecretInput(String), SecretInputDone,
+    OpenSecretInput(String, String), SecretInputDone,
     ToolStart(String, String, String), ToolEnd(String, String, bool),
     Tick,
     ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
@@ -889,7 +889,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::RetryAttemptStart | Msg::RetryLoopEnd => { model.retry_status = None; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
-        Msg::OpenSecretInput(title) => { model.mode = AppMode::Secret { title, value: String::new() }; vec![] }
+        Msg::OpenSecretInput(title, message) => { model.mode = AppMode::Secret { title, message, value: String::new() }; vec![] }
         Msg::SecretInputDone => { model.mode = AppMode::Chat; vec![] }
         Msg::ToolStart(call_id, name, args) => { model.add_tool_call(&call_id, &name, &args); vec![] }
         Msg::ToolEnd(call_id, _name, is_error) => {
@@ -1262,16 +1262,19 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         render_fullscreen_editor(model, frame, area, &title, &t);
         return;
     }
-    if matches!(&model.mode, AppMode::Secret { .. }) {
-        render_secret_input(model, frame, area, &t);
-        return;
-    }
+    // Login dialogs replace the editor (match the original `editorContainer`).
+    let secret = matches!(&model.mode, AppMode::Secret { .. });
     let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
+    let editor_h = if secret { 7u16.min(area.height.max(1)) } else { editor_h };
     let chunks = Layout::new(Direction::Vertical, [Constraint::Min(1), Constraint::Length(pending_h), Constraint::Length(status_h), Constraint::Length(editor_h), Constraint::Length(footer_h)]).split(area);
     render_body(model, frame, chunks[0], &t);
     render_pending_messages(model, frame, chunks[1], &t);
     render_status(model, frame, chunks[2], &t);
-    render_input(model, frame, chunks[3], &t);
+    if secret {
+        render_secret_input(model, frame, chunks[3], &t);
+    } else {
+        render_input(model, frame, chunks[3], &t);
+    }
     render_footer(model, frame, chunks[4], &t);
     if model.dialog.is_some() { render_dialog(model, frame, area, &t); return; }
     if let AppMode::Select { list, .. } = &model.mode {
@@ -3148,24 +3151,37 @@ fn render_fullscreen_editor(model: &mut Model, frame: &mut Frame, area: Rect, ti
     }
 }
 
-/// Centered masked input box for secret prompts (`AppMode::Secret`): the
-/// title names the prompt and the value renders as one bullet per character.
-fn render_secret_input(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    let AppMode::Secret { title, value } = &model.mode else { return };
-    let box_w = area.width.saturating_sub(4).clamp(20, 72).min(area.width.max(1));
-    let box_h = 3u16.min(area.height.max(1));
-    let x = area.x + area.width.saturating_sub(box_w) / 2;
-    let y = area.y + area.height.saturating_sub(box_h) / 2;
-    let rect = Rect::new(x, y, box_w, box_h);
+/// Login input dialog (`AppMode::Secret`). Mirrors the original
+/// `LoginDialogComponent.showPrompt` for API keys:
+///
+/// ```text
+/// ┌──────────────────────────────────────────────┐
+///  Login to Anthropic
+///
+///  Enter Anthropic API key
+///  > <input>
+///  (escape/ctrl+c to cancel, enter to submit)
+/// └──────────────────────────────────────────────┘
+/// ```
+fn render_secret_input(model: &Model, frame: &mut Frame, rect: Rect, t: &Theme) {
+    let AppMode::Secret { title, message, value } = &model.mode else { return };
+    let input_line = format!("> {value}");
+    let hint = "(escape/ctrl+c to cancel, enter to submit)";
     frame.render_widget(Clear, rect);
     frame.render_widget(
         Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
-            .title(format!(" {title} ")).border_style(Style::new().fg(t.border_muted)),
+            .border_style(Style::new().fg(t.border_muted)),
         rect,
     );
-    let masked: String = value.chars().map(|_| '•').collect();
+    let lines = vec![
+        Line::from(Span::styled(title.clone(), Style::new().fg(t.accent).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled(message.clone(), Style::new().fg(t.text))),
+        Line::from(Span::styled(input_line, Style::new().fg(t.text))),
+        Line::from(Span::styled(hint, Style::new().fg(t.dim))),
+    ];
     let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(masked, Style::new().fg(t.text)))), inner);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ============================================================================
@@ -5295,10 +5311,11 @@ mod tests {
     #[test]
     fn secret_input_mode_lifecycle() {
         let mut model = Model::new(100, 30);
-        update(&mut model, Msg::OpenSecretInput("Enter Anthropic API key".into()));
+        update(&mut model, Msg::OpenSecretInput("Login to Anthropic".into(), "Enter Anthropic API key".into()));
         match &model.mode {
-            AppMode::Secret { title, value } => {
-                assert_eq!(title, "Enter Anthropic API key");
+            AppMode::Secret { title, message, value } => {
+                assert_eq!(title, "Login to Anthropic");
+                assert_eq!(message, "Enter Anthropic API key");
                 assert!(value.is_empty());
             }
             _ => panic!("expected AppMode::Secret"),

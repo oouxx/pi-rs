@@ -342,10 +342,10 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | `/login` 被识别为命令 | 打开 provider 选择器 | 列为内建命令并显示用法/可用 provider，不再当普通消息发出 | 是（选择器改为参数式，见 DEVIATIONS.md #21） | |
-| `/login <provider>` | 选择器 → 认证方式 → 密钥对话框 | 按 id/显示名匹配 provider → 掩码密钥输入 | 是（有界子集） | 见 DEVIATIONS.md #21 |
+| `/login <provider>` | 选择器 → 认证方式 → 密钥对话框 | 按 id/显示名匹配 provider → `Login to X` / `Enter Y` / `> <input>` / 键位提示（editor dock，同原版） | 是（有界子集） | 见 DEVIATIONS.md #21 |
 | 密钥持久化 | 写入 auth.json（`AuthStorage.modify`） | 同左（`AuthCredential::ApiKey`，`env: None`） | 是 | |
 | 登录后模型选择 | 无模型时选 provider 默认模型（`completeProviderAuthentication`） | `AgentCmd::LoginApiKey`：无模型时用 `DEFAULT_MODEL_PER_PROVIDER` 选默认模型 | 是 | |
-| 密钥输入掩码 | `{ type: "secret" }`，不回显 | `AppMode::Secret` 每字符 `•`，不进转录 | 是 | |
+| API-key 输入 UI | `LoginDialogComponent.showPrompt`：标题 `Login to {provider}`、消息 `Enter {auth name}`、明文输入、`(escape/ctrl+c to cancel, enter to submit)`，占用编辑器区 | `AppMode::Secret` 同标题/消息/明文输入/键位提示，占用 editor dock | 是 | 见 DEVIATIONS.md #21 |
 | `/logout [provider]` | 已存凭据选择器 → 删除 | 参数式删除；无参列出已存凭据并给出 TS 同款提示文案 | 是（有界子集） | 见 DEVIATIONS.md #21 |
 | OAuth 登录 | 浏览器回调 / device code | 未实现（`AuthStorage::login` 未实现） | 否 | 见 DEVIATIONS.md #21（范围外） |
 | `/login` 可用 provider 列表 | `getLoginProviderOptions` 遍历已注册 provider（含模型目录暂空的动态 provider） | `login_providers_for`：内建 provider 显示名全集 ∪ 注册表 provider（模型目录为空的 `opencode-go` 等也在列） | 是 | 修复见 PORTING_MISTAKES.md |

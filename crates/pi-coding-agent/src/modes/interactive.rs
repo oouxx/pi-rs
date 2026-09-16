@@ -2020,22 +2020,44 @@ fn spawn_agent_command_task(
                                 "Saved API key for {display}. Credentials saved to {}",
                                 path.display()
                             );
-                            // TS `completeProviderAuthentication`: with no model
-                            // selected, pick the provider's default model so the
-                            // user can chat immediately.
-                            let default_model = if sess.get_model().await.id.is_empty() {
-                                DEFAULT_MODEL_PER_PROVIDER
-                                    .get(provider.as_str())
-                                    .and_then(|default_id| {
-                                        sess.get_model_registry().find(&provider, default_id)
-                                    })
-                            } else {
-                                None
-                            };
-                            if let Some(model) = default_model {
-                                let default_id = model.id.clone();
-                                if sess.set_model(model).await.is_ok() {
-                                    message.push_str(&format!(". Selected {default_id}."));
+                            // TS `completeProviderAuthentication`: when no model
+                            // is selected, pick the provider's default model so the
+                            // user can chat immediately (with guidance when it cannot).
+                            let previous = sess.get_model().await;
+                            let no_model = previous.id.is_empty() || previous.provider == "unknown";
+                            if no_model {
+                                let available = sess.get_model_registry().get_available();
+                                let provider_models: Vec<_> = available
+                                    .into_iter()
+                                    .filter(|m| m.provider == provider)
+                                    .collect();
+                                match DEFAULT_MODEL_PER_PROVIDER.get(provider.as_str()) {
+                                    None => message.push_str(&format!(
+                                        ". No default model is configured for provider \"{provider}\". Use /model to select a model."
+                                    )),
+                                    Some(default_id) => {
+                                        if provider_models.is_empty() {
+                                            message.push_str(
+                                                ". No models are available for that provider. Use /model to select a model.",
+                                            );
+                                        } else if let Some(model) = provider_models
+                                            .into_iter()
+                                            .find(|m| m.id.as_str() == *default_id)
+                                        {
+                                            let default_id = model.id.clone();
+                                            match sess.set_model(model).await {
+                                                Ok(()) => message
+                                                    .push_str(&format!(". Selected {default_id}.")),
+                                                Err(e) => message.push_str(&format!(
+                                                    ". Selecting its default model \"{default_id}\" failed: {e}. Use /model to select a model."
+                                                )),
+                                            }
+                                        } else {
+                                            message.push_str(&format!(
+                                                ". Its default model \"{default_id}\" is not available. Use /model to select a model."
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                             // A new credential changes `/model` availability.

@@ -27,6 +27,16 @@ struct OpenRouterModelRecord {
     architecture: Option<OpenRouterArchitecture>,
     #[serde(default)]
     supported_parameters: Option<Vec<String>>,
+    #[serde(default)]
+    reasoning: Option<OpenRouterReasoning>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OpenRouterReasoning {
+    #[serde(default)]
+    mandatory: Option<bool>,
+    #[serde(default)]
+    supported_efforts: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -131,7 +141,11 @@ struct BuildModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     headers: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    compat: Option<BuildModelCompat>,
+    compat: Option<Compat>,
+    /// models.dev `reasoning_options` (not serialized; feeds the metadata
+    /// pipeline's verified thinking-level map).
+    #[serde(skip)]
+    reasoning_options: Option<serde_json::Value>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
@@ -146,87 +160,100 @@ struct BuildModelCost {
     #[serde(default)]
     #[serde(rename = "cacheWrite")]
     cache_write: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tiers: Vec<BuildModelCostTier>,
 }
 
-/// Subset of TS `OpenAICompletionsCompat` that pi-rs models.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BuildModelCompat {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens_field: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supports_usage_in_streaming: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supports_store: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supports_reasoning_effort: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requires_assistant_after_tool_result: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requires_reasoning_content_on_assistant_messages: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requires_thinking_as_text: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requires_tool_result_name: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supports_developer_role: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supports_strict_mode: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    send_session_affinity_headers: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supports_long_cache_retention: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    zai_tool_stream: Option<bool>,
+struct BuildModelCostTier {
+    input: f64,
+    output: f64,
+    #[serde(rename = "cacheRead")]
+    cache_read: f64,
+    #[serde(rename = "cacheWrite")]
+    cache_write: f64,
+    #[serde(rename = "inputTokensAbove")]
+    input_tokens_above: u64,
 }
 
-impl BuildModelCompat {
+/// Provider-specific `compat` object. Backed by a JSON object so the metadata
+/// pipeline can carry the full Anthropic / Responses / OpenAI-completions union
+/// (and fields pi-rs models only loosely) without a hand-typed Rust union.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+#[serde(transparent)]
+struct Compat(serde_json::Map<String, serde_json::Value>);
+
+impl Compat {
     fn new() -> Self {
         Self::default()
     }
-    fn max_tokens_field(mut self, value: &str) -> Self {
-        self.max_tokens_field = Some(value.to_string());
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn insert(&mut self, key: &str, value: impl Into<serde_json::Value>) {
+        self.0.insert(key.to_string(), value.into());
+    }
+
+    fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.0.get(key)
+    }
+
+    fn get_bool(&self, key: &str) -> bool {
+        self.0
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Shallow-merge a JSON object into this compat (later keys win).
+    fn merge(&mut self, other: serde_json::Value) {
+        if let serde_json::Value::Object(map) = other {
+            for (key, value) in map {
+                self.0.insert(key, value);
+            }
+        }
+    }
+
+    fn to_value(&self) -> serde_json::Value {
+        serde_json::Value::Object(self.0.clone())
+    }
+
+    // ---- chainable builders (same call sites as before) ----
+    fn set(mut self, key: &str, value: impl Into<serde_json::Value>) -> Self {
+        self.insert(key, value);
         self
     }
-    fn thinking_format(mut self, value: &str) -> Self {
-        self.thinking_format = Some(value.to_string());
-        self
+    fn max_tokens_field(self, value: &str) -> Self {
+        self.set("maxTokensField", value)
     }
-    fn developer_role(mut self, value: bool) -> Self {
-        self.supports_developer_role = Some(value);
-        self
+    fn thinking_format(self, value: &str) -> Self {
+        self.set("thinkingFormat", value)
     }
-    fn store(mut self, value: bool) -> Self {
-        self.supports_store = Some(value);
-        self
+    fn developer_role(self, value: bool) -> Self {
+        self.set("supportsDeveloperRole", value)
     }
-    fn reasoning_effort(mut self, value: bool) -> Self {
-        self.supports_reasoning_effort = Some(value);
-        self
+    fn store(self, value: bool) -> Self {
+        self.set("supportsStore", value)
     }
-    fn strict_mode(mut self, value: bool) -> Self {
-        self.supports_strict_mode = Some(value);
-        self
+    fn reasoning_effort(self, value: bool) -> Self {
+        self.set("supportsReasoningEffort", value)
     }
-    fn long_cache_retention(mut self, value: bool) -> Self {
-        self.supports_long_cache_retention = Some(value);
-        self
+    fn strict_mode(self, value: bool) -> Self {
+        self.set("supportsStrictMode", value)
     }
-    fn session_affinity(mut self, value: bool) -> Self {
-        self.send_session_affinity_headers = Some(value);
-        self
+    fn long_cache_retention(self, value: bool) -> Self {
+        self.set("supportsLongCacheRetention", value)
     }
-    fn requires_reasoning_content(mut self, value: bool) -> Self {
-        self.requires_reasoning_content_on_assistant_messages = Some(value);
-        self
+    fn session_affinity(self, value: bool) -> Self {
+        self.set("sendSessionAffinityHeaders", value)
     }
-    fn zai_tool_stream(mut self, value: bool) -> Self {
-        self.zai_tool_stream = Some(value);
-        self
+    fn requires_reasoning_content(self, value: bool) -> Self {
+        self.set("requiresReasoningContentOnAssistantMessages", value)
+    }
+    fn zai_tool_stream(self, value: bool) -> Self {
+        self.set("zaiToolStream", value)
     }
 }
 
@@ -378,11 +405,13 @@ fn fetch_ai_gateway_models(client: &reqwest::blocking::Client) -> Result<Vec<Bui
                 output: round_cost(num(&pricing.output) * 1_000_000.0),
                 cache_read: round_cost(num(&pricing.input_cache_read) * 1_000_000.0),
                 cache_write: round_cost(num(&pricing.input_cache_write) * 1_000_000.0),
+                tiers: Vec::new(),
             },
             context_window: model.context_window.unwrap_or(4096),
             max_tokens: model.max_tokens.unwrap_or(4096),
             headers: None,
             compat: None,
+            reasoning_options: None,
         });
     }
     Ok(models)
@@ -455,7 +484,45 @@ fn get_cost(model: &serde_json::Value) -> BuildModelCost {
             .and_then(|c| c.get("cache_write"))
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
+        tiers: Vec::new(),
     }
+}
+
+/// TS `getModelsDevCost`: base cost plus `cost.tiers` (context-sized tiers).
+fn get_cost_with_tiers(model: &serde_json::Value) -> BuildModelCost {
+    let mut cost = get_cost(model);
+    if let Some(tiers) = model
+        .get("cost")
+        .and_then(|c| c.get("tiers"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for tier in tiers {
+            let context = tier.get("tier");
+            if context.and_then(|c| c.get("type")).and_then(serde_json::Value::as_str)
+                != Some("context")
+            {
+                continue;
+            }
+            let Some(size) = context.and_then(|c| c.get("size")).and_then(serde_json::Value::as_u64)
+            else {
+                continue;
+            };
+            cost.tiers.push(BuildModelCostTier {
+                input_tokens_above: size,
+                input: tier.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                output: tier.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                cache_read: tier
+                    .get("cache_read")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                cache_write: tier
+                    .get("cache_write")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+            });
+        }
+    }
+    cost
 }
 
 fn is_tool_call(model: &serde_json::Value) -> bool {
@@ -515,7 +582,7 @@ fn build_model(
     api: &str,
     provider: &str,
     base_url: &str,
-    compat: Option<BuildModelCompat>,
+    compat: Option<Compat>,
 ) -> BuildModel {
     BuildModel {
         id: id.to_string(),
@@ -531,6 +598,7 @@ fn build_model(
         max_tokens: model_max_tokens(model),
         headers: None,
         compat,
+        reasoning_options: model.get("reasoning_options").cloned(),
     }
 }
 
@@ -543,7 +611,7 @@ struct SimpleProvider {
     api: &'static str,
     base_url: &'static str,
     include_deprecated: bool,
-    compat: fn() -> Option<BuildModelCompat>,
+    compat: fn() -> Option<Compat>,
 }
 
 fn push_simple_providers(
@@ -574,7 +642,93 @@ fn push_simple_providers(
     }
 }
 
+
+// ---- provider 级 compat / thinkingLevelMap helper（对齐原版） ----
+
+const TOGETHER_REASONING_ONLY_MODELS: &[&str] = &["deepseek-ai/DeepSeek-R1", "MiniMaxAI/MiniMax-M2.7"];
+const TOGETHER_REASONING_EFFORT_MODELS: &[&str] = &["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
+const TOGETHER_TOGGLE_REASONING_EFFORT_MODELS: &[&str] = &["deepseek-ai/DeepSeek-V4-Pro"];
+const OPENCODE_LONG_CACHE_UNSUPPORTED: &[&str] = &[
+    "opencode:deepseek-v4-flash",
+    "opencode:deepseek-v4-pro",
+    "opencode:kimi-k2.5",
+    "opencode:kimi-k2.6",
+    "opencode:minimax-m2.7",
+    "opencode-go:kimi-k2.6",
+];
+const QWEN_TOKEN_PLAN_REASONING_EFFORT_FALLBACK: &[&str] = &["glm-5", "glm-5.1"];
+const FIREWORKS_ADAPTIVE_THINKING_FALLBACK_MODELS: &[&str] = &[
+    "accounts/fireworks/models/deepseek-v4-flash-0731",
+    "accounts/fireworks/models/deepseek-v4-flash-vision-exp",
+    "accounts/fireworks/models/deepseek-v4-pro-0813",
+    "accounts/fireworks/models/qwen3p8-max",
+    "accounts/fireworks/models/qwen3p8-2p4t-a95b",
+];
+
+fn together_base_compat() -> Compat {
+    Compat::new()
+        .store(false)
+        .developer_role(false)
+        .reasoning_effort(false)
+        .max_tokens_field("max_tokens")
+        .strict_mode(false)
+        .long_cache_retention(false)
+}
+
+fn get_together_compat(id: &str, reasoning: bool) -> Compat {
+    if !reasoning {
+        return together_base_compat();
+    }
+    if TOGETHER_REASONING_EFFORT_MODELS.contains(&id) {
+        return together_base_compat().reasoning_effort(true).thinking_format("openai");
+    }
+    if TOGETHER_TOGGLE_REASONING_EFFORT_MODELS.contains(&id) {
+        return together_base_compat().reasoning_effort(true).thinking_format("together");
+    }
+    if TOGETHER_REASONING_ONLY_MODELS.contains(&id) {
+        return together_base_compat();
+    }
+    together_base_compat().thinking_format("together")
+}
+
+fn get_together_thinking_level_map(id: &str, reasoning: bool) -> Option<serde_json::Value> {
+    if !reasoning {
+        return None;
+    }
+    if TOGETHER_REASONING_EFFORT_MODELS.contains(&id) {
+        return Some(serde_json::json!({"off": null, "minimal": null}));
+    }
+    if TOGETHER_TOGGLE_REASONING_EFFORT_MODELS.contains(&id) {
+        return Some(serde_json::json!({
+            "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": null
+        }));
+    }
+    if TOGETHER_REASONING_ONLY_MODELS.contains(&id) {
+        return Some(serde_json::json!({
+            "off": null, "minimal": null, "low": null, "medium": null
+        }));
+    }
+    Some(serde_json::json!({"minimal": null, "low": null, "medium": null}))
+}
+
+fn has_reasoning_option(model: &serde_json::Value, kind: &str) -> bool {
+    model
+        .get("reasoning_options")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|opts| {
+            opts.iter()
+                .any(|o| o.get("type").and_then(serde_json::Value::as_str) == Some(kind))
+        })
+}
+
+fn set_thinking_level_map(model: &mut BuildModel, map: Option<serde_json::Value>) {
+    if map.is_some() {
+        model.thinking_level_map = map;
+    }
+}
+
 // ---- models.dev 转换（provider 列表对齐原版） -------------------------------
+
 
 fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     let mut models = Vec::new();
@@ -584,45 +738,17 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
 
     // ---- 通用 provider ----
     let openai_compat = || None;
-    let together_compat = || {
-        Some(
-            BuildModelCompat::new()
-                .store(false)
-                .developer_role(false)
-                .reasoning_effort(false)
-                .max_tokens_field("max_tokens")
-                .strict_mode(false)
-                .long_cache_retention(false),
-        )
-    };
-    let huggingface_compat = || {
-        Some(
-            BuildModelCompat::new()
-                .developer_role(false)
-                .max_tokens_field("max_tokens"),
-        )
-    };
-    let moonshot_compat = || {
-        Some(
-            BuildModelCompat::new()
-                .store(false)
-                .developer_role(false)
-                .reasoning_effort(false)
-                .max_tokens_field("max_tokens")
-                .strict_mode(false)
-                .thinking_format("deepseek"),
-        )
-    };
+    let huggingface_compat = || Some(Compat::new().developer_role(false));
     let xiaomi_compat = || {
         Some(
-            BuildModelCompat::new()
+            Compat::new()
                 .requires_reasoning_content(true)
                 .thinking_format("deepseek"),
         )
     };
     let nvidia_compat = || {
         Some(
-            BuildModelCompat::new()
+            Compat::new()
                 .store(false)
                 .developer_role(false)
                 .reasoning_effort(false)
@@ -633,7 +759,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     };
     let qwen_compat = || {
         Some(
-            BuildModelCompat::new()
+            Compat::new()
                 .thinking_format("qwen")
                 .developer_role(false)
                 .store(false)
@@ -659,14 +785,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             compat: openai_compat,
         },
         SimpleProvider {
-            key: "google",
-            provider: "google",
-            api: "google-generative-ai",
-            base_url: "https://generativelanguage.googleapis.com/v1beta",
-            include_deprecated: true,
-            compat: openai_compat,
-        },
-        SimpleProvider {
             key: "groq",
             provider: "groq",
             api: "openai-completions",
@@ -679,14 +797,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             provider: "cerebras",
             api: "openai-completions",
             base_url: "https://api.cerebras.ai/v1",
-            include_deprecated: true,
-            compat: openai_compat,
-        },
-        SimpleProvider {
-            key: "xai",
-            provider: "xai",
-            api: "openai-completions",
-            base_url: "https://api.x.ai/v1",
             include_deprecated: true,
             compat: openai_compat,
         },
@@ -704,23 +814,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             api: "openai-completions",
             base_url: CLOUDFLARE_WORKERS_AI_BASE_URL,
             include_deprecated: true,
-            compat: || Some(BuildModelCompat::new().session_affinity(true)),
-        },
-        SimpleProvider {
-            key: "moonshotai",
-            provider: "moonshotai",
-            api: "openai-completions",
-            base_url: "https://api.moonshot.ai/v1",
-            include_deprecated: true,
-            compat: moonshot_compat,
-        },
-        SimpleProvider {
-            key: "moonshotai-cn",
-            provider: "moonshotai-cn",
-            api: "openai-completions",
-            base_url: "https://api.moonshot.cn/v1",
-            include_deprecated: true,
-            compat: moonshot_compat,
+            compat: || Some(Compat::new().session_affinity(true)),
         },
         SimpleProvider {
             key: "xiaomi",
@@ -753,14 +847,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             base_url: "https://token-plan-sgp.xiaomimimo.com/v1",
             include_deprecated: false,
             compat: xiaomi_compat,
-        },
-        SimpleProvider {
-            key: "mistral",
-            provider: "mistral",
-            api: "mistral-conversations",
-            base_url: "https://api.mistral.ai",
-            include_deprecated: true,
-            compat: openai_compat,
         },
         SimpleProvider {
             key: "minimax",
@@ -825,13 +911,16 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             {
                 continue;
             }
+            let compat = (model.get("structured_output").and_then(serde_json::Value::as_bool)
+                == Some(true))
+            .then(|| Compat::new().strict_mode(true));
             models.push(build_model(
                 id,
                 model,
                 "bedrock-converse-stream",
                 "amazon-bedrock",
                 &get_bedrock_base_url(id),
-                None,
+                compat,
             ));
         }
     }
@@ -888,7 +977,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     ),
                     _ => continue,
                 };
-                let compat = affinity.then(|| BuildModelCompat::new().session_affinity(true));
+                let compat = affinity.then(|| Compat::new().session_affinity(true));
                 gateway_ids.insert(id.to_string());
                 let mut entry = build_model(id, model, api, "cloudflare-ai-gateway", base_url, compat);
                 entry.name = model_name(model, id);
@@ -911,7 +1000,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     "openai-completions",
                     "cloudflare-ai-gateway",
                     CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
-                    Some(BuildModelCompat::new().session_affinity(true)),
+                    Some(Compat::new().session_affinity(true)),
                 );
                 entry.name = model_name(model, &id);
                 models.push(entry);
@@ -938,12 +1027,12 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 .get("provider")
                 .and_then(|p| p.get("npm"))
                 .and_then(serde_json::Value::as_str);
-            let (mut api, mut base_url, mut compat): (&str, String, Option<BuildModelCompat>) =
+            let (mut api, mut base_url, mut compat): (&str, String, Option<Compat>) =
                 match npm {
                     Some("@ai-sdk/openai") => (
                         "openai-responses",
                         format!("{base_path}/v1"),
-                        None,
+                        Some(Compat::new().set("sessionAffinityFormat", "openai-nosession")),
                     ),
                     Some("@ai-sdk/anthropic") => ("anthropic-messages", base_path.to_string(), None),
                     Some("@ai-sdk/google") => {
@@ -952,29 +1041,42 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     Some("@ai-sdk/alibaba") => (
                         "openai-completions",
                         format!("{base_path}/v1"),
-                        Some(BuildModelCompat::new()),
+                        Some(Compat::new().set("cacheControlFormat", "anthropic")),
                     ),
-                    _ => (
-                        "openai-completions",
-                        format!("{base_path}/v1"),
-                        Some(BuildModelCompat::new()),
-                    ),
+                    _ => ("openai-completions", format!("{base_path}/v1"), None),
                 };
+            if provider == "opencode" && id == "grok-build-0.1" {
+                compat = Some(
+                    compat
+                        .unwrap_or_else(Compat::new)
+                        .set("supportsReasoningEffort", false),
+                );
+            }
+            if (provider == "opencode" || provider == "opencode-go") && id == "kimi-k2.6" {
+                compat = Some(
+                    compat
+                        .unwrap_or_else(Compat::new)
+                        .thinking_format("deepseek")
+                        .set("supportsReasoningEffort", false),
+                );
+            }
             if provider == "opencode-go" {
                 if id == "minimax-m2.7" || id == "qwen3.5-plus" || id == "qwen3.6-plus" {
                     api = "openai-completions";
                     base_url = format!("{base_path}/v1");
                 }
                 if id == "qwen3.5-plus" || id == "qwen3.6-plus" {
-                    compat = Some(BuildModelCompat::new().thinking_format("qwen"));
+                    compat = Some(compat.unwrap_or_else(Compat::new).thinking_format("qwen"));
                 }
             }
             if api == "openai-completions" {
-                compat = Some(
-                    compat
-                        .unwrap_or_else(BuildModelCompat::new)
-                        .max_tokens_field("max_tokens"),
-                );
+                let mut c = compat.unwrap_or_else(Compat::new).max_tokens_field("max_tokens");
+                if OPENCODE_LONG_CACHE_UNSUPPORTED
+                    .contains(&format!("{provider}:{id}").as_str())
+                {
+                    c = c.long_cache_retention(false);
+                }
+                compat = Some(c);
             }
             models.push(build_model(
                 id, model, api, provider, &base_url, compat,
@@ -1008,7 +1110,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             };
             let compat = if api == "openai-completions" {
                 Some(
-                    BuildModelCompat::new()
+                    Compat::new()
                         .store(false)
                         .developer_role(false)
                         .reasoning_effort(false),
@@ -1024,6 +1126,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 "https://api.individual.githubcopilot.com",
                 compat,
             );
+            entry.cost = get_cost_with_tiers(model);
             entry.context_window = entry.context_window.max(128_000);
             if entry.max_tokens == 4096 {
                 entry.max_tokens = 8192;
@@ -1050,16 +1153,48 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 continue;
             }
             let normalized_id = if is_alias { "kimi-for-coding" } else { id };
+            let is_kimi_k3 = normalized_id == "k3";
+            let allow_empty_signature = is_kimi_k3 || normalized_id == "kimi-for-coding";
+            let compat = if allow_empty_signature {
+                Compat::new()
+                    .set("forceAdaptiveThinking", true)
+                    .set("allowEmptySignature", true)
+            } else {
+                Compat::new().set("forceAdaptiveThinking", true)
+            };
             let mut entry = build_model(
                 normalized_id,
                 model,
                 "anthropic-messages",
                 "kimi-coding",
                 "https://api.kimi.com/coding",
-                None,
+                Some(compat),
             );
+            entry.reasoning = is_kimi_k3 || model_reasoning(model);
             if is_alias {
                 entry.name = "Kimi For Coding".into();
+            }
+            // Subscription-backed: models.dev reports zero cost; use equivalent rates.
+            let implied: Option<[f64; 4]> = match normalized_id {
+                "k3" => Some([3.0, 15.0, 0.3, 0.0]),
+                "kimi-for-coding" => Some([0.95, 4.0, 0.19, 0.0]),
+                "kimi-for-coding-highspeed" => Some([1.9, 8.0, 0.38, 0.0]),
+                "kimi-k2-thinking" => Some([0.6, 2.5, 0.15, 0.0]),
+                _ => None,
+            };
+            if let Some([input, output, cache_read, cache_write]) = implied {
+                if entry.cost.input == 0.0 {
+                    entry.cost.input = input;
+                }
+                if entry.cost.output == 0.0 {
+                    entry.cost.output = output;
+                }
+                if entry.cost.cache_read == 0.0 {
+                    entry.cost.cache_read = cache_read;
+                }
+                if entry.cost.cache_write == 0.0 {
+                    entry.cost.cache_write = cache_write;
+                }
             }
             models.push(entry);
         }
@@ -1085,41 +1220,107 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             if !is_tool_call(model) {
                 continue;
             }
-            let mut compat = BuildModelCompat::new()
+            let options = model.get("reasoning_options").cloned().unwrap_or(serde_json::Value::Null);
+            let mut thinking_level_map = get_effort_thinking_level_map(&options);
+            if let Some(serde_json::Value::Object(map)) = &mut thinking_level_map {
+                if id == "glm-5.2" || id == "glm-5.2-highspeed" {
+                    map.insert("off".into(), serde_json::json!("none"));
+                }
+            }
+            let mut compat = Compat::new()
                 .developer_role(false)
                 .thinking_format("zai");
+            if thinking_level_map.is_some() {
+                compat = compat.reasoning_effort(true);
+            }
             if !ZAI_TOOL_STREAM_UNSUPPORTED_MODELS.contains(&id.as_str()) {
                 compat = compat.zai_tool_stream(true);
             }
-            models.push(build_model(
+            let mut entry = build_model(
                 id, model, "openai-completions", provider, base_url, Some(compat),
-            ));
+            );
+            // Reference cost: data.zai.models[id].cost when present.
+            if let Some(reference) = data
+                .get("zai")
+                .and_then(|z| z.get("models"))
+                .and_then(|m| m.get(id))
+                .and_then(|m| m.get("cost"))
+            {
+                entry.cost = BuildModelCost {
+                    input: reference.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                    output: reference.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                    cache_read: reference
+                        .get("cache_read")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0),
+                    cache_write: reference
+                        .get("cache_write")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0),
+                    tiers: Vec::new(),
+                };
+            }
+            set_thinking_level_map(&mut entry, thinking_level_map);
+            models.push(entry);
         }
     }
 
-    // ---- Baseten ----
+    // ---- Baseten（toggle / effort compat + thinkingLevelMap） ----
     if let Some(items) = models_object(data, "baseten") {
         let base_compat = || {
-            BuildModelCompat::new()
+            Compat::new()
                 .store(false)
                 .developer_role(false)
                 .reasoning_effort(false)
                 .strict_mode(true)
                 .long_cache_retention(false)
                 .max_tokens_field("max_tokens")
+                .set("supportsUsageInStreaming", true)
         };
         for (id, model) in items {
             if is_deprecated(model) {
                 continue;
             }
-            models.push(build_model(
+            let is_glm52 = id == "zai-org/GLM-5.2" || id == "zai-org/GLM-5.2-Fast";
+            let supports_toggle = has_reasoning_option(model, "toggle") || is_glm52;
+            let supports_effort = has_reasoning_option(model, "effort") || is_glm52;
+            let compat = match (supports_toggle, supports_effort) {
+                (true, true) => base_compat()
+                    .reasoning_effort(true)
+                    .thinking_format("baseten")
+                    .set("chatTemplateArgs", serde_json::json!({"enable_thinking": {"$var": "thinking.enabled"}})),
+                (true, false) => base_compat()
+                    .thinking_format("baseten")
+                    .set("chatTemplateArgs", serde_json::json!({"enable_thinking": {"$var": "thinking.enabled"}})),
+                (false, true) => base_compat().reasoning_effort(true).thinking_format("openai"),
+                (false, false) => base_compat(),
+            };
+            let thinking_level_map = if is_glm52 {
+                Some(serde_json::json!({
+                    "off": "none", "minimal": null, "low": null, "medium": null,
+                    "high": "high", "xhigh": null, "max": "max"
+                }))
+            } else if supports_toggle {
+                Some(serde_json::json!({
+                    "off": "off", "minimal": null, "low": null, "medium": null,
+                    "high": "high", "xhigh": null, "max": null
+                }))
+            } else {
+                get_effort_thinking_level_map(&model.get("reasoning_options").cloned().unwrap_or(serde_json::Value::Null))
+            };
+            let mut entry = build_model(
                 id,
                 model,
                 "openai-completions",
                 "baseten",
                 "https://inference.baseten.co/v1",
-                Some(base_compat()),
-            ));
+                Some(compat),
+            );
+            if is_glm52 {
+                entry.input = vec!["text".to_string()];
+            }
+            set_thinking_level_map(&mut entry, thinking_level_map);
+            models.push(entry);
         }
     }
 
@@ -1155,19 +1356,32 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 continue;
             }
             let (api, base_url, compat) = if id.contains("glm-") || id.contains("kimi-k3") {
-                (
-                    "openai-completions",
-                    "https://api.fireworks.ai/inference/v1",
-                    Some(
-                        BuildModelCompat::new()
-                            .store(false)
-                            .developer_role(false)
-                            .session_affinity(true)
-                            .long_cache_retention(false),
-                    ),
-                )
+                let mut compat = Compat::new()
+                    .store(false)
+                    .developer_role(false)
+                    .session_affinity(true)
+                    .long_cache_retention(false);
+                if id.contains("kimi-k3") {
+                    compat = compat
+                        .set("requiresReasoningContentOnAssistantMessages", true)
+                        .thinking_format("openai")
+                        .set("deferredToolsMode", "kimi");
+                }
+                ("openai-completions", "https://api.fireworks.ai/inference/v1", Some(compat))
             } else {
-                ("anthropic-messages", "https://api.fireworks.ai/inference", None)
+                let force_adaptive = has_reasoning_option(model, "effort")
+                    || FIREWORKS_ADAPTIVE_THINKING_FALLBACK_MODELS.contains(&id.as_str());
+                let mut compat = Compat::new()
+                    .set("supportsToolReferences", true)
+                    .set("allowEmptySignature", true)
+                    .session_affinity(true)
+                    .set("supportsEagerToolInputStreaming", false)
+                    .set("supportsCacheControlOnTools", false)
+                    .long_cache_retention(false);
+                if force_adaptive {
+                    compat = compat.set("forceAdaptiveThinking", true);
+                }
+                ("anthropic-messages", "https://api.fireworks.ai/inference", Some(compat))
             };
             models.push(build_model(
                 id, model, api, "fireworks", base_url, compat,
@@ -1210,15 +1424,124 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                         continue;
                     }
                 }
-                models.push(build_model(
-                    id,
-                    model,
-                    "openai-completions",
-                    provider,
-                    base_url,
-                    qwen_compat(),
-                ));
+                let options = model.get("reasoning_options").cloned().unwrap_or(serde_json::Value::Null);
+                let thinking_level_map = get_effort_thinking_level_map(&options).or_else(|| {
+                    QWEN_TOKEN_PLAN_REASONING_EFFORT_FALLBACK.contains(&id.as_str())
+                        .then(|| {
+                            serde_json::json!({
+                                "minimal": null, "low": null, "medium": null,
+                                "high": "high", "xhigh": null, "max": "max"
+                            })
+                        })
+                });
+                let compat = qwen_compat().map(|c| c.reasoning_effort(thinking_level_map.is_some()));
+                let mut entry = build_model(id, model, "openai-completions", provider, base_url, compat);
+                set_thinking_level_map(&mut entry, thinking_level_map);
+                models.push(entry);
             }
+        }
+    }
+
+    // ---- Moonshot AI（kimi-k3 有特殊 compat） ----
+    for (key, provider, base_url) in [
+        ("moonshotai", "moonshotai", "https://api.moonshot.ai/v1"),
+        ("moonshotai-cn", "moonshotai-cn", "https://api.moonshot.cn/v1"),
+    ] {
+        let Some(items) = models_object(data, key) else {
+            continue;
+        };
+        for (id, model) in items {
+            if !is_tool_call(model) {
+                continue;
+            }
+            let mut compat = Compat::new()
+                .store(false)
+                .developer_role(false)
+                .reasoning_effort(false)
+                .max_tokens_field("max_tokens")
+                .strict_mode(false)
+                .thinking_format("deepseek");
+            if id == "kimi-k3" {
+                compat = compat
+                    .requires_reasoning_content(true)
+                    .set("deferredToolsMode", "kimi")
+                    .thinking_format("openai")
+                    .reasoning_effort(true);
+            }
+            let mut entry = build_model(id, model, "openai-completions", provider, base_url, Some(compat));
+            if id == "kimi-k3" {
+                entry.reasoning = true;
+            }
+            models.push(entry);
+        }
+    }
+
+    // ---- Google（flash-latest 别名沿用被指向模型的元数据） ----
+    if let Some(items) = models_object(data, "google") {
+        for (id, model) in items {
+            if !is_tool_call(model) {
+                continue;
+            }
+            let source = match id.as_str() {
+                "gemini-flash-latest" => items.get("gemini-3.5-flash").unwrap_or(model),
+                "gemini-flash-lite-latest" => items.get("gemini-3.1-flash-lite").unwrap_or(model),
+                _ => model,
+            };
+            let mut entry = build_model(
+                id,
+                source,
+                "google-generative-ai",
+                "google",
+                "https://generativelanguage.googleapis.com/v1beta",
+                openai_compat(),
+            );
+            entry.name = model_name(model, id);
+            entry.reasoning_options = source.get("reasoning_options").cloned();
+            models.push(entry);
+        }
+    }
+
+    // ---- Mistral（cacheRead 缺省为 input×0.1） ----
+    if let Some(items) = models_object(data, "mistral") {
+        for (id, model) in items {
+            if !is_tool_call(model) {
+                continue;
+            }
+            let mut entry = build_model(
+                id,
+                model,
+                "mistral-conversations",
+                "mistral",
+                "https://api.mistral.ai",
+                None,
+            );
+            if model
+                .get("cost")
+                .and_then(|c| c.get("cache_read"))
+                .is_none()
+                && entry.cost.input > 0.0
+            {
+                entry.cost.cache_read = round_cost(entry.cost.input * 0.1);
+            }
+            models.push(entry);
+        }
+    }
+
+    // ---- xAI（Responses API，固定 compat） ----
+    if let Some(items) = models_object(data, "xai") {
+        for (id, model) in items {
+            if !is_tool_call(model) || is_deprecated(model) {
+                continue;
+            }
+            let entry = build_model(
+                id,
+                model,
+                "openai-responses",
+                "xai",
+                "https://api.x.ai/v1",
+                Some(Compat::new().long_cache_retention(false)),
+            );
+            models.push(entry);
         }
     }
 
@@ -1231,14 +1554,17 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             if !is_tool_call(model) || is_deprecated(model) {
                 continue;
             }
-            models.push(build_model(
+            let reasoning = model_reasoning(model);
+            let mut entry = build_model(
                 id,
                 model,
                 "openai-completions",
                 "together",
                 TOGETHER_BASE_URL,
-                together_compat(),
-            ));
+                Some(get_together_compat(id, reasoning)),
+            );
+            set_thinking_level_map(&mut entry, get_together_thinking_level_map(id, reasoning));
+            models.push(entry);
         }
     }
 
@@ -1254,7 +1580,12 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     // ---- 手工补充模型（models.dev 缺失或需覆盖） ----
     models.extend(manual_models());
 
-    // ---- Azure OpenAI Responses：openai-responses 模型的镜像 ----
+    models
+}
+
+/// TS `azureOpenAiModels`: clone the (already-overridden) `openai` Responses
+/// models into `azure-openai-responses`.
+fn clone_azure(models: &[BuildModel]) -> Vec<BuildModel> {
     let azure_overrides: HashMap<&str, u64> = [
         ("gpt-5.4", 1_050_000_u64),
         ("gpt-5.5", 1_050_000),
@@ -1264,7 +1595,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     ]
     .into_iter()
     .collect();
-    let azure: Vec<BuildModel> = models
+    models
         .iter()
         .filter(|m| m.provider == "openai" && m.api == "openai-responses")
         .map(|m| {
@@ -1272,15 +1603,17 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             clone.api = "azure-openai-responses".into();
             clone.provider = "azure-openai-responses".into();
             clone.base_url = String::new();
+            // TS keys reasoning options by provider:id, so the Azure clone
+            // (different provider) has none.
+            clone.reasoning_options = None;
+            // TS rebuilds the cost object, dropping `tiers`.
+            clone.cost.tiers = Vec::new();
             if let Some(ctx) = azure_overrides.get(m.id.as_str()) {
                 clone.context_window = *ctx;
             }
             clone
         })
-        .collect();
-    models.extend(azure);
-
-    models
+        .collect()
 }
 
 /// Hand-curated entries that models.dev does not provide (or that pi curates
@@ -1289,7 +1622,7 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
 fn manual_models() -> Vec<BuildModel> {
     let mut models = Vec::new();
 
-    let ant_ling_compat = BuildModelCompat::new()
+    let ant_ling_compat = Compat::new()
         .store(false)
         .developer_role(false)
         .reasoning_effort(false)
@@ -1380,7 +1713,7 @@ fn manual_models() -> Vec<BuildModel> {
             CODEX_CONTEXT,
         ),
     ] {
-        models.push(manual_model(
+        let mut entry = manual_model(
             id,
             name,
             "openai-codex-responses",
@@ -1392,7 +1725,13 @@ fn manual_models() -> Vec<BuildModel> {
             ctx,
             CODEX_MAX_TOKENS,
             None,
-        ));
+        );
+        // TS wraps most Codex costs in long-context pricing, but not
+        // `gpt-5.3-codex-spark` (explicit plain cost object).
+        if id != "gpt-5.3-codex-spark" {
+            entry.cost = with_openai_long_context_pricing(&entry.cost);
+        }
+        models.push(entry);
     }
 
     // Missing OpenAI models.
@@ -1459,10 +1798,10 @@ fn manual_models() -> Vec<BuildModel> {
     }
 
     // DeepSeek curated entries (time-based off-peak rates not representable).
-    let deepseek_compat = BuildModelCompat::new()
+    let deepseek_compat = Compat::new()
         .requires_reasoning_content(true)
         .thinking_format("deepseek");
-    models.push(manual_model(
+    let mut deepseek_flash = manual_model(
         "deepseek-flash",
         "DeepSeek V4.1 Flash",
         "openai-completions",
@@ -1474,7 +1813,11 @@ fn manual_models() -> Vec<BuildModel> {
         1_000_000,
         384_000,
         Some(deepseek_compat.clone()),
-    ));
+    );
+    deepseek_flash.thinking_level_map = Some(serde_json::json!({
+        "minimal": null, "low": "low", "medium": null, "high": "high", "max": "max"
+    }));
+    models.push(deepseek_flash);
     models.push(manual_model(
         "deepseek-v4-pro",
         "DeepSeek V4 Pro",
@@ -1520,7 +1863,7 @@ fn manual_model(
     cost: [f64; 4],
     context_window: u64,
     max_tokens: u64,
-    compat: Option<BuildModelCompat>,
+    compat: Option<Compat>,
 ) -> BuildModel {
     let input = if modalities.contains(&"image") {
         vec!["text".to_string(), "image".to_string()]
@@ -1541,11 +1884,13 @@ fn manual_model(
             output: cost[1],
             cache_read: cost[2],
             cache_write: cost[3],
+            tiers: Vec::new(),
         },
         context_window,
         max_tokens,
         headers: None,
         compat,
+        reasoning_options: None,
     }
 }
 
@@ -1576,6 +1921,30 @@ fn process_nvidia_models(
 
 // ---- OpenRouter 转换 --------------------------------------------------------
 
+/// TS `getOpenRouterThinkingLevelMap`.
+fn openrouter_thinking_level_map(reasoning: Option<&OpenRouterReasoning>) -> Option<serde_json::Value> {
+    let reasoning = reasoning?;
+    let efforts = reasoning.supported_efforts.clone().unwrap_or_default();
+    if efforts.is_empty() {
+        return (reasoning.mandatory == Some(true)).then(|| serde_json::json!({ "off": null }));
+    }
+    let options = serde_json::json!([{ "type": "effort", "values": efforts }]);
+    match get_effort_thinking_level_map(&options) {
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert(
+                "off".into(),
+                if reasoning.mandatory == Some(true) {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!("none")
+                },
+            );
+            Some(serde_json::Value::Object(map))
+        }
+        _ => (reasoning.mandatory == Some(true)).then(|| serde_json::json!({ "off": null })),
+    }
+}
+
 fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel> {
     raw.into_iter()
         .filter(|m| {
@@ -1603,26 +1972,45 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
                     inputs
                 },
             );
+            let use_anthropic_messages =
+                m.id.starts_with("anthropic/") && !m.id.ends_with(":batch");
             BuildModel {
                 id: m.id.clone(),
                 name: m.name,
-                api: "openai-completions".into(),
+                api: if use_anthropic_messages {
+                    "anthropic-messages".into()
+                } else {
+                    "openai-completions".into()
+                },
                 provider: "openrouter".into(),
-                base_url: "https://openrouter.ai/api/v1".into(),
+                base_url: if use_anthropic_messages {
+                    "https://openrouter.ai/api".into()
+                } else {
+                    "https://openrouter.ai/api/v1".into()
+                },
                 reasoning,
-                thinking_level_map: None,
+                thinking_level_map: openrouter_thinking_level_map(m.reasoning.as_ref()),
                 input: input_modalities,
                 cost: BuildModelCost {
-                    input: parse_price(&m.pricing.as_ref().and_then(|p| p.prompt.clone()))
-                        * 1_000_000.0,
-                    output: parse_price(&m.pricing.as_ref().and_then(|p| p.completion.clone()))
-                        * 1_000_000.0,
-                    cache_read: parse_price(
-                        &m.pricing.as_ref().and_then(|p| p.input_cache_read.clone()),
-                    ) * 1_000_000.0,
-                    cache_write: parse_price(
-                        &m.pricing.as_ref().and_then(|p| p.input_cache_write.clone()),
-                    ) * 1_000_000.0,
+                    input: round_cost(
+                        parse_price(&m.pricing.as_ref().and_then(|p| p.prompt.clone()))
+                            * 1_000_000.0,
+                    ),
+                    output: round_cost(
+                        parse_price(&m.pricing.as_ref().and_then(|p| p.completion.clone()))
+                            * 1_000_000.0,
+                    ),
+                    cache_read: round_cost(
+                        parse_price(
+                            &m.pricing.as_ref().and_then(|p| p.input_cache_read.clone()),
+                        ) * 1_000_000.0,
+                    ),
+                    cache_write: round_cost(
+                        parse_price(
+                            &m.pricing.as_ref().and_then(|p| p.input_cache_write.clone()),
+                        ) * 1_000_000.0,
+                    ),
+                    tiers: Vec::new(),
                 },
                 context_window: m
                     .top_provider
@@ -1635,12 +2023,8 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
                     .and_then(|t| t.max_completion_tokens)
                     .unwrap_or(4096),
                 headers: None,
-                compat: Some(
-                    BuildModelCompat::new()
-                        .max_tokens_field("max_tokens")
-                        .thinking_format("openrouter")
-                        .store(false),
-                ),
+                compat: None,
+                reasoning_options: None,
             }
         })
         .collect()
@@ -1701,24 +2085,28 @@ pub fn run(out: &std::path::Path, check_only: bool) -> Result<()> {
             [0.0, 0.0, 0.0, 0.0],
             2_000_000,
             30_000,
-            Some(
-                BuildModelCompat::new()
-                    .max_tokens_field("max_tokens")
-                    .thinking_format("openrouter")
-                    .store(false),
-            ),
+            None,
         ));
     }
+
+    // 覆盖修正 → Azure 镜像 → 深层元数据（对齐 TS 顺序）。
+    apply_overrides_all(&mut all_models);
+    let azure = clone_azure(&all_models);
+    all_models.extend(azure);
+    apply_metadata(&mut all_models);
 
     // 按 (provider, id) 排序，保证两次运行字节级一致，可复现、可 diff
     all_models.sort_by(|a, b| a.provider.cmp(&b.provider).then(a.id.cmp(&b.id)));
 
     let mut by_provider: BTreeMap<String, BTreeMap<String, &BuildModel>> = BTreeMap::new();
     for model in &all_models {
+        // First occurrence wins (models.dev priority over manual/extra
+        // sources), matching the original script's dedup.
         by_provider
             .entry(model.provider.clone())
             .or_default()
-            .insert(model.id.clone(), model);
+            .entry(model.id.clone())
+            .or_insert(model);
     }
 
     let json = serde_json::to_string_pretty(&by_provider).context("serialize models")?;
@@ -1755,4 +2143,1025 @@ pub fn run(out: &std::path::Path, check_only: bool) -> Result<()> {
         by_provider.len()
     );
     Ok(())
+}
+
+
+// ============================================================================
+// 深层元数据管线（对齐 generate-models.ts 的 apply* 系列）
+// ============================================================================
+
+const THINKING_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD: u64 = 272_000;
+const KIMI_K3_MAX_TOKENS: u64 = 131_072;
+
+fn b(value: bool) -> serde_json::Value {
+    serde_json::Value::Bool(value)
+}
+
+fn thinking_map_mut(model: &mut BuildModel) -> &mut serde_json::Map<String, serde_json::Value> {
+    if model.thinking_level_map.is_none() {
+        model.thinking_level_map = Some(serde_json::json!({}));
+    }
+    match model.thinking_level_map.as_mut() {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => unreachable!("thinking_level_map is always an object"),
+    }
+}
+
+fn merge_thinking(model: &mut BuildModel, pairs: &[(&str, serde_json::Value)]) {
+    let map = thinking_map_mut(model);
+    for (key, value) in pairs {
+        map.insert((*key).to_string(), value.clone());
+    }
+}
+
+fn merge_compat_value(model: &mut BuildModel, value: serde_json::Value) {
+    model.compat.get_or_insert_with(Compat::new).merge(value);
+}
+
+fn merge_compat(model: &mut BuildModel, pairs: &[(&str, serde_json::Value)]) {
+    let compat = model.compat.get_or_insert_with(Compat::new);
+    for (key, value) in pairs {
+        compat.insert(key, value.clone());
+    }
+}
+
+/// TS `getEffortThinkingLevelMap`.
+fn get_effort_thinking_level_map(options: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut effort_values: Vec<serde_json::Value> = Vec::new();
+    if let Some(items) = options.as_array() {
+        for option in items {
+            if option.get("type").and_then(serde_json::Value::as_str) == Some("effort") {
+                if let Some(values) = option.get("values").and_then(serde_json::Value::as_array) {
+                    effort_values.extend(values.iter().cloned());
+                }
+            }
+        }
+    }
+    if effort_values.is_empty() {
+        return None;
+    }
+    let has = |name: &str| effort_values.iter().any(|v| v.as_str() == Some(name));
+    if !THINKING_LEVELS.iter().any(|level| has(level)) && !has("none") {
+        return None;
+    }
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "off".into(),
+        if has("none") {
+            serde_json::json!("none")
+        } else {
+            serde_json::Value::Null
+        },
+    );
+    for level in THINKING_LEVELS {
+        map.insert(
+            level.into(),
+            if has(level) {
+                serde_json::json!(level)
+            } else {
+                serde_json::Value::Null
+            },
+        );
+    }
+    Some(serde_json::Value::Object(map))
+}
+
+fn openai_completions_default_compat() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({
+        "supportsStore": true,
+        "supportsDeveloperRole": true,
+        "supportsReasoningEffort": true,
+        "supportsUsageInStreaming": true,
+        "supportsFinishReason": true,
+        "maxTokensField": "max_completion_tokens",
+        "requiresToolResultName": false,
+        "requiresAssistantAfterToolResult": false,
+        "requiresThinkingAsText": false,
+        "requiresReasoningContentOnAssistantMessages": false,
+        "thinkingFormat": "openai",
+        "openRouterRouting": {},
+        "vercelGatewayRouting": {},
+        "chatTemplateKwargs": {},
+        "chatTemplateArgs": {},
+        "zaiToolStream": false,
+        "supportsStrictMode": true,
+        "supportsOpenAIGrammarTools": false,
+        "sendSessionAffinityHeaders": false,
+        "supportsLongCacheRetention": true,
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default()
+}
+
+fn detect_openai_completions_compat(model: &BuildModel) -> serde_json::Map<String, serde_json::Value> {
+    let provider = model.provider.as_str();
+    let base_url = model.base_url.as_str();
+    let id = model.id.as_str();
+
+    let is_zai = matches!(provider, "zai" | "zai-coding-cn")
+        || base_url.contains("api.z.ai")
+        || base_url.contains("open.bigmodel.cn");
+    let is_together = provider == "together"
+        || base_url.contains("api.together.ai")
+        || base_url.contains("api.together.xyz");
+    let is_moonshot =
+        matches!(provider, "moonshotai" | "moonshotai-cn") || base_url.contains("api.moonshot.");
+    let is_openrouter = provider == "openrouter" || base_url.contains("openrouter.ai");
+    let is_cloudflare_workers =
+        provider == "cloudflare-workers-ai" || base_url.contains("api.cloudflare.com");
+    let is_cloudflare_gateway =
+        provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
+    let is_nvidia = provider == "nvidia" || base_url.contains("integrate.api.nvidia.com");
+    let is_ant_ling = provider == "ant-ling" || base_url.contains("api.ant-ling.com");
+    let is_deepseek = provider == "deepseek" || base_url.to_lowercase().contains("deepseek.com");
+    let is_together_reasoning_only =
+        is_together && matches!(id, "deepseek-ai/DeepSeek-R1" | "MiniMaxAI/MiniMax-M2.7");
+
+    let is_non_standard = is_nvidia
+        || provider == "cerebras"
+        || base_url.contains("cerebras.ai")
+        || provider == "xai"
+        || base_url.contains("api.x.ai")
+        || is_together
+        || base_url.contains("chutes.ai")
+        || is_deepseek
+        || is_zai
+        || is_moonshot
+        || provider == "opencode"
+        || base_url.contains("opencode.ai")
+        || is_cloudflare_workers
+        || is_cloudflare_gateway
+        || is_ant_ling;
+    let use_max_tokens = base_url.contains("chutes.ai")
+        || is_deepseek
+        || is_moonshot
+        || is_cloudflare_gateway
+        || is_together
+        || is_nvidia
+        || is_ant_ling
+        || is_zai;
+    let is_grok = provider == "xai" || base_url.contains("api.x.ai");
+    let is_openrouter_developer_role =
+        is_openrouter && (id.starts_with("anthropic/") || id.starts_with("openai/"));
+    let cache_control_format = (provider == "openrouter"
+        && (id.starts_with("anthropic/") || id.starts_with("~anthropic/")))
+    .then_some(serde_json::json!("anthropic"));
+
+    let mut compat = openai_completions_default_compat();
+    compat.insert("supportsStore".into(), b(!is_non_standard));
+    compat.insert(
+        "supportsDeveloperRole".into(),
+        b(is_openrouter_developer_role || (!is_non_standard && !is_openrouter)),
+    );
+    compat.insert(
+        "supportsReasoningEffort".into(),
+        b(!is_grok
+            && !is_zai
+            && !is_moonshot
+            && !is_together
+            && !is_cloudflare_gateway
+            && !is_nvidia
+            && !is_ant_ling),
+    );
+    compat.insert(
+        "maxTokensField".into(),
+        serde_json::json!(if use_max_tokens {
+            "max_tokens"
+        } else {
+            "max_completion_tokens"
+        }),
+    );
+    compat.insert(
+        "requiresReasoningContentOnAssistantMessages".into(),
+        b(is_deepseek),
+    );
+    compat.insert(
+        "thinkingFormat".into(),
+        serde_json::json!(if is_deepseek {
+            "deepseek"
+        } else if is_zai {
+            "zai"
+        } else if is_together && !is_together_reasoning_only {
+            "together"
+        } else if is_ant_ling {
+            "ant-ling"
+        } else if is_openrouter {
+            "openrouter"
+        } else {
+            "openai"
+        }),
+    );
+    compat.insert(
+        "supportsStrictMode".into(),
+        b(!is_moonshot && !is_together && !is_cloudflare_gateway && !is_nvidia),
+    );
+    if let Some(value) = cache_control_format {
+        compat.insert("cacheControlFormat".into(), value);
+    }
+    compat.insert("sendSessionAffinityHeaders".into(), b(is_openrouter));
+    compat.insert(
+        "supportsLongCacheRetention".into(),
+        b(!(is_together
+            || is_cloudflare_workers
+            || is_cloudflare_gateway
+            || is_nvidia
+            || is_ant_ling)),
+    );
+    compat
+}
+
+fn compat_delta(
+    detected: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let defaults = openai_completions_default_compat();
+    let mut delta = serde_json::Map::new();
+    for (key, value) in detected {
+        let default_value = defaults.get(&key);
+        let is_empty = |v: Option<&serde_json::Value>| {
+            v.is_some_and(|v| v.as_object().is_some_and(serde_json::Map::is_empty))
+        };
+        if is_empty(Some(&value)) && is_empty(default_value) {
+            continue;
+        }
+        if default_value != Some(&value) {
+            delta.insert(key, value);
+        }
+    }
+    delta
+}
+
+fn apply_openai_completions_compat_metadata(model: &mut BuildModel) {
+    if model.api != "openai-completions" {
+        return;
+    }
+    let detected = compat_delta(detect_openai_completions_compat(model));
+    let mut merged = Compat(detected);
+    if let Some(existing) = &model.compat {
+        merged.merge(existing.to_value());
+    }
+    model.compat = if merged.is_empty() { None } else { Some(merged) };
+}
+
+fn supports_direct_reasoning_effort(model: &BuildModel) -> bool {
+    match model.api.as_str() {
+        "anthropic-messages" => model
+            .compat
+            .as_ref()
+            .is_some_and(|c| c.get_bool("forceAdaptiveThinking")),
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => true,
+        "openai-completions" => {
+            let mut merged = Compat(detect_openai_completions_compat(model));
+            if let Some(existing) = &model.compat {
+                merged.merge(existing.to_value());
+            }
+            let thinking = merged.get("thinkingFormat").and_then(serde_json::Value::as_str);
+            thinking == Some("openai") && merged.get_bool("supportsReasoningEffort")
+        }
+        _ => false,
+    }
+}
+
+fn apply_models_dev_reasoning_option_metadata(model: &mut BuildModel) {
+    let Some(options) = model.reasoning_options.clone() else {
+        return;
+    };
+    if !supports_direct_reasoning_effort(model) {
+        return;
+    }
+    if let Some(serde_json::Value::Object(map)) = get_effort_thinking_level_map(&options) {
+        let target = thinking_map_mut(model);
+        for (key, value) in map {
+            target.insert(key, value);
+        }
+    }
+}
+
+const VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS: &[&str] = &["anthropic", "openrouter"];
+const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS: &[&str] = &[
+    "github-copilot:claude-haiku-4.5",
+    "github-copilot:claude-sonnet-4",
+    "github-copilot:claude-sonnet-4.5",
+];
+
+fn supports_anthropic_mid_convo_effort(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    let id = id.strip_prefix('~').unwrap_or(&id);
+    let id = id.strip_prefix("anthropic/").unwrap_or(id);
+    let is_opus_5 = id == "claude-opus-5"
+        || (id.starts_with("claude-opus-5-")
+            && id.len() == "claude-opus-5-".len() + 8
+            && id["claude-opus-5-".len()..].chars().all(|c| c.is_ascii_digit()));
+    let is_fable_5_1 = (id.starts_with("claude-fable-5") || id.starts_with("claude-mythos-5"))
+        && (id.contains(".1") || id.contains("-1"));
+    is_opus_5 || is_fable_5_1
+}
+
+fn get_anthropic_messages_compat(provider: &str, model_id: &str) -> Option<serde_json::Value> {
+    let mut compat = serde_json::Map::new();
+    if VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS.contains(&provider)
+        && supports_anthropic_mid_convo_effort(model_id)
+    {
+        compat.insert("supportsMidConvoEffort".into(), b(true));
+    }
+    if EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS
+        .contains(&format!("{provider}:{model_id}").as_str())
+    {
+        compat.insert("supportsEagerToolInputStreaming".into(), b(false));
+    }
+    if provider == "xiaomi" || provider.starts_with("xiaomi-token-plan-") {
+        compat.insert("allowEmptySignature".into(), b(true));
+    }
+    if compat.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(compat))
+    }
+}
+
+fn apply_anthropic_messages_compat_metadata(model: &mut BuildModel) {
+    if model.api != "anthropic-messages" {
+        return;
+    }
+    let Some(compat) = get_anthropic_messages_compat(&model.provider, &model.id) else {
+        return;
+    };
+    let supports_mid_convo = compat
+        .get("supportsMidConvoEffort")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    merge_compat_value(model, compat);
+    if supports_mid_convo {
+        merge_thinking(model, &[("off", serde_json::Value::Null)]);
+    }
+}
+
+fn is_anthropic_adaptive_thinking_model(model_id: &str) -> bool {
+    [
+        "opus-4-6", "opus-4.6", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5",
+        "sonnet-4-6", "sonnet-4.6", "sonnet-5", "sonnet.5", "fable-5", "mythos-5",
+    ]
+    .iter()
+    .any(|needle| model_id.contains(needle))
+}
+
+fn is_anthropic_temperature_unsupported_model(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    ["opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5"]
+        .iter()
+        .any(|needle| id.contains(needle))
+}
+
+fn supports_open_ai_xhigh(model_id: &str) -> bool {
+    ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-astra"]
+        .iter()
+        .any(|needle| model_id.contains(needle))
+}
+
+fn supports_open_ai_max(model: &BuildModel) -> bool {
+    (model.id.contains("gpt-5.6") || model.id.contains("gpt-6-astra"))
+        && matches!(
+            model.api.as_str(),
+            "openai-responses"
+                | "azure-openai-responses"
+                | "openai-codex-responses"
+                | "openai-completions"
+        )
+}
+
+fn is_google_thinking_api(model: &BuildModel) -> bool {
+    model.api == "google-generative-ai" || model.api == "google-vertex"
+}
+
+fn is_gemini3_pro(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    id.contains("gemini-3") && id.contains("-pro")
+}
+
+fn is_gemini3_flash(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    (id.contains("gemini-3") && id.contains("-flash"))
+        || id == "gemini-flash-latest"
+        || id == "gemini-flash-lite-latest"
+}
+
+fn is_gemma4(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    id.contains("gemma4") || id.contains("gemma-4")
+}
+
+fn thinking_values<'a>(
+    pairs: &'a [(&'a str, Option<&str>)],
+) -> Vec<(&'a str, serde_json::Value)> {
+    pairs
+        .iter()
+        .map(|(key, value)| (*key, value.map_or(serde_json::Value::Null, |v| serde_json::json!(v))))
+        .collect()
+}
+
+fn openai_responses_none_reasoning(model_id: &str) -> bool {
+    [
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
+    .contains(&model_id)
+}
+
+fn apply_thinking_level_metadata(model: &mut BuildModel) {
+    let id = model.id.clone();
+    let provider = model.provider.clone();
+    let api = model.api.clone();
+
+    if (api == "openai-responses" || api == "azure-openai-responses") && id.starts_with("gpt-5") {
+        merge_thinking(model, &[("off", serde_json::Value::Null)]);
+    }
+    if id == "gpt-6-astra"
+        && matches!(
+            api.as_str(),
+            "openai-responses" | "azure-openai-responses" | "openai-codex-responses"
+        )
+    {
+        merge_thinking(
+            model,
+            &thinking_values(&[
+                ("off", None),
+                ("minimal", None),
+                ("low", Some("low")),
+                ("medium", Some("medium")),
+                ("high", Some("high")),
+                ("xhigh", Some("xhigh")),
+                ("max", Some("max")),
+            ]),
+        );
+    }
+    if provider == "github-copilot" && id.starts_with("gpt-5") {
+        merge_thinking(model, &[("minimal", serde_json::json!("low"))]);
+    }
+    if api == "openai-responses" && provider == "openai" && openai_responses_none_reasoning(&id) {
+        merge_thinking(model, &[("off", serde_json::json!("none"))]);
+    }
+    if provider == "xai" && api == "openai-responses" && model.thinking_level_map.is_none() {
+        merge_thinking(
+            model,
+            &[("off", serde_json::Value::Null), ("minimal", serde_json::Value::Null)],
+        );
+    }
+    if supports_open_ai_xhigh(&id) {
+        merge_thinking(model, &[("xhigh", serde_json::json!("xhigh"))]);
+    }
+    if supports_open_ai_max(model) {
+        merge_thinking(model, &[("max", serde_json::json!("max"))]);
+    }
+    if provider == "openai" && id == "gpt-5.5" {
+        merge_thinking(model, &[("minimal", serde_json::Value::Null)]);
+    }
+    if id.ends_with("gpt-5.5-pro") {
+        merge_thinking(
+            model,
+            &[
+                ("off", serde_json::Value::Null),
+                ("minimal", serde_json::Value::Null),
+                ("low", serde_json::Value::Null),
+            ],
+        );
+    }
+    if ["opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"]
+        .iter()
+        .any(|n| id.contains(n))
+    {
+        merge_thinking(model, &[("max", serde_json::json!("max"))]);
+    }
+    if [
+        "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5", "sonnet-5", "sonnet.5",
+    ]
+    .iter()
+    .any(|n| id.contains(n))
+    {
+        merge_thinking(
+            model,
+            &[("xhigh", serde_json::json!("xhigh")), ("max", serde_json::json!("max"))],
+        );
+    }
+    if id.contains("fable-5") {
+        merge_thinking(
+            model,
+            &[
+                ("off", serde_json::Value::Null),
+                ("xhigh", serde_json::json!("xhigh")),
+                ("max", serde_json::json!("max")),
+            ],
+        );
+    }
+    if api == "anthropic-messages" && is_anthropic_adaptive_thinking_model(&id) {
+        merge_compat(model, &[("forceAdaptiveThinking", b(true))]);
+    }
+    if api == "anthropic-messages" && is_anthropic_temperature_unsupported_model(&id) {
+        merge_compat(model, &[("supportsTemperature", b(false))]);
+    }
+    if api == "openai-completions" && id.contains("deepseek-v4") {
+        let map = if provider == "openrouter" {
+            thinking_values(&[
+                ("minimal", None),
+                ("low", None),
+                ("medium", None),
+                ("high", Some("high")),
+                ("xhigh", Some("xhigh")),
+                ("max", None),
+            ])
+        } else if (provider == "deepseek" || provider == "opencode" || provider == "opencode-go")
+            && id.contains("deepseek-v4-flash")
+        {
+            thinking_values(&[
+                ("minimal", None),
+                ("low", Some("low")),
+                ("medium", None),
+                ("high", Some("high")),
+                ("max", Some("max")),
+            ])
+        } else {
+            thinking_values(&[
+                ("minimal", None),
+                ("low", None),
+                ("medium", None),
+                ("high", Some("high")),
+                ("max", Some("max")),
+            ])
+        };
+        merge_thinking(model, &map);
+    }
+    if is_google_thinking_api(model) && is_gemini3_pro(&id) {
+        merge_thinking(
+            model,
+            &[
+                ("off", serde_json::Value::Null),
+                ("minimal", serde_json::Value::Null),
+                ("low", serde_json::json!("LOW")),
+                ("medium", serde_json::Value::Null),
+                ("high", serde_json::json!("HIGH")),
+            ],
+        );
+    }
+    if is_google_thinking_api(model) && is_gemini3_flash(&id) {
+        merge_thinking(model, &[("off", serde_json::Value::Null)]);
+    }
+    if is_google_thinking_api(model) && is_gemma4(&id) {
+        merge_thinking(
+            model,
+            &[
+                ("off", serde_json::Value::Null),
+                ("minimal", serde_json::json!("MINIMAL")),
+                ("low", serde_json::Value::Null),
+                ("medium", serde_json::Value::Null),
+                ("high", serde_json::json!("HIGH")),
+            ],
+        );
+    }
+    if provider == "groq" && id == "qwen/qwen3.6-27b" {
+        merge_thinking(
+            model,
+            &[
+                ("minimal", serde_json::Value::Null),
+                ("low", serde_json::Value::Null),
+                ("medium", serde_json::Value::Null),
+                ("high", serde_json::json!("default")),
+            ],
+        );
+    }
+    if provider == "openai-codex" && supports_open_ai_xhigh(&id) {
+        merge_thinking(model, &[("minimal", serde_json::json!("low"))]);
+    }
+    if matches!(provider.as_str(), "moonshotai" | "moonshotai-cn")
+        && matches!(id.as_str(), "kimi-k2.7-code" | "kimi-k2.7-code-highspeed")
+    {
+        merge_thinking(model, &[("off", serde_json::Value::Null)]);
+    }
+    if provider == "openrouter" && id.starts_with("inception/mercury-2") {
+        merge_thinking(model, &[("off", serde_json::Value::Null)]);
+    }
+    if provider == "openrouter" && id == "z-ai/glm-5.2" {
+        merge_thinking(model, &[("xhigh", serde_json::json!("xhigh"))]);
+    }
+    if provider == "fireworks" {
+        if api == "anthropic-messages" && model.compat.as_ref().is_some_and(|c| c.get_bool("forceAdaptiveThinking")) {
+            if id == "accounts/fireworks/models/qwen3p8-max" && model.thinking_level_map.is_none() {
+                model.thinking_level_map = get_effort_thinking_level_map(&serde_json::json!([
+                    { "type": "effort", "values": ["low", "medium", "xhigh"] }
+                ]));
+            }
+            let has_toggle = model
+                .reasoning_options
+                .as_ref()
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|opts| {
+                    opts.iter()
+                        .any(|o| o.get("type").and_then(serde_json::Value::as_str) == Some("toggle"))
+                })
+                || id == "accounts/fireworks/models/qwen3p8-2p4t-a95b";
+            if has_toggle {
+                merge_thinking(model, &[("off", serde_json::json!("none"))]);
+            }
+            if id == "accounts/fireworks/models/deepseek-v4-pro-0813" {
+                merge_thinking(model, &[("low", serde_json::json!("low"))]);
+            }
+        }
+        if id.contains("glm-5p2") {
+            merge_thinking(
+                model,
+                &[
+                    ("off", serde_json::json!("none")),
+                    ("minimal", serde_json::Value::Null),
+                    ("low", serde_json::Value::Null),
+                    ("medium", serde_json::Value::Null),
+                    ("max", serde_json::json!("max")),
+                ],
+            );
+        }
+        if id.contains("kimi-k3") {
+            merge_thinking(model, &[("medium", serde_json::Value::Null)]);
+        }
+    }
+    if provider == "opencode-go" && id == "glm-5.2" {
+        merge_thinking(
+            model,
+            &thinking_values(&[
+                ("off", None),
+                ("minimal", None),
+                ("low", None),
+                ("medium", None),
+                ("high", Some("high")),
+                ("max", Some("max")),
+            ]),
+        );
+    }
+    if provider == "opencode-go" && id == "kimi-k2.6" {
+        merge_thinking(
+            model,
+            &[
+                ("minimal", serde_json::Value::Null),
+                ("low", serde_json::Value::Null),
+                ("medium", serde_json::Value::Null),
+            ],
+        );
+    }
+    if provider == "opencode" && id == "grok-build-0.1" {
+        merge_thinking(
+            model,
+            &[
+                ("off", serde_json::Value::Null),
+                ("minimal", serde_json::Value::Null),
+                ("low", serde_json::Value::Null),
+                ("medium", serde_json::Value::Null),
+            ],
+        );
+    }
+    if provider == "ant-ling" && model.reasoning {
+        merge_thinking(
+            model,
+            &thinking_values(&[
+                ("off", None),
+                ("minimal", None),
+                ("low", None),
+                ("medium", None),
+                ("high", Some("high")),
+                ("xhigh", Some("xhigh")),
+            ]),
+        );
+    }
+    if provider == "github-copilot" {
+        type ThinkingOverride = (&'static str, &'static [(&'static str, Option<&'static str>)]);
+        let overrides: &[ThinkingOverride] = &[
+            ("claude-opus-4.7", &[("minimal", Some("low"))]),
+            ("claude-opus-4.8", &[("minimal", Some("low"))]),
+            ("claude-opus-5", &[("minimal", Some("low"))]),
+            ("claude-sonnet-4.6", &[("minimal", Some("low")), ("max", Some("max"))]),
+        ];
+        if let Some((_, pairs)) = overrides.iter().find(|(model_id, _)| *model_id == id) {
+            merge_thinking(model, &thinking_values(pairs));
+        }
+    }
+}
+
+fn apply_strict_tool_compat_metadata(model: &mut BuildModel) {
+    if matches!(model.provider.as_str(), "openai" | "cloudflare-ai-gateway")
+        && model.api == "openai-responses"
+    {
+        merge_compat(model, &[("supportsStrictMode", b(true))]);
+    } else if model.provider == "anthropic" && model.api == "anthropic-messages" {
+        merge_compat(model, &[("supportsStrictTools", b(true))]);
+    }
+}
+
+const OPENAI_GRAMMAR_TOOL_PROVIDERS: &[&str] = &[
+    "openai",
+    "openai-codex",
+    "azure-openai-responses",
+    "github-copilot",
+    "opencode",
+    "cloudflare-ai-gateway",
+];
+const OPENAI_GRAMMAR_TOOL_APIS: &[&str] = &[
+    "openai-responses",
+    "azure-openai-responses",
+    "openai-codex-responses",
+];
+
+fn apply_openai_grammar_tool_compat_metadata(model: &mut BuildModel) {
+    if !OPENAI_GRAMMAR_TOOL_APIS.contains(&model.api.as_str())
+        || !OPENAI_GRAMMAR_TOOL_PROVIDERS.contains(&model.provider.as_str())
+    {
+        return;
+    }
+    let Some(number) = model
+        .id
+        .strip_prefix("gpt-")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse::<u32>().ok())
+    else {
+        return;
+    };
+    if number < 5 {
+        return;
+    }
+    merge_compat(model, &[("supportsOpenAIGrammarTools", b(true))]);
+}
+
+const OPENAI_TOOL_SEARCH_MODEL_IDS: &[&str] = &[
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-6-astra",
+];
+const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS: &[&str] =
+    &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"];
+
+fn apply_openai_tool_search_metadata(model: &mut BuildModel) {
+    let is_openai_responses = model.provider == "openai" && model.api == "openai-responses";
+    let is_openai_codex = model.provider == "openai-codex" && model.api == "openai-codex-responses";
+    if !(is_openai_responses || is_openai_codex) || !OPENAI_TOOL_SEARCH_MODEL_IDS.contains(&model.id.as_str())
+    {
+        return;
+    }
+    let supports_additional = (is_openai_responses
+        && OPENAI_TOOL_SEARCH_MODEL_IDS.contains(&model.id.as_str()))
+        || (is_openai_codex && OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS.contains(&model.id.as_str()));
+    if supports_additional {
+        merge_compat(model, &[("supportsAdditionalTools", b(true))]);
+    }
+    merge_compat(model, &[("supportsToolSearch", b(true))]);
+}
+
+fn apply_openai_explicit_prompt_cache_metadata(model: &mut BuildModel) {
+    if model.provider != "openai" || model.api != "openai-responses" {
+        return;
+    }
+    if model.cost.cache_write <= 0.0 {
+        return;
+    }
+    merge_compat(model, &[("supportsExplicitPromptCacheMode", b(true))]);
+}
+
+const ANTHROPIC_ALLOWED_FALLBACK_MODELS: &[(&str, &[&str])] = &[
+    ("claude-fable-5", &["claude-opus-4-8", "claude-opus-5"]),
+    ("claude-opus-5", &["claude-opus-4-8"]),
+];
+
+fn apply_anthropic_allowed_fallback_model_metadata(models: &mut [BuildModel]) {
+    let by_id: HashMap<String, (String, BuildModelCost, bool)> = models
+        .iter()
+        .filter(|m| m.provider == "anthropic" && m.api == "anthropic-messages")
+        .map(|m| {
+            (
+                m.id.clone(),
+                (
+                    m.provider.clone(),
+                    m.cost.clone(),
+                    m.compat.as_ref().is_some_and(|c| c.get_bool("supportsMidConvoEffort")),
+                ),
+            )
+        })
+        .collect();
+
+    for (model_id, fallback_ids) in ANTHROPIC_ALLOWED_FALLBACK_MODELS {
+        let Some((_, _, supports_mid_convo)) = by_id.get(*model_id) else {
+            continue;
+        };
+        let mut allowed = Vec::new();
+        for fallback_id in *fallback_ids {
+            if *supports_mid_convo && !supports_anthropic_mid_convo_effort(fallback_id) {
+                continue;
+            }
+            if let Some((provider, cost, _)) = by_id.get(*fallback_id) {
+                allowed.push(serde_json::json!({
+                    "provider": provider,
+                    "model": fallback_id,
+                    "cost": cost,
+                }));
+            }
+        }
+        if allowed.is_empty() {
+            continue;
+        }
+        if let Some(model) = models
+            .iter_mut()
+            .find(|m| m.provider == "anthropic" && m.api == "anthropic-messages" && m.id == *model_id)
+        {
+            merge_compat_value(model, serde_json::json!({ "allowedFallbackModels": allowed }));
+        }
+    }
+}
+
+fn with_openai_long_context_pricing(cost: &BuildModelCost) -> BuildModelCost {
+    BuildModelCost {
+        input: cost.input,
+        output: cost.output,
+        cache_read: cost.cache_read,
+        cache_write: cost.cache_write,
+        tiers: vec![BuildModelCostTier {
+            input_tokens_above: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+            input: round_cost(cost.input * 2.0),
+            output: round_cost(cost.output * 1.5),
+            cache_read: round_cost(cost.cache_read * 2.0),
+            cache_write: round_cost(cost.cache_write * 2.0),
+        }],
+    }
+}
+
+fn openai_gpt_56_standard_cost(model_id: &str) -> Option<BuildModelCost> {
+    match model_id {
+        "gpt-5.6-luna" => Some(BuildModelCost {
+            input: 0.2,
+            output: 1.2,
+            cache_read: 0.02,
+            cache_write: 0.25,
+            tiers: Vec::new(),
+        }),
+        "gpt-5.6-terra" => Some(BuildModelCost {
+            input: 2.0,
+            output: 12.0,
+            cache_read: 0.2,
+            cache_write: 2.5,
+            tiers: Vec::new(),
+        }),
+        _ => None,
+    }
+}
+
+const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS: &[&str] = &[
+    "claude-fable-5",
+    "claude-opus-4.6",
+    "claude-opus-4.7",
+    "claude-opus-4.8",
+    "claude-opus-5",
+    "claude-sonnet-4.6",
+    "claude-sonnet-5",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+    "gpt-5.5",
+];
+const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS: &[&str] = &[
+    "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-6-astra",
+];
+const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS: &[&str] = &[
+    "gpt-5.4",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-6-astra",
+];
+const OPENROUTER_KIMI_K3_MODEL_IDS: &[&str] = &["moonshotai/kimi-k3", "~moonshotai/kimi-latest"];
+
+/// TS `generateModels`'s "temporary overrides until upstream metadata is
+/// corrected" loop.
+fn apply_overrides(model: &mut BuildModel) {
+    let id = model.id.clone();
+    let provider = model.provider.clone();
+
+    if provider == "github-copilot" && GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS.contains(&id.as_str()) {
+        model.context_window = 1_000_000;
+    }
+    if matches!(provider.as_str(), "anthropic" | "opencode" | "opencode-go")
+        && matches!(
+            id.as_str(),
+            "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-opus-4.6" | "claude-sonnet-4.6"
+        )
+    {
+        model.context_window = 1_000_000;
+    }
+    if matches!(provider.as_str(), "opencode" | "opencode-go")
+        && matches!(id.as_str(), "claude-sonnet-4-5" | "claude-sonnet-4")
+    {
+        model.context_window = 200_000;
+    }
+    if matches!(provider.as_str(), "opencode" | "opencode-go") && id == "gpt-5.4" {
+        model.context_window = 272_000;
+        model.max_tokens = 128_000;
+    }
+    if provider == "openai" && OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS.contains(&id.as_str()) {
+        model.context_window = OPENAI_LONG_CONTEXT_INPUT_THRESHOLD;
+        model.max_tokens = 128_000;
+    }
+    if provider == "openai" && OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS.contains(&id.as_str()) {
+        let cost = openai_gpt_56_standard_cost(&id).unwrap_or_else(|| model.cost.clone());
+        model.cost = with_openai_long_context_pricing(&cost);
+    }
+    if provider == "cloudflare-ai-gateway" {
+        if let Some(standard) = openai_gpt_56_standard_cost(&id) {
+            model.cost = with_openai_long_context_pricing(&standard);
+        }
+    }
+    if provider == "openai" && id == "gpt-5-pro" {
+        model.max_tokens = 128_000;
+    }
+    if (provider == "openrouter" && OPENROUTER_KIMI_K3_MODEL_IDS.contains(&id.as_str()))
+        || (provider == "vercel-ai-gateway" && id == "moonshotai/kimi-k3")
+    {
+        model.max_tokens = KIMI_K3_MAX_TOKENS;
+    }
+    if provider == "openrouter" && id == "moonshotai/kimi-k2.5" {
+        model.cost.input = 0.41;
+        model.cost.output = 2.06;
+        model.cost.cache_read = 0.07;
+        model.max_tokens = 4096;
+    }
+    if provider == "openrouter" && id.starts_with("moonshotai/kimi-k2.6") {
+        merge_compat(
+            model,
+            &[
+                ("supportsDeveloperRole", b(false)),
+                ("requiresReasoningContentOnAssistantMessages", b(true)),
+            ],
+        );
+    }
+    if provider == "openrouter" && id == "z-ai/glm-5" {
+        model.cost.input = 0.6;
+        model.cost.output = 1.9;
+        model.cost.cache_read = 0.119;
+    }
+    // DeepSeek V4 compat override across openai-completions providers.
+    if model.api == "openai-completions"
+        && id.contains("deepseek-v4")
+        && !matches!(
+            provider.as_str(),
+            "qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual"
+        )
+    {
+        let preserves_native = matches!(provider.as_str(), "openrouter" | "opencode");
+        if preserves_native {
+            merge_compat(
+                model,
+                &[("requiresReasoningContentOnAssistantMessages", b(true))],
+            );
+        } else {
+            merge_compat(
+                model,
+                &[
+                    ("requiresReasoningContentOnAssistantMessages", b(true)),
+                    ("thinkingFormat", serde_json::json!("deepseek")),
+                ],
+            );
+        }
+    }
+}
+
+/// Run the full metadata pipeline over the combined catalog (match the TS
+/// `for (const model of allModels) { apply* }` block).
+fn apply_overrides_all(models: &mut [BuildModel]) {
+    for model in models.iter_mut() {
+        apply_overrides(model);
+    }
+}
+
+fn apply_metadata(models: &mut [BuildModel]) {
+    for model in models.iter_mut() {
+        apply_openai_completions_compat_metadata(model);
+        apply_anthropic_messages_compat_metadata(model);
+        apply_models_dev_reasoning_option_metadata(model);
+        apply_thinking_level_metadata(model);
+        apply_strict_tool_compat_metadata(model);
+        apply_openai_grammar_tool_compat_metadata(model);
+        apply_openai_tool_search_metadata(model);
+        apply_openai_explicit_prompt_cache_metadata(model);
+    }
+    apply_anthropic_allowed_fallback_model_metadata(models);
 }

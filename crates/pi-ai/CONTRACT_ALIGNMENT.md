@@ -41,7 +41,7 @@
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | `ModelRuntime` / live catalog refresh | v0.80.8 引入，启动/后台自动刷新 | 手动 `pi refresh` 有界子集 | 否 | 见 DEVIATIONS.md #10（已确认保留） |
-| 模型覆盖度 | models.dev 相关 provider + AI Gateway + NVIDIA + 手工补充 | 39 provider，与原版 provider 集合一致（基础字段 + 简单 compat） | 是（provider 列表） | 深层元数据见 DEVIATIONS.md #12（待确认） |
+| 模型覆盖度 | models.dev 相关 provider + AI Gateway + NVIDIA + 手工补充 | 39 provider，与原版 provider 集合一致；字段与元数据逐一致（除 OpenRouter 上游漂移） | 是 | 见 DEVIATIONS.md #12（已确认保留） |
 | Qwen Token Plan provider | v0.81.0 #6858 新增 | 未实现 | 否 | 见 DEVIATIONS.md #2（已确认保留） |
 | `contentText` / `uuidv7` 工具 | v0.81.0 #6840/#6834 新增 | 已实现（`utils/text.rs`/`utils/uuid.rs`） | 是 | 修复见 PORTING_MISTAKES.md |
 | `retryAssistantCall()` | v0.81.0 #6901 新增 | 已实现（`utils/retry.rs`） | 是 | 修复见 PORTING_MISTAKES.md |

@@ -209,6 +209,34 @@ mod tests {
         }
     }
 
+    /// The generated catalog carries the deep metadata (compat by api +
+    /// thinkingLevelMap) ported from the original generator.
+    #[test]
+    fn test_generated_catalog_has_deep_metadata() {
+        use crate::types::ModelCompat;
+        register_built_in_api_providers();
+
+        let anthropic = crate::models::get_model("anthropic", "claude-sonnet-4-6").unwrap();
+        assert!(matches!(
+            anthropic.compat,
+            Some(ModelCompat::AnthropicMessages(_))
+        ));
+        assert!(anthropic.thinking_level_map.is_some());
+
+        let openai = crate::models::get_model("openai", "gpt-5.6-sol").unwrap();
+        assert!(matches!(
+            openai.compat,
+            Some(ModelCompat::OpenAIResponses(_))
+        ));
+        assert!(openai.thinking_level_map.is_some());
+
+        let moonshot = crate::models::get_model("moonshotai", "kimi-k2.6").unwrap();
+        assert!(matches!(
+            moonshot.compat,
+            Some(ModelCompat::OpenAICompletions(_))
+        ));
+    }
+
     #[test]
     fn test_reset_api_providers() {
         reset_api_providers();

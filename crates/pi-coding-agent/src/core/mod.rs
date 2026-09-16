@@ -11,14 +11,12 @@ pub mod diagnostics;
 pub mod exec;
 pub mod experimental;
 pub mod extensions;
-pub mod footer_data_provider;
 pub mod http_dispatcher;
 pub mod messages;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod model_registry;
 pub mod model_resolver;
-pub mod output_guard;
 pub mod package_manager;
 pub mod prompt_templates;
 pub mod project_trust;

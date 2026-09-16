@@ -13,4 +13,3 @@ pub mod text;
 pub mod transform;
 pub mod typebox_helpers;
 pub mod uuid;
-pub mod validation;

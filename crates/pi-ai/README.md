@@ -69,8 +69,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 | `types` | `Model`, `Message`, `ContentBlock`, `Usage`, `StreamOptions` 等 |
 | `providers::anthropic` | Anthropic Messages API SSE streaming |
 | `providers::openai` | OpenAI Chat Completions SSE streaming |
-| `providers::deepseek` | DeepSeek（委托给 openai） |
-| `providers::xai` | xAI Grok（委托给 openai） |
 | `providers::register_builtins` | 注册内置 provider |
 | `utils::sse` | SSE 协议解析器（Anthropic + OpenAI 两种格式） |
 | `utils::event_stream` | 事件流包装器 |

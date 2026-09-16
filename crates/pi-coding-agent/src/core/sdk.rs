@@ -401,7 +401,7 @@ pub async fn create_agent_session(
         .settings_manager
         .take()
         .unwrap_or_else(|| SettingsManager::create(&cwd, Some(&agent_dir)));
-    let model_registry = match options.model_registry.take() {
+    let mut model_registry = match options.model_registry.take() {
         Some(r) => r,
         None => {
             // 内置模型列表（与 TS 原版一致，无 Ollama 自动发现；本地/
@@ -410,6 +410,9 @@ pub async fn create_agent_session(
             ModelRegistry::new(builtins)
         }
     };
+    // Stored credentials (`/login` → auth.json) must be visible to auth checks
+    // and requests, exactly like TS `RuntimeCredentials` → `Models.getAuth`.
+    model_registry.wire_auth_resolver(std::path::Path::new(&agent_dir).join("auth.json"));
 
     let default_provider = settings_manager.get_settings().default_provider.clone();
     let default_model_id = settings_manager.get_settings().default_model.clone();

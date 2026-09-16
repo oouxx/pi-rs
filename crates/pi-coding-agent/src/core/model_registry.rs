@@ -84,6 +84,26 @@ impl ModelRegistry {
         self.api_key_resolver = Some(resolver);
     }
 
+    /// Wire the `auth.json` credential resolver. Required for stored `/login`
+    /// keys to participate in auth checks (`has_configured_auth` /
+    /// `get_available`) and request resolution (`get_api_key_and_headers`).
+    /// The file is read fresh on each lookup so keys stored after session
+    /// creation are seen.
+    pub fn wire_auth_resolver(&mut self, auth_path: std::path::PathBuf) {
+        self.set_api_key_resolver(Arc::new(move |provider| {
+            let storage = crate::core::auth_storage::AuthStorage::create(auth_path.clone());
+            storage.get(provider).and_then(|credential| match credential {
+                crate::core::auth_storage::AuthCredential::ApiKey { key: Some(key), env } => {
+                    crate::core::resolve_config_value::resolve_config_value_with_env(
+                        key,
+                        env.as_ref(),
+                    )
+                }
+                _ => None,
+            })
+        }));
+    }
+
     /// Resolve a stored API key from the attached credential resolver, if any.
     fn resolved_stored_key(&self, provider: &str) -> Option<String> {
         self.api_key_resolver.as_ref().and_then(|r| r(provider))
@@ -1169,6 +1189,26 @@ mod tests {
             Some("stored-key")
         );
         std::env::remove_var("BASETEN_API_KEY");
+    }
+
+    /// `wire_auth_resolver` makes stored `/login` credentials visible to auth
+    /// checks and key resolution (regression: production session creation used
+    /// to skip it, so `/model` never saw a just-logged-in provider).
+    #[test]
+    fn test_wire_auth_resolver_reads_auth_json() {
+        let dir = std::env::temp_dir().join(format!("pi-auth-resolver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        std::fs::write(&path, r#"{"opencode-go":{"type":"api_key","key":"sk-test"}}"#).unwrap();
+        let mut registry = ModelRegistry::new(vec![]);
+        registry.wire_auth_resolver(path.clone());
+        assert!(registry.is_provider_configured("opencode-go"));
+        assert_eq!(
+            registry.get_api_key_for_provider("opencode-go"),
+            Some("sk-test".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// TS `Models.checkAuth`: `ANTHROPIC_AUTH_TOKEN` counts as configured auth

@@ -15,19 +15,36 @@ use crate::core::system_prompt::{ContextFile, SkillInfo};
 
 /// Create the default StreamFn that bridges to the pi-ai provider system.
 /// Public for testing.
-pub fn create_default_stream_fn() -> pi_agent_core::types::StreamFn {
+pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::StreamFn {
     use pi_agent_core::pi_ai_types::StreamResponse;
 
     std::sync::Arc::new(
-        |model: pi_agent_core::pi_ai_types::Model,
+        move |model: pi_agent_core::pi_ai_types::Model,
          context: pi_agent_core::pi_ai_types::Context,
          _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
          options: pi_agent_core::types::StreamFnOptions| {
             Box::pin(async move {
+                // Provider attribution headers (match TS `transformHeaders` →
+                // `mergeProviderAttributionHeaders`): `x-opencode-session` /
+                // `x-opencode-client` session affinity plus the telemetry-gated
+                // OpenRouter/NVIDIA/Cloudflare markers. Request headers override.
+                let request_headers: Vec<(String, String)> =
+                    options.headers.clone().unwrap_or_default().into_iter().collect();
+                let headers = crate::core::provider_attribution::merge_provider_attribution_headers(
+                    &crate::core::provider_attribution::ModelInfo {
+                        provider: model.provider.clone(),
+                        base_url: model.base_url.clone(),
+                    },
+                    has_telemetry,
+                    options.session_id.as_deref(),
+                    &[request_headers],
+                )
+                .map(|entries| entries.into_iter().collect::<std::collections::HashMap<_, _>>());
+
                 let stream_opts = pi_agent_core::pi_ai::types::StreamOptions {
                     signal: options.signal,
                     api_key: options.api_key,
-                    headers: options.headers,
+                    headers,
                     session_id: options.session_id,
                     on_payload: options.on_payload,
                     on_headers: options.on_headers,
@@ -648,6 +665,11 @@ pub async fn create_agent_session(
     let (_extension_action_sender, extension_action_rx, extension_state_view) =
         crate::core::extensions::action_bus::ExtensionActionSender::new();
 
+    let has_telemetry = crate::core::telemetry::is_install_telemetry_enabled(
+        &settings_manager,
+        std::env::var("PI_TELEMETRY").ok().as_deref(),
+    );
+
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
         model,
@@ -662,7 +684,7 @@ pub async fn create_agent_session(
         session_name: options.session_name,
         stream_fn: options
             .stream_fn
-            .or_else(|| Some(create_default_stream_fn())),
+            .or_else(|| Some(create_default_stream_fn(has_telemetry))),
         convert_to_llm: options.convert_to_llm,
         initial_active_tool_names: Some(initial_active_tool_names),
         allowed_tool_names,

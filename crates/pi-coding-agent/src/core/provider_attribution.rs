@@ -162,6 +162,31 @@ mod tests {
         assert!(h.contains(&("x-opencode-session".to_string(), "sess_123".to_string())));
     }
 
+    /// `opencode-go` requires the session-affinity headers (regression: they
+    /// were never sent, so requests 400'd with `MissingSessionID`).
+    #[test]
+    fn test_session_headers_for_opencode_go() {
+        let model = ModelInfo {
+            provider: "opencode-go".into(),
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+        };
+        let headers = get_session_headers(&model, Some("sess_1")).unwrap();
+        assert!(headers.contains(&("x-opencode-session".to_string(), "sess_1".to_string())));
+        assert!(headers.contains(&("x-opencode-client".to_string(), "pi".to_string())));
+    }
+
+    /// Session headers must be sent even when install telemetry is disabled
+    /// (they are not telemetry-gated, unlike the OpenRouter/NVIDIA markers).
+    #[test]
+    fn test_session_headers_not_gated_by_telemetry() {
+        let model = ModelInfo {
+            provider: "opencode-go".into(),
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+        };
+        let headers = merge_provider_attribution_headers(&model, false, Some("sess_1"), &[]).unwrap();
+        assert!(headers.contains(&("x-opencode-session".to_string(), "sess_1".to_string())));
+    }
+
     #[test]
     fn test_merge_extra_overrides_default() {
         let model = ModelInfo {

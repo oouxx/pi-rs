@@ -1050,6 +1050,18 @@ async fn stream_anthropic_inner(
         ANTHROPIC_VERSION.to_string(),
     );
     header_map.insert("content-type".to_string(), "application/json".to_string());
+    // Static catalog headers (match TS createClient `model.headers`).
+    if let Some(model_headers) = &model.headers {
+        for (key, value) in model_headers {
+            header_map.insert(key.clone(), value.clone());
+        }
+    }
+    // Request-scoped headers override the above (match TS `optionsHeaders`).
+    if let Some(option_headers) = options.and_then(|o| o.headers.as_ref()) {
+        for (key, value) in option_headers {
+            header_map.insert(key.clone(), value.clone());
+        }
+    }
     // Fine-grained tool streaming beta: only when tools are present AND the
     // provider does not support eager tool input streaming (match TS
     // `shouldUseFineGrainedToolStreamingBeta`).

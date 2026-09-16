@@ -1574,6 +1574,12 @@ async fn stream_openai_inner(
     let mut headers: Vec<(String, String)> = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
     ];
+    // Static catalog headers (match TS `createClient`: `{...model.headers}`).
+    if let Some(model_headers) = &model.headers {
+        for (key, value) in model_headers {
+            headers.push((key.clone(), value.clone()));
+        }
+    }
     if let Some(key) = api_key {
         headers.push(("Authorization".to_string(), format!("Bearer {key}")));
     }
@@ -1590,6 +1596,20 @@ async fn stream_openai_inner(
                 headers.push(("x-session-affinity".to_string(), session_id));
             }
         }
+    }
+    // Request-scoped headers override the above (match TS `optionsHeaders`,
+    // merged last) — carries provider-attribution headers such as
+    // `x-opencode-session`.
+    if let Some(option_headers) = options.and_then(|o| o.headers.as_ref()) {
+        for (key, value) in option_headers {
+            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(key));
+            headers.push((key.clone(), value.clone()));
+        }
+    }
+    // Extension `before_provider_headers` hook (match TS `transformHeaders`).
+    if let Some(on_headers) = options.and_then(|o| o.on_headers.as_ref()) {
+        let map: std::collections::HashMap<String, String> = headers.into_iter().collect();
+        headers = on_headers(map).await.into_iter().collect();
     }
     let mut request = http_client
         .post(format!(

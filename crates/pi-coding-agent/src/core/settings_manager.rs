@@ -1157,6 +1157,7 @@ impl SettingsManager {
         self.settings.enable_install_telemetry.unwrap_or(true)
     }
 
+
     pub fn set_enable_install_telemetry(&mut self, enabled: bool) {
         self.global_settings.enable_install_telemetry = Some(enabled);
         self.mark_modified("enableInstallTelemetry", None);
@@ -2054,5 +2055,11 @@ mod tests {
 
         let errors = mgr.drain_errors();
         assert!(errors.is_empty());
+    }
+}
+
+impl crate::core::telemetry::HasTelemetrySetting for SettingsManager {
+    fn get_enable_install_telemetry(&self) -> bool {
+        SettingsManager::get_enable_install_telemetry(self)
     }
 }

@@ -532,7 +532,7 @@ async fn create_real_session() -> pi_coding_agent::core::agent_session::AgentSes
     let mut opts = CreateAgentSessionOptions::default();
     opts.cwd = std::env::temp_dir().display().to_string();
     opts.agent_dir = Some(std::env::temp_dir().display().to_string());
-    opts.stream_fn = Some(pi_coding_agent::core::sdk::create_default_stream_fn());
+    opts.stream_fn = Some(pi_coding_agent::core::sdk::create_default_stream_fn(false));
     opts.cli_provider = Some("openai".into());
     opts.cli_model = Some(OLLAMA_MODEL.into());
     opts.enable_extensions = false;

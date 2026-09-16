@@ -751,6 +751,11 @@ async fn stream_pi_messages_inner(
         .header("Accept", "text/event-stream")
         .header("Content-Type", "application/json")
         .json(&payload);
+    if let Some(model_headers) = &model.headers {
+        for (k, v) in model_headers {
+            request = request.header(k, v);
+        }
+    }
     if let Some(headers) = options.and_then(|o| o.headers.clone()) {
         for (k, v) in headers {
             request = request.header(k, v);

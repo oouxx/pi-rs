@@ -867,8 +867,12 @@ mod tests {
     #[test]
     fn test_find_exact_model_reference_match_bare_id() {
         let models = test_models();
-        let result = find_exact_model_reference_match("gpt-4o", &models);
+        // Bare id that is unique across providers matches.
+        let result = find_exact_model_reference_match("llama-3.3-70b-versatile", &models);
         assert!(result.is_some());
+        // Ambiguous bare ids (present in several providers) do NOT match, so
+        // the caller falls back to `provider/id` resolution (match TS).
+        assert!(find_exact_model_reference_match("gpt-4o", &models).is_none());
     }
 
     #[test]
@@ -880,7 +884,7 @@ mod tests {
     #[test]
     fn test_parse_model_pattern_exact() {
         let models = test_models();
-        let result = parse_model_pattern("claude-sonnet-4-6", &models, true);
+        let result = parse_model_pattern("anthropic/claude-sonnet-4-6", &models, true);
         assert!(result.model.is_some());
         assert_eq!(result.model.unwrap().id, "claude-sonnet-4-6");
     }

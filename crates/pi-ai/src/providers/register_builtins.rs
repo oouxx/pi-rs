@@ -109,6 +109,105 @@ mod tests {
         assert!(get_api_provider("pi-messages").is_some());
     }
 
+    /// The generated catalog (from the original `generate-models.ts`) covers the
+    /// full provider list, including providers whose models previously had no
+    /// bundled catalog entry (e.g. `opencode-go`).
+    #[test]
+    fn test_generated_catalog_covers_full_provider_list() {
+        register_built_in_api_providers();
+        let providers = crate::models::get_providers();
+        for provider in [
+            "opencode-go",
+            "opencode",
+            "moonshotai",
+            "moonshotai-cn",
+            "xiaomi",
+            "qwen-token-plan",
+            "baseten",
+            "huggingface",
+            "cloudflare-workers-ai",
+            "kimi-coding",
+            "zai",
+            "ant-ling",
+        ] {
+            assert!(
+                providers.iter().any(|p| p == provider),
+                "catalog should include {provider}"
+            );
+        }
+        let opencode_go = crate::models::get_models("opencode-go");
+        assert!(!opencode_go.is_empty(), "opencode-go should have models");
+        for m in &opencode_go {
+            assert!(
+                matches!(
+                    m.api.as_str(),
+                    "openai-completions" | "anthropic-messages" | "openai-responses"
+                ),
+                "opencode-go/{} has unexpected api {}",
+                m.id,
+                m.api
+            );
+        }
+    }
+
+
+    /// `compat` is parsed according to the model's `api` (not via the untagged
+    /// enum, which would always pick `OpenAICompletions` and drop the
+    /// provider-specific fields).
+    #[test]
+    fn test_compat_parsed_by_api() {
+        use crate::types::ModelCompat;
+        let parse = |api: &str, compat: serde_json::Value| -> crate::types::Model {
+            serde_json::from_value(serde_json::json!({
+                "id": "m",
+                "name": "m",
+                "api": api,
+                "provider": "p",
+                "baseUrl": "https://example.com",
+                "reasoning": true,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 1,
+                "maxTokens": 1,
+                "compat": compat,
+            }))
+            .unwrap()
+        };
+
+        let anthropic = parse(
+            "anthropic-messages",
+            serde_json::json!({"forceAdaptiveThinking": true, "supportsStrictTools": true}),
+        );
+        match anthropic.compat {
+            Some(ModelCompat::AnthropicMessages(compat)) => {
+                assert_eq!(compat.force_adaptive_thinking, Some(true));
+                assert_eq!(compat.supports_strict_tools, Some(true));
+            }
+            other => panic!("anthropic compat parsed as {other:?}"),
+        }
+
+        let responses = parse(
+            "openai-responses",
+            serde_json::json!({"supportsStrictMode": true}),
+        );
+        match responses.compat {
+            Some(ModelCompat::OpenAIResponses(compat)) => {
+                assert_eq!(compat.supports_strict_mode, Some(true));
+            }
+            other => panic!("responses compat parsed as {other:?}"),
+        }
+
+        let completions = parse(
+            "openai-completions",
+            serde_json::json!({"thinkingFormat": "deepseek"}),
+        );
+        match completions.compat {
+            Some(ModelCompat::OpenAICompletions(compat)) => {
+                assert_eq!(compat.thinking_format.as_deref(), Some("deepseek"));
+            }
+            other => panic!("completions compat parsed as {other:?}"),
+        }
+    }
 
     #[test]
     fn test_reset_api_providers() {

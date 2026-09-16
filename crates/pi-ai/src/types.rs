@@ -602,7 +602,7 @@ pub struct ModelCostTier {
     pub input_tokens_above: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {
     pub id: String,
@@ -630,6 +630,82 @@ pub struct Model {
     pub headers: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compat: Option<ModelCompat>,
+}
+
+/// Wire shape for [`Model`]: `compat` is captured as raw JSON so it can be
+/// interpreted against the model's `api` (a plain untagged enum would match the
+/// first variant — always `OpenAICompletions` — and silently drop Anthropic /
+/// Responses fields).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelRepr {
+    id: String,
+    name: String,
+    api: String,
+    provider: String,
+    base_url: String,
+    reasoning: bool,
+    #[serde(default)]
+    thinking_level_map: Option<ThinkingLevelMap>,
+    input: Vec<String>,
+    cost: ModelCost,
+    context_window: u64,
+    max_tokens: u64,
+    #[serde(default)]
+    sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default)]
+    headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    compat: Option<serde_json::Value>,
+}
+
+/// Parse a raw `compat` object using the model's `api` to pick the variant.
+fn deserialize_model_compat(api: &str, value: serde_json::Value) -> Result<ModelCompat, String> {
+    let context = |e: serde_json::Error| format!("invalid compat for api `{api}`: {e}");
+    match api {
+        "anthropic-messages" => serde_json::from_value(value)
+            .map(ModelCompat::AnthropicMessages)
+            .map_err(context),
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
+            serde_json::from_value(value)
+                .map(ModelCompat::OpenAIResponses)
+                .map_err(context)
+        }
+        _ => serde_json::from_value(value)
+            .map(|compat| ModelCompat::OpenAICompletions(Box::new(compat)))
+            .map_err(context),
+    }
+}
+
+impl<'de> Deserialize<'de> for Model {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let repr = ModelRepr::deserialize(deserializer)?;
+        let compat = match repr.compat {
+            None => None,
+            Some(value) => Some(
+                deserialize_model_compat(&repr.api, value).map_err(serde::de::Error::custom)?,
+            ),
+        };
+        Ok(Model {
+            id: repr.id,
+            name: repr.name,
+            api: repr.api,
+            provider: repr.provider,
+            base_url: repr.base_url,
+            reasoning: repr.reasoning,
+            thinking_level_map: repr.thinking_level_map,
+            input: repr.input,
+            cost: repr.cost,
+            context_window: repr.context_window,
+            max_tokens: repr.max_tokens,
+            sampling_params: repr.sampling_params,
+            headers: repr.headers,
+            compat,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

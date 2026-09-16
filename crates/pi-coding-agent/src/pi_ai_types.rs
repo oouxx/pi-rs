@@ -7,10 +7,10 @@
 //!   pi-ai → pi-agent-core → pi-coding-agent → pi-cli / pi-tui
 
 pub use pi_agent_core::pi_ai_types::{
-    get_env_api_key, get_env_var_name, AnthropicMessagesCompat, AssistantMessage,
-    AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention, ContentBlock, Context,
-    ImagesModel, Message, Model, ModelCompat, ModelCost, OpenAICompletionsCompat,
-    OpenAIResponsesCompat, OpenRouterRouting, ProviderResponse, SimpleStreamOptions, StopReason,
-    StreamOptions, StreamResponse, ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool,
-    ToolCall, ToolExecutionMode, Transport, Usage, UsageCost, VercelGatewayRouting,
+    get_env_api_key, AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic,
+    AssistantMessageEvent, CacheRetention, ContentBlock, Context, ImagesModel, Message, Model,
+    ModelCompat, ModelCost, OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting,
+    ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, StreamResponse,
+    ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolExecutionMode, Transport,
+    Usage, UsageCost, VercelGatewayRouting,
 };

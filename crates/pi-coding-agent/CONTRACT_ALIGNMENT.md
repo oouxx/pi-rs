@@ -321,3 +321,15 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 权限流 | ACP request_permission | 未实现（pi 内部 trust 模型自动决策） | 否（有意偏差，见 DEVIATIONS.md #11） |
 | MCP | ACP mcpServers（stdio/http） | `session/new`/`session/load` 携带的 MCP 服务器被连接，工具枚举并注入 custom_tools，调用转发回服务器；capabilities 声明 http=true、sse=false；SSE 未实现 | 是（stdio+http；SSE 有意不支持，见 DEVIATIONS.md #14） |
 
+
+## API-key 认证优先级（A1）
+
+对齐基准：`packages/coding-agent/src/core/{model-runtime,auth-storage,provider-composer}.ts` +
+`packages/ai/src/auth/resolve.ts`（v0.85.1）。
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 密钥解析优先级 | `resolveProviderAuth`：显式 override > stored credential > configured（models.json/扩展）key > ambient env | `get_api_key_and_headers`/`get_api_key_for_provider`：stored → registered → models.json → env | 是 | 修复见 PORTING_MISTAKES.md |
+| `hasConfiguredAuth` | `Models.checkAuth` → provider `ApiKeyAuth.check`/`resolve`；`ANTHROPIC_AUTH_TOKEN` 等发现层变量算已配置 | `is_provider_configured` 用 `find_env_keys`（含 AUTH_TOKEN）+ stored + configured | 是 | 修复见 PORTING_MISTAKES.md |
+| `getProviderAuthStatus` | runtime > stored > configured > env，四者 `configured:true` | `AuthStorage::get_auth_status` 同序、同布尔语义 | 是 | 修复见 PORTING_MISTAKES.md |
+| `getEnvApiKey` 作为请求 key | anthropic 跳过 `ANTHROPIC_AUTH_TOKEN` | `get_env_api_key` 同左 | 是 | |

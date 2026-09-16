@@ -24,6 +24,12 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 #[allow(dead_code)]
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+/// Substring that marks a Claude Code OAuth token (match TS `isOAuthToken`).
+const OAUTH_TOKEN_MARKER: &str = "sk-ant-oat";
+/// Claude Code CLI version advertised on OAuth requests (match TS `claudeCodeVersion`).
+const CLAUDE_CODE_VERSION: &str = "2.1.251";
+const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+const OAUTH_BETA: &str = "oauth-2025-04-20";
 
 #[allow(dead_code)]
 const CLAUDE_CODE_TOOLS: &[&str] = &[
@@ -813,6 +819,114 @@ fn resolve_cache_retention(retention: Option<&CacheRetention>) -> CacheRetention
 // StreamAnthropic: main streaming function
 // ============================================================================
 
+/// Resolved Anthropic request credential (match TS `anthropicApiKeyAuth().resolve`).
+#[derive(Debug, PartialEq, Eq)]
+struct AnthropicAuth {
+    /// `apiKey` returned by auth resolution (may itself be an OAuth token).
+    api_key: Option<String>,
+    /// `true` when `ANTHROPIC_AUTH_TOKEN` supplies the Bearer credential.
+    use_bearer: bool,
+    /// The `ANTHROPIC_AUTH_TOKEN` value when it is the active credential.
+    auth_token: Option<String>,
+}
+
+/// Resolve the Anthropic request credential from explicit/stored key, the
+/// gateway bearer token, and the OAuth/API-key env fallbacks, in TS order:
+/// explicit key → `ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_OAUTH_TOKEN` → `ANTHROPIC_API_KEY`.
+fn resolve_anthropic_auth(
+    explicit_api_key: Option<String>,
+    auth_token: Option<String>,
+    oauth_token: Option<String>,
+    api_key_env: Option<String>,
+) -> AnthropicAuth {
+    if let Some(key) = explicit_api_key.filter(|k| !k.is_empty()) {
+        return AnthropicAuth {
+            api_key: Some(key),
+            use_bearer: false,
+            auth_token: None,
+        };
+    }
+    if let Some(token) = auth_token {
+        return AnthropicAuth {
+            api_key: None,
+            use_bearer: true,
+            auth_token: Some(token),
+        };
+    }
+    AnthropicAuth {
+        api_key: oauth_token.or(api_key_env),
+        use_bearer: false,
+        auth_token: None,
+    }
+}
+
+/// `sk-ant-oat…` marks a Claude Code OAuth token (match TS `isOAuthToken`).
+fn is_oauth_token(api_key: Option<&str>) -> bool {
+    api_key.is_some_and(|key| key.contains(OAUTH_TOKEN_MARKER))
+}
+
+/// Auth-related headers for an Anthropic request (match TS `createClient`).
+/// GitHub Copilot and `ANTHROPIC_AUTH_TOKEN` use `Authorization: Bearer`;
+/// `sk-ant-oat…` OAuth tokens also add Claude Code identity headers.
+/// Returns `(name, value)` pairs so the result is order-stable for tests.
+fn anthropic_auth_headers(
+    provider: &str,
+    api_key: Option<&str>,
+    auth_token: Option<&str>,
+    use_bearer: bool,
+) -> Vec<(String, String)> {
+    if use_bearer {
+        return auth_token.map_or_else(Vec::new, |token| {
+            vec![("authorization".to_string(), format!("Bearer {token}"))]
+        });
+    }
+    let key = api_key.unwrap_or_default();
+    // Copilot: Bearer auth, no Claude Code identity headers.
+    if provider == "github-copilot" {
+        return vec![("authorization".to_string(), format!("Bearer {key}"))];
+    }
+    if is_oauth_token(api_key) {
+        // OAuth: Bearer auth plus Claude Code identity headers.
+        vec![
+            ("authorization".to_string(), format!("Bearer {key}")),
+            (
+                "user-agent".to_string(),
+                format!("claude-cli/{CLAUDE_CODE_VERSION}"),
+            ),
+            ("x-app".to_string(), "cli".to_string()),
+        ]
+    } else {
+        vec![("x-api-key".to_string(), key.to_string())]
+    }
+}
+
+/// Resolve the Anthropic request credential for the model's provider.
+///
+/// Only the `anthropic` provider owns the `ANTHROPIC_AUTH_TOKEN` /
+/// `ANTHROPIC_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` variables; other providers
+/// that speak the Anthropic wire format (e.g. `minimax`, `fireworks`,
+/// `github-copilot`) fall back to their own env var.
+fn resolve_anthropic_provider_auth(
+    provider: &str,
+    explicit_api_key: Option<String>,
+    auth_token: Option<String>,
+    oauth_token: Option<String>,
+    anthropic_api_key: Option<String>,
+    provider_env_key: Option<String>,
+) -> AnthropicAuth {
+    if provider == "anthropic" {
+        resolve_anthropic_auth(explicit_api_key, auth_token, oauth_token, anthropic_api_key)
+    } else {
+        AnthropicAuth {
+            api_key: explicit_api_key
+                .filter(|k| !k.is_empty())
+                .or(provider_env_key),
+            use_bearer: false,
+            auth_token: None,
+        }
+    }
+}
+
 /// Stream a completion from the Anthropic Messages API.
 #[must_use]
 pub fn stream_anthropic(
@@ -823,24 +937,36 @@ pub fn stream_anthropic(
     let model = model.clone();
     let context = context.clone();
     let owned_options = options.cloned();
-    // Auth resolution order (match TS `anthropicApiKeyAuth().resolve`):
-    // 1. explicit/stored credential api_key → x-api-key
+    // Auth resolution (match TS `anthropicApiKeyAuth().resolve` for the
+    // `anthropic` provider):
+    // 1. explicit/stored credential api_key → apiKey
     // 2. ANTHROPIC_AUTH_TOKEN → Authorization: Bearer
-    // 3. ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY env → x-api-key
+    // 3. ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY env → apiKey
+    // An OAuth token (`sk-ant-oat…`) still travels as `apiKey` here and is
+    // upgraded to Bearer by the request layer, matching TS `isOAuthToken`.
     let explicit_api_key = owned_options.as_ref().and_then(|o| o.api_key.clone());
-    let auth_token = std::env::var(crate::env_api_keys::ANTHROPIC_AUTH_TOKEN_ENV)
-        .ok()
-        .filter(|t| !t.is_empty());
-    let api_key = explicit_api_key
-        .clone()
-        .or_else(|| {
-            if auth_token.is_some() {
-                None
-            } else {
-                crate::env_api_keys::get_env_api_key(&model.provider)
-            }
-        });
-    let use_bearer = explicit_api_key.is_none() && auth_token.is_some();
+    let auth = resolve_anthropic_provider_auth(
+        &model.provider,
+        explicit_api_key,
+        crate::env_api_keys::get_provider_env_value(
+            crate::env_api_keys::ANTHROPIC_AUTH_TOKEN_ENV,
+            None,
+        ),
+        crate::env_api_keys::get_provider_env_value(
+            crate::env_api_keys::ANTHROPIC_OAUTH_TOKEN_ENV,
+            None,
+        ),
+        crate::env_api_keys::get_provider_env_value(
+            crate::env_api_keys::ANTHROPIC_API_KEY_ENV,
+            None,
+        ),
+        crate::env_api_keys::get_env_api_key(&model.provider, None),
+    );
+    let AnthropicAuth {
+        api_key,
+        use_bearer,
+        auth_token,
+    } = auth;
     let auth_token_for_inner = auth_token.clone();
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -911,17 +1037,13 @@ async fn stream_anthropic_inner(
 
     // Allow extensions to modify HTTP request headers
     let mut header_map = std::collections::HashMap::new();
-    // ANTHROPIC_AUTH_TOKEN authenticates against Anthropic-compatible gateways
-    // that require `Authorization: Bearer` (TS #5871/#6148).
-    if use_bearer {
-        if let Some(token) = auth_token {
-            header_map.insert("authorization".to_string(), format!("Bearer {token}"));
-        }
-    } else {
-        header_map.insert(
-            "x-api-key".to_string(),
-            api_key.clone().unwrap_or_default(),
-        );
+    for (name, value) in anthropic_auth_headers(
+        &model.provider,
+        api_key.as_deref(),
+        auth_token,
+        use_bearer,
+    ) {
+        header_map.insert(name, value);
     }
     header_map.insert(
         "anthropic-version".to_string(),
@@ -933,6 +1055,15 @@ async fn stream_anthropic_inner(
     // `shouldUseFineGrainedToolStreamingBeta`).
     let has_tools = context.tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
     let mut beta_features: Vec<String> = Vec::new();
+    // Claude Code OAuth requests advertise the identity betas (match TS
+    // `getBetaFeatures`); Copilot auth is Bearer but not OAuth.
+    let is_oauth = !use_bearer
+        && model.provider != "github-copilot"
+        && is_oauth_token(api_key.as_deref());
+    if is_oauth {
+        beta_features.push(CLAUDE_CODE_BETA.to_string());
+        beta_features.push(OAUTH_BETA.to_string());
+    }
     if has_tools && !compat.supports_eager_tool_input_streaming.unwrap_or(true) {
         beta_features.push(FINE_GRAINED_TOOL_STREAMING_BETA.to_string());
     }
@@ -1562,6 +1693,8 @@ pub fn stream_simple_anthropic(
         full_opts.max_retries = opts.base.max_retries;
         full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
         full_opts.metadata.clone_from(&opts.base.metadata);
+        full_opts.reasoning_effort.clone_from(&opts.reasoning);
+        full_opts.thinking_budgets.clone_from(&opts.thinking_budgets);
     }
     stream_anthropic(model, context, Some(&full_opts))
 }
@@ -1575,6 +1708,173 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::types::ModelCost;
+
+    /// TS `anthropicApiKeyAuth().resolve`: an explicit/stored key beats every env var.
+    #[test]
+    fn test_resolve_anthropic_auth_explicit_key_wins() {
+        let auth = resolve_anthropic_auth(
+            Some("stored".into()),
+            Some("bearer".into()),
+            Some("oauth".into()),
+            Some("env".into()),
+        );
+        assert_eq!(
+            auth,
+            AnthropicAuth {
+                api_key: Some("stored".into()),
+                use_bearer: false,
+                auth_token: None,
+            }
+        );
+    }
+
+    /// `ANTHROPIC_AUTH_TOKEN` outranks the OAuth/API-key env vars and is sent
+    /// as a Bearer credential (TS #5871/#6148).
+    #[test]
+    fn test_resolve_anthropic_auth_auth_token_becomes_bearer() {
+        let auth = resolve_anthropic_auth(
+            None,
+            Some("bearer".into()),
+            Some("oauth".into()),
+            Some("env".into()),
+        );
+        assert!(auth.use_bearer);
+        assert_eq!(auth.auth_token.as_deref(), Some("bearer"));
+        assert_eq!(auth.api_key, None);
+    }
+
+    /// `ANTHROPIC_OAUTH_TOKEN` outranks `ANTHROPIC_API_KEY`.
+    #[test]
+    fn test_resolve_anthropic_auth_oauth_token_beats_api_key() {
+        let auth = resolve_anthropic_auth(
+            None,
+            None,
+            Some("oauth".into()),
+            Some("env".into()),
+        );
+        assert_eq!(auth.api_key.as_deref(), Some("oauth"));
+        assert!(!auth.use_bearer);
+    }
+
+    #[test]
+    fn test_resolve_anthropic_auth_api_key_fallback() {
+        let auth = resolve_anthropic_auth(None, None, None, Some("env".into()));
+        assert_eq!(auth.api_key.as_deref(), Some("env"));
+        assert!(!auth.use_bearer);
+    }
+
+    /// A blank explicit key counts as unset and falls through to env.
+    #[test]
+    fn test_resolve_anthropic_auth_empty_explicit_falls_through() {
+        let auth = resolve_anthropic_auth(
+            Some(String::new()),
+            None,
+            None,
+            Some("env".into()),
+        );
+        assert_eq!(auth.api_key.as_deref(), Some("env"));
+    }
+
+    /// Non-anthropic providers (minimax, fireworks, …) must use their own env
+    /// key and ignore `ANTHROPIC_*` variables, even though they speak the
+    /// Anthropic wire format.
+    #[test]
+    fn test_resolve_anthropic_provider_auth_non_anthropic_uses_provider_env() {
+        let auth = resolve_anthropic_provider_auth(
+            "minimax",
+            None,
+            Some("anthropic-bearer".into()),
+            Some("anthropic-oauth".into()),
+            Some("anthropic-key".into()),
+            Some("minimax-key".into()),
+        );
+        assert_eq!(auth.api_key.as_deref(), Some("minimax-key"));
+        assert!(!auth.use_bearer);
+    }
+
+    /// `github-copilot` uses its own env key (sent as Bearer by the header builder).
+    #[test]
+    fn test_resolve_anthropic_provider_auth_copilot_uses_provider_env() {
+        let auth = resolve_anthropic_provider_auth(
+            "github-copilot",
+            None,
+            None,
+            None,
+            Some("anthropic-key".into()),
+            Some("copilot-token".into()),
+        );
+        assert_eq!(auth.api_key.as_deref(), Some("copilot-token"));
+        assert!(!auth.use_bearer);
+    }
+
+    /// An explicit key still wins for non-anthropic providers.
+    #[test]
+    fn test_resolve_anthropic_provider_auth_explicit_wins() {
+        let auth = resolve_anthropic_provider_auth(
+            "minimax",
+            Some("stored".into()),
+            None,
+            None,
+            None,
+            Some("minimax-key".into()),
+        );
+        assert_eq!(auth.api_key.as_deref(), Some("stored"));
+    }
+
+    /// A plain API key is sent as `x-api-key`; an `sk-ant-oat…` OAuth token is
+    /// upgraded to a Bearer credential with Claude Code identity headers.
+    #[test]
+    fn test_anthropic_auth_headers_api_key_vs_oauth_token() {
+        let api_key =
+            anthropic_auth_headers("anthropic", Some("sk-ant-api03-key"), None, false);
+        assert_eq!(
+            api_key,
+            vec![("x-api-key".to_string(), "sk-ant-api03-key".to_string())]
+        );
+
+        let oauth = anthropic_auth_headers("anthropic", Some("sk-ant-oat01-token"), None, false);
+        assert_eq!(
+            oauth,
+            vec![
+                (
+                    "authorization".to_string(),
+                    "Bearer sk-ant-oat01-token".to_string()
+                ),
+                (
+                    "user-agent".to_string(),
+                    format!("claude-cli/{CLAUDE_CODE_VERSION}")
+                ),
+                ("x-app".to_string(), "cli".to_string()),
+            ]
+        );
+    }
+
+    /// A gateway bearer token never also emits `x-api-key`.
+    #[test]
+    fn test_anthropic_auth_headers_bearer() {
+        let headers =
+            anthropic_auth_headers("anthropic", Some("ignored"), Some("gateway"), true);
+        assert_eq!(
+            headers,
+            vec![("authorization".to_string(), "Bearer gateway".to_string())]
+        );
+    }
+
+    /// GitHub Copilot always authenticates with Bearer (even for a token that
+    /// is not an `sk-ant-oat…` OAuth token and without Claude Code headers).
+    #[test]
+    fn test_anthropic_auth_headers_github_copilot_uses_bearer() {
+        let headers = anthropic_auth_headers(
+            "github-copilot",
+            Some("copilot-token"),
+            None,
+            false,
+        );
+        assert_eq!(
+            headers,
+            vec![("authorization".to_string(), "Bearer copilot-token".to_string())]
+        );
+    }
 
     fn make_test_model() -> Model {
         Model {

@@ -905,7 +905,7 @@ pub fn stream_openai(
     let api_key = owned_options
         .as_ref()
         .and_then(|o| o.api_key.clone())
-        .or_else(|| crate::env_api_keys::get_env_api_key(&model.provider));
+        .or_else(|| crate::env_api_keys::get_env_api_key(&model.provider, None));
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 

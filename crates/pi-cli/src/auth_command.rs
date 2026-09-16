@@ -436,7 +436,7 @@ async fn run_check(
             reason: Some("provider_not_found"),
             auth_type: None,
         }
-    } else if registry.get_api_key_for_provider(&provider_id).is_some() {
+    } else if registry.is_provider_configured(&provider_id) {
         CheckResult {
             status: "ready",
             provider: provider_id.clone(),

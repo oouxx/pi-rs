@@ -4,26 +4,8 @@
 //! as the main API for calling LLM providers.
 
 use crate::api_registry::get_api_provider;
-use crate::env_api_keys::get_env_api_key;
 use crate::types::{AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions};
 use crate::utils::event_stream::AssistantMessageEventStream;
-
-/// Check if an explicit API key was provided.
-fn has_explicit_api_key(api_key: Option<&str>) -> bool {
-    api_key.is_some_and(|k| !k.trim().is_empty())
-}
-
-/// Resolve API key from options or environment.
-fn with_env_api_key(model: &Model, options: Option<StreamOptions>) -> Option<StreamOptions> {
-    let mut opts = options.unwrap_or_default();
-    if has_explicit_api_key(opts.api_key.as_deref()) {
-        return Some(opts);
-    }
-    if let Some(env_key) = get_env_api_key(&model.provider) {
-        opts.api_key = Some(env_key);
-    }
-    Some(opts)
-}
 
 /// Resolve the API provider for a given API, panicking if none registered.
 fn resolve_api_provider(api: &str) -> crate::api_registry::ApiProvider {
@@ -38,8 +20,17 @@ pub fn stream(
     options: Option<StreamOptions>,
 ) -> AssistantMessageEventStream {
     let provider = resolve_api_provider(&model.api);
-    let opts = with_env_api_key(model, options);
-    (provider.stream)(model, context, opts.as_ref())
+    // Treat a blank explicit key as unset so it falls through to the
+    // provider's env fallback (TS auth resolution treats an empty string as
+    // unset). `with_env_api_key` used to do this normalization before it was
+    // removed in favour of provider-side resolution.
+    let options = options.map(|mut opts| {
+        if opts.api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+            opts.api_key = None;
+        }
+        opts
+    });
+    (provider.stream)(model, context, options.as_ref())
 }
 
 /// Complete a request and return the final `AssistantMessage`.

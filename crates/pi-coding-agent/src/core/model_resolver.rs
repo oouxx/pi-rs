@@ -606,7 +606,7 @@ pub fn find_initial_model(
         if let Some(model) = model_registry.find(provider, model_id) {
             // TS requires the saved default to have configured auth before
             // using it (findInitialModel step 3: `hasConfiguredAuth`).
-            if model_registry.get_api_key_for_provider(provider).is_some() {
+            if model_registry.has_configured_auth(&model) {
                 return InitialModelResult {
                     model: Some(model),
                     thinking_level: default_thinking_level
@@ -621,12 +621,11 @@ pub fn find_initial_model(
     // 4. Try first available model with valid API key (matching TS
     // findInitialModel step 4): prefer the per-provider default model, then
     // fall back to the first available model whose provider has auth.
-    // `get_api_key_for_provider` mirrors TS `hasConfiguredAuth` (env vars,
-    // registered providers, models.json provider configs).
+    // `hasConfiguredAuth` is the authority (match TS `ModelRuntime.hasConfiguredAuth`).
     let mut available_models: Vec<Model> = model_registry
         .get_models()
         .into_iter()
-        .filter(|m| model_registry.get_api_key_for_provider(&m.provider).is_some())
+        .filter(|m| model_registry.has_configured_auth(m))
         .collect();
     // Sort for determinism: the registry's model order is HashMap-derived
     // (random per process), while TS iterates providers in registration

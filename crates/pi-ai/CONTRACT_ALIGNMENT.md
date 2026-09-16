@@ -67,3 +67,21 @@
 | 早期流结束重试 | "stream ended before a terminal response event" 分类为可重试（v0.81.0 #6727） | `_is_retryable_error_message` 已含该模式 | 是 | 修复见 PORTING_MISTAKES.md |
 | tool-call id 归一化（openai-completions） | pipe 分隔 ID 归一化 + isSameModel 门控 + toolCallIdMap（v0.81.0 #6854） | `normalize_tool_call_id` 已移植 | 是 | 修复见 PORTING_MISTAKES.md |
 | `ToolResultMessage.usage` | 工具可报告 LLM usage（v0.81.0 #6671） | `Message::ToolResult.usage: Option<Usage>` 已加 | 是 | 修复见 PORTING_MISTAKES.md |
+
+## API-key 认证（A1 流程）
+
+对齐基准：`packages/ai/src/env-api-keys.ts` + `auth/helpers.ts` + `auth/resolve.ts` +
+`providers/anthropic.ts`（v0.85.1）。
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| provider → env 变量名 | `getApiKeyEnvVars` envMap（含 qwen-token-plan/-cn/-individual、baseten、ant-ling、nvidia、azure、mistral、opencode、xiaomi-token-plan-*、zai-coding-cn 等） | 同左（`ENV_MAP`），另加 pi-rs 扩展 `ollama` | 是（含脚本外扩展） | ollama 见 DEVIATIONS.md #4 |
+| `findEnvKeys` | 返回该 provider 已设置的候选 env 名列表（按优先级），无则 `undefined` | `find_env_keys(provider, env) -> Option<Vec<String>>` | 是 | |
+| `getEnvApiKey`（anthropic） | 跳过 `ANTHROPIC_AUTH_TOKEN`，返回 `ANTHROPIC_OAUTH_TOKEN` 或 `ANTHROPIC_API_KEY` | 同左（`get_env_api_key`） | 是 | |
+| `getEnvApiKey`（vertex/bedrock） | 返回 `"<authenticated>"` 哨兵 | 未实现（返回 `None`） | 否 | 见 DEVIATIONS.md #9（暂缓） |
+| `getProviderEnvValue` | 作用域 env 覆盖 > `process.env` > Bun sandbox | `get_provider_env_value`：`env` 覆盖（非空）> `std::env` | 是（无 Bun sandbox，Rust 无对应运行环境） | |
+| `envApiKeyAuth.resolve` | stored `credential.key` 优先，否则按声明顺序第一个已设置 env | provider 内 `explicit.or_else(get_env_api_key(...))` | 是 | |
+| anthropic 请求认证顺序 | 显式/stored key → `ANTHROPIC_AUTH_TOKEN`(Bearer) → `ANTHROPIC_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`(apiKey) | `resolve_anthropic_auth` 同左 | 是 | |
+| anthropic `isOAuthToken` | `sk-ant-oat…` → Bearer + `user-agent: claude-cli/2.1.251` + `x-app: cli` + OAuth beta | `anthropic_auth_headers` + `is_oauth_token` 同左 | 是（工具名归一化未做，见 DEVIATIONS.md #10） | |
+| `stream()` env 注入 | env 回退在 provider `resolve` 内，入口不注入 | 已移除 `with_env_api_key`，同左 | 是 | 修复见 PORTING_MISTAKES.md |
+| anthropic-messages 各 provider 的 env 归属 | `ANTHROPIC_AUTH_TOKEN`/`_OAUTH_TOKEN`/`_API_KEY` 只属于 `anthropic` provider；minimax/fireworks/copilot 用各自 provider 的 env | `resolve_anthropic_provider_auth` 按 provider 区分 | 是 | 修复见 PORTING_MISTAKES.md |

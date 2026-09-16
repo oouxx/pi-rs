@@ -1390,9 +1390,9 @@ where
                             .await
                             .map(|(k, _)| k)
                             .or_else(|| {
-                                pi_ai::env_api_keys::get_env_api_key(&model.provider)
+                                pi_ai::env_api_keys::get_env_api_key(&model.provider, None)
                             }),
-                        None => pi_ai::env_api_keys::get_env_api_key(&model.provider),
+                        None => pi_ai::env_api_keys::get_env_api_key(&model.provider, None),
                     }
                 }
                 .unwrap_or_default();
@@ -1508,7 +1508,7 @@ where
                 let get_auth = self.get_api_key_and_headers.read().await;
                 match get_auth.as_ref() {
                     Some(f) => f(&model).await.map(|(k, _)| k),
-                    None => pi_ai::env_api_keys::get_env_api_key(&model.provider),
+                    None => pi_ai::env_api_keys::get_env_api_key(&model.provider, None),
                 }
             };
 

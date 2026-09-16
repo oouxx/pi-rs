@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::resolve_config_value;
 use pi_agent_core::pi_ai_types::get_env_api_key;
-use pi_agent_core::pi_ai_types::get_env_var_name;
 
 // ---------------------------------------------------------------------------
 // OAuth types – defined here until pi-ai exposes them upstream
@@ -30,12 +29,7 @@ pub trait OAuthLoginCallbacks: Send {
 }
 
 pub fn find_env_keys(provider: &str) -> Vec<String> {
-    if let Some(var_name) = get_env_var_name(provider) {
-        if std::env::var(var_name).is_ok() {
-            return vec![var_name.to_string()];
-        }
-    }
-    Vec::new()
+    pi_agent_core::pi_ai_types::find_env_keys(provider, None).unwrap_or_default()
 }
 
 pub fn get_oauth_provider(_provider_id: &str) -> Option<OAuthProvider> {
@@ -309,7 +303,7 @@ impl AuthStorage {
         if self.data.contains_key(provider) {
             return true;
         }
-        if get_env_api_key(provider).is_some() {
+        if get_env_api_key(provider, None).is_some() {
             return true;
         }
         if let Some(ref resolver) = self.fallback_resolver {
@@ -321,6 +315,16 @@ impl AuthStorage {
     }
 
     pub fn get_auth_status(&self, provider: &str) -> AuthStatus {
+        // 对齐 TS `ModelRuntime.getProviderAuthStatus`：runtime > stored >
+        // configured（models.json/扩展）> env；前三者都算 `configured: true`。
+        if self.runtime_overrides.contains_key(provider) {
+            return AuthStatus {
+                configured: true,
+                source: Some("runtime".to_string()),
+                label: Some("--api-key".to_string()),
+            };
+        }
+
         if self.data.contains_key(provider) {
             return AuthStatus {
                 configured: true,
@@ -329,18 +333,10 @@ impl AuthStorage {
             };
         }
 
-        if self.runtime_overrides.contains_key(provider) {
-            return AuthStatus {
-                configured: false,
-                source: Some("runtime".to_string()),
-                label: Some("--api-key".to_string()),
-            };
-        }
-
         let env_keys = find_env_keys(provider);
         if let Some(first_key) = env_keys.first() {
             return AuthStatus {
-                configured: false,
+                configured: true,
                 source: Some("environment".to_string()),
                 label: Some(first_key.clone()),
             };
@@ -349,7 +345,7 @@ impl AuthStorage {
         if let Some(ref resolver) = self.fallback_resolver {
             if resolver(provider).is_some() {
                 return AuthStatus {
-                    configured: false,
+                    configured: true,
                     source: Some("fallback".to_string()),
                     label: Some("custom provider config".to_string()),
                 };
@@ -414,7 +410,7 @@ impl AuthStorage {
             return None;
         }
 
-        if let Some(env_key) = get_env_api_key(provider_id) {
+        if let Some(env_key) = get_env_api_key(provider_id, None) {
             return Some(env_key);
         }
 

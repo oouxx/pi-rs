@@ -5,6 +5,7 @@ use pi_agent_core::pi_ai_types::Model;
 
 use crate::config;
 use pi_agent_core::pi_ai_types::get_env_api_key;
+use pi_agent_core::pi_ai_types::find_env_keys;
 
 use serde::Deserialize;
 
@@ -236,16 +237,25 @@ impl ModelRegistry {
     }
 
     pub fn has_configured_auth(&self, model: &Model) -> bool {
-        if get_env_api_key(&model.provider).is_some() {
+        self.is_provider_configured(&model.provider)
+    }
+
+    /// Whether a provider has complete auth configuration
+    /// (match TS `Models.checkAuth` → `ModelRuntime.hasConfiguredAuth`).
+    pub fn is_provider_configured(&self, provider: &str) -> bool {
+        // 对齐 TS `Models.checkAuth`：经 `ApiKeyAuth.resolve` 判定配置，因此
+        // `ANTHROPIC_AUTH_TOKEN` 等“发现层”变量也算已配置（`get_env_api_key`
+        // 会跳过它，不能用于配置判定）。
+        if find_env_keys(provider, None).is_some() {
             return true;
         }
         // Stored credentials (auth.json) count as configured auth.
-        if self.resolved_stored_key(&model.provider).is_some() {
+        if self.resolved_stored_key(provider).is_some() {
             return true;
         }
         // Check registered providers (from register_provider calls)
         let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(config) = providers.get(&model.provider) {
+        if let Some(config) = providers.get(provider) {
             if config.api_key.is_some() {
                 return true;
             }
@@ -257,7 +267,7 @@ impl ModelRegistry {
         }
         // Check models.json provider configs
         let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(config) = json_providers.get(&model.provider) {
+        if let Some(config) = json_providers.get(provider) {
             if config.api_key.is_some() {
                 return true;
             }
@@ -280,14 +290,11 @@ impl ModelRegistry {
         false
     }
 
-    /// Get API key for a provider, checking env vars, stored credentials
-    /// (auth.json), registered providers, and models.json provider configs in order.
+    /// Get API key for a provider (match TS `resolveProviderAuth` precedence:
+    /// stored credential > configured (`models.json` / registered) key > env).
     pub fn get_api_key_for_provider(&self, provider: &str) -> Option<String> {
-        // Check env first
-        if let Some(key) = get_env_api_key(provider) {
-            return Some(key);
-        }
-        // Check stored credentials (auth.json) — keys set via the GUI / /login.
+        // Stored credential (auth.json) wins over ambient env (TS
+        // `resolveProviderAuth`: stored credential before ambient).
         if let Some(key) = self.resolved_stored_key(provider) {
             return Some(key);
         }
@@ -318,15 +325,14 @@ impl ModelRegistry {
         }
         drop(json_providers);
 
-        None
+        // Ambient env is the lowest-priority fallback.
+        get_env_api_key(provider, None)
     }
 
     pub async fn get_api_key_and_headers(&self, model: &Model) -> Result<ApiKeyResult, String> {
-        let mut api_key = get_env_api_key(&model.provider);
-        // Stored credentials (auth.json) — keys set via the GUI / /login.
-        if api_key.is_none() {
-            api_key = self.resolved_stored_key(&model.provider);
-        }
+        // TS `resolveProviderAuth` order: stored credential > configured
+        // (`models.json` / registered provider) key > ambient env.
+        let mut api_key = self.resolved_stored_key(&model.provider);
         let mut headers: HashMap<String, String> = HashMap::new();
         // Whether the provider requires an Authorization header (models.json
         // `authHeader`, matching TS `resolveCompatibilityRequestConfig`).
@@ -369,6 +375,11 @@ impl ModelRegistry {
             }
         }
         drop(json_providers);
+
+        // Ambient env is the lowest-priority fallback.
+        if api_key.is_none() {
+            api_key = get_env_api_key(&model.provider, None);
+        }
 
         match api_key {
             Some(key) => Ok(ApiKeyResult {
@@ -1135,6 +1146,46 @@ mod tests {
         }));
         assert_eq!(registry.get_api_key_for_provider("test-provider-xyz"), Some("sk-stored-123".to_string()));
         assert_eq!(registry.get_api_key_for_provider("anthropic"), None);
+    }
+
+    /// TS `resolveProviderAuth` precedence: stored credential beats ambient
+    /// env, which is itself the last fallback. Kept in one test so the env
+    /// mutation cannot race with itself.
+    #[test]
+    fn test_api_key_precedence_stored_before_env() {
+        let mut registry = ModelRegistry::new(vec![]);
+        std::env::set_var("BASETEN_API_KEY", "env-key");
+        // No stored credential → env is used.
+        assert_eq!(
+            registry.get_api_key_for_provider("baseten").as_deref(),
+            Some("env-key")
+        );
+        // Stored credential wins over env.
+        registry.set_api_key_resolver(Arc::new(|provider| {
+            (provider == "baseten").then(|| "stored-key".to_string())
+        }));
+        assert_eq!(
+            registry.get_api_key_for_provider("baseten").as_deref(),
+            Some("stored-key")
+        );
+        std::env::remove_var("BASETEN_API_KEY");
+    }
+
+    /// TS `Models.checkAuth`: `ANTHROPIC_AUTH_TOKEN` counts as configured auth
+    /// (the provider's `resolve` returns a Bearer credential for it), even
+    /// though `get_env_api_key` deliberately skips it as a request key.
+    #[test]
+    fn test_configured_auth_counts_anthropic_auth_token() {
+        let registry = ModelRegistry::new(vec![]);
+        std::env::set_var("ANTHROPIC_AUTH_TOKEN", "bearer");
+        let configured = registry.is_provider_configured("anthropic");
+        let key = registry.get_api_key_for_provider("anthropic");
+        std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
+        assert!(configured, "ANTHROPIC_AUTH_TOKEN should count as configured auth");
+        assert!(
+            key.is_none(),
+            "ANTHROPIC_AUTH_TOKEN must not be returned as an API key"
+        );
     }
 
     /// TS 0.84 `ModelsRefreshOptions`/`ModelsRefreshResult`: a cancelled

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::api_registry::{clear_api_providers, register_api_provider, ApiProvider};
-use crate::providers::anthropic::stream_anthropic;
+use crate::providers::anthropic::{stream_anthropic, stream_simple_anthropic};
 use crate::providers::openai::{stream_openai, stream_simple_openai};
 use crate::providers::openai_responses::{stream_openai_responses, stream_simple_openai_responses};
 use crate::providers::pi_messages::{stream_pi_messages, stream_simple_pi_messages};
@@ -24,7 +24,7 @@ pub fn register_built_in_api_providers() {
             stream: Arc::new(move |model, context, options| {
                 stream_anthropic(model, context, options)
             }),
-            stream_simple: Arc::new(stream_simple_openai),
+            stream_simple: Arc::new(stream_simple_anthropic),
         },
         Some("builtin"),
     );

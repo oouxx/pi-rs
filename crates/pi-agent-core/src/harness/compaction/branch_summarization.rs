@@ -165,7 +165,7 @@ pub async fn generate_branch_summary(
     }];
 
     // Call the LLM to generate the summary
-    let api_key = get_env_api_key(&options.model.provider).unwrap_or_default();
+    let api_key = get_env_api_key(&options.model.provider, None).unwrap_or_default();
 
     let context = crate::pi_ai_types::Context {
         system_prompt: Some(

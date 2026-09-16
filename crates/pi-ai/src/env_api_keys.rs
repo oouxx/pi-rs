@@ -1,84 +1,139 @@
+//! Provider API-key environment discovery.
+//!
+//! Port of `packages/ai/src/env-api-keys.ts`. These functions only report
+//! *configured API-key environment variables* for discovery/status; they are
+//! intentionally unaware of ambient credential sources (AWS profiles, Google
+//! ADC). Request-time auth resolution lives in the provider implementations.
+//!
+//! Deliberately not ported yet (tracked in `DEVIATIONS.md`): `getEnvApiKey`
+//! returns the `"<authenticated>"` sentinel for `google-vertex` / `amazon-bedrock`
+//! ambient credentials.
+
 use std::collections::HashMap;
+
+/// Provider-scoped environment overlay (match TS `ProviderEnv`).
+pub type ProviderEnv = HashMap<String, String>;
 
 /// Anthropic bearer token env var (match TS `ANTHROPIC_AUTH_TOKEN_ENV`).
 /// Participates in env discovery/status, but `get_env_api_key` skips it because
-/// requests must pass it as `Authorization: Bearer` (TS #5871/#6148).
+/// requests must pass it as `Authorization: Bearer`.
 pub const ANTHROPIC_AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
 /// Anthropic OAuth token env var (match TS `ANTHROPIC_OAUTH_TOKEN_ENV`).
 pub const ANTHROPIC_OAUTH_TOKEN_ENV: &str = "ANTHROPIC_OAUTH_TOKEN";
 /// Anthropic API key env var (match TS `ANTHROPIC_API_KEY_ENV`).
 pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
-/// Map of provider names to environment variable names for API keys.
-fn provider_env_keys() -> HashMap<&'static str, &'static str> {
-    let mut map = HashMap::new();
-    map.insert("openai", "OPENAI_API_KEY");
-    map.insert("anthropic", ANTHROPIC_API_KEY_ENV);
-    map.insert("google", "GOOGLE_API_KEY");
-    map.insert("google-vertex", "GOOGLE_VERTEX_API_KEY");
-    map.insert("deepseek", "DEEPSEEK_API_KEY");
-    map.insert("github-copilot", "COPILOT_API_KEY");
-    map.insert("xai", "XAI_API_KEY");
-    map.insert("groq", "GROQ_API_KEY");
-    map.insert("cerebras", "CEREBRAS_API_KEY");
-    map.insert("openrouter", "OPENROUTER_API_KEY");
-    map.insert("huggingface", "HF_API_KEY");
-    map.insert("together", "TOGETHER_API_KEY");
-    map.insert("fireworks", "FIREWORKS_API_KEY");
-    map.insert("vercel-ai-gateway", "VERCEL_AI_GATEWAY_API_KEY");
-    map.insert("zai", "ZAI_API_KEY");
-    map.insert("amazon-bedrock", "AWS_ACCESS_KEY_ID");
-    map.insert("minimax", "MINIMAX_API_KEY");
-    map.insert("minimax-cn", "MINIMAX_CN_API_KEY");
-    map.insert("moonshotai", "MOONSHOT_API_KEY");
-    map.insert("moonshotai-cn", "MOONSHOT_CN_API_KEY");
-    map.insert("cloudflare-workers-ai", "CLOUDFLARE_WORKERS_AI_API_KEY");
-    map.insert("cloudflare-ai-gateway", "CLOUDFLARE_AI_GATEWAY_API_KEY");
-    map.insert("xiaomi", "XIAOMI_API_KEY");
-    map.insert("kimi-coding", "KIMI_CODING_API_KEY");
-    map
-}
+/// Static provider → env var map (match TS `getApiKeyEnvVars` envMap).
+/// `anthropic` and `github-copilot` are handled as special cases below.
+const ENV_MAP: &[(&str, &str)] = &[
+    ("ant-ling", "ANT_LING_API_KEY"),
+    ("qwen-token-plan", "QWEN_TOKEN_PLAN_API_KEY"),
+    ("qwen-token-plan-cn", "QWEN_TOKEN_PLAN_CN_API_KEY"),
+    ("qwen-token-plan-individual", "QWEN_TOKEN_PLAN_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+    ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
+    ("nvidia", "NVIDIA_API_KEY"),
+    ("deepseek", "DEEPSEEK_API_KEY"),
+    ("google", "GEMINI_API_KEY"),
+    ("google-vertex", "GOOGLE_CLOUD_API_KEY"),
+    ("groq", "GROQ_API_KEY"),
+    ("cerebras", "CEREBRAS_API_KEY"),
+    ("xai", "XAI_API_KEY"),
+    ("radius", "RADIUS_API_KEY"),
+    ("openrouter", "OPENROUTER_API_KEY"),
+    ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
+    ("zai", "ZAI_API_KEY"),
+    ("zai-coding-cn", "ZAI_CODING_CN_API_KEY"),
+    ("mistral", "MISTRAL_API_KEY"),
+    ("minimax", "MINIMAX_API_KEY"),
+    ("minimax-cn", "MINIMAX_CN_API_KEY"),
+    ("moonshotai", "MOONSHOT_API_KEY"),
+    ("moonshotai-cn", "MOONSHOT_API_KEY"),
+    ("huggingface", "HF_TOKEN"),
+    ("fireworks", "FIREWORKS_API_KEY"),
+    ("together", "TOGETHER_API_KEY"),
+    ("baseten", "BASETEN_API_KEY"),
+    ("opencode", "OPENCODE_API_KEY"),
+    ("opencode-go", "OPENCODE_API_KEY"),
+    ("kimi-coding", "KIMI_API_KEY"),
+    ("cloudflare-workers-ai", "CLOUDFLARE_API_KEY"),
+    ("cloudflare-ai-gateway", "CLOUDFLARE_API_KEY"),
+    ("xiaomi", "XIAOMI_API_KEY"),
+    ("xiaomi-token-plan-cn", "XIAOMI_TOKEN_PLAN_CN_API_KEY"),
+    ("xiaomi-token-plan-ams", "XIAOMI_TOKEN_PLAN_AMS_API_KEY"),
+    ("xiaomi-token-plan-sgp", "XIAOMI_TOKEN_PLAN_SGP_API_KEY"),
+    // pi-rs extension (not in TS): local Ollama auto-discovery reads this as an
+    // optional bearer token. See DEVIATIONS.md #4.
+    ("ollama", "OLLAMA_API_KEY"),
+];
 
-static ENV_KEYS: std::sync::LazyLock<HashMap<&'static str, &'static str>> =
-    std::sync::LazyLock::new(provider_env_keys);
-
-/// All env var names that participate in auth discovery for a provider
-/// (match TS `getEnvVarNames`). Anthropic includes `ANTHROPIC_AUTH_TOKEN`
-/// which is handled separately as a Bearer token.
-pub fn get_env_var_names(provider: &str) -> Vec<&'static str> {
-    if provider == "anthropic" {
-        return vec![
+/// All candidate env var names for a provider, in precedence order
+/// (match TS `getApiKeyEnvVars`).
+///
+/// Returns `None` for providers without any API-key env var.
+#[must_use]
+pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
+    match provider {
+        "github-copilot" => Some(vec!["COPILOT_GITHUB_TOKEN"]),
+        // ANTHROPIC_AUTH_TOKEN participates in env discovery/status, but
+        // `get_env_api_key` skips it because requests must pass it as a Bearer header.
+        "anthropic" => Some(vec![
             ANTHROPIC_AUTH_TOKEN_ENV,
             ANTHROPIC_OAUTH_TOKEN_ENV,
             ANTHROPIC_API_KEY_ENV,
-        ];
+        ]),
+        other => ENV_MAP
+            .iter()
+            .find(|(name, _)| *name == other)
+            .map(|(_, var)| vec![*var]),
     }
-    ENV_KEYS.get(provider).map(|v| vec![*v]).unwrap_or_default()
 }
 
-/// Get the API key for a provider from the environment.
-/// Returns the value of the environment variable associated with the provider.
-/// Skips `ANTHROPIC_AUTH_TOKEN` (handled as a Bearer token by the provider).
-pub fn get_env_api_key(provider: &str) -> Option<String> {
-    if provider == "anthropic" {
-        // ANTHROPIC_OAUTH_TOKEN takes precedence over ANTHROPIC_API_KEY;
-        // ANTHROPIC_AUTH_TOKEN is skipped here (Bearer handled separately).
-        for var in [ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV] {
-            if let Ok(v) = std::env::var(var) {
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
-        }
-        return None;
+/// Resolve a provider env value from a scoped overlay, then the process env
+/// (match TS `getProviderEnvValue`). Empty values are treated as unset.
+#[must_use]
+pub fn get_provider_env_value(name: &str, env: Option<&ProviderEnv>) -> Option<String> {
+    if let Some(value) = env.and_then(|e| e.get(name)).filter(|v| !v.is_empty()) {
+        return Some(value.clone());
     }
-    let var_name = ENV_KEYS.get(provider)?;
-    std::env::var(var_name).ok()
+    std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-/// Get the environment variable name for a provider.
-pub fn get_env_var_name(provider: &str) -> Option<&'static str> {
-    ENV_KEYS.get(provider).copied()
+/// Which of a provider's candidate env vars are actually configured, in
+/// precedence order (match TS `findEnvKeys`). Returns `None` when none are set.
+#[must_use]
+pub fn find_env_keys(provider: &str, env: Option<&ProviderEnv>) -> Option<Vec<String>> {
+    let env_vars = get_api_key_env_vars(provider)?;
+    let found: Vec<String> = env_vars
+        .into_iter()
+        .filter(|var| get_provider_env_value(var, env).is_some())
+        .map(std::string::ToString::to_string)
+        .collect();
+    if found.is_empty() {
+        None
+    } else {
+        Some(found)
+    }
+}
+
+/// Get the API key for a provider from known environment variables
+/// (match TS `getEnvApiKey`).
+///
+/// Anthropic is special: `ANTHROPIC_AUTH_TOKEN` is skipped because it is a
+/// gateway bearer token, not an API key. Providers that authenticate through
+/// ambient credentials (AWS, Google ADC) return `None` here until the
+/// `"<authenticated>"` sentinel is ported.
+#[must_use]
+pub fn get_env_api_key(provider: &str, env: Option<&ProviderEnv>) -> Option<String> {
+    let env_keys = find_env_keys(provider, env)?;
+    let api_key_env = if provider == "anthropic" {
+        env_keys
+            .iter()
+            .find(|key| key.as_str() != ANTHROPIC_AUTH_TOKEN_ENV)?
+    } else {
+        env_keys.first()?
+    };
+    get_provider_env_value(api_key_env, env)
 }
 
 #[cfg(test)]
@@ -86,63 +141,150 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    #[test]
-    fn test_get_env_var_name() {
-        assert_eq!(get_env_var_name("openai"), Some("OPENAI_API_KEY"));
-        assert_eq!(get_env_var_name("anthropic"), Some("ANTHROPIC_API_KEY"));
-        assert_eq!(get_env_var_name("nonexistent"), None);
+    fn overlay(pairs: &[(&str, &str)]) -> ProviderEnv {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
     }
 
     #[test]
-    fn test_get_env_api_key_not_set() {
-        assert!(get_env_api_key("openai").is_none() || std::env::var("OPENAI_API_KEY").is_ok());
-    }
-
-    // --- Supplementary tests matching TS originals ---
-
-    #[test]
-    fn test_known_providers_have_env_var_names() {
-        let providers = &[
-            "openai",
-            "anthropic",
-            "google",
-            "deepseek",
-            "xai",
-            "groq",
-            "cerebras",
-            "openrouter",
-            "huggingface",
-            "together",
-            "fireworks",
-            "vercel-ai-gateway",
-            "zai",
-            "github-copilot",
-            "amazon-bedrock",
-            "minimax",
-            "moonshotai",
+    fn test_env_var_names_match_ts_catalog() {
+        // Regression guard: these names were previously wrong (e.g. GEMINI vs
+        // GOOGLE, HF_TOKEN vs HF_API_KEY) and silently broke real API-key auth.
+        let cases = [
+            ("openai", "OPENAI_API_KEY"),
+            ("google", "GEMINI_API_KEY"),
+            ("google-vertex", "GOOGLE_CLOUD_API_KEY"),
+            ("deepseek", "DEEPSEEK_API_KEY"),
+            ("github-copilot", "COPILOT_GITHUB_TOKEN"),
+            ("xai", "XAI_API_KEY"),
+            ("groq", "GROQ_API_KEY"),
+            ("cerebras", "CEREBRAS_API_KEY"),
+            ("openrouter", "OPENROUTER_API_KEY"),
+            ("huggingface", "HF_TOKEN"),
+            ("together", "TOGETHER_API_KEY"),
+            ("fireworks", "FIREWORKS_API_KEY"),
+            ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
+            ("zai", "ZAI_API_KEY"),
+            ("zai-coding-cn", "ZAI_CODING_CN_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
+            ("minimax-cn", "MINIMAX_CN_API_KEY"),
+            ("moonshotai", "MOONSHOT_API_KEY"),
+            ("moonshotai-cn", "MOONSHOT_API_KEY"),
+            ("cloudflare-workers-ai", "CLOUDFLARE_API_KEY"),
+            ("cloudflare-ai-gateway", "CLOUDFLARE_API_KEY"),
+            ("kimi-coding", "KIMI_API_KEY"),
+            ("opencode", "OPENCODE_API_KEY"),
+            ("opencode-go", "OPENCODE_API_KEY"),
+            ("ant-ling", "ANT_LING_API_KEY"),
+            ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
+            ("nvidia", "NVIDIA_API_KEY"),
+            ("mistral", "MISTRAL_API_KEY"),
+            ("baseten", "BASETEN_API_KEY"),
+            ("radius", "RADIUS_API_KEY"),
+            ("qwen-token-plan", "QWEN_TOKEN_PLAN_API_KEY"),
+            ("qwen-token-plan-cn", "QWEN_TOKEN_PLAN_CN_API_KEY"),
+            ("qwen-token-plan-individual", "QWEN_TOKEN_PLAN_API_KEY"),
+            ("xiaomi", "XIAOMI_API_KEY"),
+            ("xiaomi-token-plan-cn", "XIAOMI_TOKEN_PLAN_CN_API_KEY"),
+            ("xiaomi-token-plan-ams", "XIAOMI_TOKEN_PLAN_AMS_API_KEY"),
+            ("xiaomi-token-plan-sgp", "XIAOMI_TOKEN_PLAN_SGP_API_KEY"),
         ];
-        for provider in providers {
-            let var_name = get_env_var_name(provider);
-            assert!(
-                var_name.is_some(),
-                "Provider '{provider}' should have an env var name"
-            );
+        for (provider, expected) in cases {
+            let vars = get_api_key_env_vars(provider).unwrap();
+            assert_eq!(vars, vec![expected], "provider {provider}");
         }
     }
 
     #[test]
-    fn test_get_env_api_key_with_var_set() {
-        std::env::set_var("__PI_TEST_API_KEY__", "test-key-value");
-        // Hack: test by checking var resolution logic directly
+    fn test_anthropic_env_var_list() {
         assert_eq!(
-            std::env::var("__PI_TEST_API_KEY__").ok(),
-            Some("test-key-value".into())
+            get_api_key_env_vars("anthropic").unwrap(),
+            vec![
+                ANTHROPIC_AUTH_TOKEN_ENV,
+                ANTHROPIC_OAUTH_TOKEN_ENV,
+                ANTHROPIC_API_KEY_ENV
+            ]
         );
-        std::env::remove_var("__PI_TEST_API_KEY__");
     }
 
     #[test]
-    fn test_get_env_api_key_returns_none_for_unknown_provider() {
-        assert!(get_env_api_key("nonexistent-provider-xyz").is_none());
+    fn test_unknown_provider_has_no_env_vars() {
+        assert!(get_api_key_env_vars("nonexistent-provider-xyz").is_none());
+        assert!(find_env_keys("nonexistent-provider-xyz", None).is_none());
+        assert!(get_env_api_key("nonexistent-provider-xyz", None).is_none());
+    }
+
+    #[test]
+    fn test_provider_env_overlay_wins_over_process_env() {
+        // TS `getProviderEnvValue` prefers the scoped overlay. Using the
+        // overlay keeps this test independent of the real process env.
+        let env = overlay(&[("OPENAI_API_KEY", "from-overlay")]);
+        assert_eq!(
+            get_provider_env_value("OPENAI_API_KEY", Some(&env)).as_deref(),
+            Some("from-overlay")
+        );
+    }
+
+    #[test]
+    fn test_empty_overlay_value_is_unset() {
+        let env = overlay(&[("OPENAI_API_KEY", "")]);
+        assert!(get_provider_env_value("__PI_DEFINITELY_UNSET__", Some(&env)).is_none());
+    }
+
+    #[test]
+    fn test_find_env_keys_returns_all_set_vars_in_order() {
+        let env = overlay(&[
+            (ANTHROPIC_AUTH_TOKEN_ENV, "bearer"),
+            (ANTHROPIC_API_KEY_ENV, "key"),
+        ]);
+        // OAUTH unset, AUTH + API_KEY set -> both reported, in list order.
+        assert_eq!(
+            find_env_keys("anthropic", Some(&env)).unwrap(),
+            vec![
+                ANTHROPIC_AUTH_TOKEN_ENV.to_string(),
+                ANTHROPIC_API_KEY_ENV.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_get_env_api_key_skips_anthropic_auth_token() {
+        // Only the gateway bearer token is set: it is not an API key, so
+        // discovery must not return it (match TS `getEnvApiKey`).
+        let auth_only = overlay(&[(ANTHROPIC_AUTH_TOKEN_ENV, "bearer")]);
+        assert!(get_env_api_key("anthropic", Some(&auth_only)).is_none());
+
+        // API key set alongside the bearer token: the API key wins.
+        let both = overlay(&[
+            (ANTHROPIC_AUTH_TOKEN_ENV, "bearer"),
+            (ANTHROPIC_API_KEY_ENV, "key"),
+        ]);
+        assert_eq!(
+            get_env_api_key("anthropic", Some(&both)).as_deref(),
+            Some("key")
+        );
+    }
+
+    #[test]
+    fn test_get_env_api_key_prefers_anthropic_oauth_over_api_key() {
+        let env = overlay(&[
+            (ANTHROPIC_OAUTH_TOKEN_ENV, "oauth"),
+            (ANTHROPIC_API_KEY_ENV, "key"),
+        ]);
+        assert_eq!(
+            get_env_api_key("anthropic", Some(&env)).as_deref(),
+            Some("oauth")
+        );
+    }
+
+    #[test]
+    fn test_get_env_api_key_uses_first_configured_var() {
+        let env = overlay(&[("GEMINI_API_KEY", "gemini")]);
+        assert_eq!(
+            get_env_api_key("google", Some(&env)).as_deref(),
+            Some("gemini")
+        );
     }
 }

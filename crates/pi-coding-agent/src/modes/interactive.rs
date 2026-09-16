@@ -1043,6 +1043,15 @@ fn handle_secret_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> V
             }
             vec![]
         }
+        // Ctrl+V: paste from the system clipboard (same as the chat input).
+        KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
+            if let Some(text) = pi_tui::clipboard::read_clipboard_text() {
+                if let pi_tui::AppMode::Secret { value, .. } = &mut state.model.mode {
+                    value.push_str(&pi_tui::app::normalize_secret_paste(&text));
+                }
+            }
+            vec![]
+        }
         KeyCode::Char(c)
             if !key
                 .modifiers

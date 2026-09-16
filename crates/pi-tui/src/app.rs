@@ -839,7 +839,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             vec![]
         }
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
-        Msg::Paste(text) => { model.input.handle_paste(&text); vec![] }
+        Msg::Paste(text) => {
+            if let AppMode::Secret { value, .. } = &mut model.mode {
+                value.push_str(&normalize_secret_paste(&text));
+            } else {
+                model.input.handle_paste(&text);
+            }
+            vec![]
+        }
         Msg::NewMessage(role, text) => { model.push_message(role, text); vec![] }
         Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); m.md.append_text(&delta); } vec![] }
         Msg::MessageEnd { thinking, stop_reason, error_message } => {
@@ -1095,8 +1102,21 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         // Submitting/cancelling is handled by the host (pi-coding-agent), which
         // owns the pending-login state.
         AppMode::Secret { value, .. } => match key.code {
-            KeyCode::Char(c) => value.push(c),
-            KeyCode::Backspace => { value.pop(); }
+            KeyCode::Char('v') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                if let Some(text) = crate::clipboard::read_clipboard_text() {
+                    value.push_str(&normalize_secret_paste(&text));
+                }
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+                ) =>
+            {
+                value.push(c);
+            }
+            KeyCode::Backspace => {
+                value.pop();
+            }
             _ => {}
         },
     }
@@ -3149,6 +3169,27 @@ fn render_fullscreen_editor(model: &mut Model, frame: &mut Frame, area: Rect, ti
         model.cursor_pos = Some((inner.x + x, inner.y + y));
         frame.set_cursor_position((inner.x + x, inner.y + y));
     }
+}
+
+/// Paste normalization for the single-line login input (match TS
+/// `Input.handlePaste`): strip CR/LF and expand tabs.
+#[must_use]
+pub fn normalize_secret_paste(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\n' => {}
+            '\t' => out.push_str("    "),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Login input dialog (`AppMode::Secret`). Mirrors the original
@@ -5335,5 +5376,28 @@ mod tests {
         }
         update(&mut model, Msg::SecretInputDone);
         assert!(matches!(model.mode, AppMode::Chat));
+    }
+
+    /// Pasted text (bracketed paste / Ctrl+V) is normalized into the secret
+    /// value (strip CR/LF, expand tabs), not the chat input.
+    #[test]
+    fn secret_input_accepts_paste() {
+        let mut model = Model::new(100, 30);
+        update(
+            &mut model,
+            Msg::OpenSecretInput("Login to Anthropic".into(), "Enter Anthropic API key".into()),
+        );
+        model.input.set_value("chat");
+        update(&mut model, Msg::Paste("sk-ant-api\r\nkey\t".into()));
+        match &model.mode {
+            AppMode::Secret { value, .. } => assert_eq!(value, "sk-ant-apikey    "),
+            _ => panic!("expected AppMode::Secret"),
+        }
+        assert_eq!(model.input.value(), "chat", "chat input untouched in secret mode");
+    }
+
+    #[test]
+    fn normalize_secret_paste_strips_newlines_and_expands_tabs() {
+        assert_eq!(normalize_secret_paste("a\r\nb\rc\nd\te"), "abcd    e");
     }
 }

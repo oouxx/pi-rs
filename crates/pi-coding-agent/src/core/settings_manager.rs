@@ -1041,6 +1041,34 @@ impl SettingsManager {
         self.settings.retry.clone().unwrap_or_default()
     }
 
+    /// Provider-request retry/timeout settings (match TS
+    /// `getProviderRetrySettings`): `maxRetryDelayMs` defaults to 60s.
+    pub fn get_provider_retry_settings(&self) -> ProviderRetrySettings {
+        let provider = self
+            .settings
+            .retry
+            .as_ref()
+            .and_then(|retry| retry.provider.clone())
+            .unwrap_or_default();
+        ProviderRetrySettings {
+            timeout_ms: provider.timeout_ms,
+            max_retries: provider.max_retries,
+            max_retry_delay_ms: Some(provider.max_retry_delay_ms.unwrap_or(60_000)),
+        }
+    }
+
+    /// HTTP idle timeout in ms (match TS `getHttpIdleTimeoutMs`; 0 disables).
+    pub fn get_http_idle_timeout_ms(&self) -> u64 {
+        self.settings
+            .http_idle_timeout_ms
+            .unwrap_or(crate::core::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS)
+    }
+
+    /// WebSocket connect timeout in ms (match TS `getWebSocketConnectTimeoutMs`).
+    pub fn get_websocket_connect_timeout_ms(&self) -> Option<u64> {
+        self.settings.websocket_connect_timeout_ms
+    }
+
     // --- hideThinkingBlock ---
 
     pub fn get_hide_thinking_block(&self) -> bool {

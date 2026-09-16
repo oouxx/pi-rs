@@ -1250,10 +1250,25 @@ impl AgentSession {
                 Box::pin(async move { registry.get_api_key_for_provider(&provider) })
             }));
 
+        // Provider request settings (match TS `sdk.ts` streamFn): timeouts and
+        // retries default from settings when the request does not override them.
+        let provider_retry = settings_manager.get_provider_retry_settings();
+        let http_idle_timeout_ms = settings_manager.get_http_idle_timeout_ms();
+        // SDKs treat timeout=0 as immediate; use max int32 to disable.
+        let effective_timeout_ms = if http_idle_timeout_ms == 0 {
+            2_147_483_647
+        } else {
+            http_idle_timeout_ms
+        };
+
         let agent_options = pi_agent_core::agent::AgentOptions {
             initial_state: Some(initial_state),
             convert_to_llm: Some(convert_to_llm),
             stream_fn: Some(stream_fn),
+            timeout_ms: provider_retry.timeout_ms.or(Some(effective_timeout_ms)),
+            websocket_connect_timeout_ms: settings_manager.get_websocket_connect_timeout_ms(),
+            max_retries: provider_retry.max_retries,
+            max_retry_delay_ms: provider_retry.max_retry_delay_ms,
             session_id: Some(
                 bash_session_manager
                     .lock()

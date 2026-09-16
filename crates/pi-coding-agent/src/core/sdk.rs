@@ -21,7 +21,7 @@ pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::St
     std::sync::Arc::new(
         move |model: pi_agent_core::pi_ai_types::Model,
          context: pi_agent_core::pi_ai_types::Context,
-         _thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+         thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
          options: pi_agent_core::types::StreamFnOptions| {
             Box::pin(async move {
                 // Provider attribution headers (match TS `transformHeaders` →
@@ -41,11 +41,44 @@ pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::St
                 )
                 .map(|entries| entries.into_iter().collect::<std::collections::HashMap<_, _>>());
 
+                // Forward every request-affecting field (match TS `streamSimple`
+                // options spread). Dropping these silently lost temperature,
+                // maxTokens, timeouts, retries, cache retention, tool choice,
+                // service tier, metadata, thinking budgets and the reasoning level.
+                let transport = options.transport.as_ref().and_then(|t| {
+                    serde_json::from_value::<pi_agent_core::pi_ai::types::Transport>(
+                        serde_json::json!(t),
+                    )
+                    .ok()
+                });
                 let stream_opts = pi_agent_core::pi_ai::types::StreamOptions {
+                    temperature: options.temperature,
+                    // Default the output cap to the model's max, clamped to the
+                    // context window (match TS `buildBaseOptions`).
+                    max_tokens: options.max_tokens.or_else(|| {
+                        Some(
+                            pi_agent_core::pi_ai::providers::simple_options::clamp_max_tokens_to_context(
+                                &model,
+                                &context,
+                                model.max_tokens,
+                            ),
+                        )
+                    }),
                     signal: options.signal,
                     api_key: options.api_key,
-                    headers,
+                    transport,
+                    cache_retention: options.cache_retention,
                     session_id: options.session_id,
+                    headers,
+                    timeout_ms: options.timeout_ms,
+                    websocket_connect_timeout_ms: options.websocket_connect_timeout_ms,
+                    max_retries: options.max_retries,
+                    max_retry_delay_ms: options.max_retry_delay_ms,
+                    metadata: options.metadata,
+                    tool_choice: options.tool_choice,
+                    service_tier: options.service_tier,
+                    reasoning_effort: thinking,
+                    thinking_budgets: options.thinking_budgets,
                     on_payload: options.on_payload,
                     on_headers: options.on_headers,
                     on_provider_response: options.on_provider_response,

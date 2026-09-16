@@ -852,28 +852,11 @@ fn get_pi_ai_models() -> Vec<Model> {
     let mut models = Vec::new();
     for provider in &providers {
         for m in pi_agent_core::pi_ai::models::get_models(provider) {
-            models.push(Model {
-                id: m.id.clone(),
-                name: m.name.clone(),
-                api: m.api.clone(),
-                provider: m.provider.clone(),
-                base_url: m.base_url.clone(),
-                reasoning: m.reasoning,
-                thinking_level_map: m.thinking_level_map.clone(),
-                input: m.input.clone(),
-                cost: pi_agent_core::pi_ai_types::ModelCost {
-                    input: m.cost.input,
-                    output: m.cost.output,
-                    cache_read: m.cost.cache_read,
-                    cache_write: m.cost.cache_write,
-                            tiers: vec![],
-},
-                context_window: m.context_window,
-                max_tokens: m.max_tokens,
-                sampling_params: None,
-                headers: m.headers.clone(),
-                compat: None,
-            });
+            // Clone the model verbatim: reconstructing field-by-field silently
+            // dropped `compat`, `cost.tiers` and `sampling_params` from the
+            // generated catalog (breaking max_tokens field, thinking format,
+            // affinity headers, pricing tiers, …).
+            models.push(m);
         }
     }
     models

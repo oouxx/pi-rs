@@ -260,4 +260,5 @@ mod tests {
             "Expected at least one provider from generated models, got none."
         );
     }
+
 }

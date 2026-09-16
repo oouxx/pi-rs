@@ -736,6 +736,15 @@ async fn stream_pi_messages_inner(
             "toolChoice": options.and_then(|o| o.tool_choice.clone()),
         },
     });
+    // Allow extensions to modify the request payload (match TS `onPayload`).
+    let payload = if let Some(on_payload) = options.and_then(|o| o.on_payload.as_ref()) {
+        match on_payload(payload).await {
+            Some(modified) => modified,
+            None => return Err("Request cancelled by extension".into()),
+        }
+    } else {
+        payload
+    };
 
     // Check abort signal before sending.
     if let Some(ref rx) = signal {
@@ -744,22 +753,33 @@ async fn stream_pi_messages_inner(
         }
     }
 
-    let client = reqwest::Client::new();
-    let mut request = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Accept", "text/event-stream")
-        .header("Content-Type", "application/json")
-        .json(&payload);
+    let client = options
+        .and_then(|o| o.http_client.clone())
+        .map_or_else(reqwest::Client::new, |c| (*c).clone());
+    let mut header_pairs: Vec<(String, String)> = vec![
+        ("Authorization".to_string(), format!("Bearer {api_key}")),
+        ("Accept".to_string(), "text/event-stream".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
     if let Some(model_headers) = &model.headers {
         for (k, v) in model_headers {
-            request = request.header(k, v);
+            header_pairs.push((k.clone(), v.clone()));
         }
     }
     if let Some(headers) = options.and_then(|o| o.headers.clone()) {
         for (k, v) in headers {
-            request = request.header(k, v);
+            header_pairs.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&k));
+            header_pairs.push((k, v));
         }
+    }
+    // Extension `before_provider_headers` hook (match TS `transformHeaders`).
+    if let Some(on_headers) = options.and_then(|o| o.on_headers.as_ref()) {
+        let map: std::collections::HashMap<String, String> = header_pairs.into_iter().collect();
+        header_pairs = on_headers(map).await.into_iter().collect();
+    }
+    let mut request = client.post(&url).json(&payload);
+    for (k, v) in &header_pairs {
+        request = request.header(k, v);
     }
     let response = {
         use crate::utils::provider_retry::{
@@ -829,6 +849,16 @@ async fn stream_pi_messages_inner(
             }
         })?
     };
+    // Notify extensions about the provider response (match TS `onResponse`).
+    if let Some(on_provider_response) = options.and_then(|o| o.on_provider_response.as_ref()) {
+        let status = response.status().as_u16();
+        let resp_headers: std::collections::HashMap<String, String> = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        on_provider_response(status, resp_headers);
+    }
     if response.content_length() == Some(0) {
         return Err(format!("{} response has no body", model.provider).into());
     }
@@ -857,24 +887,10 @@ pub fn stream_simple_pi_messages(
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
-    let mut full_opts = StreamOptions::default();
-    if let Some(opts) = options {
-        full_opts.temperature = opts.base.temperature;
-        full_opts.max_tokens = opts.base.max_tokens;
-        full_opts.signal.clone_from(&opts.base.signal);
-        full_opts.api_key.clone_from(&opts.base.api_key);
-        full_opts.transport.clone_from(&opts.base.transport);
-        full_opts.cache_retention.clone_from(&opts.base.cache_retention);
-        full_opts.session_id.clone_from(&opts.base.session_id);
-        full_opts.headers.clone_from(&opts.base.headers);
-        full_opts.timeout_ms = opts.base.timeout_ms;
-        full_opts.max_retries = opts.base.max_retries;
-        full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
-        full_opts.metadata.clone_from(&opts.base.metadata);
-        full_opts.reasoning_effort.clone_from(&opts.reasoning);
-        full_opts.thinking_budgets.clone_from(&opts.thinking_budgets);
-        full_opts.debug = opts.debug;
-    }
+    // Route through the shared helper (match TS `buildBaseOptions`) so
+    // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
+    // `reasoning_effort` and `thinking_budgets` are preserved.
+    let full_opts = crate::providers::simple_options::build_base_options(model, options, None);
     stream_pi_messages(model, context, Some(&full_opts))
 }
 

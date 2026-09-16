@@ -1564,6 +1564,15 @@ async fn stream_openai_inner(
     }
 
     let request_body = Value::Object(body);
+    // Allow extensions to modify the request payload (match TS `onPayload`).
+    let request_body = if let Some(on_payload) = options.and_then(|o| o.on_payload.as_ref()) {
+        match on_payload(request_body).await {
+            Some(modified) => modified,
+            None => return Err("Request cancelled by extension".into()),
+        }
+    } else {
+        request_body
+    };
     // [vision-debug]
     if std::env::var("PI_DEBUG_BODY").is_ok() {
         let _ = std::fs::write(
@@ -1635,6 +1644,17 @@ async fn stream_openai_inner(
     )
     .await
     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+
+    // Notify extensions about the provider response (match TS `onResponse`).
+    if let Some(on_provider_response) = options.and_then(|o| o.on_provider_response.as_ref()) {
+        let status = response.status().as_u16();
+        let resp_headers: std::collections::HashMap<String, String> = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        on_provider_response(status, resp_headers);
+    }
 
     // Stream the SSE body incrementally (match TS openai-completions streaming).
     let events = crate::utils::sse::sse_events_stream(
@@ -2104,25 +2124,10 @@ pub fn stream_simple_openai(
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
-    let mut full_opts = StreamOptions::default();
-    if let Some(opts) = options {
-        full_opts.temperature = opts.base.temperature;
-        full_opts.max_tokens = opts.base.max_tokens;
-        full_opts.signal.clone_from(&opts.base.signal);
-        full_opts.api_key.clone_from(&opts.base.api_key);
-        full_opts.transport.clone_from(&opts.base.transport);
-        full_opts
-            .cache_retention
-            .clone_from(&opts.base.cache_retention);
-        full_opts.session_id.clone_from(&opts.base.session_id);
-        full_opts.headers.clone_from(&opts.base.headers);
-        full_opts.timeout_ms = opts.base.timeout_ms;
-        full_opts.max_retries = opts.base.max_retries;
-        full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
-        full_opts.metadata.clone_from(&opts.base.metadata);
-        full_opts.reasoning_effort.clone_from(&opts.reasoning);
-        full_opts.thinking_budgets.clone_from(&opts.thinking_budgets);
-    }
+    // Route through the shared helper (match TS `buildBaseOptions`) so
+    // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
+    // `reasoning_effort` and `thinking_budgets` are preserved.
+    let full_opts = crate::providers::simple_options::build_base_options(model, options, None);
     stream_openai(model, context, Some(&full_opts))
 }
 

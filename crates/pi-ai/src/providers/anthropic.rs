@@ -1103,20 +1103,21 @@ async fn stream_anthropic_inner(
             header_map
         };
 
-    let http_client = HttpClient::builder()
-        .default_headers({
-            let mut headers = reqwest::header::HeaderMap::new();
-            for (key, value) in &final_headers {
-                if let (Ok(k), Ok(v)) = (
-                    reqwest::header::HeaderName::from_bytes(key.as_bytes()),
-                    reqwest::header::HeaderValue::from_str(value),
-                ) {
-                    headers.insert(k, v);
-                }
-            }
-            headers
+    // Per-request HTTP client injection (TS per-request `fetch`); headers are
+    // applied per request so an injected client is honored.
+    let http_client = match options.and_then(|o| o.http_client.clone()) {
+        Some(client) => (*client).clone(),
+        None => HttpClient::builder().build()?,
+    };
+    let header_pairs: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = final_headers
+        .iter()
+        .filter_map(|(key, value)| {
+            Some((
+                reqwest::header::HeaderName::from_bytes(key.as_bytes()).ok()?,
+                reqwest::header::HeaderValue::from_str(value).ok()?,
+            ))
         })
-        .build()?;
+        .collect();
 
     // Build request body
     let cache_control = get_cache_control(model, options);
@@ -1298,7 +1299,10 @@ async fn stream_anthropic_inner(
     };
 
     let response = {
-        let request = http_client.post(&model.base_url).json(&request_body);
+        let mut request = http_client.post(&model.base_url).json(&request_body);
+        for (key, value) in &header_pairs {
+            request = request.header(key.clone(), value.clone());
+        }
         // HTTP-level retry (match TS `retryProviderRequest`): transient errors
         // are retried with exponential backoff; the abort signal interrupts.
         crate::utils::provider_retry::send_with_retry(
@@ -1689,25 +1693,10 @@ pub fn stream_simple_anthropic(
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
-    let mut full_opts = StreamOptions::default();
-    if let Some(opts) = options {
-        full_opts.temperature = opts.base.temperature;
-        full_opts.max_tokens = opts.base.max_tokens;
-        full_opts.signal.clone_from(&opts.base.signal);
-        full_opts.api_key.clone_from(&opts.base.api_key);
-        full_opts.transport.clone_from(&opts.base.transport);
-        full_opts
-            .cache_retention
-            .clone_from(&opts.base.cache_retention);
-        full_opts.session_id.clone_from(&opts.base.session_id);
-        full_opts.headers.clone_from(&opts.base.headers);
-        full_opts.timeout_ms = opts.base.timeout_ms;
-        full_opts.max_retries = opts.base.max_retries;
-        full_opts.max_retry_delay_ms = opts.base.max_retry_delay_ms;
-        full_opts.metadata.clone_from(&opts.base.metadata);
-        full_opts.reasoning_effort.clone_from(&opts.reasoning);
-        full_opts.thinking_budgets.clone_from(&opts.thinking_budgets);
-    }
+    // Route through the shared helper (match TS `buildBaseOptions`) so
+    // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
+    // `reasoning_effort` and `thinking_budgets` are preserved.
+    let full_opts = crate::providers::simple_options::build_base_options(model, options, None);
     stream_anthropic(model, context, Some(&full_opts))
 }
 

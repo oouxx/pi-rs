@@ -57,11 +57,11 @@ pub fn build_base_options(
         reasoning_effort: opts.reasoning.clone(),
         thinking_budgets: opts.thinking_budgets.clone(),
         debug: opts.debug,
-        on_payload: None,
-        on_headers: None,
-        on_provider_response: None,
-
-
+        // Hooks must survive the simple→full options conversion (match TS
+        // `buildBaseOptions`, which spreads `onPayload`/`onResponse`).
+        on_payload: opts.base.on_payload.clone(),
+        on_headers: opts.base.on_headers.clone(),
+        on_provider_response: opts.base.on_provider_response.clone(),
     }
 }
 

@@ -2,18 +2,75 @@
 //!
 //! Ported from `packages/ai/src/providers/simple-options.ts`.
 
-use crate::types::{Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets};
+use crate::types::{Context, Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets};
+
+const CONTEXT_SAFETY_TOKENS: i64 = 4096;
+const MIN_MAX_TOKENS: u64 = 1;
+/// Tokens always left for the answer when a thinking budget shares the response ceiling.
+pub const MIN_ANSWER_TOKENS: u64 = 1024;
+
+/// TS `clampMaxTokensToContext`: keep the requested output under the model's
+/// context window (leaving room for the estimated prompt + a safety margin).
+#[must_use]
+pub fn clamp_max_tokens_to_context(model: &Model, context: &Context, max_tokens: u64) -> u64 {
+    if model.context_window == 0 {
+        return max_tokens.max(MIN_MAX_TOKENS);
+    }
+    let estimated = crate::utils::estimate::estimate_context_tokens(context).tokens;
+    let available = model.context_window as i64 - estimated as i64 - CONTEXT_SAFETY_TOKENS;
+    max_tokens.min(available.max(MIN_MAX_TOKENS as i64) as u64)
+}
+
+/// TS `thinkingBudgetForLevel`: per-level budget with custom overrides.
+#[must_use]
+pub fn thinking_budget_for_level(level: &str, custom_budgets: Option<&ThinkingBudgets>) -> u64 {
+    let defaults = ThinkingBudgets {
+        minimal: Some(1024),
+        low: Some(2048),
+        medium: Some(8192),
+        high: Some(16_384),
+    };
+    let level = if level == "xhigh" || level == "max" { "high" } else { level };
+    let budget = match custom_budgets {
+        Some(cb) => match level {
+            "minimal" => cb.minimal.or(defaults.minimal),
+            "low" => cb.low.or(defaults.low),
+            "medium" => cb.medium.or(defaults.medium),
+            _ => cb.high.or(defaults.high),
+        },
+        None => match level {
+            "minimal" => defaults.minimal,
+            "low" => defaults.low,
+            "medium" => defaults.medium,
+            _ => defaults.high,
+        },
+    };
+    budget.unwrap_or(16_384)
+}
+
+/// TS `clampThinkingBudgetToAnswerRoom`: cap the budget so at least
+/// `MIN_ANSWER_TOKENS` remain under the shared response ceiling.
+#[must_use]
+pub fn clamp_thinking_budget_to_answer_room(thinking_budget: u64, ceiling: u64) -> u64 {
+    thinking_budget.min(ceiling.saturating_sub(MIN_ANSWER_TOKENS))
+}
 
 /// Build a full `StreamOptions` from `SimpleStreamOptions` and an API key.
 #[must_use]
 pub fn build_base_options(
     model: &Model,
+    context: &Context,
     options: Option<&SimpleStreamOptions>,
     api_key: Option<&str>,
 ) -> StreamOptions {
     let Some(opts) = options else {
         return StreamOptions {
             api_key: api_key.map(std::string::ToString::to_string),
+            max_tokens: Some(clamp_max_tokens_to_context(
+                model,
+                context,
+                model.max_tokens,
+            )),
             sampling_params: model.sampling_params.clone(),
             ..Default::default()
         };
@@ -36,7 +93,12 @@ pub fn build_base_options(
 
     StreamOptions {
         temperature: opts.base.temperature,
-        max_tokens: opts.base.max_tokens,
+        // TS `buildBaseOptions` clamps the requested output to the context.
+        max_tokens: Some(clamp_max_tokens_to_context(
+            model,
+            context,
+            opts.base.max_tokens.unwrap_or(model.max_tokens),
+        )),
         sampling_params,
         http_client: opts.base.http_client.clone(),
         signal: opts.base.signal.clone(),
@@ -138,6 +200,75 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    fn test_model(context_window: u64, max_tokens: u64) -> Model {
+        Model {
+            id: "m".into(),
+            name: "m".into(),
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            base_url: String::new(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window,
+            max_tokens,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    fn empty_context() -> Context {
+        Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        }
+    }
+
+    /// TS `clampMaxTokensToContext`: leave `contextWindow - estimate - 4096`.
+    #[test]
+    fn test_clamp_max_tokens_to_context() {
+        let model = test_model(200_000, 64_000);
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &empty_context(), 300_000),
+            195_904
+        );
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &empty_context(), 1_000),
+            1_000
+        );
+    }
+
+    /// A model without a context window is not clamped (match TS).
+    #[test]
+    fn test_clamp_max_tokens_zero_context_uncapped() {
+        let model = test_model(0, 64_000);
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &empty_context(), 12_345),
+            12_345
+        );
+    }
+
+    #[test]
+    fn test_thinking_budget_for_level() {
+        assert_eq!(thinking_budget_for_level("minimal", None), 1_024);
+        assert_eq!(thinking_budget_for_level("low", None), 2_048);
+        assert_eq!(thinking_budget_for_level("medium", None), 8_192);
+        assert_eq!(thinking_budget_for_level("high", None), 16_384);
+        // xhigh/max clamp to the high budget (match TS `clampReasoning`).
+        assert_eq!(thinking_budget_for_level("xhigh", None), 16_384);
+        assert_eq!(thinking_budget_for_level("max", None), 16_384);
+    }
+
+    /// TS `clampThinkingBudgetToAnswerRoom`: keep `MIN_ANSWER_TOKENS` free.
+    #[test]
+    fn test_clamp_thinking_budget_to_answer_room() {
+        assert_eq!(clamp_thinking_budget_to_answer_room(16_000, 12_000), 10_976);
+        assert_eq!(clamp_thinking_budget_to_answer_room(1_000, 12_000), 1_000);
+    }
+
     #[test]
     fn test_clamp_reasoning_xhigh() {
         assert_eq!(clamp_reasoning(Some("xhigh")), Some("high".to_string()));
@@ -211,7 +342,7 @@ mod tests {
             headers: None,
             compat: None,
         };
-        let opts = build_base_options(&model, None, Some("key123"));
+        let opts = build_base_options(&model, &Context { system_prompt: None, messages: vec![], tools: None }, None, Some("key123"));
         assert_eq!(opts.api_key, Some("key123".to_string()));
         assert!(opts.temperature.is_none());
     }
@@ -255,7 +386,7 @@ mod tests {
             thinking_budgets: None,
             debug: None,
         };
-        let opts = build_base_options(&model, Some(&simple), None);
+        let opts = build_base_options(&model, &Context { system_prompt: None, messages: vec![], tools: None }, Some(&simple), None);
         let sp = opts.sampling_params.unwrap();
         assert_eq!(sp.get("temperature").unwrap(), &serde_json::json!(0.2), "request overrides model");
         assert_eq!(sp.get("repetition_penalty").unwrap(), &serde_json::json!(1.1), "model default kept");
@@ -292,7 +423,7 @@ mod tests {
             thinking_budgets: None,
             debug: None,
         };
-        let opts = build_base_options(&model, Some(&simple), None);
+        let opts = build_base_options(&model, &Context { system_prompt: None, messages: vec![], tools: None }, Some(&simple), None);
         assert!(
             std::sync::Arc::ptr_eq(opts.http_client.as_ref().unwrap(), &client),
             "custom http client must be preserved"

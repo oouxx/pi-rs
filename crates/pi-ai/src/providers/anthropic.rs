@@ -1237,11 +1237,36 @@ async fn stream_anthropic_inner(
                     );
                     body.insert("output_config".into(), json!({ "effort": level }));
                 } else {
+                    // Budget-based thinking (match TS `streamSimple`): adjust
+                    // maxTokens for the thinking budget and clamp it to the
+                    // model's context window.
+                    let adjusted =
+                        crate::providers::simple_options::adjust_max_tokens_for_thinking(
+                            options.and_then(|o| o.max_tokens),
+                            model.max_tokens,
+                            level,
+                            options.and_then(|o| o.thinking_budgets.as_ref()),
+                        );
+                    let effective_max_tokens =
+                        crate::providers::simple_options::clamp_max_tokens_to_context(
+                            model,
+                            context,
+                            adjusted.max_tokens,
+                        );
+                    let budget =
+                        crate::providers::simple_options::clamp_thinking_budget_to_answer_room(
+                            adjusted.thinking_budget,
+                            effective_max_tokens,
+                        );
+                    body.insert(
+                        "max_tokens".into(),
+                        Value::Number(effective_max_tokens.into()),
+                    );
                     body.insert(
                         "thinking".into(),
                         json!({
                             "type": "enabled",
-                            "budget_tokens": 1024,
+                            "budget_tokens": budget,
                             "display": "summarized",
                         }),
                     );
@@ -1412,10 +1437,13 @@ async fn stream_anthropic_inner(
             continue;
         }
 
-        let event: AnthropicSseEvent = match serde_json::from_str(data) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        // Parse with the shared repair helper (match TS `parseJsonWithRepair`:
+        // tolerate partial/repairable JSON).
+        let event: AnthropicSseEvent =
+            match crate::utils::json_parse::parse_json_with_repair(data) {
+                Ok(event) => event,
+                Err(_) => continue,
+            };
 
         match event {
             AnthropicSseEvent::MessageStart { message } => {
@@ -1696,7 +1724,7 @@ pub fn stream_simple_anthropic(
     // Route through the shared helper (match TS `buildBaseOptions`) so
     // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
     // `reasoning_effort` and `thinking_budgets` are preserved.
-    let full_opts = crate::providers::simple_options::build_base_options(model, options, None);
+    let full_opts = crate::providers::simple_options::build_base_options(model, context, options, None);
     stream_anthropic(model, context, Some(&full_opts))
 }
 

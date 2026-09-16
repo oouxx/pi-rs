@@ -890,7 +890,7 @@ pub fn stream_simple_pi_messages(
     // Route through the shared helper (match TS `buildBaseOptions`) so
     // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
     // `reasoning_effort` and `thinking_budgets` are preserved.
-    let full_opts = crate::providers::simple_options::build_base_options(model, options, None);
+    let full_opts = crate::providers::simple_options::build_base_options(model, context, options, None);
     stream_pi_messages(model, context, Some(&full_opts))
 }
 

@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod estimate;
 pub mod event_stream;
 pub mod headers;
 pub mod json_parse;

@@ -333,3 +333,18 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | `hasConfiguredAuth` | `Models.checkAuth` → provider `ApiKeyAuth.check`/`resolve`；`ANTHROPIC_AUTH_TOKEN` 等发现层变量算已配置 | `is_provider_configured` 用 `find_env_keys`（含 AUTH_TOKEN）+ stored + configured | 是 | 修复见 PORTING_MISTAKES.md |
 | `getProviderAuthStatus` | runtime > stored > configured > env，四者 `configured:true` | `AuthStorage::get_auth_status` 同序、同布尔语义 | 是 | 修复见 PORTING_MISTAKES.md |
 | `getEnvApiKey` 作为请求 key | anthropic 跳过 `ANTHROPIC_AUTH_TOKEN` | `get_env_api_key` 同左 | 是 | |
+
+## 认证命令 `/login` / `/logout`
+
+对齐基准：`modes/interactive/interactive-mode.ts`（`handleLoginCommand` /
+`showApiKeyLoginDialog` / `completeProviderAuthentication` / `/logout`），v0.85.1。
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| `/login` 被识别为命令 | 打开 provider 选择器 | 列为内建命令并显示用法/可用 provider，不再当普通消息发出 | 是（选择器改为参数式，见 DEVIATIONS.md #21） | |
+| `/login <provider>` | 选择器 → 认证方式 → 密钥对话框 | 按 id/显示名匹配 provider → 掩码密钥输入 | 是（有界子集） | 见 DEVIATIONS.md #21 |
+| 密钥持久化 | 写入 auth.json（`AuthStorage.modify`） | 同左（`AuthCredential::ApiKey`，`env: None`） | 是 | |
+| 登录后模型选择 | 无模型时选 provider 默认模型（`completeProviderAuthentication`） | `AgentCmd::LoginApiKey`：无模型时用 `DEFAULT_MODEL_PER_PROVIDER` 选默认模型 | 是 | |
+| 密钥输入掩码 | `{ type: "secret" }`，不回显 | `AppMode::Secret` 每字符 `•`，不进转录 | 是 | |
+| `/logout [provider]` | 已存凭据选择器 → 删除 | 参数式删除；无参列出已存凭据并给出 TS 同款提示文案 | 是（有界子集） | 见 DEVIATIONS.md #21 |
+| OAuth 登录 | 浏览器回调 / device code | 未实现（`AuthStorage::login` 未实现） | 否 | 见 DEVIATIONS.md #21（范围外） |

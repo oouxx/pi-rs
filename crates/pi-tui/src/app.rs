@@ -512,7 +512,7 @@ fn format_duration(ms: u128) -> String {
 }
 
 
-pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String } }
+pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String }, Secret { title: String, value: String } }
 /// Terminal stop reason of an assistant message (TS `StopReason`), used to
 /// render the TS post-content notices (truncated/aborted/error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -746,6 +746,9 @@ pub enum Msg {
         error_message: Option<String>,
     },
     OpenEditor(String, String), EditorDone(String),
+    /// Open a masked single-line input (e.g. `/login` API keys): the value is
+    /// captured in memory and rendered as one bullet per character.
+    OpenSecretInput(String), SecretInputDone,
     ToolStart(String, String, String), ToolEnd(String, String, bool),
     Tick,
     ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
@@ -886,6 +889,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::RetryAttemptStart | Msg::RetryLoopEnd => { model.retry_status = None; vec![] }
         Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
         Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
+        Msg::OpenSecretInput(title) => { model.mode = AppMode::Secret { title, value: String::new() }; vec![] }
+        Msg::SecretInputDone => { model.mode = AppMode::Chat; vec![] }
         Msg::ToolStart(call_id, name, args) => { model.add_tool_call(&call_id, &name, &args); vec![] }
         Msg::ToolEnd(call_id, _name, is_error) => {
             model.update_tool_call(&call_id, if is_error { ToolCallState::Failed } else { ToolCallState::Done });
@@ -1086,6 +1091,14 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
         AppMode::Select { list } => { list.handle_key(&key); }
         AppMode::Editor { editor, .. } => { editor.handle_key(&key); }
+        // Masked secret input: printable characters append, Backspace removes.
+        // Submitting/cancelling is handled by the host (pi-coding-agent), which
+        // owns the pending-login state.
+        AppMode::Secret { value, .. } => match key.code {
+            KeyCode::Char(c) => value.push(c),
+            KeyCode::Backspace => { value.pop(); }
+            _ => {}
+        },
     }
     vec![]
 }
@@ -1247,6 +1260,10 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
             String::new()
         };
         render_fullscreen_editor(model, frame, area, &title, &t);
+        return;
+    }
+    if matches!(&model.mode, AppMode::Secret { .. }) {
+        render_secret_input(model, frame, area, &t);
         return;
     }
     let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
@@ -3129,6 +3146,26 @@ fn render_fullscreen_editor(model: &mut Model, frame: &mut Frame, area: Rect, ti
         model.cursor_pos = Some((inner.x + x, inner.y + y));
         frame.set_cursor_position((inner.x + x, inner.y + y));
     }
+}
+
+/// Centered masked input box for secret prompts (`AppMode::Secret`): the
+/// title names the prompt and the value renders as one bullet per character.
+fn render_secret_input(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
+    let AppMode::Secret { title, value } = &model.mode else { return };
+    let box_w = area.width.saturating_sub(4).clamp(20, 72).min(area.width.max(1));
+    let box_h = 3u16.min(area.height.max(1));
+    let x = area.x + area.width.saturating_sub(box_w) / 2;
+    let y = area.y + area.height.saturating_sub(box_h) / 2;
+    let rect = Rect::new(x, y, box_w, box_h);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
+            .title(format!(" {title} ")).border_style(Style::new().fg(t.border_muted)),
+        rect,
+    );
+    let masked: String = value.chars().map(|_| '•').collect();
+    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(masked, Style::new().fg(t.text)))), inner);
 }
 
 // ============================================================================
@@ -5250,5 +5287,36 @@ mod tests {
         let blocks = [bv("user"), bv("assistant")];
         let (_gaps, leads) = block_gaps(&blocks);
         assert_eq!(leads, vec![0, 0]);
+    }
+
+    /// `OpenSecretInput` enters the masked input mode with an empty value and
+    /// never stores the typed secret anywhere except the mode; `SecretInputDone`
+    /// returns to chat.
+    #[test]
+    fn secret_input_mode_lifecycle() {
+        let mut model = Model::new(100, 30);
+        update(&mut model, Msg::OpenSecretInput("Enter Anthropic API key".into()));
+        match &model.mode {
+            AppMode::Secret { title, value } => {
+                assert_eq!(title, "Enter Anthropic API key");
+                assert!(value.is_empty());
+            }
+            _ => panic!("expected AppMode::Secret"),
+        }
+        // Characters append to the masked value; Backspace removes them.
+        handle_key(&mut model, crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_key(&mut model, crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        match &model.mode {
+            AppMode::Secret { value, .. } => assert!(value.is_empty()),
+            _ => panic!("expected AppMode::Secret"),
+        }
+        update(&mut model, Msg::SecretInputDone);
+        assert!(matches!(model.mode, AppMode::Chat));
     }
 }

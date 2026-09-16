@@ -25,7 +25,10 @@ use pi_tui::app;
 use tokio::sync::Mutex;
 
 use crate::core::agent_session::{AgentSession, AgentSessionEvent, CompactionReason};
+use crate::core::auth_storage::{AuthCredential, AuthStorage};
 use crate::core::extensions::ExtensionUIContext;
+use crate::core::model_resolver::DEFAULT_MODEL_PER_PROVIDER;
+use crate::core::provider_display_names::get_provider_display_name;
 
 const DOUBLE_CTRL_C_WINDOW_MS: u64 = 500;
 const SPINNER_TICK_MS: u64 = 100;
@@ -66,6 +69,12 @@ enum AgentCmd {
     /// Alt+Up（TS `app.message.dequeue`）取回队列文本后：同步清空会话层
     /// 队列镜像并发出 QueueUpdate（把 pending 显示归零）。
     SyncQueueMirrors,
+    /// `/login <provider>` 提交密钥后：写入 auth.json（TS
+    /// `showApiKeyLoginDialog` → `loginProvider` → `completeProviderAuthentication`）。
+    LoginApiKey { provider: String, key: String },
+    /// `/logout [provider]`：删除 auth.json 存储的凭据（TS `/logout` →
+    /// `showOAuthSelector("logout")`）。provider 为空时列出已存凭据。
+    LogoutProvider { provider: String },
 }
 
 // ============================================================================
@@ -160,6 +169,9 @@ enum PendingUi {
     Confirm { reply: std::sync::mpsc::Sender<bool> },
     Select { reply: tokio::sync::oneshot::Sender<Option<String>> },
     Input { reply: tokio::sync::oneshot::Sender<Option<String>> },
+    /// `/login <provider>`: the masked secret editor is open; the value is
+    /// read from `AppMode::Secret` when the user submits.
+    LoginApiKey { provider: String },
 }
 
 /// `ui.select` handler shape: title, options, payload → user choice.
@@ -334,6 +346,9 @@ struct AppState {
     skill_commands: Vec<String>,
     /// Extension dialog awaiting a user answer (at most one at a time).
     pending_ui: Option<PendingUi>,
+    /// Providers available for `/login <provider>` (`id`, display name),
+    /// snapshot taken at startup (match TS `getLoginProviderOptions`).
+    login_providers: Vec<(String, String)>,
     /// When the current streaming/working run started (for the status-bar
     /// elapsed timer).
     stream_started_at: Option<Instant>,
@@ -356,6 +371,7 @@ impl AppState {
             ext_commands,
             skill_commands,
             pending_ui: None,
+            login_providers: Vec::new(),
             stream_started_at: None,
             last_status_refresh: Instant::now() - std::time::Duration::from_secs(10),
             line_screen: pi_tui::line_screen::LineScreen::new(),
@@ -576,6 +592,7 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
     match &state.model.mode {
         pi_tui::AppMode::Select { .. } => return handle_select_key(state, key),
         pi_tui::AppMode::Editor { .. } => return handle_editor_key(state, key),
+        pi_tui::AppMode::Secret { .. } => return handle_secret_key(state, key),
         pi_tui::AppMode::Chat => {}
     }
 
@@ -880,6 +897,8 @@ fn resolve_pending_ui_text(state: &mut AppState, value: Option<String>) {
                 let _ = reply.send(value);
             }
             PendingUi::Confirm { .. } => {}
+            // `/login` owns its own resolution (reads `AppMode::Secret`).
+            PendingUi::LoginApiKey { .. } => {}
         }
     }
 }
@@ -892,6 +911,8 @@ fn resolve_pending_ui_bool(state: &mut AppState, value: bool) {
                 let _ = reply.send(value);
             }
             PendingUi::Select { .. } | PendingUi::Input { .. } => {}
+            // `/login` owns its own resolution.
+            PendingUi::LoginApiKey { .. } => {}
         }
     }
 }
@@ -978,6 +999,62 @@ fn handle_editor_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> V
         }
     }
     vec![]
+}
+
+/// Keys while the masked `/login` API-key input is visible: Enter submits,
+/// Esc cancels, Backspace edits. The value lives in `AppMode::Secret`.
+fn handle_secret_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match key.code {
+        KeyCode::Enter => {
+            let value = if let pi_tui::AppMode::Secret { value, .. } = &state.model.mode {
+                value.clone()
+            } else {
+                String::new()
+            };
+            let provider = match state.pending_ui.take() {
+                Some(PendingUi::LoginApiKey { provider }) => provider,
+                other => {
+                    state.pending_ui = other;
+                    return vec![];
+                }
+            };
+            app::update(&mut state.model, pi_tui::Msg::SecretInputDone);
+            if value.trim().is_empty() {
+                state
+                    .model
+                    .push_message("system", "Login cancelled: no API key entered.");
+                return vec![];
+            }
+            vec![Effect::AgentCommand(AgentCmd::LoginApiKey {
+                provider,
+                key: value,
+            })]
+        }
+        KeyCode::Esc => {
+            state.pending_ui = None;
+            app::update(&mut state.model, pi_tui::Msg::SecretInputDone);
+            state.model.push_message("system", "Login cancelled.");
+            vec![]
+        }
+        KeyCode::Backspace => {
+            if let pi_tui::AppMode::Secret { value, .. } = &mut state.model.mode {
+                value.pop();
+            }
+            vec![]
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            if let pi_tui::AppMode::Secret { value, .. } = &mut state.model.mode {
+                value.push(c);
+            }
+            vec![]
+        }
+        _ => vec![],
+    }
 }
 
 /// Slash-command handling (pure, mirrors `interactive-mode.ts`).
@@ -1078,7 +1155,7 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             vec![Effect::Compact { instructions }]
         }
         "/help" => {
-            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /compact [instructions], /theme [dark|light], /help, /quit".to_string();
+            let mut help = "Commands: /new, /name <name>, /model <provider>/<id>, /compact [instructions], /theme [dark|light], /login <provider>, /logout [provider], /help, /quit".to_string();
             if !state.ext_commands.is_empty() {
                 help.push_str(&format!("\nExtension: /{}", state.ext_commands.join(", /")));
             }
@@ -1098,6 +1175,8 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             // 成功/失败/空消息三态提示，无中间状态）。
             vec![Effect::AgentCommand(AgentCmd::CopyLastMessage)]
         }
+        "/login" => login_command(state, args),
+        "/logout" => logout_command(args),
         "/quit" | "/exit" => {
             state.quit = true;
             vec![]
@@ -1118,6 +1197,78 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             }
         }
     }
+}
+
+/// `/login [provider]` — start provider authentication (match TS
+/// `handleLoginCommand`). pi-rs has no OAuth login flow, so this implements the
+/// API-key path (prompt for a secret, persist it in auth.json). The provider
+/// selector is argument-based (no interactive picker — see DEVIATIONS.md).
+fn login_command(state: &mut AppState, args: &str) -> Vec<Effect> {
+    let provider_ref = args.trim();
+
+    if provider_ref.is_empty() {
+        let list = available_login_providers(state);
+        let msg = if list.is_empty() {
+            "Usage: /login <provider>".to_string()
+        } else {
+            format!("Usage: /login <provider>\nAvailable providers: {list}")
+        };
+        state.model.push_message("system", msg);
+        return vec![];
+    }
+
+    let lower = provider_ref.to_lowercase();
+    let found = state
+        .login_providers
+        .iter()
+        .find(|(id, name)| {
+            id.to_lowercase() == lower || (!name.is_empty() && name.to_lowercase() == lower)
+        })
+        .cloned();
+    let Some((provider, name)) = found else {
+        let list = available_login_providers(state);
+        state.model.push_message(
+            "system",
+            format!("Unknown provider \"{provider_ref}\". Available providers: {list}"),
+        );
+        return vec![];
+    };
+
+    let display = if name.is_empty() { provider.clone() } else { name };
+    state.pending_ui = Some(PendingUi::LoginApiKey {
+        provider: provider.clone(),
+    });
+    app::update(
+        &mut state.model,
+        pi_tui::Msg::OpenSecretInput(format!("Enter {display} API key")),
+    );
+    vec![]
+}
+
+/// `id (Name)` list used by `/login` for its usage / unknown-provider hints.
+fn available_login_providers(state: &AppState) -> String {
+    state
+        .login_providers
+        .iter()
+        .map(|(id, name)| {
+            if name.is_empty() || name == id {
+                id.clone()
+            } else {
+                format!("{id} ({name})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `/logout [provider]` — remove credentials stored by `/login` (match TS
+/// `/logout` → `showOAuthSelector("logout")`). The removal itself runs in the
+/// agent task (it owns the session and auth path); an empty provider lists
+/// stored credentials.
+fn logout_command(args: &str) -> Vec<Effect> {
+    vec![Effect::AgentCommand(AgentCmd::LogoutProvider {
+        provider: args.trim().to_lowercase(),
+    })]
 }
 
 // ============================================================================
@@ -1145,6 +1296,34 @@ struct CompletionSources {
 
 /// `/model <provider>/<id>` 参数补全（对齐 TS `createBaseAutocompleteProvider`
 /// 里 modelCommand.getArgumentCompletions：fuzzy 过滤可用模型快照）。
+/// `/login` 参数补全：provider `id` / 显示名 fuzzy 过滤（对齐 TS
+/// `loginCommand.getArgumentCompletions`）。
+fn provider_argument_completions(providers: Vec<(String, String)>) -> pi_tui::ArgumentCompletionsFn {
+    let search: Vec<String> = providers
+        .iter()
+        .map(|(id, name)| if name.is_empty() { id.clone() } else { format!("{id} {name}") })
+        .collect();
+    let items: Vec<pi_tui::CompletionItem> = providers
+        .iter()
+        .map(|(id, name)| {
+            let label = if name.is_empty() { id.clone() } else { name.clone() };
+            pi_tui::CompletionItem::new(id.clone(), label, String::new())
+        })
+        .collect();
+    std::sync::Arc::new(move |prefix: String| {
+        let search = search.clone();
+        let items = items.clone();
+        Box::pin(async move {
+            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&search, &prefix, |t| t.clone());
+            if idx.is_empty() {
+                None
+            } else {
+                Some(idx.into_iter().map(|(i, _)| items[i].clone()).collect())
+            }
+        })
+    })
+}
+
 fn model_argument_completions(models: Vec<pi_agent_core::pi_ai_types::Model>) -> pi_tui::ArgumentCompletionsFn {
     // TS getModelSearchText：`id provider provider/id provider id name`。
     let search: Vec<String> = models
@@ -1213,6 +1392,25 @@ fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCo
         pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
             .with_argument_completions(model_argument_completions(models)),
     );
+    // `/login`：参数补全 = 可登录 provider（对齐 TS loginCommand.getArgumentCompletions）。
+    let login_providers: Vec<(String, String)> = session
+        .get_model_registry()
+        .get_providers()
+        .into_iter()
+        .map(|id| {
+            let name = get_provider_display_name(&id).unwrap_or("").to_string();
+            (id, name)
+        })
+        .collect();
+    commands.push(
+        pi_tui::CompletionCommand::new("/login <provider>", "Configure provider authentication", "login")
+            .with_argument_completions(provider_argument_completions(login_providers)),
+    );
+    commands.push(pi_tui::CompletionCommand::new(
+        "/logout [provider]",
+        "Remove provider authentication",
+        "logout",
+    ));
     // Prompt template 命令（对齐 TS `templateCommands`）。
     commands.extend(template_completion_commands(&session.prompt_templates()));
     if let Some(registry) = session.get_extension_registry() {
@@ -1767,6 +1965,82 @@ fn spawn_agent_command_task(
                                 }
                             }
                         }
+                        AgentCmd::LoginApiKey { provider, key } => {
+                            // Persist the API key (match TS `loginProvider` →
+                            // `AuthStorage.modify`). A newly written credential
+                            // is picked up immediately: the registry's resolver
+                            // re-reads auth.json on every lookup.
+                            let path = crate::config::get_auth_path();
+                            let mut storage = AuthStorage::create(path.clone());
+                            storage.set(
+                                &provider,
+                                AuthCredential::ApiKey {
+                                    key: Some(key),
+                                    env: None,
+                                },
+                            );
+                            let display = get_provider_display_name(&provider)
+                                .unwrap_or(provider.as_str())
+                                .to_string();
+                            let mut message = format!(
+                                "Saved API key for {display}. Credentials saved to {}",
+                                path.display()
+                            );
+                            // TS `completeProviderAuthentication`: with no model
+                            // selected, pick the provider's default model so the
+                            // user can chat immediately.
+                            let default_model = if sess.get_model().await.id.is_empty() {
+                                DEFAULT_MODEL_PER_PROVIDER
+                                    .get(provider.as_str())
+                                    .and_then(|default_id| {
+                                        sess.get_model_registry().find(&provider, default_id)
+                                    })
+                            } else {
+                                None
+                            };
+                            if let Some(model) = default_model {
+                                let default_id = model.id.clone();
+                                if sess.set_model(model).await.is_ok() {
+                                    message.push_str(&format!(". Selected {default_id}."));
+                                }
+                            }
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), message));
+                        }
+                        AgentCmd::LogoutProvider { provider } => {
+                            // `/logout [provider]` — remove credentials stored by
+                            // `/login` (match TS `showOAuthSelector("logout")`).
+                            let path = crate::config::get_auth_path();
+                            let mut storage = AuthStorage::create(path);
+                            if provider.is_empty() {
+                                let stored = storage.list();
+                                let message = if stored.is_empty() {
+                                    "No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".to_string()
+                                } else {
+                                    format!("Usage: /logout <provider>\nStored credentials: {}", stored.join(", "))
+                                };
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), message));
+                            } else {
+                                // Resolve id-or-display-name → provider id.
+                                let provider_id = sess
+                                    .get_model_registry()
+                                    .get_providers()
+                                    .into_iter()
+                                    .find(|id| {
+                                        id.to_lowercase() == provider
+                                            || get_provider_display_name(id)
+                                                .is_some_and(|n| n.to_lowercase() == provider)
+                                    })
+                                    .unwrap_or_else(|| provider.clone());
+                                storage.remove(&provider_id);
+                                let display = get_provider_display_name(&provider_id)
+                                    .unwrap_or(provider_id.as_str())
+                                    .to_string();
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    format!("Removed stored credentials for {display}."),
+                                ));
+                            }
+                        }
                         AgentCmd::ExtensionCommand(cmd_name, args) => {
                             // Run a slash command registered by an extension.
                             // The handler runs on a blocking thread with its
@@ -1976,6 +2250,20 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     session.set_extension_mode("tui");
 
     let mut state = AppState::new(cols, rows, ext_commands, skill_commands);
+
+    // `/login` provider snapshot (match TS `getLoginProviderOptions`): every
+    // registered provider is login-able with an API key in pi-rs (OAuth-only
+    // providers are not ported).
+    state.login_providers = session
+        .get_model_registry()
+        .get_providers()
+        .into_iter()
+        .map(|id| {
+            let name = get_provider_display_name(&id).unwrap_or("").to_string();
+            (id, name)
+        })
+        .collect();
+    state.login_providers.sort_by(|a, b| a.0.cmp(&b.0));
 
     // ── 补全（对齐 TS createBaseAutocompleteProvider + autocompleteMaxVisible）──
     let completion_commands = build_completion_commands(&session);
@@ -3287,5 +3575,143 @@ mod tests {
         assert_eq!(resolve_theme_setting(Some("a/b/c"), TerminalTheme::Dark), None);
         // No setting → no resolution.
         assert_eq!(resolve_theme_setting(None, TerminalTheme::Dark), None);
+    }
+
+    // ── /login /logout（A1 API-key 认证）────────────────────────────────
+
+    /// `/login` provider argument completion fuzzy-filters by id/display name.
+    #[tokio::test]
+    async fn provider_argument_completions_fuzzy_filter() {
+        let providers = vec![
+            ("anthropic".to_string(), "Anthropic".to_string()),
+            ("openai".to_string(), "OpenAI".to_string()),
+        ];
+        let f = provider_argument_completions(providers);
+        let items = f("anth".to_string()).await.expect("provider 补全");
+        assert_eq!(items.len(), 1, "anth 只匹配 anthropic: {items:?}");
+        assert_eq!(items[0].value, "anthropic");
+        assert_eq!(items[0].label, "Anthropic");
+    }
+
+    fn login_state() -> AppState {
+        let mut s = state();
+        s.login_providers = vec![
+            ("anthropic".into(), "Anthropic".into()),
+            ("openai".into(), "OpenAI".into()),
+        ];
+        s
+    }
+
+    /// `/login` without a provider lists usage instead of being sent as a
+    /// chat message (regression: it used to fall through to `submit_message`).
+    #[test]
+    fn slash_login_without_provider_shows_usage() {
+        let mut s = login_state();
+        let effects = slash_command(&mut s, "/login");
+        assert!(effects.is_empty());
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text.contains("Usage: /login <provider>")));
+        assert!(matches!(s.model.mode, pi_tui::AppMode::Chat));
+    }
+
+    /// `/login <provider>` opens the masked secret input for the provider
+    /// (matched case-insensitively by id or display name).
+    #[test]
+    fn slash_login_with_provider_opens_secret_input() {
+        let mut s = login_state();
+        let effects = slash_command(&mut s, "/login anthropic");
+        assert!(effects.is_empty());
+        assert!(matches!(&s.model.mode, pi_tui::AppMode::Secret { title, value }
+            if title.contains("Anthropic") && value.is_empty()));
+        assert!(matches!(s.pending_ui, Some(PendingUi::LoginApiKey { .. })));
+    }
+
+    /// A display name (not just the id) selects the provider.
+    #[test]
+    fn slash_login_accepts_display_name() {
+        let mut s = login_state();
+        slash_command(&mut s, "/login OpenAI");
+        assert!(matches!(&s.pending_ui, Some(PendingUi::LoginApiKey { provider }) if provider == "openai"));
+    }
+
+    /// Unknown provider → error listing available providers, no prompt.
+    #[test]
+    fn slash_login_unknown_provider_errors() {
+        let mut s = login_state();
+        let effects = slash_command(&mut s, "/login nope");
+        assert!(effects.is_empty());
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text.contains("Unknown provider")));
+        assert!(s.pending_ui.is_none());
+        assert!(matches!(s.model.mode, pi_tui::AppMode::Chat));
+    }
+
+    /// Submitting the secret emits the login command with the entered key and
+    /// closes the prompt without putting the secret in the transcript.
+    #[test]
+    fn secret_input_enter_emits_login_command() {
+        let mut s = login_state();
+        slash_command(&mut s, "/login anthropic");
+        for c in "sk-secret".chars() {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            assert!(handle_secret_key(&mut s, key).is_empty());
+        }
+        let effects = handle_secret_key(
+            &mut s,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::AgentCommand(AgentCmd::LoginApiKey {
+                provider: "anthropic".into(),
+                key: "sk-secret".into(),
+            })]
+        );
+        assert!(matches!(s.model.mode, pi_tui::AppMode::Chat));
+        assert!(s.pending_ui.is_none());
+        // The secret never lands in the transcript.
+        assert!(!s.model.messages.iter().any(|m| m.text.contains("sk-secret")));
+    }
+
+    /// Esc cancels the login without emitting an effect.
+    #[test]
+    fn secret_input_esc_cancels() {
+        let mut s = login_state();
+        slash_command(&mut s, "/login openai");
+        let effects = handle_secret_key(
+            &mut s,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        assert!(effects.is_empty());
+        assert!(matches!(s.model.mode, pi_tui::AppMode::Chat));
+        assert!(s.pending_ui.is_none());
+    }
+
+    /// `/logout <provider>` routes to the agent task, never a chat message.
+    #[test]
+    fn slash_logout_routes_to_agent_command() {
+        let mut s = login_state();
+        let effects = slash_command(&mut s, "/logout anthropic");
+        assert_eq!(
+            effects,
+            vec![Effect::AgentCommand(AgentCmd::LogoutProvider {
+                provider: "anthropic".into(),
+            })]
+        );
     }
 }

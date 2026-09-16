@@ -27,9 +27,6 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: pi-rs-macos-x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: pi-rs-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +52,7 @@ jobs:
       - name: Rename binary
         run: |
           cd target/${{ matrix.target }}/release
-          mv pi-rs${{ matrix.os == 'windows-latest' && '.exe' || '' }} ${{ matrix.artifact }}
+          mv pi-rs ${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

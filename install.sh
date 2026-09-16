@@ -24,7 +24,6 @@ detect_os() {
   case "$(uname -s)" in
     Linux*) echo "linux" ;;
     Darwin*) echo "macos" ;;
-    MINGW* | MSYS* | CYGWIN*) echo "windows" ;;
     *) echo "unsupported" ;;
   esac
 }
@@ -79,11 +78,7 @@ install() {
   url="$(download_url "$os" "$arch")"
   mkdir -p "$INSTALL_DIR"
 
-  if [ "$os" = "windows" ]; then
-    dest="$INSTALL_DIR/pi-rs.exe"
-  else
-    dest="$INSTALL_DIR/pi-rs"
-  fi
+  dest="$INSTALL_DIR/pi-rs"
 
   echo "Detected: $os/$arch"
   echo "Downloading $url"
@@ -105,11 +100,7 @@ install() {
 
 uninstall() {
   local dest
-  if [ "$(detect_os)" = "windows" ]; then
-    dest="$INSTALL_DIR/pi-rs.exe"
-  else
-    dest="$INSTALL_DIR/pi-rs"
-  fi
+  dest="$INSTALL_DIR/pi-rs"
 
   if [ -f "$dest" ]; then
     rm -f "$dest"

@@ -1313,6 +1313,24 @@ struct CompletionSources {
     cwd: String,
 }
 
+/// Live `/model` completion snapshot (TS `modelRuntime.getAvailableSnapshot()`):
+/// shared with the agent task, which refreshes it after auth/model commands so
+/// `/login` immediately makes the provider's models completable.
+type CompletionModelSnapshot =
+    Arc<std::sync::RwLock<Vec<pi_agent_core::pi_ai_types::Model>>>;
+
+/// Models offered by `/model` completion (match TS
+/// `modelCommand.getArgumentCompletions`: scoped models if any, else the
+/// available snapshot of auth-configured providers).
+fn completion_models(session: &AgentSession) -> Vec<pi_agent_core::pi_ai_types::Model> {
+    let scoped = session.get_scoped_models();
+    if scoped.is_empty() {
+        session.get_model_registry().get_available()
+    } else {
+        scoped.iter().map(|(m, _)| m.clone()).collect()
+    }
+}
+
 /// `/model <provider>/<id>` 参数补全（对齐 TS `createBaseAutocompleteProvider`
 /// 里 modelCommand.getArgumentCompletions：fuzzy 过滤可用模型快照）。
 /// `/login` 参数补全：provider `id` / 显示名 fuzzy 过滤（对齐 TS
@@ -1343,23 +1361,25 @@ fn provider_argument_completions(providers: Vec<(String, String)>) -> pi_tui::Ar
     })
 }
 
-fn model_argument_completions(models: Vec<pi_agent_core::pi_ai_types::Model>) -> pi_tui::ArgumentCompletionsFn {
-    // TS getModelSearchText：`id provider provider/id provider id name`。
-    let search: Vec<String> = models
-        .iter()
-        .map(|m| {
-            let name = if m.name.is_empty() { String::new() } else { format!(" {}", m.name) };
-            format!("{} {} {}/{} {} {}{name}", m.id, m.provider, m.provider, m.id, m.provider, m.id)
-        })
-        .collect();
-    let items: Vec<pi_tui::CompletionItem> = models
-        .iter()
-        .map(|m| pi_tui::CompletionItem::new(format!("{}/{}", m.provider, m.id), m.id.clone(), m.provider.clone()))
-        .collect();
+fn model_argument_completions(snapshot: CompletionModelSnapshot) -> pi_tui::ArgumentCompletionsFn {
     std::sync::Arc::new(move |prefix: String| {
-        let search = search.clone();
-        let items = items.clone();
+        let snapshot = snapshot.clone();
         Box::pin(async move {
+            // 每次请求读取实时快照（对齐 TS `getAvailableSnapshot()`）——
+            // 否则 `/login` 之后 `/model` 补全仍是启动时的空列表。
+            let models = snapshot.read().map(|g| g.clone()).unwrap_or_default();
+            // TS getModelSearchText：`id provider provider/id provider id name`。
+            let search: Vec<String> = models
+                .iter()
+                .map(|m| {
+                    let name = if m.name.is_empty() { String::new() } else { format!(" {}", m.name) };
+                    format!("{} {} {}/{} {} {}{name}", m.id, m.provider, m.provider, m.id, m.provider, m.id)
+                })
+                .collect();
+            let items: Vec<pi_tui::CompletionItem> = models
+                .iter()
+                .map(|m| pi_tui::CompletionItem::new(format!("{}/{}", m.provider, m.id), m.id.clone(), m.provider.clone()))
+                .collect();
             // fuzzy_filter_indices 用 search 文本排序，再映射回 item。
             let idx = pi_tui::fuzzy::fuzzy_filter_indices(&search, &prefix, |t| t.clone());
             if idx.is_empty() {
@@ -1395,7 +1415,10 @@ fn wrap_extension_argument_completions(
 /// 构建补全命令列表（对齐 TS `createBaseAutocompleteProvider`）：
 /// 内建命令（`/model` 带模型参数补全）+ prompt template + 扩展命令
 /// + skill 命令（受 `enableSkillCommands` 控制）。
-fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCommand> {
+fn build_completion_commands(
+    session: &AgentSession,
+    model_snapshot: CompletionModelSnapshot,
+) -> Vec<pi_tui::CompletionCommand> {
     let mut commands = vec![
         pi_tui::CompletionCommand::new("/help", "Show commands", "help"),
         pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
@@ -1405,11 +1428,10 @@ fn build_completion_commands(session: &AgentSession) -> Vec<pi_tui::CompletionCo
         pi_tui::CompletionCommand::new("/theme [dark|light]", "Switch theme (dark/light)", "theme"),
         pi_tui::CompletionCommand::new("/reload", "Reload extensions", "reload"),
     ];
-    // `/model`：参数补全 = 可用模型列表（对齐 TS modelCommand.getArgumentCompletions）。
-    let models = session.get_model_registry().get_available();
+    // `/model`：参数补全 = 实时可用模型快照（对齐 TS modelCommand.getArgumentCompletions）。
     commands.push(
         pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
-            .with_argument_completions(model_argument_completions(models)),
+            .with_argument_completions(model_argument_completions(model_snapshot)),
     );
     // `/login`：参数补全 = 可登录 provider（对齐 TS loginCommand.getArgumentCompletions）。
     let login_providers: Vec<(String, String)> = login_providers_for(session.get_model_registry());
@@ -1834,6 +1856,7 @@ fn spawn_agent_command_task(
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<AgentCmd>,
     exit_flag: Arc<std::sync::atomic::AtomicBool>,
     result_tx: tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
+    model_snapshot: CompletionModelSnapshot,
 ) {
     tokio::spawn(async move {
         while !exit_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2015,6 +2038,10 @@ fn spawn_agent_command_task(
                                     message.push_str(&format!(". Selected {default_id}."));
                                 }
                             }
+                            // A new credential changes `/model` availability.
+                            if let Ok(mut snapshot) = model_snapshot.write() {
+                                *snapshot = completion_models(&sess);
+                            }
                             let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), message));
                         }
                         AgentCmd::LogoutProvider { provider } => {
@@ -2046,6 +2073,10 @@ fn spawn_agent_command_task(
                                 let display = get_provider_display_name(&provider_id)
                                     .unwrap_or(provider_id.as_str())
                                     .to_string();
+                                // Removing a credential changes `/model` availability.
+                                if let Ok(mut snapshot) = model_snapshot.write() {
+                                    *snapshot = completion_models(&sess);
+                                }
                                 let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                     "system".into(),
                                     format!("Removed stored credentials for {display}."),
@@ -2117,6 +2148,10 @@ fn spawn_agent_command_task(
                         AgentCmd::ReloadExtensions => {
                             // Extension reload is not applicable for Rust
                             // native extensions.
+                            // Registered providers / models may still have changed.
+                            if let Ok(mut snapshot) = model_snapshot.write() {
+                                *snapshot = completion_models(&sess);
+                            }
                         }
                     }
                 }
@@ -2269,7 +2304,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     state.login_providers = login_providers_for(session.get_model_registry());
 
     // ── 补全（对齐 TS createBaseAutocompleteProvider + autocompleteMaxVisible）──
-    let completion_commands = build_completion_commands(&session);
+    let model_snapshot: CompletionModelSnapshot =
+        Arc::new(std::sync::RwLock::new(completion_models(&session)));
+    let completion_commands = build_completion_commands(&session, model_snapshot.clone());
     state
         .model
         .completer
@@ -2404,7 +2441,13 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     let bg_session = session.clone();
     let bg_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bg_exit_flag = bg_exit.clone();
-    spawn_agent_command_task(bg_session, cmd_rx, bg_exit_flag, result_tx.clone());
+    spawn_agent_command_task(
+        bg_session,
+        cmd_rx,
+        bg_exit_flag,
+        result_tx.clone(),
+        model_snapshot.clone(),
+    );
 
     // ── Subscribe agent events (lock-and-release) ───────────────────────
     // Keep an `Arc<Agent>` handle for abort: `abort()` is `&self` and must
@@ -3020,10 +3063,38 @@ mod tests {
                 compat: None,
             },
         ];
-        let f = model_argument_completions(models);
+        let f = model_argument_completions(Arc::new(std::sync::RwLock::new(models)));
         let items = f("gpt-4o-m".to_string()).await.expect("模型补全");
         assert_eq!(items.len(), 1, "gpt-4o-m 只匹配 gpt-4o-mini: {items:?}");
         assert_eq!(items[0].value, "openai/gpt-4o-mini");
+    }
+
+    /// The `/model` completion reads the shared snapshot on every request, so
+    /// a `/login` that refreshes it becomes visible without restarting. Guards
+    /// the startup-snapshot regression.
+    #[tokio::test]
+    async fn model_argument_completions_reflects_live_snapshot() {
+        let snapshot: CompletionModelSnapshot = Arc::new(std::sync::RwLock::new(Vec::new()));
+        let f = model_argument_completions(snapshot.clone());
+        assert!(f(String::new()).await.is_none(), "空快照 → 无补全");
+        *snapshot.write().expect("snapshot write") = vec![pi_agent_core::pi_ai_types::Model {
+            id: "kimi-k2".into(),
+            name: "Kimi K2".into(),
+            api: "openai-completions".into(),
+            provider: "opencode-go".into(),
+            base_url: "http://localhost".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".into()],
+            cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+            context_window: 128000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }];
+        let items = f(String::new()).await.expect("刷新后可见");
+        assert_eq!(items[0].value, "opencode-go/kimi-k2");
     }
 
     #[test]

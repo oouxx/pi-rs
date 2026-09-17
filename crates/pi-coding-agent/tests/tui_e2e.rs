@@ -1778,13 +1778,14 @@ fn tui_scroll_up_down_restores_exact_screen() {
             &format!("amb={ambiguous_wide}: scroll-down-1 must restore scroll-up-N exactly"),
         );
 
-        // Home (gg) to the top, then G back to the bottom: the bottom
-        // screen must be byte-identical to the original.
-        tui.write(b"gg");
+        // Home to the top, then End back to the bottom (TS
+        // `tui.altScreen.top/bottom` = home/end): the bottom screen must be
+        // byte-identical to the original.
+        tui.write(b"\x1b[H");
         std::thread::sleep(Duration::from_millis(200));
         pump(&mut tui, &mut screen);
         let top = screen.snapshot();
-        tui.write(b"G");
+        tui.write(b"\x1b[F");
         std::thread::sleep(Duration::from_millis(200));
         pump(&mut tui, &mut screen);
         let after_g = screen.snapshot();
@@ -1812,11 +1813,11 @@ fn tui_scroll_up_down_restores_exact_screen() {
 /// 200 ms), the transcript rows re-wrap and shift up every frame — the
 /// heaviest diff churn for wide characters. After aborting the stream, the
 /// same scroll invariants must hold (scroll-up N+1 then down 1 restores
-/// exactly, and gg/G round-trips).
+/// exactly, and Home/End round-trips).
 /// Streaming variant: while the reply streams in, the transcript rows
 /// re-wrap and shift up every frame — the heaviest diff churn for wide
 /// characters. After the big stream completes, the scroll invariants must
-/// hold (scroll-up N+1 then down 1 restores exactly, and gg/G round-trips).
+/// hold (scroll-up N+1 then down 1 restores exactly, and Home/End round-trips).
 #[test]
 fn tui_scroll_after_long_stream_restores_exact_screen() {
     for ambiguous_wide in [false, true] {
@@ -1860,16 +1861,16 @@ fn tui_scroll_after_long_stream_restores_exact_screen() {
             &format!("amb={ambiguous_wide}: streaming: scroll-down-1 restores scroll-up-N"),
         );
 
-        tui.write(b"gg");
+        tui.write(b"\x1b[H");
         std::thread::sleep(Duration::from_millis(200));
         pump(&mut tui, &mut screen);
-        tui.write(b"G");
+        tui.write(b"\x1b[F");
         std::thread::sleep(Duration::from_millis(200));
         pump(&mut tui, &mut screen);
         assert_screens_eq(
             &screen.snapshot(),
             &bottom,
-            &format!("amb={ambiguous_wide}: streaming: G restores the original bottom"),
+            &format!("amb={ambiguous_wide}: streaming: End restores the original bottom"),
         );
 
         tui.write(&[0x04]);

@@ -9,13 +9,17 @@
 //! context usage left and the model right-aligned. Colors come from the
 //! TS built-in dark theme (see [`crate::theme`]).
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
+use crate::selection::{
+    columns_for_row, line_range, word_range, ClickTarget, Granularity, SelPoint, SelSpace, Selection,
+};
 use crate::components::{
     Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger, Editor, Input, Markdown, SelectList,
 };
@@ -131,7 +135,7 @@ fn intra_line_spans(
 /// 的 `-`/`+` 行做分组——恰好 1 删 1 增时做词级 intra-line 高亮（inverse
 /// 标记变更 token），否则整组按行着色。返回消费的行数。
 fn render_edit_diff_line(
-    frame: &mut Frame,
+    frame: &mut Buffer,
     area: Rect,
     y: i32,
     bg: Color,
@@ -260,6 +264,19 @@ const BOX_PAD_X: u16 = 1;
 const BOX_PAD_Y: u16 = 1;
 /// Minimum content rows of the input editor (TS `max(5, 30% rows)`).
 const EDITOR_MIN_ROWS: u16 = 5;
+
+/// Body render helpers write into an off-screen *content* buffer (for the
+/// transcript) as well as the live frame, so they take `&mut Buffer`.
+/// This shim keeps the original `frame.render_widget(...)` call shape.
+trait RenderWidgetExt {
+    fn render_widget<W: Widget>(&mut self, widget: W, area: Rect);
+}
+
+impl RenderWidgetExt for Buffer {
+    fn render_widget<W: Widget>(&mut self, widget: W, area: Rect) {
+        widget.render(area, self);
+    }
+}
 /// Context usage thresholds (TS footer: error >90, warning >70).
 const CTX_ERROR_PCT: u8 = 90;
 const CTX_WARNING_PCT: u8 = 70;
@@ -276,6 +293,9 @@ pub enum Cmd {
     /// Ctrl+X（TS `app.message.copy`）：复制最后一条 assistant 消息到系统
     /// 剪贴板——由宿主（interactive 模式）在 agent 任务里执行。
     CopyLastMessage,
+    /// 复制当前 app-owned 选区（copy-on-select 松手 / Ctrl+X preferSelection）。
+    /// 宿主写系统剪贴板并回显三态结果。
+    CopySelection(String),
 }
 
 /// Cumulative token/cost totals for the footer stats line (TS
@@ -619,7 +639,6 @@ pub struct Model {
     /// Whether context usage is known (TS shows `?/window` when null).
     pub context_usage_known: bool,
     pub elapsed_secs: u64,
-    pub g_pressed: bool,
     /// Next stable block id (messages and tool calls share one sequence).
     next_block_id: u64,
     // ── TS footer data (FooterComponent) ────────────────────────────────
@@ -668,6 +687,21 @@ pub struct Model {
     /// 重试倒计时（TS RetryStatusIndicator + CountdownTimer）：auto_retry_start /
     /// summarization_retry_scheduled 期间在 status 区显示，逐秒递减。
     pub retry_status: Option<RetryStatus>,
+    // ── App-owned 文本选择（TS TuiAltScreen selection 子系统）──────────
+    /// Drag/word/line 选择状态（anchor/focus、粒度、源文本快照）。
+    pub selection: Selection,
+    /// TS `fullscreenCopyOnSelect`（默认 `true`）：松手即写系统剪贴板。
+    pub copy_on_select: bool,
+    /// 上次渲染的转录区矩形（鼠标点 → 内容行映射）。
+    pub body_area: Rect,
+    /// 上次渲染的转录视口顶部（内容行偏移）。
+    pub body_scroll: usize,
+    /// 转录内容可滚动上限（auto-scroll 到达边界时停止）。
+    pub body_max_scroll: usize,
+    /// 转录内容总行数。
+    pub content_height: usize,
+    /// 上次渲染的整屏纯文本行（`SelSpace::Screen` 选择的源文本）。
+    pub screen_lines: Vec<String>,
 }
 
 /// 重试倒计时状态（TS RetryStatusIndicator）：`esc_aborts` 仅在 agent 自动
@@ -691,7 +725,6 @@ impl Model {
             completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
             cwd: String::new(), git_branch: None, context_usage_pct: 0.0,
             context_usage_known: false, elapsed_secs: 0,
-            g_pressed: false,
             next_block_id: 0,
             session_name: None,
             usage_totals: UsageTotals::default(),
@@ -711,6 +744,13 @@ impl Model {
             compaction_manual: false,
             compaction_overflow: false,
             retry_status: None,
+            selection: Selection::default(),
+            copy_on_select: true,
+            body_area: Rect::new(0, 0, 0, 0),
+            body_scroll: 0,
+            body_max_scroll: 0,
+            content_height: 0,
+            screen_lines: Vec::new(),
         }
     }
 
@@ -823,11 +863,310 @@ impl Model {
 }
 
 // ============================================================================
+// App-owned text selection (TS TuiAltScreen selection subsystem)
+// ============================================================================
+
+/// Double-click interval (TS `DOUBLE_CLICK_INTERVAL_MS`).
+const DOUBLE_CLICK_INTERVAL_MS: u64 = 500;
+
+/// Upper bound for the off-screen transcript capture used by text selection.
+/// The TS original materializes the whole document (`scrollContentLines`) each
+/// render; pi-rs only does it on a press, but guards against pathological
+/// transcripts: beyond this size content-space selection is unavailable
+/// (screen-space selection still works).
+const MAX_SELECTION_CONTENT_ROWS: u16 = 20_000;
+
+impl Model {
+    /// Whether a non-empty selection is visible (TS `hasActiveSelection`).
+    pub fn has_active_selection(&self) -> bool {
+        self.selection.has_active()
+    }
+
+    /// The selected text (TS `getActiveSelectionText`).
+    pub fn selection_text(&self) -> Option<String> {
+        self.selection.text()
+    }
+
+    /// Apply the host's `fullscreenCopyOnSelect` setting.
+    pub fn set_copy_on_select(&mut self, enabled: bool) {
+        self.copy_on_select = enabled;
+    }
+
+    /// Current copy-on-select setting.
+    pub fn copy_on_select(&self) -> bool {
+        self.copy_on_select
+    }
+
+    /// Whether the drag autoscroll loop wants another tick.
+    pub fn selection_auto_scroll_active(&self) -> bool {
+        self.selection.auto_scroll_dir != 0
+    }
+
+    /// Route a non-wheel mouse event into the selection state machine
+    /// (TS `handleSelectionMouseEvent`). Only the chat transcript owns mouse
+    /// selection (overlays/editors keep their keyboard interaction).
+    pub fn handle_mouse(&mut self, event: &MouseEvent) -> Vec<Cmd> {
+        if !matches!(self.mode, AppMode::Chat) {
+            return Vec::new();
+        }
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.selection_press(event);
+                Vec::new()
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.selection_drag(event);
+                Vec::new()
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.selection_release(event),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Which coordinate space the pointer is in (TS: the scroll view under
+    /// the pointer, otherwise screen coordinates).
+    fn selection_space_at(&self, col: u16, row: u16) -> SelSpace {
+        let area = self.body_area;
+        if area.width > 0
+            && area.height > 0
+            && col >= area.left()
+            && col < area.right()
+            && row >= area.top()
+            && row < area.bottom()
+        {
+            SelSpace::Content
+        } else {
+            SelSpace::Screen
+        }
+    }
+
+    /// Map a mouse event to a selection point in `space` (TS
+    /// `getSelectionPoint` / `getScrollSelectionPoint`): content rows clamp to
+    /// the visible viewport then to the content range; screen points clamp to
+    /// the terminal.
+    fn selection_point(&self, space: SelSpace, event: &MouseEvent) -> SelPoint {
+        match space {
+            SelSpace::Content => {
+                let area = self.body_area;
+                let rel = (event.row as i32 - area.top() as i32)
+                    .clamp(0, area.height.saturating_sub(1) as i32) as usize;
+                let row = (self.body_scroll + rel).min(self.content_height.saturating_sub(1));
+                let col = event
+                    .column
+                    .saturating_sub(area.left())
+                    .min(area.width.saturating_sub(1));
+                SelPoint::character(SelSpace::Content, row, col)
+            }
+            SelSpace::Screen => {
+                let row = (event.row as usize).min(self.height.saturating_sub(1) as usize);
+                let col = event.column.min(self.width.saturating_sub(1));
+                SelPoint::character(SelSpace::Screen, row, col)
+            }
+        }
+    }
+
+    /// Double/triple-click detection (TS `getClickCount`): a repeated click on
+    /// the same word within 500ms cycles 1 → 2 → 3.
+    fn selection_click_count(&mut self, point: &SelPoint, word: Option<(u16, u16)>) -> u8 {
+        let now = std::time::Instant::now();
+        let count = match (word, self.selection.last_click.as_ref()) {
+            (Some((word_start, word_end)), Some(previous))
+                if now.duration_since(previous.timestamp)
+                    <= std::time::Duration::from_millis(DOUBLE_CLICK_INTERVAL_MS)
+                    && previous.space == point.space
+                    && previous.row == point.row
+                    && previous.word_start == word_start
+                    && previous.word_end == word_end =>
+            {
+                (previous.count % 3) + 1
+            }
+            _ => 1,
+        };
+        self.selection.last_click = word.map(|(word_start, word_end)| {
+            ClickTarget {
+                timestamp: now,
+                count,
+                space: point.space,
+                row: point.row,
+                word_start,
+                word_end,
+            }
+        });
+        count
+    }
+
+    /// Primary-button press: anchor the selection and resolve the word/line
+    /// range for the current click count (TS `handleSelectionMouseEvent`
+    /// press branch).
+    fn selection_press(&mut self, event: &MouseEvent) {
+        let space = self.selection_space_at(event.column, event.row);
+        let (lines, max_col) = match space {
+            SelSpace::Content => (transcript_content_lines(self), self.body_area.width),
+            SelSpace::Screen => (self.screen_lines.clone(), self.width),
+        };
+        self.selection.source_lines = lines;
+        self.selection.source_max_col = max_col;
+        self.selection.press_active = true;
+        self.selection.dragged = false;
+        self.selection.auto_scroll_dir = 0;
+        self.selection.drag_pointer = None;
+        let anchor = self.selection_point(space, event);
+        // Clone the line: the click counter mutably borrows the selection.
+        let line = self
+            .selection
+            .source_lines
+            .get(anchor.row)
+            .cloned()
+            .unwrap_or_default();
+        let word = word_range(&line, anchor.col);
+        let click_count = self.selection_click_count(&anchor, word);
+        let range = match click_count {
+            2 => word.map(|(start, end)| {
+                (
+                    SelPoint { col: start, ..anchor },
+                    SelPoint { col: end, boundary: true, ..anchor },
+                )
+            }),
+            3 => {
+                let (start, end) = line_range(&line);
+                Some((
+                    SelPoint { col: start, ..anchor },
+                    SelPoint { col: end, boundary: true, ..anchor },
+                ))
+            }
+            _ => None,
+        };
+        self.selection.granularity = match (click_count, range.is_some()) {
+            (2, true) => Granularity::Word,
+            (3, true) => Granularity::Line,
+            _ => Granularity::Character,
+        };
+        self.selection.initial_range = range;
+        self.selection.anchor = Some(range.map(|r| r.0).unwrap_or(anchor));
+        self.selection.focus = Some(range.map(|r| r.1).unwrap_or(anchor));
+    }
+
+    /// Primary-button drag: extend the focus and (transcript only) arm the
+    /// viewport-edge autoscroll (TS drag branch).
+    fn selection_drag(&mut self, event: &MouseEvent) {
+        let Some(anchor) = self.selection.anchor else { return };
+        if !self.selection.press_active {
+            return;
+        }
+        self.selection.dragged = true;
+        self.selection.last_click = None;
+        let point = self.selection_point(anchor.space, event);
+        self.selection.update_focus(point);
+        self.update_selection_auto_scroll(event);
+    }
+
+    /// Arm/clear the autoscroll direction while dragging past the transcript
+    /// viewport edge (TS `updateSelectionAutoScroll`).
+    fn update_selection_auto_scroll(&mut self, event: &MouseEvent) {
+        let Some(anchor) = self.selection.anchor else {
+            self.selection.auto_scroll_dir = 0;
+            return;
+        };
+        if anchor.space != SelSpace::Content || self.body_area.height == 0 {
+            self.selection.auto_scroll_dir = 0;
+            return;
+        }
+        self.selection.drag_pointer = Some((event.column, event.row));
+        let top = self.body_area.top();
+        let bottom = self.body_area.bottom().saturating_sub(1);
+        self.selection.auto_scroll_dir = if event.row <= top {
+            -1
+        } else if event.row >= bottom {
+            1
+        } else {
+            0
+        };
+    }
+
+    /// Advance a held drag by one row (TS `autoScrollSelection`, driven by the
+    /// 50ms timer there and by the tick here). Returns whether the view moved.
+    pub fn selection_auto_scroll(&mut self) -> bool {
+        let direction = self.selection.auto_scroll_dir;
+        if direction == 0 {
+            return false;
+        }
+        let Some(anchor) = self.selection.anchor else {
+            self.selection.auto_scroll_dir = 0;
+            return false;
+        };
+        if anchor.space != SelSpace::Content {
+            self.selection.auto_scroll_dir = 0;
+            return false;
+        }
+        let current = self.body_scroll as i64;
+        let max = self.body_max_scroll as i64;
+        let next = (current + direction as i64).clamp(0, max);
+        if next == current {
+            self.selection.auto_scroll_dir = 0;
+            self.selection.drag_pointer = None;
+            return false;
+        }
+        if direction < 0 {
+            self.auto_scroll = false;
+        }
+        self.scroll_offset = next as usize;
+        // Keep the projection metadata in sync when several autoscroll steps
+        // run between renders (the tick loop redraws every step, but tests and
+        // fast ticks may not).
+        self.body_scroll = next as usize;
+        if next >= max {
+            self.auto_scroll = true;
+        }
+        if let Some((x, y)) = self.selection.drag_pointer {
+            let area = self.body_area;
+            let rel = (y as i32 - area.top() as i32)
+                .clamp(0, area.height.saturating_sub(1) as i32) as usize;
+            let row = (next as usize + rel).min(self.content_height.saturating_sub(1));
+            let col = x.saturating_sub(area.left()).min(area.width.saturating_sub(1));
+            self.selection
+                .update_focus(SelPoint::character(SelSpace::Content, row, col));
+        }
+        true
+    }
+
+    /// Primary-button release: stop the drag, copy on select when enabled
+    /// (TS release branch).
+    fn selection_release(&mut self, event: &MouseEvent) -> Vec<Cmd> {
+        if !self.selection.press_active {
+            return Vec::new();
+        }
+        self.selection.press_active = false;
+        self.selection.auto_scroll_dir = 0;
+        self.selection.drag_pointer = None;
+        let Some(anchor) = self.selection.anchor else {
+            return Vec::new();
+        };
+        let point = self.selection_point(anchor.space, event);
+        self.selection.update_focus(point);
+        let mut cmds = Vec::new();
+        if self.copy_on_select {
+            if let Some(text) = self.selection.text() {
+                cmds.push(Cmd::CopySelection(text));
+            }
+        }
+        cmds
+    }
+}
+
+// ============================================================================
 // Msg
 // ============================================================================
 
 pub enum Msg {
     Key(KeyEvent), Resize(u16, u16), Paste(String),
+    /// Non-wheel mouse events (press / drag / release) for app-owned text
+    /// selection (TS `handleMouseEvent`).
+    Mouse(MouseEvent),
+    /// Terminal focus loss (`?1004h`) — cancels an in-progress selection grip
+    /// (TS `FOCUS_OUT`).
+    FocusLost,
+    /// TS `fullscreenCopyOnSelect` setting pushed in by the host.
+    SetCopyOnSelect(bool),
     NewMessage(String, String), StreamText(String), StreamEnd,
     /// Finalize the streaming assistant message: thinking content, terminal
     /// stop reason and provider error message (TS `Done`/`Error` events).
@@ -930,6 +1269,19 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             vec![]
         }
         Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
+        Msg::Mouse(m) => model.handle_mouse(&m),
+        Msg::FocusLost => {
+            // TS FOCUS_OUT: only an in-progress grip is cancelled; a completed
+            // selection survives focus changes. The click tracker is always
+            // dropped so a click after refocusing is not treated as a double
+            // click.
+            model.selection.last_click = None;
+            if model.selection.press_active {
+                model.selection.clear();
+            }
+            vec![]
+        }
+        Msg::SetCopyOnSelect(enabled) => { model.copy_on_select = enabled; vec![] }
         Msg::Paste(text) => {
             if let AppMode::Secret { value, .. } = &mut model.mode {
                 value.push_str(&normalize_secret_paste(&text));
@@ -1080,7 +1432,6 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             _ => {}
         }
     }
-    if key.code != KeyCode::Char('g') { model.g_pressed = false; }
     // Ctrl+O: toggle tool output expansion + the startup header (TS
     // `app.tools.expand`).
     if key.code == KeyCode::Char('o') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
@@ -1092,9 +1443,16 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     // 选择器各自处理自己的键（对话框 Editor 的 ctrl+d/v/x 由 textarea 原生
     // 处理：delete-char-forward / 剪贴板粘贴 / 剪切选区）。
     if matches!(model.mode, AppMode::Chat) {
-        // Ctrl+X: app.message.copy（TS `handleCopyCommand`）——复制最后一条
-        // assistant 消息，执行在宿主（interactive 模式）的 agent 任务里。
+        // Ctrl+X: app.message.copy（TS `handleCopyCommand({preferSelection:true})`）
+        // ——copy-on-select 关闭时优先复制当前选区（TS 只在 `!copyOnSelect &&
+        // hasActiveSelection` 时走选区分支），否则复制最后一条 assistant
+        // 消息（宿主 interactive 模式的 agent 任务）。
         if key.code == KeyCode::Char('x') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+            if !model.copy_on_select {
+                if let Some(text) = model.selection.text() {
+                    return vec![Cmd::CopySelection(text)];
+                }
+            }
             return vec![Cmd::CopyLastMessage];
         }
         // Ctrl+C: app.clear（对齐 TS `handleCtrlC`）——500ms 内连按两次退出，
@@ -1155,9 +1513,10 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             }
             match key.code {
             KeyCode::Char(c) => {
-                if c == 'g' && model.g_pressed && model.input.value().is_empty() { model.g_pressed = false; model.scroll_offset = 0; model.auto_scroll = false; return vec![]; }
-                if c == 'g' && model.input.value().is_empty() { model.g_pressed = true; return vec![]; }
-                if c == 'G' && model.input.value().is_empty() { model.auto_scroll = true; return vec![]; }
+                // Plain characters always insert (TS editor behavior). Scroll
+                // top/bottom are Home/End (`tui.altScreen.top/bottom`), never
+                // vim-style `gg`/`G` — those are not bindings in the original
+                // and used to swallow a leading `g`/`G`.
                 model.input.insert_char(c);
             }
             KeyCode::Backspace => {
@@ -1371,6 +1730,7 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
             String::new()
         };
         render_fullscreen_editor(model, frame, area, &title, &t);
+        capture_screen_lines(model, frame.buffer_mut(), area);
         return;
     }
     // Login dialogs replace the editor (match the original `editorContainer`).
@@ -1378,7 +1738,7 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
     let editor_h = if secret { 7u16.min(area.height.max(1)) } else { editor_h };
     let chunks = Layout::new(Direction::Vertical, [Constraint::Min(1), Constraint::Length(pending_h), Constraint::Length(status_h), Constraint::Length(editor_h), Constraint::Length(footer_h)]).split(area);
-    render_body(model, frame, chunks[0], &t);
+    render_body(model, frame.buffer_mut(), chunks[0], &t);
     render_pending_messages(model, frame, chunks[1], &t);
     render_status(model, frame, chunks[2], &t);
     if secret {
@@ -1387,8 +1747,9 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         render_input(model, frame, chunks[3], &t);
     }
     render_footer(model, frame, chunks[4], &t);
-    if model.dialog.is_some() { render_dialog(model, frame, area, &t); return; }
-    if let AppMode::Select { list, .. } = &model.mode {
+    if model.dialog.is_some() {
+        render_dialog(model, frame, area, &t);
+    } else if let AppMode::Select { list, .. } = &model.mode {
         // Overlays center inside the terminal area (alt screen = the
         // whole visible screen).
         let oa_h = (area.height / 2).clamp(1, area.height.max(1));
@@ -1396,6 +1757,63 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         let oa = Rect::new(area.width / 4, oa_y, area.width / 2, oa_h);
         frame.render_widget(Clear, oa); list.render_to_frame(frame, oa, &t);
     }
+    // Selection highlight last (TS `applySelection` runs after overlays) and
+    // then snapshot the screen text for `SelSpace::Screen` selections.
+    apply_selection_highlight(model, frame.buffer_mut(), area);
+    capture_screen_lines(model, frame.buffer_mut(), area);
+}
+
+/// Invert the selected cells (TS `applySelectionHighlight`, `\x1b[7m`).
+fn apply_selection_highlight(model: &Model, buf: &mut Buffer, area: Rect) {
+    let Some((start, end)) = model.selection.bounds() else { return };
+    if start.space != end.space {
+        return;
+    }
+    for source_row in start.row..=end.row {
+        let line = model
+            .selection
+            .source_lines
+            .get(source_row)
+            .map(String::as_str)
+            .unwrap_or("");
+        let (start_col, end_col) = match start.space {
+            SelSpace::Content => {
+                columns_for_row(line, source_row, (start, end), 0, model.body_area.width)
+            }
+            SelSpace::Screen => columns_for_row(line, source_row, (start, end), 0, area.width),
+        };
+        if end_col <= start_col {
+            continue;
+        }
+        let (base_x, screen_row) = match start.space {
+            SelSpace::Content => {
+                let y = model.body_area.top() as i32 + source_row as i32 - model.body_scroll as i32;
+                if y < model.body_area.top() as i32 || y >= model.body_area.bottom() as i32 {
+                    continue;
+                }
+                (model.body_area.left(), y as u16)
+            }
+            SelSpace::Screen => (0u16, source_row as u16),
+        };
+        if screen_row >= area.height {
+            continue;
+        }
+        for col in start_col..end_col {
+            let x = base_x + col;
+            if x >= area.width {
+                break;
+            }
+            buf[(x, screen_row)].modifier.insert(Modifier::REVERSED);
+        }
+    }
+}
+
+/// Snapshot the rendered screen as plain text lines — the source for
+/// `SelSpace::Screen` selections (TS `previousScreen`).
+fn capture_screen_lines(model: &mut Model, buf: &Buffer, area: Rect) {
+    model.screen_lines = (0..area.height)
+        .map(|row| buffer_row_text(buf, area.x, area.y + row, area.width))
+        .collect();
 }
 
 /// Dock heights (status / editor / footer), TS-style: the status area is
@@ -1758,7 +2176,7 @@ fn block_gaps(blocks: &[BlockView]) -> (Vec<u16>, Vec<u16>) {
     (gaps, leads)
 }
 
-fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
+fn render_body(model: &mut Model, frame: &mut Buffer, area: Rect, t: &Theme) {
     let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
     let blocks = build_blocks(model, wrap_w, t);
     let expanded = model.tool_output_expanded;
@@ -1798,7 +2216,40 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
         }
         clamped
     };
-    let mut ly = area.top() as i32 - scroll as i32;
+    // Selection projection metadata: mouse selection works in content-row
+    // coordinates (TS `SelectionPoint.scrollView`), so the render records the
+    // body rect / scroll offset used by `apply_selection_highlight` and the
+    // mouse handlers.
+    model.body_area = area;
+    model.body_scroll = scroll;
+    model.body_max_scroll = max_scroll;
+    model.content_height = total_h as usize;
+    render_blocks(frame, area, t, &blocks, &heights, &gaps, &leads, area.top() as i32 - scroll as i32, expanded, wrap_w);
+
+    if blocks.is_empty() {
+        // 空转录提示行。view() 开头已整屏 Clear，这里无需再擦除。
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + BOX_PAD_X, area.y + 1, area.width.saturating_sub(2), 1));
+    }
+}
+
+/// Render the transcript blocks top-down starting at `start_y` (content row
+/// coordinates for the off-screen content buffer, or `body.top - scroll` for
+/// the visible frame). Shared by [`render_body`] and
+/// [`transcript_content_lines`] so display and copy use one code path.
+#[allow(clippy::too_many_arguments)]
+fn render_blocks(
+    frame: &mut Buffer,
+    area: Rect,
+    t: &Theme,
+    blocks: &[BlockView],
+    heights: &[u16],
+    gaps: &[u16],
+    leads: &[u16],
+    start_y: i32,
+    expanded: bool,
+    wrap_w: usize,
+) {
+    let mut ly = start_y;
     for (idx, item) in blocks.iter().enumerate() {
         let h = (heights[idx] + gaps[idx] + leads[idx]) as i32;
         if h <= 0 {
@@ -1816,15 +2267,61 @@ fn render_body(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
         }
         ly += h;
     }
+}
 
-    if blocks.is_empty() {
-        // 空转录提示行。view() 开头已整屏 Clear，这里无需再擦除。
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + BOX_PAD_X, area.y + 1, area.width.saturating_sub(2), 1));
+/// Plain-text content rows of the transcript (selection source for content-row
+/// selections). Renders the full document into an off-screen buffer of the
+/// content height — the equivalent of the TS `scrollContentLines`.
+fn transcript_content_lines(model: &mut Model) -> Vec<String> {
+    let area = model.body_area;
+    if area.width == 0 {
+        return Vec::new();
     }
+    let t = model.theme.clone();
+    let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
+    let expanded = model.tool_output_expanded;
+    let blocks = build_blocks(model, wrap_w, &t);
+    let heights: Vec<u16> = blocks.iter().map(|b| block_height(b, expanded, wrap_w)).collect();
+    let (gaps, leads) = block_gaps(&blocks);
+    let total_h: u16 = heights
+        .iter()
+        .zip(&gaps)
+        .zip(&leads)
+        .map(|((h, g), l)| h + g + l)
+        .sum::<u16>();
+    if total_h > MAX_SELECTION_CONTENT_ROWS {
+        return Vec::new();
+    }
+    let content_h = total_h.max(1);
+    let content_area = Rect::new(0, 0, area.width, content_h);
+    let mut buf = Buffer::empty(content_area);
+    render_blocks(&mut buf, content_area, &t, &blocks, &heights, &gaps, &leads, 0, expanded, wrap_w);
+    (0..content_h)
+        .map(|y| buffer_row_text(&buf, 0, y, area.width))
+        .collect()
+}
+
+/// Concatenate the symbols of one buffer row into plain text (wide-character
+/// continuation cells carry an empty symbol and are skipped).
+fn buffer_row_text(buf: &Buffer, x: u16, y: u16, width: u16) -> String {
+    let area = buf.area();
+    let mut out = String::new();
+    for col in 0..width {
+        let cx = x + col;
+        if cx >= area.width || y >= area.height {
+            break;
+        }
+        let symbol = buf[(cx, y)].symbol();
+        if symbol.is_empty() {
+            continue;
+        }
+        out.push_str(symbol);
+    }
+    out.trim_end().to_string()
 }
 
 /// Render one row into the body if it lies inside the body area.
-fn render_body_row(frame: &mut Frame, area: Rect, y: i32, widget: impl ratatui::widgets::Widget) {
+fn render_body_row(frame: &mut Buffer, area: Rect, y: i32, widget: impl ratatui::widgets::Widget) {
     if y >= area.top() as i32 && y < area.bottom() as i32 {
         frame.render_widget(widget, Rect::new(area.x, y as u16, area.width, 1));
     }
@@ -2240,7 +2737,7 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
 }
 
 /// One full-width background row (empty content) — box top/bottom padding.
-fn render_bg_row(frame: &mut Frame, area: Rect, y: i32, bg: Color) {
+fn render_bg_row(frame: &mut Buffer, area: Rect, y: i32, bg: Color) {
     if y >= area.top() as i32 && y < area.bottom() as i32 {
         frame.render_widget(
             Paragraph::new(Line::raw("")).style(Style::new().bg(bg)),
@@ -2252,7 +2749,7 @@ fn render_bg_row(frame: &mut Frame, area: Rect, y: i32, bg: Color) {
 /// One content row inside a background box: `BOX_PAD_X` left padding, the
 /// given spans, background fills the rest of the row (TS
 /// `applyBackgroundToLine`).
-fn render_boxed_row(frame: &mut Frame, area: Rect, y: i32, bg: Color, mut spans: Vec<Span<'static>>) {
+fn render_boxed_row(frame: &mut Buffer, area: Rect, y: i32, bg: Color, mut spans: Vec<Span<'static>>) {
     if y >= area.top() as i32 && y < area.bottom() as i32 {
         let mut line = Line::raw(" ".repeat(BOX_PAD_X as usize));
         line.spans.append(&mut spans);
@@ -2265,7 +2762,7 @@ fn render_boxed_row(frame: &mut Frame, area: Rect, y: i32, bg: Color, mut spans:
 
 /// Startup header block (TS `builtInHeader`): logo + keybinding hints +
 /// onboarding, rendered at the top of the transcript.
-fn render_header_block(frame: &mut Frame, area: Rect, item: &BlockView, mut ly: i32) -> i32 {
+fn render_header_block(frame: &mut Buffer, area: Rect, item: &BlockView, mut ly: i32) -> i32 {
     for line in &item.md_lines {
         render_body_row(frame, area, ly, Paragraph::new(line.clone()));
         ly += 1;
@@ -2286,7 +2783,7 @@ fn render_header_block(frame: &mut Frame, area: Rect, item: &BlockView, mut ly: 
 ///
 /// Output is plain `toolOutput` color in both paths (the TS renderers do
 /// not diff-colorize). Returns the next row.
-fn render_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize) -> i32 {
+fn render_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize) -> i32 {
     let bg = tool_bg(t, item.tool_state.as_ref());
     // Box top padding.
     render_bg_row(frame, area, ly, bg);
@@ -2305,7 +2802,7 @@ fn render_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: 
 }
 
 /// Bash renderer rows (title through the timer line).
-fn render_bash_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     // Title: `$ {command}` bold (+ `...` in toolOutput when empty/missing,
     // `[invalid arg]` in error when non-string), muted ` (timeout Ns)`
     // suffix (TS `formatBashCall`).
@@ -2416,7 +2913,7 @@ fn shorten_path(path: &str, cwd: &str) -> String {
 /// Fallback renderer rows (no registered tool renderer — TS
 /// `formatToolExecution`): bold tool-name title, blank + args JSON, first
 /// 10 output lines + trailing `... (N more lines, ctrl+o to expand)`.
-fn render_fallback_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_fallback_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     // Title row.
     render_boxed_row(
         frame,
@@ -2489,7 +2986,7 @@ fn read_call_args(args: &str) -> (Option<String>, Option<u64>, Option<u64>) {
 /// success shows just the title, matching TS `formatReadResult` returning
 /// "" unless expanded). Content lines are word-wrapped like the TS Text
 /// renderer, and truncation warnings render below the preview.
-fn render_read_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     let (path, offset, limit) = read_call_args(&item.tool_args);
     let path_display = match path {
         Some(p) if !p.is_empty() => shorten_path(&p, &item.cwd),
@@ -2553,7 +3050,7 @@ fn render_read_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expan
 /// `grep /{pattern}/ in {path} ({glob}) limit {n}`, the output previewed
 /// to 15 wrapped raw lines, and the truncation warning
 /// `[Truncated: ...]` when the match/byte/line limits were hit.
-fn render_grep_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     let v: serde_json::Value = serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
     let pattern = v.get("pattern").and_then(|p| p.as_str()).map(str::to_string);
     let path = v
@@ -2672,7 +3169,7 @@ fn write_call_args(args: &str) -> (WritePathArg, WriteContentArg) {
 /// tool renderers resolve none). An invalid `content` arg renders the error
 /// `[invalid content arg - expected string]`; an error result renders the
 /// output in `error` color (TS `formatWriteResult`).
-fn render_write_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_write_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     let (path_arg, content_arg) = write_call_args(&item.tool_args);
     // Title: `write` bold + ` {path}` (TS `renderToolPath`).
     let path_display = match path_arg {
@@ -2822,7 +3319,7 @@ fn write_content_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
 /// text renders with diff syntax highlighting (TS `renderDiff`:
 /// `-`/`+`/context lines in toolDiffRemoved/toolDiffAdded/toolDiffContext,
 /// single-line modifications get intra-line word highlighting).
-fn render_edit_tool_block(frame: &mut Frame, area: Rect, item: &BlockView, _expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
+fn render_edit_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, _expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
     let v: serde_json::Value = serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
     let path = v
         .get("file_path")
@@ -2866,7 +3363,7 @@ fn tool_bg(t: &Theme, state: Option<&ToolCallState>) -> Color {
 /// User message: full-width box (`userMessageBg`, TS
 /// `UserMessageComponent`) with markdown content — never truncated (the
 /// transcript scrolls instead).
-fn render_user_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
+fn render_user_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
     let bg = t.user_message_bg;
     render_bg_row(frame, area, ly, bg);
     ly += 1;
@@ -2885,7 +3382,7 @@ fn render_user_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &Theme,
 /// scrolls). Thinking content renders below the text in `thinkingText`
 /// italic (TS `AssistantMessageComponent`), and a terminal stop reason
 /// renders a TS-style notice in the error color.
-fn render_assistant_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
+fn render_assistant_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
     // Thinking section FIRST (TS `AssistantMessageComponent.updateContent`
     // renders `message.content` in order — the model emits thinking blocks
     // before the text, so thinking renders above the body). Blank separator
@@ -2939,7 +3436,7 @@ fn render_assistant_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &T
 
 /// System notice: plain text rows in muted (TS status notices are plain
 /// `Text` in dim/muted) — never truncated.
-fn render_system_block(frame: &mut Frame, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
+fn render_system_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
     for line in &item.plain_lines {
         render_body_row(frame, area, ly, Paragraph::new(Line::from(Span::styled(line.clone(), Style::new().fg(t.muted)))));
         ly += 1;
@@ -3326,8 +3823,9 @@ fn render_secret_input(model: &Model, frame: &mut Frame, rect: Rect, t: &Theme) 
 pub async fn run(
     mut model: Model,
     mut terminal: crate::terminal::Terminal,
-    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<KeyEvent>,
+    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<crate::terminal::InputEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::terminal::InputEvent;
     use tokio::time::{sleep, Duration};
     // 行级差分渲染（对齐 TS TuiAltScreen.doRender）：整行比较、整行重写，
     // 只在首帧/尺寸变化时全量清屏重绘——不依赖 cell 级 diff 对终端的保真度。
@@ -3341,15 +3839,26 @@ pub async fn run(
         line_screen.render(&lines, cursor, area.width, area.height)?;
         terminal.ratatui_terminal().swap_buffers();
         tokio::select! {
-            Some(key) = input_rx.recv() => {
-                let cmds = update(&mut model, Msg::Key(key));
+            Some(input) = input_rx.recv() => {
+                let msg = match input {
+                    InputEvent::Key(key) => Msg::Key(key),
+                    InputEvent::Mouse(mouse) => Msg::Mouse(mouse),
+                    InputEvent::FocusLost => Msg::FocusLost,
+                    InputEvent::Paste(text) => Msg::Paste(text),
+                    InputEvent::ScrollUp => Msg::ScrollUp(3),
+                    InputEvent::ScrollDown => Msg::ScrollDown(3),
+                    InputEvent::Resize(w, h) => Msg::Resize(w, h),
+                };
+                let cmds = update(&mut model, msg);
                 for cmd in cmds {
                     if matches!(cmd, Cmd::Quit) {
                         return Ok(());
                     }
                 }
             }
-            _ = sleep(Duration::from_millis(50)) => {}
+            _ = sleep(Duration::from_millis(50)) => {
+                model.selection_auto_scroll();
+            }
         }
     }
 }
@@ -5441,6 +5950,33 @@ mod tests {
         }
     }
 
+    /// 普通字符始终插入（TS 编辑器行为）：`g`/`G` 不是 vim 前缀，空输入
+    /// 时也不该被吞掉（曾把首个 `g` 吃掉：`go` → `o`）。转录滚动上下界是
+    /// `Home`/`End`（TS `tui.altScreen.top/bottom` = home/end）。
+    #[test]
+    fn plain_g_inserts_and_home_end_scroll() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut model = Model::new(60, 12);
+        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)));
+        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)));
+        assert_eq!(model.input.value(), "go", "leading g must be inserted");
+        model.input.clear();
+        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE)));
+        assert_eq!(model.input.value(), "G", "G inserts literally");
+
+        // 空输入时 Home/End 仍是转录滚动（TS altScreen top/bottom）。
+        model.input.clear();
+        for i in 0..20 {
+            update(&mut model, Msg::NewMessage("assistant".into(), format!("line-{i:02}")));
+        }
+        let _ = render_text(&mut model, 60, 12);
+        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+        assert_eq!(model.scroll_offset, 0, "Home scrolls to top");
+        assert!(!model.auto_scroll, "Home stops following");
+        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        assert!(model.auto_scroll, "End re-engages follow");
+    }
+
     /// 渲染辅助：TestBackend 画当前视图，返回非空行拼接文本。
     fn render_text(model: &mut Model, w: u16, h: u16) -> String {
         use ratatui::backend::TestBackend;
@@ -5556,5 +6092,190 @@ mod tests {
     #[test]
     fn normalize_secret_paste_strips_newlines_and_expands_tabs() {
         assert_eq!(normalize_secret_paste("a\r\nb\rc\nd\te"), "abcd    e");
+    }
+
+    // ============================================================
+    // App-owned text selection (TS TuiAltScreen selection subsystem)
+    // ============================================================
+
+    fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column: col, row, modifiers: crossterm::event::KeyModifiers::NONE }
+    }
+
+    fn render_to_buffer(model: &mut Model) -> Buffer {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+        let mut terminal =
+            RatTerminal::new(TestBackend::new(model.width, model.height)).expect("backend");
+        terminal.draw(|frame| view(model, frame)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    fn selection_model(text: &str) -> Model {
+        let mut model = Model::new(40, 12);
+        // The startup header would shift the transcript rows; system messages
+        // render as plain one-line-per-`\n` rows at column 0.
+        model.show_header = false;
+        update(&mut model, Msg::NewMessage("system".into(), text.into()));
+        model
+    }
+
+    /// TS "selects visible text with the mouse and copies it ...": drag from
+    /// the first row to the start of the second copies the joined lines and
+    /// renders the selection in reverse video.
+    #[test]
+    fn mouse_drag_selection_copies_and_highlights() {
+        let mut model = selection_model("alpha\nbeta\ngamma\ndelta");
+        render_to_buffer(&mut model);
+
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 4, 1));
+        let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 4, 1));
+        match cmds.as_slice() {
+            [Cmd::CopySelection(text)] => assert_eq!(text, "alpha\nbeta"),
+            other => panic!("expected CopySelection, got {other:?}"),
+        }
+        assert!(model.has_active_selection());
+
+        let buf = render_to_buffer(&mut model);
+        assert!(
+            buf[(1, 0)].modifier.contains(Modifier::REVERSED),
+            "selected content is inverted"
+        );
+        assert!(
+            !buf[(7, 0)].modifier.contains(Modifier::REVERSED),
+            "unselected column stays plain"
+        );
+    }
+
+    /// TS "leaves selections visible without copying when copyOnSelect is
+    /// disabled": the selection survives, and Ctrl+X (preferSelection) then
+    /// copies it instead of the last assistant message.
+    #[test]
+    fn copy_on_select_off_keeps_selection_for_ctrl_x() {
+        let mut model = selection_model("alpha\nbeta\ngamma\ndelta");
+        model.set_copy_on_select(false);
+        render_to_buffer(&mut model);
+
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 4, 1));
+        let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 4, 1));
+        assert!(cmds.is_empty(), "no copy-on-select when disabled");
+        assert_eq!(model.selection_text().as_deref(), Some("alpha\nbeta"));
+
+        // Ctrl+X → CopySelection (TS `handleCopyCommand({preferSelection:true})`).
+        let key = KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        match update(&mut model, Msg::Key(key)).as_slice() {
+            [Cmd::CopySelection(text)] => assert_eq!(text, "alpha\nbeta"),
+            other => panic!("expected CopySelection, got {other:?}"),
+        }
+    }
+
+    /// TS "does not append whitespace to double-click word highlighting":
+    /// double-click selects the word without the trailing spaces.
+    #[test]
+    fn double_click_selects_whole_word_without_whitespace() {
+        let mut model = selection_model("foo  bar");
+        render_to_buffer(&mut model);
+        for _ in 0..2 {
+            model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+            model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 0, 0));
+        }
+        assert_eq!(model.selection_text().as_deref(), Some("foo"));
+    }
+
+    /// TS "selects whole words on double click ... and selects lines on triple
+    /// click": triple-click selects the whole line.
+    #[test]
+    fn triple_click_selects_whole_line() {
+        let mut model = selection_model("foo  bar");
+        render_to_buffer(&mut model);
+        for _ in 0..3 {
+            model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+            model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 0, 0));
+        }
+        assert_eq!(model.selection_text().as_deref(), Some("foo  bar"));
+    }
+
+    /// TS "clears an active visible selection on focus loss" and "retains a
+    /// completed visible selection across focus changes".
+    #[test]
+    fn focus_loss_cancels_active_press_but_keeps_completed_selection() {
+        let mut model = selection_model("alpha\nbeta");
+        render_to_buffer(&mut model);
+        // Completed selection survives focus loss.
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 4, 1));
+        model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 4, 1));
+        assert!(model.has_active_selection());
+        update(&mut model, Msg::FocusLost);
+        assert!(model.has_active_selection(), "completed selection retained");
+
+        // An in-progress grip is cancelled; orphan drag/release do nothing.
+        model.selection.clear();
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        assert!(model.selection.press_active);
+        update(&mut model, Msg::FocusLost);
+        assert!(!model.selection.press_active);
+        assert!(!model.has_active_selection());
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 4, 1));
+        let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 4, 1));
+        assert!(cmds.is_empty(), "orphan release must not copy");
+    }
+
+    /// TS "auto-scrolls and extends a drag selection held at the viewport
+    /// edge": holding the pointer above the viewport scrolls up and extends
+    /// the selection to the rows scrolled into range.
+    #[test]
+    fn drag_at_viewport_edge_auto_scrolls_and_extends_selection() {
+        let text: String = (1..=15).map(|i| format!("line {i}\n")).collect();
+        let mut model = selection_model(&text);
+        render_to_buffer(&mut model);
+        assert!(model.body_max_scroll > 0, "content overflows the viewport");
+
+        let top = model.body_area.top();
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, top));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 0, top));
+        assert!(model.selection_auto_scroll_active());
+        let before = model.selection_text().unwrap_or_default();
+        // Scroll to the very top (the loop stops early once it cannot move).
+        for _ in 0..20 {
+            if !model.selection_auto_scroll() {
+                break;
+            }
+        }
+        let after = model.selection_text().unwrap_or_default();
+        assert!(
+            after.contains("line 1") && !before.contains("line 1"),
+            "autoscroll extends the selection up: {after:?}"
+        );
+    }
+
+    /// A selection drawn in the docked region (input box) copies screen text
+    /// through the `SelSpace::Screen` source, not transcript content rows.
+    #[test]
+    fn screen_space_selection_copies_dock_text() {
+        let mut model = Model::new(40, 12);
+        model.input.set_value("hello world");
+        let buf = render_to_buffer(&mut model);
+        // Locate the editor dock row containing the typed text.
+        let (row, col) = (0..model.height)
+            .find_map(|y| {
+                let line = buffer_row_text(&buf, 0, y, model.width);
+                line.find("hello world").map(|col| (y, col as u16))
+            })
+            .expect("input text row");
+        let space = model.selection_space_at(col, row);
+        assert_eq!(space, SelSpace::Screen, "editor dock is screen space");
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), col + 11, row));
+        let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), col + 11, row));
+        match cmds.as_slice() {
+            [Cmd::CopySelection(text)] => assert_eq!(text, "hello world"),
+            other => panic!("expected CopySelection, got {other:?}"),
+        }
     }
 }

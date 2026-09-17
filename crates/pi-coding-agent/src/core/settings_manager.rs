@@ -249,6 +249,9 @@ pub struct Settings {
     pub output_pad: Option<OutputPad>,
     pub autocomplete_max_visible: Option<u32>,
     pub show_hardware_cursor: Option<bool>,
+    /// TS `fullscreenCopyOnSelect` (default true): copy the app-owned
+    /// fullscreen text selection to the clipboard on mouse release.
+    pub fullscreen_copy_on_select: Option<bool>,
 
     // Markdown / warnings
     pub markdown: Option<MarkdownSettings>,
@@ -1468,6 +1471,22 @@ impl SettingsManager {
         self.persist_scope(SettingsScope::Global);
     }
 
+    // --- fullscreenCopyOnSelect ---
+
+    /// TS `settingsManager.getFullscreenCopyOnSelect()` (default `true`).
+    pub fn get_fullscreen_copy_on_select(&self) -> bool {
+        self.settings.fullscreen_copy_on_select.unwrap_or(true)
+    }
+
+    /// TS `settingsManager.setFullscreenCopyOnSelect()` — persisted in the
+    /// global settings scope.
+    pub fn set_fullscreen_copy_on_select(&mut self, enabled: bool) {
+        self.global_settings.fullscreen_copy_on_select = Some(enabled);
+        self.mark_modified("fullscreenCopyOnSelect", None);
+        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.persist_scope(SettingsScope::Global);
+    }
+
     // --- editorPaddingX ---
 
     pub fn get_editor_padding_x(&self) -> u32 {
@@ -1867,6 +1886,25 @@ mod tests {
 
         mgr.set_retry_enabled(false);
         assert!(!mgr.get_retry_enabled());
+    }
+
+    /// TS `fullscreenCopyOnSelect` defaults to `true` and persists to the
+    /// global scope (the interactive TUI reads it once at startup).
+    #[test]
+    fn test_fullscreen_copy_on_select_setting() {
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let mut mgr = SettingsManager::new(storage, Settings::default(), Settings::default());
+        assert!(mgr.get_fullscreen_copy_on_select(), "defaults to true");
+
+        // The serialized key is camelCase (used by interactive-mode settings).
+        mgr.set_fullscreen_copy_on_select(false);
+        assert!(!mgr.get_fullscreen_copy_on_select());
+        assert_eq!(
+            serde_json::to_value(mgr.get_global_settings())
+                .ok()
+                .and_then(|v| v.get("fullscreenCopyOnSelect").and_then(|v| v.as_bool())),
+            Some(false)
+        );
     }
 
     #[test]

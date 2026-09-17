@@ -60,6 +60,9 @@ enum AgentCmd {
     /// `/copy`：复制最后一条 assistant 消息到系统剪贴板（TS
     /// `handleCopyCommand`）。
     CopyLastMessage,
+    /// App-owned 选区复制（TS copy-on-select 松手 / Ctrl+X 的
+    /// `preferSelection` 分支）：写系统剪贴板并回显结果。
+    CopySelection(String),
     /// 排队消息在无活动 run 时入队（按键到 effect 执行之间的窗口）：触发
     /// settled 续跑消费队列（TS 由 run 自己的 settled 循环消费）。
     RunSettledContinuations,
@@ -411,7 +414,14 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             if active {
                 app::update(&mut state.model, pi_tui::Msg::Tick);
             }
-            UpdateOutcome { effects: vec![], redraw: active }
+            // 选择拖拽到视口边缘的自动滚动（TS `autoScrollSelection` 的
+            // 50ms interval，在这里由 tick 驱动）。
+            let scrolled = if state.model.selection_auto_scroll_active() {
+                state.model.selection_auto_scroll()
+            } else {
+                false
+            };
+            UpdateOutcome { effects: vec![], redraw: active || scrolled }
         }
         Action::Agent(msg) => {
             // TS compaction_end → flushCompactionQueue / aborted 提示、
@@ -489,7 +499,21 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                     app::update(&mut state.model, msg);
                 }
                 msg => {
-                    app::update(&mut state.model, msg);
+                    // Keep the commands produced by pi-tui (mouse-release
+                    // `CopySelection`, `CopyLastMessage`, completion
+                    // requests) — dropping them here would silently lose the
+                    // copy-on-select clipboard write.
+                    let cmds = app::update(&mut state.model, msg);
+                    effects.extend(cmds.into_iter().filter_map(|cmd| match cmd {
+                        pi_tui::Cmd::RequestCompletion(req) => Some(Effect::RequestCompletion(req)),
+                        pi_tui::Cmd::CopyLastMessage => {
+                            Some(Effect::AgentCommand(AgentCmd::CopyLastMessage))
+                        }
+                        pi_tui::Cmd::CopySelection(text) => {
+                            Some(Effect::AgentCommand(AgentCmd::CopySelection(text)))
+                        }
+                        pi_tui::Cmd::Quit => None,
+                    }));
                 }
             }
             UpdateOutcome { effects, redraw: true }
@@ -505,6 +529,9 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                 // 任务路径（读最后一条 assistant 消息 + 写系统剪贴板）。
                 pi_tui::Cmd::CopyLastMessage => {
                     Some(Effect::AgentCommand(AgentCmd::CopyLastMessage))
+                }
+                pi_tui::Cmd::CopySelection(text) => {
+                    Some(Effect::AgentCommand(AgentCmd::CopySelection(text)))
                 }
                 pi_tui::Cmd::Quit => {
                     quit = true;
@@ -637,10 +664,11 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
         KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL => {
             vec![Effect::AgentCommand(AgentCmd::CycleThinkingLevel)]
         }
-        // Ctrl+B: abort bash
-        KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
-            vec![Effect::AgentCommand(AgentCmd::AbortBash)]
-        }
+        // NOTE: Ctrl+B is deliberately NOT bound here. The TS original binds
+        // `tui.editor.cursorLeft` to left/ctrl+b (packages/tui keybindings),
+        // and aborts a running bash command with Esc/`session.abortBash()` —
+        // never with Ctrl+B. Intercepting it here made Ctrl+F (cursorRight)
+        // work while Ctrl+B (cursorLeft) was swallowed as `AbortBash`.
         // Esc: 对齐 TS `onEscape`（interactive-mode.ts setupKeyHandlers）——
         // **不退出**（退出是 Ctrl+D / 双击 Ctrl+C / /quit）：
         // 1) 压缩进行中 → 中止压缩（TS compaction_start 把 onEscape 换成
@@ -2035,6 +2063,21 @@ fn spawn_agent_command_task(
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
                         }
+                        AgentCmd::CopySelection(text) => {
+                            // App-owned 选区复制（copy-on-select / Ctrl+X
+                            // preferSelection）：直接写剪贴板 + 回显结果。
+                            if let Err(e) = pi_tui::clipboard::copy_to_clipboard(&text) {
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    format!("Failed to copy to clipboard: {e}"),
+                                ));
+                            } else {
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    "Copied!".into(),
+                                ));
+                            }
+                        }
                         AgentCmd::CopyLastMessage => {
                             // `/copy`（TS `handleCopyCommand`）：复制最后一条
                             // assistant 消息；没有消息时给错误提示。
@@ -2410,6 +2453,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         state.model.theme = pi_tui::Theme::light();
     }
     state.model.model_name = initial_model_name;
+    // TS `fullscreenCopyOnSelect`（默认 true）：松手即复制选区。
+    state.model.set_copy_on_select(session.get_fullscreen_copy_on_select());
     state.model.cwd = cwd.clone();
     state.model.git_branch = current_git_branch(&cwd);
     // ── TS footer data: session name + model identity (provider, reasoning,
@@ -2596,6 +2641,21 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     }
                     pi_tui::terminal::InputEvent::ScrollUp => Action::Agent(pi_tui::Msg::ScrollUp(3)),
                     pi_tui::terminal::InputEvent::ScrollDown => Action::Agent(pi_tui::Msg::ScrollDown(3)),
+                    // Non-wheel mouse events drive app-owned text selection
+                    // (TS `TuiAltScreen.handleMouseEvent`). Pure motion events
+                    // (`?1003h` all-motion tracking) carry no selection
+                    // meaning and must not force a redraw on every move.
+                    pi_tui::terminal::InputEvent::Mouse(mouse) => {
+                        if matches!(mouse.kind, crossterm::event::MouseEventKind::Moved) {
+                            continue;
+                        }
+                        Action::Agent(pi_tui::Msg::Mouse(mouse))
+                    }
+                    // Focus loss cancels an in-progress selection grip
+                    // (TS `FOCUS_OUT`).
+                    pi_tui::terminal::InputEvent::FocusLost => {
+                        Action::Agent(pi_tui::Msg::FocusLost)
+                    }
                     // Bracketed paste → editor `handle_paste` (TS `handlePaste`).
                     pi_tui::terminal::InputEvent::Paste(text) => {
                         Action::Agent(pi_tui::Msg::Paste(text))
@@ -3349,6 +3409,22 @@ mod tests {
         let second = handle_key(&mut s, key);
         assert!(!s.quit, "双击 Esc 不退出（选择器未实现）");
         assert_eq!(second, vec![]);
+    }
+
+    /// Ctrl+B / Ctrl+F 是编辑器 readline 光标移动（TS `tui.editor.cursorLeft`
+    /// = left/ctrl+b，`cursorRight` = right/ctrl+f），不是中止 bash。
+    /// 回归防护：曾把 Ctrl+B 拦截成 `AbortBash`，导致 Ctrl+F 能用而 Ctrl+B
+    /// 被吞掉；中止 bash 走 Esc（`session.abortBash`）。
+    #[test]
+    fn ctrl_b_and_ctrl_f_move_the_input_cursor() {
+        let mut s = state();
+        s.model.input.set_value("abc");
+        assert_eq!(s.model.input.cursor_pos(), 3);
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Char('b'), KM::CONTROL));
+        assert_eq!(s.model.input.cursor_pos(), 2, "ctrl+b moves the cursor left");
+        assert!(effects.is_empty(), "ctrl+b is not an app-level effect");
+        handle_key(&mut s, key(crossterm::event::KeyCode::Char('f'), KM::CONTROL));
+        assert_eq!(s.model.input.cursor_pos(), 3, "ctrl+f moves the cursor right");
     }
 
     // ── 补全应用（对齐 TS applyCompletion）──────────────────────────────

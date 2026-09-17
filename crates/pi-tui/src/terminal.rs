@@ -12,7 +12,8 @@
 use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEvent, MouseEventKind,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
+    EventStream, KeyEvent, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use futures::StreamExt;
@@ -43,8 +44,11 @@ impl Terminal {
         crossterm::terminal::enable_raw_mode()?;
 
         execute!(io::stdout(), EnableBracketedPaste)?;
-        // 滚轮滚动 transcript（内部 scrollback 的输入源）。
+        // 滚轮滚动 transcript + app-owned 文本选择（内部 scrollback 的输入源）。
         execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+        // Focus reporting (`?1004h`, TS `ENABLE_ALL_MOTION_MOUSE` includes it):
+        // the model clears an in-progress mouse selection on focus loss.
+        execute!(io::stdout(), EnableFocusChange)?;
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -74,7 +78,9 @@ impl Terminal {
                                 let _ = input_tx.send(InputEvent::Paste(text));
                             }
                             Some(Ok(Event::Mouse(m))) => {
-                                // 滚轮 → 滚动事件（wheelScrollLines = 1，对齐 TS）。
+                                // 滚轮 → 滚动事件（wheelScrollLines = 1，对齐 TS）；
+                                // 其余鼠标事件（press/drag/release/move）转发给
+                                // app-owned 文本选择（TS `handleMouseEvent`）。
                                 match m.kind {
                                     MouseEventKind::ScrollUp => {
                                         let _ = input_tx.send(InputEvent::ScrollUp);
@@ -82,8 +88,15 @@ impl Terminal {
                                     MouseEventKind::ScrollDown => {
                                         let _ = input_tx.send(InputEvent::ScrollDown);
                                     }
-                                    _ => {}
+                                    _ => {
+                                        let _ = input_tx.send(InputEvent::Mouse(m));
+                                    }
                                 }
+                            }
+                            // Focus loss clears an in-progress selection grip
+                            // (TS `FOCUS_OUT` handling).
+                            Some(Ok(Event::FocusLost)) => {
+                                let _ = input_tx.send(InputEvent::FocusLost);
                             }
                             // 终端 resize 必须转发：不转发的话应用不感知尺寸
                             // 变化，ratatui 只 resize 自己的内部 buffer，真实
@@ -101,7 +114,11 @@ impl Terminal {
                 }
             }
             let _ = crossterm::terminal::disable_raw_mode();
-            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                DisableFocusChange
+            );
         });
 
         Ok((input_rx, ShutdownGuard { sender: Some(shutdown_tx) }))
@@ -141,6 +158,12 @@ pub enum InputEvent {
     /// Bracketed paste (crossterm `Event::Paste`) — routed through the
     /// editor's `handle_paste` (TS `handlePaste`).
     Paste(String),
+    /// Non-wheel mouse events (press / drag / release / move) for the
+    /// application-owned fullscreen text selection.
+    Mouse(MouseEvent),
+    /// Terminal focus loss (crossterm `Event::FocusLost`, `?1004h`) — cancels
+    /// an in-progress selection, mirroring the TS `FOCUS_OUT` path.
+    FocusLost,
 }
 
 pub struct ShutdownGuard {

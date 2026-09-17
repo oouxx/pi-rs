@@ -2857,6 +2857,23 @@ impl AgentSession {
             .unwrap_or(5)
     }
 
+    /// TS `settingsManager.getFullscreenCopyOnSelect()` (default true): the
+    /// interactive TUI copies the app-owned selection on mouse release when
+    /// enabled.
+    pub fn get_fullscreen_copy_on_select(&self) -> bool {
+        self.settings_manager
+            .lock()
+            .map(|sm| sm.get_fullscreen_copy_on_select())
+            .unwrap_or(true)
+    }
+
+    /// TS `settingsManager.setFullscreenCopyOnSelect()`.
+    pub fn set_fullscreen_copy_on_select(&self, enabled: bool) {
+        if let Ok(mut sm) = self.settings_manager.lock() {
+            sm.set_fullscreen_copy_on_select(enabled);
+        }
+    }
+
     pub fn retry_attempt(&self) -> u32 {
         *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

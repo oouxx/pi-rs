@@ -136,6 +136,10 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 19 | **快照克隆被当作共享状态写入** | TS `this.session.model = x` 直接改共享对象 | 调用某个 `state()`/`getState()` 返回**克隆快照**（如 `Arc<RwLock<T>>` 的 `read().await.clone()`），在其上赋值/`push` 后丢弃——编译通过、行为静默丢失 | 写状态必须用真正的 setter 或 `update_state(&mut)` 写锁；任何 `let mut state = x.state().await` 后出现赋值/push 都要怀疑是克隆丢写 | #75（`set_model`/`set_thinking_level`/`set_active_tools_by_name`/`send_custom_message`/`_flush_pending_bash_messages`/`cycle_model`/`record_bash_result` 共 7 处） |
 | 20 | **执行时上下文 vs 构造期快照** | TS `ExtensionRunner.createContext()` 每次 dispatch 新建 context，`ui`/`mode` 等字段是 getter，调用时实时读 runner 上可变的绑定（`bindExtensions({ uiContext })` 换绑后全部路径立即生效） | Rust 在构造期把整个上下文（含 ui/runtime）快照进长期存活的闭包 `Arc`，宿主事后换绑（如 TUI `set_extension_ui_context`）只改了另一个 context——编译通过，行为静默走旧默认值（如 `eprintln!("[pi] ...")` 打进 TUI 屏幕） | 需要"事后换绑"的字段用实时读取的委托/绑定（`RwLock` + delegating context，等价 TS getter），不要把可变绑定快照进长期存活闭包 | #93（bash session 环境变量）、#119（TUI 换绑 UI 后扩展工具 notify 仍走默认 eprintln） |
 
+| 21 | **应用级快捷键遮蔽编辑器键位** | TS 应用级 handler 只拦截明确注册在 app 层的键（如 Ctrl+X/Ctrl+C），其余 ctrl/alt 字母落给编辑器（`tui.editor.*` 绑定：ctrl+b=left、ctrl+f=right、ctrl+a/e=行首尾…） | Rust 在 interactive 层把某个 ctrl 字母无条件映射成应用动作（如 `Ctrl+B → AbortBash`），该键永远到不了编辑器——两个方向表现不一致（Ctrl+F 能用、Ctrl+B 被吞），且原版根本没有这个应用级绑定 | 逐一核对应用级 handler 的键位是否在原版 app 层注册过；编辑器能处理的 ctrl/alt 字母不要在上层拦截 | `Ctrl+B → AbortBash`（应为编辑器 `cursorLeft`；bash 中止 = Esc），见 PORTING_MISTAKES（interactive.rs） |
+
+| 22 | **前缀键未命中未回填** | TS 无 vim 前缀键；编辑器里普通字符一律插入 | Rust 自行加多键序列（`g`→`gg`），第一个键只置"待定"状态、不落字，后续键不匹配时直接处理后续键——序列未完成的那个字符被永久吞掉（`go` → `o`），且原版根本没有这个绑定 | 多键前缀必须缓存未完成的按键，下一键不匹配时先把它作为字面输入回填，再处理下一键；更优先的是先核对原版是否真有该键位 | `gg`/`G` 转录滚动（应为 Home/End，plain g/G 插入），见 PORTING_MISTAKES（pi-tui app.rs） |
+
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。
 
@@ -165,3 +169,65 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 - `CONTRACT_ALIGNMENT.md`（各 crate）：公开 API 行为对照表，"是否一致=否"必须引
   用 `DEVIATIONS.md` 编号。
 - 三个阶段工作流、模块合并检查清单见 `CLAUDE.md`，本文件不重复。
+
+---
+
+## 8. app-owned 文本选择子系统移植映射（TuiAltScreen 选择 → pi-tui）
+
+原版位置：`packages/tui/src/tui-alt-screen.ts`（选择相关代码约 400 行 +
+`test/tui-alt-screen.test.ts` 20 余条用例）。pi-rs 侧落在
+`crates/pi-tui/src/selection.rs`（纯逻辑）+ `app.rs`（鼠标路由/高亮/命令）。
+
+### 8.1 模块与职责
+
+| 原版符号 | Rust 位置 | 职责 |
+| -------- | --------- | ---- |
+| `SelectionPoint` / `SelectionRange` | `selection::{SelPoint, SelSpace}` | 选择端点；`SelSpace` 区分转录内容行（Content）与屏幕行（Screen） |
+| `SelectionGranularity` | `selection::Granularity` | `character` / `word` / `line` |
+| `TERMINAL_WORD_SELECTION_JOINERS` | `selection::JOINERS` | `/`、`-` 连词 |
+| `getWordSelection` / `getLineSelection` | `selection::{word_range, line_range}` | 双击/三击范围（UAX #29 word bounds + joiner 合并） |
+| `getSelectionColumns` / `getActiveSelectionText` | `selection::{columns_for_row, extract_text}` | grapheme 列吸附 + 逐行裁剪、`trimEnd`、`\n` 连接 |
+| `applySelectionHighlight` / `applySelection` | `app::apply_selection_highlight` | 选中单元格加 `REVERSED`（原版 `\x1b[7m`，每个 `m` 序列后重发） |
+| `handleSelectionMouseEvent` | `app::handle_selection_mouse` | press/drag/release 状态机 |
+| `updateSelectionAutoScroll` / `autoScrollSelection` | `app::selection_auto_scroll` | 拖到视口边缘后按 tick 滚动并延伸焦点 |
+| `copyOnSelect` / `copySelection` | `Model::copy_on_select` + `Cmd::CopySelection` | 松手复制；宿主执行 system clipboard + 提示 |
+| `hasActiveSelection` / `copyActiveSelectionToClipboard` | `Model::selection_text` / `Cmd::CopySelection` | `Ctrl+X` preferSelection 路径 |
+
+### 8.2 核心数据结构映射
+
+- 原版 `scrollView` 字段（选择点属于哪个滚动视图）→ `SelSpace`：
+  `Content`（转录，行号是**内容行**，需按 `body_scroll` 投影到屏幕）与
+  `Screen`（docked 区域，行号即屏幕行）。`getSelectionBounds` 中
+  `anchor.scrollView !== focus.scrollView` 的判定 → `space` 不同即返回 `None`
+  （跨区选择不成立）。
+- 原版每帧从 `previousScreen` / `scrollContentLines` 取源文本；Rust 在 press
+  时把源文本快照进选择状态（`source_lines`），drag 期间复用——等价于原版
+  用"上一帧"文本的语义。
+- 原版反转视频作用于渲染后的 ANSI 行；Rust 作用于 ratatui `Buffer` 单元格，
+  对宽字符起始单元格设置 modifier（延续单元格 symbol 为空，不受影响）。
+
+### 8.3 高危陷阱标注
+
+| 模式 | 原版行为 | Rust 天真翻译的坑 | 正确做法 |
+| ---- | -------- | ----------------- | -------- |
+| 列越界 | JS `sliceByColumn` 越界返回空串 | `line[i]` 越界 panic | 全部经 `columns_for_row` 裁剪到 `[min,max]` |
+| 宽字符/组合字 | `getGraphemeCellRange` 把端点吸附到 grapheme 边界 | 按 `char` 而非 grapheme 切列，CJK/emoji/组合音标被切半 | 用 `unicode-segmentation` grapheme + `unicode-width` 累计单元格 |
+| `trimEnd` | 每行复制前 `trimEnd`，行尾空格不进剪贴板 | 直接整行拼接带出 padding | `extract_text` 逐行 `trim_end` |
+| 复制排序 | 松手时先 `stopSelectionAutoScroll` 再复制 | 先复制再停 autoscroll，多滚一帧、内容与高亮不一致 | 顺序：停 autoscroll → 更新 focus → 复制 |
+| 焦点丢失 | `FOCUS_OUT` 只在 `selectionPressActive` 时清空 | 无脑清空，导致已完成的选择被误清 | 仅 `press_active` 时清 anchor/focus |
+| 非滚动区选择 | 屏幕点以 `previousScreen` 为源 | 用转录内容行当屏幕行，行号错位 | `SelSpace` 区分两个坐标空间 |
+
+### 8.4 对外接口（新增）
+
+- `terminal::InputEvent::{Mouse(MouseEvent), FocusLost}`：press/drag/release/
+  move 与焦点丢失（`EnableFocusChange` = `?1004h`，对齐原版
+  `ENABLE_ALL_MOTION_MOUSE` 的 1004h）。
+- `app::Msg::{Mouse(MouseEvent), FocusLost, SetCopyOnSelect(bool)}`。
+- `app::Cmd::CopySelection(String)`：宿主写系统剪贴板后回显成功/失败（原版
+  `flash("Copied!")`，Rust 无 flash 概念，沿用 system 消息，见 DEVIATIONS）。
+- `Model::{selection_text, has_active_selection, set_copy_on_select,
+  selection_auto_scroll_active, selection_auto_scroll}`。
+- 设置项 `fullscreenCopyOnSelect`（默认 `true`）：
+  `SettingsManager::{get,set}_fullscreen_copy_on_select` +
+  `AgentSession::{get,set}_fullscreen_copy_on_select` +
+  interactive 启动时写入模型。

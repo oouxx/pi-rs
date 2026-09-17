@@ -47,13 +47,25 @@
 | Ctrl+O | `app.tools.expand`：展开 header + 全部工具输出 | `Msg::ToggleToolExpansion`：切换 header 展开态 + 工具块强制 Expanded | 是 | |
 | Ctrl+C | `app.clear` → `handleCtrlC`：500ms 内连按两次 shutdown，否则清空编辑器（setText 同时 cancelAutocomplete） | 同款（仅 Chat 模式）：第一次清空 + 关补全弹窗，500ms 内第二次返回 `Cmd::Quit`；对话框/选择器聚焦时不拦截 | 是 | |
 | Ctrl+D | 空编辑器时 `app.exit` → shutdown（CustomEditor 非空时交给编辑器 deleteCharForward，默认绑定 ctrl+d） | 空输入返回 `Cmd::Quit`；非空 `delete()`（删除光标后一字符）；仅 Chat 模式 | 是 | |
+| 编辑器光标键位 | `tui.editor.cursorLeft` = `left`/`ctrl+b`；`cursorRight` = `right`/`ctrl+f`；`cursorWordLeft` = `alt+left`/`ctrl+left`/`alt+b`；`cursorWordRight` = `alt+right`/`ctrl+right`/`alt+f`（`packages/tui/src/keybindings.ts`）；bash 中止 = `Esc`（`session.abortBash()`），无应用级 Ctrl+B 绑定 | `classify_key_event`（vendored kernel）同款映射；interactive 层不再拦截 `Ctrl+B`（曾误映射为 `AbortBash`） | 是 | 回归修复见 PORTING_MISTAKES（interactive.rs `Ctrl+B`） |
 | Ctrl+V | `app.clipboard.pasteImage` → `handleClipboardPaste`：先读图片（有则插入临时文件路径），否则读文本 → `handlePaste`（归一化换行/制表符、过滤非打印字符、文件路径前补空格、>10 行或 >1000 字符折叠成 `[paste #N +N lines]` marker，提交时展开）；失败静默 | 仅文本路径：`read_clipboard_text()` → `handle_paste`（同款归一化/过滤/路径空格/大段折叠 marker，提交时展开）；图片路径未复刻；仅 Chat 模式 | 否 | 图片粘贴未复刻（见 DEVIATIONS.md 剪贴板条目） |
-| Ctrl+X | `app.message.copy` → `handleCopyCommand`（复制最后一条 assistant 消息；alt screen 上 flash "Copied!"） | `Cmd::CopyLastMessage` → interactive 模式 agent 任务执行，system 消息回显三态结果；仅 Chat 模式 | 是 | flash 换成 system 消息（Rust 无 flash 概念） |
+| Ctrl+X | `app.message.copy` → `handleCopyCommand({preferSelection:true})`：fullscreen 且 `!copyOnSelect` 且有选区时复制**选区**，否则复制最后一条 assistant 消息；alt screen 上 flash "Copied!" | 同款分支：`!copy_on_select` 且有选区 → `Cmd::CopySelection(选区)`，否则 `Cmd::CopyLastMessage`；均 system 消息回显；仅 Chat 模式 | 是 | flash 换成 system 消息（Rust 无 flash 概念，见 DEVIATIONS.md） |
 | `/copy` | slash 命令 → `handleCopyCommand`（清空编辑器） | slash_command 清空编辑器 → 同一 `AgentCmd::CopyLastMessage` 任务 | 是 | |
 | 块折叠 / Ctrl+F | 无（工具/消息平铺渲染） | 无（已移除） | 是 | 见 DEVIATIONS.md 块折叠条目 |
 | 工具输出截断 | fallback：未展开时前 10 行 + `... (N more lines, ctrl+o to expand)`（`FALLBACK_PREVIEW_LINES`=10），展开时全部 | `FALLBACK_PREVIEW_LINES`=10 + 同款提示（muted 文案 + dim 键名），Ctrl+O 展开 | 是 | |
 | 工具执行 | 无审批门：`beforeToolCall` 仅用于扩展 dispatch，工具调用直接执行 | 无审批门：approval_hook 不安装，工具调用直接执行 | 是 | 无审批门（见 DEVIATIONS.md） |
-| 滚动 | ScrollView scrollBy/scrollTo（PageUp/Down、gg/G） | `ScrollUp/ScrollDown/ScrollToBottom` + gg/G | 是 | |
+| 滚动 | ScrollView scrollBy/scrollTo + `tui.altScreen.top/bottom` = `home`/`end`；plain `g`/`G` 是普通字符（编辑器插入） | `ScrollUp/ScrollDown/ScrollToBottom` + 空输入时 `Home`/`End` 滚到顶/底；`g`/`G` 始终插入（曾误加 `gg`/`G` 滚动，吞掉首个 `g`，已移除） | 是 | 修复见 PORTING_MISTAKES（pi-tui `gg`/`G`） |
+| 鼠标拖选复制 | `handleSelectionMouseEvent` release：`copyOnSelect` 时 `copySelectionToClipboard()` | `handle_mouse` release → `Cmd::CopySelection(text)`，宿主写系统剪贴板 | 是 | 成功/失败用 system 消息而非 flash（见 DEVIATIONS.md） |
+| 选区高亮 | `applySelectionHighlight`（`\x1b[7m`，每个 SGR `m` 后重发） | `apply_selection_highlight` 对选中 cell 加 `Modifier::REVERSED` | 是 | |
+| 双击选词 | `getWordSelection`：`Intl.Segmenter` word 粒度 + `/`/`-` 连词合并 | `word_range`：UAX #29 word bounds + `/`/`-` joiner | 是（有意偏差） | CJK 无词典分词（见 DEVIATIONS.md） |
+| 三击选行 | `getLineSelection`：整行 | `line_range` 整行 | 是 | |
+| 列吸附 | `getGraphemeCellRange` 吸附 grapheme 边界（CJK/emoji/组合字） | `columns_for_row` + `slice_columns`（unicode-segmentation + unicode-width） | 是 | |
+| 复制文本 | 逐行 `sliceByColumn(strict)` + `trimEnd` + `\n` 连接 | `extract_text` 同款 | 是 | |
+| 拖拽边缘自动滚动 | `setInterval(50ms)` 每步滚一行并延伸焦点 | tick 驱动（100ms）`selection_auto_scroll` | 是（有意偏差） | 节奏差异（见 DEVIATIONS.md） |
+| 焦点丢失 | `FOCUS_OUT` 仅取消**按下中**的选择；已完成的选区保留 | `Msg::FocusLost` 仅在 `press_active` 时 `clear()` | 是 | |
+| copyOnSelect=false | 保留选区不复制；`hasActiveSelection`/程序化复制可用 | 同款 | 是 | |
+| 屏幕空间选择（dock/输入框） | 非滚动区用 `previousScreen` 作源文本 | `SelSpace::Screen` + `screen_lines`（每帧快照） | 是 | |
+| 组件级鼠标分发 / OSC 8 链接 / 右键粘贴 / 编辑器点选光标 | `handleMouseEvent` 先分发组件，再退回全屏选择 | 无 | 否 | 见 DEVIATIONS.md（全屏选择以外未移植） |
 
 ## 数据流（pi-coding-agent → pi-tui）
 
@@ -75,4 +87,5 @@
 | 读（macOS/Windows） | 原生 addon getText（null on fail） | pbpaste / `powershell Get-Clipboard -Raw`（None on fail） | 是（有意偏差） | 见 DEVIATIONS.md 剪贴板条目 |
 | 读（Linux） | Wayland：wl-paste --no-newline --type text；否则原生 addon | wl-paste → xclip → xsel | 是（有意偏差） | 同上 |
 | 失败语义 | 读静默 null；写全通道失败 throw `Error("Failed to copy to clipboard")` | 读静默 None；写全通道失败 `Err` → interactive 模式 system 消息 | 是 | |
+| App-owned 选区复制（`Cmd::CopySelection` → `AgentCmd::CopySelection`） | TS `copySelection` 注入回调 → 原生剪贴板 + flash | `pi_tui::clipboard::copy_to_clipboard`（与 Ctrl+X 同通道） | 是（有意偏差） | 反馈用 system 消息（见 DEVIATIONS.md） |
 | 对话框 Editor（AppMode::Editor）剪贴板 | TS dialog editor 自身处理 ctrl+c/v/x（复制选区/粘贴/剪切） | vendored textarea 原生处理（`SystemClipboard` provider：ctrl+v 粘贴、ctrl+x 剪切选区、鼠标选复制），应用级快捷键不拦截 | 是 | |

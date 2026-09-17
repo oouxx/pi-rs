@@ -12,6 +12,7 @@ pub mod fuzzy;
 pub mod detect;
 pub mod keymap;
 pub mod render;
+pub mod selection;
 pub mod terminal;
 pub mod theme;
 
@@ -24,6 +25,7 @@ pub use components::{
     CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown, MarkdownTheme, SelectList, TextComponent,
 };
 pub use keymap::{Action, KeyBind, Keymap};
+pub use selection::{Granularity, SelPoint, SelSpace, Selection};
 pub use terminal::{ShutdownGuard, Terminal};
 
 /// Utility: render markdown text to styled lines through the vendored

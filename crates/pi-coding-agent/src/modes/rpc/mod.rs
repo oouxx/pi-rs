@@ -299,14 +299,14 @@ pub async fn run_rpc_mode(
         convert_to_llm: None,
         extension_paths,
         extension_flags: Some(extension_flags),
-        enable_extensions: true,
+        enable_extensions,
         persist_session: false,
         session_file: None,
         fork_from: None,
         session_dir: None,
-        extension_registry: crate::core::extensions::builtin_extension_registry(
-            enable_extensions,
-        ),
+        // Built-in Rust extensions are built inside `create_agent_session`,
+        // filtered by settings `extensionsEnabled`.
+        extension_registry: None,
         cli_provider,
         cli_model,
         auth_storage: None,

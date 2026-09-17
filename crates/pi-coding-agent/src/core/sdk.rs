@@ -634,10 +634,17 @@ pub async fn create_agent_session(
     };
 
     // ── Extension registry (Rust native extensions) ───────────────────
-    let extension_registry = options
-        .extension_registry
-        .take()
-        .unwrap_or_default();
+    // An explicitly provided registry wins (tests / custom Rust extensions).
+    // Otherwise build the built-in set, filtered by settings
+    // `extensionsEnabled` (missing id = enabled).
+    let extension_registry = match options.extension_registry.take() {
+        Some(registry) => registry,
+        None => crate::core::extensions::builtin_extension_registry(
+            options.enable_extensions,
+            &settings_manager.get_extensions_enabled(),
+        )
+        .unwrap_or_default(),
+    };
 
     // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
@@ -1113,5 +1120,43 @@ mod tests {
 
         assert_eq!(session.get_model().await.id, "m1");
         assert_eq!(session.get_thinking_level().await, "high");
+    }
+
+    /// `extensionsEnabled` from settings controls which built-in extensions are
+    /// registered when no explicit registry is supplied.
+    #[tokio::test]
+    async fn settings_extensions_enabled_filters_builtin_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let registry = registry_with(
+            vec![test_model("testp", "m1", false)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+        let agent_dir = tmp.path().join("agent");
+        let mut settings = SettingsManager::create(&cwd, Some(agent_dir.to_str().unwrap()));
+        settings.set_global(
+            "extensionsEnabled",
+            serde_json::json!({ "goal": false, "subagent": false }),
+        );
+
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(agent_dir.to_string_lossy().to_string()),
+            model: Some(test_model("testp", "m1", false)),
+            enable_extensions: true,
+            extension_registry: None,
+            settings_manager: Some(settings),
+            model_registry: Some(registry),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let ext_registry = session.get_extension_registry().expect("registry");
+        let tools: Vec<&str> = ext_registry.tools().iter().map(|t| t.name.as_str()).collect();
+        assert!(!tools.iter().any(|t| t.starts_with("goal_")), "goal off: {tools:?}");
+        assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
+        assert!(tools.contains(&"web_search"), "web_search on: {tools:?}");
     }
 }

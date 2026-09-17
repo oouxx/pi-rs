@@ -279,9 +279,9 @@ pub async fn run(args: &CliArgs) -> i32 {
         extension_paths: args.extensions.clone(),
         extension_flags: Some(args.unknown_flags.clone()),
         enable_extensions: !args.no_extensions,
-        extension_registry: pi_coding_agent::core::extensions::builtin_extension_registry(
-            !args.no_extensions,
-        ),
+        // Built-in Rust extensions are built inside `create_agent_session`,
+        // filtered by settings `extensionsEnabled`.
+        extension_registry: None,
         persist_session,
         session_file,
         fork_from,
@@ -385,9 +385,9 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         extension_paths: args.extensions.clone(),
         extension_flags: Some(args.unknown_flags.clone()),
         enable_extensions: !args.no_extensions,
-        extension_registry: pi_coding_agent::core::extensions::builtin_extension_registry(
-            !args.no_extensions,
-        ),
+        // Built-in Rust extensions are built inside `create_agent_session`,
+        // filtered by settings `extensionsEnabled`.
+        extension_registry: None,
         persist_session,
         session_file,
         fork_from,

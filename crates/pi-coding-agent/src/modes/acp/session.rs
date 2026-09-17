@@ -475,14 +475,14 @@ impl SessionRegistry {
                 stream_fn: None,
                 convert_to_llm: None,
                 extension_paths: vec![],
-                enable_extensions: true,
+                enable_extensions,
                 persist_session: true,
                 session_file: session_file_owned.clone(),
                 fork_from: None,
                 session_dir: Some(session_dir_owned.clone()),
-                extension_registry: crate::core::extensions::builtin_extension_registry(
-                    enable_extensions,
-                ),
+                // Built-in Rust extensions are built inside `create_agent_session`,
+                // filtered by settings `extensionsEnabled`.
+                extension_registry: None,
                 cli_provider: cli_provider.clone(),
                 cli_model: cli_model.clone(),
                 auth_storage: None,

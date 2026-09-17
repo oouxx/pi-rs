@@ -226,10 +226,11 @@ pub struct Settings {
     // Packages, extensions, skills, prompts, themes
     pub packages: Option<Vec<PackageSource>>,
     pub extensions: Option<Vec<String>>,
-    /// Per-extension enable/disable, keyed by stable built-in extension id
-    /// (`goal`, `subagent`, `web_search`). Missing ids default to enabled
-    /// (opt-out), and global/project objects merge per key so a project can
-    /// override a single extension without dropping the rest.
+    /// Per-extension enable flags for the built-in extensions, keyed by stable
+    /// id (`goal`, `subagent`, `web_search`). **Opt-in**: missing ids are
+    /// disabled, so a built-in must be explicitly set to `true` to load.
+    /// Global/project objects merge per key so a project can override a single
+    /// extension without dropping the rest.
     pub extensions_enabled: Option<HashMap<String, bool>>,
     pub skills: Option<Vec<String>>,
     pub prompts: Option<Vec<String>>,
@@ -1254,8 +1255,8 @@ impl SettingsManager {
         self.settings.extensions.clone().unwrap_or_default()
     }
 
-    /// Per-extension enable flags (`extensionsEnabled`). Missing ids are absent
-    /// from the map; callers treat them as enabled (opt-out).
+    /// Per-extension enable flags (`extensionsEnabled`). **Opt-in**: missing
+    /// ids are disabled; callers only treat an explicit `true` as enabled.
     #[must_use]
     pub fn get_extensions_enabled(&self) -> HashMap<String, bool> {
         self.settings.extensions_enabled.clone().unwrap_or_default()
@@ -1627,31 +1628,31 @@ mod tests {
 
     /// `extensionsEnabled` merges per key across scopes: a project override for
     /// one extension must not drop the global flags for the others (a plain
-    /// array override would). Protects the "project can re-enable one built-in"
+    /// array override would). Protects the "project can override one built-in"
     /// behavior.
     #[test]
     fn test_extensions_enabled_merges_per_key() {
         let base = Settings {
             extensions_enabled: Some(HashMap::from([
-                ("goal".to_string(), false),
-                ("subagent".to_string(), false),
+                ("goal".to_string(), true),
+                ("subagent".to_string(), true),
             ])),
             ..Default::default()
         };
         let overlay = Settings {
-            extensions_enabled: Some(HashMap::from([("goal".to_string(), true)])),
+            extensions_enabled: Some(HashMap::from([("goal".to_string(), false)])),
             ..Default::default()
         };
 
         let merged = deep_merge_settings(&base, &overlay);
         let enabled = merged.extensions_enabled.expect("map");
-        assert_eq!(enabled.get("goal"), Some(&true));
+        assert_eq!(enabled.get("goal"), Some(&false));
         assert_eq!(
             enabled.get("subagent"),
-            Some(&false),
+            Some(&true),
             "project override must not drop other global keys"
         );
-        // Missing id stays absent; callers treat it as enabled (opt-out).
+        // Missing id stays absent; callers treat it as disabled (opt-in).
         assert_eq!(enabled.get("web_search"), None);
     }
 

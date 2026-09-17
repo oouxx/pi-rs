@@ -212,6 +212,7 @@ impl SessionRegistry {
                 ui,
                 cli_provider,
                 cli_model,
+                None,
             )
             .await?;
 
@@ -303,6 +304,7 @@ impl SessionRegistry {
                 mcp_servers,
                 self.enable_extensions,
                 ui,
+                None,
                 None,
                 None,
             )
@@ -446,6 +448,7 @@ impl SessionRegistry {
         ui: Option<crate::core::extensions::ExtensionUIContext>,
         cli_provider: Option<String>,
         cli_model: Option<String>,
+        settings_manager: Option<crate::core::settings_manager::SettingsManager>,
     ) -> Result<(AgentSession, Vec<McpConnection>), String> {
         let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
         let custom_tools = if mcp_tools.is_empty() {
@@ -489,7 +492,7 @@ impl SessionRegistry {
                 model_registry: None,
                 resource_loader: None,
                 session_manager: None,
-                settings_manager: None,
+                settings_manager,
                 session_start_event: None,
         ui_context: ui,
                 custom_tools: custom_tools.clone(),
@@ -2545,16 +2548,36 @@ mod tests {
     }
 
     /// `--no-extensions` 语义在 ACP 会话上的体现：`build_session` 的
-    /// `enable_extensions` 决定是否注册内置 Rust 扩展工具
-    /// （goal/subagent/web_search）。
+    /// `enable_extensions` 决定是否走内置扩展；具体扩展默认关闭（opt-in），
+    /// 由 settings `extensionsEnabled` 显式打开。
     #[tokio::test]
     async fn test_build_session_extension_tools() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let reg = SessionRegistry::with_base_dir(tmp.path().to_path_buf());
 
+        // Opt-in：settings 显式打开三个内置扩展。
+        let mut settings = crate::core::settings_manager::SettingsManager::create(
+            "/tmp",
+            Some(tmp.path().to_str().expect("utf8 path")),
+        );
+        settings.set_global(
+            "extensionsEnabled",
+            serde_json::json!({ "goal": true, "subagent": true, "web_search": true }),
+        );
+
         // 启用：工具列表含全部内置扩展工具。
         let (session, _conns) = reg
-            .build_session("/tmp", None, "/tmp", &[], true, None, None, None)
+            .build_session(
+                "/tmp",
+                None,
+                "/tmp",
+                &[],
+                true,
+                None,
+                None,
+                None,
+                Some(settings),
+            )
             .await
             .expect("build with extensions");
         let state = session.get_agent().state().await;
@@ -2565,7 +2588,7 @@ mod tests {
 
         // 禁用（--no-extensions）：无任何扩展工具。
         let (session, _conns) = reg
-            .build_session("/tmp", None, "/tmp", &[], false, None, None, None)
+            .build_session("/tmp", None, "/tmp", &[], false, None, None, None, None)
             .await
             .expect("build without extensions");
         let state = session.get_agent().state().await;

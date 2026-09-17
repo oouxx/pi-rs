@@ -212,7 +212,7 @@ This file documents the alignment between the TypeScript original
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
 | 处理扩展 UI 响应 | Handles `extension_ui_response` type on stdin | Handles `extension_ui_response` type on stdin via `pending_extension_requests` | 是 |
-| 扩展启用状态 | Extensions enabled in RPC mode（由 `--no-extensions` 传入） | Extensions enabled in RPC mode（`enable_extensions` = CLI `--no-extensions` 取反；内置 registry 在 `create_agent_session` 内按 settings `extensionsEnabled` 过滤） | 是（有意偏差，见 DEVIATIONS.md #24） |
+| 扩展启用状态 | Extensions enabled in RPC mode（由 `--no-extensions` 传入） | Extensions enabled in RPC mode（`enable_extensions` = CLI `--no-extensions` 取反；内置 registry 在 `create_agent_session` 内按 settings `extensionsEnabled` 构建，**默认关闭、需显式 `true`**） | 是（有意偏差，见 DEVIATIONS.md #24） |
 
 ## RPC Protocol
 

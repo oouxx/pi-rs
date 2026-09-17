@@ -1123,7 +1123,8 @@ mod tests {
     }
 
     /// `extensionsEnabled` from settings controls which built-in extensions are
-    /// registered when no explicit registry is supplied.
+    /// registered when no explicit registry is supplied (opt-in: only `true`
+    /// ids load).
     #[tokio::test]
     async fn settings_extensions_enabled_filters_builtin_registry() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1137,7 +1138,7 @@ mod tests {
         let mut settings = SettingsManager::create(&cwd, Some(agent_dir.to_str().unwrap()));
         settings.set_global(
             "extensionsEnabled",
-            serde_json::json!({ "goal": false, "subagent": false }),
+            serde_json::json!({ "web_search": true }),
         );
 
         let (session, _result) = create_agent_session(CreateAgentSessionOptions {

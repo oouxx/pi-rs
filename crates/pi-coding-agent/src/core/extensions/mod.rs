@@ -76,10 +76,11 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 3] = ["goal", "subagent", "web_search"];
 /// `enable` 是 discovery 总开关（`--no-extensions`）：为 `false` 时返回
 /// `None`，一个内置扩展都不注册。
 ///
-/// `enabled` 是来自 settings `extensionsEnabled` 的逐扩展覆盖：
-/// - id 缺失 → 启用（opt-out，新增内置扩展默认生效，不需改用户配置）
-/// - `false` → 不注册该扩展
-/// - `true` → 强制注册
+/// `enabled` 是来自 settings `extensionsEnabled` 的逐扩展开关：
+/// **内置扩展默认关闭**，只有显式写 `true` 才注册（opt-in）。
+/// - id 缺失 → 不注册
+/// - `true` → 注册
+/// - `false` → 不注册（与缺失相同，但可显式覆盖上层 scope）
 ///
 /// 全关时返回 `Some(空 registry)` 而非 `None`：discovery 仍然开着，只是没有
 /// 任何内置扩展。
@@ -90,7 +91,7 @@ pub fn builtin_extension_registry(
     if !enable {
         return None;
     }
-    let is_enabled = |id: &str| enabled.get(id).copied().unwrap_or(true);
+    let is_enabled = |id: &str| enabled.get(id).copied().unwrap_or(false);
     let mut reg = ExtensionRegistry::new();
     if is_enabled("goal") {
         reg.register(
@@ -124,11 +125,15 @@ mod tests {
         assert!(builtin_extension_registry(false, &std::collections::HashMap::new()).is_none());
     }
 
-    /// 默认注册全部三个内置 Rust 扩展（goal / subagent / web_search）。
+    /// 默认注册全部三个内置 Rust 扩展（goal / subagent / web_search）——
+    /// 需显式通过 `extensionsEnabled` 打开。
     #[test]
     fn test_builtin_extension_registry_enabled() {
-        let reg = builtin_extension_registry(true, &std::collections::HashMap::new())
-            .expect("registry");
+        let enabled: std::collections::HashMap<String, bool> = BUILTIN_EXTENSION_IDS
+            .iter()
+            .map(|id| ((*id).to_string(), true))
+            .collect();
+        let reg = builtin_extension_registry(true, &enabled).expect("registry");
         let tools: Vec<&str> =
             reg.tools().iter().map(|t| t.name.as_str()).collect();
         for name in [
@@ -153,22 +158,31 @@ mod tests {
         }
     }
 
-    /// `extensionsEnabled` 可以单独关掉某个内置扩展，其余仍注册（opt-out）。
+    /// 内置扩展默认关闭：空的 `extensionsEnabled` 不注册任何扩展（opt-in）。
+    #[test]
+    fn test_builtin_extension_registry_defaults_to_disabled() {
+        let reg = builtin_extension_registry(true, &std::collections::HashMap::new())
+            .expect("registry");
+        assert!(reg.tools().is_empty(), "built-ins must be opt-in");
+        assert_eq!(reg.handler_count(), 0);
+    }
+
+    /// `extensionsEnabled` 可单独打开某个内置扩展，其余保持关闭（opt-in）。
     #[test]
     fn test_builtin_extension_registry_respects_enabled_map() {
         let mut enabled = std::collections::HashMap::new();
-        enabled.insert("goal".to_string(), false);
+        enabled.insert("goal".to_string(), true);
         let reg = builtin_extension_registry(true, &enabled).expect("registry");
         let tools: Vec<&str> = reg.tools().iter().map(|t| t.name.as_str()).collect();
-        assert!(!tools.iter().any(|t| t.starts_with("goal_")), "goal must be off: {tools:?}");
-        assert!(tools.contains(&"subagent"));
-        assert!(tools.contains(&"web_search"));
+        assert!(tools.iter().any(|t| t.starts_with("goal_")), "goal on: {tools:?}");
+        assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
+        assert!(!tools.contains(&"web_search"), "web_search off: {tools:?}");
 
-        // 显式 true 覆盖默认（例如 project 想重新打开被 global 关掉的扩展）。
-        let mut re_enabled = std::collections::HashMap::new();
-        re_enabled.insert("goal".to_string(), true);
-        let reg = builtin_extension_registry(true, &re_enabled).expect("registry");
-        assert!(reg.tools().iter().any(|t| t.name == "goal_complete"));
+        // 显式 false 与缺失等价，但可覆盖上层 scope 的 true。
+        let mut disabled = std::collections::HashMap::new();
+        disabled.insert("goal".to_string(), false);
+        let reg = builtin_extension_registry(true, &disabled).expect("registry");
+        assert!(reg.tools().is_empty());
     }
 
     /// 全部关闭时返回 `Some(空 registry)` 而不是 `None`（discovery 仍开着）。

@@ -746,16 +746,10 @@ impl AgentSession {
         let ext_model = format!("{}/{}", options.model.provider, options.model.id);
         ext_runtime_handle.get_model = std::sync::Arc::new(move || ext_model.clone());
         // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
-        let registry_for_provider = model_registry.clone();
-        ext_runtime_handle.register_provider = std::sync::Arc::new(move |config_value| {
-            if let Ok(config) = serde_json::from_value::<crate::core::model_registry::ProviderConfig>(
-                config_value,
-            ) {
-                if let Some(name) = config.name.clone() {
-                    registry_for_provider.register_provider(&name, config);
-                }
-            }
-        });
+        crate::core::extensions::install_register_provider_hook(
+            &mut ext_runtime_handle,
+            model_registry.clone(),
+        );
         // 实时 UI 绑定：构造期值等于 options.ui_context（或默认 eprintln），
         // interactive 模式之后通过 set_extension_ui_context 换绑；两个扩展
         // 上下文都从这里实时读取（对齐 TS runner.uiContext + getter）。
@@ -1399,18 +1393,10 @@ impl AgentSession {
                 let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
                 ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
                 // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
-                let registry_for_provider = model_registry_for_ext.clone();
-                ext_runtime_handle.register_provider = std::sync::Arc::new(move |config_value| {
-                    if let Ok(config) =
-                        serde_json::from_value::<crate::core::model_registry::ProviderConfig>(
-                            config_value,
-                        )
-                    {
-                        if let Some(name) = config.name.clone() {
-                            registry_for_provider.register_provider(&name, config);
-                        }
-                    }
-                });
+                crate::core::extensions::install_register_provider_hook(
+                    &mut ext_runtime_handle,
+                    model_registry_for_ext.clone(),
+                );
                 ExtensionContext::new(
                     session_cwd_for_ext.clone(),
                     false,

@@ -218,11 +218,6 @@ pub async fn create_agent_session_from_services(
         }
     };
 
-    let thinking_level = match options.thinking_level {
-        Some(t) => t,
-        None => "medium".to_string(),
-    };
-
     // Build the options struct and delegate to the single entry point.
     // `create_agent_session` handles extension registry wrapping,
     // prompt_guidelines collection, resource loading, and session assembly.
@@ -235,7 +230,7 @@ pub async fn create_agent_session_from_services(
         cwd,
         agent_dir: Some(agent_dir),
         model: Some(model),
-        thinking_level: Some(thinking_level),
+        thinking_level: options.thinking_level.clone(),
         scoped_models: options.scoped_models,
         no_tools: options.no_tools,
         tools: options.tools,

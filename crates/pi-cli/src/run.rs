@@ -260,7 +260,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         cwd: cwd.clone(),
         agent_dir: Some(agent_dir.to_string_lossy().to_string()),
         model: None,
-        thinking_level: None,
+        thinking_level: args.thinking.clone(),
         scoped_models,
         no_tools: if args.no_tools {
             Some(pi_coding_agent::core::sdk::NoToolsMode::All)
@@ -366,7 +366,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         cwd: cwd.to_string(),
         agent_dir: Some(agent_dir.to_string()),
         model: None,
-        thinking_level: None,
+        thinking_level: args.thinking.clone(),
         scoped_models: None,
         no_tools: if args.no_tools {
             Some(pi_coding_agent::core::sdk::NoToolsMode::All)
@@ -576,8 +576,9 @@ fn build_model_registry(args: &CliArgs) -> Result<ModelRegistry, String> {
                 api: None,
                 headers: None,
                 auth_header: None,
+                models: None,
             },
-        );
+        )?;
     }
     Ok(registry)
 }

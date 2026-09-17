@@ -13,10 +13,17 @@ use serde::Deserialize;
 type ApiKeyResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 pub struct ModelRegistry {
-    models: RwLock<Vec<Model>>,
+    /// Model list, shared across clones so registrations made through an
+    /// extension hook are visible to the session holding another clone
+    /// (TS keeps one `ModelRuntime` instance per session).
+    models: Arc<RwLock<Vec<Model>>>,
     registered_providers: Arc<RwLock<HashMap<String, ProviderConfig>>>,
     /// Provider configs loaded from models.json (provider-level settings like baseUrl, apiKey, headers, etc.)
-    models_json_providers: RwLock<HashMap<String, ProviderConfig>>,
+    models_json_providers: Arc<RwLock<HashMap<String, ProviderConfig>>>,
+    /// Models that extension registrations replaced, kept so
+    /// `unregister_provider` can restore the previous layer
+    /// (match TS `recomputeProvider` restoring built-ins).
+    replaced_models: Arc<RwLock<HashMap<String, Vec<Model>>>>,
     /// Path of the models.json file, kept for hot reload (match TS #6999).
     models_path: Option<std::path::PathBuf>,
     /// Credential resolver consulted for API-key resolution, matching TS
@@ -27,16 +34,17 @@ pub struct ModelRegistry {
 impl Clone for ModelRegistry {
     fn clone(&self) -> Self {
         Self {
-            models: RwLock::new(self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
+            models: Arc::clone(&self.models),
             registered_providers: Arc::clone(&self.registered_providers),
-            models_json_providers: RwLock::new(self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()),
+            models_json_providers: Arc::clone(&self.models_json_providers),
+            replaced_models: Arc::clone(&self.replaced_models),
             models_path: self.models_path.clone(),
             api_key_resolver: self.api_key_resolver.clone(),
         }
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub name: Option<String>,
@@ -45,6 +53,56 @@ pub struct ProviderConfig {
     pub api: Option<String>,
     pub headers: Option<HashMap<String, String>>,
     pub auth_header: Option<bool>,
+    /// Models to register. When present this **replaces** all existing models
+    /// for the provider (match TS `applyExtension`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<ProviderModelConfig>>,
+}
+
+/// A model definition supplied through `pi.registerProvider`
+/// (match TS `ProviderModelConfig`).
+///
+/// Field requirements mirror the TS type: `api`/`baseUrl` may be inherited
+/// from the provider config or the model being replaced, everything else is
+/// required so a malformed registration fails loudly instead of registering a
+/// half-configured model.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    pub reasoning: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level_map: Option<HashMap<String, Option<String>>>,
+    pub input: Vec<String>,
+    pub cost: pi_agent_core::pi_ai_types::ModelCost,
+    pub context_window: u64,
+    pub max_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<pi_agent_core::pi_ai_types::ModelCompat>,
+}
+
+/// Resolve the model defaults used when a definition omits `api`/`baseUrl`.
+///
+/// Matches TS `findModelDefaults`: same id, then same api, then the first
+/// `openai-completions` model, then the first model overall.
+fn find_model_defaults<'a>(
+    models: &'a [Model],
+    model_id: &str,
+    api: Option<&str>,
+) -> Option<&'a Model> {
+    models
+        .iter()
+        .find(|m| m.id == model_id)
+        .or_else(|| api.and_then(|api| models.iter().find(|m| m.api == api)))
+        .or_else(|| models.iter().find(|m| m.api == "openai-completions"))
+        .or_else(|| models.first())
 }
 
 /// Input for registering a provider, matching the original ProviderConfigInput interface.
@@ -64,15 +122,30 @@ pub struct ModelRegistryEntry {
     pub provider_config: Option<ProviderConfig>,
 }
 
+/// Merge a re-registration over the previously stored config: defined values
+/// win, `None` keeps the previous value (match TS `ModelRuntime.registerProvider`).
+fn merge_provider_config(previous: &ProviderConfig, next: ProviderConfig) -> ProviderConfig {
+    ProviderConfig {
+        name: next.name.or_else(|| previous.name.clone()),
+        base_url: next.base_url.or_else(|| previous.base_url.clone()),
+        api_key: next.api_key.or_else(|| previous.api_key.clone()),
+        api: next.api.or_else(|| previous.api.clone()),
+        headers: next.headers.or_else(|| previous.headers.clone()),
+        auth_header: next.auth_header.or(previous.auth_header),
+        models: next.models.or_else(|| previous.models.clone()),
+    }
+}
+
 impl ModelRegistry {
     pub fn new(builtin_models: Vec<Model>) -> Self {
         let mut models = builtin_models;
         let models_path = config::get_models_path();
         let models_json_providers = Self::load_models_from_path(&mut models, &models_path, None);
         Self {
-            models: RwLock::new(models),
+            models: Arc::new(RwLock::new(models)),
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
-            models_json_providers: RwLock::new(models_json_providers),
+            models_json_providers: Arc::new(RwLock::new(models_json_providers)),
+            replaced_models: Arc::new(RwLock::new(HashMap::new())),
             models_path: Some(models_path),
             api_key_resolver: None,
         }
@@ -116,9 +189,10 @@ impl ModelRegistry {
         let mut models = builtin_models;
         let models_json_providers = Self::load_models_from_path(&mut models, models_path, None);
         Self {
-            models: RwLock::new(models),
+            models: Arc::new(RwLock::new(models)),
             registered_providers: Arc::new(RwLock::new(HashMap::new())),
-            models_json_providers: RwLock::new(models_json_providers),
+            models_json_providers: Arc::new(RwLock::new(models_json_providers)),
+            replaced_models: Arc::new(RwLock::new(HashMap::new())),
             models_path: Some(models_path.to_path_buf()),
             api_key_resolver: None,
         }
@@ -442,14 +516,197 @@ impl ModelRegistry {
         }
     }
 
-    pub fn register_provider(&self, provider_name: &str, config: ProviderConfig) {
-        let mut providers = self.registered_providers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-        providers.insert(provider_name.to_string(), config);
+    /// Register a provider config (extension `pi.registerProvider`, `--api-key`).
+    ///
+    /// Re-registering merges defined values over the previous registration and
+    /// keeps previously defined fields (match TS `ModelRuntime.registerProvider`).
+    ///
+    /// When the merged config carries `models`, they **replace** every model
+    /// currently registered for the provider (match TS `applyExtension`; the
+    /// replaced models are restored by [`ModelRegistry::unregister_provider`]).
+    /// Without `models`, a provider-level `baseUrl` is applied to the
+    /// provider's existing models.
+    ///
+    /// Returns an error for structurally invalid registrations (missing `api`
+    /// or `baseUrl`, match TS `validateExtensionProvider` / `applyExtension`).
+    pub fn register_provider(
+        &self,
+        provider_name: &str,
+        config: ProviderConfig,
+    ) -> Result<(), String> {
+        // Re-registration merges defined values over the stored config
+        // (TS: `const effective = { ...previous }; for (value of config) if
+        // (value !== undefined) effective[key] = value`).
+        let config = {
+            let providers = self
+                .registered_providers
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match providers.get(provider_name) {
+                Some(previous) => merge_provider_config(previous, config),
+                None => config,
+            }
+        };
+
+        // Build (and validate) the model list before mutating any state so a
+        // rejected registration leaves the registry untouched, like TS
+        // `validateExtensionProvider` which throws before publishing.
+        let replacement = match config.models.as_ref() {
+            Some(definitions) => Some(self.build_extension_models(provider_name, &config, definitions)?),
+            None => None,
+        };
+
+        // Snapshot the provider's original models before the first mutation so
+        // `unregister_provider` can restore them (TS `recomposeProvider`
+        // rebuilds from built-ins). Only the first snapshot is kept: later
+        // re-registrations must resolve defaults against the original layer,
+        // not a previous extension layer.
+        if replacement.is_some() || config.base_url.is_some() {
+            let already_snapshotted = self
+                .replaced_models
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(provider_name);
+            if !already_snapshotted {
+                let snapshot: Vec<Model> = self
+                    .models
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|m| m.provider == provider_name)
+                    .cloned()
+                    .collect();
+                self.replaced_models
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(provider_name.to_string(), snapshot);
+            }
+        }
+
+        if let Some(models) = replacement {
+            let mut current = self
+                .models
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            current.retain(|m| m.provider != provider_name);
+            current.extend(models);
+        } else if let Some(ref base_url) = config.base_url {
+            let mut current = self
+                .models
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for model in current.iter_mut().filter(|m| m.provider == provider_name) {
+                model.base_url = base_url.clone();
+            }
+        }
+
+        self.registered_providers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_name.to_string(), config);
+        Ok(())
     }
 
+    /// Build the models for an extension registration, resolving `api` and
+    /// `baseUrl` from the model definition, then the provider config, then the
+    /// defaults model of the layer being replaced (match TS `applyExtension` +
+    /// `findModelDefaults`).
+    fn build_extension_models(
+        &self,
+        provider_name: &str,
+        config: &ProviderConfig,
+        definitions: &[ProviderModelConfig],
+    ) -> Result<Vec<Model>, String> {
+        let previous: Vec<Model> = {
+            let replaced = self
+                .replaced_models
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(snapshot) = replaced.get(provider_name) {
+                snapshot.clone()
+            } else {
+                drop(replaced);
+                self.models
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|m| m.provider == provider_name)
+                    .cloned()
+                    .collect()
+            }
+        };
+
+        definitions
+            .iter()
+            .map(|definition| {
+                let defaults = find_model_defaults(
+                    &previous,
+                    &definition.id,
+                    definition.api.as_deref().or(config.api.as_deref()),
+                );
+                let api = definition
+                    .api
+                    .clone()
+                    .or_else(|| config.api.clone())
+                    .or_else(|| defaults.map(|m| m.api.clone()))
+                    .ok_or_else(|| {
+                        format!(
+                            "Provider {provider_name}, model {}: no \"api\" specified. Set at provider or model level.",
+                            definition.id
+                        )
+                    })?;
+                let base_url = definition
+                    .base_url
+                    .clone()
+                    .or_else(|| config.base_url.clone())
+                    .or_else(|| defaults.map(|m| m.base_url.clone()))
+                    .ok_or_else(|| {
+                        format!(
+                            "Provider {provider_name}: \"baseUrl\" is required when defining custom models."
+                        )
+                    })?;
+                Ok(Model {
+                    id: definition.id.clone(),
+                    name: definition.name.clone(),
+                    api,
+                    provider: provider_name.to_string(),
+                    base_url,
+                    reasoning: definition.reasoning,
+                    thinking_level_map: definition.thinking_level_map.clone(),
+                    input: definition.input.clone(),
+                    cost: definition.cost.clone(),
+                    context_window: definition.context_window,
+                    max_tokens: definition.max_tokens,
+                    sampling_params: definition.sampling_params.clone(),
+                    // TS `applyExtension` clears model-level headers for
+                    // extension-registered models.
+                    headers: None,
+                    compat: definition.compat.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Unregister a provider registered via [`ModelRegistry::register_provider`],
+    /// restoring the models it replaced (match TS `unregisterProvider`).
     pub fn unregister_provider(&self, provider_name: &str) {
-        let mut providers = self.registered_providers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-        providers.remove(provider_name);
+        self.registered_providers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_name);
+        let restored = self
+            .replaced_models
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_name);
+        if let Some(previous) = restored {
+            let mut current = self
+                .models
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            current.retain(|m| m.provider != provider_name);
+            current.extend(previous);
+        }
     }
 
     /// Get the config for a registered provider (from `register_provider`).
@@ -498,6 +755,9 @@ impl ModelRegistry {
                                 m
                             }),
                             auth_header: provider_def.auth_header,
+                            // models.json models are applied to the model list
+                            // directly; the config keeps provider-level settings.
+                            models: None,
                         };
                         provider_configs.insert(provider_name.clone(), provider_config);
 
@@ -1258,5 +1518,399 @@ mod tests {
         assert!(!target.contains_key("authorization"), "null marker must delete the header");
         assert_eq!(target.get("x-api-key").map(|s| s.as_str()), Some("sk-new"));
         assert_eq!(target.get("x-custom").map(|s| s.as_str()), Some("v"));
+    }
+
+    // ── Extension registerProvider (TS `applyExtension`) ───────────────
+
+    fn extension_test_model(id: &str) -> Model {
+        Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            api: "anthropic-messages".to_string(),
+            provider: "extp".to_string(),
+            base_url: "https://orig.example.com".to_string(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+            context_window: 100_000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    fn model_with(provider: &str, id: &str, api: &str, base_url: &str) -> Model {
+        Model {
+            provider: provider.to_string(),
+            api: api.to_string(),
+            base_url: base_url.to_string(),
+            ..extension_test_model(id)
+        }
+    }
+
+    /// Extension registrations may carry `models`; the old hook silently
+    /// dropped them (serde had no `models` field). They replace every existing
+    /// model of the provider and inherit provider-level api/baseUrl.
+    #[test]
+    fn test_register_provider_with_models_replaces_provider_models() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![extension_test_model("builtin-model")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "Extension Provider",
+            "apiKey": "k",
+            "api": "openai-completions",
+            "baseUrl": "https://proxy.example.com",
+            "models": [{
+                "id": "custom-1",
+                "name": "Custom 1",
+                "reasoning": true,
+                "input": ["text", "image"],
+                "cost": { "input": 1.0, "output": 2.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+                "contextWindow": 200_000,
+                "maxTokens": 4096
+            }]
+        }))
+        .expect("models must deserialize");
+
+        registry.register_provider("extp", config).unwrap();
+
+        assert!(
+            registry.find("extp", "builtin-model").is_none(),
+            "extension models replace all existing provider models"
+        );
+        let model = registry.find("extp", "custom-1").expect("custom model");
+        assert_eq!(model.api, "openai-completions");
+        assert_eq!(model.base_url, "https://proxy.example.com");
+        assert!(model.reasoning);
+        assert_eq!(model.input, vec!["text".to_string(), "image".to_string()]);
+        assert_eq!(model.context_window, 200_000);
+    }
+
+    /// A replaced model with the same id supplies api/baseUrl defaults
+    /// (TS `findModelDefaults`).
+    #[test]
+    fn test_register_provider_models_inherit_defaults_from_replaced_model() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![extension_test_model("keep-me")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "models": [{
+                "id": "keep-me",
+                "name": "Renamed",
+                "reasoning": true,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 100_000,
+                "maxTokens": 4096
+            }]
+        }))
+        .unwrap();
+
+        registry.register_provider("extp", config).unwrap();
+
+        let model = registry.find("extp", "keep-me").expect("model");
+        assert_eq!(model.name, "Renamed");
+        assert_eq!(model.api, "anthropic-messages");
+        assert_eq!(model.base_url, "https://orig.example.com");
+    }
+
+    /// Structurally invalid model definitions are rejected instead of
+    /// registering a half-configured model (TS `applyExtension` throws).
+    #[test]
+    fn test_register_provider_models_require_api_and_base_url() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+
+        let missing_api: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "models": [{
+                "id": "m",
+                "name": "M",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 1000,
+                "maxTokens": 100
+            }]
+        }))
+        .unwrap();
+        let error = registry
+            .register_provider("extp", missing_api)
+            .expect_err("missing api must fail");
+        assert!(error.contains("no \"api\" specified"), "unexpected error: {error}");
+
+        let missing_base_url: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "api": "openai-completions",
+            "models": [{
+                "id": "m",
+                "name": "M",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 1000,
+                "maxTokens": 100
+            }]
+        }))
+        .unwrap();
+        let error = registry
+            .register_provider("extp", missing_base_url)
+            .expect_err("missing baseUrl must fail");
+        assert!(
+            error.contains("\"baseUrl\" is required"),
+            "unexpected error: {error}"
+        );
+
+        // A rejected registration must not leave config behind.
+        assert!(registry.get_provider_config("extp").is_none());
+    }
+
+    /// Unregistering restores the models the extension replaced
+    /// (TS `unregisterProvider` recomposes the built-in layer).
+    #[test]
+    fn test_unregister_provider_restores_replaced_models() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![extension_test_model("builtin-model")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "api": "openai-completions",
+            "baseUrl": "https://proxy.example.com",
+            "apiKey": "k",
+            "models": [{
+                "id": "custom-1",
+                "name": "Custom 1",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 1000,
+                "maxTokens": 100
+            }]
+        }))
+        .unwrap();
+        registry.register_provider("extp", config).unwrap();
+
+        registry.unregister_provider("extp");
+
+        assert!(registry.find("extp", "custom-1").is_none());
+        assert!(registry.find("extp", "builtin-model").is_some());
+        assert!(registry.get_provider_config("extp").is_none());
+    }
+
+    /// Without `models`, a provider-level `baseUrl` overrides the existing
+    /// provider models (documented TS `registerProvider` use case).
+    #[test]
+    fn test_register_provider_base_url_overrides_existing_models() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![extension_test_model("builtin-model")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        registry
+            .register_provider(
+                "extp",
+                ProviderConfig {
+                    base_url: Some("https://proxy.example.com".to_string()),
+                    api_key: Some("k".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let model = registry.find("extp", "builtin-model").expect("model");
+        assert_eq!(model.base_url, "https://proxy.example.com");
+        assert!(
+            registry.find("extp", "builtin-model").is_some(),
+            "baseUrl-only registration keeps existing models"
+        );
+    }
+
+    /// A registration without `models`/`baseUrl` only records auth config and
+    /// leaves the model list untouched (e.g. the `--api-key` path).
+    #[test]
+    fn test_register_provider_without_models_keeps_existing_models() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![extension_test_model("builtin-model")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        registry
+            .register_provider(
+                "extp",
+                ProviderConfig {
+                    api_key: Some("k".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let model = registry.find("extp", "builtin-model").expect("model");
+        assert_eq!(model.base_url, "https://orig.example.com");
+        assert!(registry.has_configured_auth(&model));
+    }
+
+    /// Re-registering merges defined values over the previous registration and
+    /// keeps previously defined fields (TS `ModelRuntime.registerProvider`).
+    #[test]
+    fn test_register_provider_merges_with_previous_registration() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let with_models: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "baseUrl": "https://a.example.com",
+            "apiKey": "k1",
+            "api": "openai-completions",
+            "models": [{
+                "id": "m",
+                "name": "M",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 1000,
+                "maxTokens": 100
+            }]
+        }))
+        .unwrap();
+        registry.register_provider("extp", with_models).unwrap();
+
+        // Second registration only updates the key: baseUrl/api/models survive.
+        registry
+            .register_provider(
+                "extp",
+                ProviderConfig {
+                    api_key: Some("k2".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let config = registry.get_provider_config("extp").expect("config");
+        assert_eq!(config.base_url.as_deref(), Some("https://a.example.com"));
+        assert_eq!(config.api.as_deref(), Some("openai-completions"));
+        assert_eq!(config.api_key.as_deref(), Some("k2"));
+        assert_eq!(config.models.as_ref().map(Vec::len), Some(1));
+        assert!(registry.find("extp", "m").is_some());
+    }
+
+    /// A `baseUrl`-only registration rewrites the existing models in place, and
+    /// unregistering restores the original base URL (TS `recomposeProvider`
+    /// rebuilds from the built-in layer). Regression: only model-bearing
+    /// registrations were snapshotted, so the rewrite leaked past unregister.
+    #[test]
+    fn test_unregister_provider_restores_base_url_override() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![extension_test_model("builtin-model")],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        registry
+            .register_provider(
+                "extp",
+                ProviderConfig {
+                    base_url: Some("https://proxy.example.com".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            registry.find("extp", "builtin-model").map(|m| m.base_url),
+            Some("https://proxy.example.com".to_string())
+        );
+
+        registry.unregister_provider("extp");
+
+        assert_eq!(
+            registry.find("extp", "builtin-model").map(|m| m.base_url),
+            Some("https://orig.example.com".to_string()),
+            "unregister must restore the pre-registration base URL"
+        );
+        assert!(registry.get_provider_config("extp").is_none());
+    }
+
+    /// `api`/`baseUrl` fall back to the layer being replaced via
+    /// `findModelDefaults` (same id → same api → first openai-completions →
+    /// first model), matching TS `applyExtension`.
+    #[test]
+    fn test_register_provider_models_use_find_model_defaults_chain() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![
+                model_with("extp", "openai-ish", "openai-completions", "https://oa.example.com"),
+                model_with("extp", "anthropic-ish", "anthropic-messages", "https://an.example.com"),
+            ],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "models": [
+                {
+                    "id": "by-api",
+                    "name": "By Api",
+                    "api": "anthropic-messages",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "cost": { "input": 0.0, "output": 0.0 },
+                    "contextWindow": 1000,
+                    "maxTokens": 100
+                },
+                {
+                    "id": "by-openai",
+                    "name": "By OpenAI",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "cost": { "input": 0.0, "output": 0.0 },
+                    "contextWindow": 1000,
+                    "maxTokens": 100
+                }
+            ]
+        }))
+        .unwrap();
+
+        registry.register_provider("extp", config).unwrap();
+
+        // Explicit api selects the first model with that api; baseUrl follows.
+        let by_api = registry.find("extp", "by-api").expect("by-api");
+        assert_eq!(by_api.api, "anthropic-messages");
+        assert_eq!(by_api.base_url, "https://an.example.com");
+
+        // No api hint: prefer the first openai-completions model.
+        let by_openai = registry.find("extp", "by-openai").expect("by-openai");
+        assert_eq!(by_openai.api, "openai-completions");
+        assert_eq!(by_openai.base_url, "https://oa.example.com");
+    }
+
+    /// `samplingParams` on extension model definitions is preserved (TS spreads
+    /// the definition into the model). Previously it was silently dropped.
+    #[test]
+    fn test_register_provider_models_keep_sampling_params() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "api": "openai-completions",
+            "baseUrl": "https://proxy.example.com",
+            "models": [{
+                "id": "m",
+                "name": "M",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0.0, "output": 0.0 },
+                "contextWindow": 1000,
+                "maxTokens": 100,
+                "samplingParams": { "temperature": 0.25 }
+            }]
+        }))
+        .unwrap();
+
+        registry.register_provider("extp", config).unwrap();
+
+        let model = registry.find("extp", "m").expect("model");
+        let sampling = model.sampling_params.expect("sampling_params");
+        assert_eq!(
+            sampling.get("temperature").and_then(serde_json::Value::as_f64),
+            Some(0.25)
+        );
     }
 }

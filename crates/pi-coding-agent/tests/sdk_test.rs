@@ -1512,8 +1512,10 @@ async fn test_state_mutations_persist_to_agent() {
             api: Some("openai-completions".to_string()),
             headers: None,
             auth_header: None,
+            models: None,
         },
-    );
+    )
+    .expect("register openrouter provider");
     let mut new_model = make_model();
     new_model.reasoning = true;
     new_model.thinking_level_map = Some(HashMap::new());
@@ -1589,8 +1591,10 @@ async fn test_prompt_returns_error_when_no_api_key() {
             api: None,
             headers: None,
             auth_header: Some(true),
+            models: None,
         },
-    );
+    )
+    .expect("register provider");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {

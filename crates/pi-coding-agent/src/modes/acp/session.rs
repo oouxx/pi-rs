@@ -1932,8 +1932,10 @@ mod tests {
                 api: Some("test-api".into()),
                 headers: None,
                 auth_header: None,
+                models: None,
             },
-        );
+        )
+        .expect("register fake provider");
         registry
     }
 

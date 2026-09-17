@@ -23,6 +23,35 @@ pub use loader::{
     resolve_extension_entries, CacheToken, DiscoveredExtensions, ExtensionCache, PiManifest,
 };
 
+/// Wire payload for the extension `registerProvider` hook.
+///
+/// Mirrors the TS host call `runtime.registerProvider(providerId, config)`,
+/// which receives the provider id separately from the config (the config's
+/// `name` is only a display name).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterProviderPayload {
+    provider_id: String,
+    config: crate::core::model_registry::ProviderConfig,
+}
+
+/// Install the extension `registerProvider` hook on a runtime handle.
+///
+/// The payload is `{ "providerId": "...", "config": { ... } }`. Structurally
+/// invalid registrations (bad payload shape, missing `api`/`baseUrl` for model
+/// definitions) return an error instead of being silently dropped, matching TS
+/// `validateExtensionProvider`, which throws.
+pub fn install_register_provider_hook(
+    handle: &mut RuntimeHandle,
+    registry: crate::core::model_registry::ModelRegistry,
+) {
+    handle.register_provider = std::sync::Arc::new(move |payload| {
+        let RegisterProviderPayload { provider_id, config } =
+            serde_json::from_value(payload).map_err(|e| e.to_string())?;
+        registry.register_provider(&provider_id, config)
+    });
+}
+
 /// Try to load a JS/TS extension immediately after installation.
 ///
 /// Main 分支不包含 JS 扩展运行时（V8 方案已移除，Bun 方案在
@@ -107,5 +136,55 @@ mod tests {
             };
             assert_eq!(t.source_info.path, expected);
         }
+    }
+
+    /// The extension `registerProvider` hook keys the registration by
+    /// `providerId` (TS `pi.registerProvider(name, config)`) and installs the
+    /// supplied models — previously the payload's `models` were dropped and
+    /// `config.name` was misused as the provider id.
+    #[test]
+    fn test_install_register_provider_hook_registers_models() {
+        let mut handle = RuntimeHandle::noop();
+        let registry = crate::core::model_registry::ModelRegistry::new_with_models_path(
+            vec![],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        install_register_provider_hook(&mut handle, registry.clone());
+
+        (handle.register_provider)(serde_json::json!({
+            "providerId": "corp",
+            "config": {
+                "name": "Corporate AI",
+                "apiKey": "k",
+                "api": "openai-responses",
+                "baseUrl": "https://ai.corp.example",
+                "models": [{
+                    "id": "corp-1",
+                    "name": "Corp 1",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "cost": { "input": 0.0, "output": 0.0 },
+                    "contextWindow": 1000,
+                    "maxTokens": 100
+                }]
+            }
+        }))
+        .expect("hook must register the provider");
+
+        assert!(registry.find("corp", "corp-1").is_some());
+        assert!(registry.get_provider_config("corp").is_some());
+        assert_eq!(
+            registry
+                .get_provider_config("corp")
+                .and_then(|c| c.name)
+                .as_deref(),
+            Some("Corporate AI"),
+            "config.name is a display name, not the provider id"
+        );
+
+        // Malformed payloads surface an error instead of being dropped.
+        let error = (handle.register_provider)(serde_json::json!({"name": "legacy-shape"}))
+            .expect_err("legacy payload must be rejected");
+        assert!(error.contains("providerId"), "unexpected error: {error}");
     }
 }

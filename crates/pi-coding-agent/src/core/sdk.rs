@@ -9,7 +9,7 @@ use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
 use crate::core::resource_loader::{self, ResourceLoaderOptions};
-use crate::core::session_manager::SessionManager;
+use crate::core::session_manager::{SessionEntry, SessionManager};
 use crate::core::settings_manager::SettingsManager;
 use crate::core::system_prompt::{ContextFile, SkillInfo};
 
@@ -483,74 +483,6 @@ pub async fn create_agent_session(
         })
         .unwrap_or_default();
 
-    // Resolve the model. When the caller has already resolved a model (e.g.
-    // `create_agent_session_from_services`), honor it directly and skip the
-    // default resolution path. Otherwise resolve from CLI flags / scoped
-    // models / settings, falling back to the first available model.
-    let (model, thinking_level, fallback_message) = if let Some(m) = options.model.clone() {
-        let tl = options
-            .thinking_level
-            .clone()
-            .map(|t| match t.as_str() {
-                "high" => "high".to_string(),
-                "low" => "low".to_string(),
-                _ => "medium".to_string(),
-            })
-            .unwrap_or_else(|| "medium".to_string());
-        (m, tl, None)
-    } else {
-        let initial_model = model_resolver::find_initial_model(
-            options.cli_provider.as_deref(),
-            options.cli_model.as_deref(),
-            &scoped,
-            false,
-            default_provider.as_deref(),
-            default_model_id.as_deref(),
-            default_thinking_level.as_deref(),
-            &model_registry,
-        );
-
-        match initial_model.model {
-            Some(m) => {
-                let thinking_level = match initial_model.thinking_level.as_str() {
-                    "high" => "high".to_string(),
-                    "medium" => "medium".to_string(),
-                    "low" => "low".to_string(),
-                    _ => "medium".to_string(),
-                };
-                (m, thinking_level, initial_model.fallback_message)
-            }
-            None => {
-                // TS 原版行为（sdk.ts）：没有任何可用模型时，session 仍创建，
-                // 只是不带模型（model 为空 id），thinkingLevel = "off"，
-                // modelFallbackMessage = formatNoModelsAvailableMessage()。
-                // prompt() 会报"没有选择模型"（formatNoModelSelectedMessage）。
-                let empty_model = Model {
-                    id: String::new(),
-                    name: String::new(),
-                    api: String::new(),
-                    provider: String::new(),
-                    base_url: String::new(),
-                    reasoning: false,
-                    thinking_level_map: None,
-                    input: Vec::new(),
-                    cost: pi_agent_core::pi_ai_types::ModelCost::default(),
-                    context_window: 0,
-                    max_tokens: 0,
-                    sampling_params: None,
-                    headers: None,
-                    compat: None,
-                };
-                let fallback_message = Some(
-                    crate::core::auth_guidance::format_no_models_available_message(
-                        &crate::config::get_docs_path().to_string_lossy(),
-                    ),
-                );
-                (empty_model, "off".to_string(), fallback_message)
-            }
-        }
-    };
-
     // Resolve session directory: --session-dir overrides default. The default
     // is the encoded-cwd subdirectory (`sessions/--<encoded-cwd>--`), matching
     // TS `getDefaultSessionDir`. Using the bare `sessions/` root here made
@@ -579,6 +511,127 @@ pub async fn create_agent_session(
         )
     };
 
+    // Existing session data drives both model restore and the `isContinuing`
+    // flag passed to `find_initial_model` (TS sdk.ts `buildSessionContext()` →
+    // `hasExistingSession` / `hasThinkingEntry`).
+    let existing_session = session_manager.build_context();
+    let has_existing_session = !existing_session.messages.is_empty();
+    let has_thinking_entry = session_manager
+        .get_branch(None)
+        .iter()
+        .any(|entry| matches!(entry, SessionEntry::ThinkingLevelChange { .. }));
+
+    // Resolve the model. When the caller has already resolved a model (e.g.
+    // `create_agent_session_from_services`), honor it directly. Otherwise
+    // restore the model recorded in the session when resuming, then fall back
+    // to CLI flags / scoped models / settings / first available model.
+    let mut model: Option<Model> = options.model.clone();
+    let mut fallback_message: Option<String> = None;
+
+    if model.is_none() && has_existing_session {
+        if let Some(saved) = &existing_session.model {
+            let restored = model_registry
+                .find(&saved.provider, &saved.model_id)
+                .filter(|m| model_registry.has_configured_auth(m));
+            match restored {
+                Some(m) => model = Some(m),
+                None => {
+                    fallback_message =
+                        Some(format!("Could not restore model {}/{}", saved.provider, saved.model_id));
+                }
+            }
+        }
+    }
+
+    // Thinking level: an explicit caller/CLI value wins, then the session's
+    // recorded level, then the settings default (TS sdk.ts order). The CLI
+    // passes the raw `--models` scope instead of pre-resolving it, so a scoped
+    // pattern's explicit level (`provider/id:high`, applied by TS main.ts to
+    // `options.thinkingLevel`) is folded in here for new sessions.
+    let mut resolved_thinking_level: Option<String> = options.thinking_level.clone().or_else(|| {
+        if options.model.is_none() && !has_existing_session {
+            scoped.first().and_then(|s| s.thinking_level.clone())
+        } else {
+            None
+        }
+    });
+
+    if model.is_none() {
+        let initial = model_resolver::find_initial_model(
+            options.cli_provider.as_deref(),
+            options.cli_model.as_deref(),
+            &scoped,
+            has_existing_session,
+            default_provider.as_deref(),
+            default_model_id.as_deref(),
+            default_thinking_level.as_deref(),
+            &model_registry,
+        );
+        model = initial.model;
+        match (&model, &fallback_message) {
+            (None, _) => {
+                // TS 原版行为（sdk.ts）：没有任何可用模型时，session 仍创建，
+                // 只是不带模型（model 为空 id），thinkingLevel = "off"，
+                // modelFallbackMessage = formatNoModelsAvailableMessage()。
+                // prompt() 会报"没有选择模型"（formatNoModelSelectedMessage）。
+                fallback_message = Some(
+                    crate::core::auth_guidance::format_no_models_available_message(
+                        &crate::config::get_docs_path().to_string_lossy(),
+                    ),
+                );
+            }
+            (Some(m), Some(previous)) => {
+                fallback_message = Some(format!("{previous}. Using {}/{}", m.provider, m.id));
+            }
+            (Some(_), None) => {}
+        }
+    }
+
+    // Restore the session's thinking level when resuming; only then fall back
+    // to the settings default (TS sdk.ts thinking-level order).
+    if resolved_thinking_level.is_none() && has_existing_session {
+        resolved_thinking_level = Some(if has_thinking_entry {
+            existing_session.thinking_level.clone()
+        } else {
+            default_thinking_level
+                .clone()
+                .unwrap_or_else(|| crate::core::defaults::DEFAULT_THINKING_LEVEL.to_string())
+        });
+    }
+
+    let thinking_level = resolved_thinking_level.unwrap_or_else(|| {
+        default_thinking_level
+            .clone()
+            .unwrap_or_else(|| crate::core::defaults::DEFAULT_THINKING_LEVEL.to_string())
+    });
+
+    // Clamp to the model's capabilities; a session without a resolved model is
+    // always "off" (TS sdk.ts `clampThinkingLevel`).
+    let (model, thinking_level) = match model {
+        Some(m) => {
+            let level = pi_agent_core::pi_ai_types::clamp_thinking_level(&m, &thinking_level);
+            (m, level)
+        }
+        None => {
+            let empty_model = Model {
+                id: String::new(),
+                name: String::new(),
+                api: String::new(),
+                provider: String::new(),
+                base_url: String::new(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: Vec::new(),
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                context_window: 0,
+                max_tokens: 0,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            };
+            (empty_model, "off".to_string())
+        }
+    };
 
     // ── Extension registry (Rust native extensions) ───────────────────
     let extension_registry = options
@@ -612,16 +665,10 @@ pub async fn create_agent_session(
     let ext_agent_dir = agent_dir.clone();
     ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
     // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
-    let registry_for_provider = model_registry.clone();
-    ext_runtime_handle.register_provider = std::sync::Arc::new(move |config_value| {
-        if let Ok(config) = serde_json::from_value::<crate::core::model_registry::ProviderConfig>(
-            config_value,
-        ) {
-            if let Some(name) = config.name.clone() {
-                registry_for_provider.register_provider(&name, config);
-            }
-        }
-    });
+    crate::core::extensions::install_register_provider_hook(
+        &mut ext_runtime_handle,
+        model_registry.clone(),
+    );
     let ext_ctx = crate::core::extensions::ExtensionContext::new(
         cwd.clone(),
         false,
@@ -765,4 +812,306 @@ pub async fn create_agent_session(
             extensions_result,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::core::model_registry::ProviderConfig;
+    use pi_agent_core::pi_ai_types::ModelCost;
+
+    /// Minimal model definition for the session-restore tests.
+    fn test_model(provider: &str, id: &str, reasoning: bool) -> Model {
+        Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            api: "openai-completions".to_string(),
+            provider: provider.to_string(),
+            base_url: "https://example.invalid/v1".to_string(),
+            reasoning,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// Registry backed by a non-existent models.json, whose provider carries an
+    /// API key so `has_configured_auth` is true (models are selectable and
+    /// restorable). Bypasses the developer's real `~/.pi/models.json`.
+    fn registry_with(
+        models: Vec<Model>,
+        provider: &str,
+        models_path: &std::path::Path,
+    ) -> ModelRegistry {
+        let registry = ModelRegistry::new_with_models_path(models, models_path);
+        registry.register_provider(
+            provider,
+            ProviderConfig {
+                name: None,
+                base_url: None,
+                api_key: Some("test-key".to_string()),
+                api: None,
+                headers: None,
+                auth_header: None,
+                models: None,
+            },
+        )
+        .unwrap();
+        registry
+    }
+
+    /// A session containing one user message plus optional model/thinking
+    /// entries, so `hasExistingSession` is true on the next create call.
+    fn existing_session(cwd: &str, session_dir: &str) -> SessionManager {
+        let mut sm = SessionManager::new(cwd, session_dir, None, false, None);
+        sm.append_message(serde_json::json!({"role": "user", "content": "hello"}));
+        sm
+    }
+
+    fn temp_cwd(tmp: &tempfile::TempDir) -> String {
+        let cwd = tmp.path().join("cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        cwd.to_string_lossy().to_string()
+    }
+
+    /// Resuming a session restores the recorded model and thinking level
+    /// (TS sdk.ts `existingSession.model` + `hasThinkingEntry`).
+    #[tokio::test]
+    async fn create_agent_session_restores_model_and_thinking_from_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let session_dir = tmp.path().join("sessions");
+        let registry = registry_with(
+            vec![test_model("testp", "m1", true)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+
+        let mut sm = existing_session(&cwd, session_dir.to_str().unwrap());
+        sm.append_model_change("testp", "m1");
+        sm.append_thinking_level_change("high");
+
+        let (session, result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(tmp.path().join("agent").to_string_lossy().to_string()),
+            model: None,
+            model_registry: Some(registry),
+            session_manager: Some(sm),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert!(result.model_fallback_message.is_none());
+        let model = session.get_model().await;
+        assert_eq!(model.provider, "testp");
+        assert_eq!(model.id, "m1");
+        assert_eq!(session.get_thinking_level().await, "high");
+    }
+
+    /// When the saved model can no longer be restored, the session falls back
+    /// to the next available model and reports it in the fallback message; the
+    /// scoped models are skipped because the session is continuing
+    /// (TS `isContinuing: hasExistingSession`).
+    #[tokio::test]
+    async fn restore_failure_reports_fallback_and_skips_scoped_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let session_dir = tmp.path().join("sessions");
+        let registry = registry_with(
+            vec![
+                test_model("testp", "other-model", false),
+                test_model("testp", "scoped-model", false),
+            ],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+
+        let mut sm = existing_session(&cwd, session_dir.to_str().unwrap());
+        sm.append_model_change("missing", "gone");
+        let scoped = test_model("testp", "scoped-model", false);
+
+        let (session, result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(tmp.path().join("agent").to_string_lossy().to_string()),
+            model: None,
+            scoped_models: Some(vec![(scoped, None)]),
+            model_registry: Some(registry),
+            session_manager: Some(sm),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(session.get_model().await.id, "other-model");
+        let message = result.model_fallback_message.expect("fallback message");
+        assert!(
+            message.starts_with("Could not restore model missing/gone. Using testp/other-model"),
+            "unexpected fallback message: {message}"
+        );
+    }
+
+    /// A session that recorded a thinking level but no model still restores
+    /// the thinking level; the initial-model fallback level (settings/default)
+    /// must not shadow it. Regression: the initial-model level was applied
+    /// before the session restore, so this case silently got "medium".
+    #[tokio::test]
+    async fn session_thinking_level_wins_over_initial_model_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let session_dir = tmp.path().join("sessions");
+        let registry = registry_with(
+            vec![test_model("testp", "m1", true)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+
+        // Messages + thinking entry, but no model change entry.
+        let mut sm = existing_session(&cwd, session_dir.to_str().unwrap());
+        sm.append_thinking_level_change("high");
+
+        let (session, result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(tmp.path().join("agent").to_string_lossy().to_string()),
+            model: None,
+            model_registry: Some(registry),
+            session_manager: Some(sm),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert!(result.model_fallback_message.is_none());
+        assert_eq!(session.get_model().await.id, "m1");
+        assert_eq!(session.get_thinking_level().await, "high");
+    }
+
+    /// Scoped models still pick the initial model for a brand-new session.
+    #[tokio::test]
+    async fn scoped_model_is_used_when_not_continuing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let registry = registry_with(
+            vec![
+                test_model("testp", "other-model", false),
+                test_model("testp", "scoped-model", false),
+            ],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+        let scoped = test_model("testp", "scoped-model", false);
+
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(tmp.path().join("agent").to_string_lossy().to_string()),
+            model: None,
+            scoped_models: Some(vec![(scoped, None)]),
+            model_registry: Some(registry),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(session.get_model().await.id, "scoped-model");
+    }
+
+    /// An explicit thinking level wins over the value restored from the
+    /// session (TS sdk.ts checks `options.thinkingLevel` first).
+    #[tokio::test]
+    async fn explicit_thinking_level_overrides_session_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let session_dir = tmp.path().join("sessions");
+        let registry = registry_with(
+            vec![test_model("testp", "m1", true)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+
+        let mut sm = existing_session(&cwd, session_dir.to_str().unwrap());
+        sm.append_model_change("testp", "m1");
+        sm.append_thinking_level_change("high");
+
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(tmp.path().join("agent").to_string_lossy().to_string()),
+            model: None,
+            thinking_level: Some("low".to_string()),
+            model_registry: Some(registry),
+            session_manager: Some(sm),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(session.get_thinking_level().await, "low");
+    }
+
+    /// A non-reasoning model clamps the resolved thinking level to "off"
+    /// (TS sdk.ts `clampThinkingLevel`). Previously the SDK hardcoded
+    /// "medium" for caller-provided models.
+    #[tokio::test]
+    async fn thinking_level_is_clamped_to_model_capabilities() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let registry = registry_with(
+            vec![test_model("testp", "plain", false)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(tmp.path().join("agent").to_string_lossy().to_string()),
+            model: Some(test_model("testp", "plain", false)),
+            model_registry: Some(registry),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(session.get_thinking_level().await, "off");
+    }
+
+    /// With no explicit thinking level and no session, the settings default is
+    /// used even when the model comes from `--provider`/`--model` or the first
+    /// available model (TS sdk.ts: `defaultThinkingLevel ?? DEFAULT`).
+    /// Regression: the initial-model path hardcoded `DEFAULT_THINKING_LEVEL`,
+    /// so a configured default was silently ignored on those paths.
+    #[tokio::test]
+    async fn settings_default_thinking_level_is_used_without_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let registry = registry_with(
+            vec![test_model("testp", "m1", true)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+        let agent_dir = tmp.path().join("agent");
+        let mut settings = SettingsManager::create(&cwd, Some(agent_dir.to_str().unwrap()));
+        settings.set_default_thinking_level("high");
+
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(agent_dir.to_string_lossy().to_string()),
+            model: None,
+            cli_provider: Some("testp".to_string()),
+            cli_model: Some("m1".to_string()),
+            settings_manager: Some(settings),
+            model_registry: Some(registry),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(session.get_model().await.id, "m1");
+        assert_eq!(session.get_thinking_level().await, "high");
+    }
 }

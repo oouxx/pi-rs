@@ -766,8 +766,10 @@ mod tests {
                 api: None,
                 headers: None,
                 auth_header: None,
+                models: None,
             },
-        );
+        )
+        .unwrap();
         registry
     }
 

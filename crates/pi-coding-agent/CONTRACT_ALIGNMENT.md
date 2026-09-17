@@ -258,9 +258,24 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| `register_provider(name, config)` | `modelRegistry.registerProvider(name, config)` — inserts into `registeredProviders` map | `model_registry.register_provider(&name, config)` — inserts into `Arc<RwLock<HashMap>>` | 是 |
-| Clone shares provider map | N/A (single instance) | `ModelRegistry::clone()` shares `registered_providers` via `Arc` (models and models_json_providers are deep-copied — they are read-only after construction) | 是 |
-| Post-bind live registration | `runtime.registerProvider = (name, config) => modelRegistry.registerProvider(...)` | `RuntimeActions.register_provider` closure captures a `ModelRegistry` clone (shares the Arc) → calls `register_provider` | 是 |
+| `register_provider(name, config)` | `modelRegistry.registerProvider(name, config)` — merges config into `extensionProviders`, validates (`validateExtensionProvider` throws) | `model_registry.register_provider(&name, config) -> Result<(), String>` — validates `api`/`baseUrl`, stores config, returns `Err` instead of throwing | 是 |
+| 注册携带 `models` | `applyExtension`: 有 `models` 时**替换**该 provider 全部模型（无 `models` 但有 `baseUrl` 时改写现有模型 baseUrl）；`api`/`baseUrl` 依次取 model → provider config → `findModelDefaults`（same id → same api → first openai-completions → first model） | 同：替换现有模型；无 `models` 时 `baseUrl` 改写现有模型 baseUrl；`api`/`baseUrl` 依次取 model → provider config → `find_model_defaults`（same id → same api → openai-completions → 首个模型）；模型级 `samplingParams` 保留 | 是 |
+| `unregister_provider(name)` | `unregisterProvider`: 移除扩展层，`recomposeProvider` 恢复 built-in/models.json 模型（含被 baseUrl 改写的原始 baseUrl） | 移除注册配置并恢复注册前的模型快照（`replaced_models`，替换与 baseUrl 改写都触发首次快照） | 是 |
+| `oauth` / `streamSimple` / `refreshModels` | `ProviderConfig` 支持 OAuth 登录回调、自定义 streamSimple、模型刷新 | 未支持（无 OAuth 登录流，见 DEVIATIONS.md #21；JS 扩展运行时不在 main 分支） | 是（有意偏差，见 DEVIATIONS.md #21） |
+| Clone 共享注册状态 | N/A（`ModelRuntime` 单实例） | `ModelRegistry::clone()` 通过 `Arc` 共享 `models` / `registered_providers` / `models_json_providers` / `replaced_models`，扩展钩子注册的模型对持有另一 clone 的 session 可见 | 是 |
+| Post-bind live registration | `runtime.registerProvider = (name, config) => modelRegistry.registerProvider(...)` | `install_register_provider_hook` 安装闭包，payload 为 `{ "providerId", "config" }`（TS 的 provider id 与 config.name 是两个参数） | 是 |
+| 注册失败处理 | 抛异常，由 loader 记入扩展诊断 | payload 解析/校验失败返回 `Err(String)`，不再静默丢弃 | 是 |
+
+### createAgentSession — Model / Thinking Level 恢复
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+|---------|-----------|--------------|--------|
+| 恢复 session 模型 | `existingSession.model` → `getModel` + `hasConfiguredAuth`，成功则用其作为初始模型 | `session_manager.build_context()` → `model_registry.find` + `has_configured_auth` | 是 |
+| 恢复失败 | `Could not restore model {provider}/{id}`，随后初始模型解析成功时追加 `. Using {p}/{id}` | 同文案、同追加顺序 | 是 |
+| `isContinuing` | `findInitialModel({ isContinuing: hasExistingSession })`，续聊时跳过 scoped models | `find_initial_model(..., has_existing_session, ...)` | 是 |
+| 恢复 thinking level | `options.thinkingLevel` → session 记录（仅当存在 `thinking_level_change`，否则 settings 默认）→ settings 默认 → `DEFAULT`，最后按模型 `clampThinkingLevel`，无模型为 `off` | 同顺序；`--models provider/id:level` 的显式 level 等价于 TS main.ts 写入 `options.thinkingLevel`（仅新会话、未指定 `--thinking` 时生效）；`clamp_thinking_level`；`has_thinking_entry = get_branch().any(ThinkingLevelChange)` | 是 |
+| CLI `--thinking` | `options.thinkingLevel = parsed.thinking`（优先于 scoped/默认） | `thinking_level: args.thinking.clone()`（此前被忽略，见 PORTING_MISTAKES.md） | 是 |
+| 无模型 session | 仍创建 session（空 model），`modelFallbackMessage = formatNoModelsAvailableMessage()`，thinking = `off` | 同 | 是 |
 
 ### ResolvedCommand
 

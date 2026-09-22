@@ -1989,10 +1989,10 @@ struct BlockView {
     error_message: Option<String>,
 }
 
-/// Startup header lines (TS `builtInHeader` ExpandableText): the logo,
-/// one-line keybinding hints (compact) or the full list (expanded), and
-/// the onboarding line. Key names are dim, descriptions muted — the same
-/// split the TS `keyHint` helper produces.
+/// Startup header lines (TS `builtInHeader` ExpandableText): the logo
+/// and one-line keybinding hints (compact) or the full list (expanded).
+/// Key names are dim, descriptions muted — the same split the TS
+/// `keyHint` helper produces.
 fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
     let hint = |key: &str, desc: &str| {
         Line::from(vec![
@@ -2007,10 +2007,6 @@ fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
             Style::new().fg(t.dim),
         ),
     ]);
-    let onboarding = Line::from(Span::styled(
-        "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
-        Style::new().fg(t.dim),
-    ));
     if !expanded {
         let compact = Line::from(vec![
             Span::styled("escape", Style::new().fg(t.dim)),
@@ -2032,7 +2028,7 @@ fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
             "Press ctrl+o to show full startup help and loaded resources.",
             Style::new().fg(t.dim),
         ));
-        return vec![logo, compact, press, Line::raw(""), onboarding];
+        return vec![logo, compact, press];
     }
     vec![
         logo,
@@ -2055,8 +2051,6 @@ fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
         hint("alt+up", "to edit all queued messages"),
         hint("ctrl+v", "to paste image (with text fallback)"),
         hint("drop files", "to attach"),
-        Line::raw(""),
-        onboarding,
     ]
 }
 
@@ -2760,8 +2754,8 @@ fn render_boxed_row(frame: &mut Buffer, area: Rect, y: i32, bg: Color, mut spans
     }
 }
 
-/// Startup header block (TS `builtInHeader`): logo + keybinding hints +
-/// onboarding, rendered at the top of the transcript.
+/// Startup header block (TS `builtInHeader`): logo + keybinding hints,
+/// rendered at the top of the transcript.
 fn render_header_block(frame: &mut Buffer, area: Rect, item: &BlockView, mut ly: i32) -> i32 {
     for line in &item.md_lines {
         render_body_row(frame, area, ly, Paragraph::new(line.clone()));
@@ -4578,8 +4572,8 @@ mod tests {
     }
 
     /// The startup header renders the TS compact text: logo (accent bold +
-    /// dim version), the one-line hints, the press hint and the onboarding
-    /// line. Ctrl+O (ToggleToolExpansion) switches to the expanded list.
+    /// dim version) and the one-line hints. Ctrl+O (ToggleToolExpansion)
+    /// switches to the expanded list.
     #[test]
     fn startup_header_renders_compact_and_expands() {
         use ratatui::backend::TestBackend;
@@ -4609,9 +4603,8 @@ mod tests {
         assert_eq!(buf[(59, 1)].symbol(), "!", "bang key");
         assert_eq!(buf[(68, 1)].symbol(), "c", "ctrl+o key");
 
-        // Press hint + onboarding.
+        // Press hint.
         assert_eq!(buf[(0, 2)].symbol(), "P", "press hint");
-        assert_eq!(buf[(0, 4)].symbol(), "P", "onboarding line");
 
         // Ctrl+O expands: the full keybinding list appears.
         update(&mut model, Msg::ToggleToolExpansion);
@@ -4636,7 +4629,6 @@ mod tests {
         assert_eq!(buf[(0, 17)].symbol(), "a", "expanded: alt+up");
         assert_eq!(buf[(0, 18)].symbol(), "c", "expanded: ctrl+v");
         assert_eq!(buf[(0, 19)].symbol(), "d", "expanded: drop files");
-        assert_eq!(buf[(0, 21)].symbol(), "P", "expanded: onboarding");
     }
 
     /// Tool calls render their args below the title (TS fallback: blank
@@ -4796,7 +4788,7 @@ mod tests {
 
         // Scan the transcript rows (after the header) for the block order.
         let row_of = |needle: &str, bg: ratatui::style::Color| -> u16 {
-            (6..60u16)
+            (0..60u16)
                 .find(|&y| buf[(1, y)].symbol() == needle && buf[(1, y)].bg == bg)
                 .unwrap_or(u16::MAX)
         };
@@ -4804,7 +4796,7 @@ mod tests {
         let tool = row_of("$", theme::TOOL_SUCCESS_BG);
         let user2 = row_of("s", theme::USER_MESSAGE_BG);
         // The assistant text sits between user1 and the tool (no box bg).
-        let assistant = (6..60u16)
+        let assistant = (0..60u16)
             .find(|&y| buf[(0, y)].symbol() == "c")
             .unwrap_or(u16::MAX);
         assert!(user1 < assistant, "user1 before assistant");

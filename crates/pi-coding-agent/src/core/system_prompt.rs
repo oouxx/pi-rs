@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-use crate::config;
-
 pub const DEFAULT_THINKING_LEVEL: &str = "medium";
 
 #[derive(Debug, Clone, Default)]
@@ -147,10 +145,6 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let readme_path = get_readme_path();
-    let docs_path = get_docs_path();
-    let examples_path = get_examples_path();
-
     let mut prompt = format!(
         r#"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
@@ -160,21 +154,9 @@ Available tools:
 In addition to the tools above, you may have access to other custom tools depending on the project.
 
 Guidelines:
-{guidelines}
-
-Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
-- Main documentation: {readme_path}
-- Additional docs: {docs_path}
-- Examples: {examples_path} (extensions, custom tools, SDK)
-- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
-- When working on pi topics, read the docs and examples and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"#,
+{guidelines}"#,
         tools_list = tools_list,
         guidelines = guidelines,
-        readme_path = readme_path,
-        docs_path = docs_path,
-        examples_path = examples_path,
     );
 
     if !append_section.is_empty() {
@@ -215,28 +197,6 @@ fn format_skills_for_prompt(skills: &[SkillInfo]) -> String {
     }
     result.push_str("</skills>\n");
     result
-}
-
-fn get_readme_path() -> String {
-    let agent_dir = config::get_agent_dir();
-    agent_dir
-        .parent()
-        .map(|p| p.join("README.md"))
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "README.md".to_string())
-}
-
-fn get_docs_path() -> String {
-    config::get_docs_path().to_string_lossy().to_string()
-}
-
-fn get_examples_path() -> String {
-    let agent_dir = config::get_agent_dir();
-    agent_dir
-        .parent()
-        .map(|p| p.join("examples"))
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "examples".to_string())
 }
 
 #[cfg(test)]

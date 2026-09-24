@@ -784,6 +784,42 @@ fn tui_probe_slow_stream_completes() {
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
 }
 
+/// The "working" status must track the session run lifecycle (TS
+/// `isStreaming = _isAgentRunActive`): the spinner appears while the agent
+/// streams and is cleared once the run settles. Regression guard: the spinner
+/// used to be driven by the per-`agent.prompt()` core AgentStart/AgentEnd, so
+/// it could blink off between post-run continuations and be out of sync with
+/// the session's run-active flag.
+#[test]
+fn tui_working_status_tracks_run_lifecycle() {
+    let mut tui = Tui::spawn_queue_stream();
+    let mut screen = TermScreen::new(WIDTH, HEIGHT, false);
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    tui.write(b"first\r");
+    assert!(tui.wait_for("slow", TIMEOUT), "streaming started");
+    // While streaming, the working spinner is visible.
+    pump(&mut tui, &mut screen);
+    let streaming_snap = screen.snapshot();
+    assert!(
+        streaming_snap.iter().any(|r| r.contains("Working...")),
+        "working spinner visible while streaming: {streaming_snap:?}"
+    );
+
+    assert!(tui.wait_settled(TIMEOUT), "run settled");
+    // After the run settles, the spinner is gone.
+    std::thread::sleep(Duration::from_millis(300));
+    pump(&mut tui, &mut screen);
+    let idle_snap = screen.snapshot();
+    assert!(
+        !idle_snap.iter().any(|r| r.contains("Working...")),
+        "working spinner cleared after settle: {idle_snap:?}"
+    );
+
+    tui.write(&[0x04]);
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
+}
+
 /// Full chat flow: launch → prompt visible → send message → mock reply
 /// streams in → Ctrl+D quits → clean exit code 0.
 #[test]

@@ -1357,6 +1357,10 @@ async fn stream_openai_inner(
     let max_tokens = options.and_then(|o| o.max_tokens);
     let temperature = options.and_then(|o| o.temperature);
     let signal = options.and_then(|o| o.signal.clone());
+    // Idle timeout (TS `httpIdleTimeoutMs` → undici `bodyTimeout`): fire only
+    // when no SSE data arrives for this long, so long-but-active streams are
+    // never cut off. 0 / i32::MAX disable it.
+    let idle_timeout = crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms));
 
     // Per-request HTTP client injection (TS per-request `fetch`): hosts can
     // supply a custom client (proxy/TLS/timeouts/mocks).
@@ -1646,6 +1650,7 @@ async fn stream_openai_inner(
         signal.clone(),
         options.and_then(|o| o.max_retries),
         options.and_then(|o| o.max_retry_delay_ms),
+        idle_timeout,
         "OpenAI API error",
     )
     .await
@@ -1733,7 +1738,26 @@ async fn stream_openai_inner(
 
     loop {
         let next = tokio::select! {
-            event = events.next() => event,
+            res = crate::utils::idle::with_idle_timeout(events.next(), idle_timeout) => match res {
+                Ok(event) => event,
+                Err(()) => {
+                    // Idle timeout: no response data for `timeout_ms`. Emit a
+                    // retryable error (message matches `timed? out`) so the
+                    // agent-level auto-retry resumes the turn, matching TS
+                    // (undici bodyTimeout rejects the read → retry classifier).
+                    output.stop_reason = StopReason::Error;
+                    output.error_message = Some(
+                        idle_timeout
+                            .map(crate::utils::idle::idle_timeout_message)
+                            .unwrap_or_else(|| "Request timed out".to_string()),
+                    );
+                    let _ = tx.send(AssistantMessageEvent::Error {
+                        reason: StopReason::Error,
+                        error: output.clone(),
+                    });
+                    return Ok(());
+                }
+            },
             _ = &mut abort_fut => {
                 // Abort requested — mark the message as aborted (matching TS
                 // `output.stopReason = signal.aborted ? "aborted" : "error"`)
@@ -2781,7 +2805,7 @@ mod tests {
 
 #[cfg(test)]
 mod abort_tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use futures::StreamExt;
 
@@ -2885,5 +2909,66 @@ mod abort_tests {
             }
             other => panic!("expected Error(Aborted), got {other:?}"),
         }
+    }
+
+    /// An idle SSE stream (no data for `timeout_ms`) must terminate with a
+    /// retryable `Error` instead of hanging forever (matching TS
+    /// `httpIdleTimeoutMs` → undici `bodyTimeout`). Regression guard: the
+    /// providers previously accepted `timeout_ms` but never applied it, so a
+    /// stalled upstream hung indefinitely.
+    #[tokio::test]
+    async fn idle_timeout_interrupts_idle_sse_stream_and_marks_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let body = "data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"},\"index\":0}]}\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{}",
+                body
+            );
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, resp.as_bytes()).await;
+            // Hold the connection open (idle stream).
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let model = abort_test_model(&addr.to_string());
+        let context = Context {
+            system_prompt: Some("You are helpful".into()),
+            messages: vec![],
+            tools: None,
+        };
+        let opts = StreamOptions {
+            api_key: Some("test-key".into()),
+            // Short idle timeout so the test is fast.
+            timeout_ms: Some(200),
+            ..Default::default()
+        };
+        let mut stream = stream_openai(&model, &context, Some(&opts));
+
+        let mut saw_thinking = false;
+        let mut error: Option<AssistantMessage> = None;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await {
+                Ok(Some(AssistantMessageEvent::ThinkingStart { .. }))
+                | Ok(Some(AssistantMessageEvent::ThinkingDelta { .. })) => saw_thinking = true,
+                Ok(Some(AssistantMessageEvent::Error { reason, error: e })) => {
+                    assert_eq!(reason, StopReason::Error);
+                    error = Some(e);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+        assert!(saw_thinking, "must receive the thinking chunk first");
+        let error = error.expect("idle timeout must yield Error");
+        assert_eq!(error.stop_reason, StopReason::Error);
+        let msg = error.error_message.unwrap_or_default();
+        assert!(msg.contains("timed out"), "message was: {msg}");
     }
 }

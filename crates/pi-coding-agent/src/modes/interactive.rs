@@ -2325,8 +2325,12 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                     v
                 }
                 BE::UserMessage(text) => vec![pi_tui::Msg::NewMessage("user".into(), text)],
-                BE::AgentRunStart => vec![pi_tui::Msg::AgentStart],
-                BE::AgentRunEnd => vec![pi_tui::Msg::AgentEnd],
+                // Run-active lifecycle is driven by the session events
+                // (AgentStart → AgentSettled = TS `isStreaming = _isAgentRunActive`),
+                // not the per-`agent.prompt()` core AgentStart/AgentEnd, which
+                // fires for each prompt/continue and would blink the spinner
+                // off between post-run continuations.
+                BE::AgentRunStart | BE::AgentRunEnd => vec![],
                 BE::ToolStart(call_id, name, args) => vec![pi_tui::Msg::ToolStart(call_id, name, args)],
                 BE::ToolEnd(call_id, name, e) => vec![pi_tui::Msg::ToolEnd(call_id, name, e)],
                 BE::ToolOutput(call_id, name, o) => vec![pi_tui::Msg::SetToolOutput(call_id, name, o)],
@@ -2510,6 +2514,16 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             .await
             .subscribe_session_events(std::sync::Arc::new(move |event| {
                 let msg = match event {
+                    // Run-active lifecycle (TS `isStreaming = _isAgentRunActive`):
+                    // set on agent_start, cleared on agent_settled (which fires
+                    // after the post-run loop — retries, compaction, queued
+                    // continuations). This is the session-level flag, not the
+                    // per-`agent.prompt()` core AgentStart/AgentEnd, so the
+                    // "working" state stays accurate across continuations and
+                    // a message submitted during retry backoff is queued (like
+                    // TS) instead of starting a competing run.
+                    AgentSessionEvent::AgentStart => Some(pi_tui::Msg::AgentStart),
+                    AgentSessionEvent::AgentSettled => Some(pi_tui::Msg::AgentEnd),
                     AgentSessionEvent::QueueUpdate { steering, follow_up } => {
                         Some(pi_tui::Msg::SetPendingQueues { steering, follow_up })
                     }

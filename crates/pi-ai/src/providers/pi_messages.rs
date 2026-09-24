@@ -435,6 +435,7 @@ async fn read_pi_messages_events_stream(
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
     converter: &mut PiMessagesConverter,
     signal: Option<tokio::sync::watch::Receiver<bool>>,
+    idle_timeout: Option<std::time::Duration>,
 ) -> Result<bool, String> {
     use futures::StreamExt;
 
@@ -462,7 +463,25 @@ async fn read_pi_messages_events_stream(
 
     loop {
         let next = tokio::select! {
-            chunk = stream.next() => chunk,
+            res = crate::utils::idle::with_idle_timeout(stream.next(), idle_timeout) => match res {
+                Ok(chunk) => chunk,
+                Err(()) => {
+                    // Idle timeout: no SSE data for `timeout_ms`. Emit a
+                    // retryable error (message matches `timed? out`) and return
+                    // it; the caller treats it like the abort case (the Error
+                    // event was already emitted) so it is not double-reported.
+                    let msg = idle_timeout
+                        .map(crate::utils::idle::idle_timeout_message)
+                        .unwrap_or_else(|| "Request timed out".to_string());
+                    converter.partial.stop_reason = StopReason::Error;
+                    converter.partial.error_message = Some(msg.clone());
+                    let _ = tx.send(AssistantMessageEvent::Error {
+                        reason: StopReason::Error,
+                        error: converter.partial.clone(),
+                    });
+                    return Err(msg);
+                }
+            },
             _ = &mut abort_fut => {
                 converter.partial.stop_reason = StopReason::Aborted;
                 converter.partial.error_message = Some("Request was aborted".to_string());
@@ -873,10 +892,20 @@ async fn stream_pi_messages_inner(
     let mut converter = PiMessagesConverter::new(model);
     use futures::StreamExt;
     let bytes_stream = response.bytes_stream().map(|item| item.map(|b| b.to_vec()));
-    let terminal = match read_pi_messages_events_stream(bytes_stream, tx, &mut converter, signal).await {
+    let terminal = match read_pi_messages_events_stream(
+        bytes_stream,
+        tx,
+        &mut converter,
+        signal,
+        crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms)),
+    )
+    .await
+    {
         Ok(t) => t,
         // Abort: the Error(Aborted) event was already emitted inside the reader.
         Err(e) if e == "Request was aborted" => return Ok(()),
+        // Idle timeout: the Error event was already emitted inside the reader.
+        Err(e) if e.starts_with("Request timed out") => return Ok(()),
         Err(e) => return Err(e.into()),
     };
     if !terminal {

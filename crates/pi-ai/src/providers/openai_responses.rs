@@ -1296,6 +1296,10 @@ fn finalize_response(
     apply_service_tier_pricing(&mut output.usage, &model.id, effective_tier);
 }
 
+/// Test-only convenience wrapper: the production path calls
+/// [`process_responses_stream_with_idle`] directly with the resolved idle
+/// timeout. Kept so existing tests can drive the stream without one.
+#[cfg(test)]
 async fn process_responses_stream<S>(
     events: S,
     output: &mut AssistantMessage,
@@ -1304,6 +1308,32 @@ async fn process_responses_stream<S>(
     service_tier: Option<&str>,
     grammar_properties: &std::collections::HashMap<String, String>,
     signal: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<(), String>
+where
+    S: futures::Stream<Item = Result<Option<Value>, String>> + Unpin,
+{
+    process_responses_stream_with_idle(
+        events,
+        output,
+        tx,
+        model,
+        service_tier,
+        grammar_properties,
+        signal,
+        None,
+    )
+    .await
+}
+
+async fn process_responses_stream_with_idle<S>(
+    events: S,
+    output: &mut AssistantMessage,
+    tx: &tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
+    model: &Model,
+    service_tier: Option<&str>,
+    grammar_properties: &std::collections::HashMap<String, String>,
+    signal: Option<tokio::sync::watch::Receiver<bool>>,
+    idle_timeout: Option<std::time::Duration>,
 ) -> Result<(), String>
 where
     S: futures::Stream<Item = Result<Option<Value>, String>> + Unpin,
@@ -1334,7 +1364,22 @@ where
     let mut events = events;
     loop {
         let next = tokio::select! {
-            item = events.next() => item,
+            res = crate::utils::idle::with_idle_timeout(events.next(), idle_timeout) => match res {
+                Ok(item) => item,
+                Err(()) => {
+                    output.stop_reason = StopReason::Error;
+                    output.error_message = Some(
+                        idle_timeout
+                            .map(crate::utils::idle::idle_timeout_message)
+                            .unwrap_or_else(|| "Request timed out".to_string()),
+                    );
+                    let _ = tx.send(AssistantMessageEvent::Error {
+                        reason: StopReason::Error,
+                        error: output.clone(),
+                    });
+                    return Ok(());
+                }
+            },
             _ = &mut abort_fut => {
                 output.stop_reason = StopReason::Aborted;
                 output.error_message = Some("Request was aborted".to_string());
@@ -2106,6 +2151,7 @@ async fn stream_openai_responses_inner(
         signal.clone(),
         options.and_then(|o| o.max_retries),
         options.and_then(|o| o.max_retry_delay_ms),
+        crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms)),
         "OpenAI API error",
     )
     .await?;
@@ -2161,7 +2207,7 @@ async fn stream_openai_responses_inner(
     let compat = get_compat(model);
     let supports_grammar = compat.supports_openai_grammar_tools.unwrap_or(false);
     let grammar_properties = grammar_tool_input_properties(context, supports_grammar);
-    process_responses_stream(
+    process_responses_stream_with_idle(
         events,
         &mut output,
         tx,
@@ -2169,6 +2215,7 @@ async fn stream_openai_responses_inner(
         service_tier,
         &grammar_properties,
         signal,
+        crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms)),
     )
     .await?;
 

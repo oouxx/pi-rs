@@ -2,6 +2,7 @@ pub mod diagnostics;
 pub mod estimate;
 pub mod event_stream;
 pub mod headers;
+pub mod idle;
 pub mod json_parse;
 pub mod overflow;
 pub mod provider_retry;

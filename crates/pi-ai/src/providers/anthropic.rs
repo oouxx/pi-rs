@@ -1025,6 +1025,8 @@ async fn stream_anthropic_inner(
         .and_then(|o| o.max_tokens)
         .unwrap_or(model.max_tokens);
     let signal = options.and_then(|o| o.signal.clone());
+    // Idle timeout (TS `httpIdleTimeoutMs` → undici `bodyTimeout`).
+    let idle_timeout = crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms));
     let _cache_retention = options.and_then(|o| o.cache_retention.as_ref());
 
     // Allow extensions to modify HTTP request headers
@@ -1328,6 +1330,7 @@ async fn stream_anthropic_inner(
             signal.clone(),
             options.and_then(|o| o.max_retries),
             options.and_then(|o| o.max_retry_delay_ms),
+            idle_timeout,
             "Anthropic API error",
         )
         .await
@@ -1408,7 +1411,22 @@ async fn stream_anthropic_inner(
 
     loop {
         let next = tokio::select! {
-            sse = events.next() => sse,
+            res = crate::utils::idle::with_idle_timeout(events.next(), idle_timeout) => match res {
+                Ok(sse) => sse,
+                Err(()) => {
+                    output.stop_reason = StopReason::Error;
+                    output.error_message = Some(
+                        idle_timeout
+                            .map(crate::utils::idle::idle_timeout_message)
+                            .unwrap_or_else(|| "Request timed out".to_string()),
+                    );
+                    let _ = tx.send(AssistantMessageEvent::Error {
+                        reason: StopReason::Error,
+                        error: output.clone(),
+                    });
+                    return Ok(());
+                }
+            },
             _ = &mut abort_fut => {
                 output.stop_reason = StopReason::Aborted;
                 output.error_message = Some("Request was aborted".to_string());

@@ -196,10 +196,43 @@ where
     }
 }
 
+/// Execute a request, applying an optional headers/idle timeout (TS undici
+/// `headersTimeout`). A timeout is reported as a network error (`status: None`)
+/// so the retry policy retries it (the message contains `timed out`).
+async fn execute_with_timeout(
+    http_client: &reqwest::Client,
+    request: reqwest::Request,
+    timeout: Option<Duration>,
+) -> Result<reqwest::Response, ProviderHttpError> {
+    let fut = http_client.execute(request);
+    match timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(ProviderHttpError::new(
+                e.status().map(|s| s.as_u16()),
+                e.to_string(),
+            )),
+            Err(_) => Err(ProviderHttpError::new(
+                None,
+                format!(
+                    "Request timed out: no response headers within {}s",
+                    timeout.as_secs()
+                ),
+            )),
+        },
+        None => fut.await.map_err(|e| {
+            ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string())
+        }),
+    }
+}
+
 /// Shared convenience wrapper for provider HTTP requests: sends `request` via
 /// `http_client`, retrying transient failures per [`retry_provider_request`],
 /// and returns the response on success. Non-2xx responses are surfaced as
 /// errors (with retry headers extracted for the retry policy).
+///
+/// `timeout` bounds each attempt's headers phase (TS undici `headersTimeout`);
+/// the SSE body idle timeout is applied by the providers' read loops.
 ///
 /// Falls back to a single attempt when the request body cannot be cloned.
 pub async fn send_with_retry(
@@ -208,6 +241,7 @@ pub async fn send_with_retry(
     signal: Option<watch::Receiver<bool>>,
     max_retries: Option<u32>,
     max_retry_delay_ms: Option<u64>,
+    timeout: Option<Duration>,
     error_prefix: &str,
 ) -> Result<reqwest::Response, String> {
     let http_client = http_client.clone();
@@ -222,10 +256,7 @@ pub async fn send_with_retry(
                         let req = request_ref.try_clone().ok_or_else(|| {
                             ProviderHttpError::new(None, "request body not cloneable")
                         })?;
-                        let response = http_client
-                            .execute(req)
-                            .await
-                            .map_err(|e| ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string()))?;
+                        let response = execute_with_timeout(&http_client, req, timeout).await?;
                         let status = response.status();
                         let headers = response.headers().clone();
                         if !status.is_success() {
@@ -261,10 +292,9 @@ pub async fn send_with_retry(
             .map_err(|e| e.message)
         }
         None => {
-            let response = http_client
-                .execute(request)
+            let response = execute_with_timeout(&http_client, request, timeout)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.message)?;
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.unwrap_or_default();
@@ -392,5 +422,36 @@ mod tests {
         tx.send(true).unwrap();
         let err = fut.await.unwrap_err();
         assert_eq!(err.status, Some(503));
+    }
+
+    /// A server that accepts the connection but never sends response headers
+    /// must be cut off by the headers timeout (TS undici `headersTimeout`),
+    /// reported as a retryable network error.
+    #[tokio::test]
+    async fn execute_with_timeout_bounds_hung_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Accept and hold the connection open without responding.
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(socket);
+        });
+
+        let client = reqwest::Client::new();
+        let request = client
+            .get(format!("http://{addr}/"))
+            .build()
+            .unwrap();
+        let err = execute_with_timeout(&client, request, Some(Duration::from_millis(150)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, None);
+        assert!(
+            err.message.contains("timed out"),
+            "message was: {}",
+            err.message
+        );
+        assert!(is_retryable_provider_error(&err));
     }
 }

@@ -520,8 +520,9 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
         }
         Action::Key(key) => {
             let mut effects = handle_key(state, key);
-            // Ctrl+C 连按两次 / Ctrl+D（空输入）→ app.rs 返回 Cmd::Quit，
-            // 这里置退出标志（对齐 TS `handleCtrlC`/`handleCtrlD`）。
+            // Ctrl+C 连按两次 → app.rs 返回 Cmd::Quit，这里置退出标志
+            // （对齐 TS `handleCtrlC`）。Ctrl+D 的 app.exit 拦截已移除，
+            // 见 DEVIATIONS.md。
             let mut quit = false;
             effects.extend(state.pending_cmds.drain(..).filter_map(|cmd| match cmd {
                 pi_tui::Cmd::RequestCompletion(req) => Some(Effect::RequestCompletion(req)),
@@ -611,7 +612,7 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
 
 /// Key dispatch — pure: mutates model/state and returns effects.
 /// Mirrors the key handling from TS `interactive-mode.ts` (Ctrl+C abort with
-/// double-press quit, Ctrl+L clear, Ctrl+D quit, Esc interrupt, Ctrl+P/T/B
+/// double-press quit, Ctrl+L clear, Esc interrupt, Ctrl+P/T/B
 /// commands, Enter submits, slash commands).
 fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -651,11 +652,8 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             app::update(&mut state.model, pi_tui::Msg::ClearScreen);
             vec![]
         }
-        // Ctrl+D: quit
-        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
-            state.quit = true;
-            vec![]
-        }
+        // Ctrl+D 的 app.exit 拦截已移除（见 DEVIATIONS.md）：不退出，落
+        // 到默认分支交给编辑器 readline 键位 delete-char-forward。
         // Ctrl+P: cycle model (matching original Ctrl+P behavior)
         KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
             vec![Effect::AgentCommand(AgentCmd::CycleModel("next".into()))]
@@ -670,7 +668,7 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
         // never with Ctrl+B. Intercepting it here made Ctrl+F (cursorRight)
         // work while Ctrl+B (cursorLeft) was swallowed as `AbortBash`.
         // Esc: 对齐 TS `onEscape`（interactive-mode.ts setupKeyHandlers）——
-        // **不退出**（退出是 Ctrl+D / 双击 Ctrl+C / /quit）：
+        // **不退出**（退出是双击 Ctrl+C / /quit）：
         // 1) 压缩进行中 → 中止压缩（TS compaction_start 把 onEscape 换成
         //    abortCompaction，优先于其他分支）
         // 2) 流式/运行中 → 中断 + 清排队 follow-up（TS restoreQueuedMessagesToEditor）
@@ -3439,6 +3437,25 @@ mod tests {
         assert!(effects.is_empty(), "ctrl+b is not an app-level effect");
         handle_key(&mut s, key(crossterm::event::KeyCode::Char('f'), KM::CONTROL));
         assert_eq!(s.model.input.cursor_pos(), 3, "ctrl+f moves the cursor right");
+    }
+
+    /// Ctrl+D 不再是 app 级退出键（拦截已移除，见 DEVIATIONS.md）：不再
+    /// 退出，而是落到编辑器 readline 键位 delete-char-forward。回归防护：
+    /// 防止重新加回 `app.exit` 拦截。
+    #[test]
+    fn ctrl_d_does_not_quit_and_deletes_forward() {
+        let mut s = state();
+        s.model.input.set_value("abcde");
+        s.model.input.move_left();
+        s.model.input.move_left(); // cursor 在 'c' 与 'd' 之间
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Char('d'), KM::CONTROL));
+        assert!(!s.quit, "ctrl+d must not quit");
+        assert!(effects.is_empty(), "ctrl+d is not an app-level effect");
+        assert_eq!(s.model.input.value(), "abce", "ctrl+d deletes the char after the cursor");
+        s.model.input.clear();
+        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Char('d'), KM::CONTROL));
+        assert!(!s.quit, "ctrl+d on empty input must not quit");
+        assert!(effects.is_empty());
     }
 
     // ── 补全应用（对齐 TS applyCompletion）──────────────────────────────

@@ -8,7 +8,7 @@
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
-| 启动 header | `builtInHeader` ExpandableText：logo `Pi v{version}`（accent 粗体 + dim）+ 紧凑提示行 + `Press ctrl+o to show full startup help...` + 空行 + onboarding；Ctrl+O 展开为 19 条完整快捷键列表 | `header_lines()` 渲染相同内容（logo/紧凑/展开/onboarding），Ctrl+O 切换 | 是 | |
+| 启动 header | `builtInHeader` ExpandableText：logo `Pi v{version}`（accent 粗体 + dim）+ 紧凑提示行 + `Press ctrl+o to show full startup help...` + 空行 + onboarding；Ctrl+O 展开为 19 条完整快捷键列表 | `header_lines()` 渲染 logo + 紧凑提示（`escape interrupt · ctrl+c clear · / commands · ! bash · ctrl+o more`，无 ctrl+d）+ `Press ctrl+o ...`；Ctrl+O 展开为 18 条（已删 `ctrl+d to exit (empty)`）；onboarding 行已删除 | 是（有意偏差，见 DEVIATIONS.md） | 移除 ctrl+d 退出 + onboarding 删除（均见 DEVIATIONS.md） |
 | 转录锚定 | ScrollView `follow: "end"`：内容不足一屏时 `scrollTop = 0`（顶对齐），溢出时跟随底部 | 内容不足一屏时顶对齐，溢出时跟随底部（alt screen 内裁剪，历史靠转录自身滚动） | 是 | |
 | 渲染模式 | 默认 `tuiMode: "regular"`（TuiMainScreen，虚拟 buffer 差分渲染） | alt screen + ratatui 直接渲染；每帧 `Terminal::clear()` + 整帧重绘（不依赖 diff 保真度，见 DEVIATIONS.md 渲染策略条目；`view()` 内仍保留缓冲 Clear，TestBackend 单测不变） | 否 | 有意保留 alt screen + 全量重绘（见 DEVIATIONS.md） |
 | 工具块位置 | chatContainer 按事件顺序追加：工具块紧跟请求它的 assistant 消息 | blocks 按共享 block-id 时间序排序穿插 | 是 | |
@@ -46,7 +46,7 @@
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | Ctrl+O | `app.tools.expand`：展开 header + 全部工具输出 | `Msg::ToggleToolExpansion`：切换 header 展开态 + 工具块强制 Expanded | 是 | |
 | Ctrl+C | `app.clear` → `handleCtrlC`：500ms 内连按两次 shutdown，否则清空编辑器（setText 同时 cancelAutocomplete） | 同款（仅 Chat 模式）：第一次清空 + 关补全弹窗，500ms 内第二次返回 `Cmd::Quit`；对话框/选择器聚焦时不拦截 | 是 | |
-| Ctrl+D | 空编辑器时 `app.exit` → shutdown（CustomEditor 非空时交给编辑器 deleteCharForward，默认绑定 ctrl+d） | 空输入返回 `Cmd::Quit`；非空 `delete()`（删除光标后一字符）；仅 Chat 模式 | 是 | |
+| Ctrl+D | 空编辑器时 `app.exit` → shutdown（CustomEditor 非空时交给编辑器 deleteCharForward，默认绑定 ctrl+d） | app 级拦截已**彻底移除**：不退出，恒为编辑器 readline `delete-char-forward`（空输入 no-op）；仅 Chat 模式生效 | 是（有意偏差，见 DEVIATIONS.md） | 用户要求移除 app 级 Ctrl+D 拦截 |
 | 编辑器光标键位 | `tui.editor.cursorLeft` = `left`/`ctrl+b`；`cursorRight` = `right`/`ctrl+f`；`cursorWordLeft` = `alt+left`/`ctrl+left`/`alt+b`；`cursorWordRight` = `alt+right`/`ctrl+right`/`alt+f`（`packages/tui/src/keybindings.ts`）；bash 中止 = `Esc`（`session.abortBash()`），无应用级 Ctrl+B 绑定 | `classify_key_event`（vendored kernel）同款映射；interactive 层不再拦截 `Ctrl+B`（曾误映射为 `AbortBash`） | 是 | 回归修复见 PORTING_MISTAKES（interactive.rs `Ctrl+B`） |
 | Ctrl+V | `app.clipboard.pasteImage` → `handleClipboardPaste`：先读图片（有则插入临时文件路径），否则读文本 → `handlePaste`（归一化换行/制表符、过滤非打印字符、文件路径前补空格、>10 行或 >1000 字符折叠成 `[paste #N +N lines]` marker，提交时展开）；失败静默 | 仅文本路径：`read_clipboard_text()` → `handle_paste`（同款归一化/过滤/路径空格/大段折叠 marker，提交时展开）；图片路径未复刻；仅 Chat 模式 | 否 | 图片粘贴未复刻（见 DEVIATIONS.md 剪贴板条目） |
 | Ctrl+X | `app.message.copy` → `handleCopyCommand({preferSelection:true})`：fullscreen 且 `!copyOnSelect` 且有选区时复制**选区**，否则复制最后一条 assistant 消息；alt screen 上 flash "Copied!" | 同款分支：`!copy_on_select` 且有选区 → `Cmd::CopySelection(选区)`，否则 `Cmd::CopyLastMessage`；均 system 消息回显；仅 Chat 模式 | 是 | flash 换成 system 消息（Rust 无 flash 概念，见 DEVIATIONS.md） |

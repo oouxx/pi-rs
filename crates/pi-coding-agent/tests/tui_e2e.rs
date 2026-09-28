@@ -9,11 +9,11 @@
 //!   a **mock stream_fn** (no network, no API key) and runs the interactive
 //!   TUI against the PTY slave.
 //! - The parent opens a `portable-pty` pair, drives the TUI by writing keys
-//!   to the master (Enter/Ctrl+C/Ctrl+D/Esc) and asserts on the rendered
+//!   to the master (Enter/Ctrl+C/Esc) and asserts on the rendered
 //!   output streamed back from the master reader.
 //!
 //! Coverage: launch + prompt render, chat flow with streamed mock reply,
-//! Ctrl+C abort of a long stream, clean quit paths (Esc / Ctrl+D) and
+//! Ctrl+C abort of a long stream, clean quit paths (double Ctrl+C) and
 //! exit code 0 with terminal restored.
 
 use std::io::{Read, Write};
@@ -696,6 +696,13 @@ impl Tui {
         self.writer.write_all(bytes).expect("pty write");
     }
 
+    /// Quit the TUI via the double-Ctrl+C path (both presses land inside the
+    /// 500 ms window). Ctrl+D is no longer an app-level quit (see
+    /// DEVIATIONS.md), so the tests must not rely on it.
+    fn quit(&mut self) {
+        self.write(&[0x03, 0x03]);
+    }
+
     /// Drain any pending output into the accumulated buffer.
     fn drain(&mut self) {
         while let Ok(chunk) = self.rx.try_recv() {
@@ -780,7 +787,7 @@ fn tui_probe_slow_stream_completes() {
     tui.write(b"first\r");
     assert!(tui.wait_for("slow", TIMEOUT), "streaming started");
     assert!(tui.wait_settled(TIMEOUT), "run 1 settled");
-    tui.write(&[0x04]);
+    tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
 }
 
@@ -816,12 +823,12 @@ fn tui_working_status_tracks_run_lifecycle() {
         "working spinner cleared after settle: {idle_snap:?}"
     );
 
-    tui.write(&[0x04]);
+    tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
 }
 
 /// Full chat flow: launch → prompt visible → send message → mock reply
-/// streams in → Ctrl+D quits → clean exit code 0.
+/// streams in → double Ctrl+C quits → clean exit code 0.
 #[test]
 fn tui_chat_flow_renders_mock_reply_and_quits() {
     let mut tui = Tui::spawn(false);
@@ -845,7 +852,7 @@ fn tui_chat_flow_renders_mock_reply_and_quits() {
         tui.rendered()
     );
 
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
     // The TUI must have restored the terminal (left alternate screen).
@@ -888,7 +895,7 @@ fn tui_resume_renders_restored_history() {
         tui.rendered()
     );
 
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit code 0");
 }
 
@@ -931,8 +938,8 @@ fn tui_ctrl_c_aborts_long_stream() {
         tui.rendered().chars().rev().take(400).collect::<String>()
     );
 
-    // Still responsive: Ctrl+D quits.
-    tui.write(&[0x04]);
+    // Still responsive: double Ctrl+C quits.
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit after abort");
 }
@@ -1008,7 +1015,7 @@ fn tui_message_queueing_flow() {
     assert!(snap.iter().any(|r| r.contains("second")), "user bubble rendered");
     assert!(snap.iter().any(|r| r.contains("Reply number 2")), "reply rendered");
 
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
 }
 
@@ -1028,7 +1035,7 @@ fn tui_compact_command_surfaces_not_needed_error() {
         tui.rendered().chars().rev().take(600).collect::<String>()
     );
 
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
 }
 
@@ -1066,7 +1073,7 @@ fn tui_retry_countdown_and_esc_abort() {
         tui.rendered().chars().rev().take(600).collect::<String>()
     );
 
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
 }
 
@@ -1110,7 +1117,7 @@ fn tui_tool_output_streams_and_same_name_tools_stay_independent() {
         "no folded one-row tool boxes; got: {text:?}"
     );
 
-    tui.write(&[0x04]);
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
@@ -1183,7 +1190,7 @@ fn tui_slash_command_menu_and_feedback() {
         tui.rendered()
     );
 
-    tui.write(&[0x04]);
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
@@ -1221,8 +1228,8 @@ fn tui_goal_text_status_and_start() {
         tui.rendered()
     );
 
-    // Ctrl+D 退出。
-    tui.write(&[0x04]); // Ctrl+D: quit
+    // 双击 Ctrl+C 退出。
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
@@ -1253,7 +1260,7 @@ fn tui_chat_flow_real_ollama() {
         tui.rendered()
     );
 
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     let code = tui.wait_exit(REAL_TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
@@ -1290,7 +1297,7 @@ fn tui_extension_slash_command_executes() {
         tui.rendered()
     );
 
-    tui.write(&[0x04]);
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
@@ -1344,16 +1351,16 @@ fn tui_extension_ui_dialogs_work() {
         std::thread::sleep(Duration::from_millis(40));
     }
 
-    tui.write(&[0x04]);
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }
 
 /// Esc 不退出：对齐 TS `onEscape`——空闲时第一下只记录 double-escape
 /// 时间（TS 默认弹 tree/fork 选择器，本 port 未实现，见 DEVIATIONS），
-/// TUI 保持可用，Ctrl+D 才退出。
+/// TUI 保持可用，双击 Ctrl+C 才退出。
 #[test]
-fn tui_esc_does_not_quit_and_ctrl_d_still_quits() {
+fn tui_esc_does_not_quit_and_double_ctrl_c_still_quits() {
     let mut tui = Tui::spawn(false);
     assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
     tui.write(&[0x1b]); // Esc —— 不退出
@@ -1363,9 +1370,9 @@ fn tui_esc_does_not_quit_and_ctrl_d_still_quits() {
         "TUI still alive after Esc; tail: {:?}",
         tui.rendered().chars().rev().take(200).collect::<String>()
     );
-    tui.write(&[0x04]); // Ctrl+D: quit
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
-    assert_eq!(code, Some(0), "Ctrl+D quit exit code 0");
+    assert_eq!(code, Some(0), "double Ctrl+C quit exit code 0");
     assert!(
         tui.rendered().contains("\x1b[?1049l"),
         "terminal restored after quit"
@@ -1373,7 +1380,7 @@ fn tui_esc_does_not_quit_and_ctrl_d_still_quits() {
 }
 
 /// Esc 中断长流（对齐 TS `onEscape` 的 streaming 分支）：流式输出停止增长、
-/// TUI 保持响应，Ctrl+D 正常退出。
+/// TUI 保持响应，双击 Ctrl+C 正常退出。
 #[test]
 fn tui_esc_aborts_long_stream() {
     let mut tui = Tui::spawn(true);
@@ -1410,8 +1417,8 @@ fn tui_esc_aborts_long_stream() {
         tui.rendered().chars().rev().take(400).collect::<String>()
     );
 
-    // Still responsive: Ctrl+D quits.
-    tui.write(&[0x04]);
+    // Still responsive: double Ctrl+C quits.
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit after Esc interrupt");
 }
@@ -1839,7 +1846,7 @@ fn tui_scroll_up_down_restores_exact_screen() {
             &format!("amb={ambiguous_wide}: G (scroll-to-bottom) restores the original screen"),
         );
 
-        tui.write(&[0x04]);
+        tui.quit();
         let code = tui.wait_exit(TIMEOUT);
         assert_eq!(code, Some(0), "amb={ambiguous_wide}: clean exit code 0");
     }
@@ -1909,7 +1916,7 @@ fn tui_scroll_after_long_stream_restores_exact_screen() {
             &format!("amb={ambiguous_wide}: streaming: End restores the original bottom"),
         );
 
-        tui.write(&[0x04]);
+        tui.quit();
         let code = tui.wait_exit(TIMEOUT);
         assert_eq!(code, Some(0), "amb={ambiguous_wide}: clean exit code 0");
     }
@@ -1976,7 +1983,7 @@ fn tui_scroll_after_resize_restores_exact_screen() {
         "grow back restores the original 100-col bottom screen",
     );
 
-    tui.write(&[0x04]);
+    tui.quit();
     let code = tui.wait_exit(TIMEOUT);
     assert_eq!(code, Some(0), "clean exit code 0");
 }

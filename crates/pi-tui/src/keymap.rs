@@ -62,7 +62,6 @@ impl Keymap {
             KeyBind::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         ]);
         bindings.insert(Action::Quit, vec![
-            KeyBind::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
             KeyBind::new(KeyCode::Esc, KeyModifiers::NONE),
         ]);
         bindings.insert(Action::ScrollUp, vec![

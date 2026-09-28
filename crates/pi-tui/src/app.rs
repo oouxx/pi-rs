@@ -1438,7 +1438,7 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         model.tool_output_expanded = !model.tool_output_expanded;
         return vec![];
     }
-    // 应用级快捷键（Ctrl+C/Ctrl+D/Ctrl+V/Ctrl+X）只在下栏编辑器聚焦时生效
+    // 应用级快捷键（Ctrl+C/Ctrl+V/Ctrl+X）只在下栏编辑器聚焦时生效
     // ——TS 把它们注册在 defaultEditor（CustomEditor.handleInput）上；对话框/
     // 选择器各自处理自己的键（对话框 Editor 的 ctrl+d/v/x 由 textarea 原生
     // 处理：delete-char-forward / 剪贴板粘贴 / 剪切选区）。
@@ -1472,16 +1472,8 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             model.completer.deactivate();
             return vec![];
         }
-        // Ctrl+D: app.exit（对齐 TS `handleCtrlD`，CustomEditor 只在空编辑器
-        // 时触发）——编辑器为空时退出；非空时是 delete-char-forward（删除
-        // 光标后的字符），不是插入字面 'd'。
-        if key.code == KeyCode::Char('d') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
-            if model.input.value().is_empty() {
-                return vec![Cmd::Quit];
-            }
-            model.input.delete();
-            return vec![];
-        }
+        // Ctrl+D 的 app.exit 拦截已移除（见 DEVIATIONS.md）：Ctrl+D 不再退出，
+        // 落到下方 AppMode::Chat 的 readline 键位，恒为 delete-char-forward。
         // Ctrl+V: app.clipboard.pasteImage 的文本路径（对齐 TS
         // `handleClipboardPaste` → `readClipboardText` → `handlePaste`）——从
         // 系统剪贴板读文本，经 `handle_paste` 归一化/过滤/大段折叠后插入光标
@@ -2012,8 +2004,8 @@ fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
             Span::styled("escape", Style::new().fg(t.dim)),
             Span::styled(" interrupt", Style::new().fg(t.muted)),
             Span::styled(" · ", Style::new().fg(t.muted)),
-            Span::styled("ctrl+c/ctrl+d", Style::new().fg(t.dim)),
-            Span::styled(" clear/exit", Style::new().fg(t.muted)),
+            Span::styled("ctrl+c", Style::new().fg(t.dim)),
+            Span::styled(" clear", Style::new().fg(t.muted)),
             Span::styled(" · ", Style::new().fg(t.muted)),
             Span::styled("/", Style::new().fg(t.dim)),
             Span::styled(" commands", Style::new().fg(t.muted)),
@@ -2035,7 +2027,6 @@ fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
         hint("escape", "to interrupt"),
         hint("ctrl+c", "to clear"),
         hint("ctrl+c twice", "to exit"),
-        hint("ctrl+d", "to exit (empty)"),
         hint("ctrl+z", "to suspend"),
         hint("ctrl+k", "to delete to end"),
         hint("shift+tab", "to cycle thinking level"),
@@ -4591,17 +4582,17 @@ mod tests {
         assert_eq!(buf[(3, 0)].symbol(), "v", "version prefix");
         assert_eq!(buf[(3, 0)].fg, theme::DIM, "version dim");
 
-        // Compact hints row: `escape interrupt · ctrl+c/ctrl+d clear/exit
-        // · / commands · ! bash · ctrl+o more`.
+        // Compact hints row: `escape interrupt · ctrl+c clear · / commands ·
+        // ! bash · ctrl+o more`.
         assert_eq!(buf[(0, 1)].symbol(), "e", "escape key");
         assert_eq!(buf[(0, 1)].fg, theme::DIM, "key dim");
         assert_eq!(buf[(7, 1)].symbol(), "i", "interrupt desc");
         assert_eq!(buf[(7, 1)].fg, theme::MUTED, "desc muted");
         assert_eq!(buf[(17, 1)].symbol(), "\u{00b7}", "separator");
         assert_eq!(buf[(19, 1)].symbol(), "c", "ctrl+c key");
-        assert_eq!(buf[(46, 1)].symbol(), "/", "slash key");
-        assert_eq!(buf[(59, 1)].symbol(), "!", "bang key");
-        assert_eq!(buf[(68, 1)].symbol(), "c", "ctrl+o key");
+        assert_eq!(buf[(34, 1)].symbol(), "/", "slash key");
+        assert_eq!(buf[(47, 1)].symbol(), "!", "bang key");
+        assert_eq!(buf[(56, 1)].symbol(), "c", "ctrl+o key");
 
         // Press hint.
         assert_eq!(buf[(0, 2)].symbol(), "P", "press hint");
@@ -4613,22 +4604,21 @@ mod tests {
         assert_eq!(buf[(0, 1)].symbol(), "e", "expanded: escape to interrupt");
         assert_eq!(buf[(0, 2)].symbol(), "c", "expanded: ctrl+c to clear");
         assert_eq!(buf[(0, 3)].symbol(), "c", "expanded: ctrl+c twice to exit");
-        assert_eq!(buf[(0, 4)].symbol(), "c", "expanded: ctrl+d to exit (empty)");
-        assert_eq!(buf[(0, 5)].symbol(), "c", "expanded: ctrl+z to suspend");
-        assert_eq!(buf[(0, 6)].symbol(), "c", "expanded: ctrl+k to delete to end");
-        assert_eq!(buf[(0, 7)].symbol(), "s", "expanded: shift+tab");
-        assert_eq!(buf[(0, 8)].symbol(), "c", "expanded: ctrl+p");
-        assert_eq!(buf[(0, 9)].symbol(), "c", "expanded: ctrl+l");
-        assert_eq!(buf[(0, 10)].symbol(), "c", "expanded: ctrl+o");
-        assert_eq!(buf[(0, 11)].symbol(), "c", "expanded: ctrl+t");
-        assert_eq!(buf[(0, 12)].symbol(), "c", "expanded: ctrl+g");
-        assert_eq!(buf[(0, 13)].symbol(), "/", "expanded: slash");
-        assert_eq!(buf[(0, 14)].symbol(), "!", "expanded: bang");
-        assert_eq!(buf[(0, 15)].symbol(), "!", "expanded: double bang");
-        assert_eq!(buf[(0, 16)].symbol(), "a", "expanded: alt+enter");
-        assert_eq!(buf[(0, 17)].symbol(), "a", "expanded: alt+up");
-        assert_eq!(buf[(0, 18)].symbol(), "c", "expanded: ctrl+v");
-        assert_eq!(buf[(0, 19)].symbol(), "d", "expanded: drop files");
+        assert_eq!(buf[(0, 4)].symbol(), "c", "expanded: ctrl+z to suspend");
+        assert_eq!(buf[(0, 5)].symbol(), "c", "expanded: ctrl+k to delete to end");
+        assert_eq!(buf[(0, 6)].symbol(), "s", "expanded: shift+tab");
+        assert_eq!(buf[(0, 7)].symbol(), "c", "expanded: ctrl+p");
+        assert_eq!(buf[(0, 8)].symbol(), "c", "expanded: ctrl+l");
+        assert_eq!(buf[(0, 9)].symbol(), "c", "expanded: ctrl+o");
+        assert_eq!(buf[(0, 10)].symbol(), "c", "expanded: ctrl+t");
+        assert_eq!(buf[(0, 11)].symbol(), "c", "expanded: ctrl+g");
+        assert_eq!(buf[(0, 12)].symbol(), "/", "expanded: slash");
+        assert_eq!(buf[(0, 13)].symbol(), "!", "expanded: bang");
+        assert_eq!(buf[(0, 14)].symbol(), "!", "expanded: double bang");
+        assert_eq!(buf[(0, 15)].symbol(), "a", "expanded: alt+enter");
+        assert_eq!(buf[(0, 16)].symbol(), "a", "expanded: alt+up");
+        assert_eq!(buf[(0, 17)].symbol(), "c", "expanded: ctrl+v");
+        assert_eq!(buf[(0, 18)].symbol(), "d", "expanded: drop files");
     }
 
     /// Tool calls render their args below the title (TS fallback: blank
@@ -5776,7 +5766,8 @@ mod tests {
     }
 
     /// 剪贴板快捷键（对齐 TS）：Ctrl+C 清空编辑器（500ms 内连按两次退出）、
-    /// Ctrl+D 空输入退出（非空时 delete-char-forward）、Ctrl+V 从系统剪贴板
+    /// Ctrl+D 已移除 app 级退出拦截（恒为 delete-char-forward，见
+    /// DEVIATIONS.md）、Ctrl+V 从系统剪贴板
     /// 粘贴文本、Ctrl+X 复制最后一条 assistant 消息。这些应用级快捷键只
     /// 在下栏编辑器聚焦（Chat 模式）时生效——对话框/选择器各自处理自己的键。
     #[test]
@@ -5796,19 +5787,20 @@ mod tests {
         let cmds = handle_key(&mut model, ctrl('c'));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::Quit)), "second ctrl+c within 500ms quits");
 
-        // Ctrl+D：空输入退出；非空输入是 delete-char-forward（删除光标后的
-        // 字符）——TS CustomEditor 空编辑器才触发 app.exit，非空时交给编辑器
-        // 的 deleteCharForward（默认绑定 ctrl+d）。
+        // Ctrl+D：已移除 app 级拦截（见 DEVIATIONS.md）——无论输入是否为空都
+        // 不再退出，而是走编辑器 readline 键位 delete-char-forward（删除光标
+        // 后的字符）。
         let mut model = Model::new(100, 30);
         model.input.set_value("abcde");
         model.input.move_left();
         model.input.move_left(); // cursor 在 'c' 与 'd' 之间
         let cmds = handle_key(&mut model, ctrl('d'));
-        assert!(cmds.is_empty(), "ctrl+d with non-empty input must not quit");
+        assert!(cmds.is_empty(), "ctrl+d must not quit");
         assert_eq!(model.input.value(), "abce", "ctrl+d deletes the char after the cursor");
         model.input.clear();
         let cmds = handle_key(&mut model, ctrl('d'));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::Quit)), "ctrl+d with empty input quits");
+        assert!(cmds.is_empty(), "ctrl+d with empty input must not quit");
+        assert_eq!(model.input.value(), "", "ctrl+d on empty input is a no-op");
 
         // Ctrl+V：不插入字面 'v'，且不 panic（剪贴板读取失败时静默忽略）。
         let mut model = Model::new(100, 30);

@@ -1107,9 +1107,17 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn default_session_dir(_cwd: &str, agent_dir: &str) -> String {
-        let path = std::path::Path::new(agent_dir).join("sessions");
-        path.to_string_lossy().to_string()
+    /// Default session directory for a cwd, mirroring TS
+    /// `getDefaultSessionDir(cwd, agentDir)`:
+    /// `{agent_dir}/sessions/--encoded-cwd--`.
+    ///
+    /// The cwd segment is essential — without it every project's sessions
+    /// would share one flat directory, and `SessionManager::list` (which
+    /// resolves the same encoded path) would never find them.
+    pub fn default_session_dir(cwd: &str, agent_dir: &str) -> String {
+        config::get_default_session_dir(cwd, Some(agent_dir))
+            .to_string_lossy()
+            .to_string()
     }
 
     pub fn new(
@@ -2555,6 +2563,22 @@ mod tests {
         assert!(!mgr.get_session_id().is_empty());
         assert_eq!(mgr.get_cwd(), "/tmp/test");
         assert!(mgr.get_leaf_id().is_none());
+    }
+
+    /// Regression: the default session dir must include the encoded cwd
+    /// segment (TS `getDefaultSessionDirPath`). Without it, new sessions are
+    /// written flat into `sessions/` while `SessionManager::list` looks in
+    /// `sessions/--cwd--/`, so `--continue`/`--resume` and the resume hint
+    /// can never find them.
+    #[test]
+    fn test_default_session_dir_encodes_cwd() {
+        let agent = tempfile::tempdir().unwrap();
+        let agent_str = agent.path().to_str().unwrap();
+        let dir = SessionManager::default_session_dir("/home/me/project", agent_str);
+        assert!(
+            dir.ends_with("sessions/--home-me-project--"),
+            "default session dir must be cwd-scoped, got: {dir}"
+        );
     }
 
     #[test]

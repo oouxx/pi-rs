@@ -124,10 +124,16 @@ pub fn get_docs_path() -> PathBuf {
 
 /// Returns the default session directory for the given `cwd`.
 ///
-/// The path is `{sessions_dir}/--encoded-cwd--`.
-/// Sessions dir resolution follows `get_sessions_dir()` priority.
-pub fn get_default_session_dir(cwd: &str, _agent_dir: Option<&str>) -> PathBuf {
-    let sessions_base = get_sessions_dir();
+/// Mirrors TS `getDefaultSessionDirPath(cwd, agentDir)`:
+/// `{sessions_dir}/--encoded-cwd--`. When `agent_dir` is supplied the
+/// sessions base is `{agent_dir}/sessions`; otherwise the process-level
+/// `get_sessions_dir()` (which honours `$PI_CODING_AGENT_SESSION_DIR`) is
+/// used.
+pub fn get_default_session_dir(cwd: &str, agent_dir: Option<&str>) -> PathBuf {
+    let sessions_base = match agent_dir {
+        Some(dir) => expand_tilde_path(dir).join("sessions"),
+        None => get_sessions_dir(),
+    };
     let safe_path = encode_cwd_to_dir_name(&resolve_path(cwd));
     let dir = sessions_base.join(safe_path);
     if !dir.exists() {

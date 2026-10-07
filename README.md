@@ -27,11 +27,14 @@ pi-rs "帮我写一个 Rust 的斐波那契函数"
 # 一次性提问，结果输出到终端（适合脚本/管道）
 pi-rs -p "解释一下这个文件" < file.rs
 
+# 引用文件一起提问
+pi-rs -p "总结这个文档" @README.md
+
 # 列出可用的模型
 pi-rs --list-models
 ```
 
-首次使用前，配置你的模型和 API Key（环境变量或 `~/.pi-rs/agent/settings.json`），然后 `pi-rs --list-models` 确认模型可用。
+首次使用前，配置你的模型和 API Key（环境变量，或 `~/.pi-rs/agent/auth.json`，或 `models.json` 里的 provider 配置），然后 `pi-rs --list-models` 确认模型可用。
 
 ## 使用方式
 
@@ -41,8 +44,9 @@ pi-rs --list-models
 
 ```bash
 pi-rs                          # 启动交互会话
-pi-rs --continue               # 继续上一次会话
-pi-rs --resume                 # 选择并恢复历史会话
+pi-rs --continue               # 继续最近一次会话
+pi-rs --resume                 # 恢复最近一次会话
+pi-rs --session <ID>           # 按会话 ID 前缀（或 .jsonl 路径）恢复
 pi-rs --fork <ID>              # 从某个会话分叉出新会话
 ```
 
@@ -64,13 +68,14 @@ pi-rs -p -m claude-sonnet-4-6 "用 Python 写一个快速排序"
 pi-rs --acp
 ```
 
-编辑器会通过标准输入输出与 π 通信，你可以在编辑器里选择模型、调整思考强度、查看 bash 终端输出和文件 diff。
+编辑器会通过标准输入输出与 π 通信，你可以在编辑器里选择模型、调整思考强度、查看工具执行进度与输出。
 
 ### 其他模式
 
 ```bash
 pi-rs --mode json "..."        # JSON 结构化输出，方便程序解析
 pi-rs --mode rpc               # RPC 模式（供外部工具调用）
+pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 ```
 
 ## 常用选项
@@ -79,33 +84,54 @@ pi-rs --mode rpc               # RPC 模式（供外部工具调用）
 | ---- | ---- |
 | `-m, --model` | 指定模型（如 `claude-sonnet-4-6`） |
 | `-P, --provider` | 指定提供商 |
-| `-t, --thinking` | 思考强度：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
-| `--tools` / `--exclude-tools` | 允许 / 排除特定工具（如 `read,bash,edit`） |
-| `--extension <PATH>` | 加载扩展 |
+| `-k, --api-key` | 直接指定 API Key |
+| `--thinking` | 思考强度：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
+| `--tools` / `--exclude-tools` | 允许 / 排除特定工具（逗号分隔，如 `read,bash,edit`；短标志 `-t` / `-xt`） |
+| `--extension <PATH>` | 加载扩展（可重复） |
 | `--no-session` | 不保存会话 |
+| `--session-dir <DIR>` | 自定义会话目录 |
+| `--no-extensions` / `--no-skills` | 禁用扩展 / skills 加载 |
+| `--list-models [PATTERN]` | 列出可用模型（可按关键字过滤） |
 | `-h, --help` | 查看完整帮助 |
+
+## 子命令
+
+```bash
+pi-rs update                  # 更新到最新 GitHub Release
+pi-rs install <source>        # 安装扩展包
+pi-rs remove <name>           # 移除扩展
+pi-rs list                    # 列出已安装扩展
+pi-rs auth check              # 检查认证状态
+pi-rs auth print-api-key      # 输出指定提供商的 API Key
+```
 
 ## 会话中的斜杠命令
 
-在交互或 ACP 会话中，输入 `/` 开头的命令可以管理会话：
+在交互会话中，输入 `/` 开头的命令可以管理会话（Tab 可补全）：
 
-- `/model` — 切换模型
-- `/settings` — 查看/修改设置
-- `/resume` — 恢复历史会话
-- `/export` — 导出会话（HTML / JSONL）
-- `/compact` — 压缩上下文
-- `/login` — 配置 API Key
 - `/new` — 开启新会话
+- `/name <name>` — 设置会话名称
+- `/model <provider>/<id>` — 切换模型
+- `/theme [dark|light]` — 切换主题
+- `/compact [instructions]` — 压缩上下文
+- `/copy` — 复制最后一条回复
+- `/reload` — 重新加载扩展
+- `/help` — 查看命令列表
 - `/quit` — 退出
+
+扩展注册的命令和 skills 也会以斜杠命令的形式出现（如 `/skill:xxx`）。
+
+> 与 TS 原版的差异：`/settings`、`/login`、`/resume`、`/export` 等原版命令尚未实现（`/login` 用 `pi auth` 子命令与环境变量替代，`/export` 用 `pi-rs --export <FILE>` 替代）。
 
 ## 数据与配置
 
 - 会话记录保存在 `~/.pi-rs/agent/sessions/`
-- 配置文件：`~/.pi-rs/agent/settings.json`（模型、API Key、默认参数）
-- 模型列表：`~/.pi-rs/agent/models.json`（可手动添加本地模型端点）
+- 设置文件：`~/.pi-rs/agent/settings.json`（默认模型/提供商、默认思考强度等参数）
+- API Key：环境变量（如 `ANTHROPIC_API_KEY`）或 `~/.pi-rs/agent/auth.json`
+- 模型列表：`~/.pi-rs/agent/models.json`（可手动添加自定义 provider / 本地端点：`baseUrl`、`apiKey`、`headers` 等）
 
 ## 致谢
 
 π 是 [earendil-works/pi](https://github.com/earendil-works/pi)（TypeScript 版）的 Rust 移植。
 原版由 Mario Zechner 开发，采用 MIT 许可证（Copyright (c) 2025 Mario Zechner）。
-本项目的设计、行为与公开接口均以原版为基准，感谢原作者的出色工作。
+本项目以原版的设计与公开接口为基准，扩展系统与 TUI 组件层等模块改用了 Rust 生态的实现方式，有意保留的差异记录在 [DEVIATIONS.md](DEVIATIONS.md)。感谢原作者的出色工作。

@@ -42,6 +42,9 @@ const RETRY_ENV: &str = "PI_TUI_E2E_RETRY_STREAM";
 /// Restored-session mock: the child opens this session file so the TUI must
 /// render its persisted history on startup (TS `rebuildChatFromMessages`).
 const RESUME_ENV: &str = "PI_TUI_E2E_RESUME_FILE";
+/// Persist the mock session so the quit-path resume hint has a file to point
+/// at (TS `formatResumeCommand` returns `None` without a written session file).
+const PERSIST_ENV: &str = "PI_TUI_E2E_PERSIST_SESSION";
 const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
 const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
 const MOCK_REPLY: &str = "Hello from the mock LLM!";
@@ -344,6 +347,10 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     // persisted history to render on startup.
     if let Ok(path) = std::env::var(RESUME_ENV) {
         opts.session_file = Some(path);
+        opts.persist_session = true;
+    }
+    // Resume-hint e2e：需要会话真正落盘。
+    if std::env::var(PERSIST_ENV).is_ok() {
         opts.persist_session = true;
     }
     opts.model_registry = Some(ModelRegistry::new(vec![mock_model()]));
@@ -861,6 +868,54 @@ fn tui_chat_flow_renders_mock_reply_and_quits() {
         out.contains("\x1b[?1049l"),
         "alternate screen restored on quit: {:?}",
         out.chars().rev().take(200).collect::<String>()
+    );
+    // 非持久化（内存）会话不打印 resume 提示（TS `formatResumeCommand` 的
+    // `isPersisted` 抑制条件）——与 `tui_quit_prints_resume_hint_for_persisted_session`
+    // 成对，防止提示断言在“什么都没有被打印”的情况下也通过。
+    assert!(
+        !out.replace(['\r', '\n'], "").contains("To resume this session:"),
+        "no resume hint for an in-memory session"
+    );
+}
+
+/// Clean quit after a persisted exchange must print the copy-paste resume
+/// hint to the real stdout (TS `formatResumeCommand`, pi PR #5176). The
+/// interactive unit tests cover the string building; this covers the wiring
+/// that a user actually sees: stdout is a TTY, the session file exists on
+/// disk, and the hint is printed after the alternate screen is restored —
+/// the exact path where "unit tests pass but the real binary stays silent"
+/// (see `crates/pi-cli/PORTING_MISTAKES.md` #1/#2).
+#[test]
+fn tui_quit_prints_resume_hint_for_persisted_session() {
+    let mut tui = Tui::spawn_inner_env(false, None, &[(PERSIST_ENV, "1")]);
+    assert!(
+        tui.wait_for("mock-model", TIMEOUT),
+        "footer rendered; got: {:?}",
+        tui.rendered()
+    );
+
+    // 先产生一条消息让会话文件落盘：空会话不打印提示（TS 同款 exists 抑制条件）。
+    tui.write(b"hello\r");
+    assert!(
+        tui.wait_for("LLM!", TIMEOUT),
+        "mock reply streamed; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.quit();
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit code 0");
+
+    // 终端宽度可能折行：去掉回车换行后断言。
+    let plain = tui.rendered().replace(['\r', '\n'], "");
+    assert!(
+        plain.contains("To resume this session:"),
+        "resume hint printed on quit; got: {:?}",
+        plain.chars().rev().take(400).collect::<String>()
+    );
+    assert!(
+        plain.contains("pi-rs --session"),
+        "hint carries the resume command; got: {:?}",
+        plain.chars().rev().take(400).collect::<String>()
     );
 }
 

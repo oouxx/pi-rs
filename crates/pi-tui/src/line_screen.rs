@@ -67,6 +67,18 @@ fn buffer_row_to_ansi(row: &[ratatui::buffer::Cell]) -> String {
             continue;
         }
         prev_wide = width == 2;
+        // A modifier that turns off mid-row (e.g. the end of a selection
+        // highlight) must emit an off code. SGR has no single "clear
+        // modifiers" sequence that is always safe across terminals, so reset
+        // everything and re-apply the current colors below (trackers are
+        // cleared to force re-emission). Without this, reverse video leaks
+        // from the selection to the end of the row.
+        if !mods.is_empty() && !cell.modifier.contains(mods) {
+            out.push_str("\x1b[0m");
+            fg = None;
+            bg = None;
+            mods = ratatui::style::Modifier::empty();
+        }
         if cell.fg != fg.unwrap_or(ratatui::style::Color::Reset)
             || (fg.is_none() && cell.fg != ratatui::style::Color::Reset)
         {
@@ -267,6 +279,7 @@ impl LineScreen {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -322,6 +335,26 @@ mod tests {
             cell("", Color::Reset, Color::Reset, Modifier::empty()),
         ]);
         assert_eq!(buffer_row_to_ansi(&r), "你好\x1b[0m");
+    }
+
+    /// A modifier that turns off mid-row (e.g. the end of a selection
+    /// highlight) must emit an off code, otherwise reverse video leaks to the
+    /// end of the line and the whole row looks selected.
+    #[test]
+    fn turns_off_modifiers_within_a_row() {
+        let r = row(&[
+            cell("a", Color::Reset, Color::Reset, Modifier::empty()),
+            cell("b", Color::Reset, Color::Reset, Modifier::REVERSED),
+            cell("c", Color::Reset, Color::Reset, Modifier::empty()),
+        ]);
+        let out = buffer_row_to_ansi(&r);
+        // After the reversed glyph, the glyph `c` must be preceded by an
+        // off/reset sequence so it renders plain.
+        let after_b = out.split('b').nth(1).expect("row contains b");
+        assert!(
+            after_b.starts_with("\x1b[27m") || after_b.starts_with("\x1b[0m"),
+            "reverse video must be turned off before the following glyph: {out:?}"
+        );
     }
 
     /// Style changes emit SGR only at change points.

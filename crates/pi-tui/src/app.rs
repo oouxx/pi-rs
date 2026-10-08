@@ -2293,11 +2293,16 @@ fn transcript_content_lines(model: &mut Model) -> Vec<String> {
         .collect()
 }
 
-/// Concatenate the symbols of one buffer row into plain text (wide-character
-/// continuation cells carry an empty symbol and are skipped).
+/// Concatenate the symbols of one buffer row into plain text.
+///
+/// Wide characters (CJK, emoji) occupy two cells: the first holds the glyph
+/// and the second is a continuation cell that ratatui fills with a space.
+/// Emitting it would insert a visible gap after every wide glyph and shift
+/// every following column, so the continuation cell is skipped.
 fn buffer_row_text(buf: &Buffer, x: u16, y: u16, width: u16) -> String {
     let area = buf.area();
     let mut out = String::new();
+    let mut skip_continuation = false;
     for col in 0..width {
         let cx = x + col;
         if cx >= area.width || y >= area.height {
@@ -2305,9 +2310,17 @@ fn buffer_row_text(buf: &Buffer, x: u16, y: u16, width: u16) -> String {
         }
         let symbol = buf[(cx, y)].symbol();
         if symbol.is_empty() {
+            // Continuation cell marker with no symbol: nothing follows to skip.
+            skip_continuation = false;
+            continue;
+        }
+        if skip_continuation {
+            // Second cell of the previous wide glyph: drop its filler space.
+            skip_continuation = false;
             continue;
         }
         out.push_str(symbol);
+        skip_continuation = unicode_width::UnicodeWidthStr::width(symbol) >= 2;
     }
     out.trim_end().to_string()
 }
@@ -6109,6 +6122,38 @@ mod tests {
         model.show_header = false;
         update(&mut model, Msg::NewMessage("system".into(), text.into()));
         model
+    }
+
+    /// Copying a selection that contains wide (CJK) characters must not insert
+    /// the space ratatui stores in the wide glyph's continuation cell.
+    #[test]
+    fn mouse_drag_selection_copies_wide_characters_without_filler_spaces() {
+        let mut model = selection_model("你好世界abc");
+        render_to_buffer(&mut model);
+
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 7, 0));
+        let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 7, 0));
+        match cmds.as_slice() {
+            [Cmd::CopySelection(text)] => {
+                assert_eq!(text, "你好世界", "wide glyphs must not gain filler spaces: {text:?}")
+            }
+            other => panic!("expected CopySelection, got {other:?}"),
+        }
+        assert_eq!(model.selection_text().as_deref(), Some("你好世界"));
+    }
+
+    /// Mixed wide + narrow glyphs (and a real space between them) round-trip
+    /// exactly: the wide continuation filler is dropped, genuine spaces kept.
+    #[test]
+    fn selection_text_preserves_real_spaces_between_wide_glyphs() {
+        let mut model = selection_model("界 a 界");
+        render_to_buffer(&mut model);
+        // Select the whole first row (0-based content row 0).
+        model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), 6, 0));
+        let _ = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 6, 0));
+        assert_eq!(model.selection_text().as_deref(), Some("界 a 界"));
     }
 
     /// TS "selects visible text with the mouse and copies it ...": drag from

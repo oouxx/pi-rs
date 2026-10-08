@@ -12,7 +12,7 @@ use crate::core::context_usage::ContextUsage;
 use crate::core::extensions::{ExtensionContext, ExtensionRegistry, ToolDefinition};
 use crate::core::messages;
 use crate::core::model_registry::ModelRegistry;
-use crate::core::resource_loader::LoadedResources;
+use crate::core::resource_loader::{LoadedResources, ResourceLoader};
 use crate::core::session_manager::SessionEntry;
 use crate::core::session_manager::SessionManager;
 use crate::core::system_prompt::{self, ContextFile, SkillInfo};
@@ -143,7 +143,10 @@ pub struct AgentSessionConfig {
     /// 消费；None = 无 UI 客户端，notify 落 stderr、dialog 返回默认）。
     pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
     /// Loaded resources (skills, extensions, prompt templates).
-    pub resources: Option<LoadedResources>,
+    /// Resource loader for extensions, skills, prompts, themes, context files,
+    /// and system prompt. Matches TS `AgentSessionConfig.resourceLoader`;
+    /// retained so `reload()` can rescan from disk.
+    pub resource_loader: Option<Box<dyn ResourceLoader>>,
     /// Custom tool definitions injected by the caller (e.g. trading tools).
     /// The SDK creates stub DynTool entries from these definitions.
     /// Call `agent.add_tools()` after session creation to replace stubs
@@ -520,8 +523,10 @@ pub struct AgentSession {
     /// getAllTools / getToolDefinition). Populated from custom_tools and
     /// extension tools at construction time.
     tool_definitions: std::collections::HashMap<String, crate::core::extensions::ToolDefinition>,
-    /// Loaded resources (skills, prompt templates, context files), matching TS `_resourceLoader`.
-    resources: Option<LoadedResources>,
+    /// Resource loader owning skills, prompt templates, context files and
+    /// system prompt, matching TS `_resourceLoader`. `reload()` rescans disk
+    /// through this instance.
+    resource_loader: std::sync::Mutex<Option<Box<dyn ResourceLoader>>>,
     /// System-prompt build options (without the selected-tool list, which
     /// changes with the active tool set). Saved at construction so
     /// `set_active_tools_by_name` can rebuild the prompt (matching TS
@@ -1408,7 +1413,7 @@ impl AgentSession {
             extension_ui_binding,
             tool_registry,
             tool_definitions,
-            resources: options.resources,
+            resource_loader: std::sync::Mutex::new(options.resource_loader),
             system_prompt_options: Some({
                 // Save the build options without the selected-tool list so
                 // set_active_tools_by_name can rebuild the prompt when the
@@ -2746,9 +2751,8 @@ impl AgentSession {
 
     /// Get file-based prompt templates, matching TS `get promptTemplates()`.
     pub fn prompt_templates(&self) -> Vec<crate::core::prompt_templates::PromptTemplate> {
-        self.resources
-            .as_ref()
-            .map(|r| r.prompt_templates.clone())
+        self.resource_loader()
+            .map(|r| r.prompt_templates)
             .unwrap_or_default()
     }
 
@@ -3467,10 +3471,9 @@ impl AgentSession {
 
         // Look up the skill in the resource loader
         let skills = self
-            .resources
-            .as_ref()
-            .map(|r| &r.skills[..])
-            .unwrap_or(&[]);
+            .resource_loader()
+            .map(|r| r.skills)
+            .unwrap_or_default();
         if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
             match std::fs::read_to_string(&skill.file_path) {
                 Ok(content) => {
@@ -5678,24 +5681,61 @@ impl AgentSession {
     }
 
     /// Get a reference to the loaded resources (skills, prompt templates, context files),
-    /// matching TS `get resourceLoader()`.
-    pub fn resource_loader(&self) -> Option<&LoadedResources> {
-        self.resources.as_ref()
+    /// matching TS `get resourceLoader()`. Returns an owned snapshot so callers
+    /// never hold the internal lock across await points.
+    pub fn resource_loader(&self) -> Option<LoadedResources> {
+        self.resource_loader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|loader| loader.get_resources().clone())
     }
 
-    /// Reload session state from disk, matching TS reload().
-    /// Refreshes settings, queue modes, and resources.
+    /// Reload session state and discover resources from disk, matching TS reload().
     pub async fn reload(&self) {
-        // Reload settings
         if let Ok(mut sm) = self.settings_manager.lock() {
             sm.reload();
         }
-        // Sync queue modes from settings (matching TS syncQueueModesFromSettings)
         self._sync_queue_modes_from_settings().await;
-        // Reload resources
-        // Note: resources are loaded once at construction time in the current
-        // implementation. Full hot-reload of resources would require re-reading
-        // from disk, which is a future enhancement.
+
+        // TS `reload()` awaits `this._resourceLoader.reload()`. Extension
+        // resource paths contributed during the session are applied first,
+        // matching `extendResourcesFromExtensions("reload")`.
+        let loaded = {
+            let mut guard = self
+                .resource_loader
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(loader) = guard.as_mut() else {
+                return;
+            };
+            if let Some(extra) = &self.extension_resource_paths {
+                loader.extend_resources(extra.clone());
+            }
+            loader.reload()
+        };
+
+        let skills: Vec<SkillInfo> = loaded.skills.iter().map(|s| SkillInfo {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            file_path: s.file_path.clone(),
+            base_dir: s.base_dir.clone(),
+        }).collect();
+        let context_files: Vec<ContextFile> = loaded.context_files.iter().map(|f| ContextFile {
+            path: f.path.clone(),
+            content: f.content.clone(),
+        }).collect();
+
+        // TS `_rebuildSystemPrompt` reads the freshly loaded skills/context.
+        if let Some(mut opts) = self.system_prompt_options.clone() {
+            let selected_tools = self.agent.state().await.tools.iter().map(|t| t.name.clone()).collect();
+            opts.selected_tools = Some(selected_tools);
+            opts.skills = Some(skills);
+            opts.context_files = Some(context_files);
+            let rebuilt = system_prompt::build_system_prompt(&opts);
+            *self.base_system_prompt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = rebuilt.clone();
+            self.agent.set_system_prompt(rebuilt).await;
+        }
     }
 
     /// Sync queue modes from settings, matching TS syncQueueModesFromSettings().

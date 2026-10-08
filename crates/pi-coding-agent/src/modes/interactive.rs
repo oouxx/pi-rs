@@ -1205,7 +1205,7 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             vec![]
         }
         "/reload" => {
-            system(state, "Reloading extensions...".into());
+            system(state, "Reloading settings, extensions, skills, prompts, and context files...".into());
             vec![Effect::AgentCommand(AgentCmd::ReloadExtensions)]
         }
         "/copy" => {
@@ -1395,8 +1395,10 @@ struct QueueMirrors {
 // ============================================================================
 
 /// 补全所需的不变数据快照：命令列表（含参数补全回调）+ cwd。
+/// 命令列表用 `RwLock` 包裹，`/reload` 重新发现 skills/prompts 后可原地替换，
+/// 无需重建共享 Arc。
 struct CompletionSources {
-    commands: Vec<pi_tui::CompletionCommand>,
+    commands: std::sync::RwLock<Vec<pi_tui::CompletionCommand>>,
     cwd: String,
 }
 
@@ -1513,7 +1515,11 @@ fn build_completion_commands(
         pi_tui::CompletionCommand::new("/compact [instructions]", "Manually compact the session context", "compact"),
         pi_tui::CompletionCommand::new("/quit", "Quit", "quit"),
         pi_tui::CompletionCommand::new("/theme [dark|light]", "Switch theme (dark/light)", "theme"),
-        pi_tui::CompletionCommand::new("/reload", "Reload extensions", "reload"),
+        pi_tui::CompletionCommand::new(
+            "/reload",
+            "Reload keybindings, extensions, skills, prompts, themes, and context files",
+            "reload",
+        ),
     ];
     // `/model`：参数补全 = 实时可用模型快照（对齐 TS modelCommand.getArgumentCompletions）。
     commands.push(
@@ -1589,20 +1595,26 @@ async fn resolve_completion(
     match req.trigger {
         CompletionTrigger::Slash => {
             // TS：命令 fuzzy 过滤（name = 命令名）。
-            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&sources.commands, &req.query, |c| c.insert_text.clone());
+            let commands = sources.commands.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&commands, &req.query, |c| c.insert_text.clone());
             idx.into_iter()
                 .map(|(i, _)| {
-                    let c = &sources.commands[i];
+                    let c = &commands[i];
                     pi_tui::CompletionItem::new(c.insert_text.clone(), c.label.clone(), c.description.clone())
                 })
                 .collect()
         }
         CompletionTrigger::Argument => {
             let Some(name) = &req.command else { return Vec::new() };
-            let Some(cmd) = sources.commands.iter().find(|c| c.insert_text == *name) else {
-                return Vec::new();
+            // Clone the Arc before awaiting: a `RwLockReadGuard` is not `Send`.
+            let completions = {
+                let commands = sources.commands.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                commands
+                    .iter()
+                    .find(|c| c.insert_text == *name)
+                    .and_then(|c| c.argument_completions.clone())
             };
-            let Some(f) = &cmd.argument_completions else {
+            let Some(f) = completions else {
                 return Vec::new();
             };
             f(req.query.clone()).await.unwrap_or_default()
@@ -1944,6 +1956,7 @@ fn spawn_agent_command_task(
     exit_flag: Arc<std::sync::atomic::AtomicBool>,
     result_tx: tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
     model_snapshot: CompletionModelSnapshot,
+    completion_sources: Arc<CompletionSources>,
 ) {
     tokio::spawn(async move {
         while !exit_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2270,12 +2283,25 @@ fn spawn_agent_command_task(
                             }
                         }
                         AgentCmd::ReloadExtensions => {
-                            // Extension reload is not applicable for Rust
-                            // native extensions.
-                            // Registered providers / models may still have changed.
+                            // Reload settings and all discoverable resources, including
+                            // project/user skills and prompt templates. Native Rust
+                            // extensions remain registered for the session lifetime.
+                            sess.reload().await;
+                            // Refresh the model completion snapshot and the slash-command
+                            // completion list so newly discovered `/skill:<name>` calls
+                            // appear without restarting the session.
                             if let Ok(mut snapshot) = model_snapshot.write() {
                                 *snapshot = completion_models(&sess);
                             }
+                            let commands = build_completion_commands(&sess, model_snapshot.clone());
+                            if let Ok(mut slot) = completion_sources.commands.write() {
+                                *slot = commands.clone();
+                            }
+                            let _ = result_tx.send(pi_tui::Msg::SetCompletionCommands(commands));
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                "system".into(),
+                                "Reloaded settings, skills, prompts, and context files".into(),
+                            ));
                         }
                     }
                 }
@@ -2444,7 +2470,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         .completer
         .set_max_visible(session.get_autocomplete_max_visible() as usize);
     let completion_sources = Arc::new(CompletionSources {
-        commands: completion_commands,
+        commands: std::sync::RwLock::new(completion_commands),
         cwd: cwd.clone(),
     });
 
@@ -2598,6 +2624,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         bg_exit_flag,
         result_tx.clone(),
         model_snapshot.clone(),
+        completion_sources.clone(),
     );
 
     // ── Subscribe agent events (lock-and-release) ───────────────────────
@@ -3551,10 +3578,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_slash_completion_fuzzy_filters_commands() {
         let sources = CompletionSources {
-            commands: vec![
+            commands: std::sync::RwLock::new(vec![
                 pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
                 pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
-            ],
+            ]),
             cwd: ".".into(),
         };
         let req = pi_tui::CompletionRequest {
@@ -3646,8 +3673,8 @@ mod tests {
             })
         });
         let sources = CompletionSources {
-            commands: vec![pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
-                .with_argument_completions(f)],
+            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
+                .with_argument_completions(f)]),
             cwd: ".".into(),
         };
         let req = pi_tui::CompletionRequest {
@@ -3668,7 +3695,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_argument_completion_missing_callback_returns_empty() {
         let sources = CompletionSources {
-            commands: vec![pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name")],
+            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name")]),
             cwd: ".".into(),
         };
         let req = pi_tui::CompletionRequest {

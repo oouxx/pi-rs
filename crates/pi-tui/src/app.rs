@@ -1185,6 +1185,9 @@ pub enum Msg {
     ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
     SetGitBranch(Option<String>), SetContextUsage(f64), SetContextUsageKnown(bool),
     SetElapsed(u64), SetModelName(String),
+    /// `/reload`: replace the slash-command completion list after resources
+    /// were rediscovered (skills, prompt templates, extensions).
+    SetCompletionCommands(Vec<crate::components::CompletionCommand>),
     SetEditorText(String), ExitSelect,
     SetToolOutput(String, String, String),
     SetToolTruncation(String, Option<ToolTruncation>),
@@ -1381,6 +1384,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetThinkingLevel(level) => { model.thinking_level = level; vec![] }
         Msg::SetProvider(provider) => { model.provider = provider; vec![] }
         Msg::SetReasoning(on) => { model.reasoning = on; vec![] }
+        Msg::SetCompletionCommands(commands) => {
+            model.completer.set_commands(commands);
+            vec![]
+        }
         Msg::ToggleToolExpansion => {
             model.tool_output_expanded = !model.tool_output_expanded;
             vec![]

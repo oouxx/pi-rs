@@ -8,7 +8,7 @@ use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
 use crate::core::auth_storage::AuthStorage;
-use crate::core::resource_loader::{self, ResourceLoaderOptions};
+use crate::core::resource_loader::{self, ResourceLoader, ResourceLoaderOptions};
 use crate::core::session_manager::{SessionEntry, SessionManager};
 use crate::core::settings_manager::SettingsManager;
 use crate::core::system_prompt::{ContextFile, SkillInfo};
@@ -702,7 +702,9 @@ pub async fn create_agent_session(
     )
     .await;
 
-    // Load resources for context files and skills
+    // Load resources for context files and skills. The loader instance is
+    // retained by the session so `reload()` can rescan from disk, matching
+    // TS `resourceLoader.reload()`.
     let resource_options = options
         .resource_loader
         .clone()
@@ -712,7 +714,9 @@ pub async fn create_agent_session(
             include_defaults: true,
             ..Default::default()
         });
-    let resources = resource_loader::load_all_resources(&resource_options);
+    let mut resource_loader_instance =
+        resource_loader::DefaultResourceLoader::new(resource_options);
+    let resources = resource_loader_instance.reload();
 
     let context_files: Vec<ContextFile> = resources
         .clone()
@@ -784,7 +788,7 @@ pub async fn create_agent_session(
         excluded_tool_names,
         extension_registry: Some(extension_registry_arc),
         ui_context: options.ui_context.clone(),
-        resources: Some(resources),
+        resource_loader: Some(Box::new(resource_loader_instance)),
         custom_tools: options.custom_tools,
         tools_options: options.tools_options,
         extension_state_view: Some(extension_state_view),

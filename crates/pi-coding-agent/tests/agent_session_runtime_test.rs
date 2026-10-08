@@ -95,7 +95,7 @@ async fn create_test_session(
         ui_context: None,
         custom_tools: None,
         tools_options: None,
-        resources: None,
+        resource_loader: None,
         extension_state_view: None,
         extension_action_rx: None,
     };
@@ -536,7 +536,7 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
         ui_context: None,
         custom_tools: None,
         tools_options: None,
-        resources: None,
+        resource_loader: None,
         extension_state_view: Some(state_view),
         extension_action_rx: Some(rx),
     };
@@ -663,7 +663,7 @@ async fn test_session_switch_invalidates_js_runtime() {
         ui_context: None,
         custom_tools: None,
         tools_options: None,
-        resources: None,
+        resource_loader: None,
         extension_state_view: None,
         extension_action_rx: None,
     };

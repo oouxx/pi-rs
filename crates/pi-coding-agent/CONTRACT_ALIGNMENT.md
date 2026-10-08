@@ -365,3 +365,15 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | OAuth 登录 | 浏览器回调 / device code | 未实现（`AuthStorage::login` 未实现） | 否 | 见 DEVIATIONS.md #21（范围外） |
 | `/login` 可用 provider 列表 | `getLoginProviderOptions` 遍历已注册 provider（含模型目录暂空的动态 provider） | `login_providers_for`：内建 provider 显示名全集 ∪ 注册表 provider（模型目录为空的 `opencode-go` 等也在列） | 是 | 修复见 PORTING_MISTAKES.md |
 | `/model` 参数补全数据源 | `getArgumentCompletions` 每次调用读 `scopedModels` 或 `getAvailableSnapshot()`（实时） | `model_argument_completions` 每次请求读共享实时快照；scoped 非空时优先 | 是 | 修复见 PORTING_MISTAKES.md |
+
+## `/reload`（资源重发现）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+| -------- | ----------- | ------------- | -------- |
+| `/reload` 重读 settings | `settingsManager.reload()` | `settings_manager.reload()` | 是 |
+| `/reload` 重发现 skills | `resourceLoader.reload()` → `updateSkillsFromPaths()` 重新扫描 `{agentDir}/skills`、`{cwd}/{CONFIG_DIR_NAME}/skills`、CLI/扩展路径 | `AgentSession` 持有 `Box<dyn ResourceLoader>`（对齐 TS `resourceLoader`），`reload()` 调 `loader.reload()` 重新扫描同一批路径 | 是 |
+| `/reload` 重发现 prompt templates / context 文件 | 同 `resourceLoader.reload()` | 同上（`LoadedResources` 整体替换） | 是 |
+| `/reload` 刷新 system prompt | 重建含 skills 段的 system prompt | 用新 skills/context 重建 base system prompt | 是 |
+| `/reload` 刷新 slash 补全（`/skill:<name>`） | 补全提供者每次从 `resourceLoader` 读取 | 重建补全命令并推送 `Msg::SetCompletionCommands` | 是 |
+| `/reload` 重载扩展 | `reload()` 重建 ExtensionRunner（重新从磁盘加载扩展文件） | 扩展为 Rust 原生注册，注册表不重建（见 DEVIATIONS.md；`/reload` 仅刷新 provider/模型补全与资源） | 是（有意偏差，见 DEVIATIONS.md 扩展系统条目） |
+| `resourceLoader` 访问器 | TS 属性返回 loader 实例，调用方读 `getSkills()` | Rust `AgentSession::resource_loader()` 返回 owned `LoadedResources` 快照（`get_resources().clone()`）；loader 实例本身保存在 `AgentSession` 内 | 是（内部访问器，非 wire 契约） |

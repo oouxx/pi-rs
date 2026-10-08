@@ -121,7 +121,7 @@ pi-rs auth print-api-key      # 输出指定提供商的 API Key
 
 扩展注册的命令和 skills 也会以斜杠命令的形式出现（如 `/skill:xxx`）。
 
-> 与 TS 原版的差异：`/settings`、`/login`、`/resume`、`/export` 等原版命令尚未实现（`/login` 用 `pi auth` 子命令与环境变量替代，`/export` 用 `pi-rs --export <FILE>` 替代）。
+> 与 TS 原版的差异：`/login` 当前支持 API-key 登录，不支持 OAuth；`/export` 支持基础 HTML 导出，但未复刻主题和自定义工具 renderer；部分 settings、selector 和 TUI 组件仍未完整移植。
 
 ## 数据与配置
 

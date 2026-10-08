@@ -1,65 +1,44 @@
-# 对齐里程碑（Alignment Milestone）
+# 对齐里程碑
 
-> 本文件记录 pi-rs 与 TS 原版（earendil-works/pi）的对齐目标与进度基准。
-> 变更日志参考：https://github.com/earendil-works/pi/releases
+> 本文件记录 pi-rs 与同级 `../pi`（TypeScript 原版）的版本基准和对齐范围。
 
-## 目标版本
+## 当前版本基准
 
-| 项 | 值 |
+| 项目 | 当前值 |
 | --- | --- |
-| 对齐目标 | earendil-works/pi **v0.82**（0.82.x 系列） |
-| 最终补丁 | v0.82.1 |
-| 目标 commit | `b4f293684`（v0.82.1，2026-07-25） |
-| 起始版本 | v0.81.1（`20be4b18d4c57487f8993d2762bace129f0cf7c6`，2026-07-21） |
-| 参考 changelog | https://github.com/earendil-works/pi/releases |
+| 当前 TS 参考版本 | `v1.0.0`（仅用于后续差距识别） |
+| TS 参考 commit | `a13d35a74`（`Release v1.0.0`） |
+| Rust workspace 版本 | `v1.83.16` |
+| 对齐/验收基准 | TS `v0.82.1`（commit `b4f293684`） |
+| 后续差距记录 | TS `v0.82.1` → `v1.0.0`，不改变当前基准 |
 
-## 背景
+## 当前结论
 
-- v0.81 对齐已完成（差距清单清零，见 `ALIGNMENT_GAPS.md` v0.81 部分）。
-- 开始 v0.82 对齐时 pi-rs 自身版本：**v1.81.1**（2026-08-09）。
-- 当时 `../pi` 处于 v0.84.x 时代：v0.82.1 于 2026-07-25 发布。
-- 当前 pi-rs 版本：v1.81.1（2026-08-09）。
+pi-rs 已基本完成 TS `v0.82.1` 的核心行为对齐，覆盖：
 
-## v0.82.x 变更摘要（来自 releases changelog）
+- `pi-ai`：Anthropic/OpenAI 主流调用、流式响应、工具调用、reasoning、usage、重试和模型注册；
+- `pi-agent-core`：Agent loop、工具循环、队列、abort、compaction、retry 和事件流；
+- `pi-coding-agent`：内置工具、session、prompt template、skills、扩展基础能力、RPC/ACP 和模型目录；
+- `pi-tui`：基础交互、工具渲染、slash/file completion、队列、压缩和重试状态显示。
 
-| 版本 | 发布日期 | 关键变更 |
-| --- | --- | --- |
-| v0.82.0 | 2026-07-24 | **Breaking**：`getBuiltinModelDataUrl` → `getBuiltinModelDataGeneratedAt`（目录 freshness 用生成时间）；AgentHarness `ExecutionEnv` → `toolContext` + `AgentHarnessTool`。新增：`Tool.constrainedSampling`（严格 JSON Schema + Lark/regex grammar）、OpenRouter/Kimi Code OAuth、`bash_execution_update` 事件、bash 工具 session 环境变量、`supportsGrammarTools`/`supportsStrictTools` compat flags |
-| v0.82.1 | 2026-07-25 | `ANTHROPIC_AUTH_TOKEN` bearer 认证；Claude Opus 5；远程目录 ETag 重验证；`ModelsError` 追加底层原因 |
+pi-rs 当前以 TS `v0.82.1` 作为对齐和验收基准。TS `v1.0.0` 仅作为后续差距识别的参考，不代表本项目当前目标已经切换到 v1.0.0。
 
-## v0.81.x 变更摘要（历史，已完成对齐）
+| 范围 | 当前状态 |
+| --- | --- |
+| Anthropic/OpenAI 核心 Agent 路径 | 继续对齐，优先级高 |
+| session、model runtime、MCP 基础行为 | 部分已实现，需要针对 v1.0.0 重新审计 |
+| OAuth、完整 provider/model catalog | 有界支持；差异见各 crate `DEVIATIONS.md` |
+| codemode、image/classifier | 未完整移植，暂不作为核心里程碑 |
+| client/server/protocol | 不在当前核心范围 |
+| Durable/Pico/Chord | 不在当前核心范围 |
+| TUI 组件逐行复刻 | 不在范围；核心交互状态机仍需保持一致 |
 
-| 版本 | 发布日期 | 关键变更 |
-| --- | --- | --- |
-| v0.81.0 | 2026-07-21 | **Breaking**：`SessionStorage` 接口大改（`getPathToRootOrCompaction`/`getSessionName`/`getSessionStats`/cursor-based `getEntries`/retainedTail checkpoint）；`uuidv7` 移到 pi-ai；`Agent.streamFn` 改为必选 `streamFunction`（后 #6915 恢复 fallback）。新增：Qwen Token Plan provider、`contentText`、`retryAssistantCall`、`get_available_thinking_levels` RPC、usage 元数据（tool result/compaction/branch summary）、llama.cpp router、完整 provider 扩展、模型生成分离与验证 |
-| v0.81.1 | 2026-07-21 | compaction/branch-summary 按 retry policy 重试 + 生命周期事件；恢复 streamFn 扩展兼容；Kimi K3 用 OpenAI thinking format + reasoning effort |
+## 权威文档
 
-## v0.80.x 变更摘要（历史，已完成对齐）
+- 历史 `v0.79` → `v0.82.1` 差距：[`docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md`](docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md)
+- TS `v1.0.0` 后续差距：仅在需要时以当前代码重新审计，不单独维护差距表；
+- 有意偏差：根目录及各 crate 的 `DEVIATIONS.md`
+- 契约对齐：各 crate 的 `CONTRACT_ALIGNMENT.md`
+- 历史可行性/专项审计：[`docs/archive/`](docs/archive/)
 
-| 版本 | 发布日期 | 关键变更 |
-| --- | --- | --- |
-| v0.80.0 | 2026-06-23 | pi-ai 旧全局 API（`stream`/`complete`/`getModel`/`registerApiProvider` 等）迁至 `@earendil-works/pi-ai/compat`；新增 Ctrl+J 换行；session 名称换行符规范化；OpenAI Responses 流在缺失终止事件前失败；Codex Responses WebSocket 断线重连；Bedrock 尊重 scoped `AWS_PROFILE`；移除 `/base` 选择性入口 |
-| v0.80.1 | 2026-06-23 | Bedrock scoped `AWS_PROFILE` endpoint 修复；Fireworks Anthropic 兼容请求默认值；Together MiniMax M2.7 元数据修复 |
-| v0.80.2 | 2026-06-23 | `ApiKeyCredential` discriminator 改为 `type: "api_key"`；`ExecutionEnvExecOptions` 重命名为 `ShellExecOptions`；Anthropic 兼容自定义模型改用显式 compat 元数据；恢复 legacy stream 别名（`streamSimpleOpenAICompletions` 等）与 openai-completions `detectCompat` fallback |
-| v0.80.3 | 2026-06-30 | Claude Sonnet 5 支持；`outputPad`/`externalEditor` 设置；RPC `get_entries`/`get_tree`；扩展 `session_info_changed` 事件；Azure Foundry endpoint；默认 OpenAI 模型改为 gpt-5.5；`Usage.reasoning` token 计数 |
-| v0.80.4 | 2026-07-09 | tag 存在，无独立 release changelog |
-| v0.80.5 | 2026-07-09 | 无 changelog（占位 release） |
-| v0.80.6 | 2026-07-10 | 新增 `max` thinking level；input-based 定价 tier（GPT-5.4/5.5/5.6 长上下文计费）；`shellPath` 支持 `~` 展开；Anthropic 空 thinking 文本保留 |
-| v0.80.7 | 2026-07-14 | **Breaking**：移除 `compat.sendSessionIdHeader`，改为 `compat.sessionAffinityFormat`；cache-friendly dynamic tool loading；Ctrl+X 复制消息；Fable 5 `xhigh`/`max` thinking；Responses `toolChoice` 支持 |
-| v0.80.8 | 2026-07-16 | **Breaking**：`ModelRuntime` 统一模型运行时与 provider 认证（`authStorage`/`modelRegistry` → `modelRuntime`）；live model catalog refresh（`pi update --models`）；xAI device-code OAuth + Grok 4.5 Responses |
-| v0.80.9 | 2026-07-16 | Kimi K3 + deferred tool loading；xAI 默认模型改为 Grok 4.5；移除 Grok 3 / Grok 3 Fast / Grok 4.20 等 |
-| v0.80.10 | 2026-07-16 | Kimi Coding adaptive thinking 兼容；K3 仅暴露 `max` thinking level；恢复 0.80.9 误删的 xAI 模型 |
-
-## 对齐状态
-
-- 已确认偏差：见各 crate 的 `DEVIATIONS.md`（`crates/pi-ai/DEVIATIONS.md`、`crates/pi-coding-agent/DEVIATIONS.md`）。
-- v0.81 差距清单：见 `ALIGNMENT_GAPS.md` v0.81 部分（A 类 4 项待修，B 类 10 项待确认/排期）。
-- 已知未覆盖项（相对 v0.81，已确认为最终范围）：
-  - `openai-responses` API 后端：已移植（openai 官方 provider 走 `/v1/responses`）。
-  - `azure-openai-responses` / `openai-codex-responses` 后端：**范围外**（用户拍板：主流仅需 anthropic + openai 格式）。
-  - `pi-messages` 后端：已移植（`providers/pi_messages.rs`，Radius gateway 协议；见 DEVIATIONS #7）。
-  - v0.80.8 的 `ModelRuntime` / live model catalog refresh：手动刷新已实现（`pi refresh`），自动刷新/可用性检查/credential 同步未做（范围外）。
-  - 模型覆盖度：用户确认仅保留 anthropic + openai 主流范围（见 `crates/pi-ai/DEVIATIONS.md` #2，已确认保留）。
-  - v0.81 新 provider（Qwen Token Plan）、llama.cpp router、完整 provider 扩展：**范围外**（用户拍板不扩展 provider 后端，见 DEVIATIONS #2）。
-
-> 本文件是里程碑基准，不是偏差日志。发现行为不一致时仍按 CLAUDE.md 阶段四流程处理：先查 `DEVIATIONS.md`，未登记再分类处理。
+> 发现行为差异时，先查对应 crate 的 `DEVIATIONS.md`，再按阶段四流程处理；不要把历史差距表当作当前代码状态。

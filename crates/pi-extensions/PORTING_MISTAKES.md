@@ -1,6 +1,6 @@
 # pi-extensions 移植错误归档
 
-> 对齐检查（GOAL_TS_COMPARISON.md）中修复的回归 bug。根因模式尽量归到
+> 历史依据：`GOAL_TS_COMPARISON_2026-08-24.md`（已归档）。根因模式尽量归到
 > PORTING.md 高危陷阱表的分类；新出现的模式已同步回 PORTING.md。
 
 | 位置 | 现象 | 根因模式 | 修复方式 |

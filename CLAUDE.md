@@ -31,12 +31,9 @@ ts源码在当前项目根目录的同级pi目录下
 | `pi-ai`           | `packages/ai`                  | 统一多 Provider LLM API（OpenAI/Anthropic/Google 等）     |
 | `pi-agent-core`   | `packages/agent`               | Agent 运行时：状态机、工具调用循环、事件流                |
 | `pi-coding-agent` | `packages/coding-agent`        | 内置工具集（read/write/edit/bash/grep/find/ls）+ 扩展系统 |
-| `pi-tui`          | （coding-agent 内的 TUI 组件） | 终端 UI 渲染层——**当前范围内不复刻**，见下方偏差日志      |
+| `pi-tui`          | （coding-agent 内的 TUI 组件） | 终端 UI 渲染层——采用 Ratatui + TEA 重写，要求核心状态机和交互语义对齐，不要求组件逐行复刻 |
 
-**已确认的偏差记录在 `DEVIATIONS.md`（`pi-coding-agent` crate 目录下），
-目前包含两条：** 扩展系统内部实现允许偏离原版（但对外 interface 和
-函数行为必须与原 TS 版本一致）；TUI 部分本轮不复刻。阶段四对齐检查
-遇到这两类差异时按已确认偏差处理，不要尝试纠正，具体约束见该文件。
+**已确认的偏差记录在根目录及各 crate 的 `DEVIATIONS.md` 中。** 扩展系统允许内部实现偏离原版，但对外 interface 和函数行为仍需对齐；TUI 已纳入最小可用范围，组件层允许采用 Rust 原生架构重写。阶段四对齐检查遇到已确认偏差时不要尝试改回原版。
 
 **依赖方向固定为单向，禁止反向依赖：**
 
@@ -48,7 +45,25 @@ pi-ai  ←  pi-agent-core  ←  pi-coding-agent  ←  pi-tui
 
 ---
 
-## 工作流：三阶段，禁止跳步
+## 当前工作阶段
+
+仓库当前处于**阶段四：收尾对齐**。当前对齐和验收基准固定为 TS `v0.82.1`；TS `v1.0.0` 仅用于识别未来差距，不改变当前目标。新功能或新模块仍按阶段一至三执行；已有模块按 `DEVIATIONS.md`、`CONTRACT_ALIGNMENT.md` 和当前代码核对。历史可行性文档已移至 `docs/archive/`，不作为当前实现状态依据。
+
+
+## 文档维护触发规则
+
+日常内部重构、性能优化和测试修正不需要更新对齐文档。仅在以下情况更新对应文件：
+
+| 变更 | 文档 |
+| --- | --- |
+| 有意保留 TS 行为差异 | 对应 crate 的 `DEVIATIONS.md` |
+| 修复移植行为 bug | 对应 crate 的 `PORTING_MISTAKES.md` |
+| 修改公开 API、事件或序列化契约 | 对应 crate 的 `CONTRACT_ALIGNMENT.md` |
+| 新增翻译陷阱 | `PORTING.md` |
+| 用户可见 CLI/TUI 行为变化 | `README.md`，必要时补契约表 |
+| 完成对齐里程碑 | `MILESTONE.md` |
+
+历史差距、可行性评估和专项审计只归档，不作为日常维护文件。
 
 ### 阶段一：架构分析（只产出文档，不写代码）
 
@@ -278,21 +293,21 @@ DEVIATIONS.md）"，不要标记为"否"然后触发修正。
 
 ---
 
-## 模块合并前检查清单（每个模块必须逐项打勾）
+## 模块合并前检查清单
 
-- [ ] 类型定义与阶段一分析文档一致，无遗漏字段
-- [ ] 翻译测试用例 100% 通过
-- [ ] 补充的边界条件测试通过
+以下项目按本次变更类型执行，不要求每个内部修复都修改全部文档：
+
+- [ ] 相关测试通过；涉及公开行为时补充边界/失败路径测试
 - [ ] `cargo clippy --all-targets -- -D warnings` 无警告
-- [ ] 无 `.unwrap()` / `.expect()`（测试代码除外）
-- [ ] 公开 API 文档注释（`///`）覆盖所有 `pub` 项
-- [ ] `DEVIATIONS.md` 中"待确认"条目已清零，或已明确知会用户遗留哪些
-- [ ] 已完成一轮独立上下文的对抗式复核，复核意见已全部处理
-- [ ] 本模块修复的真回归已补进 `PORTING_MISTAKES.md`，新发现的陷阱
-      模式已同步回 `PORTING.md`
-- [ ] 没有用 `todo!()`/`unimplemented!()`/放宽类型 掩盖未解决的问题
-- [ ] `CONTRACT_ALIGNMENT.md` 已覆盖本模块所有公开 API，且没有未引用
-      `DEVIATIONS.md` 的"否"
+- [ ] 生产代码无 `.unwrap()` / `.expect()`；测试代码除外
+- [ ] 公开 API 有 `///` 文档注释（新增或修改公开项时）
+- [ ] 有意 TS 差异已登记到对应 `DEVIATIONS.md`
+- [ ] 移植行为 bug 已登记到对应 `PORTING_MISTAKES.md`
+- [ ] 公开 API、事件或序列化契约变化已更新对应 `CONTRACT_ALIGNMENT.md`
+- [ ] 新增高危翻译模式时已更新 `PORTING.md`
+- [ ] 仅内部重构、性能优化或测试修正时，无需更新对齐文档
+- [ ] 已确认偏差不被对齐修复意外覆盖
+
 
 ---
 

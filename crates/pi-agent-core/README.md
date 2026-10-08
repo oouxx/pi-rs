@@ -30,7 +30,7 @@ pi-agent-core
 
 ```toml
 [dependencies]
-pi-agent-core = "1.78"
+pi-agent-core = "1.83"
 pi-ai = { path = "../pi-ai" }
 tokio = { version = "1", features = ["full"] }
 ```

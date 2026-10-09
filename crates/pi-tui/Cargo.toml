@@ -15,6 +15,9 @@ xai-grok-markdown = { path = "../vendor/xai-grok-markdown" }
 # selection, bracket handling).
 xai-ratatui-textarea = { path = "../vendor/xai-ratatui-textarea" }
 anstyle = "1.0"
+# Theme-driven syntax highlighting for code blocks: build the syntect theme
+# from the active `Theme`'s syntax* tokens (same version as xai-grok-markdown).
+syntect = "5.3"
 serde_json = { workspace = true }
 textwrap = "0.16"
 unicode-segmentation = "1.12.0"

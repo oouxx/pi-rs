@@ -23,6 +23,7 @@ use crate::selection::{
 use crate::components::{
     Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger, Editor, Input, Markdown, SelectList,
 };
+use crate::render::wrap::word_wrap_line_with_joiners;
 use crate::theme::Theme;
 
 // ============================================================================
@@ -594,11 +595,19 @@ pub struct Message {
 impl Message {
     /// Create a message and feed its initial text through the markdown
     /// pipeline. `width` is the wrap width at construction; the renderer
-    /// re-wraps automatically on subsequent width changes.
-    pub fn new(id: u64, role: impl Into<String>, text: impl Into<String>, width: usize) -> Self {
+    /// re-wraps automatically on subsequent width changes. `theme` colours
+    /// both the body and thinking markdown (TS drives them from the one
+    /// global `theme`).
+    pub fn new(
+        id: u64,
+        role: impl Into<String>,
+        text: impl Into<String>,
+        width: usize,
+        theme: &Theme,
+    ) -> Self {
         let text = text.into();
-        let md = Markdown::new(&text, width);
-        let thinking_md = Markdown::new("", width);
+        let md = Markdown::with_theme(&text, width, theme);
+        let thinking_md = Markdown::with_theme("", width, theme);
         Self {
             id,
             role: role.into(),
@@ -765,7 +774,8 @@ impl Model {
     /// auto-scroll.
     pub fn push_message(&mut self, role: impl Into<String>, text: impl Into<String>) {
         let id = self.alloc_block_id();
-        self.messages.push(Message::new(id, role, text, self.width as usize));
+        self.messages
+            .push(Message::new(id, role, text, self.width as usize, &self.theme));
         self.auto_scroll = true;
     }
 
@@ -820,7 +830,7 @@ impl Model {
                 } => {
                     let id = self.alloc_block_id();
                     let mut msg =
-                        Message::new(id, role.clone(), text.clone(), self.width as usize);
+                        Message::new(id, role.clone(), text.clone(), self.width as usize, &self.theme);
                     if !thinking.is_empty() {
                         msg.append_thinking(thinking);
                     }
@@ -1299,7 +1309,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             if let Some(m) = model.messages.last_mut() {
                 if !thinking.is_empty() {
                     m.thinking = thinking;
-                    m.thinking_md = Markdown::new(&m.thinking, model.width as usize);
+                    m.thinking_md = Markdown::with_theme(&m.thinking, model.width as usize, &model.theme);
                 }
                 m.stop_reason = stop_reason;
                 m.error_message = error_message;
@@ -1392,7 +1402,16 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.tool_output_expanded = !model.tool_output_expanded;
             vec![]
         }
-        Msg::SetTheme(theme) => { model.theme = theme; vec![] }
+        Msg::SetTheme(theme) => {
+            model.theme = theme;
+            // Re-colour every existing block for the new palette (TS drives the
+            // global `theme`; blocks repaint on the next render).
+            for m in &mut model.messages {
+                m.md.set_theme(&model.theme);
+                m.thinking_md.set_theme(&model.theme);
+            }
+            vec![]
+        }
         Msg::SetEditorText(text) => { model.input.set_value(&text); vec![] }
         Msg::ExitSelect => { model.mode = AppMode::Chat; vec![] }
         Msg::SetToolOutput(call_id, _name, text) => { model.set_tool_output(&call_id, &text); vec![] }
@@ -2183,7 +2202,7 @@ fn render_body(model: &mut Model, frame: &mut Buffer, area: Rect, t: &Theme) {
     let expanded = model.tool_output_expanded;
     let heights: Vec<u16> = blocks
         .iter()
-        .map(|b| block_height(b, expanded, wrap_w))
+        .map(|b| block_height(b, expanded, wrap_w, t))
         .collect();
     let (gaps, leads) = block_gaps(&blocks);
 
@@ -2282,7 +2301,7 @@ fn transcript_content_lines(model: &mut Model) -> Vec<String> {
     let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
     let expanded = model.tool_output_expanded;
     let blocks = build_blocks(model, wrap_w, &t);
-    let heights: Vec<u16> = blocks.iter().map(|b| block_height(b, expanded, wrap_w)).collect();
+    let heights: Vec<u16> = blocks.iter().map(|b| block_height(b, expanded, wrap_w, &t)).collect();
     let (gaps, leads) = block_gaps(&blocks);
     let total_h: u16 = heights
         .iter()
@@ -2649,14 +2668,14 @@ fn bash_preview(b: &BlockView, wrap_w: usize, expanded: bool) -> (usize, usize) 
 /// system blocks are plain lines with no padding. Messages are never
 /// truncated — the transcript scrolls (TS ScrollView), and only tool
 /// output has the TS preview budget when not expanded.
-fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
+fn block_height(b: &BlockView, expanded: bool, wrap_w: usize, t: &Theme) -> u16 {
     match b.role {
         "header" => b.md_lines.len() as u16,
         "tool" => {
             match tool_renderer(b) {
                 ToolRenderer::Bash => {
-                    // bash renderer: title + (blank + hint + tail preview
-                    // when output non-empty) + warnings + blank +
+                    // bash renderer: title (word-wrapped) + (blank + hint +
+                    // tail preview when output non-empty) + warnings + blank +
                     // Elapsed/Took line.
                     let (_shown, skipped) = bash_preview(b, wrap_w, expanded);
                     let hint = if skipped > 0 { 1 } else { 0 };
@@ -2666,7 +2685,13 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
                     } else {
                         1 + hint as u16 + _shown as u16
                     };
-                    BOX_PAD_Y + 1 + out_rows + warns + 1 + 1 + BOX_PAD_Y
+                    BOX_PAD_Y
+                        + title_rows(&bash_title_line(b, t), wrap_w)
+                        + out_rows
+                        + warns
+                        + 1
+                        + 1
+                        + BOX_PAD_Y
                 }
                 ToolRenderer::Read => {
                     // read renderer: title only when collapsed and not an
@@ -2682,7 +2707,7 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
                     } else {
                         0
                     };
-                    BOX_PAD_Y + 1 + content + BOX_PAD_Y
+                    BOX_PAD_Y + title_rows(&read_title_line(b, t), wrap_w) + content + BOX_PAD_Y
                 }
                 ToolRenderer::Grep => {
                     // grep renderer: title + (blank + up to 15 wrapped raw
@@ -2695,15 +2720,22 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
                         let warns = if grep_warning_text(b).is_some() { 2 } else { 0 };
                         content = 1 + rows.len() as u16 + more + warns;
                     }
-                    BOX_PAD_Y + 1 + content + BOX_PAD_Y
+                    BOX_PAD_Y + title_rows(&grep_title_line(b, t), wrap_w) + content + BOX_PAD_Y
                 }
                 ToolRenderer::Edit => {
                     // edit renderer: title + blank + diff text.
                     let total = b.tool_output.lines().count();
-                    BOX_PAD_Y + 1 + 1 + total as u16 + BOX_PAD_Y
+                    BOX_PAD_Y
+                        + title_rows(&edit_title_line(b, t), wrap_w)
+                        + 1
+                        + total as u16
+                        + BOX_PAD_Y
                 }
                 ToolRenderer::Write => {
-                    BOX_PAD_Y + 1 + write_content_height(b, expanded, wrap_w) + BOX_PAD_Y
+                    BOX_PAD_Y
+                        + title_rows(&write_title_line(b, t), wrap_w)
+                        + write_content_height(b, expanded, wrap_w)
+                        + BOX_PAD_Y
                 }
                 ToolRenderer::Fallback => {
                     // fallback renderer: title + (blank + wrapped args) +
@@ -2726,7 +2758,7 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
                         let blank = if b.tool_args.is_empty() { 0 } else { 1 };
                         content += blank + rows.len() as u16 + more;
                     }
-                    BOX_PAD_Y + 1 + content + BOX_PAD_Y
+                    BOX_PAD_Y + title_rows(&fallback_title_line(b, t), wrap_w) + content + BOX_PAD_Y
                 }
             }
         }
@@ -2806,7 +2838,7 @@ fn render_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded:
         ToolRenderer::Bash => ly = render_bash_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Read => ly = render_read_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Grep => ly = render_grep_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
-        ToolRenderer::Edit => ly = render_edit_tool_block(frame, area, item, expanded, t, ly, bg),
+        ToolRenderer::Edit => ly = render_edit_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Write => ly = render_write_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Fallback => ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
     }
@@ -2815,11 +2847,12 @@ fn render_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded:
     ly + 1
 }
 
-/// Bash renderer rows (title through the timer line).
-fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
-    // Title: `$ {command}` bold (+ `...` in toolOutput when empty/missing,
-    // `[invalid arg]` in error when non-string), muted ` (timeout Ns)`
-    // suffix (TS `formatBashCall`).
+/// Build the bash title as a styled line: `$ {command}` bold
+/// (+ `[invalid arg]` in error for a non-string command, `...` in
+/// `toolOutput` when empty/missing), with the muted ` (timeout Ns)` suffix
+/// appended to the same line so wrapping carries the suffix along (TS
+/// `formatShellCall` returns one `Text` with all runs, then wraps it).
+fn bash_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let (command, timeout) = bash_call_args(&item.tool_args);
     let title_bold = Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD);
     let mut spans = match &command {
@@ -2840,10 +2873,64 @@ fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
         BashCommandArg::Text(c) => vec![Span::styled(format!("$ {c}"), title_bold)],
     };
     if let Some(secs) = timeout {
-        spans.push(Span::styled(format!(" (timeout {secs}s)"), Style::new().fg(t.muted)));
+        spans.push(Span::styled(
+            format!(" (timeout {secs}s)"),
+            Style::new().fg(t.muted),
+        ));
     }
-    render_boxed_row(frame, area, ly, bg, spans);
-    ly += 1;
+    Line::from(spans)
+}
+
+/// Visual rows a (styled) title line occupies at `wrap_w`. TS tool titles are
+/// `Text` components that word-wrap, so a long title grows the box instead of
+/// being clipped (see PORTING.md §5 #26).
+fn title_rows(title: &Line<'static>, wrap_w: usize) -> u16 {
+    word_wrap_line_with_joiners(title, wrap_w).0.len() as u16
+}
+
+/// Render a title line word-wrapped across as many rows as needed; returns the
+/// number of rows consumed. Mirrors the TS `Text` component's
+/// `wrapTextWithAnsi` (word-wrap, not clip).
+fn render_wrapped_title(
+    frame: &mut Buffer,
+    area: Rect,
+    ly: i32,
+    bg: Color,
+    title: &Line<'static>,
+    wrap_w: usize,
+) -> i32 {
+    let (rows, _) = word_wrap_line_with_joiners(title, wrap_w);
+    let mut y = ly;
+    for row in rows {
+        render_boxed_row(frame, area, y, bg, into_static_line(row).spans);
+        y += 1;
+    }
+    y - ly
+}
+
+/// Clone a wrapped line into a `'static` line (the wrapper borrows its input,
+/// but `render_boxed_row` takes `Span<'static>`; all span content here is
+/// owned/basic-`'static`, so `into_owned` is cheap).
+fn into_static_line(line: Line<'_>) -> Line<'static> {
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|s| Span::styled(s.content.into_owned(), s.style))
+        .collect();
+    let mut out = Line::from(spans);
+    out.style = line.style;
+    out.alignment = line.alignment;
+    out
+}
+
+/// Bash renderer rows (title through the timer line).
+fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+    // Title: `$ {command}` bold (+ `...` in toolOutput when empty/missing,
+    // `[invalid arg]` in error when non-string), muted ` (timeout Ns)`
+    // suffix (TS `formatShellCall`). Word-wrapped like the TS `Text`
+    // component, so a long command spans multiple rows.
+    let title = bash_title_line(item, t);
+    ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     // Blank line, then the output — only when the trimmed output is
     // non-empty (TS renderResult prepends a newline inside the output Text).
     let output = bash_display_text(item);
@@ -2924,19 +3011,22 @@ fn shorten_path(path: &str, cwd: &str) -> String {
     path.to_string()
 }
 
+/// Fallback title line: the tool name in bold `toolTitle` (TS
+/// `formatToolExecution`).
+fn fallback_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        item.tool_name.clone(),
+        Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
+    )])
+}
+
 /// Fallback renderer rows (no registered tool renderer — TS
 /// `formatToolExecution`): bold tool-name title, blank + args JSON, first
 /// 10 output lines + trailing `... (N more lines, ctrl+o to expand)`.
 fn render_fallback_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
-    // Title row.
-    render_boxed_row(
-        frame,
-        area,
-        ly,
-        bg,
-        vec![Span::styled(item.tool_name.clone(), Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD))],
-    );
-    ly += 1;
+    // Title row (word-wrapped like TS `Text`).
+    let title = fallback_title_line(item, t);
+    ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     // Args (TS fallback: blank line + JSON in the default text color,
     // word-wrapped by the Text renderer).
     if !item.tool_args.is_empty() {
@@ -2994,13 +3084,8 @@ fn read_call_args(args: &str) -> (Option<String>, Option<u64>, Option<u64>) {
     (path, offset, limit)
 }
 
-/// Read renderer (TS `formatReadCall`/`formatReadResult`): the title is
-/// `read {path}{:range}` — `read` bold, path accent, range warning — and
-/// the content only renders when expanded or the tool errored (collapsed
-/// success shows just the title, matching TS `formatReadResult` returning
-/// "" unless expanded). Content lines are word-wrapped like the TS Text
-/// renderer, and truncation warnings render below the preview.
-fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+/// Read title line: `read {path}{:range}` (TS `formatReadCall`).
+fn read_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let (path, offset, limit) = read_call_args(&item.tool_args);
     let path_display = match path {
         Some(p) if !p.is_empty() => shorten_path(&p, &item.cwd),
@@ -3019,8 +3104,18 @@ fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
         };
         spans.push(Span::styled(range, Style::new().fg(t.warning)));
     }
-    render_boxed_row(frame, area, ly, bg, spans);
-    ly += 1;
+    Line::from(spans)
+}
+
+/// Read renderer (TS `formatReadCall`/`formatReadResult`): the title is
+/// `read {path}{:range}` — `read` bold, path accent, range warning — and
+/// the content only renders when expanded or the tool errored (collapsed
+/// success shows just the title, matching TS `formatReadResult` returning
+/// "" unless expanded). Content lines are word-wrapped like the TS Text
+/// renderer, and truncation warnings render below the preview.
+fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+    let title = read_title_line(item, t);
+    ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     if read_content_visible(item, expanded) {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
@@ -3060,12 +3155,11 @@ fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
     ly
 }
 
-/// Grep renderer (TS `formatGrepCall`/`formatGrepResult`): title
-/// `grep /{pattern}/ in {path} ({glob}) limit {n}`, the output previewed
-/// to 15 wrapped raw lines, and the truncation warning
-/// `[Truncated: ...]` when the match/byte/line limits were hit.
-fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
-    let v: serde_json::Value = serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
+/// Grep title line: `grep /{pattern}/ in {path} ({glob}) limit {n}`
+/// (TS `formatGrepCall`).
+fn grep_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
+    let v: serde_json::Value =
+        serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
     let pattern = v.get("pattern").and_then(|p| p.as_str()).map(str::to_string);
     let path = v
         .get("path")
@@ -3089,8 +3183,16 @@ fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
     if let Some(n) = limit {
         spans.push(Span::styled(format!(" limit {n}"), Style::new().fg(t.tool_output)));
     }
-    render_boxed_row(frame, area, ly, bg, spans);
-    ly += 1;
+    Line::from(spans)
+}
+
+/// Grep renderer (TS `formatGrepCall`/`formatGrepResult`): title
+/// `grep /{pattern}/ in {path} ({glob}) limit {n}`, the output previewed
+/// to 15 wrapped raw lines, and the truncation warning
+/// `[Truncated: ...]` when the match/byte/line limits were hit.
+fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+    let title = grep_title_line(item, t);
+    ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     let output = item.tool_output.trim();
     if !output.is_empty() {
         render_boxed_row(frame, area, ly, bg, vec![]);
@@ -3174,6 +3276,26 @@ fn write_call_args(args: &str) -> (WritePathArg, WriteContentArg) {
     (path, content)
 }
 
+/// Write title line: `write {path}` (`write` bold, path accent via
+/// `renderToolPath`; invalid → error `[invalid arg]`, empty → `...`).
+fn write_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
+    let (path_arg, _content_arg) = write_call_args(&item.tool_args);
+    let path_display = match path_arg {
+        WritePathArg::Invalid => Span::styled("[invalid arg]", Style::new().fg(t.error)),
+        WritePathArg::Text(p) if p.is_empty() => {
+            Span::styled("...", Style::new().fg(t.tool_output))
+        }
+        WritePathArg::Text(p) => {
+            Span::styled(shorten_path(&p, &item.cwd), Style::new().fg(t.accent))
+        }
+    };
+    Line::from(vec![
+        Span::styled("write", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        path_display,
+    ])
+}
+
 /// Write renderer (TS `formatWriteCall`/`formatWriteResult`): the title is
 /// `write {path}` (`write` bold, path accent via `renderToolPath`), then a
 /// blank line and the first 10 content lines (from `args.content`, not the
@@ -3184,27 +3306,9 @@ fn write_call_args(args: &str) -> (WritePathArg, WriteContentArg) {
 /// `[invalid content arg - expected string]`; an error result renders the
 /// output in `error` color (TS `formatWriteResult`).
 fn render_write_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
-    let (path_arg, content_arg) = write_call_args(&item.tool_args);
-    // Title: `write` bold + ` {path}` (TS `renderToolPath`).
-    let path_display = match path_arg {
-        WritePathArg::Invalid => Span::styled("[invalid arg]", Style::new().fg(t.error)),
-        WritePathArg::Text(p) if p.is_empty() => {
-            Span::styled("...", Style::new().fg(t.tool_output))
-        }
-        WritePathArg::Text(p) => Span::styled(shorten_path(&p, &item.cwd), Style::new().fg(t.accent)),
-    };
-    render_boxed_row(
-        frame,
-        area,
-        ly,
-        bg,
-        vec![
-            Span::styled("write", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-            path_display,
-        ],
-    );
-    ly += 1;
+    let (_path_arg, content_arg) = write_call_args(&item.tool_args);
+    let title = write_title_line(item, t);
+    ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     match content_arg {
         WriteContentArg::Invalid => {
             render_boxed_row(frame, area, ly, bg, vec![]);
@@ -3329,29 +3433,32 @@ fn write_content_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
     h as u16
 }
 
-/// Edit renderer (TS `formatEditCall`): title `edit {path}`; the diff
-/// text renders with diff syntax highlighting (TS `renderDiff`:
-/// `-`/`+`/context lines in toolDiffRemoved/toolDiffAdded/toolDiffContext,
-/// single-line modifications get intra-line word highlighting).
-fn render_edit_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, _expanded: bool, t: &Theme, mut ly: i32, bg: Color) -> i32 {
-    let v: serde_json::Value = serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
+/// Edit title line: `edit {path}` (TS `formatEditCall`).
+fn edit_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
+    let v: serde_json::Value =
+        serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
     let path = v
         .get("file_path")
         .and_then(|p| p.as_str())
         .or_else(|| v.get("path").and_then(|p| p.as_str()))
         .map(str::to_string)
         .unwrap_or_else(|| "...".to_string());
-    render_boxed_row(
-        frame,
-        area,
-        ly,
-        bg,
-        vec![
-            Span::styled("edit", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {}", shorten_path(&path, &item.cwd)), Style::new().fg(t.accent)),
-        ],
-    );
-    ly += 1;
+    Line::from(vec![
+        Span::styled("edit", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {}", shorten_path(&path, &item.cwd)),
+            Style::new().fg(t.accent),
+        ),
+    ])
+}
+
+/// Edit renderer (TS `formatEditCall`): title `edit {path}`; the diff
+/// text renders with diff syntax highlighting (TS `renderDiff`:
+/// `-`/`+`/context lines in toolDiffRemoved/toolDiffAdded/toolDiffContext,
+/// single-line modifications get intra-line word highlighting).
+fn render_edit_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, _expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+    let title = edit_title_line(item, t);
+    ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     if !item.tool_output.is_empty() {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
@@ -4896,6 +5003,59 @@ mod tests {
         assert_eq!(buf[(2, title_row + 3)].symbol(), "u", "expanded line 2 second char");
     }
 
+    /// A long bash command must word-wrap across multiple title rows instead
+    /// of being clipped at the box edge (the TS `Text` component wraps).
+    #[test]
+    fn bash_tool_wraps_long_command_title() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(50, 30);
+        model.context_usage_known = true;
+        let command = "echo ".to_string() + &"abcdefghij".repeat(8);
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-long".into(),
+                "bash".into(),
+                format!("{{\"command\":\"{command}\"}}"),
+            ),
+        );
+        update(&mut model, Msg::ToolEnd("tc-long".into(), "bash".into(), false));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(50, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let title_row = (0..30)
+            .find(|&y| buf[(1, y)].symbol() == "$" && buf[(1, y)].modifier.contains(Modifier::BOLD))
+            .expect("bash title");
+        // Collect the consecutive non-blank rows starting at the title (the
+        // row after them is the blank line before the timer).
+        let mut rows = 0;
+        let mut rendered = String::new();
+        let mut y = title_row;
+        while y < 30 {
+            let line: String = (1..50).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            rendered.push_str(trimmed);
+            rows += 1;
+            y += 1;
+        }
+        assert!(rows >= 2, "long title must wrap, got {rows} row(s)");
+        // Word-wrap drops boundary whitespace, so compare ignoring whitespace:
+        // every command character must be present (nothing clipped).
+        let expected: String = format!("$ {command}")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let actual: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(actual, expected, "wrapped title preserves the whole command");
+    }
+
     /// A running bash tool shows the live `Elapsed {x.x}s` line (the tick
     /// re-renders it); once finished it switches to `Took {x.x}s`.
     #[test]
@@ -5015,6 +5175,86 @@ mod tests {
             .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
             .expect("read title expanded");
         assert_eq!(buf[(1, title_row + 2)].symbol(), "l", "content visible when expanded");
+    }
+
+    /// A long title for the non-bash renderers (read/grep) must word-wrap
+    /// across multiple rows instead of being clipped at the box edge — same
+    /// TS `Text` semantics as the bash title.
+    #[test]
+    fn long_read_and_grep_titles_wrap() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let long_path_str = "/work/".to_string() + &"deepdir/".repeat(10) + "main.rs";
+        let mut model = Model::new(50, 30);
+        model.context_usage_known = true;
+        model.cwd = "/work".into();
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-r".into(),
+                "read".into(),
+                format!("{{\"file_path\":\"{long_path_str}\"}}"),
+            ),
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(50, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let (rows, text) = collect_bold_title_rows(buf, 50, "r");
+        assert!(rows >= 2, "read title must wrap, got {rows} row(s)");
+        let expected: String = format!("read {long_path_str}")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let actual: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(actual, expected, "wrapped read title preserves the path");
+
+        let long_pattern = "TODO".repeat(20);
+        let mut model = Model::new(50, 30);
+        model.context_usage_known = true;
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-g".into(),
+                "grep".into(),
+                format!("{{\"pattern\":\"{long_pattern}\",\"path\":\"src\"}}"),
+            ),
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(50, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let (rows, text) = collect_bold_title_rows(buf, 50, "g");
+        assert!(rows >= 2, "grep title must wrap, got {rows} row(s)");
+        let expected: String = format!("grep /{long_pattern}/ in src")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let actual: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(actual, expected, "wrapped grep title preserves pattern/path");
+    }
+
+    /// Collect the consecutive non-blank boxed rows starting at the first row
+    /// whose column 1 is `first` in bold (the tool title), returning
+    /// `(row_count, concatenated_text)`. Word-wrap drops boundary whitespace,
+    /// so callers compare with whitespace filtered out.
+    fn collect_bold_title_rows(buf: &Buffer, width: u16, first: &str) -> (usize, String) {
+        let start = (0..buf.area.height)
+            .find(|&y| buf[(1, y)].symbol() == first && buf[(1, y)].modifier.contains(Modifier::BOLD))
+            .expect("tool title row");
+        let mut rows = 0;
+        let mut text = String::new();
+        let mut y = start;
+        while y < buf.area.height {
+            let line: String = (1..width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            text.push_str(trimmed);
+            rows += 1;
+            y += 1;
+        }
+        (rows, text)
     }
 
     /// The grep renderer (TS `formatGrepCall`): `grep /{pattern}/ in
@@ -6076,8 +6316,11 @@ mod tests {
         // 继续向上滚到顶：最早内容（header）出现，最新内容被推出。
         update(&mut model, Msg::ScrollUp(100));
         let text = render_text(&mut model, 60, 12);
+        // Use the crate version rather than a hard-coded string, so this
+        // assertion does not go stale on the next version bump.
+        let version_marker = format!("Pi v{}", env!("CARGO_PKG_VERSION"));
         assert!(
-            text.contains("Pi v1.83"),
+            text.contains(&version_marker),
             "scroll to top shows oldest (header): {text:?}"
         );
         assert!(!text.contains("line-19"), "scroll to top hides newest: {text:?}");
@@ -6265,6 +6508,44 @@ mod tests {
             RatTerminal::new(TestBackend::new(model.width, model.height)).expect("backend");
         terminal.draw(|frame| view(model, frame)).expect("draw");
         terminal.backend().buffer().clone()
+    }
+
+    /// `/theme` must re-colour already-rendered markdown blocks (TS drives
+    /// every element from the global `theme`; the bug this guards against is
+    /// markdown being hard-coded to the dark palette).
+    #[test]
+    fn set_theme_recolors_existing_markdown() {
+        let mut model = Model::new(60, 20);
+        model.show_header = false;
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), "# Heading".into()),
+        );
+        let dark_heading = Theme::default().md_heading;
+        let light_heading = Theme::light().md_heading;
+        assert_ne!(dark_heading, light_heading);
+
+        let dark_buf = render_to_buffer(&mut model);
+        assert!(
+            buffer_contains_fg(&dark_buf, dark_heading),
+            "dark heading colour rendered"
+        );
+
+        update(&mut model, Msg::SetTheme(Theme::light()));
+        let light_buf = render_to_buffer(&mut model);
+        assert!(
+            buffer_contains_fg(&light_buf, light_heading),
+            "existing block re-coloured to the light heading"
+        );
+        assert!(
+            !buffer_contains_fg(&light_buf, dark_heading),
+            "dark heading colour must be gone after switch"
+        );
+    }
+
+    /// Whether any buffer cell has `fg` as its foreground colour.
+    fn buffer_contains_fg(buf: &Buffer, fg: ratatui::style::Color) -> bool {
+        buf.content.iter().any(|cell| cell.fg == fg)
     }
 
     fn selection_model(text: &str) -> Model {

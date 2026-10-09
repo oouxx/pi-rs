@@ -90,6 +90,17 @@
   仍简化的：多行编辑已换 grok textarea（12.7k 行 widget）；slash 命令中
   `/quit`/`/exit` 静默无效、`CycleModel`/`SetThinkingLevel` 等为 no-op
   stub——属最小可用简化。
+- **主题（2026-10-09，pi-tui `theme.rs` + `components/markdown.rs`）**：
+  v0.82.1 的 52 个 theme token 已全部进 `Theme`（dark/light 逐 token 对齐
+  `v0.82.1` 的 `dark.json`/`light.json`），markdown 调色板与代码块语法色
+  都改为读活动 `Theme`，`Msg::SetTheme` 重染已有块。**有意偏差**：代码块
+  语法着色的 TS 实现是 highlight.js（`buildCliHighlightTheme()` 把
+  highlight.js 类别映射到 `syntax*` token），Rust 走 vendored grok 管线的
+  syntect，`syntect_theme()` 用 TextMate scope 名近似同一套 `syntax*`
+  token——两者分类体系不同，个别 scope 的归类可能与 highlight.js 不完全
+  一致（但配色都来自同一组 `syntax*` token）。未移植的主题能力（自定义
+  主题 JSON 加载、主题列表/选择器、文件热重载、HTML 导出主题色）属
+  “选择器/导出未移植”的已登记范围。
 - 一旦后续对齐检查覆盖 TUI 组件，需要单独走阶段一到阶段三；本条记录
   届时更新或移除，不要留着过期的“已确认保留”误导后续判断。
 | `reload()` / `_buildRuntime()` | TS `reload()` 调用 `_buildRuntime()` 重建整个 ExtensionRunner（重新从磁盘加载扩展文件、重建工具注册表、重新绑定所有回调） | Rust `reload()` 只调用 `settings_manager.reload()`，不重建 ExtensionRegistry | Rust 扩展通过 `Arc<ExtensionRegistry>` 在构造时一次性注册，运行时不支持热重载。TS 扩展是文件驱动的动态加载（`.ts`/`.js` 文件 → ResourceLoader → ExtensionRunner），Rust 扩展是程序化注册的静态引用（`registry.register()` → `Arc<ExtensionRegistry>`），没有"运行时重建"的概念 | 已确认保留 |

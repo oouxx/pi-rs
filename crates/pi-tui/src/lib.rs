@@ -32,17 +32,11 @@ pub use terminal::{ShutdownGuard, Terminal};
 /// grok-build markdown pipeline (pulldown-cmark + syntect + width-aware wrap)
 /// with the TS original dark theme palette.
 pub fn render_markdown(text: &str) -> Vec<ratatui::text::Line<'static>> {
-    static SYNTECT: std::sync::OnceLock<xai_grok_markdown::Syntect> = std::sync::OnceLock::new();
-    let syntect = SYNTECT.get_or_init(|| {
-        xai_grok_markdown::Syntect::new(include_bytes!(
-            "../../vendor/xai-grok-markdown/assets/tokyo-night.tmTheme"
-        ))
-    });
     xai_grok_markdown::render_markdown_ratatui(
         text,
-        components::markdown::pi_dark_style(),
+        components::markdown::style_from_theme(&Theme::default()),
         true,
-        Some(syntect),
+        Some(components::markdown::default_syntect()),
     )
     .0
 }

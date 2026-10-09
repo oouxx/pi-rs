@@ -2604,6 +2604,7 @@ dependencies = [
  "ratatui",
  "serde_json",
  "similar",
+ "syntect",
  "tempfile",
  "textwrap",
  "tokio",

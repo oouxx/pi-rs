@@ -5,118 +5,185 @@
 //! parsing + syntect highlighting + checkpoint-based streaming); this module
 //! keeps the component API stable (`Markdown::new` / `append_text` / `render`)
 //! and adds width-aware wrapping for the logical lines the pipeline produces.
+//!
+//! Both the markdown palette ([`MarkdownStyle`]) and the code-block syntax
+//! palette (a `syntect` theme) are derived from the active [`Theme`], so a
+//! `/theme dark` → `/theme light` switch re-colours existing blocks (TS
+//! drives every markdown element from the one global `theme` instance).
 
+use ratatui::style::Color as RataColor;
 use ratatui::text::Line;
 use xai_grok_markdown::{MarkdownStyle, StreamingMarkdownRenderer, Syntect};
 
 use crate::render::wrap::word_wrap_lines_with_joiners;
+use crate::theme::Theme;
 
 /// Theme type for markdown rendering — grok-build's style configuration.
 /// A `MarkdownStyle` holds semantic styles (heading / code / table …) which
 /// the pipeline maps onto ratatui styles. [`MarkdownTheme::default`] resolves
-/// to the TS original dark palette (see [`pi_dark_style`]).
+/// to the TS original dark palette (see [`style_from_theme`]).
 pub type MarkdownTheme = MarkdownStyle;
 
-/// Tokyo Night `.tmTheme` shipped with the vendored pipeline
-/// (grok-build uses the same theme file for the TUI).
+/// Tokyo Night `.tmTheme` shipped with the vendored pipeline. Only used as a
+/// bootstrap so [`Syntect::new`] can load its syntax set; the parser's theme
+/// field is immediately replaced by [`syntect_theme`] (the active [`Theme`]'s
+/// `syntax*` tokens). It is never used as the rendered syntax palette.
 const TOKYO_NIGHT_THEME: &[u8] =
     include_bytes!("../../../vendor/xai-grok-markdown/assets/tokyo-night.tmTheme");
 
-/// The TS original dark theme markdown palette (`dark.json` md tokens),
-/// mapped onto the vendored grok pipeline's `MarkdownStyle`.
-///
-/// Reference tokens: heading `#f0c674`, link `#81a2be`, linkUrl `#666666`,
-/// code `#8abeb7`, codeBlock `#b5bd68`, quote `#808080`, hr `#808080`,
-/// listBullet `#8abeb7`, text `#d4d4d4`. Code blocks carry no background
-/// (the TS `Markdown` component colors code lines with `mdCodeBlock` only).
-pub fn pi_dark_style() -> MarkdownStyle {
-    use anstyle::{Color, RgbColor, Style as AnStyle};
-
-    let rgb = |hex: u32| {
-        RgbColor(
-            ((hex >> 16) & 0xff) as u8,
-            ((hex >> 8) & 0xff) as u8,
-            (hex & 0xff) as u8,
-        )
-    };
-    let fg = |hex: u32| AnStyle::new().fg_color(Some(Color::Rgb(rgb(hex))));
-    let hidden = AnStyle::new().hidden();
-
-    MarkdownStyle {
-        heading_inner: [fg(0xf0c674).bold(); 6],
-        heading_outer: [hidden; 6],
-        strong_inner: fg(0xd4d4d4).bold(),
-        strong_outer: hidden,
-        emphasis_inner: fg(0xd4d4d4).italic(),
-        emphasis_outer: hidden,
-        strikethrough_inner: fg(0x808080).strikethrough(),
-        strikethrough_outer: hidden,
-        inline_code_inner: fg(0x8abeb7),
-        inline_code_outer: hidden,
-        blockquote_outer: fg(0x808080).italic(),
-        task_checked: fg(0xb5bd68),
-        task_unchecked: fg(0x808080),
-        list_item: fg(0x8abeb7),
-        rule: fg(0x808080),
-        link_outer: hidden,
-        link_text: fg(0x81a2be).underline(),
-        link_url: fg(0x666666),
-        link_title: fg(0x666666),
-        code_outer: hidden,
-        code_language: hidden,
-        code_untagged: fg(0xb5bd68),
-        code_background: fg(0xb5bd68),
-        table_outer: fg(0x8abeb7).bold(),
-        text: fg(0xd4d4d4),
-        math: fg(0x81a2be),
+/// Build an `anstyle` style with `color` as the foreground.
+fn anstyle_fg(color: RataColor) -> anstyle::Style {
+    match color {
+        RataColor::Rgb(r, g, b) => {
+            anstyle::Style::new().fg_color(Some(anstyle::Color::Rgb(anstyle::RgbColor(r, g, b))))
+        }
+        _ => anstyle::Style::new(),
     }
 }
 
-/// Tokyo Night markdown style — the previous default, kept for reference
-/// (grok-build's `tokyonight` markdown palette).
-pub fn tokyo_night_style() -> MarkdownStyle {
-    use anstyle::{Color, RgbColor, Style as AnStyle};
-
-    let rgb = |hex: u32| {
-        RgbColor(
-            ((hex >> 16) & 0xff) as u8,
-            ((hex >> 8) & 0xff) as u8,
-            (hex & 0xff) as u8,
-        )
-    };
-    let fg = |hex: u32| AnStyle::new().fg_color(Some(Color::Rgb(rgb(hex))));
-    let bg = |hex: u32| AnStyle::new().bg_color(Some(Color::Rgb(rgb(hex))));
-    let hidden = AnStyle::new().hidden();
-
+/// Map the active [`Theme`]'s semantic tokens onto the vendored pipeline's
+/// [`MarkdownStyle`]. Mirrors the TS `getMarkdownTheme()` wiring: heading →
+/// `mdHeading`, link → `mdLink`, code → `mdCode`, code block → `mdCodeBlock`,
+/// quote → `mdQuote`, rule → `mdHr`, list bullet → `mdListBullet`, body text →
+/// `text`. Code blocks carry no background (TS colours code lines with
+/// `mdCodeBlock` only).
+#[must_use]
+pub fn style_from_theme(t: &Theme) -> MarkdownStyle {
+    let hidden = anstyle::Style::new().hidden();
     MarkdownStyle {
-        heading_inner: [fg(0x7aa2f7).bold(); 6],
+        heading_inner: [anstyle_fg(t.md_heading).bold(); 6],
         heading_outer: [hidden; 6],
-        strong_inner: fg(0xc0caf5).bold(),
+        strong_inner: anstyle_fg(t.text).bold(),
         strong_outer: hidden,
-        emphasis_inner: fg(0xc0caf5).italic(),
+        emphasis_inner: anstyle_fg(t.text).italic(),
         emphasis_outer: hidden,
-        strikethrough_inner: fg(0x565f89).strikethrough(),
+        strikethrough_inner: anstyle_fg(t.muted).strikethrough(),
         strikethrough_outer: hidden,
-        inline_code_inner: fg(0x9ece6a)
-            .bg_color(Some(Color::Rgb(rgb(0x1a1b26)))),
+        inline_code_inner: anstyle_fg(t.md_code),
         inline_code_outer: hidden,
-        blockquote_outer: fg(0xbb9af7),
-        task_checked: fg(0x9ece6a),
-        task_unchecked: fg(0x565f89),
-        list_item: fg(0x7aa2f7),
-        rule: fg(0x363b4f),
+        blockquote_outer: anstyle_fg(t.md_quote).italic(),
+        task_checked: anstyle_fg(t.success),
+        task_unchecked: anstyle_fg(t.muted),
+        list_item: anstyle_fg(t.md_list_bullet),
+        rule: anstyle_fg(t.md_hr),
         link_outer: hidden,
-        link_text: fg(0x7dcbf8).underline(),
-        link_url: fg(0x565f89),
-        link_title: fg(0x565f89),
+        link_text: anstyle_fg(t.md_link).underline(),
+        link_url: anstyle_fg(t.md_link_url),
+        link_title: anstyle_fg(t.md_link_url),
         code_outer: hidden,
         code_language: hidden,
-        code_untagged: fg(0x9ece6a),
-        code_background: bg(0x16161e),
-        table_outer: fg(0x7aa2f7).bold(),
-        text: fg(0xc0caf5),
-        math: fg(0xbb9af7),
+        code_untagged: anstyle_fg(t.md_code_block),
+        code_background: anstyle_fg(t.md_code_block),
+        table_outer: anstyle_fg(t.accent).bold(),
+        text: anstyle_fg(t.text),
+        math: anstyle_fg(t.md_link),
     }
+}
+
+/// The TS original dark theme markdown palette (`dark.json` @ v0.82.1).
+///
+/// Kept as a convenience alias for callers that have no `Theme` at hand;
+/// prefer [`style_from_theme`].
+#[must_use]
+pub fn pi_dark_style() -> MarkdownStyle {
+    style_from_theme(&Theme::default())
+}
+
+/// Convert a ratatui colour to a `syntect` colour (`a` defaults to opaque).
+fn syntect_color(color: RataColor) -> syntect::highlighting::Color {
+    match color {
+        RataColor::Rgb(r, g, b) => syntect::highlighting::Color { r, g, b, a: 0xff },
+        _ => syntect::highlighting::Color {
+            r: 0xd4,
+            g: 0xd4,
+            b: 0xd4,
+            a: 0xff,
+        },
+    }
+}
+
+/// Build a `syntect` theme whose scope rules use the active [`Theme`]'s
+/// `syntax*` tokens.
+///
+/// This approximates the TS `buildCliHighlightTheme()` mapping (highlight.js
+/// categories → `syntaxKeyword`/`syntaxString`/… ) on syntect's TextMate
+/// scope names. Where the two ecosystems disagree the mapping errs toward the
+/// token that best matches the scope; see `DEVIATIONS.md`.
+fn syntect_theme(t: &Theme) -> syntect::highlighting::Theme {
+    use std::str::FromStr;
+    use syntect::highlighting::{ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
+
+    let rule = |scope: &str, color: RataColor| -> Option<ThemeItem> {
+        let selectors = ScopeSelectors::from_str(scope).ok()?;
+        Some(ThemeItem {
+            scope: selectors,
+            style: StyleModifier {
+                foreground: Some(syntect_color(color)),
+                background: None,
+                font_style: None,
+            },
+        })
+    };
+
+    // Order matters for equal-specificity ties (later rules win): put the
+    // coarse `keyword`/`punctuation` rules first so the specific operator /
+    // type / function selectors below override them where they are deeper.
+    let rules: &[(&str, RataColor)] = &[
+        ("comment", t.syntax_comment),
+        ("keyword", t.syntax_keyword),
+        ("storage", t.syntax_keyword),
+        ("keyword.operator, punctuation.definition.operator", t.syntax_operator),
+        ("string, constant.other.symbol, string.regexp", t.syntax_string),
+        (
+            "constant.numeric, constant.language, constant.character, constant.other, support.constant",
+            t.syntax_number,
+        ),
+        (
+            "entity.name.function, support.function, meta.function-call, variable.function",
+            t.syntax_function,
+        ),
+        (
+            "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, support.type, support.class, storage.type",
+            t.syntax_type,
+        ),
+        (
+            "variable, variable.parameter, variable.other, support.variable, meta.object-literal.key",
+            t.syntax_variable,
+        ),
+        ("entity.name.tag", t.syntax_punctuation),
+        ("punctuation", t.syntax_punctuation),
+    ];
+
+    let scopes: Vec<ThemeItem> = rules
+        .iter()
+        .filter_map(|(scope, color)| rule(scope, *color))
+        .collect();
+
+    syntect::highlighting::Theme {
+        name: Some(format!("pi-{}", t.name)),
+        author: None,
+        settings: ThemeSettings {
+            foreground: Some(syntect_color(t.text)),
+            ..ThemeSettings::default()
+        },
+        scopes,
+    }
+}
+
+/// A `Syntect` highlighter whose syntax set comes from the vendored bundle and
+/// whose theme is [`syntect_theme`].
+fn syntect_for_theme(t: &Theme) -> Syntect {
+    let mut syntect = Syntect::new(TOKYO_NIGHT_THEME);
+    syntect.theme = syntect_theme(t);
+    syntect
+}
+
+/// Shared theme-driven `Syntect` for the default (dark) palette, used by the
+/// free-standing [`crate::render_markdown`] helper (one syntax-set load).
+#[must_use]
+pub fn default_syntect() -> &'static Syntect {
+    static SYNTECT: std::sync::OnceLock<Syntect> = std::sync::OnceLock::new();
+    SYNTECT.get_or_init(|| syntect_for_theme(&Theme::default()))
 }
 
 /// Rendered markdown content with syntax-highlighted code blocks.
@@ -134,15 +201,22 @@ pub struct Markdown {
 }
 
 impl Markdown {
-    /// Parse and render markdown source.
+    /// Parse and render markdown source with the default (dark) theme.
     /// The `width` is the available character width for text wrapping.
+    ///
+    /// Prefer [`Markdown::with_theme`] so the block follows the active theme.
     pub fn new(source: &str, width: usize) -> Self {
-        let mut renderer = StreamingMarkdownRenderer::new(pi_dark_style(), true);
+        Self::with_theme(source, width, &Theme::default())
+    }
+
+    /// Parse and render markdown source with the given theme. The `width` is
+    /// the available character width for text wrapping.
+    pub fn with_theme(source: &str, width: usize, theme: &Theme) -> Self {
+        let mut renderer = StreamingMarkdownRenderer::new(style_from_theme(theme), true);
         renderer.push(source);
-        let syntect = Syntect::new(TOKYO_NIGHT_THEME);
         let mut md = Self {
             renderer,
-            syntect,
+            syntect: syntect_for_theme(theme),
             dirty: true,
             wrapped: Vec::new(),
             joiners: Vec::new(),
@@ -150,6 +224,15 @@ impl Markdown {
         };
         let _ = md.render(width);
         md
+    }
+
+    /// Re-colour this block for a new theme. The next [`Self::render`]
+    /// rebuilds the output from the retained source (style + syntax caches are
+    /// reset), so existing blocks follow `/theme` without re-streaming.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.renderer.set_style(style_from_theme(theme));
+        self.syntect.theme = syntect_theme(theme);
+        self.dirty = true;
     }
 
     /// Append streaming text and mark for re-render.
@@ -189,6 +272,7 @@ impl Markdown {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
     use unicode_width::UnicodeWidthStr;
 
@@ -225,7 +309,10 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect();
-        assert!(plain.contains("Hello world"), "appended delta visible: {plain}");
+        assert!(
+            plain.contains("Hello world"),
+            "appended delta visible: {plain}"
+        );
     }
 
     #[test]
@@ -233,7 +320,8 @@ mod tests {
         // "漢字" is 2 columns per glyph; at width 6 the two CJK chars must
         // start a new row rather than being split mid-glyph.
         let mut md = Markdown::new("abc 漢字", 6);
-        let lines = md.render(6);        let rows: Vec<String> = lines
+        let lines = md.render(6);
+        let rows: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
             .collect();
@@ -255,8 +343,7 @@ mod tests {
         // The vendored grok wrap is width-aware (CJK = 2 columns) and returns
         // joiners: the exact substring skipped at each soft-wrap boundary.
         let line = Line::from(ratatui::text::Span::raw("abc 漢字"));
-        let (rows, joiners) =
-            crate::render::wrap::word_wrap_line_with_joiners(&line, 6);
+        let (rows, joiners) = crate::render::wrap::word_wrap_line_with_joiners(&line, 6);
         for row in &rows {
             assert!(row.to_string().width() <= 6, "row {row:?} too wide");
         }
@@ -287,5 +374,46 @@ mod tests {
         md.append_text("\n\n");
         let _ = md.render(80); // must not panic
         assert!(md.text().len() >= 2);
+    }
+
+    /// The rendered heading colour must come from the active theme, so a
+    /// `/theme light` switch is visible in already-rendered blocks.
+    #[test]
+    fn heading_color_follows_theme() {
+        let dark = Theme::default();
+        let light = Theme::light();
+        let mut md = Markdown::with_theme("# Title", 80, &dark);
+        assert_eq!(heading_fg(&render_owned(&mut md, 80)), dark.md_heading);
+        md.set_theme(&light);
+        assert_eq!(heading_fg(&render_owned(&mut md, 80)), light.md_heading);
+        assert_ne!(dark.md_heading, light.md_heading, "tokens must differ");
+    }
+
+    /// Test helper: clone the rendered lines so the borrow of `md` ends.
+    fn render_owned(md: &mut Markdown, width: usize) -> Vec<Line<'static>> {
+        md.render(width).to_vec()
+    }
+
+    /// The heading span's foreground in a rendered document.
+    fn heading_fg(lines: &[Line<'static>]) -> ratatui::style::Color {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("Title"))
+            .and_then(|s| s.style.fg)
+            .expect("heading span has a foreground")
+    }
+
+    /// Light vs dark markdown styles must differ, and the syntax theme must be
+    /// rebuilt from the theme's `syntax*` tokens.
+    #[test]
+    fn syntax_theme_uses_theme_tokens() {
+        let dark = syntect_theme(&Theme::default());
+        assert_eq!(dark.name.as_deref(), Some("pi-dark"));
+        let light = syntect_theme(&Theme::light());
+        assert_eq!(light.name.as_deref(), Some("pi-light"));
+        // The two themes must not be identical (different token values).
+        assert_ne!(dark.scopes.len(), 0);
+        assert_ne!(dark.scopes, light.scopes);
     }
 }

@@ -25,6 +25,11 @@ similar = { workspace = true }
 # gitignore-aware directory walking for `@` file completion（对齐 TS 的 fd 语义）
 ignore = "0.4"
 dirs = "6"
+# Clipboard image paste (Ctrl+V): arboard reads the native clipboard image,
+# `image` encodes it to PNG for the temp file.
+arboard = "3.6"
+image = "0.25"
+uuid = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

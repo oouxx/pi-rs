@@ -39,6 +39,9 @@ unicode-normalization = "0.1"
 url = "2"
 fs2 = "0.4"
 base64 = "0.22"
+# Image decode/resize/encode for the read tool's inline-image pipeline
+# (port of the TS Photon-based `image-process.ts` / `image-resize-core.ts`).
+image = "0.25"
 # reqwest bumped 0.11 -> 0.12 to align with pi-ai / pi-agent-core (usage is
 # limited to Client::builder + get/send/json, which is stable across the bump).
 # rustls-tls keeps it pure-Rust so cross-compilation needs no OpenSSL.

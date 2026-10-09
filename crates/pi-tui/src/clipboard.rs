@@ -179,8 +179,61 @@ pub fn read_clipboard_text() -> Option<String> {
     read
 }
 
+// ── Clipboard image ─────────────────────────────────────────────────────────
+
+/// An image read from the system clipboard.
+pub struct ClipboardImage {
+    /// PNG-encoded bytes (the clipboard's native RGBA is re-encoded).
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
+/// TS `extensionForImageMimeType`.
+fn extension_for_image_mime_type(mime_type: &str) -> Option<&'static str> {
+    match mime_type.split(';').next().unwrap_or(mime_type).trim().to_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+/// Read an image from the system clipboard (TS `readClipboardImage`).
+///
+/// The native clipboard exposes raw RGBA pixels (via `arboard`), so the image
+/// is re-encoded to PNG — a format the read tool / providers accept inline.
+/// Returns `None` when there is no image or the clipboard is unavailable.
+pub fn read_clipboard_image() -> Option<ClipboardImage> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let image = clipboard.get_image().ok()?;
+    let width = u32::try_from(image.width).ok()?;
+    let height = u32::try_from(image.height).ok()?;
+    let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(rgba)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(ClipboardImage {
+        bytes: png,
+        mime_type: "image/png".to_string(),
+    })
+}
+
+/// Write clipboard image bytes to a temp file and return its path
+/// (TS `handleClipboardPaste`): `pi-clipboard-{uuid}.{ext}` under the temp
+/// dir. Returns `None` on any I/O failure (caller falls back to text).
+pub fn write_clipboard_image_temp_file(image: &ClipboardImage) -> Option<String> {
+    let ext = extension_for_image_mime_type(&image.mime_type)?;
+    let file_name = format!("pi-clipboard-{}.{}", uuid::Uuid::new_v4(), ext);
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(&path, &image.bytes).ok()?;
+    Some(path.to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// RFC 4648 vectors — the OSC 52 payload must encode exactly like the TS
@@ -205,5 +258,30 @@ mod tests {
         assert!(!emit_osc52(&big), "80k ASCII → ~107k base64 > 100k limit");
         let small = "x".repeat(70_000);
         assert!(emit_osc52(&small), "70k ASCII fits");
+    }
+
+    /// Clipboard images are persisted as `pi-clipboard-{uuid}.{ext}` under the
+    /// temp dir (TS `handleClipboardPaste`).
+    #[test]
+    fn writes_clipboard_image_temp_file() {
+        let image = ClipboardImage {
+            bytes: vec![1, 2, 3, 4],
+            mime_type: "image/png".to_string(),
+        };
+        let path = write_clipboard_image_temp_file(&image).expect("temp file");
+        assert!(path.contains("pi-clipboard-"), "got: {path}");
+        assert!(path.ends_with(".png"), "got: {path}");
+        assert_eq!(std::fs::read(&path).expect("read back"), vec![1, 2, 3, 4]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Unsupported clipboard image formats have no extension → no temp file.
+    #[test]
+    fn unsupported_clipboard_image_mime_is_rejected() {
+        let image = ClipboardImage {
+            bytes: vec![0],
+            mime_type: "image/tiff".to_string(),
+        };
+        assert!(write_clipboard_image_temp_file(&image).is_none());
     }
 }

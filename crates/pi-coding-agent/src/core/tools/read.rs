@@ -83,11 +83,16 @@ impl ReadOperations for LocalReadOperations {
 #[derive(Clone)]
 pub struct ReadToolOptions {
     pub operations: Arc<dyn ReadOperations>,
+    /// Auto-resize images to inline provider limits (TS `autoResizeImages`,
+    /// default true).
+    pub auto_resize_images: bool,
 }
 
 impl fmt::Debug for ReadToolOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ReadToolOptions").finish()
+        f.debug_struct("ReadToolOptions")
+            .field("auto_resize_images", &self.auto_resize_images)
+            .finish()
     }
 }
 
@@ -95,6 +100,7 @@ impl Default for ReadToolOptions {
     fn default() -> Self {
         Self {
             operations: Arc::new(LocalReadOperations),
+            auto_resize_images: true,
         }
     }
 }
@@ -135,14 +141,16 @@ pub fn create_read_tool(
     let opts = options.unwrap_or_default();
     let cwd = cwd.to_string();
     let operations = opts.operations.clone();
+    let auto_resize_images = opts.auto_resize_images;
 
     AgentTool {
         constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
         name: "read".to_string(),
         description: format!(
-            "Read the contents of a file. Returns the file content with line numbers. \
-             Output is truncated to {} lines or {}KB (whichever is hit first). \
-             Use offset/limit for large files.",
+            "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). \
+             Images are sent as attachments. For text files, output is truncated to {} lines or {}KB \
+             (whichever is hit first). Use offset/limit for large files. When you need the full file, \
+             continue with offset until complete.",
             truncate::DEFAULT_MAX_LINES,
             DEFAULT_MAX_BYTES / 1024
         ),
@@ -161,6 +169,7 @@ pub fn create_read_tool(
             >| {
                 let cwd = cwd.clone();
                 let operations = operations.clone();
+                let auto_resize_images = auto_resize_images;
                 Box::pin(async move {
                     let file_path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                     let offset = params
@@ -220,6 +229,46 @@ pub fn create_read_tool(
                             });
                         }
                     };
+
+                    // Image files are returned as inline attachments (TS read
+                    // tool image branch): a text note + the (optionally
+                    // resized) image block. Detected from magic bytes, so the
+                    // check runs before the UTF-8 decode that would otherwise
+                    // report "Binary file".
+                    if let Some(mime) = crate::utils::mime::detect_supported_image_mime_type(&bytes) {
+                        let mime = mime.to_string();
+                        let content = match crate::utils::image_process::process_image(
+                            &bytes,
+                            &mime,
+                            auto_resize_images,
+                        ) {
+                            Ok(processed) => {
+                                let mut note = format!("Read image file [{}]", processed.mime_type);
+                                for hint in &processed.hints {
+                                    note.push('\n');
+                                    note.push_str(hint);
+                                }
+                                vec![
+                                    ContentBlock::text(note),
+                                    ContentBlock::Image {
+                                        data: processed.data,
+                                        mime_type: processed.mime_type,
+                                    },
+                                ]
+                            }
+                            Err(message) => {
+                                vec![ContentBlock::text(format!("Read image file [{mime}]\n{message}"))]
+                            }
+                        };
+                        return Ok(AgentToolResult {
+                            content,
+                            details: serde_json::to_value(ReadToolDetails::default())
+                                .unwrap_or(serde_json::Value::Null),
+                            usage: None,
+                            added_tool_names: None,
+                            terminate: None,
+                        });
+                    }
 
                     let text_content = match String::from_utf8(bytes) {
                         Ok(s) => s,
@@ -378,5 +427,42 @@ mod tests {
         assert_eq!(tool.name, "read");
         assert!(tool.description.contains("Read the contents"));
         assert!(tool.parameters_schema.is_object());
+    }
+
+    /// Image files are returned as a text note + inline image block (TS read
+    /// tool image branch), detected from magic bytes rather than the UTF-8
+    /// "Binary file" fallback.
+    #[tokio::test]
+    async fn read_tool_returns_image_content_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pic.png");
+        image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3]))
+            .save(&file)
+            .unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let tool = create_read_tool(&cwd, None);
+        let result = (tool.execute)(
+            "tool-1".to_string(),
+            serde_json::json!({ "path": "pic.png" }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.content.len(), 2, "text note + image block");
+        match &result.content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert!(text.contains("Read image file [image/png]"), "got: {text}")
+            }
+            other => panic!("expected text note, got {other:?}"),
+        }
+        match &result.content[1] {
+            ContentBlock::Image { data, mime_type } => {
+                assert_eq!(mime_type, "image/png");
+                assert!(!data.is_empty());
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
     }
 }

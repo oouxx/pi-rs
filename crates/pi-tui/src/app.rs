@@ -1481,12 +1481,20 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
         // Ctrl+D 的 app.exit 拦截已移除（见 DEVIATIONS.md）：Ctrl+D 不再退出，
         // 落到下方 AppMode::Chat 的 readline 键位，恒为 delete-char-forward。
-        // Ctrl+V: app.clipboard.pasteImage 的文本路径（对齐 TS
-        // `handleClipboardPaste` → `readClipboardText` → `handlePaste`）——从
-        // 系统剪贴板读文本，经 `handle_paste` 归一化/过滤/大段折叠后插入光标
-        // 处；读不到时静默忽略。图片路径（readClipboardImage）未复刻，见
-        // DEVIATIONS.md。
+        // Ctrl+V: app.clipboard.pasteImage（对齐 TS `handleClipboardPaste`）——
+        // 先读剪贴板图片（`readClipboardImage`）：有则写临时文件
+        // `pi-clipboard-{uuid}.{ext}` 并把文件路径插入光标处（read 工具随后
+        // 会把图片作为附件交给模型）；否则读文本，经 `handle_paste` 归一化/
+        // 过滤/大段折叠后插入。两者都读不到时静默忽略。
         if key.code == KeyCode::Char('v') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+            // TS: when the clipboard holds an image, it is used exclusively
+            // (a failed temp-file write is silently ignored, no text fallback).
+            if let Some(image) = crate::clipboard::read_clipboard_image() {
+                if let Some(path) = crate::clipboard::write_clipboard_image_temp_file(&image) {
+                    model.input.insert_str(&path);
+                }
+                return vec![];
+            }
             if let Some(text) = crate::clipboard::read_clipboard_text() {
                 model.input.handle_paste(&text);
             }

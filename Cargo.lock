@@ -2537,6 +2537,7 @@ dependencies = [
  "futures",
  "glob",
  "ignore",
+ "image",
  "libc",
  "pi-agent-core",
  "pi-ai",
@@ -2593,10 +2594,12 @@ name = "pi-tui"
 version = "1.84.0"
 dependencies = [
  "anstyle",
+ "arboard",
  "crossterm",
  "dirs",
  "futures",
  "ignore",
+ "image",
  "libc",
  "ratatui",
  "serde_json",
@@ -2606,6 +2609,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "unicode-width 0.2.0",
+ "uuid",
  "xai-grok-markdown",
  "xai-ratatui-textarea",
 ]

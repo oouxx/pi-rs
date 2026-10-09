@@ -10,8 +10,8 @@ Rust 移植版终端 UI 框架，对应 TypeScript 原版 `@earendil-works/pi-tu
 - **Component-based**: 统一的 `Component` trait（`render()` / `handle_input()` / `invalidate()`）
 - **Overlay 系统**: 叠加层支持锚点定位（9 个方向）、偏移、边距、隐藏/显示
 - **硬件光标定位**: 通过 `CURSOR_MARKER` 零宽标记在输出中标记光标位置，支持 IME
-- **内置组件**: Text, TruncatedText, Input, Editor, Markdown, Loader, CancellableLoader, SelectList, SettingsList, Spacer, Image, Box, Container
-- **终端内联图片**: 基于 `ratatui-image`，支持 Kitty / iTerm2 / Sixel / Halfblocks 协议
+- **内置组件**: Text, Input, Editor, Markdown, SelectList, DiffView, Spacer, Box, Container
+- **图片**: 剪贴板图片粘贴（Ctrl+V，`arboard` → PNG 临时文件 → 插入路径）；**终端内联图片渲染尚未实现**（TS 的 `ImageComponent` / `ratatui-image` 未移植）
 - **Autocomplete**: 文件路径补全 + 斜杠命令 + @前缀
 - **模糊搜索**: 子序列匹配，多 token，排序
 - **Vendored 管线**: markdown 渲染用 grok-build `xai-grok-markdown`（pulldown-cmark + syntect + 宽度感知 wrap），多行编辑用 `xai-ratatui-textarea`，wrap 用 grok joiner 实现
@@ -234,18 +234,12 @@ settings.update_value("theme", "light");
 let spacer = Spacer::new(2);
 ```
 
-### ImageComponent
+### 图片
 
-```rust
-let img = ImageComponent::from_path(
-    "path/to/image.png",
-    &mut picker,
-    image_theme,
-    ImageOptions { max_width_cells: Some(40), max_height_cells: None, filename: None },
-);
-```
-
-支持 PNG/JPEG/GIF/WebP，自动检测 Kitty/iTerm2/Sixel/Halfblocks 协议。
+终端内联图片渲染**尚未实现**（TS 原版的 `ImageComponent`，基于 `ratatui-image` /
+Kitty / iTerm2 / Sixel / Halfblocks 协议）。当前支持的是剪贴板图片粘贴：
+Ctrl+V 从系统剪贴板读图片（`arboard`）→ 编码 PNG → 写临时文件 → 把路径插入
+编辑器，模型通过 `read` 工具看到图片。
 
 ### CURSOR_MARKER
 
@@ -313,7 +307,7 @@ src/
 │   ├── settings_list.rs   # ✅ 已完成
 │   ├── loader.rs          # ✅ 已完成
 │   ├── cancellable_loader.rs # ✅ 已完成
-│   ├── image.rs           # ✅ ratatui-image 集成
+│   ├── image.rs           # ❌ 未移植（终端内联图片渲染）
 │   └── box_component.rs
 ├── autocomplete.rs        # 路径补全 + 斜杠命令 + @前缀
 ├── editor_component.rs    # Editor 插件接口

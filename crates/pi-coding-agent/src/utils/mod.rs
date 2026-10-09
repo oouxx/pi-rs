@@ -6,6 +6,7 @@ pub mod frontmatter;
 pub mod fs_watch;
 pub mod git;
 pub mod html;
+pub mod image_process;
 pub mod json;
 pub mod mime;
 pub mod paths;

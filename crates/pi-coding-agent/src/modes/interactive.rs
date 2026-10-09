@@ -1508,44 +1508,44 @@ fn build_completion_commands(
     session: &AgentSession,
     model_snapshot: CompletionModelSnapshot,
 ) -> Vec<pi_tui::CompletionCommand> {
-    let mut commands = vec![
-        pi_tui::CompletionCommand::new("/help", "Show commands", "help"),
-        pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
-        pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name"),
-        pi_tui::CompletionCommand::new("/compact [instructions]", "Manually compact the session context", "compact"),
-        pi_tui::CompletionCommand::new("/quit", "Quit", "quit"),
-        pi_tui::CompletionCommand::new("/theme [dark|light]", "Switch theme (dark/light)", "theme"),
-        pi_tui::CompletionCommand::new(
-            "/reload",
-            "Reload keybindings, extensions, skills, prompts, themes, and context files",
-            "reload",
-        ),
+    // pi-rs 已实现的斜杠命令名（见 `slash_command` 的 match）。
+    const SUPPORTED: &[&str] = &[
+        "new", "name", "model", "compact", "reload", "copy", "login", "logout", "quit",
     ];
-    // `/model`：参数补全 = 实时可用模型快照（对齐 TS modelCommand.getArgumentCompletions）。
+    let mut commands: Vec<pi_tui::CompletionCommand> =
+        crate::core::slash_commands::builtin_slash_commands()
+            .into_iter()
+            .filter(|c| SUPPORTED.contains(&c.name.as_str()))
+            .map(|c| {
+                let cmd = pi_tui::CompletionCommand::new(c.name, c.description);
+                match c.argument_hint {
+                    Some(hint) => cmd.with_argument_hint(hint),
+                    None => cmd,
+                }
+            })
+            .collect();
+    // pi-rs 额外命令（TS v0.82.1 无对应内建项）。
+    commands.push(pi_tui::CompletionCommand::new("help", "Show commands"));
     commands.push(
-        pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
-            .with_argument_completions(model_argument_completions(model_snapshot)),
+        pi_tui::CompletionCommand::new("theme", "Switch theme (dark/light)")
+            .with_argument_hint("[dark|light]"),
     );
-    // `/login`：参数补全 = 可登录 provider（对齐 TS loginCommand.getArgumentCompletions）。
-    let login_providers: Vec<(String, String)> = login_providers_for(session.get_model_registry());
-    commands.push(
-        pi_tui::CompletionCommand::new("/login <provider>", "Configure provider authentication", "login")
-            .with_argument_completions(provider_argument_completions(login_providers)),
-    );
-    commands.push(pi_tui::CompletionCommand::new(
-        "/logout [provider]",
-        "Remove provider authentication",
-        "logout",
-    ));
+    // 参数补全：`/model`（实时模型快照）、`/login`（可登录 provider），对齐
+    // TS modelCommand/loginCommand.getArgumentCompletions。
+    let model_ac = model_argument_completions(model_snapshot);
+    let login_ac = provider_argument_completions(login_providers_for(session.get_model_registry()));
+    for cmd in &mut commands {
+        match cmd.name.as_str() {
+            "model" => cmd.argument_completions = Some(model_ac.clone()),
+            "login" => cmd.argument_completions = Some(login_ac.clone()),
+            _ => {}
+        }
+    }
     // Prompt template 命令（对齐 TS `templateCommands`）。
     commands.extend(template_completion_commands(&session.prompt_templates()));
     if let Some(registry) = session.get_extension_registry() {
         for rc in registry.commands() {
-            let mut cmd = pi_tui::CompletionCommand::new(
-                format!("/{}", rc.name),
-                rc.description.clone(),
-                rc.name.clone(),
-            );
+            let mut cmd = pi_tui::CompletionCommand::new(rc.name.clone(), rc.description.clone());
             if let Some(ac) = rc.get_argument_completions.clone() {
                 cmd = cmd.with_argument_completions(wrap_extension_argument_completions(ac));
             }
@@ -1561,27 +1561,28 @@ fn build_completion_commands(
     commands
 }
 
-/// Prompt template → 补全命令（对齐 TS `templateCommands`）。
+/// Prompt template → 补全命令（对齐 TS `templateCommands`：label = name，
+/// `argument-hint` frontmatter 折叠进描述）。
 fn template_completion_commands(templates: &[crate::core::prompt_templates::PromptTemplate]) -> Vec<pi_tui::CompletionCommand> {
     templates
         .iter()
         .map(|t| {
-            pi_tui::CompletionCommand::new(
-                format!("/{}", t.name),
-                t.description.clone(),
-                t.name.clone(),
-            )
+            let cmd = pi_tui::CompletionCommand::new(t.name.clone(), t.description.clone());
+            match &t.argument_hint {
+                Some(hint) => cmd.with_argument_hint(hint.clone()),
+                None => cmd,
+            }
         })
         .collect()
 }
 
-/// Skill → `/skill:<name>` 补全命令（对齐 TS `skillCommandList`）。
+/// Skill → `skill:<name>` 补全命令（对齐 TS `skillCommandList`：label = name）。
 fn skill_completion_commands(skills: &[crate::core::skills::Skill]) -> Vec<pi_tui::CompletionCommand> {
     skills
         .iter()
         .map(|s| {
             let name = format!("skill:{}", s.name);
-            pi_tui::CompletionCommand::new(format!("/{name}"), s.description.clone(), name)
+            pi_tui::CompletionCommand::new(name, s.description.clone())
         })
         .collect()
 }
@@ -1594,13 +1595,13 @@ async fn resolve_completion(
     use pi_tui::components::CompletionTrigger;
     match req.trigger {
         CompletionTrigger::Slash => {
-            // TS：命令 fuzzy 过滤（name = 命令名）。
+            // TS：命令 fuzzy 过滤（name = 命令名），label = name、描述 = hint — desc。
             let commands = sources.commands.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&commands, &req.query, |c| c.insert_text.clone());
+            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&commands, &req.query, |c| c.name.clone());
             idx.into_iter()
                 .map(|(i, _)| {
                     let c = &commands[i];
-                    pi_tui::CompletionItem::new(c.insert_text.clone(), c.label.clone(), c.description.clone())
+                    pi_tui::CompletionItem::new(c.name.clone(), c.display_label(), c.display_description())
                 })
                 .collect()
         }
@@ -1611,7 +1612,7 @@ async fn resolve_completion(
                 let commands = sources.commands.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                 commands
                     .iter()
-                    .find(|c| c.insert_text == *name)
+                    .find(|c| c.name == *name)
                     .and_then(|c| c.argument_completions.clone())
             };
             let Some(f) = completions else {
@@ -3493,7 +3494,7 @@ mod tests {
         fn enter_applies_slash_completion_then_submits() {
         let mut s = state();
         s.model.completer.set_commands(vec![
-            pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
+            pi_tui::CompletionCommand::new("new", "Start a new session"),
         ]);
         s.model.input.set_value("/n");
         s.model
@@ -3501,7 +3502,7 @@ mod tests {
             .begin(pi_tui::components::CompletionTrigger::Slash, "/n", "n");
         s.model.completer.apply_results(
             1,
-            vec![pi_tui::CompletionItem::new("new", "/new", "Start a new session")],
+            vec![pi_tui::CompletionItem::new("new", "new", "Start a new session")],
         );
         assert!(s.model.completer.visible);
         let key = crossterm::event::KeyEvent::new(
@@ -3579,8 +3580,9 @@ mod tests {
     async fn resolve_slash_completion_fuzzy_filters_commands() {
         let sources = CompletionSources {
             commands: std::sync::RwLock::new(vec![
-                pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
-                pi_tui::CompletionCommand::new("/new", "Start a new session", "new"),
+                pi_tui::CompletionCommand::new("model", "Select model (opens selector UI)")
+                    .with_argument_hint("<provider/model>"),
+                pi_tui::CompletionCommand::new("new", "Start a new session"),
             ]),
             cwd: ".".into(),
         };
@@ -3594,9 +3596,14 @@ mod tests {
             force: false,
         };
         let items = resolve_completion(&sources, &req).await;
-        assert_eq!(items.len(), 1, "只有 /model 匹配 mod: {items:?}");
+        assert_eq!(items.len(), 1, "只有 model 匹配 mod: {items:?}");
         assert_eq!(items[0].value, "model");
-        assert_eq!(items[0].label, "/model <provider>/<id>");
+        assert_eq!(items[0].label, "model", "label = name（不带 `/`）");
+        assert_eq!(
+            items[0].description,
+            "<provider/model> — Select model (opens selector UI)",
+            "argumentHint 折叠进描述"
+        );
     }
 
     /// skill 命令补全：每个 skill 生成 `/skill:<name>` 命令（对齐 TS
@@ -3624,11 +3631,11 @@ mod tests {
         ];
         let cmds = skill_completion_commands(&skills);
         assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[0].insert_text, "skill:review");
-        assert_eq!(cmds[0].label, "/skill:review");
+        assert_eq!(cmds[0].name, "skill:review");
+        assert_eq!(cmds[0].display_label(), "skill:review");
         assert_eq!(cmds[0].description, "Review the diff");
-        assert_eq!(cmds[1].insert_text, "skill:test");
-        assert_eq!(cmds[1].label, "/skill:test");
+        assert_eq!(cmds[1].name, "skill:test");
+        assert_eq!(cmds[1].display_label(), "skill:test");
     }
 
     /// prompt template 命令补全：每个 template 生成 `/name` 命令（对齐 TS
@@ -3641,6 +3648,7 @@ mod tests {
             PromptTemplate {
                 name: "fix".into(),
                 description: "Fix the issue".into(),
+                argument_hint: None,
                 file_path: "/tmp/fix.md".into(),
                 source: PromptSource::User,
                 append: false,
@@ -3655,8 +3663,8 @@ mod tests {
         ];
         let cmds = template_completion_commands(&templates);
         assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].insert_text, "fix");
-        assert_eq!(cmds[0].label, "/fix");
+        assert_eq!(cmds[0].name, "fix");
+        assert_eq!(cmds[0].display_label(), "fix");
         assert_eq!(cmds[0].description, "Fix the issue");
     }
 
@@ -3673,7 +3681,8 @@ mod tests {
             })
         });
         let sources = CompletionSources {
-            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
+            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("model", "Select model (opens selector UI)")
+                .with_argument_hint("<provider/model>")
                 .with_argument_completions(f)]),
             cwd: ".".into(),
         };
@@ -3695,7 +3704,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_argument_completion_missing_callback_returns_empty() {
         let sources = CompletionSources {
-            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("/name <name>", "Set the session name", "name")]),
+            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("name", "Set session display name")]),
             cwd: ".".into(),
         };
         let req = pi_tui::CompletionRequest {

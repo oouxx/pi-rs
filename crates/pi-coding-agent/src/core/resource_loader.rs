@@ -1085,6 +1085,7 @@ mod tests {
             PromptTemplate {
                 name: "prompt-a".to_string(),
                 description: String::new(),
+                argument_hint: None,
                 file_path: "/a.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
@@ -1099,6 +1100,7 @@ mod tests {
             PromptTemplate {
                 name: "prompt-b".to_string(),
                 description: String::new(),
+                argument_hint: None,
                 file_path: "/b.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
@@ -1123,6 +1125,7 @@ mod tests {
             PromptTemplate {
                 name: "shared".to_string(),
                 description: String::new(),
+                argument_hint: None,
                 file_path: "/first.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,
@@ -1137,6 +1140,7 @@ mod tests {
             PromptTemplate {
                 name: "shared".to_string(),
                 description: String::new(),
+                argument_hint: None,
                 file_path: "/second.md".to_string(),
                 source: crate::core::prompt_templates::PromptSource::Project,
                 append: false,

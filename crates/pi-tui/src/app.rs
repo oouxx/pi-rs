@@ -1651,7 +1651,7 @@ fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd
                     .completer
                     .commands
                     .iter()
-                    .find(|c| c.insert_text == *name)
+                    .find(|c| c.name == *name)
             })
             .is_some_and(|c| c.argument_completions.is_some());
         if !has {
@@ -1700,13 +1700,14 @@ fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd
     }))
 }
 
-/// slash 命令候选：fuzzy 过滤（对齐 TS `fuzzyFilter` on command name）。
+/// slash 命令候选：fuzzy 过滤（对齐 TS `fuzzyFilter` on command name），
+/// 展示 label = name、描述 = hint — desc（对齐 TS `autocomplete.ts`）。
 fn slash_completion_items(commands: &[CompletionCommand], query: &str) -> Vec<CompletionItem> {
-    let idx = crate::fuzzy::fuzzy_filter_indices(commands, query, |c| c.insert_text.clone());
+    let idx = crate::fuzzy::fuzzy_filter_indices(commands, query, |c| c.name.clone());
     idx.into_iter()
         .map(|(i, _)| {
             let c = &commands[i];
-            CompletionItem::new(c.insert_text.clone(), c.label.clone(), c.description.clone())
+            CompletionItem::new(c.name.clone(), c.display_label(), c.display_description())
         })
         .collect()
 }
@@ -3514,8 +3515,8 @@ fn wrap_line(line: &str, width: usize) -> Vec<(String, usize)> {
 fn render_input(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     // TS editor: `─` top border, content rows, `─` bottom border
     // (borderMuted); content scrolls to keep the cursor visible. The
-    // completion menu renders inline between the content and the bottom
-    // border (TS SelectList inside the editor).
+    // completion menu renders BELOW the bottom border (TS `Editor::render`
+    // pushes the autocomplete lines after `renderBottomBorder`).
     let layout_width = editor_layout_width(area.width);
     let (rows, cursor_row, cursor_col) = input_layout_rows(&model.input, layout_width);
     let completion = completer_rows(&model.completer);
@@ -3524,19 +3525,26 @@ fn render_input(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let scroll = cursor_row.saturating_sub(content_rows.saturating_sub(1)).min(max_scroll);
 
     let border_style = Style::new().fg(t.border_muted);
-    frame.render_widget(Paragraph::new(Line::from(Span::styled("─".repeat(area.width as usize), border_style))), Rect::new(area.x, area.y, area.width, 1));
-    frame.render_widget(Paragraph::new(Line::from(Span::styled("─".repeat(area.width as usize), border_style))), Rect::new(area.x, area.y + area.height.saturating_sub(1), area.width, 1));
+    let border_line = || Line::from(Span::styled("─".repeat(area.width as usize), border_style));
+    frame.render_widget(Paragraph::new(border_line()), Rect::new(area.x, area.y, area.width, 1));
 
     let mut content_used = 0usize;
     for (i, row) in rows.iter().enumerate().skip(scroll).take(content_rows) {
         let y = area.y + 1 + (i - scroll) as u16;
-        if y >= area.y + area.height.saturating_sub(1) { break; }
         frame.render_widget(Paragraph::new(Line::raw(row.clone())), Rect::new(area.x, y, area.width, 1));
         content_used += 1;
     }
 
+    // Bottom border sits right after the visible content (TS renders it
+    // before the autocomplete list).
+    let bottom_y = area.y + 1 + content_used as u16;
+    if bottom_y < area.y + area.height {
+        frame.render_widget(Paragraph::new(border_line()), Rect::new(area.x, bottom_y, area.width, 1));
+    }
+
     if model.completer.visible && completion > 0 {
-        let comp_area = Rect::new(area.x, area.y + 1 + content_used as u16, area.width, completion);
+        let menu_y = bottom_y + 1;
+        let comp_area = Rect::new(area.x, menu_y, area.width, completion);
         model.completer.render_rows(frame, comp_area, t);
     }
 
@@ -4293,55 +4301,188 @@ mod tests {
         let mut model = Model::new(100, 30);
         model.model_name = "mock-model".into();
         model.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("/help", "Show commands", "help"),
-            crate::components::CompletionCommand::new("/new", "Start a new session", "new"),
-            crate::components::CompletionCommand::new("/name <name>", "Set the session name", "name"),
-            crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
-            crate::components::CompletionCommand::new("/reload", "Reload extensions", "reload"),
-            crate::components::CompletionCommand::new("/quit", "Quit", "quit"),
+            crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
+                .with_argument_hint("<provider/model>"),
+            crate::components::CompletionCommand::new("new", "Start a new session"),
+            crate::components::CompletionCommand::new("name", "Set session display name"),
+            crate::components::CompletionCommand::new(
+                "reload",
+                "Reload keybindings, extensions, skills, prompts, themes, and context files",
+            ),
+            crate::components::CompletionCommand::new("quit", "Quit Pi"),
+            crate::components::CompletionCommand::new("help", "Show commands"),
         ]);
-        model.completer.begin(crate::components::CompletionTrigger::Slash, "", "");
+        model.completer.begin(crate::components::CompletionTrigger::Slash, "/", "");
         model.completer.apply_results(1, vec![
-            CompletionItem::new("help", "/help", "Show commands"),
-            CompletionItem::new("new", "/new", "Start a new session"),
-            CompletionItem::new("name", "/name <name>", "Set the session name"),
-            CompletionItem::new("model", "/model <provider>/<id>", "Switch model"),
-            CompletionItem::new("reload", "/reload", "Reload extensions"),
-            CompletionItem::new("quit", "/quit", "Quit"),
+            CompletionItem::new("model", "model", "<provider/model> — Select model (opens selector UI)"),
+            CompletionItem::new("new", "new", "Start a new session"),
+            CompletionItem::new("name", "name", "Set session display name"),
+            CompletionItem::new("reload", "reload", "Reload keybindings, extensions, skills, prompts, themes, and context files"),
+            CompletionItem::new("quit", "quit", "Quit Pi"),
+            CompletionItem::new("help", "help", "Show commands"),
         ]);
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
         let buf = terminal.backend().buffer();
 
-        // The menu lives inside the editor: find the first menu row (the
-        // `→ ` prefix of the selected item) between the editor borders.
+        // The menu renders below the editor's bottom border (TS order):
+        // find the first menu row (the `→ ` prefix of the selected item).
         let menu_row = (0..30)
             .find(|&y| buf[(0, y)].symbol() == "\u{2192}")
             .expect("menu row");
-        // Selected row: `→ /help` in accent, description muted.
+        // Selected row: the whole line (`→ model` + description) is accent
+        // (TS `selectedText` wraps prefix + label + spacing + description).
         assert_eq!(buf[(0, menu_row)].symbol(), "\u{2192}", "accent arrow prefix");
         assert_eq!(buf[(0, menu_row)].fg, theme::ACCENT, "arrow in accent");
-        assert_eq!(buf[(2, menu_row)].symbol(), "/", "label follows the prefix");
+        assert_eq!(buf[(2, menu_row)].symbol(), "m", "label follows the prefix (name, no slash)");
         assert_eq!(buf[(2, menu_row)].fg, theme::ACCENT, "selected label in accent");
-        // Description in muted, aligned after the primary column (widest
-        // label `/model <provider>/<id>` = 22 chars + 2 gap = 24).
-        let desc_col = 2 + 24;
-        assert_eq!(buf[(desc_col, menu_row)].symbol(), "S", "description column");
-        assert_eq!(buf[(desc_col, menu_row)].fg, theme::MUTED, "description muted");
-        // Unselected row: two-space prefix, default text color.
+        // Description in accent (selected line), aligned after the primary
+        // column (widest label `reload` = 6 + 2 gap, clamped up to min 12).
+        let desc_col = 2 + 12;
+        assert_eq!(buf[(desc_col, menu_row)].symbol(), "<", "hint folded into description");
+        assert_eq!(buf[(desc_col, menu_row)].fg, theme::ACCENT, "selected description in accent");
+        // Unselected row: two-space prefix, default text color, muted
+        // description in the aligned column.
         let next_row = menu_row + 1;
         assert_eq!(buf[(0, next_row)].symbol(), " ", "unselected prefix is spaces");
-        assert_eq!(buf[(2, next_row)].symbol(), "/", "unselected label");
+        assert_eq!(buf[(2, next_row)].symbol(), "n", "unselected label");
         assert_eq!(buf[(2, next_row)].fg, theme::TEXT, "unselected label in text color");
-        // Scroll info row `(1/7)` in muted (7 items, 5 visible).
+        assert_eq!(buf[(desc_col, next_row)].symbol(), "S", "unselected description column");
+        assert_eq!(buf[(desc_col, next_row)].fg, theme::MUTED, "unselected description muted");
+        // Scroll info row `(1/6)` in muted (6 items, 5 visible).
         let scroll_row = menu_row + 5;
         assert_eq!(buf[(2, scroll_row)].symbol(), "(", "scroll info row");
         assert_eq!(buf[(2, scroll_row)].fg, theme::MUTED, "scroll info muted");
-        // No border/title: the editor top border sits above the content row
-        // and the bottom border below the scroll info (the menu is inline).
-        assert_eq!(buf[(50, menu_row - 2)].symbol(), "\u{2500}", "editor top border above menu");
-        assert_eq!(buf[(50, scroll_row + 1)].symbol(), "\u{2500}", "editor bottom border below menu");
+        // The editor top border is above the input, and the bottom border
+        // sits between the input and the menu (menu below the box).
+        assert_eq!(buf[(50, menu_row - 3)].symbol(), "\u{2500}", "editor top border above input");
+        assert_eq!(buf[(50, menu_row - 1)].symbol(), "\u{2500}", "editor bottom border above menu");
+    }
+
+    /// Regression: once the completion window scrolls (`start > 0`), the
+    /// visible window must render from the TOP of the menu area. A previous
+    /// port used the absolute item index as the row offset, so scrolling to
+    /// the next page left blank rows up top and clipped the last item under
+    /// the `(n/m)` scroll row (TS `SelectList::render` pushes lines from the
+    /// window start).
+    #[test]
+    fn slash_menu_scrolls_without_blank_top_rows() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.model_name = "mock-model".into();
+        model.completer.set_commands(vec![
+            crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
+                .with_argument_hint("<provider/model>"),
+            crate::components::CompletionCommand::new("new", "Start a new session"),
+            crate::components::CompletionCommand::new("name", "Set session display name"),
+            crate::components::CompletionCommand::new("reload", "Reload extensions"),
+            crate::components::CompletionCommand::new("quit", "Quit Pi"),
+            crate::components::CompletionCommand::new("help", "Show commands"),
+        ]);
+        model.completer.begin(crate::components::CompletionTrigger::Slash, "/", "");
+        model.completer.apply_results(1, vec![
+            CompletionItem::new("model", "model", "<provider/model> — Select model (opens selector UI)"),
+            CompletionItem::new("new", "new", "Start a new session"),
+            CompletionItem::new("name", "name", "Set session display name"),
+            CompletionItem::new("reload", "reload", "Reload extensions"),
+            CompletionItem::new("quit", "quit", "Quit Pi"),
+            CompletionItem::new("help", "help", "Show commands"),
+        ]);
+        // Move the selection into the scrolled part of the window
+        // (6 items, 5 visible -> start index becomes 1).
+        for _ in 0..3 {
+            model.completer.next();
+        }
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+
+        // Anchor to the editor top border; the input occupies one content
+        // row and the bottom border follows it, so the completion window
+        // starts three rows below the top border (menu below the box).
+        let editor_top = (0..30)
+            .find(|&y| buf[(50, y)].symbol() == "\u{2500}")
+            .expect("editor top border");
+        let window_top = editor_top + 3;
+
+        // After scrolling, the first visible item is `new` (index 1) at the
+        // very top of the window — no blank row above it.
+        assert_eq!(buf[(2, window_top)].symbol(), "n", "top row is first visible item");
+        assert_eq!(buf[(3, window_top)].symbol(), "e", "top item is new");
+        assert_eq!(buf[(4, window_top)].symbol(), "w", "top item is new");
+        assert_eq!(buf[(0, window_top)].symbol(), " ", "top row unselected prefix");
+        assert_eq!(buf[(2, window_top)].fg, theme::TEXT, "top item is not the selection");
+        // The selected item (`reload`, index 3) is 2 rows down in the window.
+        let sel_row = window_top + 2;
+        assert_eq!(buf[(0, sel_row)].symbol(), "\u{2192}", "selected item arrow");
+        assert_eq!(buf[(0, sel_row)].fg, theme::ACCENT, "selected arrow in accent");
+        assert_eq!(buf[(2, sel_row)].symbol(), "r", "selected label present");
+        assert_eq!(buf[(3, sel_row)].symbol(), "e", "selected item is reload");
+        // The fifth visible item (`help`, index 5) sits at window row 4 and
+        // is followed by the `(n/m)` scroll row at row 5 — it must not be
+        // clipped or overwritten.
+        let last_item_row = window_top + 4;
+        assert_eq!(buf[(2, last_item_row)].symbol(), "h", "last visible item rendered");
+        assert_eq!(buf[(3, last_item_row)].symbol(), "e", "last visible item is help");
+        let scroll_row = window_top + 5;
+        assert_eq!(buf[(2, scroll_row)].symbol(), "(", "scroll info row after items");
+    }
+
+    /// TS `SelectList` 的 slash 布局把主列宽下限钳到 12（短命令的描述也
+    /// 对齐到第 14 列），且截断不补省略号（`truncateToWidth(x, w, "")`）。
+    /// 旧实现主列宽从 1 起、截断补 `...`，两者都会让菜单看起来和原版不同。
+    #[test]
+    fn slash_menu_primary_column_min_and_no_ellipsis() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut completer = crate::components::Completer::new();
+        completer.begin(crate::components::CompletionTrigger::Slash, "/", "");
+        completer.apply_results(
+            1,
+            vec![
+                CompletionItem::new("a", "a", "first"),
+                CompletionItem::new("bb", "bb", "second"),
+                CompletionItem::new("long", "x".repeat(40), "desc"),
+            ],
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(80, 4)).expect("backend");
+        let theme = crate::theme::Theme::default();
+        terminal
+            .draw(|f| completer.render_rows(f, f.area(), &theme))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+
+        // Primary column width = 32 (widest `x`*40 + 2 clamped to max 32).
+        // The long label is truncated to 30 chars with NO ellipsis: col 32 is
+        // the spacing gap before the description, not part of a `...`.
+        assert_eq!(buf[(31, 2)].symbol(), "x", "long label kept to width 30");
+        assert_eq!(buf[(32, 2)].symbol(), " ", "gap after truncated label, no ellipsis");
+        let dots = (0..40).any(|x| buf[(x, 2)].symbol() == ".");
+        assert!(!dots, "truncation must not append an ellipsis");
+
+        // Short-label list: slash layout clamps the primary column UP to 12,
+        // so the description aligns at column 14 (TS select-list.test.ts).
+        let mut short = crate::components::Completer::new();
+        short.begin(crate::components::CompletionTrigger::Slash, "/", "");
+        short.apply_results(
+            1,
+            vec![
+                CompletionItem::new("a", "a", "first"),
+                CompletionItem::new("bb", "bb", "second"),
+            ],
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(80, 2)).expect("backend");
+        terminal
+            .draw(|f| short.render_rows(f, f.area(), &theme))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(14, 0)].symbol(), "f", "min primary column 12 -> desc at col 14");
+        assert_eq!(buf[(14, 1)].symbol(), "s", "descriptions aligned at col 14");
     }
 
     /// Tab 应用选中补全（对齐 TS `tui.input.tab`）：Tab 不是"下一个"，
@@ -4350,7 +4491,7 @@ mod tests {
     fn tab_applies_selected_completion() {
         let mut model = Model::new(100, 30);
         model.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("/new", "Start a new session", "new"),
+            crate::components::CompletionCommand::new("new", "Start a new session"),
         ]);
         model.input.set_value("/n");
         model.completer.begin(CompletionTrigger::Slash, "/n", "n");
@@ -4367,7 +4508,8 @@ mod tests {
     fn tab_without_popup_triggers_slash_completion() {
         let mut model = Model::new(100, 30);
         model.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
+            crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
+                .with_argument_hint("<provider/model>"),
         ]);
         model.input.set_value("/mo");
         let tab = KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE);
@@ -4386,8 +4528,9 @@ mod tests {
     fn typing_slash_triggers_command_completion_request() {
         let mut model = Model::new(100, 30);
         model.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model"),
-            crate::components::CompletionCommand::new("/new", "Start a new session", "new"),
+            crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
+                .with_argument_hint("<provider/model>"),
+            crate::components::CompletionCommand::new("new", "Start a new session"),
         ]);
         let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('/'), crossterm::event::KeyModifiers::NONE)));
         assert!(model.completer.visible);
@@ -4429,13 +4572,14 @@ mod tests {
     #[test]
     fn slash_argument_completion_only_when_registered() {
         let mut model = Model::new(100, 30);
-        let with_args = crate::components::CompletionCommand::new("/model <provider>/<id>", "Switch model", "model")
+        let with_args = crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
+            .with_argument_hint("<provider/model>")
             .with_argument_completions(std::sync::Arc::new(|_p: String| {
                 Box::pin(async { Some(Vec::new()) })
             }));
         model.completer.set_commands(vec![
             with_args,
-            crate::components::CompletionCommand::new("/name <name>", "Set the session name", "name"),
+            crate::components::CompletionCommand::new("name", "Set session display name"),
         ]);
         // `/cmd g` → Argument 请求。
         let mut last = Vec::new();
@@ -4454,7 +4598,7 @@ mod tests {
         // `/name x` → 无参数补全注册 → 弹窗关闭、无请求。
         let mut model2 = Model::new(100, 30);
         model2.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("/new <name>", "Set the session name", "name"),
+            crate::components::CompletionCommand::new("name", "Set session display name"),
         ]);
         for ch in ['/', 'n', 'a', 'm', 'e', ' ', 'x'] {
             update(&mut model2, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));

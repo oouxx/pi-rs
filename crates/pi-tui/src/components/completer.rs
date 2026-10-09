@@ -53,32 +53,53 @@ pub type ArgumentCompletionsFn = Arc<
     dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<CompletionItem>>> + Send>> + Send + Sync,
 >;
 
-/// 补全菜单里的一个命令：label 展示、insert_text 为命令名（不带 `/`）、
-/// 可选参数补全。
+/// 补全菜单里的一个命令。字段对齐 TS `SlashCommand`（`autocomplete.ts`）：
+/// `name` 既是插入文本又是展示 label，`description` 为原始描述，`argumentHint`
+/// 在展示时拼到描述前面（`hint — desc`）。
 #[derive(Clone)]
 pub struct CompletionCommand {
-    /// 菜单展示文本（如 `/model <provider>/<id>`）。
-    pub label: String,
+    /// 命令名（不带 `/`），既是插入文本也是菜单 label（TS `name`）。
+    pub name: String,
+    /// 原始描述（不含 argumentHint），对齐 TS `description`。
     pub description: String,
-    /// 插入的命令名（如 `model`）。
-    pub insert_text: String,
+    /// 参数提示（如 `<provider/model>`），对齐 TS `argumentHint`。
+    pub argument_hint: Option<String>,
     /// 参数补全（`/cmd <arg>` 上下文），对齐 TS `getArgumentCompletions`。
     pub argument_completions: Option<ArgumentCompletionsFn>,
 }
 
 impl CompletionCommand {
-    pub fn new(label: impl Into<String>, description: impl Into<String>, insert_text: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
-            label: label.into(),
+            name: name.into(),
             description: description.into(),
-            insert_text: insert_text.into(),
+            argument_hint: None,
             argument_completions: None,
         }
+    }
+
+    pub fn with_argument_hint(mut self, hint: impl Into<String>) -> Self {
+        self.argument_hint = Some(hint.into());
+        self
     }
 
     pub fn with_argument_completions(mut self, f: ArgumentCompletionsFn) -> Self {
         self.argument_completions = Some(f);
         self
+    }
+
+    /// 菜单 label（TS `label: name`）。
+    pub fn display_label(&self) -> &str {
+        &self.name
+    }
+
+    /// 菜单描述（TS `fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc`）。
+    pub fn display_description(&self) -> String {
+        match (&self.argument_hint, self.description.is_empty()) {
+            (Some(hint), false) => format!("{hint} — {}", self.description),
+            (Some(hint), true) => hint.clone(),
+            (None, _) => self.description.clone(),
+        }
     }
 }
 
@@ -118,6 +139,11 @@ pub struct Completer {
     /// 与正在输入的文本一致——避免 Enter/Tab 应用到过期结果，等价 TS
     /// 串行请求管线 + `isStale` 语义）。
     pub results_query: String,
+    /// TS `SelectListLayoutOptions` 主列宽下/上限（`SLASH_COMMAND_SELECT_LIST_LAYOUT`
+    /// 为 12/32；路径/参数列表用默认 32/32）。由 `begin` 根据前缀是否以
+    /// `/` 开头选定。
+    pub primary_min: usize,
+    pub primary_max: usize,
 }
 
 impl Completer {
@@ -133,6 +159,8 @@ impl Completer {
             max_visible: 5,
             request_seq: 0,
             results_query: String::new(),
+            primary_min: 32,
+            primary_max: 32,
         }
     }
 
@@ -152,6 +180,16 @@ impl Completer {
         self.selected = 0;
         self.visible = true;
         self.request_seq += 1;
+        // TS `createAutocompleteList`: 以 `/` 开头的前缀（命令名与命令参数）
+        // 用 `SLASH_COMMAND_SELECT_LIST_LAYOUT`（主列 12..32），其余
+        // （路径/附件）用默认 32..32。
+        if prefix.starts_with('/') {
+            self.primary_min = 12;
+            self.primary_max = 32;
+        } else {
+            self.primary_min = 32;
+            self.primary_max = 32;
+        }
     }
 
     /// 回填候选；仅当 `seq` 是最新请求（未过期）时生效。
@@ -208,14 +246,16 @@ impl Completer {
 
     /// Render the completion list TS-style (the original `SelectList` used
     /// for the editor autocomplete): plain inline rows — no border, no
-    /// title, no background. The selected row carries a `→ ` accent prefix
-    /// and accent text; the description sits muted in an aligned second
-    /// column; a `(n/m)` scroll row appears when the list scrolls; an open
-    /// menu with no matches shows `No matching commands`.
+    /// title, no background. The selected row is entirely accent (TS
+    /// `selectedText` wraps prefix + label + spacing + description);
+    /// unselected rows are default text with a muted description in an
+    /// aligned second column; a `(n/m)` scroll row appears when the list
+    /// scrolls; an open menu with no matches shows `No matching commands`.
     pub fn render_rows(&self, frame: &mut Frame, area: Rect, t: &crate::theme::Theme) {
         if !self.visible || area.height == 0 {
             return;
         }
+        let width = area.width as usize;
         let mut row = |y: u16, spans: Vec<Span<'static>>| {
             if y < area.y + area.height {
                 frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, y, area.width, 1));
@@ -229,13 +269,18 @@ impl Completer {
 
         let max_visible = self.max_visible;
         let total = self.results.len();
+        // TS `getPrimaryColumnWidth`: widest display value + `PRIMARY_COLUMN_GAP`
+        // (2), clamped to the layout bounds (slash 12..32, path 32..32).
         let widest = self
             .results
             .iter()
             .map(|c| unicode_width::UnicodeWidthStr::width(c.label.as_str()) + 2)
             .max()
             .unwrap_or(0);
-        let primary_col = widest.clamp(1, 32);
+        let lo = self.primary_min.min(self.primary_max).max(1);
+        let hi = self.primary_min.max(self.primary_max).max(1);
+        let primary_col = widest.clamp(lo, hi);
+
         // Selection-centered window (TS `selected - floor(maxVisible/2)`).
         let start = self
             .selected
@@ -246,36 +291,78 @@ impl Completer {
         for (i, item) in self.results.iter().enumerate().skip(start).take(end - start) {
             let selected = i == self.selected;
             let prefix = if selected { "\u{2192} " } else { "  " };
-            let label_w = unicode_width::UnicodeWidthStr::width(item.label.as_str());
-            let max_label = primary_col.saturating_sub(2).max(1);
-            let label = if label_w > max_label {
-                crate::app::truncate_to_width(&item.label, max_label)
-            } else {
-                item.label.clone()
-            };
-            let label_w = unicode_width::UnicodeWidthStr::width(label.as_str());
-            let spacing = " ".repeat(primary_col.saturating_sub(label_w).max(1));
-            let mut spans = vec![
-                Span::styled(prefix, Style::new().fg(t.accent)),
-                Span::styled(label, Style::new().fg(if selected { t.accent } else { t.text })),
-            ];
-            if !item.description.is_empty() {
-                let desc_start = 2 + primary_col;
-                let desc_w = (area.width as usize).saturating_sub(desc_start).saturating_sub(2);
-                if desc_w > 10 {
-                    let desc = crate::app::truncate_to_width(&item.description, desc_w);
-                    spans.push(Span::styled(format!("{spacing}{desc}"), Style::new().fg(t.muted)));
+            let prefix_w = 2usize;
+            let desc = normalize_single_line(&item.description);
+
+            // TS `renderItem`: descriptions only render when the terminal is
+            // wide enough (`width > 40`) and the remaining space exceeds
+            // `MIN_DESCRIPTION_WIDTH` (10).
+            let mut drawn = false;
+            if !desc.is_empty() && width > 40 {
+                let effective = primary_col.min(width.saturating_sub(prefix_w + 4)).max(1);
+                let max_primary = effective.saturating_sub(2).max(1);
+                let label = crate::app::truncate_to_width_suffix(&item.label, max_primary, "");
+                let label_w = unicode_width::UnicodeWidthStr::width(label.as_str());
+                let spacing = " ".repeat(effective.saturating_sub(label_w).max(1));
+                let desc_start = prefix_w + label_w + spacing.len();
+                let remaining = width.saturating_sub(desc_start).saturating_sub(2);
+                if remaining > 10 {
+                    let desc = crate::app::truncate_to_width_suffix(&desc, remaining, "");
+                    let spans = if selected {
+                        // Selected: the whole line (prefix + label + spacing +
+                        // description) is accent (TS `selectedText`).
+                        vec![Span::styled(
+                            format!("{prefix}{label}{spacing}{desc}"),
+                            Style::new().fg(t.accent),
+                        )]
+                    } else {
+                        vec![
+                            Span::styled(format!("{prefix}{label}"), Style::new().fg(t.text)),
+                            Span::styled(format!("{spacing}{desc}"), Style::new().fg(t.muted)),
+                        ]
+                    };
+                    row(area.y + (i - start) as u16, spans);
+                    drawn = true;
                 }
             }
-            row(area.y + i as u16, spans);
+
+            if !drawn {
+                // No description: truncate the label to the row (TS
+                // `truncatePrimary` with no ellipsis).
+                let max_width = width.saturating_sub(prefix_w + 2);
+                let label = crate::app::truncate_to_width_suffix(&item.label, max_width, "");
+                let text = format!("{prefix}{label}");
+                let style = Style::new().fg(if selected { t.accent } else { t.text });
+                row(area.y + (i - start) as u16, vec![Span::styled(text, style)]);
+            }
         }
 
-        // Scroll indicator (TS `  (n/m)` in muted).
+        // Scroll indicator (TS `  (n/m)` in muted, truncated to width - 2).
         if start > 0 || end < total {
             let info = format!("  ({}/{})", self.selected + 1, total);
+            let info = crate::app::truncate_to_width_suffix(&info, width.saturating_sub(2), "");
             row(area.y + (end - start) as u16, vec![Span::styled(info, Style::new().fg(t.muted))]);
         }
     }
+}
+
+/// TS `normalizeToSingleLine`: collapse runs of `\r`/`\n` to a single space
+/// and trim (descriptions are rendered on one row).
+fn normalize_single_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_break = false;
+    for ch in text.chars() {
+        if ch == '\r' || ch == '\n' {
+            if !in_break {
+                out.push(' ');
+            }
+            in_break = true;
+        } else {
+            in_break = false;
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
 }
 
 /// 应用选中项（对齐 TS `applyCompletion`）。

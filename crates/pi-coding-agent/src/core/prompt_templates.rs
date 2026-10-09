@@ -11,6 +11,9 @@ use crate::core::source_info::{SourceInfo, create_synthetic_source_info};
 pub struct PromptTemplate {
     pub name: String,
     pub description: String,
+    /// 参数提示（frontmatter `argument-hint`），对齐 TS `PromptTemplate.argumentHint`。
+    #[serde(rename = "argumentHint", skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
     pub file_path: String,
     pub source: PromptSource,
     pub append: bool,
@@ -133,7 +136,20 @@ fn load_prompts_from_dir(
 fn load_prompt_from_file(path: &Path, source: PromptSource) -> Option<PromptTemplate> {
     let content = std::fs::read_to_string(path).ok()?;
     let file_name = path.file_stem()?.to_str()?.to_string();
-    let description = extract_description(&content).unwrap_or_default();
+    // 对齐 TS `loadTemplateFromFile`：description = frontmatter.description ||
+    // 正文首个非空行（截断到 60 字符 + `...`）；argumentHint 来自
+    // frontmatter `argument-hint`。
+    let parsed = crate::utils::frontmatter::parse_frontmatter(&content);
+    let fm = parsed.frontmatter.as_object();
+    let fm_str = |key: &str| {
+        fm.and_then(|m| m.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let description = fm_str("description").unwrap_or_else(|| first_line_description(&parsed.body));
+    let argument_hint = fm_str("argument-hint");
     let append = content.contains("append: true");
 
     let source_info = create_synthetic_source_info(
@@ -147,6 +163,7 @@ fn load_prompt_from_file(path: &Path, source: PromptSource) -> Option<PromptTemp
     Some(PromptTemplate {
         name: file_name,
         description,
+        argument_hint,
         file_path: path.to_string_lossy().to_string(),
         source,
         append,
@@ -154,15 +171,16 @@ fn load_prompt_from_file(path: &Path, source: PromptSource) -> Option<PromptTemp
     })
 }
 
-fn extract_description(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        return Some(trimmed.to_string());
+/// TS `loadTemplateFromFile` 的回退：正文首个非空行，超过 60 字符截断 + `...`。
+fn first_line_description(body: &str) -> String {
+    let Some(line) = body.lines().find(|l| !l.trim().is_empty()) else {
+        return String::new();
+    };
+    let mut out: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        out.push_str("...");
     }
-    None
+    out
 }
 
 pub fn read_prompt_content(path: &str) -> Result<String, String> {
@@ -315,6 +333,35 @@ mod tests {
         assert!(result.templates.is_empty());
     }
 
+    /// 对齐 TS `loadTemplateFromFile`：description 取 frontmatter，`argument-hint`
+    /// 解析到 `argument_hint`；无 frontmatter 时回退正文首个非空行。
+    #[test]
+    fn load_prompt_from_file_reads_frontmatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("review.md");
+        std::fs::write(
+            &file,
+            "---\ndescription: Code review\nargument-hint: <path>\n---\nReview $1\n",
+        )
+        .expect("write");
+        let t = load_prompt_from_file(&file, PromptSource::User).expect("template");
+        assert_eq!(t.name, "review");
+        assert_eq!(t.description, "Code review", "frontmatter description");
+        assert_eq!(t.argument_hint.as_deref(), Some("<path>"));
+    }
+
+    /// 无 frontmatter description 时回退正文首个非空行（对齐 TS），且不再把
+    /// frontmatter 分隔符 `---` 当成描述（旧实现的 bug）。
+    #[test]
+    fn load_prompt_from_file_falls_back_to_first_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("plain.md");
+        std::fs::write(&file, "\nFix the bug\nmore text\n").expect("write");
+        let t = load_prompt_from_file(&file, PromptSource::User).expect("template");
+        assert_eq!(t.description, "Fix the bug");
+        assert_eq!(t.argument_hint, None);
+    }
+
     #[test]
     fn parse_command_args_handles_quotes() {
         assert_eq!(parse_command_args("a b c"), vec!["a", "b", "c"]);
@@ -363,6 +410,7 @@ mod tests {
         let templates = vec![PromptTemplate {
             name: "review".to_string(),
             description: "Code review".to_string(),
+            argument_hint: None,
             file_path: file.to_string_lossy().to_string(),
             source: PromptSource::User,
             append: false,

@@ -1186,11 +1186,12 @@ fn tui_slash_command_menu_and_feedback() {
     let mut tui = Tui::spawn(false);
     assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
-    // `/` opens the command menu — TS-style inline rows (no border/title):
-    // the first row is `→ /help — Show commands`.
+    // `/` opens the command menu — TS-style rows (label = command name, no
+    // slash; argument hint folded into the description): the first row is
+    // `→ model  <provider/model> — Select model (opens selector UI)`.
     tui.write(b"/");
     assert!(
-        tui.wait_for("Show commands", TIMEOUT),
+        tui.wait_for("Select model (opens selector UI)", TIMEOUT),
         "slash menu rendered; got: {:?}",
         tui.rendered()
     );

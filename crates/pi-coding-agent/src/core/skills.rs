@@ -426,7 +426,7 @@ fn load_skills_from_dir(
         let rel_path = full_path.strip_prefix(dir).unwrap_or(&full_path);
         let rel_str = rel_path.to_string_lossy();
 
-        if full_path.is_dir() || full_path.is_symlink() {
+        if full_path.is_dir() {
             // For directories, check with trailing slash
             if ignore_matcher.ignores(&format!("{}/", rel_str)) {
                 continue;
@@ -766,5 +766,39 @@ mod tests {
         };
         let result = load_skills(&opts);
         assert!(result.skills.is_empty());
+    }
+
+    /// A skill file that is a symlink must be loaded, not treated as a
+    /// directory. Regression: the discovery loop recursed into any symlink,
+    /// so `<skills>/check-docs.md -> .../check-docs.md` produced
+    /// "failed to read skills directory: Not a directory" and was dropped.
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_skill_file_is_discovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".pi-rs").join("skills");
+        let target_dir = dir.path().join("target");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target = target_dir.join("check-docs.md");
+        std::fs::write(
+            &target,
+            "---\nname: check-docs\ndescription: Check the docs\n---\n\n# Check\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&target, skills_dir.join("check-docs.md")).unwrap();
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: dir.path().to_string_lossy().to_string(),
+            agent_dir: Some(dir.path().join("agent").to_string_lossy().to_string()),
+            include_defaults: true,
+            ..Default::default()
+        });
+        let names: Vec<_> = result.skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"check-docs"),
+            "symlinked skill not loaded; got {names:?}, diagnostics {:?}",
+            result.diagnostics
+        );
     }
 }

@@ -143,6 +143,7 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 21 | **应用级快捷键遮蔽编辑器键位** | TS 应用级 handler 只拦截明确注册在 app 层的键（如 Ctrl+X/Ctrl+C），其余 ctrl/alt 字母落给编辑器（`tui.editor.*` 绑定：ctrl+b=left、ctrl+f=right、ctrl+a/e=行首尾…） | Rust 在 interactive 层把某个 ctrl 字母无条件映射成应用动作（如 `Ctrl+B → AbortBash`），该键永远到不了编辑器——两个方向表现不一致（Ctrl+F 能用、Ctrl+B 被吞），且原版根本没有这个应用级绑定 | 逐一核对应用级 handler 的键位是否在原版 app 层注册过；编辑器能处理的 ctrl/alt 字母不要在上层拦截 | `Ctrl+B → AbortBash`（应为编辑器 `cursorLeft`；bash 中止 = Esc），见 PORTING_MISTAKES（interactive.rs） |
 
 | 22 | **前缀键未命中未回填** | TS 无 vim 前缀键；编辑器里普通字符一律插入 | Rust 自行加多键序列（`g`→`gg`），第一个键只置"待定"状态、不落字，后续键不匹配时直接处理后续键——序列未完成的那个字符被永久吞掉（`go` → `o`），且原版根本没有这个绑定 | 多键前缀必须缓存未完成的按键，下一键不匹配时先把它作为字面输入回填，再处理下一键；更优先的是先核对原版是否真有该键位 | `gg`/`G` 转录滚动（应为 Home/End，plain g/G 插入），见 PORTING_MISTAKES（pi-tui app.rs） |
+| 27 | **符号链接被当作目录** | TS 的 fd/ignore 遍历按符号链接的目标类型处理；指向文件的链接就是文件 | Rust 目录分支写成 `path.is_dir() || path.is_symlink()`：指向**文件**的符号链接也进目录分支，对文件 `read_dir` 失败，资源被静默丢弃（只留一条 warning），行为在“真文件 vs 符号链接”下不同 | `is_dir()` 本身已跟随符号链接；目录分支只判 `is_dir()`，符号链接到文件走文件分支按扩展名加载 | #132（`.pi-rs/skills/check-docs.md -> …` 被当成目录丢弃，真实会话验证发现） |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。

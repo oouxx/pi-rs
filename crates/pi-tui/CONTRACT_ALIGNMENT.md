@@ -92,15 +92,15 @@
 
 ## 主题（theme，`src/theme.rs` + `src/components/markdown.rs`）
 
-对照基准 TS `v0.82.1`（`packages/coding-agent/src/modes/interactive/theme/`）。
+对照基准：见根目录 [`.version`](../../.version)（`packages/coding-agent/src/modes/interactive/theme/`）。
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
-| Theme token 集 | `ThemeColor` + `ThemeBg` 共 52 个 token，dark/light 两套（`dark.json`/`light.json` 解析 `vars`） | `Theme` 52 个字段；dark = `Theme::default()`，light = `Theme::light()`，逐 token 对齐 v0.82.1 两套 JSON | 是 | |
+| Theme token 集 | `ThemeColor` + `ThemeBg` 共 52 个 token，dark/light 两套（`dark.json`/`light.json` 解析 `vars`） | `Theme` 52 个字段；dark = `Theme::default()`，light = `Theme::light()`，逐 token 对齐原版两套 JSON | 是 | |
 | markdown 调色板 | `getMarkdownTheme()` 从全局 `theme` 取 `md*` token（heading/link/code/codeBlock/quote/hr/listBullet） | `style_from_theme(&Theme)` 同映射 | 是 | |
 | markdown 随主题切换 | `/theme` 换全局 `theme`，所有 markdown 下次渲染换色 | `Markdown::with_theme`/`set_theme`（`StreamingMarkdownRenderer::set_style` 全量重渲）；`Msg::SetTheme` 遍历所有 message 重染 | 是 | |
 | 代码块语法色 | highlight.js + `buildCliHighlightTheme()`（`syntax*` token） | syntect + `syntect_theme()`（同一组 `syntax*` token，TextMate scope 近似映射） | 是（有意偏差，见 DEVIATIONS.md） | highlight.js 类别 vs syntect scope 分类体系不同 |
 | thinking 分级边框色 | `getThinkingBorderColor(level)` → `thinkingOff…thinkingMax` | `Theme::thinking_level_color(level)` 同映射（未知 → off） | 是 | |
-| 终端亮/暗检测 | v0.82.1 `getThemeForRgbColor`（luminance ≥ 0.5）+ `detectTerminalBackgroundFromEnv` | `detect.rs` 同阈值 + 同 COLORFGBG 解析 | 是 | 注意这是 v0.82.1 语义；v0.99.0 起 TS 改为 WCAG/`terminalAppearance`，超出当前基准 |
+| 终端亮/暗检测 | TS `getThemeForRgbColor`（luminance ≥ 0.5）+ `detectTerminalBackgroundFromEnv` | `detect.rs` 同阈值 + 同 COLORFGBG 解析 | 是 | 注意这是基线版本语义；TS 后续版本改为 WCAG/`terminalAppearance`，超出当前基准 |
 | 自定义主题加载 / 主题列表 / 热重载 | `loadThemeFromPath` / `getAvailableThemes` / `startThemeWatcher` | 无（`get_custom_themes_dir()` 已定义但未接线，无 `dark.json`/`light.json` 文件） | 否 | 主题加载/选择器未移植（见 DEVIATIONS.md） |
 | `/theme` 命令 | 打开设置选择器，可切任意主题 + `onThemeChange`/`onThemePreview` | `/theme [dark\|light]` 前缀匹配切换 / 无参 toggle | 否 | 选择器未移植（见 DEVIATIONS.md） |

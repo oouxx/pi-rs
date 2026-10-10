@@ -1,6 +1,6 @@
 # CONTRACT_ALIGNMENT.md — pi-ai
 
-对齐基准：earendil-works/pi **v0.80**（见根目录 `MILESTONE.md`）。
+对齐基准：见根目录 [`.version`](../../.version)（TS 原版版本 + commit）。
 本表覆盖 pi-ai 公开 API 的行为对照；"是否一致"为"否"的条目必须引用
 `DEVIATIONS.md` 或 `PORTING_MISTAKES.md` 对应记录。
 
@@ -36,7 +36,7 @@
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | overflow 检测括号形式 | `maximum context length (N)` 判为 overflow | 同左 | 是 | 修复见 PORTING_MISTAKES.md |
 
-## 未覆盖项（相对 v0.81）
+## 未覆盖项
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
@@ -71,7 +71,7 @@
 ## API-key 认证（A1 流程）
 
 对齐基准：`packages/ai/src/env-api-keys.ts` + `auth/helpers.ts` + `auth/resolve.ts` +
-`providers/anthropic.ts`（v0.85.1）。
+`providers/anthropic.ts`。
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |

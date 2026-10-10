@@ -1,9 +1,9 @@
 # MCP v1.0.0 对齐分析（pi-rs ← pi TS）
 
 > 状态：**阶段一分析稿**（待用户确认范围后再进入阶段二）。
-> 基准：TS `packages/coding-agent`（MCP 在 v0.82.1 之后加入，commit `8562bcf66`
-> `feat(coding-agent): codemode and MCP`，v1.0.0 形态）。pi-rs 当前基线仍为
-> v0.82.1，本文是用户明确要求的「超前对齐」分析。
+> 基准：TS `packages/coding-agent`（MCP 在基线版本之后加入，commit `8562bcf66`
+> `feat(coding-agent): codemode and MCP`，后续 v1.0.0 形态）。pi-rs 当前基线见
+> 根目录 `.version`，本文是用户明确要求的「超前对齐」分析。
 
 ## 实施状态（2026-10-09 更新）
 

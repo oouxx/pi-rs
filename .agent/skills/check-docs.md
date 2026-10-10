@@ -1,15 +1,15 @@
 ---
 name: check-docs
-description: 检查 pi-rs 仓库文档是否过时、版本口径是否一致、引用是否断裂，并按当前 TS v0.82.1 对齐基准输出维护建议。用于用户要求检查、审查或更新文档时。
+description: 检查 pi-rs 仓库文档是否过时、版本口径是否一致、引用是否断裂，并按根目录 `.version` 记录的对齐基准输出维护建议。用于用户要求检查、审查或更新文档时。
 ---
 
 # 检查 pi-rs 文档
 
-从 pi-rs 仓库根目录执行。当前对齐和验收基准固定为 **TS v0.82.1**；同级 `../pi` 的较新版本只用于识别未来差距，不得把它当作当前对齐目标。
+从 pi-rs 仓库根目录执行。当前对齐和验收基准记录在根目录 `.version`（TS 版本 + commit）；同级 `../pi` 的较新版本只用于识别未来差距，不得把它当作当前对齐目标。
 
 ## 检查原则
 
-- 先读取 `MILESTONE.md`，确认当前基准和范围。
+- 先读取根目录 `.version` 与 `MILESTONE.md`，确认当前基准和范围。
 - `DEVIATIONS.md` 是有意差异的权威来源；不要把已确认偏差当作 bug。
 - `CONTRACT_ALIGNMENT.md` 是公开 API/事件/序列化契约的权威来源。
 - `PORTING_MISTAKES.md` 是历史移植错误归档，不因旧版本号自动判定为过时。
@@ -22,8 +22,9 @@ description: 检查 pi-rs 仓库文档是否过时、版本口径是否一致、
 ### 1. 确认版本基准
 
 ```bash
-grep -nE '对齐/验收基准|当前 TS|Rust workspace|目标版本|v0\.82\.1' \
+grep -nE '对齐/验收基准|当前 TS|Rust workspace|目标版本|\.version' \
   MILESTONE.md CONTRACT_ALIGNMENT.md CLAUDE.md
+cat .version
 
 if [ -d ../pi ]; then
   git -C ../pi describe --tags --always
@@ -35,7 +36,7 @@ fi
 报告必须明确：
 
 ```text
-当前验收基准：TS v0.82.1
+当前验收基准：根目录 .version 记录的 TS 版本（附 commit）
 TS 最新参考版本：仅作为未来差距参考
 Rust workspace 版本：从 Cargo.toml 读取
 ```
@@ -111,7 +112,7 @@ find . -name '*.md' -not -path './.git/*' -not -path './target/*' -print0 \
 ```text
 # 文档检查结果
 
-基准：TS v0.82.1
+基准：根目录 `.version` 记录的 TS 版本
 Rust 版本：...
 
 ## 明确过时

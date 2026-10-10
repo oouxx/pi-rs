@@ -1,0 +1,9 @@
+# pi-rs 对齐的 TypeScript 原版版本 —— 单一事实来源
+#
+# 对齐检查、各 crate 的 CONTRACT_ALIGNMENT.md / DEVIATIONS.md / MILESTONE.md
+# 统一引用本文件，不再在文档里写死版本号；升级对齐目标时只改这里。
+#
+# 同级 ../pi 检出的更新版本只用于识别未来差距，不改变本文件记录的基准。
+
+ts_version=v0.82.1
+ts_commit=b4f293684

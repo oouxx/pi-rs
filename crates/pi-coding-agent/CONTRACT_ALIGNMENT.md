@@ -340,7 +340,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 ## API-key 认证优先级（A1）
 
 对齐基准：`packages/coding-agent/src/core/{model-runtime,auth-storage,provider-composer}.ts` +
-`packages/ai/src/auth/resolve.ts`（v0.85.1）。
+`packages/ai/src/auth/resolve.ts`。
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
@@ -352,7 +352,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 ## 认证命令 `/login` / `/logout`
 
 对齐基准：`modes/interactive/interactive-mode.ts`（`handleLoginCommand` /
-`showApiKeyLoginDialog` / `completeProviderAuthentication` / `/logout`），v0.85.1。
+`showApiKeyLoginDialog` / `completeProviderAuthentication` / `/logout`）。
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
@@ -381,7 +381,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 ## 配置目录与项目信任
 
 对齐基准：`packages/coding-agent/src/{config,main}.ts`、
-`core/{trust-manager,project-trust,settings-manager,resource-loader}.ts`（v0.82.1）。
+`core/{trust-manager,project-trust,settings-manager,resource-loader}.ts`。
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
 | -------- | ----------- | ------------- | -------- | ---------------- |
@@ -392,7 +392,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 
 ## MCP（原生客户端，新增功能）
 
-> pi-rs 原生 MCP 客户端，非 TS 移植（TS v0.82.1 无原生 MCP；v1.0.0 的内置 MCP
+> pi-rs 原生 MCP 客户端，非 TS 移植（TS 基线版本无原生 MCP；后续版本的内置 MCP
 > 扩展未移植）。行为基准是本 port 自身的设计，见 DEVIATIONS.md #14。
 
 | 行为场景 | 期望行为 | pi-rs 行为 | 是否一致 |
@@ -403,7 +403,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 连接失败 | 告警，不阻断会话启动 | 10s 超时，stderr 告警，跳过该服务器 | 是 |
 | `${VAR}` / `!cmd` 解析 | env 值、header 值支持 | 复用 `resolve_config_value_or_throw` | 是 |
 | `pi-rs mcp list/add/remove/enable/disable` | 管理配置 | 已实现 | 是 |
-| exposure / codemode / deferred | （TS v1.0.0） | 未实现，全部按 direct 注入 | 否（有意，DEVIATIONS.md #14） |
-| MCP resources 工具 | （TS v1.0.0）`list_mcp_resources` 等 | 未实现 | 否（有意，DEVIATIONS.md #14） |
-| OAuth / `/mcp` TUI | （TS v1.0.0） | 未实现 | 否（有意，DEVIATIONS.md #14） |
+| exposure / codemode / deferred | （TS 后续版本） | 未实现，全部按 direct 注入 | 否（有意，DEVIATIONS.md #14） |
+| MCP resources 工具 | （TS 后续版本）`list_mcp_resources` 等 | 未实现 | 否（有意，DEVIATIONS.md #14） |
+| OAuth / `/mcp` TUI | （TS 后续版本） | 未实现 | 否（有意，DEVIATIONS.md #14） |
 | 工具刷新（`tools/list_changed`） | TS 支持 | 未实现（session 创建时枚举一次） | 否（有意，DEVIATIONS.md #14） |

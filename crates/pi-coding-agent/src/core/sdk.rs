@@ -767,6 +767,33 @@ pub async fn create_agent_session(
         std::env::var("PI_TELEMETRY").ok().as_deref(),
     );
 
+    // MCP servers from `mcp.json` (global + project). Connection failures are
+    // reported but never fatal: the session starts with the servers that
+    // connected. The returned tools keep their connections alive through an
+    // `Arc` captured in each tool's execute closure, so the handles here can be
+    // dropped right after building the tool list.
+    #[cfg(feature = "mcp")]
+    let custom_tools = {
+        let (specs, mut errors) = crate::core::mcp_config::load_specs(&cwd, &agent_dir);
+        let mut tools = options.custom_tools.take().unwrap_or_default();
+        if !specs.is_empty() {
+            let (mcp_tools, _connections, connect_errors) =
+                crate::core::mcp::connect_specs(&specs).await;
+            errors.extend(connect_errors);
+            tools.extend(mcp_tools);
+        }
+        for error in &errors {
+            eprintln!("[pi] MCP: {error}");
+        }
+        if tools.is_empty() {
+            None
+        } else {
+            Some(tools)
+        }
+    };
+    #[cfg(not(feature = "mcp"))]
+    let custom_tools = options.custom_tools;
+
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
         model,
@@ -789,7 +816,7 @@ pub async fn create_agent_session(
         extension_registry: Some(extension_registry_arc),
         ui_context: options.ui_context.clone(),
         resource_loader: Some(Box::new(resource_loader_instance)),
-        custom_tools: options.custom_tools,
+        custom_tools,
         tools_options: options.tools_options,
         extension_state_view: Some(extension_state_view),
         extension_action_rx: Some(extension_action_rx),

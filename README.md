@@ -103,6 +103,10 @@ pi-rs remove <name>           # 移除扩展
 pi-rs list                    # 列出已安装扩展
 pi-rs auth check              # 检查认证状态
 pi-rs auth print-api-key      # 输出指定提供商的 API Key
+pi-rs mcp list                # 列出 MCP 服务器
+pi-rs mcp add <name> -- <cmd> # 添加 stdio MCP 服务器（项目 .pi-rs/mcp.json）
+pi-rs mcp add <name> --url <url> [--sse] [--header N:V]
+pi-rs mcp enable|disable|remove <name>
 ```
 
 ## 会话中的斜杠命令
@@ -129,6 +133,19 @@ pi-rs auth print-api-key      # 输出指定提供商的 API Key
 - 设置文件：`~/.pi-rs/agent/settings.json`（默认模型/提供商、默认思考强度等参数）
 - API Key：环境变量（如 `ANTHROPIC_API_KEY`）或 `~/.pi-rs/agent/auth.json`
 - 模型列表：`~/.pi-rs/agent/models.json`（可手动添加自定义 provider / 本地端点：`baseUrl`、`apiKey`、`headers` 等）
+- MCP 服务器：`~/.pi-rs/agent/mcp.json`（全局）+ `{cwd}/.pi-rs/mcp.json`（项目），使用通用 `mcpServers` 形状：
+
+  ```json
+  {
+    "mcpServers": {
+      "fs":     { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+      "docs":   { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } },
+      "legacy": { "type": "sse", "url": "https://example.com/sse" }
+    }
+  }
+  ```
+
+  支持 stdio、streamable-HTTP 和 legacy SSE 三种传输；服务器工具会像内置工具一样注入所有模式。`enabled: false` 可临时禁用某条目。
 
 ## 致谢
 

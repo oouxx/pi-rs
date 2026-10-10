@@ -15,6 +15,10 @@ pub mod http_dispatcher;
 pub mod messages;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "mcp")]
+pub mod mcp_config;
+#[cfg(feature = "mcp")]
+pub mod mcp_sse;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod package_manager;

@@ -104,10 +104,14 @@ impl acp::Agent for PiAcpAgent {
         let capabilities = acp::AgentCapabilities::new()
             .load_session(true)
             .prompt_capabilities(acp::PromptCapabilities::new().image(true))
-            // stdio MCP is always supported; streamable-HTTP only with the
-            // `mcp` feature (which pulls the rmcp reqwest transport). SSE is
-            // not implemented.
-            .mcp_capabilities(acp::McpCapabilities::new().http(cfg!(feature = "mcp")))
+            // stdio MCP is always supported; streamable-HTTP and legacy SSE
+            // only with the `mcp` feature (which pulls the rmcp reqwest
+            // transport and the SSE client).
+            .mcp_capabilities(
+                acp::McpCapabilities::new()
+                    .http(cfg!(feature = "mcp"))
+                    .sse(cfg!(feature = "mcp")),
+            )
             .session_capabilities(
                 acp::SessionCapabilities::new()
                     .list(acp::SessionListCapabilities::new())

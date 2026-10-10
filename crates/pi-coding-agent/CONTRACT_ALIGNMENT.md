@@ -389,3 +389,21 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 项目资源识别 | `.pi/{settings.json,extensions,skills,prompts,themes,SYSTEM.md,APPEND_SYSTEM.md}` | `.pi-rs/` 下同名资源（含 `/reload` 重发现） | 是 | 目录名不同，见上 |
 | 项目信任门控 | interactive 弹 "Trust project folder?"；未受信任时项目资源全部忽略（`ResourceLoader`/`SettingsManager`/`SYSTEM.md`/扩展） | 不实现门控，全部视为可信任，项目资源无条件加载 | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
 | print/json 未受信任项目 | `resolveProjectTrusted`（无 UI + ask）返回 false，继续运行但不加载项目资源 | 不再阻断运行；项目资源照常加载（原先的 "Project not trusted" 退出已移除） | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
+
+## MCP（原生客户端，新增功能）
+
+> pi-rs 原生 MCP 客户端，非 TS 移植（TS v0.82.1 无原生 MCP；v1.0.0 的内置 MCP
+> 扩展未移植）。行为基准是本 port 自身的设计，见 DEVIATIONS.md #14。
+
+| 行为场景 | 期望行为 | pi-rs 行为 | 是否一致 |
+| -------- | -------- | ---------- | -------- |
+| 配置文件 | `{agent_dir}/mcp.json`（全局）+ `{cwd}/.pi-rs/mcp.json`（项目），`mcpServers` 通用形状 | 同左；项目条目按名覆盖全局；`enabled:false` 跳过 | 是 |
+| 传输 | stdio / streamable-HTTP / legacy SSE | 三种均支持；`type:"sse"` 或 ACP `McpServer::Sse` → SSE | 是 |
+| 工具注入 | 各模式（interactive/print/rpc/acp）都可用 MCP 工具 | `create_agent_session` 统一加载并注入 `custom_tools` | 是 |
+| 连接失败 | 告警，不阻断会话启动 | 10s 超时，stderr 告警，跳过该服务器 | 是 |
+| `${VAR}` / `!cmd` 解析 | env 值、header 值支持 | 复用 `resolve_config_value_or_throw` | 是 |
+| `pi-rs mcp list/add/remove/enable/disable` | 管理配置 | 已实现 | 是 |
+| exposure / codemode / deferred | （TS v1.0.0） | 未实现，全部按 direct 注入 | 否（有意，DEVIATIONS.md #14） |
+| MCP resources 工具 | （TS v1.0.0）`list_mcp_resources` 等 | 未实现 | 否（有意，DEVIATIONS.md #14） |
+| OAuth / `/mcp` TUI | （TS v1.0.0） | 未实现 | 否（有意，DEVIATIONS.md #14） |
+| 工具刷新（`tools/list_changed`） | TS 支持 | 未实现（session 创建时枚举一次） | 否（有意，DEVIATIONS.md #14） |

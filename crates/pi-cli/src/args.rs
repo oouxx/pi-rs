@@ -146,6 +146,7 @@ pub fn print_help() {
     println!("    update                Update {} to the latest GitHub release", config::APP_NAME);
     println!("    update --all          Update all extensions");
     println!("    config                Manage configuration");
+    println!("    mcp                   Manage MCP servers (list/add/remove/enable/disable)");
     println!("    refresh               Refresh the remote model catalog");
     println!();
     println!("EXAMPLES:");
@@ -398,6 +399,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 || s == "update"
                 || s == "list"
                 || s == "config"
+                || s == "mcp"
                 || s == "refresh" =>
             {
                 result.subcommand = Some(s.to_string());

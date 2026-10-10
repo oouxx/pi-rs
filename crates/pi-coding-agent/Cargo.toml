@@ -45,24 +45,28 @@ image = "0.25"
 # reqwest bumped 0.11 -> 0.12 to align with pi-ai / pi-agent-core (usage is
 # limited to Client::builder + get/send/json, which is stable across the bump).
 # rustls-tls keeps it pure-Rust so cross-compilation needs no OpenSSL.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# MCP (Model Context Protocol) client — lets ACP sessions call external MCP
-# servers' tools (stdio + streamable HTTP). Default-on.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# MCP (Model Context Protocol) client — lets pi call external MCP
+# servers' tools (stdio + streamable HTTP + legacy SSE). Default-on.
 rmcp = { version = "1.8", optional = true, default-features = false, features = [
   "client",
   "transport-child-process",
   "which-command",
   "transport-streamable-http-client-reqwest",
 ] }
+# SSE parser for the legacy MCP SSE client transport (rmcp does not ship one).
+sse-stream = { version = "0.2", optional = true }
 # Process-group kill for the bash tool (kill the whole tree, matching TS
 # `killProcessTree` which sends SIGKILL to -pid on Unix).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [features]
-# MCP (Model Context Protocol) client support (stdio + streamable HTTP).
-# Default-on. Disabling removes the rmcp dependency and the ACP MCP wiring.
-mcp = ["dep:rmcp"]
+# MCP (Model Context Protocol) client support (stdio + streamable HTTP +
+# legacy SSE). Default-on. Disabling removes the rmcp dependency and the MCP
+# wiring (config files, ACP servers).
+default = ["mcp"]
+mcp = ["dep:rmcp", "dep:sse-stream"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

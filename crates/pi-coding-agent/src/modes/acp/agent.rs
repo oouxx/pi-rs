@@ -593,7 +593,7 @@ fn build_startup_info(cwd: &str) -> String {
     let mut skills = Vec::new();
     for root in [
         config::get_agent_dir().join("skills"),
-        std::path::Path::new(cwd).join(".pi").join("skills"),
+        std::path::Path::new(cwd).join(config::CONFIG_DIR_NAME).join("skills"),
     ] {
         collect_skill_md(&root, &mut skills);
     }

@@ -11,10 +11,8 @@ use crate::file_processor::process_file_arguments;
 use crate::initial_message::{build_initial_message, InitialMessageInput};
 
 use pi_coding_agent::core::model_registry::{ModelRegistry, ProviderConfig};
-use pi_coding_agent::core::project_trust::{resolve_project_trusted, ProjectTrustContext};
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use pi_coding_agent::core::session_manager::{NewSessionOptions, SessionManager};
-use pi_coding_agent::core::trust_manager::ProjectTrustStore;
 
 /// Exit code for successful runs.
 const EXIT_SUCCESS: i32 = 0;
@@ -189,22 +187,10 @@ pub async fn run(args: &CliArgs) -> i32 {
     let (initial_message, initial_images) = prepare_initial_message(args, &cwd, stdin_content).await;
 
     // ── Project trust ────────────────────────────────────────────────────
-    let trust_store = ProjectTrustStore::new(&agent_dir.to_string_lossy());
-    let trusted = resolve_project_trusted(
-        pi_coding_agent::core::project_trust::ResolveProjectTrustedOptions {
-            cwd: &cwd,
-            trust_store: &trust_store,
-            trust_override: args.project_trust_override,
-            default_project_trust: args.default_project_trust,
-            project_trust_context: ProjectTrustContext::new(&cwd, false),
-            extension_registry: None,
-        },
-    );
-
-    if !trusted {
-        eprintln!("{} Project not trusted. Use --trust to override.", "Error:".red().bold());
-        return EXIT_FAILURE;
-    }
+    // pi-rs intentionally does not gate project resources on trust (see
+    // DEVIATIONS.md "配置目录与项目信任"): every project is treated as trusted,
+    // so `.pi-rs/` resources are always loaded. The `--trust`/`--no-trust`
+    // flags are still parsed for CLI compatibility but do not block the run.
 
     let message = initial_message.unwrap_or_default();
     if message.trim().is_empty() {

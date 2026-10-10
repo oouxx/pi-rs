@@ -181,7 +181,7 @@ mod tests {
         let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
         let ctx = ProjectTrustContext::new(dir.path().to_str().unwrap(), false);
 
-        // Fresh temp dir has no .pi/ resources, so trust is auto-granted
+        // Fresh temp dir has no .pi-rs/ resources, so trust is auto-granted
         let trusted = resolve_project_trusted(ResolveProjectTrustedOptions {
             cwd: dir.path().to_str().unwrap(),
             trust_store: &store,
@@ -198,7 +198,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
 
-        // Create a .pi/extensions to make trust required
+        // Create a .pi-rs/extensions to make trust required
         let pi_ext = dir.path().join(crate::config::CONFIG_DIR_NAME).join("extensions");
         fs::create_dir_all(&pi_ext).unwrap();
 
@@ -244,7 +244,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
 
-        // Create .pi/extensions to make trust required
+        // Create .pi-rs/extensions to make trust required
         let pi_dir = dir.path().join(crate::config::CONFIG_DIR_NAME).join("extensions");
         fs::create_dir_all(&pi_dir).unwrap();
 

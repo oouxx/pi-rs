@@ -39,7 +39,7 @@ pub struct ProjectTrustOption {
 
 type TrustFileData = BTreeMap<String, Option<bool>>;
 
-/// Directories/files under `{cwd}/.pi/` that require trust to load.
+/// Directories/files under `{cwd}/.pi-rs/` that require trust to load.
 const TRUST_REQUIRING_PROJECT_RESOURCES: &[&str] = &[
     "settings.json",
     "extensions",
@@ -286,7 +286,7 @@ pub fn get_project_trust_options(
 /// Check if a project directory has resources that require trust.
 ///
 /// Returns `true` when `cwd` has trust-requiring resources under:
-///   - `{cwd}/.pi/{settings.json, extensions, skills, prompts, themes, ...}`
+///   - `{cwd}/.pi-rs/{settings.json, extensions, skills, prompts, themes, ...}`
 ///   - `{parent_cwd}/.agents/skills` in any ancestor (except user's own ~/.agents/skills)
 pub fn has_trust_requiring_project_resources(cwd: &str) -> bool {
     let home_dir = normalize_cwd(
@@ -297,7 +297,7 @@ pub fn has_trust_requiring_project_resources(cwd: &str) -> bool {
     let user_agents_skills = Path::new(&home_dir).join(".agents").join("skills");
     let mut current = normalize_cwd(cwd);
 
-    // Check {cwd}/.pi/ for trust-requiring resources
+    // Check {cwd}/.pi-rs/ for trust-requiring resources
     let config_dir = Path::new(&current).join(config::CONFIG_DIR_NAME);
     if TRUST_REQUIRING_PROJECT_RESOURCES
         .iter()

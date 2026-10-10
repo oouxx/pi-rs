@@ -157,7 +157,7 @@ pub struct CreateAgentSessionOptions {
     pub extension_flags: Option<std::collections::HashMap<String, String>>,
     /// Additional paths to extension files/directories.
     /// Extensions will also be auto-discovered from:
-    ///   - {cwd}/.pi/extensions/
+    ///   - {cwd}/.pi-rs/extensions/
     ///   - {agentDir}/extensions/
     pub extension_paths: Vec<String>,
     /// If false, skip the extension RPC sidecar entirely.

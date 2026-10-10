@@ -377,3 +377,15 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | `/reload` 刷新 slash 补全（`/skill:<name>`） | 补全提供者每次从 `resourceLoader` 读取 | 重建补全命令并推送 `Msg::SetCompletionCommands` | 是 |
 | `/reload` 重载扩展 | `reload()` 重建 ExtensionRunner（重新从磁盘加载扩展文件） | 扩展为 Rust 原生注册，注册表不重建（见 DEVIATIONS.md；`/reload` 仅刷新 provider/模型补全与资源） | 是（有意偏差，见 DEVIATIONS.md 扩展系统条目） |
 | `resourceLoader` 访问器 | TS 属性返回 loader 实例，调用方读 `getSkills()` | Rust `AgentSession::resource_loader()` 返回 owned `LoadedResources` 快照（`get_resources().clone()`）；loader 实例本身保存在 `AgentSession` 内 | 是（内部访问器，非 wire 契约） |
+
+## 配置目录与项目信任
+
+对齐基准：`packages/coding-agent/src/{config,main}.ts`、
+`core/{trust-manager,project-trust,settings-manager,resource-loader}.ts`（v0.82.1）。
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 配置目录名 | `package.json` 的 `piConfig.configDir`（默认 `.pi`）：用户级 `~/.pi/agent/`，项目级 `{cwd}/.pi/` | 硬编码 `.pi-rs`：用户级 `~/.pi-rs/agent/`，项目级 `{cwd}/.pi-rs/` | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
+| 项目资源识别 | `.pi/{settings.json,extensions,skills,prompts,themes,SYSTEM.md,APPEND_SYSTEM.md}` | `.pi-rs/` 下同名资源（含 `/reload` 重发现） | 是 | 目录名不同，见上 |
+| 项目信任门控 | interactive 弹 "Trust project folder?"；未受信任时项目资源全部忽略（`ResourceLoader`/`SettingsManager`/`SYSTEM.md`/扩展） | 不实现门控，全部视为可信任，项目资源无条件加载 | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
+| print/json 未受信任项目 | `resolveProjectTrusted`（无 UI + ask）返回 false，继续运行但不加载项目资源 | 不再阻断运行；项目资源照常加载（原先的 "Project not trusted" 退出已移除） | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |

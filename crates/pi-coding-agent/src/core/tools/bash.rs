@@ -537,7 +537,7 @@ impl BashOperations for LocalBashOperations {
                     // Shell exit (matching TS 'exit' event).
                     res = &mut wait_task, if exited.is_none() => {
                         let code: Option<i32> = match res {
-                            Ok(Ok(status)) => status.code(),
+                            Ok(Ok(status)) => exit_code_from_status(status),
                             _ => None,
                         };
                         exited = Some(code);
@@ -643,6 +643,22 @@ impl BashOperations for LocalBashOperations {
 // ============================================================================
 // BashToolOptions
 // ============================================================================
+
+/// Map an exit status to a conventional exit code (TS a8b3dd199): signal
+/// termination has no `code()`, so report `128 + signal` on Unix.
+fn exit_code_from_status(status: std::process::ExitStatus) -> Option<i32> {
+    if let Some(code) = status.code() {
+        return Some(code);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return Some(128 + signal);
+        }
+    }
+    None
+}
 
 /// Current session metadata exposed to bash commands as `PI_*` environment
 /// variables (match TS #6967).
@@ -1050,12 +1066,23 @@ pub fn create_bash_tool(
                             // (`appendStatus(outputText, "Command exited with code
                             // N")`) so the output lands in the tool result message
                             // and the ACP terminal — not a bare status line.
-                            if let Some(code) = exec_result.exit_code {
-                                if code != 0 {
+                            // Matching TS a8b3dd199: a null exit code fails the
+                            // command (custom operations / signal termination).
+                            let exit_code = match exec_result.exit_code {
+                                None => {
                                     return Err(Box::new(std::io::Error::other(
-                                        append_status(&output_text, &format!("Command exited with code {}", code)),
+                                        append_status(
+                                            &output_text,
+                                            "Command terminated without an exit code",
+                                        ),
                                     )) as Box<dyn std::error::Error + Send + Sync>);
                                 }
+                                Some(code) => code,
+                            };
+                            if exit_code != 0 {
+                                return Err(Box::new(std::io::Error::other(
+                                    append_status(&output_text, &format!("Command exited with code {}", exit_code)),
+                                )) as Box<dyn std::error::Error + Send + Sync>);
                             }
 
                             Ok(AgentToolResult {

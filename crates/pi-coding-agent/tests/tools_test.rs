@@ -1345,6 +1345,31 @@ async fn test_bash_command_error() {
     assert!(err_msg.contains("Command failed") || err_msg.contains("code 1") || err_msg.contains("exit code"));
 }
 
+/// TS a8b3dd199 (#9577): a signal-killed shell is not a success. Signal
+/// termination maps to `128 + signal` and preserves partial output.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bash_signal_termination_is_error() {
+    let dir = setup_test_dir();
+    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
+        dir.path().to_str().unwrap(),
+        None,
+    );
+    for (signal, code) in [("KILL", 137), ("TERM", 143)] {
+        let params = serde_json::json!({
+            "command": format!("printf 'before-kill\\n'; kill -{signal} $$")
+        });
+        let result = execute_tool(&tool, "test-call-bash-signal", params).await;
+        assert!(result.is_err(), "signal {signal} must fail");
+        let err_msg = format!("{}", result.err().unwrap());
+        assert!(
+            err_msg.contains(&format!("code {code}")),
+            "signal {signal} -> code {code}: {err_msg}"
+        );
+        assert!(err_msg.contains("before-kill"), "partial output preserved: {err_msg}");
+    }
+}
+
 #[tokio::test]
 async fn test_bash_timeout() {
     let dir = setup_test_dir();

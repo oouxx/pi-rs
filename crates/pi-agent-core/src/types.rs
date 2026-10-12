@@ -11,6 +11,28 @@ use crate::pi_ai_types::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "role")]
 pub enum AgentMessage {
+    /// System instructions and tool declarations at one point in the transcript
+    /// (TS `SystemMessage` in `AgentMessage`). Replayed into the provider
+    /// prompt/tools by the transcript helpers.
+    #[serde(rename = "system")]
+    System {
+        content: crate::pi_ai_types::SystemContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sections: Option<std::collections::HashMap<String, Option<String>>>,
+        #[serde(
+            rename = "toolsAdded",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        tools_added: Option<Vec<crate::pi_ai_types::Tool>>,
+        #[serde(
+            rename = "toolsRemoved",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        tools_removed: Option<Vec<crate::pi_ai_types::ToolReference>>,
+        timestamp: i64,
+    },
     #[serde(rename = "user")]
     User {
         content: Vec<ContentBlock>,
@@ -86,6 +108,7 @@ pub enum CustomContent {
 impl AgentMessage {
     pub fn role(&self) -> &str {
         match self {
+            AgentMessage::System { .. } => "system",
             AgentMessage::User { .. } => "user",
             AgentMessage::Assistant { .. } => "assistant",
             AgentMessage::ToolResult { .. } => "toolResult",
@@ -98,6 +121,7 @@ impl AgentMessage {
 
     pub fn timestamp(&self) -> i64 {
         match self {
+            AgentMessage::System { timestamp, .. } => *timestamp,
             AgentMessage::User { timestamp, .. } => *timestamp,
             AgentMessage::Assistant { timestamp, .. } => *timestamp,
             AgentMessage::ToolResult { timestamp, .. } => *timestamp,

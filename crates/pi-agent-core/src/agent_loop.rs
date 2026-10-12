@@ -938,6 +938,136 @@ pub struct AgentLoopConfig {
         Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
 }
 
+/// Declare tool-loadout changes to the model (TS `declareToolChanges`).
+///
+/// `executable_tools` is what the runtime can execute; the transcript's system
+/// messages declare what the model may call. The delta becomes a system
+/// message's `toolsAdded`/`toolsRemoved`. When the pending messages already
+/// contain a system message, its tool fields are treated as intent and replaced
+/// with the delta between the committed transcript and the executable set.
+/// Otherwise a new system message is inserted before the first non-system
+/// pending message.
+pub fn declare_tool_changes(
+    context_messages: &[AgentMessage],
+    executable_tools: &[crate::pi_ai_types::Tool],
+    pending: &[AgentMessage],
+) -> Vec<AgentMessage> {
+    use crate::pi_ai_types::{get_current_tools, get_tool_state_changes};
+
+    let system_index = pending
+        .iter()
+        .rposition(|m| matches!(m, AgentMessage::System { .. }));
+    let baseline: Vec<AgentMessage> = match system_index {
+        Some(idx) => pending
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                if i == idx {
+                    with_tool_changes(m, &[], &[])
+                } else {
+                    m.clone()
+                }
+            })
+            .collect(),
+        None => pending.to_vec(),
+    };
+
+    let mut all: Vec<serde_json::Value> = context_messages
+        .iter()
+        .filter_map(|m| serde_json::to_value(m).ok())
+        .collect();
+    all.extend(baseline.iter().filter_map(|m| serde_json::to_value(m).ok()));
+    let (added, removed) = get_tool_state_changes(&get_current_tools(&all), executable_tools);
+    let unchanged = added.is_empty() && removed.is_empty();
+
+    if let Some(idx) = system_index {
+        let (has_added, has_removed) = match &pending[idx] {
+            AgentMessage::System {
+                tools_added,
+                tools_removed,
+                ..
+            } => (tools_added.is_some(), tools_removed.is_some()),
+            _ => (false, false),
+        };
+        if unchanged && !has_added && !has_removed {
+            return pending.to_vec();
+        }
+        return baseline
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                if i == idx {
+                    with_tool_changes(m, &added, &removed)
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+    }
+    if unchanged {
+        return pending.to_vec();
+    }
+    let update = new_tool_change_system(&added, &removed);
+    let insert = pending
+        .iter()
+        .position(|m| !matches!(m, AgentMessage::System { .. }))
+        .unwrap_or(pending.len());
+    let mut out = pending.to_vec();
+    out.insert(insert, update);
+    out
+}
+
+fn with_tool_changes(
+    message: &AgentMessage,
+    added: &[crate::pi_ai_types::Tool],
+    removed: &[crate::pi_ai_types::ToolReference],
+) -> AgentMessage {
+    match message {
+        AgentMessage::System {
+            content,
+            sections,
+            timestamp,
+            ..
+        } => AgentMessage::System {
+            content: content.clone(),
+            sections: sections.clone(),
+            tools_added: if added.is_empty() {
+                None
+            } else {
+                Some(added.to_vec())
+            },
+            tools_removed: if removed.is_empty() {
+                None
+            } else {
+                Some(removed.to_vec())
+            },
+            timestamp: *timestamp,
+        },
+        other => other.clone(),
+    }
+}
+
+fn new_tool_change_system(
+    added: &[crate::pi_ai_types::Tool],
+    removed: &[crate::pi_ai_types::ToolReference],
+) -> AgentMessage {
+    AgentMessage::System {
+        content: crate::pi_ai_types::SystemContent::Text(String::new()),
+        sections: None,
+        tools_added: if added.is_empty() {
+            None
+        } else {
+            Some(added.to_vec())
+        },
+        tools_removed: if removed.is_empty() {
+            None
+        } else {
+            Some(removed.to_vec())
+        },
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
 pub async fn run_agent_loop(
     prompts: Vec<AgentMessage>,
     context: AgentContext,
@@ -1461,6 +1591,55 @@ mod tests {
 
     fn dummy_event_sink() -> AgentEventSink {
         Arc::new(|_event: AgentEvent| Box::pin(async {}))
+    }
+
+    fn decl_tool(name: &str) -> crate::pi_ai_types::Tool {
+        crate::pi_ai_types::Tool {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: None,
+        }
+    }
+
+    /// TS `declareToolChanges`: inserts a tool-delta system message before the
+    /// first non-system pending message, is a no-op when the delta is empty,
+    /// and declares removals.
+    #[test]
+    fn declare_tool_changes_inserts_and_removes() {
+        let user = AgentMessage::User {
+            content: vec![ContentBlock::text("hi")],
+            timestamp: 0,
+        };
+
+        // Initial: [a, b] added, inserted before the user message.
+        let out = declare_tool_changes(&[], &[decl_tool("a"), decl_tool("b")], std::slice::from_ref(&user));
+        assert_eq!(out.len(), 2);
+        match &out[0] {
+            AgentMessage::System { tools_added, tools_removed, .. } => {
+                assert_eq!(tools_added.as_ref().unwrap().len(), 2);
+                assert!(tools_removed.is_none());
+            }
+            other => panic!("expected system delta, got {other:?}"),
+        }
+        assert_eq!(out[1].role(), "user");
+
+        // Already declared: no new system message.
+        let context = vec![out[0].clone()];
+        let out = declare_tool_changes(&context, &[decl_tool("a"), decl_tool("b")], std::slice::from_ref(&user));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role(), "user");
+
+        // Removal: [a] removed.
+        let out = declare_tool_changes(&context, &[decl_tool("b")], std::slice::from_ref(&user));
+        assert_eq!(out.len(), 2);
+        match &out[0] {
+            AgentMessage::System { tools_removed, tools_added, .. } => {
+                assert_eq!(tools_removed.as_ref().unwrap()[0].name, "a");
+                assert!(tools_added.is_none());
+            }
+            other => panic!("expected removal delta, got {other:?}"),
+        }
     }
 
     // ============================================================

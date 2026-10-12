@@ -784,6 +784,26 @@ pub fn estimate_agent_message_tokens(msg: &AgentMessage) -> u64 {
         AgentMessage::User { content, .. } | AgentMessage::ToolResult { content, .. } => {
             content_chars(content)
         }
+        AgentMessage::System {
+            content,
+            sections,
+            tools_added,
+            ..
+        } => {
+            let mut chars = match content {
+                pi_agent_core::pi_ai_types::SystemContent::Text(t) => utf16_len(t),
+                pi_agent_core::pi_ai_types::SystemContent::Blocks(blocks) => content_chars(blocks),
+            };
+            if let Some(sections) = sections {
+                for value in sections.values().flatten() {
+                    chars += utf16_len(value);
+                }
+            }
+            if let Some(tools) = tools_added {
+                chars += utf16_len(&serde_json::to_string(tools).unwrap_or_default());
+            }
+            chars
+        }
         AgentMessage::Custom { content, .. } => match content {
             CustomContent::Text(text) => utf16_len(text),
             CustomContent::Blocks(blocks) => content_chars(blocks),

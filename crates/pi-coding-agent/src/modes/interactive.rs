@@ -2978,6 +2978,8 @@ fn append_message_items(items: &mut Vec<app::TranscriptItem>, message: &AgentMes
     }
 
     match message {
+        // System messages are prompt/tool deltas, not transcript rows.
+        AgentMessage::System { .. } => {}
         AgentMessage::User { content, .. } => {
             let text = texts(content);
             if !text.is_empty() {

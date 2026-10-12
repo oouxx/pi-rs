@@ -55,6 +55,17 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
         },
         AgentMessage::BranchSummary { summary, .. } => summary.clone(),
         AgentMessage::CompactionSummary { summary, .. } => summary.clone(),
+        AgentMessage::System { content, .. } => match content {
+            crate::pi_ai_types::SystemContent::Text(t) => t.clone(),
+            crate::pi_ai_types::SystemContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
+                    crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        },
     };
 
     (text.len() as u64 / 4).max(1)

@@ -87,6 +87,19 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                     timestamp: *timestamp,
                 })
             }
+            AgentMessage::System {
+                content,
+                sections,
+                tools_added,
+                tools_removed,
+                timestamp,
+            } => Some(Message::System {
+                content: content.clone(),
+                sections: sections.clone(),
+                tools_added: tools_added.clone(),
+                tools_removed: tools_removed.clone(),
+                timestamp: *timestamp,
+            }),
             AgentMessage::Custom {
                 content, timestamp, ..
             } => {

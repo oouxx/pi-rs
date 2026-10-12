@@ -82,6 +82,19 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
     messages
         .iter()
         .filter_map(|m| match m {
+            AgentMessage::System {
+                content,
+                sections,
+                tools_added,
+                tools_removed,
+                timestamp,
+            } => Some(Message::System {
+                content: content.clone(),
+                sections: sections.clone(),
+                tools_added: tools_added.clone(),
+                tools_removed: tools_removed.clone(),
+                timestamp: *timestamp,
+            }),
             AgentMessage::User { content, timestamp } => Some(Message::User {
                 content: content.clone(),
                 timestamp: *timestamp,

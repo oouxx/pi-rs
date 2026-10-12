@@ -12,9 +12,13 @@ pub use pi_ai::types::{
     AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent,
     CacheRetention, ConstrainedSamplingConfig, ContentBlock, Context, ImagesModel, Message, Model,
     ModelCompat, ModelCost, OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting,
-    ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets,
-    ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolChoice, ToolChoiceMode, Transport,
-    Usage, UsageCost, VercelGatewayRouting,
+    ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, SystemContent,
+    ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolChoice, ToolChoiceMode,
+    ToolReference, Transport, Usage, UsageCost, VercelGatewayRouting,
+};
+
+pub use pi_ai::utils::transcript::{
+    get_current_system_prompt, get_current_tools, get_tool_state_changes, normalize_context,
 };
 
 pub use pi_ai::models::{

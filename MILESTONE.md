@@ -44,7 +44,7 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 | P0-3 agent loop 边界：`finishTurn`/`prepareRequest`/`peekQueuedMessages` + `TurnEndEvent` 扩展 + `AgentBeforeSettleEvent`/`emitBoundary` | 部分完成 | agent-core 部分（`finish_turn`/`prepare_request`/`peek_queued_messages` + `terminate` 语义）已完成；扩展边界事件（`AgentBeforeSettle`/`emitBoundary`/`TurnEndEvent` 字段）依赖 P0-4 的 session 投影/`ContextEditEntry`，随 P0-4 落地 |
 | P0-4 `ContextEditEntry` + SessionManager 权威化 | 基本完成 | SessionManager 层 + 逐请求权威投影已完成（typed projection、`prepare_request` 覆盖 context、`refresh_context`、bash 结果持久化）。剩余：扩展边界事件（`AgentBeforeSettle`/`emitBoundary`/`TurnEndEvent` 字段）——依赖 HookHandler 改成“可返回结果、可顺序修改 entries/continue”的接口（现为 void 并行 hook），归入扩展系统单独改造 |
 | P0-5 `ToolCall.arguments`/`details` 限 JSON + `user_bash` fail-closed | ✅ 完成 | 类型层面 `serde_json::Value` 已满足；`user_bash` 已 fail-closed（恰好一个字段、operations 不支持、非法结果不回落本地） |
-| P0-1 / P0-6 provider / coding-agent 修复批次 | 进行中 | 已修：GIF 误判（TS #9755）、`--mode` 静默回落（#9045）、`--provider` 无 `--model`（#10236）、非法 prompt frontmatter（#9830）、`user_bash` fail-closed（属 P0-5）。其余小修（会话切换重复消息、资源 reload source metadata、clipboard 容器/WSL、compaction 拆分措辞等）与 Provider 修复批次待续；与 `TranscriptContext`（P1-7）纠缠的留 P1 |
+| P0-1 / P0-6 provider / coding-agent 修复批次 | 基本完成（限三个通用适配器） | **P0-1（anthropic + openai-completions + openai-responses）**：审计显示绝大多数已对齐；本轮补 `tool_choice` 无 tools 门控（#8607）、`supportsMaxOutputTokens`（#8941）、未知端点默认非 strict + Cerebras 排除（#9816/#9804，含目录显式值）；Google/Bedrock/Mistral 适配器未实现不适用。**P0-6**：GIF 误判（#9755）、`--mode`（#9045）、`--provider` 无 `--model`（#10236）、非法 prompt frontmatter（#9830）、split-turn 摘要措辞（#9908）、write 字节计数（#8979）、信号终止 shell（#9577）、`user_bash` fail-closed（属 P0-5）；剩余与 `TranscriptContext`（P1-7）纠缠或不对应本 port 架构 |
 
 ### P1（架构大改，单独排期）
 

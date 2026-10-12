@@ -487,6 +487,11 @@ pub struct OpenAIResponsesCompat {
     /// Whether the provider supports explicit prompt-cache mode. Default: false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_explicit_prompt_cache_mode: Option<bool>,
+    /// Whether the provider accepts the `max_output_tokens` parameter (TS
+    /// #8941 `supportsMaxOutputTokens`). Some Codex-protocol gateways reject
+    /// it. Default: true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_max_output_tokens: Option<bool>,
 }
 
 /// Session-affinity header format for OpenAI Responses providers.

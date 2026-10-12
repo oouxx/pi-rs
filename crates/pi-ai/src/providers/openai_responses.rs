@@ -52,6 +52,7 @@ fn get_compat(model: &Model) -> OpenAIResponsesCompat {
             supports_tool_search: None,
             supports_additional_tools: None,
             supports_explicit_prompt_cache_mode: None,
+            supports_max_output_tokens: None,
         },
     }
 }
@@ -1968,10 +1969,13 @@ fn build_request_body(
     }
 
     if let Some(mt) = options.and_then(|o| o.max_tokens) {
-        body.insert(
-            "max_output_tokens".to_string(),
-            json!(mt.max(OPENAI_RESPONSES_MIN_OUTPUT_TOKENS)),
-        );
+        // TS #8941: some Codex-protocol gateways reject `max_output_tokens`.
+        if compat.supports_max_output_tokens.unwrap_or(true) {
+            body.insert(
+                "max_output_tokens".to_string(),
+                json!(mt.max(OPENAI_RESPONSES_MIN_OUTPUT_TOKENS)),
+            );
+        }
     }
     if let Some(t) = options.and_then(|o| o.temperature) {
         body.insert("temperature".to_string(), json!(t));
@@ -2278,6 +2282,35 @@ mod tests {
         }
     }
 
+    /// TS #8941: `max_output_tokens` is sent by default, and omitted when the
+    /// compat flag disables it.
+    #[test]
+    fn max_output_tokens_respects_compat() {
+        let context = Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        };
+        let opts = StreamOptions {
+            max_tokens: Some(1024),
+            ..Default::default()
+        };
+
+        let model = make_model();
+        let body = build_request_body(&model, &context, Some(&opts)).unwrap();
+        assert_eq!(body["max_output_tokens"], 1024);
+
+        let mut disabled = make_model();
+        disabled.compat = Some(crate::types::ModelCompat::OpenAIResponses(
+            crate::types::OpenAIResponsesCompat {
+                supports_max_output_tokens: Some(false),
+                ..Default::default()
+            },
+        ));
+        let body = build_request_body(&disabled, &context, Some(&opts)).unwrap();
+        assert!(body.get("max_output_tokens").is_none());
+    }
+
     #[test]
     fn test_short_hash_matches_ts() {
         // Deterministic; just verify it is stable and base36.
@@ -2471,6 +2504,7 @@ mod tests {
                 supports_tool_search: None,
                 supports_additional_tools: None,
                 supports_explicit_prompt_cache_mode: None,
+                supports_max_output_tokens: None,
             },
         ));
         let tool = Tool {

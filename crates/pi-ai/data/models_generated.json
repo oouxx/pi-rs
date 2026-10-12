@@ -3611,7 +3611,8 @@
         "supportsLongCacheRetention": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "ant-ling"
+        "thinkingFormat": "ant-ling",
+        "supportsStrictMode": true
       }
     },
     "Ling-2.6-flash": {
@@ -3638,7 +3639,8 @@
         "supportsLongCacheRetention": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "ant-ling"
+        "thinkingFormat": "ant-ling",
+        "supportsStrictMode": true
       }
     },
     "Ring-2.6-1T": {
@@ -3673,7 +3675,8 @@
         "supportsLongCacheRetention": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "ant-ling"
+        "thinkingFormat": "ant-ling",
+        "supportsStrictMode": true
       }
     }
   },
@@ -5897,7 +5900,8 @@
       "maxTokens": 40960,
       "compat": {
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": false
       }
     },
     "qwen-3.8-27b": {
@@ -5930,7 +5934,8 @@
       "maxTokens": 32768,
       "compat": {
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": false
       }
     }
   },
@@ -7449,7 +7454,8 @@
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
@@ -7483,7 +7489,8 @@
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "@cf/google/gemma-4-26b-a4b-it": {
@@ -7518,7 +7525,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/ibm-granite/granite-4.0-h-micro": {
@@ -7543,7 +7551,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
@@ -7568,7 +7577,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/meta/llama-4-scout-17b-16e-instruct": {
@@ -7594,7 +7604,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/mistralai/mistral-small-3.1-24b-instruct": {
@@ -7619,7 +7630,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/moonshotai/kimi-k2.6": {
@@ -7654,7 +7666,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/moonshotai/kimi-k2.7-code": {
@@ -7689,7 +7702,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/nvidia/nemotron-3-120b-a12b": {
@@ -7723,7 +7737,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/openai/gpt-oss-120b": {
@@ -7757,7 +7772,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/openai/gpt-oss-20b": {
@@ -7782,7 +7798,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/qwen/qwen3-30b-a3b-fp8": {
@@ -7807,7 +7824,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/qwen/qwen3.8-27b": {
@@ -7842,7 +7860,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/zai-org/glm-4.7-flash": {
@@ -7876,7 +7895,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/zai-org/glm-5.2": {
@@ -7910,7 +7930,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/zai-org/glm-5.3": {
@@ -7944,7 +7965,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "@cf/zai-org/glm-5.3-flash": {
@@ -7970,7 +7992,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     }
   },
@@ -8006,7 +8029,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro": {
@@ -8039,7 +8063,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     }
   },
@@ -8262,7 +8287,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/models/glm-5p3": {
@@ -8296,7 +8322,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/models/glm-5p3-flash": {
@@ -8331,7 +8358,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/models/gpt-oss-120b": {
@@ -8490,7 +8518,8 @@
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
         "supportsStore": false,
-        "thinkingFormat": "openai"
+        "thinkingFormat": "openai",
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/models/minimax-m2p7": {
@@ -8906,7 +8935,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/routers/glm-5p3-fast": {
@@ -8940,7 +8970,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/routers/glm-fast-latest": {
@@ -8974,7 +9005,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/routers/glm-flash-latest": {
@@ -9009,7 +9041,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/routers/glm-latest": {
@@ -9043,7 +9076,8 @@
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/routers/kimi-fast-latest": {
@@ -9119,7 +9153,8 @@
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
         "supportsStore": false,
-        "thinkingFormat": "openai"
+        "thinkingFormat": "openai",
+        "supportsStrictMode": true
       }
     },
     "accounts/fireworks/routers/kimi-latest": {
@@ -9495,7 +9530,8 @@
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gemini-3.6-flash": {
@@ -9526,7 +9562,8 @@
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gemini-3.7-flash": {
@@ -9557,7 +9594,8 @@
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gemini-3.8-flash": {
@@ -9588,7 +9626,8 @@
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gpt-5-mini": {
@@ -10137,7 +10176,8 @@
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "kimi-k3": {
@@ -10168,7 +10208,8 @@
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "mai-code-1-flash-picker": {
@@ -11088,7 +11129,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131072,
-      "maxTokens": 131072
+      "maxTokens": 131072,
+      "compat": {
+        "supportsStrictMode": true
+      }
     },
     "llama-3.3-70b-versatile": {
       "id": "llama-3.3-70b-versatile",
@@ -11107,7 +11151,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131072,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "compat": {
+        "supportsStrictMode": true
+      }
     },
     "openai/gpt-oss-120b": {
       "id": "openai/gpt-oss-120b",
@@ -11135,7 +11182,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131072,
-      "maxTokens": 65536
+      "maxTokens": 65536,
+      "compat": {
+        "supportsStrictMode": true
+      }
     },
     "openai/gpt-oss-20b": {
       "id": "openai/gpt-oss-20b",
@@ -11163,7 +11213,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131072,
-      "maxTokens": 65536
+      "maxTokens": 65536,
+      "compat": {
+        "supportsStrictMode": true
+      }
     },
     "openai/gpt-oss-safeguard-20b": {
       "id": "openai/gpt-oss-safeguard-20b",
@@ -11191,7 +11244,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131072,
-      "maxTokens": 65536
+      "maxTokens": 65536,
+      "compat": {
+        "supportsStrictMode": true
+      }
     },
     "qwen/qwen3.6-27b": {
       "id": "qwen/qwen3.6-27b",
@@ -11220,7 +11276,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131072,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "compat": {
+        "supportsStrictMode": true
+      }
     },
     "qwen/qwen3.8-27b": {
       "id": "qwen/qwen3.8-27b",
@@ -11249,7 +11308,10 @@
         "cacheWrite": 0.0
       },
       "contextWindow": 131042,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "compat": {
+        "supportsStrictMode": true
+      }
     }
   },
   "huggingface": {
@@ -11272,7 +11334,8 @@
       "contextWindow": 204800,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "MiniMaxAI/MiniMax-M2.1": {
@@ -11294,7 +11357,8 @@
       "contextWindow": 204800,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "MiniMaxAI/MiniMax-M2.5": {
@@ -11316,7 +11380,8 @@
       "contextWindow": 204800,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "MiniMaxAI/MiniMax-M2.7": {
@@ -11338,7 +11403,8 @@
       "contextWindow": 204800,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "MiniMaxAI/MiniMax-M3": {
@@ -11361,7 +11427,8 @@
       "contextWindow": 524288,
       "maxTokens": 512000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen2.5-Coder-32B-Instruct": {
@@ -11383,7 +11450,8 @@
       "contextWindow": 131072,
       "maxTokens": 8192,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-235B-A22B": {
@@ -11405,7 +11473,8 @@
       "contextWindow": 40960,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-235B-A22B-Instruct-2507": {
@@ -11427,7 +11496,8 @@
       "contextWindow": 262144,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-235B-A22B-Thinking-2507": {
@@ -11449,7 +11519,8 @@
       "contextWindow": 262144,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-30B-A3B": {
@@ -11471,7 +11542,8 @@
       "contextWindow": 40960,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-32B": {
@@ -11493,7 +11565,8 @@
       "contextWindow": 131072,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-Coder-30B-A3B-Instruct": {
@@ -11515,7 +11588,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
@@ -11537,7 +11611,8 @@
       "contextWindow": 262144,
       "maxTokens": 66536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-Coder-Next": {
@@ -11559,7 +11634,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-Next-80B-A3B-Instruct": {
@@ -11581,7 +11657,8 @@
       "contextWindow": 262144,
       "maxTokens": 66536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-Next-80B-A3B-Thinking": {
@@ -11603,7 +11680,8 @@
       "contextWindow": 262144,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-VL-235B-A22B-Instruct": {
@@ -11626,7 +11704,8 @@
       "contextWindow": 131072,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3-VL-235B-A22B-Thinking": {
@@ -11658,7 +11737,8 @@
       "contextWindow": 131072,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.5-122B-A10B": {
@@ -11681,7 +11761,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.5-27B": {
@@ -11704,7 +11785,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.5-35B-A3B": {
@@ -11727,7 +11809,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.5-397B-A17B": {
@@ -11759,7 +11842,8 @@
       "contextWindow": 262144,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.5-9B": {
@@ -11782,7 +11866,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.6-27B": {
@@ -11805,7 +11890,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.6-35B-A3B": {
@@ -11828,7 +11914,8 @@
       "contextWindow": 262144,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.8-2.4T-A95B": {
@@ -11859,7 +11946,8 @@
       "contextWindow": 262144,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "Qwen/Qwen3.8-27B": {
@@ -11891,7 +11979,8 @@
       "contextWindow": 262144,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "XiaomiMiMo/MiMo-V2-Flash": {
@@ -11913,7 +12002,8 @@
       "contextWindow": 262144,
       "maxTokens": 4096,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "XiaomiMiMo/MiMo-V2.5": {
@@ -11944,7 +12034,8 @@
       "contextWindow": 262144,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "XiaomiMiMo/MiMo-V2.5-Pro": {
@@ -11975,7 +12066,8 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-R1": {
@@ -11997,7 +12089,8 @@
       "contextWindow": 64000,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-R1-0528": {
@@ -12019,7 +12112,8 @@
       "contextWindow": 163840,
       "maxTokens": 163840,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V3": {
@@ -12041,7 +12135,8 @@
       "contextWindow": 64000,
       "maxTokens": 8192,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V3-0324": {
@@ -12063,7 +12158,8 @@
       "contextWindow": 163840,
       "maxTokens": 163840,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V3.1": {
@@ -12085,7 +12181,8 @@
       "contextWindow": 131072,
       "maxTokens": 8192,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V3.2": {
@@ -12107,7 +12204,8 @@
       "contextWindow": 163840,
       "maxTokens": 65536,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V4-Flash": {
@@ -12129,7 +12227,8 @@
       "contextWindow": 1048576,
       "maxTokens": 384000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V4-Flash-0731": {
@@ -12160,7 +12259,8 @@
       "contextWindow": 1048576,
       "maxTokens": 384000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp": {
@@ -12192,7 +12292,8 @@
       "contextWindow": 1048576,
       "maxTokens": 384000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V4-Pro": {
@@ -12223,7 +12324,8 @@
       "contextWindow": 1048576,
       "maxTokens": 393216,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V4-Pro-0813": {
@@ -12254,7 +12356,8 @@
       "contextWindow": 1000000,
       "maxTokens": 384000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-ai/DeepSeek-V4.1-Flash": {
@@ -12286,7 +12389,8 @@
       "contextWindow": 1048576,
       "maxTokens": 384000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "google/gemma-3-12b-it": {
@@ -12309,7 +12413,8 @@
       "contextWindow": 131072,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "google/gemma-3-27b-it": {
@@ -12332,7 +12437,8 @@
       "contextWindow": 131072,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "google/gemma-3-4b-it": {
@@ -12355,7 +12461,8 @@
       "contextWindow": 131072,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "google/gemma-4-26B-A4B-it": {
@@ -12378,7 +12485,8 @@
       "contextWindow": 262144,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "google/gemma-4-31B-it": {
@@ -12401,7 +12509,8 @@
       "contextWindow": 262144,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "meta-llama/Llama-3.1-8B-Instruct": {
@@ -12423,7 +12532,8 @@
       "contextWindow": 131072,
       "maxTokens": 4096,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "meta-llama/Llama-3.3-70B-Instruct": {
@@ -12445,7 +12555,8 @@
       "contextWindow": 131072,
       "maxTokens": 4096,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K2-Instruct": {
@@ -12467,7 +12578,8 @@
       "contextWindow": 131072,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K2-Instruct-0905": {
@@ -12489,7 +12601,8 @@
       "contextWindow": 262144,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K2-Thinking": {
@@ -12511,7 +12624,8 @@
       "contextWindow": 262144,
       "maxTokens": 262144,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K2.5": {
@@ -12534,7 +12648,8 @@
       "contextWindow": 262144,
       "maxTokens": 262144,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K2.6": {
@@ -12557,7 +12672,8 @@
       "contextWindow": 262144,
       "maxTokens": 262144,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K2.7-Code": {
@@ -12580,7 +12696,8 @@
       "contextWindow": 262144,
       "maxTokens": 262144,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "moonshotai/Kimi-K3": {
@@ -12612,7 +12729,8 @@
       "contextWindow": 1000000,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-oss-120b": {
@@ -12643,7 +12761,8 @@
       "contextWindow": 131072,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-oss-20b": {
@@ -12674,7 +12793,8 @@
       "contextWindow": 131072,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "stepfun-ai/Step-3.5-Flash": {
@@ -12696,7 +12816,8 @@
       "contextWindow": 262144,
       "maxTokens": 256000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "stepfun-ai/Step-3.7-Flash": {
@@ -12728,7 +12849,8 @@
       "contextWindow": 262144,
       "maxTokens": 256000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "tencent/Hy3": {
@@ -12759,7 +12881,8 @@
       "contextWindow": 262144,
       "maxTokens": 128000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/Inkling": {
@@ -12791,7 +12914,8 @@
       "contextWindow": 1048576,
       "maxTokens": 1048576,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/Inkling-Small": {
@@ -12814,7 +12938,8 @@
       "contextWindow": 524288,
       "maxTokens": 1048576,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.5": {
@@ -12836,7 +12961,8 @@
       "contextWindow": 131072,
       "maxTokens": 98304,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.5-Air": {
@@ -12858,7 +12984,8 @@
       "contextWindow": 131072,
       "maxTokens": 98304,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.5V": {
@@ -12881,7 +13008,8 @@
       "contextWindow": 65536,
       "maxTokens": 16384,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.6": {
@@ -12903,7 +13031,8 @@
       "contextWindow": 204800,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.6V-Flash": {
@@ -12926,7 +13055,8 @@
       "contextWindow": 131072,
       "maxTokens": 32768,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.7": {
@@ -12948,7 +13078,8 @@
       "contextWindow": 204800,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-4.7-Flash": {
@@ -12970,7 +13101,8 @@
       "contextWindow": 200000,
       "maxTokens": 128000,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-5": {
@@ -12992,7 +13124,8 @@
       "contextWindow": 202752,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-5.1": {
@@ -13014,7 +13147,8 @@
       "contextWindow": 202752,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-5.2": {
@@ -13036,7 +13170,8 @@
       "contextWindow": 262144,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-5.3": {
@@ -13067,7 +13202,8 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     },
     "zai-org/GLM-5.3-Flash": {
@@ -13099,7 +13235,8 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsStrictMode": true
       }
     }
   },
@@ -16330,7 +16467,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "claude-fable-5": {
@@ -16664,7 +16802,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-flash-vision-exp": {
@@ -16699,7 +16838,8 @@
         "maxTokensField": "max_tokens",
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro": {
@@ -16734,7 +16874,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gemini-3-flash": {
@@ -16923,7 +17064,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.1": {
@@ -16947,7 +17089,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -16980,7 +17123,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3": {
@@ -17013,7 +17157,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3-flash": {
@@ -17047,7 +17192,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gpt-5": {
@@ -17827,7 +17973,8 @@
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.6": {
@@ -17855,7 +18002,8 @@
         "supportsLongCacheRetention": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.7-code": {
@@ -17880,7 +18028,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "kimi-k3": {
@@ -17914,7 +18063,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "ling-3.0-flash-fin-free": {
@@ -17938,7 +18088,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-free": {
@@ -17963,7 +18114,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "minimax-m2.5": {
@@ -17987,7 +18139,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "minimax-m2.7": {
@@ -18012,7 +18165,8 @@
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
         "supportsLongCacheRetention": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "minimax-m3": {
@@ -18037,7 +18191,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "muse-spark-1.2": {
@@ -18189,7 +18344,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "nemotron-3.5-lightning-free": {
@@ -18213,7 +18369,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "qwen3.5-plus": {
@@ -18288,7 +18445,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-flash-vision-exp": {
@@ -18322,7 +18480,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro": {
@@ -18355,7 +18514,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4.1-flash": {
@@ -18389,7 +18549,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "glm-5.1": {
@@ -18413,7 +18574,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -18446,7 +18608,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3": {
@@ -18479,7 +18642,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3-flash": {
@@ -18513,7 +18677,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "gpt-5.6-luna": {
@@ -18610,7 +18775,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "hy4-preview": {
@@ -18643,7 +18809,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.6": {
@@ -18676,7 +18843,8 @@
         "supportsLongCacheRetention": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.7-code": {
@@ -18701,7 +18869,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "kimi-k3": {
@@ -18735,7 +18904,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "longcat-2.0": {
@@ -18759,7 +18929,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5": {
@@ -18784,7 +18955,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-pro": {
@@ -18808,7 +18980,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "minimax-m2.7": {
@@ -18832,7 +19005,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "minimax-m3": {
@@ -18942,7 +19116,8 @@
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-max": {
@@ -18966,7 +19141,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-plus": {
@@ -18991,7 +19167,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-flash": {
@@ -19045,7 +19222,8 @@
       "compat": {
         "maxTokensField": "max_tokens",
         "supportsDeveloperRole": false,
-        "supportsStore": false
+        "supportsStore": false,
+        "supportsStrictMode": true
       }
     }
   },
@@ -19074,7 +19252,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "aion-labs/aion-3.0": {
@@ -19101,7 +19280,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "aion-labs/aion-3.0-mini": {
@@ -19128,7 +19308,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "amazon/nova-2-lite-v1": {
@@ -19153,7 +19334,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "amazon/nova-lite-v1": {
@@ -19178,7 +19360,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "amazon/nova-micro-v1": {
@@ -19202,7 +19385,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "amazon/nova-premier-v1": {
@@ -19227,7 +19411,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "amazon/nova-pro-v1": {
@@ -19252,7 +19437,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-3-haiku": {
@@ -19371,7 +19557,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-fable-5:batch": {
@@ -19405,7 +19592,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-haiku-4.5": {
@@ -19450,7 +19638,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-opus-4": {
@@ -19515,7 +19704,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-opus-4.5": {
@@ -19560,7 +19750,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-opus-4.6": {
@@ -19626,7 +19817,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-opus-4.7": {
@@ -19693,7 +19885,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-opus-4.8": {
@@ -19760,7 +19953,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-opus-5": {
@@ -19828,7 +20022,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-sonnet-4": {
@@ -19893,7 +20088,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-sonnet-4.6": {
@@ -19959,7 +20155,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "anthropic/claude-sonnet-5": {
@@ -20025,7 +20222,8 @@
       "compat": {
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "arcee-ai/trinity-large-thinking": {
@@ -20052,7 +20250,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "auto": {
@@ -20077,7 +20276,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "bytedance-seed/seed-1.6": {
@@ -20102,7 +20302,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "bytedance-seed/seed-1.6-flash": {
@@ -20127,7 +20328,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "bytedance-seed/seed-2-1-turbo": {
@@ -20152,7 +20354,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "bytedance-seed/seed-2.0-code": {
@@ -20186,7 +20389,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "bytedance-seed/seed-2.0-lite": {
@@ -20220,7 +20424,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "bytedance-seed/seed-2.0-mini": {
@@ -20254,7 +20459,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "cohere/command-r-08-2024": {
@@ -20278,7 +20484,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "cohere/command-r-plus-08-2024": {
@@ -20302,7 +20509,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "cohere/north-mini-code:free": {
@@ -20326,7 +20534,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-chat": {
@@ -20350,7 +20559,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-chat-v3-0324": {
@@ -20374,7 +20584,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-chat-v3.1": {
@@ -20398,7 +20609,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-r1": {
@@ -20425,7 +20637,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-r1-0528": {
@@ -20452,7 +20665,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v3.1-terminus": {
@@ -20476,7 +20690,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v3.2": {
@@ -20500,7 +20715,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v3.2-exp": {
@@ -20524,7 +20740,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-flash": {
@@ -20558,7 +20775,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-flash-0731": {
@@ -20592,7 +20810,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-flash-0731:batch": {
@@ -20626,7 +20845,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-flash-vision-exp": {
@@ -20661,7 +20881,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-flash-vision-exp:batch": {
@@ -20696,7 +20917,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-pro": {
@@ -20730,7 +20952,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-pro-0813": {
@@ -20764,7 +20987,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4-pro-0813:batch": {
@@ -20798,7 +21022,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "deepseek/deepseek-v4.1-flash": {
@@ -20833,7 +21058,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "dots-studio/dots-3-note-preview:free": {
@@ -20858,7 +21084,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-flash": {
@@ -20883,7 +21110,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-flash-lite": {
@@ -20908,7 +21136,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-flash-lite:batch": {
@@ -20933,7 +21162,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-flash:batch": {
@@ -20958,7 +21188,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-pro": {
@@ -20986,7 +21217,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-pro-preview": {
@@ -21014,7 +21246,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-2.5-pro:batch": {
@@ -21042,7 +21275,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3-flash-preview": {
@@ -21076,7 +21310,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3-flash-preview:batch": {
@@ -21110,7 +21345,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3-pro-image": {
@@ -21138,7 +21374,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.1-flash-lite": {
@@ -21172,7 +21409,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.1-flash-lite-preview": {
@@ -21206,7 +21444,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.1-flash-lite:batch": {
@@ -21240,7 +21479,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.1-pro-preview": {
@@ -21274,7 +21514,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.1-pro-preview-customtools": {
@@ -21308,7 +21549,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.1-pro-preview:batch": {
@@ -21342,7 +21584,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.5-flash": {
@@ -21376,7 +21619,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.5-flash-lite": {
@@ -21410,7 +21654,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.5-flash-lite:batch": {
@@ -21444,7 +21689,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.5-flash:batch": {
@@ -21478,7 +21724,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.6-flash": {
@@ -21512,7 +21759,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.6-flash:batch": {
@@ -21546,7 +21794,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.7-flash": {
@@ -21580,7 +21829,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.7-flash:batch": {
@@ -21614,7 +21864,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.8-flash": {
@@ -21648,7 +21899,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemini-3.8-flash:batch": {
@@ -21682,7 +21934,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemma-3-12b-it": {
@@ -21707,7 +21960,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemma-3-27b-it": {
@@ -21732,7 +21986,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemma-4-26b-a4b-it": {
@@ -21757,7 +22012,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemma-4-26b-a4b-it:free": {
@@ -21782,7 +22038,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemma-4-31b-it": {
@@ -21807,7 +22064,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "google/gemma-4-31b-it:free": {
@@ -21832,7 +22090,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "ibm-granite/granite-4.2-8b": {
@@ -21865,7 +22124,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inception/mercury-2": {
@@ -21898,7 +22158,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inception/mercury-2.5": {
@@ -21931,7 +22192,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inclusionai/ling-3.0-flash": {
@@ -21955,7 +22217,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inclusionai/ling-3.0-flash-fin": {
@@ -21979,7 +22242,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inclusionai/ling-3.0-flash-fin:free": {
@@ -22003,7 +22267,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inclusionai/ling-3.0-flash-sante:free": {
@@ -22027,7 +22292,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inclusionai/ling-3.0-flash-vl": {
@@ -22052,7 +22318,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "inclusionai/ling-3.0-flash-vl:free": {
@@ -22077,7 +22344,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "kwaipilot/kat-coder-pro-v2": {
@@ -22101,7 +22369,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "kwaipilot/kat-coder-pro-v2.5": {
@@ -22125,7 +22394,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "liquid/lfm-2.5-2.6b:free": {
@@ -22152,7 +22422,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meituan/longcat-2.0": {
@@ -22176,7 +22447,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta-llama/llama-3.1-70b-instruct": {
@@ -22200,7 +22472,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta-llama/llama-3.1-8b-instruct": {
@@ -22224,7 +22497,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta-llama/llama-3.3-70b-instruct": {
@@ -22248,7 +22522,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta-llama/llama-4-maverick": {
@@ -22273,7 +22548,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta-llama/llama-4-scout": {
@@ -22298,7 +22574,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-glimmer-30b": {
@@ -22332,7 +22609,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-glimmer-30b:batch": {
@@ -22366,7 +22644,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-spark-1.1": {
@@ -22400,7 +22679,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-spark-1.2": {
@@ -22434,7 +22714,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-spark-1.2-contributor": {
@@ -22468,7 +22749,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-spark-1.3": {
@@ -22502,7 +22784,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "meta/muse-spark-1.3-contributor": {
@@ -22536,7 +22819,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m1": {
@@ -22560,7 +22844,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m2": {
@@ -22587,7 +22872,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m2.1": {
@@ -22614,7 +22900,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m2.5": {
@@ -22641,7 +22928,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m2.7": {
@@ -22668,7 +22956,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m3": {
@@ -22693,7 +22982,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "minimax/minimax-m3:batch": {
@@ -22718,7 +23008,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/codestral-2508": {
@@ -22742,7 +23033,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/codestral-2508:batch": {
@@ -22766,7 +23058,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/devstral-2512": {
@@ -22790,7 +23083,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/ministral-14b-2512": {
@@ -22815,7 +23109,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/ministral-3b-2512": {
@@ -22840,7 +23135,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/ministral-8b-2512": {
@@ -22865,7 +23161,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/ministral-8b-2512:batch": {
@@ -22890,7 +23187,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-large": {
@@ -22914,7 +23212,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-large-2407": {
@@ -22938,7 +23237,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-large-2512": {
@@ -22963,7 +23263,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-large-2512:batch": {
@@ -22988,7 +23289,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-medium-3": {
@@ -23013,7 +23315,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-medium-3-5": {
@@ -23047,7 +23350,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-medium-3-5:batch": {
@@ -23081,7 +23385,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-medium-3.1": {
@@ -23106,7 +23411,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-medium-3.1:batch": {
@@ -23131,7 +23437,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-nemo": {
@@ -23155,7 +23462,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-saba": {
@@ -23179,7 +23487,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-small-2603": {
@@ -23213,7 +23522,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-small-2603:batch": {
@@ -23247,7 +23557,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mistral-small-3.2-24b-instruct": {
@@ -23272,7 +23583,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/mixtral-8x22b-instruct": {
@@ -23296,7 +23608,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "mistralai/voxtral-small-24b-2507": {
@@ -23320,7 +23633,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k2": {
@@ -23344,7 +23658,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k2-0905": {
@@ -23368,7 +23683,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k2-thinking": {
@@ -23395,7 +23711,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k2.5": {
@@ -23420,7 +23737,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k2.6": {
@@ -23446,7 +23764,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k2.7-code": {
@@ -23474,7 +23793,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k3": {
@@ -23508,7 +23828,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "moonshotai/kimi-k3:batch": {
@@ -23542,7 +23863,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nex-agi/nex-n2.5-mini:free": {
@@ -23576,7 +23898,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nex-agi/nex-n2.5-pro:free": {
@@ -23610,7 +23933,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3-nano-30b-a3b": {
@@ -23634,7 +23958,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
@@ -23659,7 +23984,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3-super-120b-a12b": {
@@ -23692,7 +24018,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3-super-120b-a12b:free": {
@@ -23725,7 +24052,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3-ultra-550b-a55b": {
@@ -23758,7 +24086,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3-ultra-550b-a55b:free": {
@@ -23791,7 +24120,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3.5-lightning": {
@@ -23815,7 +24145,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "nvidia/nemotron-3.5-lightning:free": {
@@ -23839,7 +24170,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-3.5-turbo": {
@@ -23862,7 +24194,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-3.5-turbo-0613": {
@@ -23885,7 +24218,8 @@
       "maxTokens": 3685,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-3.5-turbo-16k": {
@@ -23908,7 +24242,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-3.5-turbo:batch": {
@@ -23931,7 +24266,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4": {
@@ -23954,7 +24290,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4-turbo": {
@@ -23978,7 +24315,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4-turbo:batch": {
@@ -24002,7 +24340,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4.1": {
@@ -24026,7 +24365,8 @@
       "maxTokens": 32768,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4.1-mini": {
@@ -24050,7 +24390,8 @@
       "maxTokens": 32768,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4.1-mini:batch": {
@@ -24074,7 +24415,8 @@
       "maxTokens": 32768,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4.1-nano": {
@@ -24098,7 +24440,8 @@
       "maxTokens": 32768,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4.1-nano:batch": {
@@ -24122,7 +24465,8 @@
       "maxTokens": 32768,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4.1:batch": {
@@ -24146,7 +24490,8 @@
       "maxTokens": 32768,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o": {
@@ -24170,7 +24515,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o-2024-05-13": {
@@ -24194,7 +24540,8 @@
       "maxTokens": 4096,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o-2024-08-06": {
@@ -24218,7 +24565,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o-2024-11-20": {
@@ -24242,7 +24590,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o-mini": {
@@ -24266,7 +24615,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o-mini-2024-07-18": {
@@ -24290,7 +24640,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o-mini:batch": {
@@ -24314,7 +24665,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-4o:batch": {
@@ -24338,7 +24690,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5": {
@@ -24371,7 +24724,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5-mini": {
@@ -24404,7 +24758,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5-mini:batch": {
@@ -24437,7 +24792,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5-nano": {
@@ -24470,7 +24826,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5-nano:batch": {
@@ -24503,7 +24860,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5-pro": {
@@ -24536,7 +24894,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5-pro:batch": {
@@ -24569,7 +24928,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.1": {
@@ -24602,7 +24962,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.1-codex": {
@@ -24635,7 +24996,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.1-codex-max": {
@@ -24668,7 +25030,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.1-codex-mini": {
@@ -24701,7 +25064,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.1:batch": {
@@ -24734,7 +25098,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.2": {
@@ -24767,7 +25132,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.2-chat": {
@@ -24794,7 +25160,8 @@
       "maxTokens": 32000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.2-codex": {
@@ -24827,7 +25194,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.2-pro": {
@@ -24860,7 +25228,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.2-pro:batch": {
@@ -24893,7 +25262,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.2:batch": {
@@ -24926,7 +25296,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.3-codex": {
@@ -24959,7 +25330,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4": {
@@ -24992,7 +25364,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4-mini": {
@@ -25025,7 +25398,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4-mini:batch": {
@@ -25058,7 +25432,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4-nano": {
@@ -25091,7 +25466,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4-nano:batch": {
@@ -25124,7 +25500,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4-pro": {
@@ -25157,7 +25534,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4-pro:batch": {
@@ -25190,7 +25568,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.4:batch": {
@@ -25223,7 +25602,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.5": {
@@ -25256,7 +25636,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.5-pro": {
@@ -25289,7 +25670,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.5-pro:batch": {
@@ -25322,7 +25704,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.5:batch": {
@@ -25355,7 +25738,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-luna": {
@@ -25388,7 +25772,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-luna-pro": {
@@ -25421,7 +25806,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-luna-pro:batch": {
@@ -25454,7 +25840,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-luna:batch": {
@@ -25487,7 +25874,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-sol": {
@@ -25520,7 +25908,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-sol-pro": {
@@ -25553,7 +25942,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-sol-pro:batch": {
@@ -25586,7 +25976,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-sol:batch": {
@@ -25619,7 +26010,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-terra": {
@@ -25652,7 +26044,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-terra-pro": {
@@ -25685,7 +26078,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-terra-pro:batch": {
@@ -25718,7 +26112,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5.6-terra:batch": {
@@ -25751,7 +26146,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-5:batch": {
@@ -25784,7 +26180,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-6-astra": {
@@ -25817,7 +26214,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-6-astra-pro": {
@@ -25850,7 +26248,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-6-astra-pro:batch": {
@@ -25883,7 +26282,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-6-astra:batch": {
@@ -25916,7 +26316,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-audio": {
@@ -25939,7 +26340,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-audio-mini": {
@@ -25962,7 +26364,8 @@
       "maxTokens": 16384,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-chat-latest": {
@@ -25986,7 +26389,8 @@
       "maxTokens": 128000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-oss-120b": {
@@ -26018,7 +26422,8 @@
       "maxTokens": 117964,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-oss-120b:batch": {
@@ -26050,7 +26455,8 @@
       "maxTokens": 117964,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-oss-20b": {
@@ -26082,7 +26488,8 @@
       "maxTokens": 117964,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/gpt-oss-safeguard-20b": {
@@ -26108,7 +26515,8 @@
       "maxTokens": 65536,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o1": {
@@ -26132,7 +26540,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o3": {
@@ -26156,7 +26565,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o3-mini": {
@@ -26179,7 +26589,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o3-mini-high": {
@@ -26211,7 +26622,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o3-mini:batch": {
@@ -26234,7 +26646,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o3-pro": {
@@ -26258,7 +26671,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o3:batch": {
@@ -26282,7 +26696,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o4-mini": {
@@ -26306,7 +26721,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o4-mini-high": {
@@ -26339,7 +26755,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openai/o4-mini:batch": {
@@ -26363,7 +26780,8 @@
       "maxTokens": 100000,
       "compat": {
         "sendSessionAffinityHeaders": true,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openrouter/auto": {
@@ -26388,7 +26806,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openrouter/auto-beta": {
@@ -26413,7 +26832,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "openrouter/free": {
@@ -26438,7 +26858,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "poolside/laguna-s-2.1": {
@@ -26462,7 +26883,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "poolside/laguna-s-2.1:free": {
@@ -26486,7 +26908,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "poolside/laguna-xs-2.1": {
@@ -26510,7 +26933,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "poolside/laguna-xs-2.1:free": {
@@ -26534,7 +26958,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen-2.5-72b-instruct": {
@@ -26558,7 +26983,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen-2.5-7b-instruct": {
@@ -26582,7 +27008,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen-plus": {
@@ -26606,7 +27033,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen-plus-2025-07-28": {
@@ -26630,7 +27058,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-14b": {
@@ -26654,7 +27083,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-235b-a22b": {
@@ -26678,7 +27108,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-235b-a22b-2507": {
@@ -26702,7 +27133,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-235b-a22b-thinking-2507": {
@@ -26729,7 +27161,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-30b-a3b": {
@@ -26753,7 +27186,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-30b-a3b-instruct-2507": {
@@ -26777,7 +27211,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-30b-a3b-thinking-2507": {
@@ -26804,7 +27239,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-32b": {
@@ -26828,7 +27264,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-8b": {
@@ -26852,7 +27289,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-coder": {
@@ -26876,7 +27314,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-coder-30b-a3b-instruct": {
@@ -26900,7 +27339,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-coder-flash": {
@@ -26924,7 +27364,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-coder-next": {
@@ -26948,7 +27389,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-coder-plus": {
@@ -26972,7 +27414,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-max": {
@@ -26996,7 +27439,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-max-thinking": {
@@ -27020,7 +27464,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-next-80b-a3b-instruct": {
@@ -27044,7 +27489,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-next-80b-a3b-thinking": {
@@ -27071,7 +27517,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-235b-a22b-instruct": {
@@ -27096,7 +27543,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-235b-a22b-thinking": {
@@ -27124,7 +27572,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-30b-a3b-instruct": {
@@ -27149,7 +27598,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-30b-a3b-thinking": {
@@ -27177,7 +27627,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-32b-instruct": {
@@ -27202,7 +27653,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-8b-instruct": {
@@ -27227,7 +27679,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3-vl-8b-thinking": {
@@ -27255,7 +27708,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-122b-a10b": {
@@ -27280,7 +27734,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-27b": {
@@ -27305,7 +27760,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-35b-a3b": {
@@ -27330,7 +27786,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-397b-a17b": {
@@ -27355,7 +27812,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-9b": {
@@ -27380,7 +27838,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-9b:batch": {
@@ -27405,7 +27864,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-flash-02-23": {
@@ -27430,7 +27890,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-plus-02-15": {
@@ -27455,7 +27916,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.5-plus-20260420": {
@@ -27480,7 +27942,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.6-27b": {
@@ -27505,7 +27968,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.6-35b-a3b": {
@@ -27530,7 +27994,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.6-flash": {
@@ -27555,7 +28020,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.6-max-preview": {
@@ -27579,7 +28045,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.6-plus": {
@@ -27604,7 +28071,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.7-flash": {
@@ -27629,7 +28097,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.7-max": {
@@ -27653,7 +28122,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.7-plus": {
@@ -27678,7 +28148,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.8-2.4t-a95b": {
@@ -27711,7 +28182,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.8-2.4t-a95b:batch": {
@@ -27744,7 +28216,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.8-27b": {
@@ -27778,7 +28251,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.8-flash": {
@@ -27803,7 +28277,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "qwen/qwen3.8-max-0902": {
@@ -27837,7 +28312,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "rekaai/reka-edge": {
@@ -27862,7 +28338,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "relace/relace-search": {
@@ -27886,7 +28363,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "sakana/fugu-max": {
@@ -27920,7 +28398,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "sakana/fugu-ultra": {
@@ -27954,7 +28433,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "sakana/fugu-ultra-v2": {
@@ -27988,7 +28468,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "sakana/sakana-namazu": {
@@ -28022,7 +28503,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "sao10k/l3.1-euryale-70b": {
@@ -28046,7 +28528,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "stepfun/step-3.5-flash": {
@@ -28073,7 +28556,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "stepfun/step-3.7-flash": {
@@ -28107,7 +28591,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "tencent/hy3": {
@@ -28140,7 +28625,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "tencent/hy3-preview": {
@@ -28173,7 +28659,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "tencent/hy4-preview": {
@@ -28206,7 +28693,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "thedrummer/unslopnemo-12b": {
@@ -28230,7 +28718,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/inkling": {
@@ -28264,7 +28753,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/inkling-small": {
@@ -28298,7 +28788,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/inkling-small:free": {
@@ -28332,7 +28823,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/inkling:batch": {
@@ -28366,7 +28858,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "thinkingmachines/inkling:free": {
@@ -28400,7 +28893,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "upstage/solar-pro-3": {
@@ -28424,7 +28918,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "upstage/solar-pro4": {
@@ -28448,7 +28943,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "x-ai/grok-4.20": {
@@ -28473,7 +28969,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "x-ai/grok-4.3": {
@@ -28507,7 +29004,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "x-ai/grok-4.3:batch": {
@@ -28541,7 +29039,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "x-ai/grok-4.5": {
@@ -28575,7 +29074,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "x-ai/grok-4.6": {
@@ -28609,7 +29109,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "x-ai/grok-build-0.1": {
@@ -28637,7 +29138,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "xiaomi/mimo-v2.5": {
@@ -28662,7 +29164,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "xiaomi/mimo-v2.5-pro": {
@@ -28686,7 +29189,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.5": {
@@ -28710,7 +29214,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.5-air": {
@@ -28734,7 +29239,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.5v": {
@@ -28759,7 +29265,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.6": {
@@ -28783,7 +29290,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.6v": {
@@ -28808,7 +29316,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.7": {
@@ -28832,7 +29341,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-4.7-flash": {
@@ -28856,7 +29366,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5": {
@@ -28880,7 +29391,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5-turbo": {
@@ -28904,7 +29416,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.1": {
@@ -28928,7 +29441,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.2": {
@@ -28961,7 +29475,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.2:batch": {
@@ -28994,7 +29509,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.3": {
@@ -29027,7 +29543,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.3-flash": {
@@ -29061,7 +29578,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.3-flash:batch": {
@@ -29095,7 +29613,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5.3:batch": {
@@ -29128,7 +29647,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "z-ai/glm-5v-turbo": {
@@ -29153,7 +29673,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~anthropic/claude-fable-latest": {
@@ -29188,7 +29709,8 @@
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~anthropic/claude-haiku-latest": {
@@ -29214,7 +29736,8 @@
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~anthropic/claude-opus-latest": {
@@ -29249,7 +29772,8 @@
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~anthropic/claude-sonnet-latest": {
@@ -29284,7 +29808,8 @@
         "cacheControlFormat": "anthropic",
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~deepseek/deepseek-flash-latest": {
@@ -29318,7 +29843,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~deepseek/deepseek-pro-latest": {
@@ -29351,7 +29877,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~deepseek/deepseek-v4-flash-latest": {
@@ -29385,7 +29912,8 @@
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~google/gemini-flash-latest": {
@@ -29419,7 +29947,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~google/gemini-pro-latest": {
@@ -29453,7 +29982,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~moonshotai/kimi-latest": {
@@ -29487,7 +30017,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~openai/gpt-astra-latest": {
@@ -29521,7 +30052,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~openai/gpt-luna-latest": {
@@ -29555,7 +30087,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~openai/gpt-mini-latest": {
@@ -29589,7 +30122,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~openai/gpt-sol-latest": {
@@ -29623,7 +30157,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~openai/gpt-terra-latest": {
@@ -29657,7 +30192,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~x-ai/grok-latest": {
@@ -29691,7 +30227,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~z-ai/glm-flash-latest": {
@@ -29725,7 +30262,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     },
     "~z-ai/glm-latest": {
@@ -29758,7 +30296,8 @@
       "compat": {
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
-        "thinkingFormat": "openrouter"
+        "thinkingFormat": "openrouter",
+        "supportsStrictMode": true
       }
     }
   },
@@ -29785,7 +30324,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v3.2": {
@@ -29810,7 +30350,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-flash": {
@@ -29844,7 +30385,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-flash-0731": {
@@ -29878,7 +30420,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro": {
@@ -29912,7 +30455,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro-0813": {
@@ -29946,7 +30490,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4.1-flash": {
@@ -29981,7 +30526,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5": {
@@ -30014,7 +30560,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5.1": {
@@ -30047,7 +30594,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -30081,7 +30629,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.5": {
@@ -30107,7 +30656,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.6": {
@@ -30133,7 +30683,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.7-code": {
@@ -30159,7 +30710,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.6-flash": {
@@ -30185,7 +30737,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.6-plus": {
@@ -30211,7 +30764,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-max": {
@@ -30236,7 +30790,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-plus": {
@@ -30262,7 +30817,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-flash": {
@@ -30297,7 +30853,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-max": {
@@ -30332,7 +30889,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     }
   },
@@ -30359,7 +30917,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v3.2": {
@@ -30384,7 +30943,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-flash": {
@@ -30418,7 +30978,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-flash-0731": {
@@ -30452,7 +31013,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro": {
@@ -30486,7 +31048,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro-0813": {
@@ -30520,7 +31083,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4.1-flash": {
@@ -30555,7 +31119,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5": {
@@ -30588,7 +31153,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5.1": {
@@ -30621,7 +31187,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -30655,7 +31222,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.5": {
@@ -30681,7 +31249,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.6": {
@@ -30707,7 +31276,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "kimi-k2.7-code": {
@@ -30733,7 +31303,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.6-flash": {
@@ -30759,7 +31330,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.6-plus": {
@@ -30785,7 +31357,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-max": {
@@ -30810,7 +31383,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-plus": {
@@ -30836,7 +31410,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-flash": {
@@ -30871,7 +31446,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-max": {
@@ -30906,7 +31482,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     }
   },
@@ -30942,7 +31519,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro": {
@@ -30976,7 +31554,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "deepseek-v4-pro-0813": {
@@ -31010,7 +31589,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -31044,7 +31624,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.6-flash": {
@@ -31070,7 +31651,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-max": {
@@ -31095,7 +31677,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.7-plus": {
@@ -31121,7 +31704,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-flash": {
@@ -31156,7 +31740,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     },
     "qwen3.8-max": {
@@ -31191,7 +31776,8 @@
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
         "supportsStore": false,
-        "thinkingFormat": "qwen"
+        "thinkingFormat": "qwen",
+        "supportsStrictMode": true
       }
     }
   },
@@ -36896,7 +37482,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-pro": {
@@ -36919,7 +37506,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-pro-ultraspeed": {
@@ -36942,7 +37530,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     }
   },
@@ -36968,7 +37557,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-pro": {
@@ -36991,7 +37581,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     }
   },
@@ -37017,7 +37608,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-pro": {
@@ -37040,7 +37632,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     }
   },
@@ -37066,7 +37659,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     },
     "mimo-v2.5-pro": {
@@ -37089,7 +37683,8 @@
       "maxTokens": 131072,
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
-        "thinkingFormat": "deepseek"
+        "thinkingFormat": "deepseek",
+        "supportsStrictMode": true
       }
     }
   },
@@ -37118,7 +37713,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5-turbo": {
@@ -37145,7 +37741,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -37181,7 +37778,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.2-highspeed": {
@@ -37217,7 +37815,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3": {
@@ -37253,7 +37852,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3-flash": {
@@ -37290,7 +37890,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3-highspeed": {
@@ -37326,7 +37927,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     }
   },
@@ -37356,7 +37958,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-4.7": {
@@ -37383,7 +37986,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5-turbo": {
@@ -37410,7 +38014,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.1": {
@@ -37437,7 +38042,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.2": {
@@ -37473,7 +38079,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.2-highspeed": {
@@ -37509,7 +38116,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3": {
@@ -37545,7 +38153,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3-flash": {
@@ -37582,7 +38191,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5.3-highspeed": {
@@ -37618,7 +38228,8 @@
         "supportsReasoningEffort": true,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     },
     "glm-5v-turbo": {
@@ -37646,7 +38257,8 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "thinkingFormat": "zai",
-        "zaiToolStream": true
+        "zaiToolStream": true,
+        "supportsStrictMode": true
       }
     }
   }

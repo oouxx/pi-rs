@@ -152,7 +152,10 @@ fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         chat_template_args: serde_json::Map::new(),
         zai_tool_stream: false,
         supports_thinking_token_budget: false,
-        supports_strict_mode: !is_moonshot && !is_together && !is_cloudflare_ai_gateway && !is_nvidia,
+        // TS #9816: OpenAI compatibility alone does not imply strict JSON-schema
+        // tool support. The generated catalog enables it explicitly for capable
+        // built-in models; unknown/custom endpoints default to non-strict.
+        supports_strict_mode: false,
         supports_openai_grammar_tools: false,
         cache_control_format,
         send_session_affinity_headers: false,
@@ -1490,8 +1493,13 @@ async fn stream_openai_inner(
             body.insert("tool_stream".to_string(), Value::Bool(true));
         }
     }
-    if let Some(ref tc) = options.and_then(|o| o.tool_choice.as_ref()) {
-        body.insert("tool_choice".to_string(), serde_json::to_value(tc)?);
+    // TS #8607: a `tool_choice` without tools can be rejected by gateways
+    // (e.g. during compaction) — only send it when tools are present.
+    let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
+    if has_tools {
+        if let Some(ref tc) = options.and_then(|o| o.tool_choice.as_ref()) {
+            body.insert("tool_choice".to_string(), serde_json::to_value(tc)?);
+        }
     }
 
     apply_thinking_params(model, options, &compat, &mut body);
@@ -2190,6 +2198,27 @@ mod tests {
             headers: None,
             compat: None,
         }
+    }
+
+    #[test]
+    fn strict_mode_defaults_non_strict_for_unknown_endpoints() {
+        // TS #9816: OpenAI compatibility alone does not imply strict tool
+        // support; the generated catalog enables it explicitly for capable
+        // built-ins, and unknown/custom endpoints default to non-strict.
+        let mut custom = test_model("my-custom-provider");
+        custom.base_url = "https://my-gateway.example.com/v1".to_string();
+        assert!(!get_compat(&custom).supports_strict_mode);
+
+        // Explicit compat metadata still enables strict.
+        let mut tagged = test_model("my-custom-provider");
+        tagged.base_url = "https://my-gateway.example.com/v1".to_string();
+        tagged.compat = Some(crate::types::ModelCompat::OpenAICompletions(Box::new(
+            crate::types::OpenAICompletionsCompat {
+                supports_strict_mode: Some(true),
+                ..Default::default()
+            },
+        )));
+        assert!(get_compat(&tagged).supports_strict_mode);
     }
 
     #[test]
@@ -2970,5 +2999,69 @@ mod abort_tests {
         assert_eq!(error.stop_reason, StopReason::Error);
         let msg = error.error_message.unwrap_or_default();
         assert!(msg.contains("timed out"), "message was: {msg}");
+    }
+
+    /// TS #8607: `tool_choice` must be omitted when no tools are provided.
+    #[tokio::test]
+    async fn tool_choice_omitted_without_tools() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_srv = captured.clone();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let n = AsyncReadExt::read(&mut socket, &mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            if let Some(idx) = req.find("\r\n\r\n") {
+                *captured_srv.lock().unwrap() = Some(req[idx + 4..].to_string());
+            }
+            let body = "data: {\"id\":\"1\",\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{body}");
+            let _ = AsyncWriteExt::write_all(&mut socket, resp.as_bytes()).await;
+        });
+
+        let model = Model {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            api: "openai-completions".to_string(),
+            provider: "openai".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        };
+        let context = Context {
+            system_prompt: None,
+            messages: vec![crate::types::Message::User {
+                content: vec![crate::types::ContentBlock::text("hi")],
+                timestamp: 0,
+            }],
+            tools: None,
+        };
+        let opts = StreamOptions {
+            api_key: Some("test-key".into()),
+            tool_choice: Some(crate::types::ToolChoice::Mode(
+                crate::types::ToolChoiceMode::None,
+            )),
+            ..Default::default()
+        };
+        let _ = stream_openai(&model, &context, Some(&opts)).result().await;
+
+        let body = captured.lock().unwrap().clone().unwrap_or_default();
+        assert!(!body.is_empty(), "server captured a request body");
+        assert!(
+            !body.contains("\"tool_choice\""),
+            "tool_choice omitted when no tools: {body}"
+        );
     }
 }

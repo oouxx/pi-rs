@@ -2245,7 +2245,7 @@ fn openai_completions_default_compat() -> serde_json::Map<String, serde_json::Va
         "chatTemplateKwargs": {},
         "chatTemplateArgs": {},
         "zaiToolStream": false,
-        "supportsStrictMode": true,
+        "supportsStrictMode": false,
         "supportsOpenAIGrammarTools": false,
         "sendSessionAffinityHeaders": false,
         "supportsLongCacheRetention": true,
@@ -2274,6 +2274,7 @@ fn detect_openai_completions_compat(model: &BuildModel) -> serde_json::Map<Strin
     let is_cloudflare_gateway =
         provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
     let is_nvidia = provider == "nvidia" || base_url.contains("integrate.api.nvidia.com");
+    let is_cerebras = provider == "cerebras" || base_url.contains("cerebras.ai");
     let is_ant_ling = provider == "ant-ling" || base_url.contains("api.ant-ling.com");
     let is_deepseek = provider == "deepseek" || base_url.to_lowercase().contains("deepseek.com");
     let is_together_reasoning_only =
@@ -2355,7 +2356,7 @@ fn detect_openai_completions_compat(model: &BuildModel) -> serde_json::Map<Strin
     );
     compat.insert(
         "supportsStrictMode".into(),
-        b(!is_moonshot && !is_together && !is_cloudflare_gateway && !is_nvidia),
+        b(!is_moonshot && !is_together && !is_cloudflare_gateway && !is_nvidia && !is_cerebras),
     );
     if let Some(value) = cache_control_format {
         compat.insert("cacheControlFormat".into(), value);

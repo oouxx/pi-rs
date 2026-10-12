@@ -30,15 +30,20 @@ Format your summary as:
 - [Any information needed to continue the work]"#;
 
 #[allow(dead_code)]
-const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = r#"This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
-Summarize the prefix to provide context for the retained suffix:
+const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = r#"The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
+
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
+
 ## Original Request
-[What did the user ask for in this turn?]
-## Early Progress
-- [Key decisions and work done in the prefix]
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-Be concise. Focus on what's needed to understand the kept suffix."#;
+[What did the user ask for?]
+
+## Progress So Far
+- [Key decisions and work completed in these messages]
+
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
+
+Only summarize information explicitly present above. Do not infer or recreate later messages."#;
 
 #[derive(Debug, Clone)]
 pub struct CompactionSettings {
@@ -646,8 +651,11 @@ pub fn build_summarization_prompt(
 pub fn build_turn_prefix_summarization_prompt(messages: &[AgentMessage]) -> String {
     let llm_messages = messages::convert_to_llm(messages);
     let conversation_text = serialize_conversation(&llm_messages);
+    // TS #9908: separate the conversation from the instructions with a clear
+    // Markdown boundary and use continuation-oriented wording (avoids Fable
+    // split-turn summary refusals).
     format!(
-        "<conversation>\n{}\n</conversation>\n\n{}",
+        "# Conversation\n{}\n\n# Instructions\n{}",
         conversation_text, TURN_PREFIX_SUMMARIZATION_PROMPT
     )
 }

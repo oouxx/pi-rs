@@ -191,7 +191,6 @@ format!("Error creating directory: {}", e),
                             throw_if_aborted()?;
 
                             // Write the file contents
-                            let byte_count = cnt.len();
                             ops.write_file(&abs_path, &cnt).await.map_err(|e| {
                                 Box::new(std::io::Error::other(
 format!("Error writing file: {}", e),
@@ -202,8 +201,8 @@ format!("Error writing file: {}", e),
                             Ok::<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>(
                                 AgentToolResult {
                                     content: vec![ContentBlock::text(format!(
-                                        "Successfully wrote {} bytes to {}",
-                                        byte_count, fp
+                                        "Successfully wrote to {}",
+                                        fp
                                     ))],
                                     details: serde_json::Value::Null,
                                     usage: None,

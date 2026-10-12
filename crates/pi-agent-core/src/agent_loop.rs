@@ -740,26 +740,39 @@ async fn stream_assistant_response(
         messages = transform(messages, signal.clone()).await;
     }
 
-    let llm_messages = convert_to_llm(&messages);
+    let mut llm_messages = convert_to_llm(&messages);
+    // The request is built from the transcript (P1-7): ensure a leading system
+    // message carries the prompt/tools. `run_agent_loop` already materializes
+    // one; direct callers may pass the shorthand instead.
+    if !matches!(
+        llm_messages.first(),
+        Some(crate::pi_ai_types::Message::System { .. })
+    ) {
+        let declarations = tool_declarations(context.tools.as_deref());
+        if !context.system_prompt.is_empty() || !declarations.is_empty() {
+            llm_messages.insert(
+                0,
+                crate::pi_ai_types::Message::System {
+                    content: crate::pi_ai_types::SystemContent::Text(
+                        context.system_prompt.clone(),
+                    ),
+                    sections: None,
+                    tools_added: if declarations.is_empty() {
+                        None
+                    } else {
+                        Some(declarations)
+                    },
+                    tools_removed: None,
+                    timestamp: 0,
+                },
+            );
+        }
+    }
 
     let pi_context = crate::pi_ai_types::Context {
-        system_prompt: if context.system_prompt.is_empty() {
-            None
-        } else {
-            Some(context.system_prompt.clone())
-        },
+        system_prompt: None,
         messages: llm_messages,
-        tools: context.tools.as_ref().map(|tools| {
-            tools
-                .iter()
-                .map(|t| crate::pi_ai_types::Tool {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters_schema.clone(),
-                    constrained_sampling: t.constrained_sampling.clone(),
-                })
-                .collect()
-        }),
+        tools: None,
     };
 
     let stream = stream_fn(
@@ -1068,6 +1081,42 @@ fn new_tool_change_system(
     }
 }
 
+/// Build model-visible tool declarations from the executable tool set.
+fn tool_declarations(tools: Option<&[Arc<crate::types::DynTool>]>) -> Vec<crate::pi_ai_types::Tool> {
+    tools
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|t| crate::pi_ai_types::Tool {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.parameters_schema.clone(),
+                    constrained_sampling: t.constrained_sampling.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Materialize the base prompt/tools as a leading transcript system message
+/// (TS `createInitialSystemMessage`). Returns `None` when both are empty.
+fn initial_system_message(system_prompt: &str, declarations: &[crate::pi_ai_types::Tool]) -> Option<AgentMessage> {
+    if system_prompt.is_empty() && declarations.is_empty() {
+        return None;
+    }
+    Some(AgentMessage::System {
+        content: crate::pi_ai_types::SystemContent::Text(system_prompt.to_string()),
+        sections: None,
+        tools_added: if declarations.is_empty() {
+            None
+        } else {
+            Some(declarations.to_vec())
+        },
+        tools_removed: None,
+        timestamp: 0,
+    })
+}
+
 pub async fn run_agent_loop(
     prompts: Vec<AgentMessage>,
     context: AgentContext,
@@ -1076,23 +1125,33 @@ pub async fn run_agent_loop(
     signal: &Option<tokio::sync::watch::Receiver<bool>>,
     stream_fn: &StreamFn,
 ) -> Result<Vec<AgentMessage>, Box<dyn std::error::Error + Send + Sync>> {
-    let mut new_messages: Vec<AgentMessage> = prompts.clone();
+    let declarations = tool_declarations(context.tools.as_deref());
+    // Materialize the base prompt/tools into the transcript (P1-7) so the
+    // request is built from transcript system messages, not a side channel.
+    let mut base_messages = context.messages.clone();
+    if !matches!(base_messages.first(), Some(AgentMessage::System { .. })) {
+        if let Some(initial) = initial_system_message(&context.system_prompt, &declarations) {
+            base_messages.insert(0, initial);
+        }
+    }
+    let initial_messages = declare_tool_changes(&base_messages, &declarations, &prompts);
+    let mut new_messages: Vec<AgentMessage> = initial_messages.clone();
     let mut current_context = AgentContext {
         system_prompt: context.system_prompt.clone(),
-        messages: [&context.messages[..], &prompts[..]].concat(),
+        messages: [&base_messages[..], &initial_messages[..]].concat(),
         tools: context.tools.clone(),
     };
 
     emit(AgentEvent::AgentStart).await;
     emit(AgentEvent::TurnStart).await;
 
-    for prompt in &prompts {
+    for message in &initial_messages {
         emit(AgentEvent::MessageStart {
-            message: prompt.clone(),
+            message: message.clone(),
         })
         .await;
         emit(AgentEvent::MessageEnd {
-            message: prompt.clone(),
+            message: message.clone(),
         })
         .await;
     }
@@ -1125,6 +1184,13 @@ pub async fn run_agent_loop_continue(
     }
 
     let mut current_context = context;
+    // Materialize the base prompt/tools into the transcript (P1-7).
+    if !matches!(current_context.messages.first(), Some(AgentMessage::System { .. })) {
+        let declarations = tool_declarations(current_context.tools.as_deref());
+        if let Some(initial) = initial_system_message(&current_context.system_prompt, &declarations) {
+            current_context.messages.insert(0, initial);
+        }
+    }
     let mut new_messages: Vec<AgentMessage> = Vec::new();
 
     emit(AgentEvent::AgentStart).await;
@@ -1262,7 +1328,13 @@ async fn run_loop(
             }
 
             if !pending_messages.is_empty() {
-                for message in pending_messages.drain(..) {
+                // Declare any tool-loadout change before the queued messages
+                // (TS `declareToolChanges`).
+                let declarations = tool_declarations(current_context.tools.as_deref());
+                let declared =
+                    declare_tool_changes(&current_context.messages, &declarations, &pending_messages);
+                pending_messages.clear();
+                for message in declared {
                     emit(AgentEvent::MessageStart {
                         message: message.clone(),
                     })
@@ -1507,6 +1579,67 @@ mod tests {
         DynTool,
     };
     use std::sync::Arc;
+
+    /// TS 9e05370b2: the prompt/tools become a leading transcript system
+    /// message; the provider request carries it in `messages` (no side-channel
+    /// `systemPrompt`/`tools`).
+    #[tokio::test]
+    async fn run_agent_loop_materializes_leading_system_message() {
+        let captured: Arc<std::sync::Mutex<Option<crate::pi_ai_types::Context>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let cap = captured.clone();
+        let stream_fn: StreamFn = Arc::new(move |_model, context, _thinking, _opts| {
+            *cap.lock().unwrap() = Some(context);
+            done_stream_fn_inner()
+        });
+
+        let tool = dummy_agent_tool(
+            "sample",
+            serde_json::json!({"type": "object"}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::Value::Null,
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            }),
+        );
+        let context = AgentContext {
+            system_prompt: "You are helpful".into(),
+            messages: vec![],
+            tools: Some(vec![tool]),
+        };
+
+        run_agent_loop(
+            vec![user_prompt()],
+            context,
+            &minimal_loop_config(),
+            &dummy_event_sink(),
+            &None,
+            &stream_fn,
+        )
+        .await
+        .unwrap();
+
+        let ctx = captured.lock().unwrap().clone().unwrap();
+        assert!(ctx.system_prompt.is_none(), "no side-channel prompt");
+        assert!(ctx.tools.is_none(), "no side-channel tools");
+        match &ctx.messages[0] {
+            crate::pi_ai_types::Message::System {
+                content,
+                tools_added,
+                ..
+            } => {
+                assert_eq!(
+                    content,
+                    &crate::pi_ai_types::SystemContent::Text("You are helpful".into())
+                );
+                assert_eq!(tools_added.as_ref().unwrap()[0].name, "sample");
+            }
+            other => panic!("expected leading system message, got {other:?}"),
+        }
+    }
 
     fn dummy_tool_call(id: &str, name: &str, args: serde_json::Value) -> AgentToolCall {
         AgentToolCall {

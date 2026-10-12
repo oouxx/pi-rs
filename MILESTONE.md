@@ -53,8 +53,8 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 1. ✅ pi-ai transcript 纯函数（`utils/transcript.rs`：normalize / collapse / resolve / replay / tool-delta 探测）+ `ToolReference` 类型（7 测试）
 2. ✅ 类型层：`SystemMessage` 变体进 `Message`（`SystemContent` string|blocks、`sections`、`toolsAdded`/`toolsRemoved`）+ 迁移全部匹配点（providers / estimate / transform / serialize_conversation；provider 暂以 no-op arm 占位，待第 3 步接管）；serde 往返测试
 3. 🔄 provider 请求构建：三个适配器入口调 `Context::collapsed()`（把 transcript system 消息折叠回 `systemPrompt`/`tools` 并丢弃，对齐 `collapseSystemMessages`）——**collapse 路径已接线**；支持 mid-convo system 的 provider 原样发送待后续
-4. 🔄 agent-core：`AgentMessage::System`（+ convert / estimate / 转录渲染迁移）与 `declare_tool_changes` 纯函数已完成（带测试）；**尚未接线到 run_agent_loop**，且 `AgentContext.systemPrompt` 仍保留——完整落地需移除 systemPrompt、改由编码层构造前置 system 消息（与第 5 步耦合）
-5. coding-agent system-prompt 重写（sections/tools delta）+ 恢复/分支导航保留变更
+4. ✅ agent-core：`AgentMessage::System` + `declare_tool_changes` **已接线**——`run_agent_loop` 把 base prompt/tools 实体化为前置 system 消息并在 pending 前声明工具 delta；`stream_assistant_response` 改为从 transcript 构建请求（`systemPrompt`/`tools` 侧道不再传入，仅作为输入源）；直接调用者回退补前置 system 消息
+5. 🔄 coding-agent：prompt/tools 已随 transcript 传递并在恢复/分支时空保留；**sections-based prompt 重建（system-prompt.ts）与 mid-convo capability 元数据**待续
 
 - **P1-8** ModelRuntime / ai Models 运行时 API（auth signal / stored+publish / isSubscription）
 - **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差

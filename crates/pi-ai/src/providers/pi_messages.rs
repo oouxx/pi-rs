@@ -665,7 +665,8 @@ pub fn stream_pi_messages(
     options: Option<&StreamOptions>,
 ) -> AssistantMessageEventStream {
     let model = model.clone();
-    let context = context.clone();
+    // Collapse transcript system messages into the leading prompt/tools (P1-7).
+    let context = context.collapsed();
     let owned_options = options.cloned();
     let api_key = owned_options
         .as_ref()

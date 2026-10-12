@@ -558,6 +558,102 @@ pub struct UserBashResult {
     pub result: Option<serde_json::Value>,
 }
 
+// ============================================================================
+// Boundary events (turn_end / agent_before_settle)
+// ============================================================================
+
+/// Outcome of a completed turn/run (TS `AgentActivityOutcome`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentActivityOutcome {
+    Completed,
+    Aborted,
+    Error,
+}
+
+/// Append-only session entry draft an extension may add at a boundary
+/// (TS `SessionBoundaryDraft`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum SessionBoundaryDraft {
+    #[serde(rename = "custom", rename_all = "camelCase")]
+    Custom {
+        custom_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
+    #[serde(rename = "custom_message", rename_all = "camelCase")]
+    CustomMessage {
+        custom_type: String,
+        content: serde_json::Value,
+        display: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
+    },
+    #[serde(rename = "context_edit", rename_all = "camelCase")]
+    ContextEdit {
+        target_id: String,
+        replacement: serde_json::Value,
+    },
+    #[serde(rename = "compaction", rename_all = "camelCase")]
+    Compaction {
+        summary: String,
+        /// `None`/`null` creates a self-retaining compaction.
+        #[serde(default)]
+        first_kept_entry_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<serde_json::Value>,
+    },
+}
+
+/// Which boundary is being dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryKind {
+    TurnEnd,
+    AgentBeforeSettle,
+}
+
+/// Model-context preview handed to boundary handlers (TS
+/// `BoundaryContextPreview`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryContextPreview {
+    pub context_entries: Vec<serde_json::Value>,
+    pub context_messages: Vec<serde_json::Value>,
+    pub llm_messages: Vec<serde_json::Value>,
+    pub pending_messages: Vec<serde_json::Value>,
+    pub can_continue: bool,
+}
+
+/// Mutable boundary state visible to each handler (TS `BoundaryState`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryState {
+    pub entries: Vec<SessionBoundaryDraft>,
+    #[serde(rename = "continue")]
+    pub continue_: bool,
+    pub context: BoundaryContextPreview,
+    pub outcome: AgentActivityOutcome,
+}
+
+/// Result returned by a boundary handler (TS `BoundaryResult`). Returning
+/// `None` (or all-`None` fields) leaves the state unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct BoundaryResult {
+    pub entries: Option<Vec<SessionBoundaryDraft>>,
+    pub continue_: Option<bool>,
+}
+
+/// Outcome of a boundary dispatch (TS `BoundaryDispatchResult`).
+#[derive(Debug, Clone)]
+pub struct BoundaryDispatchResult {
+    pub entries: Vec<SessionBoundaryDraft>,
+    pub continue_: bool,
+    pub context: BoundaryContextPreview,
+    pub valid: bool,
+}
 
 // ============================================================================
 // EventPublisher

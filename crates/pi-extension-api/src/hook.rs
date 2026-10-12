@@ -341,6 +341,25 @@ pub trait HookHandler: Send + Sync {
     ) {
     }
 
+    /// Turn-end **boundary** (TS `turn_end` boundary, 466db0fec). Returning
+    /// entries/continue injects append-only session entries and/or requests one
+    /// more provider request. Runs sequentially (each handler sees the previous
+    /// handler's state); the void `on_turn_end` remains for notifications.
+    async fn on_turn_end_boundary(
+        &self,
+        _state: crate::BoundaryState,
+    ) -> Option<crate::BoundaryResult> {
+        None
+    }
+
+    /// Before-settle **boundary** (TS `agent_before_settle`).
+    async fn on_agent_before_settle_boundary(
+        &self,
+        _state: crate::BoundaryState,
+    ) -> Option<crate::BoundaryResult> {
+        None
+    }
+
     /// 消息开始时触发。
     async fn on_message_start(&self, _message: &Value) {}
 
@@ -672,6 +691,65 @@ impl HookRunner {
             .map(|h| h.on_turn_end(turn_index, message, tool_results, timestamp, ctx))
             .collect();
         futures::future::join_all(futures).await;
+    }
+
+    /// Dispatch a boundary sequentially (TS `ExtensionRunner.emitBoundary`).
+    ///
+    /// Each handler receives the state accumulated so far; its returned
+    /// `entries`/`continue` replace the current values. After every handler the
+    /// caller-supplied `build_context` recomputes the model-context preview
+    /// (mirroring TS `buildContext`); if it fails, the dispatch is marked
+    /// invalid and drafts are discarded.
+    pub async fn run_boundary<F>(
+        &self,
+        kind: crate::BoundaryKind,
+        mut state: crate::BoundaryState,
+        build_context: F,
+    ) -> crate::BoundaryDispatchResult
+    where
+        F: Fn(
+            &[crate::SessionBoundaryDraft],
+        ) -> Result<crate::BoundaryContextPreview, String>,
+    {
+        let mut valid = true;
+        for handler in &self.handlers {
+            let result = match kind {
+                crate::BoundaryKind::TurnEnd => handler.on_turn_end_boundary(state.clone()).await,
+                crate::BoundaryKind::AgentBeforeSettle => {
+                    handler.on_agent_before_settle_boundary(state.clone()).await
+                }
+            };
+            if let Some(r) = result {
+                if let Some(entries) = r.entries {
+                    state.entries = entries;
+                }
+                if let Some(cont) = r.continue_ {
+                    state.continue_ = cont;
+                }
+            }
+            match build_context(&state.entries) {
+                Ok(context) => {
+                    state.context = context;
+                    valid = true;
+                }
+                Err(_) => valid = false,
+            }
+        }
+        if valid {
+            crate::BoundaryDispatchResult {
+                entries: state.entries,
+                continue_: state.continue_,
+                context: state.context,
+                valid,
+            }
+        } else {
+            crate::BoundaryDispatchResult {
+                entries: Vec::new(),
+                continue_: false,
+                context: state.context,
+                valid: false,
+            }
+        }
     }
 
     /// Fire `on_message_start` to all handlers (parallel).
@@ -1157,9 +1235,127 @@ impl HookRunner {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn boundary_dispatch_accumulates_entries_and_continue() {
+        use std::sync::Mutex;
+
+        fn preview() -> crate::BoundaryContextPreview {
+            crate::BoundaryContextPreview {
+                context_entries: vec![],
+                context_messages: vec![],
+                llm_messages: vec![],
+                pending_messages: vec![],
+                can_continue: true,
+            }
+        }
+
+        struct H {
+            name: String,
+            entries: Option<Vec<crate::SessionBoundaryDraft>>,
+            cont: Option<bool>,
+        }
+
+        #[async_trait]
+        impl HookHandler for H {
+            fn name(&self) -> &str {
+                &self.name
+            }
+            async fn on_turn_end_boundary(
+                &self,
+                _state: crate::BoundaryState,
+            ) -> Option<crate::BoundaryResult> {
+                Some(crate::BoundaryResult {
+                    entries: self.entries.clone(),
+                    continue_: self.cont,
+                })
+            }
+        }
+
+        let seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut runner = HookRunner::new();
+        runner.register(Box::new(H {
+            name: "h1".into(),
+            entries: Some(vec![crate::SessionBoundaryDraft::Custom {
+                custom_type: "x".into(),
+                data: None,
+            }]),
+            cont: Some(false),
+        }));
+        runner.register(Box::new(H {
+            name: "h2".into(),
+            entries: None,
+            cont: Some(true),
+        }));
+
+        let state = crate::BoundaryState {
+            entries: vec![],
+            continue_: false,
+            context: preview(),
+            outcome: crate::AgentActivityOutcome::Completed,
+        };
+        let seen2 = seen.clone();
+        let result = runner
+            .run_boundary(crate::BoundaryKind::TurnEnd, state, move |entries| {
+                seen2.lock().unwrap().push(entries.len());
+                Ok(preview())
+            })
+            .await;
+
+        assert!(result.valid);
+        assert_eq!(result.entries.len(), 1, "h1's entry is kept (h2 returned None)");
+        assert!(result.continue_, "h2 requested continuation");
+        assert_eq!(*seen.lock().unwrap(), vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn boundary_dispatch_invalid_context_discards_drafts() {
+        struct H;
+        #[async_trait]
+        impl HookHandler for H {
+            fn name(&self) -> &str {
+                "h"
+            }
+            async fn on_agent_before_settle_boundary(
+                &self,
+                _state: crate::BoundaryState,
+            ) -> Option<crate::BoundaryResult> {
+                Some(crate::BoundaryResult {
+                    entries: Some(vec![crate::SessionBoundaryDraft::Custom {
+                        custom_type: "x".into(),
+                        data: None,
+                    }]),
+                    continue_: Some(true),
+                })
+            }
+        }
+        let mut runner = HookRunner::new();
+        runner.register(Box::new(H));
+        let state = crate::BoundaryState {
+            entries: vec![],
+            continue_: false,
+            context: crate::BoundaryContextPreview {
+                context_entries: vec![],
+                context_messages: vec![],
+                llm_messages: vec![],
+                pending_messages: vec![],
+                can_continue: false,
+            },
+            outcome: crate::AgentActivityOutcome::Error,
+        };
+        let result = runner
+            .run_boundary(crate::BoundaryKind::AgentBeforeSettle, state, |_| {
+                Err("bad entries".to_string())
+            })
+            .await;
+        assert!(!result.valid);
+        assert!(result.entries.is_empty());
+        assert!(!result.continue_);
+    }
 
     #[tokio::test]
     async fn void_hooks_fire_to_all_handlers() {

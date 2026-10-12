@@ -11,9 +11,10 @@ use crate::pi_ai_types::{
 };
 use crate::types::{
     AfterToolCallContext, AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage,
-    AgentToolCall, AgentToolResult, BeforeToolCallContext, BeforeToolCallFn, ConvertToLlmFn,
-    GetFollowUpMessagesFn, GetSteeringMessagesFn, PrepareNextTurnFn, ShouldStopAfterTurnContext,
-    ShouldStopAfterTurnFn, StreamFn, StreamFnOptions, TransformContextFn,
+    AgentRequestUpdate, AgentToolCall, AgentToolResult, AgentTurnContext, AgentTurnDecision,
+    BeforeToolCallContext, BeforeToolCallFn, ConvertToLlmFn, FinishTurnFn, GetFollowUpMessagesFn,
+    GetSteeringMessagesFn, PrepareNextTurnFn, PrepareRequestContext, PrepareRequestFn, StreamFn,
+    StreamFnOptions, TransformContextFn,
 };
 
 /// Check whether the signal watch has received an abort (true) value.
@@ -905,7 +906,8 @@ pub struct AgentLoopConfig {
     pub get_api_key: Option<crate::types::GetApiKeyFn>,
     pub get_steering_messages: Option<GetSteeringMessagesFn>,
     pub get_follow_up_messages: Option<GetFollowUpMessagesFn>,
-    pub should_stop_after_turn: Option<ShouldStopAfterTurnFn>,
+    pub finish_turn: Option<FinishTurnFn>,
+    pub prepare_request: Option<PrepareRequestFn>,
     pub prepare_next_turn: Option<PrepareNextTurnFn>,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
@@ -1076,6 +1078,29 @@ pub fn agent_loop_continue(
     Box::pin(UnboundedReceiverStream::new(rx))
 }
 
+/// Apply a `prepareRequest` update to the loop runtime state (TS inline logic):
+/// a returned thinking level of `off` clears `reasoning`.
+fn apply_request_update(
+    update: AgentRequestUpdate,
+    current_context: &mut AgentContext,
+    config_model: &mut Model,
+    config_reasoning: &mut Option<ThinkingLevel>,
+) {
+    if let Some(ctx) = update.context {
+        *current_context = ctx;
+    }
+    if let Some(model) = update.model {
+        *config_model = model;
+    }
+    if let Some(level) = update.thinking_level {
+        *config_reasoning = if level == crate::pi_ai_types::THINKING_OFF {
+            None
+        } else {
+            Some(level)
+        };
+    }
+}
+
 async fn run_loop(
     current_context: &mut AgentContext,
     new_messages: &mut Vec<AgentMessage>,
@@ -1087,6 +1112,7 @@ async fn run_loop(
     let mut config_model = initial_config.model.clone();
     let mut config_reasoning = initial_config.reasoning.clone();
     let mut first_turn = true;
+    let mut explicit_continuation = false;
 
     let mut pending_messages: Vec<AgentMessage> =
         if let Some(get_steering) = &initial_config.get_steering_messages {
@@ -1117,6 +1143,26 @@ async fn run_loop(
                     .await;
                     current_context.messages.push(message.clone());
                     new_messages.push(message);
+                }
+            }
+
+            // TS `prepareRequest`: runs before every provider request, including
+            // the first. The returned context/model/thinking level replace the
+            // runtime values for this and later requests in the run.
+            if let Some(prepare_request) = &initial_config.prepare_request {
+                let request_update = prepare_request(
+                    PrepareRequestContext {
+                        context: current_context.clone(),
+                        model: config_model.clone(),
+                        thinking_level: config_reasoning
+                            .clone()
+                            .unwrap_or_else(|| crate::pi_ai_types::THINKING_OFF.to_string()),
+                    },
+                    signal.clone(),
+                )
+                .await;
+                if let Some(update) = request_update {
+                    apply_request_update(update, current_context, &mut config_model, &mut config_reasoning);
                 }
             }
 
@@ -1168,6 +1214,17 @@ async fn run_loop(
             let stop_reason = message.stop_reason.clone();
             match stop_reason {
                 StopReason::Error | StopReason::Aborted => {
+                    // TS: finishTurn also runs for hard exits, but its decision is
+                    // ignored (error/aborted responses remain terminal).
+                    let completed_turn = AgentTurnContext {
+                        message: agent_msg.clone(),
+                        tool_results: Vec::new(),
+                        context: current_context.clone(),
+                        new_messages: new_messages.clone(),
+                    };
+                    if let Some(finish_turn) = &initial_config.finish_turn {
+                        let _ = finish_turn(completed_turn, signal.clone()).await;
+                    }
                     emit(AgentEvent::TurnEnd {
                         message: agent_msg,
                         tool_results: Vec::new(),
@@ -1211,21 +1268,29 @@ async fn run_loop(
                 }
 
                 if batch.terminate {
-                    emit(AgentEvent::TurnEnd {
-                        message: agent_msg.clone(),
-                        tool_results: batch.messages.clone(),
-                    })
-                    .await;
-                    emit(AgentEvent::AgentEnd {
-                        messages: new_messages.clone(),
-                    })
-                    .await;
-                    return Ok(());
+                    // TS: a terminating tool batch stops tool iteration but does
+                    // not bypass finishTurn / turn_end.
+                    has_more_tool_calls = false;
                 }
 
                 batch.messages
             } else {
                 Vec::new()
+            };
+
+            let completed_turn = AgentTurnContext {
+                message: agent_msg.clone(),
+                tool_results: tool_results.clone(),
+                context: current_context.clone(),
+                new_messages: new_messages.clone(),
+            };
+
+            // TS: finishTurn runs after assistant + tool results are finalized,
+            // immediately before `turn_end`.
+            let decision = if let Some(finish_turn) = &initial_config.finish_turn {
+                finish_turn(completed_turn.clone(), signal.clone()).await
+            } else {
+                None
             };
 
             emit(AgentEvent::TurnEnd {
@@ -1234,16 +1299,17 @@ async fn run_loop(
             })
             .await;
 
-            let next_turn_context = ShouldStopAfterTurnContext {
-                message: agent_msg.clone(),
-                tool_results: tool_results.clone(),
-                context: current_context.clone(),
-                new_messages: new_messages.clone(),
-            };
+            if decision == Some(AgentTurnDecision::End) {
+                emit(AgentEvent::AgentEnd {
+                    messages: new_messages.clone(),
+                })
+                .await;
+                return Ok(());
+            }
 
             if let Some(prepare_next_turn) = &initial_config.prepare_next_turn {
                 if let Some(update) =
-                    prepare_next_turn(next_turn_context.clone(), signal.clone()).await
+                    prepare_next_turn(completed_turn, signal.clone()).await
                 {
                     if let Some(ctx) = update.context {
                         *current_context = ctx;
@@ -1257,21 +1323,17 @@ async fn run_loop(
                 }
             }
 
-            if let Some(should_stop) = &initial_config.should_stop_after_turn {
-                if should_stop(next_turn_context).await {
-                    emit(AgentEvent::AgentEnd {
-                        messages: new_messages.clone(),
-                    })
-                    .await;
-                    return Ok(());
-                }
-            }
-
+            explicit_continuation = decision == Some(AgentTurnDecision::Continue);
             pending_messages = if let Some(get_steering) = &initial_config.get_steering_messages {
                 get_steering().await
             } else {
                 Vec::new()
             };
+            // TS: a scheduled tool-result / steering request satisfies the
+            // continuation, so it needs no extra context-only turn.
+            if has_more_tool_calls || !pending_messages.is_empty() {
+                explicit_continuation = false;
+            }
         }
 
         let follow_up_messages = if let Some(get_follow_up) = &initial_config.get_follow_up_messages
@@ -1282,7 +1344,16 @@ async fn run_loop(
         };
 
         if !follow_up_messages.is_empty() {
+            // Set as pending so inner loop processes them
+            explicit_continuation = false;
             pending_messages = follow_up_messages;
+            continue;
+        }
+
+        // No natural request was selected, so fulfill the continuation decision
+        // with one context-only turn.
+        if explicit_continuation {
+            explicit_continuation = false;
             continue;
         }
 
@@ -1477,7 +1548,8 @@ mod tests {
             get_api_key: None,
             get_steering_messages: None,
             get_follow_up_messages: None,
-            should_stop_after_turn: None,
+            finish_turn: None,
+            prepare_request: None,
             prepare_next_turn: None,
             before_tool_call: None,
             after_tool_call: None,
@@ -2577,7 +2649,8 @@ mod tests {
             get_api_key: None,
             get_steering_messages: None,
             get_follow_up_messages: None,
-            should_stop_after_turn: None,
+            finish_turn: None,
+            prepare_request: None,
             prepare_next_turn: None,
             before_tool_call: None,
             after_tool_call: None,
@@ -2670,5 +2743,207 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
+    }
+
+    // ============================================================
+    // finishTurn / prepareRequest (TS 0.87 boundaries)
+    // ============================================================
+
+    /// Stream fn that returns a single completed assistant message (no tools).
+    fn done_stream_fn() -> StreamFn {
+        Arc::new(|_model, _ctx, _thinking, _opts| done_stream_fn_inner())
+    }
+
+    fn user_prompt() -> AgentMessage {
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hi")],
+            timestamp: 1000,
+        }
+    }
+
+    fn test_context() -> AgentContext {
+        AgentContext {
+            system_prompt: String::new(),
+            messages: vec![],
+            tools: vec![].into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_finish_turn_runs_before_turn_end_and_can_end_run() {
+        let order: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let finish_turn: FinishTurnFn = {
+            let order = order.clone();
+            Arc::new(move |_ctx: AgentTurnContext, _sig| {
+                let order = order.clone();
+                Box::pin(async move {
+                    order.lock().unwrap().push("finish".into());
+                    Some(AgentTurnDecision::End)
+                })
+            })
+        };
+
+        let emit: AgentEventSink = {
+            let order = order.clone();
+            Arc::new(move |event| {
+                let name = match event {
+                    AgentEvent::TurnEnd { .. } => "turn_end",
+                    AgentEvent::AgentEnd { .. } => "agent_end",
+                    _ => "other",
+                };
+                order.lock().unwrap().push(name.into());
+                Box::pin(async {})
+            })
+        };
+
+        let mut config = minimal_loop_config();
+        config.finish_turn = Some(finish_turn);
+
+        run_agent_loop(
+            vec![user_prompt()],
+            test_context(),
+            &config,
+            &emit,
+            &None,
+            &done_stream_fn(),
+        )
+        .await
+        .unwrap();
+
+        let log = order.lock().unwrap().clone();
+        let finish = log.iter().position(|s| s == "finish").expect("finishTurn ran");
+        let turn_end = log.iter().position(|s| s == "turn_end").expect("turn_end");
+        let agent_end = log.iter().position(|s| s == "agent_end").expect("agent_end");
+        assert!(finish < turn_end, "finishTurn runs before turn_end: {log:?}");
+        assert!(turn_end < agent_end, "turn_end before agent_end: {log:?}");
+    }
+
+    #[tokio::test]
+    async fn test_finish_turn_continue_triggers_one_extra_request() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stream_fn: StreamFn = {
+            let calls = calls.clone();
+            Arc::new(move |_model, _ctx, _thinking, _opts| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                done_stream_fn_inner()
+            })
+        };
+
+        let finishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let finish_turn: FinishTurnFn = {
+            let finishes = finishes.clone();
+            Arc::new(move |_ctx: AgentTurnContext, _sig| {
+                let finishes = finishes.clone();
+                Box::pin(async move {
+                    // First turn requests a continuation, second turn ends.
+                    let n = finishes.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        Some(AgentTurnDecision::Continue)
+                    } else {
+                        Some(AgentTurnDecision::End)
+                    }
+                })
+            })
+        };
+
+        let mut config = minimal_loop_config();
+        config.finish_turn = Some(finish_turn);
+
+        run_agent_loop(
+            vec![user_prompt()],
+            test_context(),
+            &config,
+            &dummy_event_sink(),
+            &None,
+            &stream_fn,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "`continue` schedules exactly one extra request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_request_runs_before_first_request() {
+        let seen_model: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let stream_fn: StreamFn = {
+            let seen_model = seen_model.clone();
+            Arc::new(move |model, _ctx, _thinking, _opts| {
+                *seen_model.lock().unwrap() = Some(model.id.clone());
+                done_stream_fn_inner()
+            })
+        };
+
+        let prepare_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let prepare_request: PrepareRequestFn = {
+            let prepare_calls = prepare_calls.clone();
+            Arc::new(move |_req: PrepareRequestContext, _sig| {
+                let prepare_calls = prepare_calls.clone();
+                Box::pin(async move {
+                    prepare_calls.fetch_add(1, Ordering::SeqCst);
+                    Some(AgentRequestUpdate {
+                        model: Some(model_with_id("overridden")),
+                        ..Default::default()
+                    })
+                })
+            })
+        };
+
+        let mut config = minimal_loop_config();
+        config.prepare_request = Some(prepare_request);
+
+        run_agent_loop(
+            vec![user_prompt()],
+            test_context(),
+            &config,
+            &dummy_event_sink(),
+            &None,
+            &stream_fn,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(prepare_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            seen_model.lock().unwrap().as_deref(),
+            Some("overridden"),
+            "prepareRequest model override reaches the provider request"
+        );
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn done_stream_fn_inner() -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::pi_ai_types::StreamResponse,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
+                > + Send,
+        >,
+    > {
+        Box::pin(async {
+            let events: Box<
+                dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent> + Send + Unpin,
+            > = Box::new(futures::stream::iter([
+                crate::pi_ai_types::AssistantMessageEvent::Done {
+                    reason: StopReason::Stop,
+                    message: dummy_assistant_message_llm(),
+                },
+            ]));
+            Ok(events)
+        })
+    }
+
+    fn model_with_id(id: &str) -> Model {
+        let mut model = minimal_loop_config().model;
+        model.id = id.to_string();
+        model
     }
 }

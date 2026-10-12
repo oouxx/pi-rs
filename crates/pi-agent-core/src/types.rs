@@ -346,16 +346,45 @@ pub struct AfterToolCallContext {
     pub context: AgentContext,
 }
 
+/// Context passed to completed-turn callbacks (TS `AgentTurnContext`).
 #[derive(Clone)]
-pub struct ShouldStopAfterTurnContext {
+pub struct AgentTurnContext {
     pub message: AgentMessage,
     pub tool_results: Vec<AgentMessage>,
     pub context: AgentContext,
     pub new_messages: Vec<AgentMessage>,
 }
 
-/// Alias to match TS `PrepareNextTurnContext extends ShouldStopAfterTurnContext`.
-pub type PrepareNextTurnContext = ShouldStopAfterTurnContext;
+/// Decision returned by [`FinishTurnFn`] (TS `AgentTurnDecision`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgentTurnDecision {
+    /// Ensure one next provider request (no-op when tool results / steering /
+    /// follow-up already schedule one).
+    Continue,
+    /// End the run without polling queues or preparing another request.
+    End,
+}
+
+/// Alias to match TS `PrepareNextTurnContext extends AgentTurnContext`.
+pub type PrepareNextTurnContext = AgentTurnContext;
+
+/// Runtime state available immediately before a conversational provider
+/// request (TS `PrepareRequestContext`).
+#[derive(Clone)]
+pub struct PrepareRequestContext {
+    pub context: AgentContext,
+    pub model: Model,
+    pub thinking_level: ThinkingLevel,
+}
+
+/// Replacement runtime state for the provider request being prepared
+/// (TS `AgentRequestUpdate` = `Omit<AgentLoopTurnUpdate, "messages">`).
+#[derive(Clone, Default)]
+pub struct AgentRequestUpdate {
+    pub context: Option<AgentContext>,
+    pub model: Option<Model>,
+    pub thinking_level: Option<ThinkingLevel>,
+}
 
 pub struct AgentLoopTurnUpdate {
     pub context: Option<AgentContext>,
@@ -482,11 +511,25 @@ pub type GetFollowUpMessagesFn = Arc<
         + Sync,
 >;
 
-pub type ShouldStopAfterTurnFn = Arc<
+pub type FinishTurnFn = Arc<
     dyn Fn(
-            ShouldStopAfterTurnContext,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
-        + Send
+            AgentTurnContext,
+            Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<AgentTurnDecision>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// Matches TS `AgentLoopConfig.prepareRequest` — called before every provider
+/// request, including the first.
+pub type PrepareRequestFn = Arc<
+    dyn Fn(
+            PrepareRequestContext,
+            Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<AgentRequestUpdate>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -505,7 +548,7 @@ pub type PrepareNextTurnOptionsFn = Arc<
 /// and an optional abort signal.
 pub type PrepareNextTurnFn = Arc<
     dyn Fn(
-            ShouldStopAfterTurnContext,
+            AgentTurnContext,
             Option<tokio::sync::watch::Receiver<bool>>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Option<AgentLoopTurnUpdate>> + Send>,

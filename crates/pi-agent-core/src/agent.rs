@@ -8,8 +8,9 @@ use crate::pi_ai_types::{
 };
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
-    BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, PrepareNextTurnFn, PrepareNextTurnOptionsFn,
-    QueueMode, ShouldStopAfterTurnFn, StreamFn, TransformContextFn,
+    AgentTurnContext, BeforeToolCallFn, ConvertToLlmFn, FinishTurnFn, GetApiKeyFn,
+    PrepareNextTurnFn, PrepareNextTurnOptionsFn, PrepareRequestFn, QueueMode, StreamFn,
+    TransformContextFn,
 };
 
 /// Global fallback stream function used by `Agent` when callers omit `stream_fn`
@@ -122,6 +123,10 @@ pub struct AgentOptions {
     pub prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
     /// Takes the full turn context. Matches TS `AgentOptions.prepareNextTurnWithContext`.
     pub prepare_next_turn_with_context: Option<PrepareNextTurnFn>,
+    /// Called after a completed turn, before `turn_end` (TS `AgentOptions.finishTurn`).
+    pub finish_turn: Option<FinishTurnFn>,
+    /// Called before every provider request, including the first (TS `AgentOptions.prepareRequest`).
+    pub prepare_request: Option<PrepareRequestFn>,
     pub steering_mode: Option<QueueMode>,
     pub follow_up_mode: Option<QueueMode>,
     pub session_id: Option<String>,
@@ -156,6 +161,8 @@ impl Default for AgentOptions {
             after_tool_call: None,
             prepare_next_turn: None,
             prepare_next_turn_with_context: None,
+            finish_turn: None,
+            prepare_request: None,
             steering_mode: None,
             follow_up_mode: None,
             session_id: None,
@@ -219,7 +226,8 @@ pub struct Agent {
     after_tool_call: Option<AfterToolCallFn>,
     prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
     prepare_next_turn_with_context: Option<PrepareNextTurnFn>,
-    should_stop_after_turn: Option<ShouldStopAfterTurnFn>,
+    finish_turn: Option<FinishTurnFn>,
+    prepare_request: Option<PrepareRequestFn>,
     steering_queue: Arc<Mutex<PendingMessageQueue>>,
     follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
     session_id: Option<String>,
@@ -336,7 +344,8 @@ impl Agent {
             after_tool_call: options.after_tool_call,
             prepare_next_turn: options.prepare_next_turn,
             prepare_next_turn_with_context: options.prepare_next_turn_with_context,
-            should_stop_after_turn: None,
+            finish_turn: options.finish_turn,
+            prepare_request: options.prepare_request,
             steering_queue: Arc::new(Mutex::new(PendingMessageQueue::new(
                 options.steering_mode.unwrap_or(QueueMode::OneAtATime),
             ))),
@@ -363,8 +372,12 @@ impl Agent {
         }
     }
 
-    pub fn set_should_stop_after_turn(&mut self, f: ShouldStopAfterTurnFn) {
-        self.should_stop_after_turn = Some(f);
+    pub fn set_finish_turn(&mut self, f: FinishTurnFn) {
+        self.finish_turn = Some(f);
+    }
+
+    pub fn set_prepare_request(&mut self, f: PrepareRequestFn) {
+        self.prepare_request = Some(f);
     }
 
     /// Set the `before_tool_call` hook, replacing any existing one.
@@ -790,13 +803,14 @@ impl Agent {
                 let q = follow_up_queue.clone();
                 Box::pin(async move { q.lock().await.drain() })
             })),
-            should_stop_after_turn: self.should_stop_after_turn.clone(),
+            finish_turn: self.finish_turn.clone(),
+            prepare_request: self.prepare_request.clone(),
             prepare_next_turn: {
                 let pnt = self.prepare_next_turn.clone();
                 let pntwc = self.prepare_next_turn_with_context.clone();
                 let cancel_rx_clone = cancel_rx.clone();
                 if pntwc.is_some() || pnt.is_some() {
-                    Some(Arc::new(move |ctx: crate::types::ShouldStopAfterTurnContext, sig: Option<tokio::sync::watch::Receiver<bool>>| {
+                    Some(Arc::new(move |ctx: AgentTurnContext, sig: Option<tokio::sync::watch::Receiver<bool>>| {
                         let pnt = pnt.clone();
                         let pntwc = pntwc.clone();
                         let sig = sig.or_else(|| Some(cancel_rx_clone.clone()));

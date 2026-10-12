@@ -840,7 +840,8 @@ where
                     msgs
                 })
             })),
-            should_stop_after_turn: None,
+            finish_turn: None,
+            prepare_request: None,
             prepare_next_turn: None,
             before_tool_call: Some(Arc::new(move |ctx: crate::types::BeforeToolCallContext, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
                 let handlers = handlers2.clone();

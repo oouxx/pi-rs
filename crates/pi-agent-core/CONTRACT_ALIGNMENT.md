@@ -7,7 +7,9 @@
 | --- | --- | --- | --- |
 | Agent loop | 流式响应、工具调用、多轮执行，直到无 tool call 或终止 | 已实现 `agent_loop` 多轮执行 | 已对齐核心行为 |
 | 工具执行事件 | 发出工具开始、更新、结束事件，并关联 tool call id | 已通过 `AgentEvent` / session event 转发 | 已对齐核心行为 |
-| steering / follow-up | 支持运行中排队，并按配置消费 | 已实现队列和消费模式 | 已对齐核心行为 |
+| steering / follow-up | 支持运行中排队，并按配置消费 | 已实现队列和消费模式；`peekQueuedMessages()` 预览不消费 | 已对齐核心行为 |
+| 回合边界回调 | `finishTurn` 在 `turn_end` 之前运行（error/aborted 也运行，决策忽略）；`{action:"end"}` 结束、`{action:"continue"}` 保证一次后续请求；`prepareRequest` 在每次 provider 请求（含首次）前运行并覆盖 context/model/thinking | 已实现（`agent_loop` + `Agent::finish_turn`/`prepare_request`/`peek_queued_messages`） | 已对齐（扩展边界事件 `AgentBeforeSettle`/`emitBoundary`/`TurnEndEvent` 字段待 P0-4） |
+| 工具批次终止 | `terminate` 只停止工具迭代，不跳过 `finishTurn`/`turn_end` | 同款（此前提前 `agent_end` 返回，已修） | 已对齐 |
 | abort | 取消当前运行并停止后续工具/模型流程 | 已实现 `abort` 及 session 侧取消路径 | 已对齐核心行为 |
 | retry | provider/assistant 错误按 retry policy 重试并发出生命周期事件 | 已实现 agent 级 retry 和相关事件 | 已对齐核心行为 |
 | compaction | 压缩请求使用独立 routing session，并支持重试 | 已实现；部分 branch-summary 能力受范围限制 | 有界对齐，见 crate `DEVIATIONS.md` |

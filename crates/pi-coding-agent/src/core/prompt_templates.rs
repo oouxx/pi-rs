@@ -94,9 +94,11 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> LoadPrompt
                 &mut diagnostics,
             );
         } else if path.is_file() && raw_path.ends_with(".md") {
-            if let Some(template) = load_prompt_from_file(&path, PromptSource::Path) {
+            let (template, mut diags) = load_prompt_from_file(&path, PromptSource::Path);
+            if let Some(template) = template {
                 template_map.insert(template.name.clone(), template);
             }
+            diagnostics.append(&mut diags);
         }
     }
 
@@ -126,20 +128,51 @@ fn load_prompts_from_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() && path.extension().map(|e| e == "md").unwrap_or(false) {
-            if let Some(template) = load_prompt_from_file(&path, source.clone()) {
+            let (template, mut diags) = load_prompt_from_file(&path, source.clone());
+            if let Some(template) = template {
                 template_map.insert(template.name.clone(), template);
             }
+            diagnostics.append(&mut diags);
         }
     }
 }
 
-fn load_prompt_from_file(path: &Path, source: PromptSource) -> Option<PromptTemplate> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let file_name = path.file_stem()?.to_str()?.to_string();
+fn load_prompt_from_file(
+    path: &Path,
+    source: PromptSource,
+) -> (Option<PromptTemplate>, Vec<ResourceDiagnostic>) {
+    let mut diagnostics = Vec::new();
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            diagnostics.push(ResourceDiagnostic::Warning {
+                message: e.to_string(),
+                path: path.to_string_lossy().to_string(),
+            });
+            return (None, diagnostics);
+        }
+    };
+    let Some(file_name) = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+    else {
+        return (None, diagnostics);
+    };
     // 对齐 TS `loadTemplateFromFile`：description = frontmatter.description ||
     // 正文首个非空行（截断到 60 字符 + `...`）；argumentHint 来自
-    // frontmatter `argument-hint`。
-    let parsed = crate::utils::frontmatter::parse_frontmatter(&content);
+    // frontmatter `argument-hint`。非法 frontmatter 报 resource warning 并跳过
+    // 模板（TS #9830）。
+    let parsed = match crate::utils::frontmatter::try_parse_frontmatter(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            diagnostics.push(ResourceDiagnostic::Warning {
+                message: e,
+                path: path.to_string_lossy().to_string(),
+            });
+            return (None, diagnostics);
+        }
+    };
     let fm = parsed.frontmatter.as_object();
     let fm_str = |key: &str| {
         fm.and_then(|m| m.get(key))
@@ -160,15 +193,18 @@ fn load_prompt_from_file(path: &Path, source: PromptSource) -> Option<PromptTemp
         None,
     );
 
-    Some(PromptTemplate {
-        name: file_name,
-        description,
-        argument_hint,
-        file_path: path.to_string_lossy().to_string(),
-        source,
-        append,
-        source_info,
-    })
+    (
+        Some(PromptTemplate {
+            name: file_name,
+            description,
+            argument_hint,
+            file_path: path.to_string_lossy().to_string(),
+            source,
+            append,
+            source_info,
+        }),
+        diagnostics,
+    )
 }
 
 /// TS `loadTemplateFromFile` 的回退：正文首个非空行，超过 60 字符截断 + `...`。
@@ -344,10 +380,24 @@ mod tests {
             "---\ndescription: Code review\nargument-hint: <path>\n---\nReview $1\n",
         )
         .expect("write");
-        let t = load_prompt_from_file(&file, PromptSource::User).expect("template");
+        let (template, diagnostics) = load_prompt_from_file(&file, PromptSource::User);
+        assert!(diagnostics.is_empty());
+        let t = template.expect("template");
         assert_eq!(t.name, "review");
         assert_eq!(t.description, "Code review", "frontmatter description");
         assert_eq!(t.argument_hint.as_deref(), Some("<path>"));
+    }
+
+    /// 非法 frontmatter 报 resource warning 并跳过模板（TS #9830）。
+    #[test]
+    fn load_prompt_from_file_reports_invalid_frontmatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("broken.md");
+        // Unclosed quote → invalid YAML.
+        std::fs::write(&file, "---\ndescription: \"unterminated\n---\nbody\n").expect("write");
+        let (template, diagnostics) = load_prompt_from_file(&file, PromptSource::User);
+        assert!(template.is_none(), "malformed template is skipped");
+        assert_eq!(diagnostics.len(), 1, "one warning emitted");
     }
 
     /// 无 frontmatter description 时回退正文首个非空行（对齐 TS），且不再把
@@ -357,7 +407,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("plain.md");
         std::fs::write(&file, "\nFix the bug\nmore text\n").expect("write");
-        let t = load_prompt_from_file(&file, PromptSource::User).expect("template");
+        let (template, _diagnostics) = load_prompt_from_file(&file, PromptSource::User);
+        let t = template.expect("template");
         assert_eq!(t.description, "Fix the bug");
         assert_eq!(t.argument_hint, None);
     }

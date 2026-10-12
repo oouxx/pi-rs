@@ -43,6 +43,29 @@ fn extract_frontmatter(content: &str) -> (Option<String>, String) {
     }
 }
 
+/// Parse frontmatter from content, returning an error when the frontmatter is
+/// present but not valid YAML (TS `parseFrontmatter` uses the `yaml` package,
+/// which throws). Use this where a malformed frontmatter must be reported
+/// (e.g. prompt templates, TS #9830).
+pub fn try_parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
+    let (yaml_string, body) = extract_frontmatter(content);
+    let frontmatter = match yaml_string {
+        Some(yaml) => {
+            let value: serde_yaml::Value =
+                serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+            match value {
+                serde_yaml::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+                serde_yaml::Value::Mapping(_) => {
+                    serde_json::to_value(value).map_err(|e| e.to_string())?
+                }
+                _ => return Err("frontmatter must be a YAML mapping".to_string()),
+            }
+        }
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    Ok(ParsedFrontmatter { frontmatter, body })
+}
+
 /// Parse frontmatter from content.
 ///
 /// Returns the parsed frontmatter (as JSON Value) and the body text.

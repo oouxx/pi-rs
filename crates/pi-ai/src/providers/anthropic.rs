@@ -931,7 +931,8 @@ pub fn stream_anthropic(
     options: Option<&StreamOptions>,
 ) -> AssistantMessageEventStream {
     let model = model.clone();
-    let context = context.clone();
+    // Collapse transcript system messages into the leading prompt/tools (P1-7).
+    let context = context.collapsed();
     let owned_options = options.cloned();
     // Auth resolution (match TS `anthropicApiKeyAuth().resolve` for the
     // `anthropic` provider):

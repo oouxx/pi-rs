@@ -814,6 +814,70 @@ pub struct Context {
     pub tools: Option<Vec<Tool>>,
 }
 
+impl Context {
+    /// Serialize the transcript messages to their JSON wire form for the
+    /// transcript replay helpers.
+    fn transcript_values(&self) -> Vec<serde_json::Value> {
+        serde_json::to_value(&self.messages)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Effective system prompt after replaying every transcript system message
+    /// (TS `getCurrentSystemPrompt(normalizeContext(context))`). With the
+    /// `systemPrompt`/`tools` shorthand and no system messages this is the
+    /// shorthand prompt.
+    #[must_use]
+    pub fn effective_system_prompt(&self) -> String {
+        let messages = self.transcript_values();
+        let transcript = crate::utils::transcript::normalize_context(
+            self.system_prompt.as_deref(),
+            self.tools.as_deref(),
+            &messages,
+        );
+        crate::utils::transcript::get_current_system_prompt(&transcript)
+    }
+
+    /// Effective tool set after replaying every transcript system message
+    /// (TS `getCurrentTools(normalizeContext(context))`).
+    #[must_use]
+    pub fn effective_tools(&self) -> Vec<Tool> {
+        let messages = self.transcript_values();
+        let transcript = crate::utils::transcript::normalize_context(
+            self.system_prompt.as_deref(),
+            self.tools.as_deref(),
+            &messages,
+        );
+        crate::utils::transcript::get_current_tools(&transcript)
+    }
+
+    /// Collapse transcript system messages into the leading `systemPrompt` and
+    /// current `tools`, dropping them from the message list (TS
+    /// `collapseSystemMessages`). Providers that do not accept mid-conversation
+    /// system messages call this before building the request.
+    #[must_use]
+    pub fn collapsed(&self) -> Context {
+        // A `Context` built only from shorthand (no System messages) returns the
+        // shorthand unchanged, avoiding a needless message rewrite.
+        if !self.messages.iter().any(|m| matches!(m, Message::System { .. })) {
+            return self.clone();
+        }
+        let prompt = self.effective_system_prompt();
+        let tools = self.effective_tools();
+        Context {
+            system_prompt: if prompt.is_empty() { None } else { Some(prompt) },
+            messages: self
+                .messages
+                .iter()
+                .filter(|m| !matches!(m, Message::System { .. }))
+                .cloned()
+                .collect(),
+            tools: if tools.is_empty() { None } else { Some(tools) },
+        }
+    }
+}
+
 // ============================================================================
 // Stream options
 // ============================================================================
@@ -1192,6 +1256,66 @@ mod tests {
         let head = crate::utils::transcript::get_current_system_message(&[value]).unwrap();
         assert_eq!(head["content"], "base");
         assert_eq!(crate::utils::transcript::get_current_tools(&[serde_json::to_value(&message).unwrap()]).len(), 1);
+    }
+
+    /// `Context::collapsed` folds transcript system messages into the leading
+    /// prompt/tools and drops them from the message list (P1-7 step 3).
+    #[test]
+    fn collapsed_folds_system_messages() {
+        let tool_a = Tool {
+            name: "a".into(),
+            description: "".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: None,
+        };
+        let tool_b = Tool {
+            name: "b".into(),
+            ..tool_a.clone()
+        };
+        let ctx = Context {
+            system_prompt: Some("base".into()),
+            messages: vec![
+                Message::System {
+                    content: SystemContent::Text("extra".into()),
+                    sections: None,
+                    tools_added: Some(vec![tool_a.clone()]),
+                    tools_removed: None,
+                    timestamp: 0,
+                },
+                Message::User {
+                    content: vec![ContentBlock::text("hi")],
+                    timestamp: 1,
+                },
+                Message::System {
+                    content: SystemContent::Text(String::new()),
+                    sections: None,
+                    tools_added: None,
+                    tools_removed: Some(vec![ToolReference {
+                        name: "a".into(),
+                    }]),
+                    timestamp: 2,
+                },
+                Message::System {
+                    content: SystemContent::Text(String::new()),
+                    sections: None,
+                    tools_added: Some(vec![tool_b.clone()]),
+                    tools_removed: None,
+                    timestamp: 3,
+                },
+            ],
+            tools: Some(vec![tool_a.clone()]),
+        };
+        let collapsed = ctx.collapsed();
+        assert_eq!(collapsed.system_prompt.as_deref(), Some("base\n\nextra"));
+        let names: Vec<String> = collapsed
+            .tools
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names, vec!["b"], "a removed, b added");
+        assert_eq!(collapsed.messages.len(), 1);
+        assert!(matches!(collapsed.messages[0], Message::User { .. }));
     }
 
     /// `StreamOptions::clone` must preserve `sampling_params` / `http_client`

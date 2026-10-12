@@ -322,15 +322,21 @@ pub fn format_tokens(count: u64) -> String {
         return count.to_string();
     }
     if count < 10_000 {
-        return format!("{:.1}k", count as f64 / 1000.0);
+        return format!("{:.1}k", round_one_decimal(count as f64 / 1000.0));
     }
     if count < 1_000_000 {
         return format!("{}k", (count as f64 / 1000.0).round() as u64);
     }
     if count < 10_000_000 {
-        return format!("{:.1}M", count as f64 / 1_000_000.0);
+        return format!("{:.1}M", round_one_decimal(count as f64 / 1_000_000.0));
     }
     format!("{}M", (count as f64 / 1_000_000.0).round() as u64)
+}
+
+/// Round to one decimal with JS `toFixed` semantics (half away from zero),
+/// not Rust's default round-half-to-even (see PORTING_MISTAKES #8).
+fn round_one_decimal(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
 }
 
 // ============================================================================
@@ -665,6 +671,16 @@ pub struct Model {
     pub provider: Option<String>,
     /// Whether the active model supports reasoning (TS `model.reasoning`).
     pub reasoning: bool,
+    /// Distinct providers with available models — the `(provider)` prefix is
+    /// only shown when > 1 (TS `footerData.getAvailableProviderCount()`).
+    pub available_provider_count: usize,
+    /// Subscription-backed provider (Kimi Coding or OAuth): appends ` (sub)`
+    /// to the cost and shows the cost even when it is zero (TS
+    /// `usingSubscription`).
+    pub using_subscription: bool,
+    /// `PI_EXPERIMENTAL=1` — appends the `• xp` badge (TS
+    /// `areExperimentalFeaturesEnabled()`).
+    pub experimental: bool,
     // ── Startup header (TS builtInHeader ExpandableText) ────────────────
     /// Whether the startup header is visible (TS shows it unless quiet
     /// startup is configured).
@@ -742,6 +758,9 @@ impl Model {
             thinking_level: None,
             provider: None,
             reasoning: false,
+            available_provider_count: 0,
+            using_subscription: false,
+            experimental: false,
             show_header: true,
             tool_output_expanded: false,
             last_ctrl_c: None,
@@ -1213,6 +1232,7 @@ pub enum Msg {
     SetThinkingLevel(Option<String>),
     SetProvider(Option<String>),
     SetReasoning(bool),
+    SetUsingSubscription(bool),
     /// Ctrl+O (app.tools.expand): toggle the startup header and tool
     /// output expansion.
     ToggleToolExpansion,
@@ -1394,6 +1414,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetThinkingLevel(level) => { model.thinking_level = level; vec![] }
         Msg::SetProvider(provider) => { model.provider = provider; vec![] }
         Msg::SetReasoning(on) => { model.reasoning = on; vec![] }
+        Msg::SetUsingSubscription(on) => { model.using_subscription = on; vec![] }
         Msg::SetCompletionCommands(commands) => {
             model.completer.set_commands(commands);
             vec![]
@@ -3700,6 +3721,135 @@ pub(crate) fn truncate_to_width(s: &str, width: usize) -> String {
     truncate_to_width_suffix(s, width, "...")
 }
 
+/// Lexically normalize a path (resolve `.`/`..` without touching the
+/// filesystem) — TS `node:path` `resolve` semantics.
+fn lexical_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Resolve a path to an absolute, normalized form (relative paths are joined
+/// onto the process cwd) — TS `path.resolve`.
+fn resolve_path(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        lexical_normalize(p)
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        lexical_normalize(&cwd.join(p))
+    }
+}
+
+/// Lexically compute `to` relative to `from` — TS `path.relative`. Returns
+/// `None` when the paths share no root (so the target is not inside `from`).
+fn relative_path(from: &std::path::Path, to: &std::path::Path) -> Option<std::path::PathBuf> {
+    let from_comps: Vec<_> = from.components().collect();
+    let to_comps: Vec<_> = to.components().collect();
+    let mut common = 0usize;
+    while common < from_comps.len() && common < to_comps.len() && from_comps[common] == to_comps[common]
+    {
+        common += 1;
+    }
+    if common == 0 && (!from_comps.is_empty() || !to_comps.is_empty()) {
+        return None;
+    }
+    let mut rel = std::path::PathBuf::new();
+    for _ in common..from_comps.len() {
+        rel.push("..");
+    }
+    for comp in &to_comps[common..] {
+        rel.push(comp.as_os_str());
+    }
+    Some(rel)
+}
+
+/// Replace the home directory prefix with `~`, only when `cwd` really is the
+/// home directory or a descendant — TS `formatCwdForFooter`. Sibling paths
+/// that merely share the home prefix (e.g. `/home/user2` with home
+/// `/home/user`) are left untouched.
+fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
+    let Some(home) = home.filter(|h| !h.is_empty()) else {
+        return cwd.to_string();
+    };
+    let resolved_cwd = resolve_path(cwd);
+    let resolved_home = resolve_path(home);
+    let Some(rel) = relative_path(&resolved_home, &resolved_cwd) else {
+        return cwd.to_string();
+    };
+    let rel_str = rel.to_string_lossy();
+    let sep = std::path::MAIN_SEPARATOR;
+    let is_inside = rel.as_os_str().is_empty()
+        || (rel_str != ".."
+            && !rel_str.starts_with(&format!("..{sep}"))
+            && !rel.is_absolute());
+    if !is_inside {
+        return cwd.to_string();
+    }
+    if rel.as_os_str().is_empty() {
+        "~".to_string()
+    } else {
+        format!("~{sep}{rel_str}")
+    }
+}
+
+/// Truncate a styled span sequence to a display width, appending a dim `...`
+/// when it does not fit (TS `truncateToWidth(statsLeft, width, "...")`).
+fn truncate_spans_to_width(
+    spans: Vec<Span<'static>>,
+    width: usize,
+    suffix_style: Style,
+) -> Vec<Span<'static>> {
+    let total: usize = spans
+        .iter()
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if total <= width {
+        return spans;
+    }
+    let (target, suffix) = if width >= 3 { (width - 3, "...") } else { (width, "") };
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+    for s in spans {
+        if col >= target {
+            break;
+        }
+        let text = s.content.as_ref();
+        let tw = unicode_width::UnicodeWidthStr::width(text);
+        if col + tw <= target {
+            col += tw;
+            out.push(s);
+        } else {
+            let keep = target - col;
+            let mut kept = String::new();
+            let mut c = 0usize;
+            for ch in text.chars() {
+                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if c + cw > keep {
+                    break;
+                }
+                kept.push(ch);
+                c += cw;
+            }
+            out.push(Span::styled(kept, s.style));
+            break;
+        }
+    }
+    if !suffix.is_empty() {
+        out.push(Span::styled(suffix.to_string(), suffix_style));
+    }
+    out
+}
+
 /// Format token counts for the compact footer display (TS
 /// `formatTokens()`).
 fn footer_tokens(count: u64) -> String {
@@ -3715,11 +3865,14 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let width = area.width as usize;
     if area.height > 0 {
         // Line 1: `~/path (branch) • sessionName` in dim.
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let home = std::env::var("HOME")
+            .ok()
+            .filter(|h| !h.is_empty())
+            .or_else(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()));
         let cwd: String = if model.cwd.is_empty() {
             "~".into()
         } else {
-            model.cwd.replace(&home, "~")
+            format_cwd_for_footer(&model.cwd, home.as_deref())
         };
         let mut pwd = cwd;
         if let Some(branch) = &model.git_branch {
@@ -3761,12 +3914,13 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
                 push_part(&mut left_spans, format!("CH{rate:.1}%"));
             }
         }
-        if u.cost > 0.0 {
-            push_part(&mut left_spans, format!("${:.3}", u.cost));
+        if u.cost > 0.0 || model.using_subscription {
+            let sub = if model.using_subscription { " (sub)" } else { "" };
+            push_part(&mut left_spans, format!("${:.3}{sub}", u.cost));
         }
         // Context display: `{pct}%/{window} (auto)` — colorized by
         // threshold (error >90, warning >70), `?/{window}` when unknown.
-        let pct = model.context_usage_pct.min(100.0);
+        let pct = model.context_usage_pct;
         let ctx_col = if pct > CTX_ERROR_PCT as f64 {
             t.error
         } else if pct > CTX_WARNING_PCT as f64 {
@@ -3785,6 +3939,20 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
             left_spans.push(Span::raw(" "));
         }
         left_spans.push(Span::styled(ctx_display, Style::new().fg(ctx_col)));
+        // Experimental badge (`PI_EXPERIMENTAL=1`): dim bullet + bold warning
+        // `xp` (TS `• xp`).
+        if model.experimental {
+            left_spans.push(Span::raw(" "));
+            left_spans.push(Span::styled("\u{2022}", Style::new().fg(t.dim)));
+            left_spans.push(Span::raw(" "));
+            left_spans.push(Span::styled(
+                "xp",
+                Style::new().fg(t.warning).add_modifier(Modifier::BOLD),
+            ));
+        }
+        // TS truncates the stats string to the terminal width with a dim
+        // ellipsis before laying out the right-aligned model label.
+        let mut left_spans = truncate_spans_to_width(left_spans, width, Style::new().fg(t.dim));
 
         // Right side: `(provider) model • thinking` when the model reasons.
         let model_name = if model.model_name.is_empty() {
@@ -3801,11 +3969,13 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
                 format!("{model_name} \u{2022} {level}")
             };
         }
-        if let Some(provider) = &model.provider {
-            let with_provider = format!("({provider}) {right_side}");
-            let left_w: usize = left_spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
-            if left_w + 2 + unicode_width::UnicodeWidthStr::width(with_provider.as_str()) <= width {
-                right_side = with_provider;
+        if model.available_provider_count > 1 {
+            if let Some(provider) = &model.provider {
+                let with_provider = format!("({provider}) {right_side}");
+                let left_w: usize = left_spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
+                if left_w + 2 + unicode_width::UnicodeWidthStr::width(with_provider.as_str()) <= width {
+                    right_side = with_provider;
+                }
             }
         }
 
@@ -4753,6 +4923,7 @@ mod tests {
         let mut model = Model::new(100, 30);
         model.model_name = "mock-model".into();
         model.provider = Some("openai".into());
+        model.available_provider_count = 2;
         model.reasoning = true;
         model.thinking_level = Some("low".into());
         model.context_usage_pct = 42.5;
@@ -4839,6 +5010,107 @@ mod tests {
         assert_eq!(buf[(12, 28)].symbol(), "\u{2022}", "session bullet");
         assert_eq!(buf[(14, 28)].symbol(), "M", "session name");
         assert_eq!(buf[(0, 28)].fg, theme::DIM, "pwd line dim");
+    }
+
+    /// `format_cwd_for_footer` matches TS `formatCwdForFooter`: only the home
+    /// directory and its descendants are abbreviated; siblings that merely
+    /// share the prefix are left untouched (TS `footer-width.test.ts`).
+    #[test]
+    fn format_cwd_for_footer_matches_ts_path_semantics() {
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            format_cwd_for_footer("/home/user2", Some("/home/user")),
+            "/home/user2"
+        );
+        assert_eq!(format_cwd_for_footer("/home/user", Some("/home/user")), "~");
+        assert_eq!(
+            format_cwd_for_footer("/home/user/project", Some("/home/user")),
+            format!("~{sep}project")
+        );
+        // No home (or an empty one) → cwd unchanged.
+        assert_eq!(format_cwd_for_footer("/tmp/project", None), "/tmp/project");
+        assert_eq!(format_cwd_for_footer("/tmp/project", Some("")), "/tmp/project");
+    }
+
+    /// A too-wide stats line is truncated with a dim `...` before the
+    /// right-aligned model label is placed (TS `truncateToWidth(statsLeft)`).
+    #[test]
+    fn truncate_spans_appends_ellipsis_when_too_wide() {
+        let spans = vec![Span::raw("abcdefghij")];
+        let out = truncate_spans_to_width(spans, 5, Style::new());
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "ab...");
+    }
+
+    /// Subscription-backed providers append ` (sub)` to the cost and the
+    /// `(provider)` prefix stays hidden with a single provider (TS
+    /// `usingSubscription` + `getAvailableProviderCount() > 1`).
+    #[test]
+    fn footer_marks_subscription_costs() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(120, 30);
+        model.model_name = "test-model".into();
+        model.provider = Some("kimi-coding".into());
+        model.using_subscription = true;
+        model.context_usage_known = true;
+        model.context_window = 200_000;
+        model.usage_totals = UsageTotals {
+            input: 100,
+            output: 10,
+            cost: 1.234,
+            ..Default::default()
+        };
+
+        let mut terminal = RatTerminal::new(TestBackend::new(120, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let line: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
+        assert!(line.contains("$1.234 (sub)"), "subscription marker: {line:?}");
+        assert!(
+            !line.contains("(kimi-coding)"),
+            "single provider prefix hidden: {line:?}"
+        );
+    }
+
+    /// `PI_EXPERIMENTAL=1` appends the dim bullet + bold warning `xp` badge
+    /// after the context display (TS `• xp`).
+    #[test]
+    fn footer_appends_experimental_badge() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(120, 30);
+        model.model_name = "m".into();
+        model.experimental = true;
+        model.context_usage_known = true;
+        model.context_window = 200_000;
+
+        let mut terminal = RatTerminal::new(TestBackend::new(120, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let line: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
+        assert!(line.contains("\u{2022} xp"), "experimental badge: {line:?}");
+    }
+
+    /// An unknown context percentage renders `?/{window} (auto)` and stays
+    /// dim (TS `contextUsage.percent === null` after compaction).
+    #[test]
+    fn footer_shows_question_mark_when_context_unknown() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(120, 30);
+        model.model_name = "m".into();
+        model.context_usage_known = false;
+        model.context_window = 200_000;
+
+        let mut terminal = RatTerminal::new(TestBackend::new(120, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let line: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
+        assert!(line.contains("?/200k (auto)"), "unknown context: {line:?}");
     }
 
     /// The startup header renders the TS compact text: logo (accent bold +
@@ -6249,6 +6521,18 @@ mod tests {
         assert_eq!(format_duration(1250), "1.3s");
         assert_eq!(format_duration(1249), "1.2s");
         assert_eq!(format_duration(999), "1.0s");
+    }
+
+    /// `format_tokens` one-decimal branches round half away from zero like JS
+    /// `toFixed(1)` (1250 → "1.3k"), not Rust's round-half-to-even.
+    #[test]
+    fn format_tokens_matches_ts_tofixed() {
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1250), "1.3k");
+        assert_eq!(format_tokens(2250), "2.3k");
+        assert_eq!(format_tokens(1249), "1.2k");
+        assert_eq!(format_tokens(56_789), "57k");
+        assert_eq!(format_tokens(1_250_000), "1.3M");
     }
 
     /// Assistant thinking content renders below the text in thinkingText

@@ -610,71 +610,67 @@ pub fn save_compaction_summary(summary: &CompactionResult, file_path: &str) -> R
 // Token estimation utilities
 // ============================================================================
 
-/// Roughly estimate the number of tokens in a text string.
-/// Uses a simple heuristic: ~4 characters per token for English text.
+/// TS `estimateTextAndImageContentChars` image constant (4800 chars ≈ 1200 tokens).
+const ESTIMATED_IMAGE_CHARS: u64 = 4800;
+
+/// JS `String.length` counts UTF-16 code units.
+fn utf16_len(text: &str) -> u64 {
+    text.encode_utf16().count() as u64
+}
+
+/// TS `estimateTextTokens` / the inlined `Math.ceil(chars / 4)` heuristic.
 pub fn estimate_text_tokens(text: &str) -> u64 {
-    if text.is_empty() {
-        return 0;
-    }
-    // Rough estimate: 4 chars per token for English, 1.5 for CJK
-    let mut char_count = 0u64;
-    let mut cjk_count = 0u64;
-    for ch in text.chars() {
-        char_count += 1;
-        if ch as u32 >= 0x4E00 && ch as u32 <= 0x9FFF {
-            cjk_count += 1;
-        }
-    }
-    // CJK characters are roughly 1.5 tokens each, others ~0.25 tokens each
-    let non_cjk = char_count.saturating_sub(cjk_count);
-    (cjk_count * 3 / 2) + (non_cjk / 4)
+    utf16_len(text).div_ceil(4)
 }
 
-/// Estimate the number of tokens in a conversation message.
-pub fn estimate_message_tokens(msg: &pi_agent_core::pi_ai_types::Message) -> u64 {
-    let mut total = 0u64;
-    match msg {
-        pi_agent_core::pi_ai_types::Message::User { content, .. } => {
-            for block in content {
-                total += estimate_content_block_tokens(block);
-            }
-        }
-        pi_agent_core::pi_ai_types::Message::Assistant { content, .. } => {
-            for block in content {
-                total += estimate_content_block_tokens(block);
-            }
-        }
-        pi_agent_core::pi_ai_types::Message::ToolResult { content, .. } => {
-            for block in content {
-                total += estimate_content_block_tokens(block);
-            }
-        }
-    }
-    total
+/// TS `estimateTextAndImageContentChars`: text blocks count their UTF-16
+/// length, image blocks count `ESTIMATED_IMAGE_CHARS` (4800), other blocks 0.
+fn content_chars(content: &[ContentBlock]) -> u64 {
+    content
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text { text, .. } => utf16_len(text),
+            ContentBlock::Image { .. } => ESTIMATED_IMAGE_CHARS,
+            _ => 0,
+        })
+        .sum()
 }
 
-fn estimate_content_block_tokens(block: &pi_agent_core::pi_ai_types::ContentBlock) -> u64 {
-    match block {
-        pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => estimate_text_tokens(text),
-        pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
-            name, arguments, ..
-        } => estimate_text_tokens(name) + estimate_text_tokens(&arguments.to_string()),
-        pi_agent_core::pi_ai_types::ContentBlock::Image { .. } => 100, // rough estimate per image
-        pi_agent_core::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
-            estimate_text_tokens(thinking)
+/// TS `estimateTokens(AgentMessage)` — the coding-agent compaction heuristic:
+/// per-role character counts divided by 4 (rounded up). Unlike the pi-ai port
+/// it operates on `AgentMessage` directly (bash executions and summaries use
+/// their raw text; images count as 4800 chars).
+pub fn estimate_agent_message_tokens(msg: &AgentMessage) -> u64 {
+    let chars: u64 = match msg {
+        AgentMessage::User { content, .. } | AgentMessage::ToolResult { content, .. } => {
+            content_chars(content)
         }
-    }
+        AgentMessage::Custom { content, .. } => match content {
+            CustomContent::Text(text) => utf16_len(text),
+            CustomContent::Blocks(blocks) => content_chars(blocks),
+        },
+        AgentMessage::Assistant { content, .. } => content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text { text, .. } => utf16_len(text),
+                ContentBlock::Thinking { thinking, .. } => utf16_len(thinking),
+                ContentBlock::ToolCall {
+                    name, arguments, ..
+                } => utf16_len(name)
+                    + utf16_len(&serde_json::to_string(arguments).unwrap_or_else(|_| "undefined".into())),
+                _ => 0,
+            })
+            .sum(),
+        AgentMessage::BashExecution { command, output, .. } => utf16_len(command) + utf16_len(output),
+        AgentMessage::BranchSummary { summary, .. }
+        | AgentMessage::CompactionSummary { summary, .. } => utf16_len(summary),
+    };
+    chars.div_ceil(4)
 }
 
-/// Calculate the total token count for a list of messages.
-pub fn calculate_context_tokens(messages: &[pi_agent_core::pi_ai_types::Message]) -> u64 {
-    messages.iter().map(estimate_message_tokens).sum()
-}
-
-/// Estimate tokens for AgentMessages (converts to LLM messages first).
-pub fn estimate_agent_messages_tokens(messages: &[pi_agent_core::types::AgentMessage]) -> u64 {
-    let llm_messages = crate::core::messages::convert_to_llm(messages);
-    calculate_context_tokens(&llm_messages)
+/// Estimate tokens for a list of `AgentMessage`s (TS `estimateTokens` map+sum).
+pub fn estimate_agent_messages_tokens(messages: &[AgentMessage]) -> u64 {
+    messages.iter().map(estimate_agent_message_tokens).sum()
 }
 
 /// TS `calculateContextTokens(usage)`: use the native `totalTokens` field
@@ -1042,42 +1038,59 @@ mod tests {
 
     #[test]
     fn test_estimate_text_tokens_english() {
-        // ~4 chars per token for English
-        let tokens = estimate_text_tokens("Hello world, this is a test message with about twenty words in it for token estimation");
-        assert!(tokens > 0);
+        // ceil(11 / 4) = 3 (TS `estimateTextTokens`).
+        assert_eq!(estimate_text_tokens("Hello world"), 3);
     }
 
     #[test]
     fn test_estimate_text_tokens_cjk() {
-        // CJK characters are ~1.5 tokens each
-        let tokens = estimate_text_tokens("你好世界这是一条测试消息");
-        assert!(tokens > 0);
+        // Plain UTF-16 length / 4 rounded up — CJK has no special weighting
+        // (TS `Math.ceil(chars / 4)`).
+        assert_eq!(estimate_text_tokens("你好世界这是一条测试消息"), 3); // 12 chars / 4
     }
 
     #[test]
-    fn test_calculate_context_tokens() {
-        use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason, Usage};
-        let messages = vec![
-            Message::User {
-                content: vec![ContentBlock::text("hello")],
-                timestamp: 1000,
-            },
-            Message::Assistant {
-                content: vec![ContentBlock::text("world")],
-                api: "test".into(),
-                provider: "test".into(),
-                model: "test".into(),
-                response_model: None,
-                response_id: None,
-                diagnostics: None,
-                usage: Usage::default(),
-                stop_reason: StopReason::Stop,
-                error_message: None,
-                timestamp: 1000,
-            },
-        ];
-        let tokens = calculate_context_tokens(&messages);
-        assert!(tokens > 0);
+    fn test_estimate_agent_message_tokens_matches_ts_chars_heuristic() {
+        use pi_agent_core::types::AgentMessage;
+
+        // User text: 11 chars → ceil(11/4) = 3.
+        let user = AgentMessage::User {
+            content: vec![ContentBlock::text("hello world")],
+            timestamp: 1,
+        };
+        assert_eq!(estimate_agent_message_tokens(&user), 3);
+
+        // Image blocks count as 4800 chars → 1200 tokens (TS
+        // `ESTIMATED_IMAGE_CHARS`).
+        let with_image = AgentMessage::User {
+            content: vec![ContentBlock::Image {
+                data: "x".into(),
+                mime_type: "image/png".into(),
+            }],
+            timestamp: 1,
+        };
+        assert_eq!(estimate_agent_message_tokens(&with_image), 1200);
+
+        // Bash executions use raw command + output chars: 8 + 4 = 12 → 3.
+        let bash = AgentMessage::BashExecution {
+            command: "echo abc".into(),
+            output: "abc\n".into(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+            timestamp: 1,
+            exclude_from_context: None,
+        };
+        assert_eq!(estimate_agent_message_tokens(&bash), 3);
+
+        // Summaries count only the summary text: 5 chars → ceil(5/4) = 2.
+        let summary = AgentMessage::BranchSummary {
+            summary: "hello".into(),
+            from_id: "a".into(),
+            timestamp: 1,
+        };
+        assert_eq!(estimate_agent_message_tokens(&summary), 2);
     }
 
     // ============================================================

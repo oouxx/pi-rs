@@ -36,9 +36,9 @@
 | 状态区 | `Loader`：`["", spinner + message]`（accent spinner + muted 文案） | `render_status`：空行 + spinner 行（busy 时） | 是 | |
 | 编辑器 | `CustomEditor`：`─` 边框（borderMuted），内容随输入增长，`max(5, 30% 行高)` | `render_input`：`─` 上下边框 + 内容行 + 光标跟随 | 是 | |
 | slash 菜单 | `SelectList`（`Editor::render` 在**下边框之后**输出候选行；无边框/标题，`→ ` 前缀 + 整行 accent 选中，muted 描述对齐主列，slash 主列 12..32 / 路径 32，最多 5 行 + `(n/m)`，截断无省略号，描述仅 `width>40` 且余宽 >10 时显示）。候选内容来自 `BUILTIN_SLASH_COMMANDS`：label = 命令名（不带 `/`），描述 = `argumentHint — description` | `Completer::render_rows` 逐分支同款（`render_input` 在下边框后渲染菜单）；`CompletionCommand` 字段同 TS `SlashCommand`（`name`/`description`/`argument_hint`），`build_completion_commands` 从 `builtin_slash_commands()` 过滤已支持命令（未移植选择器类命令不列出） | 是 | 命令集是 pi-rs 支持子集（未移植选择器类命令，见 DEVIATIONS.md） |
-| footer line 1 | `pwd (branch) • sessionName`（dim，`~` 替换 HOME） | `render_footer` line 1 同款 | 是 | |
-| footer line 2 | `↑in ↓out Rcache Wcache CH% $cost ctx%/window (auto)`（dim，context 阈值着色 error>90/warning>70，`?/window` 未知态）+ 右对齐 `(provider) model • thinking`（reasoning 模型） | `render_footer` line 2 同款（`format_tokens` 与 TS `formatTokens` 逐分支一致） | 是 | |
-| footer line 3 | 扩展状态行（`getExtensionStatuses()`） | 无 | 否 | Rust 扩展系统无 footer data provider 等价物（见 DEVIATIONS.md 扩展系统条目） |
+| footer line 1 | `pwd (branch) • sessionName`（dim；`formatCwdForFooter` 用 `resolve`+`relative`，只缩写 HOME 本身及其后代，`~` 替换） | `render_footer` line 1 同款：`format_cwd_for_footer` 词法 resolve/relative，兄弟路径不缩写，HOME 空串回退 `USERPROFILE` | 是 | |
+| footer line 2 | `↑in ↓out Rcache Wcache CH% $cost ctx%/window (auto)`（dim，context 阈值着色 error>90/warning>70，`?/window` 未知态；`cost \|\| usingSubscription` → 订阅加 ` (sub)`；`PI_EXPERIMENTAL=1` 加 `• xp`）+ 右对齐 `(provider) model • thinking`（仅 `getAvailableProviderCount() > 1` 显示 provider；stats 超宽 `truncateToWidth(..., "...")`；context 百分比不 clamp） | `render_footer` line 2 同款（`format_tokens` 与 TS `formatTokens` 逐分支一致，1 位小数走 `toFixed` 半进位；`using_subscription`/`available_provider_count`/`experimental` 由 interactive 回填；`truncate_spans_to_width` 追加 dim `...`） | 是 | |
+| footer line 3 | 扩展状态行（`getExtensionStatuses()`，按 key 排序 + `sanitizeStatusText`） | 无 | 否 | Rust 无 footer data provider 等价物；`set_status` 走 system 消息通道（见 DEVIATIONS.md 扩展 UI / footer line 3 条目） |
 
 ## 交互
 

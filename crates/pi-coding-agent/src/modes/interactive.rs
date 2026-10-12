@@ -2022,6 +2022,8 @@ fn spawn_agent_command_task(
                                 ));
                                 continue;
                             };
+                            let using_subscription = provider == "kimi-coding"
+                                || sess.get_model_registry().is_using_oauth(&model);
                             // Surface the outcome (the slash command already
                             // claimed success optimistically; set_model can
                             // fail on auth, and a silent drop left the footer
@@ -2031,6 +2033,7 @@ fn spawn_agent_command_task(
                                     let _ = result_tx.send(pi_tui::Msg::SetModelName(model_id.clone()));
                                     let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(provider.clone())));
                                     let _ = result_tx.send(pi_tui::Msg::SetReasoning(false));
+                                    let _ = result_tx.send(pi_tui::Msg::SetUsingSubscription(using_subscription));
                                     let _ = result_tx.send(pi_tui::Msg::SetContextWindow(128000));
                                     let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                         "system".into(),
@@ -2053,6 +2056,9 @@ fn spawn_agent_command_task(
                                 let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(model.provider.clone())));
                                 let _ = result_tx.send(pi_tui::Msg::SetReasoning(model.reasoning));
                                 let _ = result_tx.send(pi_tui::Msg::SetContextWindow(model.context_window));
+                                let using_subscription = model.provider == "kimi-coding"
+                                    || sess.get_model_registry().is_using_oauth(&model);
+                                let _ = result_tx.send(pi_tui::Msg::SetUsingSubscription(using_subscription));
                                 let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                     "system".into(),
                                     format!("Model: {}", model.id),
@@ -2491,6 +2497,21 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     state.model.session_name = session.get_session_name();
     {
         let model = session.get_state().await.model;
+        // Distinct providers with available models (TS
+        // `updateAvailableProviderCount`): the footer only shows the
+        // `(provider)` prefix when more than one is configured.
+        let mut providers: Vec<String> = completion_models(&session)
+            .into_iter()
+            .map(|m| m.provider)
+            .collect();
+        providers.sort();
+        providers.dedup();
+        state.model.available_provider_count = providers.len();
+        // Subscription-backed provider (TS `usingSubscription`: Kimi Coding
+        // or OAuth) → footer appends ` (sub)` to the cost.
+        state.model.using_subscription = model.provider == "kimi-coding"
+            || session.get_model_registry().is_using_oauth(&model);
+        state.model.experimental = crate::core::experimental::are_experimental_features_enabled();
         state.model.provider = Some(model.provider);
         state.model.reasoning = model.reasoning;
         state.model.context_window = model.context_window;
@@ -2875,6 +2896,12 @@ async fn refresh_status(
                     state.model.context_usage_known = true;
                     changed = true;
                 }
+            } else if state.model.context_usage_known {
+                // TS `getContextUsage()` returns `percent: null` after a
+                // compaction with no post-compaction assistant usage, so the
+                // footer falls back to `?` until the next LLM response.
+                state.model.context_usage_known = false;
+                changed = true;
             }
             // Cumulative token/cost totals (TS FooterComponent reads the
             // session entries on every render).

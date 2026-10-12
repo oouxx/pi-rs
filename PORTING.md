@@ -144,6 +144,9 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 
 | 22 | **前缀键未命中未回填** | TS 无 vim 前缀键；编辑器里普通字符一律插入 | Rust 自行加多键序列（`g`→`gg`），第一个键只置"待定"状态、不落字，后续键不匹配时直接处理后续键——序列未完成的那个字符被永久吞掉（`go` → `o`），且原版根本没有这个绑定 | 多键前缀必须缓存未完成的按键，下一键不匹配时先把它作为字面输入回填，再处理下一键；更优先的是先核对原版是否真有该键位 | `gg`/`G` 转录滚动（应为 Home/End，plain g/G 插入），见 PORTING_MISTAKES（pi-tui app.rs） |
 | 27 | **符号链接被当作目录** | TS 的 fd/ignore 遍历按符号链接的目标类型处理；指向文件的链接就是文件 | Rust 目录分支写成 `path.is_dir() || path.is_symlink()`：指向**文件**的符号链接也进目录分支，对文件 `read_dir` 失败，资源被静默丢弃（只留一条 warning），行为在“真文件 vs 符号链接”下不同 | `is_dir()` 本身已跟随符号链接；目录分支只判 `is_dir()`，符号链接到文件走文件分支按扩展名加载 | #132（`.pi-rs/skills/check-docs.md -> …` 被当成目录丢弃，真实会话验证发现） |
+| 28 | **子串替换当作路径/边界处理** | TS `formatCwdForFooter` 用 `resolve`+`relative` 判断“是否在 home 之内”，只缩写 home 本身及其后代；`process.env.HOME \|\| USERPROFILE` 中空串是 falsy | Rust 直接 `cwd.replace(&home, "~")`：兄弟路径（`/home/user2` + home `/home/user`）被错误缩写为 `~2`；HOME 为空串时 `replace("","~")` 在每个字符间插 `~` | 路径比较用词法 `resolve`/`relative` + 边界判定（`..` 前缀/绝对路径），不要用字符串替换；环境变量按 TS truthy 语义过滤空串并回退备用变量 | footer line 1（PORTING_MISTAKES #21） |
+| 29 | **显示门控条件被省略** | TS 仅在 `getAvailableProviderCount() > 1` 时显示 `(provider)` 前缀，仅在 `cost \|\| usingSubscription` 时显示成本 + ` (sub)` | Rust 只看 `provider.is_some()` / `cost > 0`：单 provider 多显示前缀、订阅制 0 成本被省略、`(sub)` 标记丢失 | 逐条核对 TS 的显示门控条件与联合判断（`x > 0 \|\| flag`），把依赖的外部计数/标志经消息回填进 view model | footer line 2（PORTING_MISTAKES #22） |
+| 30 | **本地启发式取代原版启发式** | TS 的估算/打分有明确的公式（token 估算 = 按 role 原始 UTF-16 字符数 `ceil(chars/4)`，图片 4800 字符，bash = 命令+输出，summary = summary） | Rust 自行换成“更聪明”的 CJK 加权启发式（`cjk*1.5 + non_cjk/4`、图片 100），编译通过、单测自洽，但数值系统性偏移，驱动的阈值（上下文百分比、自动压缩）随之偏移 | 移植任何启发式/估算函数时逐行对照原版公式与常量，不要用“看起来更准”的替代实现；若要改必须登记 `DEVIATIONS.md` | 上下文 token 估算（PORTING_MISTAKES pi-coding-agent #133） |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。

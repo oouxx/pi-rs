@@ -407,3 +407,12 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | MCP resources 工具 | （TS 后续版本）`list_mcp_resources` 等 | 未实现 | 否（有意，DEVIATIONS.md #14） |
 | OAuth / `/mcp` TUI | （TS 后续版本） | 未实现 | 否（有意，DEVIATIONS.md #14） |
 | 工具刷新（`tools/list_changed`） | TS 支持 | 未实现（session 创建时枚举一次） | 否（有意，DEVIATIONS.md #14） |
+
+## Context token 估算（`core/compaction.rs`，footer 上下文百分比 / 自动压缩阈值）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| `estimateContextTokens` 基准 | 取最后一条有效 assistant usage（跳过 aborted/error/全零）作为已用 token，只对之后的 `trailing` 消息做估算 | 同左（`get_last_assistant_usage_info` + `estimate_agent_messages_tokens(trailing)`） | 是 | |
+| 单条消息估算 `estimateTokens(AgentMessage)` | 按 role 取原始 UTF-16 字符数：user/custom/toolResult 文本+图片(4800 字符)、assistant text+thinking+toolCall(name+JSON args)、bash `command.length+output.length`、summary `summary.length`；`Math.ceil(chars/4)` | `estimate_agent_message_tokens` 逐 role 同款（UTF-16 长度、图片 4800、bash 命令+输出、summary 仅 summary），`chars.div_ceil(4)` | 是 | 原 CJK 加权启发式（`cjk*1.5 + non_cjk/4`、图片 100）已移除，对齐 TS |
+| `calculateContextTokens(usage)` | `totalTokens \|\| input+output+cacheRead+cacheWrite` | `calculate_context_tokens_from_usage` 同款 | 是 | |
+| 上下文百分比 | `estimate.tokens / contextWindow * 100`（不做 clamp） | `usage_percentage()` 同款（footer 也不 clamp） | 是 | |

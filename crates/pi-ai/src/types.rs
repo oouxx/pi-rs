@@ -760,6 +760,13 @@ pub struct Tool {
     pub constrained_sampling: Option<ConstrainedSamplingConfig>,
 }
 
+/// A reference to a tool by name (TS `ToolReference`), used by system-message
+/// `toolsRemoved` deltas.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolReference {
+    pub name: String,
+}
+
 // ============================================================================
 // Context
 // ============================================================================

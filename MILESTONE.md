@@ -46,12 +46,18 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 | P0-5 `ToolCall.arguments`/`details` 限 JSON + `user_bash` fail-closed | ✅ 完成 | 类型层面 `serde_json::Value` 已满足；`user_bash` 已 fail-closed（恰好一个字段、operations 不支持、非法结果不回落本地） |
 | P0-1 / P0-6 provider / coding-agent 修复批次 | 基本完成（限三个通用适配器） | **P0-1（anthropic + openai-completions + openai-responses）**：审计显示绝大多数已对齐；本轮补 `tool_choice` 无 tools 门控（#8607）、`supportsMaxOutputTokens`（#8941）、未知端点默认非 strict + Cerebras 排除（#9816/#9804，含目录显式值）；Google/Bedrock/Mistral 适配器未实现不适用。**P0-6**：GIF 误判（#9755）、`--mode`（#9045）、`--provider` 无 `--model`（#10236）、非法 prompt frontmatter（#9830）、split-turn 摘要措辞（#9908）、write 字节计数（#8979）、信号终止 shell（#9577）、`user_bash` fail-closed（属 P0-5）；剩余与 `TranscriptContext`（P1-7）纠缠或不对应本 port 架构 |
 
-### P1（架构大改，单独排期）
+### P1（架构大改）
 
-- P1-7 pi-ai `Context`→`TranscriptContext` + transcript-backed 中途 system/tool 变更（最长杠杆）
-- P1-8 ModelRuntime / ai Models 运行时 API
-- P1-9 harness v4 lane（拟维持 pi-rs 单 lane + 登记偏差）
+**P1-7 `Context` → `TranscriptContext`（进行中）**：TS `9e05370b2` 把 system prompt / tool 声明改成 transcript 里的 system 消息（`toolsAdded`/`toolsRemoved`/`sections`），provider 用 `getCurrentSystemPrompt`/`getCurrentTools` 重放。分阶段：
 
+1. ✅ pi-ai transcript 纯函数（`utils/transcript.rs`：normalize / collapse / resolve / replay / tool-delta 探测）+ `ToolReference` 类型（本步完成，7 测试）
+2. 类型层：`SystemMessage` 变体进 `Message` 并迁移匹配点；`TranscriptContext` 品牌类型
+3. provider 请求构建：从 `context.systemPrompt`/`context.tools` 改为 transcript helpers；支持 mid-convo system 的 provider 原样发送，其余 collapse
+4. agent-core：`declareToolChanges` / transcript 系统消息生成；中途 system/tool 变更
+5. coding-agent system-prompt 重写（sections/tools delta）+ 恢复/分支导航保留变更
+
+- **P1-8** ModelRuntime / ai Models 运行时 API（auth signal / stored+publish / isSubscription）
+- **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差
 ## 权威文档
 
 - 历史对齐差距：[`docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md`](docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md)

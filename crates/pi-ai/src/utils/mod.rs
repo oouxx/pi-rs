@@ -12,5 +12,6 @@ pub mod sse;
 pub mod strict_schema;
 pub mod text;
 pub mod transform;
+pub mod transcript;
 pub mod typebox_helpers;
 pub mod uuid;

@@ -1298,6 +1298,25 @@ impl SessionManager {
         mgr
     }
 
+    /// In-memory clone used to preview boundary drafts without committing them
+    /// (TS `_createBoundaryPreviewManager`). The clone never persists.
+    pub fn preview_clone(&self) -> SessionManager {
+        SessionManager {
+            session_id: self.session_id.clone(),
+            session_file: None,
+            session_dir: self.session_dir.clone(),
+            cwd: self.cwd.clone(),
+            persist: false,
+            flushed: true,
+            file_entries: self.file_entries.clone(),
+            by_id: self.by_id.clone(),
+            labels_by_id: self.labels_by_id.clone(),
+            label_timestamps_by_id: self.label_timestamps_by_id.clone(),
+            leaf_id: self.leaf_id.clone(),
+            last_run_prompt: self.last_run_prompt.clone(),
+        }
+    }
+
     pub fn set_session_file(&mut self, session_file: &str) {
         let resolved = PathBuf::from(config::resolve_path(session_file));
         self.session_file = Some(resolved.clone());

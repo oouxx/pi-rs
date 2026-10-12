@@ -148,3 +148,10 @@
 | ---------------------- | ---------- | ------------- | -------- | -------- |
 | `crates/pi-tui/src/app.rs:render_footer`（footer 第三行） | `FooterComponent.render` 末尾输出扩展状态行（`footerData.getExtensionStatuses()` 按 key 排序 + `sanitizeStatusText`，dim 风格截断） | 无第三行；扩展 `set_status` 经 TUI 桥接转 system 消息展示 | pi-tui 尚无 `ReadonlyFooterDataProvider` 等价物（git branch 由 `current_git_branch` 直接算、无扩展状态订阅机制）；扩展 UI 桥接已有既定的 `set_status`→system 消息通道，再加 footer 行会重复展示 | 已确认保留 |
 | `crates/pi-coding-agent/src/core/agent_session.rs:get_context_usage` + `pi-tui/src/app.rs:render_footer` | `getContextUsage()` 对"无 model / contextWindow<=0"返回 `undefined`（footer 显示 `0.0%/0`），对"压缩后用量未知"返回 `{percent:null}`（footer 显示 `?/window`）——两种未知态可区分 | Rust `get_context_usage()` 两种情况都返回 `None`，footer 统一显示 `?/window` | pi-rs `ContextUsage` 不携带 Option 化的 percent，区分两种未知态需改动 session API；退化场景（model 无 contextWindow）在 interactive 中不会出现，post-compaction `?` 语义已对齐 | 已确认保留 |
+
+## 扩展边界事件（2026-10-12，hook runner 边界分发）
+
+| 位置（文件:行/函数名） | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
+| ---------------------- | ---------- | ------------- | -------- | -------- |
+| `pi-extension-api/src/hook.rs`（turn_end 通知 hook） | TS 466db0fec 把 `turn_end` 从 void 事件改为 `emitBoundary` 边界（handler 可返回 entries/continue），同一事件不再以 void 形式分发 | pi-rs 新增 `on_turn_end_boundary`/`on_agent_before_settle_boundary` 边界（`HookRunner::run_boundary`，顺序、可返回结果），**同时保留** void `on_turn_end` 作为 pi-rs 内部通知通道 | Rust 扩展为程序化注册，已有内置扩展可能依赖 void `on_turn_end` 通知；边界与通知职责分离更清晰 | 已确认保留 |
+| `pi-extension-api` 边界参与标志 | TS 由 `hasHandlers(type)` 从注册表推导 handler 是否处理某事件 | Rust 需 handler 显式覆写 `participates_in_boundary(kind)`（无法反射检测方法覆写）；未覆写则不参与，caller 可整段跳过预览构建 | 避免无参与者时也做 O(n) 的 session 预览克隆 | 已确认保留 |

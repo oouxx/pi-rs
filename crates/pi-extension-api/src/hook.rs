@@ -360,6 +360,15 @@ pub trait HookHandler: Send + Sync {
         None
     }
 
+    /// Whether this handler participates in the given boundary. Handlers that
+    /// implement a boundary method must override this to return `true` for the
+    /// corresponding kind — the runner cannot detect method overrides, and this
+    /// flag lets callers skip boundary context construction entirely when no
+    /// handler participates.
+    fn participates_in_boundary(&self, _kind: crate::BoundaryKind) -> bool {
+        false
+    }
+
     /// 消息开始时触发。
     async fn on_message_start(&self, _message: &Value) {}
 
@@ -696,10 +705,11 @@ impl HookRunner {
     /// Dispatch a boundary sequentially (TS `ExtensionRunner.emitBoundary`).
     ///
     /// Each handler receives the state accumulated so far; its returned
-    /// `entries`/`continue` replace the current values. After every handler the
-    /// caller-supplied `build_context` recomputes the model-context preview
-    /// (mirroring TS `buildContext`); if it fails, the dispatch is marked
-    /// invalid and drafts are discarded.
+    /// `entries`/`continue` replace the current values. After a handler changes
+    /// the state, the caller-supplied `build_context` recomputes the model-context
+    /// preview (mirroring TS `buildContext`); if it fails, the dispatch is marked
+    /// invalid and drafts are discarded. Returns immediately (valid, empty) when
+    /// no handler participates in the boundary.
     pub async fn run_boundary<F>(
         &self,
         kind: crate::BoundaryKind,
@@ -711,28 +721,44 @@ impl HookRunner {
             &[crate::SessionBoundaryDraft],
         ) -> Result<crate::BoundaryContextPreview, String>,
     {
+        if !self.has_boundary_handlers(kind) {
+            return crate::BoundaryDispatchResult {
+                entries: state.entries,
+                continue_: state.continue_,
+                context: state.context,
+                valid: true,
+            };
+        }
         let mut valid = true;
         for handler in &self.handlers {
+            if !handler.participates_in_boundary(kind) {
+                continue;
+            }
             let result = match kind {
                 crate::BoundaryKind::TurnEnd => handler.on_turn_end_boundary(state.clone()).await,
                 crate::BoundaryKind::AgentBeforeSettle => {
                     handler.on_agent_before_settle_boundary(state.clone()).await
                 }
             };
+            let mut changed = false;
             if let Some(r) = result {
                 if let Some(entries) = r.entries {
                     state.entries = entries;
+                    changed = true;
                 }
                 if let Some(cont) = r.continue_ {
                     state.continue_ = cont;
+                    changed = true;
                 }
             }
-            match build_context(&state.entries) {
-                Ok(context) => {
-                    state.context = context;
-                    valid = true;
+            if changed {
+                match build_context(&state.entries) {
+                    Ok(context) => {
+                        state.context = context;
+                        valid = true;
+                    }
+                    Err(_) => valid = false,
                 }
-                Err(_) => valid = false,
             }
         }
         if valid {
@@ -750,6 +776,12 @@ impl HookRunner {
                 valid: false,
             }
         }
+    }
+
+    /// Whether any registered handler participates in the given boundary.
+    #[must_use]
+    pub fn has_boundary_handlers(&self, kind: crate::BoundaryKind) -> bool {
+        self.handlers.iter().any(|h| h.participates_in_boundary(kind))
     }
 
     /// Fire `on_message_start` to all handlers (parallel).
@@ -1274,6 +1306,9 @@ mod tests {
                     continue_: self.cont,
                 })
             }
+            fn participates_in_boundary(&self, kind: crate::BoundaryKind) -> bool {
+                matches!(kind, crate::BoundaryKind::TurnEnd)
+            }
         }
 
         let seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1331,6 +1366,9 @@ mod tests {
                     }]),
                     continue_: Some(true),
                 })
+            }
+            fn participates_in_boundary(&self, kind: crate::BoundaryKind) -> bool {
+                matches!(kind, crate::BoundaryKind::AgentBeforeSettle)
             }
         }
         let mut runner = HookRunner::new();

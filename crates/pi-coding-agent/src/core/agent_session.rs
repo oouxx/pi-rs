@@ -1333,6 +1333,117 @@ impl AgentSession {
                     })
                 }))
             },
+            // Turn-end boundary (TS `_installAgentBoundaryHooks`): dispatch
+            // `turn_end` boundary handlers before `turn_end`, commit their
+            // session-entry drafts, and honor `continue`.
+            finish_turn: {
+                let registry = options.extension_registry.clone();
+                let session_ref = bash_session_manager.clone();
+                let agent_ref = bash_agent_ref.clone();
+                match registry {
+                    Some(registry) => Some(Arc::new(move |
+                        turn: pi_agent_core::types::AgentTurnContext,
+                        _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                    | {
+                        let registry = registry.clone();
+                        let session_ref = session_ref.clone();
+                        let agent_ref = agent_ref.clone();
+                        Box::pin(async move {
+                            use pi_extension_api::{
+                                AgentActivityOutcome, BoundaryContextPreview, BoundaryKind,
+                                BoundaryState, SessionBoundaryDraft,
+                            };
+                            // No participating handler: skip all preview work.
+                            if !registry
+                                .hook_runner()
+                                .has_boundary_handlers(BoundaryKind::TurnEnd)
+                            {
+                                return None;
+                            }
+                            let outcome = match &turn.message {
+                                pi_agent_core::types::AgentMessage::Assistant {
+                                    stop_reason, ..
+                                } => match stop_reason {
+                                    Some(pi_agent_core::pi_ai_types::StopReason::Aborted) => {
+                                        AgentActivityOutcome::Aborted
+                                    }
+                                    Some(pi_agent_core::pi_ai_types::StopReason::Error) => {
+                                        AgentActivityOutcome::Error
+                                    }
+                                    _ => AgentActivityOutcome::Completed,
+                                },
+                                _ => AgentActivityOutcome::Completed,
+                            };
+                            let pending: Vec<serde_json::Value> = {
+                                let agent = agent_ref
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .clone();
+                                match agent {
+                                    Some(a) => a
+                                        .peek_queued_messages()
+                                        .await
+                                        .iter()
+                                        .map(|m| {
+                                            serde_json::to_value(m)
+                                                .unwrap_or(serde_json::Value::Null)
+                                        })
+                                        .collect(),
+                                    None => Vec::new(),
+                                }
+                            };
+                            let build = |drafts: &[SessionBoundaryDraft]| {
+                                let sm = session_ref
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                build_boundary_preview(&sm, drafts, pending.clone())
+                            };
+                            let initial = build(&[]).unwrap_or(BoundaryContextPreview {
+                                context_entries: Vec::new(),
+                                context_messages: Vec::new(),
+                                llm_messages: Vec::new(),
+                                pending_messages: Vec::new(),
+                                can_continue: false,
+                            });
+                            let state = BoundaryState {
+                                entries: Vec::new(),
+                                continue_: false,
+                                context: initial,
+                                outcome,
+                            };
+                            let result = registry
+                                .hook_runner()
+                                .run_boundary(BoundaryKind::TurnEnd, state, build)
+                                .await;
+                            if result.valid && !result.entries.is_empty() {
+                                {
+                                    let mut sm = session_ref
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let _ = apply_boundary_drafts(&mut sm, &result.entries);
+                                }
+                                let msgs = session_ref
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .build_projected_context_messages();
+                                let agent = agent_ref
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .clone();
+                                if let Some(agent) = agent {
+                                    agent.set_initial_messages(msgs).await;
+                                }
+                            }
+                            if result.valid && result.continue_ {
+                                Some(pi_agent_core::types::AgentTurnDecision::Continue)
+                            } else {
+                                None
+                            }
+                        })
+                    })),
+                    None => None,
+                }
+            },
             ..Default::default()
         };
 
@@ -3378,7 +3489,19 @@ impl AgentSession {
     /// 扩展在 agent_settled 入队的 owned prompt 永远不会启动。
     pub async fn run_settled_continuations(&self) {
         loop {
+            // `agent_before_settle` boundary (TS `_runBeforeSettleBoundary`):
+            // an extension may ask for one more provider request.
+            let before_settle_continue = self.dispatch_before_settle_boundary().await;
             self._emit_agent_settled().await;
+            if before_settle_continue && self.agent.continue_run().await.is_ok() {
+                loop {
+                    if !self._handle_post_agent_run().await {
+                        break;
+                    }
+                }
+                self._flush_pending_bash_messages().await;
+                continue;
+            }
             if !self.agent.has_queued_messages().await {
                 break;
             }
@@ -5068,6 +5191,74 @@ References are relative to {}.
         });
     }
 
+    /// Dispatch the `agent_before_settle` boundary (TS `_runBeforeSettleBoundary`).
+    /// Commits returned session-entry drafts and returns whether one more
+    /// provider request was requested and the context can continue.
+    async fn dispatch_before_settle_boundary(&self) -> bool {
+        use pi_extension_api::{
+            AgentActivityOutcome, BoundaryContextPreview, BoundaryKind, BoundaryState,
+        };
+        let Some(registry) = &self.extension_registry else {
+            return false;
+        };
+        let hr = registry.hook_runner();
+        if !hr.has_boundary_handlers(BoundaryKind::AgentBeforeSettle) {
+            return false;
+        }
+        let outcome = {
+            let messages = self.agent.state().await.messages;
+            match messages.iter().rev().find_map(|m| match m {
+                pi_agent_core::types::AgentMessage::Assistant { stop_reason, .. } => {
+                    Some(stop_reason.clone())
+                }
+                _ => None,
+            }) {
+                Some(Some(pi_agent_core::pi_ai_types::StopReason::Aborted)) => {
+                    AgentActivityOutcome::Aborted
+                }
+                Some(Some(pi_agent_core::pi_ai_types::StopReason::Error)) => {
+                    AgentActivityOutcome::Error
+                }
+                _ => AgentActivityOutcome::Completed,
+            }
+        };
+        let pending: Vec<serde_json::Value> = self
+            .agent
+            .peek_queued_messages()
+            .await
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+            .collect();
+        let build = |drafts: &[pi_extension_api::SessionBoundaryDraft]| {
+            let sm = self.get_session_manager();
+            build_boundary_preview(&sm, drafts, pending.clone())
+        };
+        let initial = build(&[]).unwrap_or(BoundaryContextPreview {
+            context_entries: Vec::new(),
+            context_messages: Vec::new(),
+            llm_messages: Vec::new(),
+            pending_messages: Vec::new(),
+            can_continue: false,
+        });
+        let state = BoundaryState {
+            entries: Vec::new(),
+            continue_: false,
+            context: initial,
+            outcome,
+        };
+        let result = hr
+            .run_boundary(BoundaryKind::AgentBeforeSettle, state, build)
+            .await;
+        if result.valid && !result.entries.is_empty() {
+            {
+                let mut mgr = self.get_session_manager();
+                let _ = apply_boundary_drafts(&mut mgr, &result.entries);
+            }
+            self.refresh_context().await;
+        }
+        result.valid && result.continue_ && result.context.can_continue
+    }
+
     /// Emit agent_settled and resolve idle waiters.
     async fn _emit_agent_settled(&self) {
         *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
@@ -5920,6 +6111,90 @@ fn interpret_user_bash_result(
     }
 }
 
+/// Apply boundary drafts to a session manager (TS `_applyBoundaryDrafts`).
+/// Returns the appended entry ids.
+fn apply_boundary_drafts(
+    mgr: &mut crate::core::session_manager::SessionManager,
+    drafts: &[pi_extension_api::SessionBoundaryDraft],
+) -> Result<Vec<String>, String> {
+    use pi_extension_api::SessionBoundaryDraft as D;
+    let mut ids = Vec::new();
+    for draft in drafts {
+        let id = match draft {
+            D::Custom { custom_type, data } => mgr.append_custom_entry(custom_type, data.clone()),
+            D::CustomMessage {
+                custom_type,
+                content,
+                display,
+                details,
+            } => mgr.append_custom_message_entry(
+                custom_type,
+                content.clone(),
+                *display,
+                details.clone(),
+            ),
+            D::ContextEdit {
+                target_id,
+                replacement,
+            } => mgr.append_context_edit(target_id, replacement.clone())?,
+            D::Compaction {
+                summary,
+                first_kept_entry_id,
+                details,
+                usage,
+            } => {
+                let tokens_before = crate::core::compaction::estimate_agent_messages_tokens(
+                    &mgr.build_projected_context_messages(),
+                );
+                mgr.append_compaction(
+                    summary,
+                    first_kept_entry_id.as_deref(),
+                    tokens_before,
+                    details.clone(),
+                    Some(true),
+                    usage.clone(),
+                )
+            }
+        };
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+/// Build the boundary model-context preview with the pending drafts applied to
+/// an in-memory session clone (TS `_buildBoundaryContext`). Returns `Err` when
+/// a draft is invalid — the boundary dispatch then discards all drafts.
+fn build_boundary_preview(
+    sm: &crate::core::session_manager::SessionManager,
+    drafts: &[pi_extension_api::SessionBoundaryDraft],
+    pending_messages: Vec<serde_json::Value>,
+) -> Result<pi_extension_api::BoundaryContextPreview, String> {
+    let mut preview = sm.preview_clone();
+    apply_boundary_drafts(&mut preview, drafts)?;
+    let projection = preview.build_session_projection();
+    let context_entries: Vec<serde_json::Value> = projection
+        .entries
+        .iter()
+        .map(|e| serde_json::to_value(&e.source_entry).unwrap_or(serde_json::Value::Null))
+        .collect();
+    let agent_messages = preview.build_projected_context_messages();
+    let llm_messages: Vec<serde_json::Value> =
+        crate::core::messages::convert_to_llm(&agent_messages)
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+            .collect();
+    let last_role = agent_messages.last().map(|m| m.role().to_string());
+    let has_context = !agent_messages.is_empty();
+    let can_continue = has_context && last_role.as_deref() != Some("assistant");
+    Ok(pi_extension_api::BoundaryContextPreview {
+        context_entries,
+        context_messages: projection.messages,
+        llm_messages,
+        pending_messages,
+        can_continue,
+    })
+}
+
 /// Whether an assistant message is a retryable error, matching TS
 /// `_isRetryableError`: context overflow is handled by compaction, not retry
 /// (full `isContextOverflow` detection: error patterns + silent usage
@@ -6209,6 +6484,64 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::core::session_manager::SessionEntry;
+
+    #[test]
+    fn apply_and_preview_boundary_drafts() {
+        use pi_extension_api::SessionBoundaryDraft as D;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = crate::core::session_manager::SessionManager::new(
+            "/tmp/test",
+            dir.path().to_str().unwrap(),
+            None,
+            false,
+            None,
+        );
+        let user_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": 0
+        }));
+
+        // Preview applies the draft to an in-memory clone only.
+        let drafts = vec![D::ContextEdit {
+            target_id: user_id.clone(),
+            replacement: serde_json::Value::Null,
+        }];
+        let preview = build_boundary_preview(&mgr, &drafts, vec![]).unwrap();
+        assert!(preview.context_messages.is_empty(), "omitted in preview");
+        assert_eq!(
+            mgr.build_projected_context_messages().len(),
+            1,
+            "real manager unaffected until commit"
+        );
+
+        // Commit custom + custom_message + context_edit drafts.
+        let commit = vec![
+            D::Custom {
+                custom_type: "x".into(),
+                data: None,
+            },
+            D::CustomMessage {
+                custom_type: "note".into(),
+                content: serde_json::json!([{"type": "text", "text": "n"}]),
+                display: true,
+                details: None,
+            },
+            D::ContextEdit {
+                target_id: user_id,
+                replacement: serde_json::Value::Null,
+            },
+        ];
+        let ids = apply_boundary_drafts(&mut mgr, &commit).unwrap();
+        assert_eq!(ids.len(), 3);
+        assert!(
+            !mgr.build_projected_context_messages()
+                .iter()
+                .any(|m| matches!(m, pi_agent_core::types::AgentMessage::User { .. })),
+            "user omitted after commit"
+        );
+    }
 
     #[test]
     fn interpret_user_bash_result_fails_closed() {

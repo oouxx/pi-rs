@@ -87,6 +87,20 @@ pub async fn run(args: &CliArgs) -> i32 {
         eprintln!("{} {d}", "Warning:".yellow().bold());
     }
 
+    // Invalid / missing `--mode` is a hard error (TS #9045).
+    if let Some(m) = &args.invalid_mode {
+        if m.is_empty() {
+            eprintln!("{} --mode requires a value", "Error:".red().bold());
+        } else {
+            eprintln!(
+                "{} invalid --mode {:?}: expected text, json, rpc, acp, interactive, or tui",
+                "Error:".red().bold(),
+                m
+            );
+        }
+        return EXIT_FAILURE;
+    }
+
     // --name requires a non-empty value (matching TS).
     if let Some(ref name) = args.name {
         if name.trim().is_empty() {

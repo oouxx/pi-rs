@@ -440,6 +440,16 @@ pub fn resolve_cli_model(
     let cli_model = match cli_model {
         Some(m) => m,
         None => {
+            // TS #10236: `--provider` without `--model` is an error instead of
+            // silently running the default model from another provider.
+            if let Some(provider) = cli_provider {
+                return ResolveCliModelResult {
+                    model: None,
+                    thinking_level: None,
+                    warning: None,
+                    error: Some(format!("--provider {provider} requires --model")),
+                };
+            }
             return ResolveCliModelResult {
                 model: None,
                 thinking_level: None,
@@ -928,6 +938,15 @@ mod tests {
         let result = resolve_cli_model(None, None, &registry);
         assert!(result.model.is_none());
         assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_resolve_cli_model_provider_without_model_errors() {
+        // TS #10236.
+        let registry = test_registry();
+        let result = resolve_cli_model(Some("anthropic"), None, &registry);
+        assert!(result.model.is_none());
+        assert!(result.error.is_some());
     }
 
     #[test]

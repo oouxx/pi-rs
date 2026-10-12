@@ -5479,8 +5479,10 @@ impl AgentSession {
     ) -> Result<crate::core::bash_executor::BashExecutorResult, String> {
         use crate::core::bash_executor::{BashExecutor, BashExecutorOptions};
 
-        // Dispatch user_bash event to extensions
-        // If an extension handles the command, return its result
+        // Dispatch user_bash event to extensions. A handler that returns a
+        // result fails closed: invalid or unsupported results abort without
+        // falling back to local execution (TS 509ee2bd0). `None` continues
+        // propagation to local execution.
         if let Some(ref registry) = self.extension_registry {
             if let Some(result) = crate::core::extensions::dispatcher::dispatch_user_bash(
                 registry,
@@ -5490,12 +5492,7 @@ impl AgentSession {
             )
             .await
             {
-                // Extension handled the command; return its result
-                if let Some(ref result_val) = result.result {
-                    if let Ok(parsed) = serde_json::from_value(result_val.clone()) {
-                        return Ok(parsed);
-                    }
-                }
+                return interpret_user_bash_result(result);
             }
         }
 
@@ -5901,6 +5898,28 @@ impl AgentSession {
     }
 }
 
+/// Validate and apply a `user_bash` handler result (TS 509ee2bd0 fail-closed
+/// semantics): a handler must return exactly one of `{operations}` or
+/// `{result}`. Invalid results and unsupported `operations` abort without
+/// falling back to local execution.
+fn interpret_user_bash_result(
+    result: crate::core::extensions::UserBashResult,
+) -> Result<crate::core::bash_executor::BashExecutorResult, String> {
+    const INVALID: &str =
+        "Invalid user_bash handler result: return exactly one of { operations } or { result }";
+    match (result.operations.is_some(), result.result.is_some()) {
+        (false, false) | (true, true) => Err(INVALID.to_string()),
+        (true, false) => Err(
+            "user_bash 'operations' are not supported in this port; the handler must return a { result }"
+                .to_string(),
+        ),
+        (false, true) => {
+            let value = result.result.unwrap_or(serde_json::Value::Null);
+            serde_json::from_value(value).map_err(|e| format!("Invalid user_bash result: {e}"))
+        }
+    }
+}
+
 /// Whether an assistant message is a retryable error, matching TS
 /// `_isRetryableError`: context overflow is handled by compaction, not retry
 /// (full `isContextOverflow` detection: error patterns + silent usage
@@ -6190,6 +6209,49 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::core::session_manager::SessionEntry;
+
+    #[test]
+    fn interpret_user_bash_result_fails_closed() {
+        use crate::core::extensions::UserBashResult;
+
+        // Exactly one of operations/result is required.
+        assert!(interpret_user_bash_result(UserBashResult {
+            operations: None,
+            result: None
+        })
+        .is_err());
+        assert!(interpret_user_bash_result(UserBashResult {
+            operations: Some(serde_json::json!({ "exec": true })),
+            result: Some(serde_json::json!({ "output": "x" }))
+        })
+        .is_err());
+        // `operations` is unsupported -> fail closed rather than run locally.
+        assert!(interpret_user_bash_result(UserBashResult {
+            operations: Some(serde_json::json!({ "exec": true })),
+            result: None
+        })
+        .is_err());
+        // Valid full result is used verbatim.
+        let ok = interpret_user_bash_result(UserBashResult {
+            operations: None,
+            result: Some(serde_json::json!({
+                "output": "hi",
+                "exitCode": 0,
+                "cancelled": false,
+                "truncated": false,
+                "fullOutputPath": null
+            })),
+        })
+        .unwrap();
+        assert_eq!(ok.output, "hi");
+        assert_eq!(ok.exit_code, Some(0));
+        // Malformed result JSON fails closed.
+        assert!(interpret_user_bash_result(UserBashResult {
+            operations: None,
+            result: Some(serde_json::json!(42))
+        })
+        .is_err());
+    }
 
     fn message_entry(role: &str, content: serde_json::Value, usage: Option<serde_json::Value>) -> SessionEntry {
         let mut msg = serde_json::json!({ "role": role, "content": content });

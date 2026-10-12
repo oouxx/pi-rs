@@ -24,8 +24,9 @@ pub fn detect_supported_image_mime_type(buffer: &[u8]) -> Option<&'static str> {
         }
     }
 
-    // GIF: "GIF87a" or "GIF89a"
-    if buffer.len() >= 6 && &buffer[..3] == b"GIF" {
+    // GIF: "GIF87a" or "GIF89a" (require the full 6-byte header so plain text
+    // starting with "GIF" is not misclassified as an image).
+    if buffer.len() >= 6 && (&buffer[..6] == b"GIF87a" || &buffer[..6] == b"GIF89a") {
         return Some("image/gif");
     }
 
@@ -106,6 +107,18 @@ mod tests {
     fn test_detect_gif() {
         let gif = b"GIF89a".to_vec();
         assert_eq!(detect_supported_image_mime_type(&gif), Some("image/gif"));
+        assert_eq!(
+            detect_supported_image_mime_type(b"GIF87a"),
+            Some("image/gif")
+        );
+    }
+
+    #[test]
+    fn test_text_starting_with_gif_is_not_an_image() {
+        // TS #9755: a text file whose first bytes are "GIF" must not be treated
+        // as an image.
+        assert_eq!(detect_supported_image_mime_type(b"GIF is a format"), None);
+        assert_eq!(detect_supported_image_mime_type(b"GIf89a"), None);
     }
 
     #[test]

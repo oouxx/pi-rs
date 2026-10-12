@@ -72,6 +72,9 @@ pub struct CliArgs {
     pub no_context_files: bool,
     pub unknown_flags: HashMap<String, String>,
     pub diagnostics: Vec<String>,
+    /// Invalid `--mode` value (TS #9045: error and exit nonzero instead of
+    /// silently ignoring it). `Some("")` means the value was missing.
+    pub invalid_mode: Option<String>,
     pub default_project_trust: DefaultProjectTrust,
     /// Subcommand (e.g. "install", "remove", "list")
     pub subcommand: Option<String>,
@@ -230,8 +233,11 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         "rpc" => result.mode = OutputMode::Rpc,
                         "interactive" | "tui" => result.mode = OutputMode::Interactive,
                         "acp" => result.mode = OutputMode::Acp,
-                        _ => result.mode = OutputMode::Text,
+                        "text" => result.mode = OutputMode::Text,
+                        other => result.invalid_mode = Some(other.to_string()),
                     }
+                } else {
+                    result.invalid_mode = Some(String::new());
                 }
             }
 
@@ -504,6 +510,16 @@ mod tests {
     fn test_parse_json_mode() {
         let args = parse_args(&["--mode".into(), "json".into()]);
         assert_eq!(args.mode, OutputMode::Json);
+        assert!(args.invalid_mode.is_none());
+    }
+
+    #[test]
+    fn test_parse_invalid_mode_records_error() {
+        let args = parse_args(&["--mode".into(), "bogus".into()]);
+        assert_eq!(args.invalid_mode.as_deref(), Some("bogus"));
+        // Missing value is also an error (empty marker).
+        let args = parse_args(&["--mode".into()]);
+        assert_eq!(args.invalid_mode.as_deref(), Some(""));
     }
 
     #[test]

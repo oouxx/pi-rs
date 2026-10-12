@@ -541,8 +541,10 @@ pub enum ProjectTrustDecision {
 // UserBashResult
 // ============================================================================
 
-/// Result from a `user_bash` event handler.
-/// Extensions can provide custom operations or a full replacement result.
+/// Result from a `user_bash` event handler. Must set exactly one of
+/// `operations` or `result` (TS `UserBashEventResult` union). Invalid results
+/// and unsupported `operations` fail closed (the session does not fall back to
+/// local execution).
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserBashResult {

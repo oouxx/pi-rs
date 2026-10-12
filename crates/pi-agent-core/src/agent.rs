@@ -75,17 +75,17 @@ impl PendingMessageQueue {
         self.messages.push(message);
     }
 
-    fn drain(&mut self) -> Vec<AgentMessage> {
+    fn peek(&self) -> Vec<AgentMessage> {
         match self.mode {
-            QueueMode::All => std::mem::take(&mut self.messages),
-            QueueMode::OneAtATime => {
-                if self.messages.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![self.messages.remove(0)]
-                }
-            }
+            QueueMode::All => self.messages.clone(),
+            QueueMode::OneAtATime => self.messages.first().cloned().into_iter().collect(),
         }
+    }
+
+    fn drain(&mut self) -> Vec<AgentMessage> {
+        let drained = self.peek();
+        self.messages.drain(..drained.len());
+        drained
     }
 
     fn has_items(&self) -> bool {
@@ -495,6 +495,16 @@ impl Agent {
     pub async fn has_queued_messages(&self) -> bool {
         self.steering_queue.lock().await.has_items()
             || self.follow_up_queue.lock().await.has_items()
+    }
+
+    /// Preview the messages selected for the next turn without consuming them
+    /// (TS `Agent.peekQueuedMessages()`): steering first, else follow-up.
+    pub async fn peek_queued_messages(&self) -> Vec<AgentMessage> {
+        let steering = self.steering_queue.lock().await.peek();
+        if !steering.is_empty() {
+            return steering;
+        }
+        self.follow_up_queue.lock().await.peek()
     }
 
     pub async fn abort(&self) {
@@ -2117,6 +2127,66 @@ mod tests {
         agent.clear_all_queues().await;
 
         assert!(!agent.has_queued_messages().await);
+    }
+
+    /// `peek_queued_messages()` previews the next batch without consuming it,
+    /// preferring steering over follow-up (TS `Agent.peekQueuedMessages()`).
+    #[tokio::test]
+    async fn test_agent_peek_queued_messages_does_not_consume() {
+        fn user(text: &str) -> AgentMessage {
+            AgentMessage::User {
+                content: vec![ContentBlock::text(text)],
+                timestamp: 1000,
+            }
+        }
+        fn text(m: &AgentMessage) -> String {
+            let AgentMessage::User { content, .. } = m else {
+                return String::new();
+            };
+            match content.first() {
+                Some(ContentBlock::Text { text, .. }) => text.clone(),
+                _ => String::new(),
+            }
+        }
+
+        // one-at-a-time: peek shows only the head and does not consume it.
+        let agent = Agent::new(AgentOptions {
+            stream_fn: Some(make_ok_stream_fn("ok")),
+            convert_to_llm: Some(default_convert_to_llm()),
+            steering_mode: Some(QueueMode::OneAtATime),
+            follow_up_mode: Some(QueueMode::OneAtATime),
+            ..Default::default()
+        });
+        agent.steer(user("s1")).await;
+        agent.steer(user("s2")).await;
+        agent.follow_up(user("f1")).await;
+
+        let peeked = agent.peek_queued_messages().await;
+        assert_eq!(peeked.len(), 1);
+        assert_eq!(text(&peeked[0]), "s1");
+        // Still queued (not consumed).
+        assert!(agent.has_queued_messages().await);
+        assert_eq!(text(&agent.peek_queued_messages().await[0]), "s1");
+
+        // After steering is cleared, follow-up is selected.
+        agent.clear_steering_queue().await;
+        let peeked = agent.peek_queued_messages().await;
+        assert_eq!(peeked.len(), 1);
+        assert_eq!(text(&peeked[0]), "f1");
+
+        // all mode: peek shows the whole batch.
+        let agent = Agent::new(AgentOptions {
+            stream_fn: Some(make_ok_stream_fn("ok")),
+            convert_to_llm: Some(default_convert_to_llm()),
+            steering_mode: Some(QueueMode::All),
+            ..Default::default()
+        });
+        agent.steer(user("a1")).await;
+        agent.steer(user("a2")).await;
+        let peeked = agent.peek_queued_messages().await;
+        assert_eq!(peeked.len(), 2);
+        assert_eq!(text(&peeked[0]), "a1");
+        assert_eq!(text(&peeked[1]), "a2");
     }
 
     #[tokio::test]

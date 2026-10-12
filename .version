@@ -5,5 +5,5 @@
 #
 # 同级 ../pi 检出的更新版本只用于识别未来差距，不改变本文件记录的基准。
 
-ts_version=v0.82.1
-ts_commit=b4f293684
+ts_version=v0.87.1
+ts_commit=f07218c4d

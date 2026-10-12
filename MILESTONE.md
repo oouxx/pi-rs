@@ -31,6 +31,27 @@ pi-rs 当前以 `.version` 记录的版本作为对齐和验收基准。同级 `
 | Durable/Pico/Chord | 不在当前核心范围 |
 | TUI 组件逐行复刻 | 不在范围；核心交互状态机仍需保持一致 |
 
+## v0.82.1 → v0.87.1 对齐计划（进行中，2026-10-12 起）
+
+`.version` 已切到 `v0.87.1`。按“先正确性/契约（P0），再架构大改（P1）”推进；
+TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1..v0.87.1` 变更。
+
+### P0（正确性 / 契约）
+
+| 项 | 现状 | 说明 |
+| --- | --- | --- |
+| P0-2 `message_update` delta-only（JSON/RPC） | ✅ 已完成（此前 cherry-pick） | `modes/json_event.rs::to_json_event` 已去除 `message`/`partial`，print/RPC 均已接线 |
+| P0-3 agent loop 边界：`finishTurn`/`prepareRequest`/`peekQueuedMessages` + `TurnEndEvent` 扩展 + `AgentBeforeSettleEvent`/`emitBoundary` | 进行中 | pi-rs 现为旧的 `shouldStopAfterTurn`（0.84），需替换为 0.87 的 `finishTurn`/`prepareRequest` |
+| P0-4 `ContextEditEntry` + SessionManager 权威化 | 待做 | `appendContextEdit`、`refreshContext()`；pi-rs 暂无 `context_edit` |
+| P0-5 `ToolCall.arguments`/`details` 限 JSON + `user_bash` fail-closed | 部分 | 类型层面 `serde_json::Value` 已满足；`user_bash` 目前 fail-open（`operations` 未接线，非法结果回落本地执行），需对齐或登记偏差 |
+| P0-1 / P0-6 provider / coding-agent 修复批次 | 长尾，待逐项审计 | 与 `TranscriptContext`（P1-7）纠缠的修复留给 P1 |
+
+### P1（架构大改，单独排期）
+
+- P1-7 pi-ai `Context`→`TranscriptContext` + transcript-backed 中途 system/tool 变更（最长杠杆）
+- P1-8 ModelRuntime / ai Models 运行时 API
+- P1-9 harness v4 lane（拟维持 pi-rs 单 lane + 登记偏差）
+
 ## 权威文档
 
 - 历史对齐差距：[`docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md`](docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md)

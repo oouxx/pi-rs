@@ -106,6 +106,18 @@ pub enum SessionEntry {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
     },
+    /// Append-only change to one earlier entry's contribution to model context
+    /// (TS `ContextEditEntry`). `replacement: null` omits the target from model
+    /// context; a value replaces only its content.
+    #[serde(rename = "context_edit")]
+    ContextEdit {
+        id: String,
+        parent_id: Option<String>,
+        timestamp: String,
+        target_id: String,
+        #[serde(default)]
+        replacement: serde_json::Value,
+    },
     #[serde(rename = "label")]
     Label {
         id: String,
@@ -134,6 +146,7 @@ impl SessionEntry {
             | SessionEntry::BranchSummary { id, .. }
             | SessionEntry::Custom { id, .. }
             | SessionEntry::CustomMessage { id, .. }
+            | SessionEntry::ContextEdit { id, .. }
             | SessionEntry::Label { id, .. }
             | SessionEntry::SessionInfo { id, .. } => id,
         }
@@ -148,6 +161,7 @@ impl SessionEntry {
             | SessionEntry::BranchSummary { parent_id, .. }
             | SessionEntry::Custom { parent_id, .. }
             | SessionEntry::CustomMessage { parent_id, .. }
+            | SessionEntry::ContextEdit { parent_id, .. }
             | SessionEntry::Label { parent_id, .. }
             | SessionEntry::SessionInfo { parent_id, .. } => parent_id.as_deref(),
         }
@@ -162,6 +176,7 @@ impl SessionEntry {
             | SessionEntry::BranchSummary { timestamp, .. }
             | SessionEntry::Custom { timestamp, .. }
             | SessionEntry::CustomMessage { timestamp, .. }
+            | SessionEntry::ContextEdit { timestamp, .. }
             | SessionEntry::Label { timestamp, .. }
             | SessionEntry::SessionInfo { timestamp, .. } => timestamp,
         }
@@ -170,6 +185,27 @@ impl SessionEntry {
 
 #[derive(Debug, Clone)]
 pub struct SessionContext {
+    pub messages: Vec<serde_json::Value>,
+    pub thinking_level: String,
+    pub model: Option<ModelInfo>,
+}
+
+/// One projected contribution to model context (TS `ProjectedSessionEntry`).
+/// The same raw entry can be omitted from, or content-replaced in, the model
+/// context by a later append-only context edit.
+#[derive(Debug, Clone)]
+pub struct ProjectedSessionEntry {
+    /// Raw append-only entry that owns this projected contribution.
+    pub source_entry: SessionEntry,
+    /// Model-visible messages after context edits. Empty for state-only entries
+    /// and omissions.
+    pub messages: Vec<serde_json::Value>,
+}
+
+/// Provenance-preserving, compaction-aware model context (TS `SessionProjection`).
+#[derive(Debug, Clone)]
+pub struct SessionProjection {
+    pub entries: Vec<ProjectedSessionEntry>,
     pub messages: Vec<serde_json::Value>,
     pub thinking_level: String,
     pub model: Option<ModelInfo>,
@@ -703,6 +739,17 @@ fn add_ids_to_entry(entry: SessionEntry, id: &str, parent_id: Option<String>) ->
             target_id,
             label,
         },
+        SessionEntry::ContextEdit {
+            target_id,
+            replacement,
+            ..
+        } => SessionEntry::ContextEdit {
+            id: id.to_string(),
+            parent_id,
+            timestamp,
+            target_id,
+            replacement,
+        },
         SessionEntry::SessionInfo { name, .. } => SessionEntry::SessionInfo {
             id: id.to_string(),
             parent_id,
@@ -790,6 +837,19 @@ fn set_timestamp_on_entry(entry: SessionEntry, timestamp: &str) -> SessionEntry 
             details,
             usage,
             from_hook,
+        },
+        SessionEntry::ContextEdit {
+            id,
+            parent_id,
+            target_id,
+            replacement,
+            ..
+        } => SessionEntry::ContextEdit {
+            id,
+            parent_id,
+            timestamp: ts,
+            target_id,
+            replacement,
         },
         SessionEntry::Custom {
             id,
@@ -936,49 +996,85 @@ pub fn build_context_entries(
     context_entries
 }
 
-pub fn build_session_context(
-    entries: &[SessionEntry],
-    by_id: &HashMap<String, SessionEntry>,
-    leaf_id: Option<&str>,
-) -> SessionContext {
-    if entries.is_empty() {
-        return SessionContext {
-            messages: Vec::new(),
-            thinking_level: "off".to_string(),
-            model: None,
-        };
+/// Convert a single session entry into model-visible JSON messages, before any
+/// context edits.
+fn session_entry_to_value_messages(entry: &SessionEntry) -> Vec<serde_json::Value> {
+    match entry {
+        SessionEntry::Message { message, .. } => vec![message.clone()],
+        SessionEntry::Compaction {
+            summary,
+            tokens_before,
+            ..
+        } => vec![serde_json::json!({
+            "role": "user",
+            "content": format!(
+                "[Compaction Summary ({} tokens before)]\n{}",
+                tokens_before, summary
+            ),
+        })],
+        SessionEntry::BranchSummary { summary, .. } => vec![serde_json::json!({
+            "role": "user",
+            "content": format!("[Branch Summary]\n{}", summary),
+        })],
+        SessionEntry::CustomMessage { content, .. } => vec![serde_json::json!({
+            "role": "user",
+            "content": content,
+        })],
+        _ => Vec::new(),
     }
+}
 
-    let leaf = if let Some(lid) = leaf_id {
-        by_id.get(lid)
-    } else {
-        entries.last()
+/// Apply an append-only context edit to an entry's projected messages
+/// (TS `projectContextEntry`).
+fn project_context_entry(
+    entry: &SessionEntry,
+    edit: Option<&SessionEntry>,
+) -> Vec<serde_json::Value> {
+    let messages = session_entry_to_value_messages(entry);
+    let Some(SessionEntry::ContextEdit { replacement, .. }) = edit else {
+        return messages;
     };
-
-    let leaf = match leaf {
-        Some(l) => l,
-        None => {
-            return SessionContext {
-                messages: Vec::new(),
-                thinking_level: "off".to_string(),
-                model: None,
+    if replacement.is_null() {
+        return Vec::new();
+    }
+    let replacement_content = replacement
+        .get("content")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    messages
+        .into_iter()
+        .map(|mut message| {
+            let role = message
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string();
+            if role != "user" && role != "assistant" && role != "toolResult" && role != "custom" {
+                return message;
             }
-        }
-    };
+            let content = if (role == "assistant" || role == "toolResult")
+                && replacement_content.is_string()
+            {
+                serde_json::json!([{
+                    "type": "text",
+                    "text": replacement_content.as_str().unwrap_or_default(),
+                }])
+            } else {
+                replacement_content.clone()
+            };
+            if let Some(obj) = message.as_object_mut() {
+                obj.insert("content".to_string(), content);
+            }
+            message
+        })
+        .collect()
+}
 
-    let mut path = Vec::new();
-    let mut current = Some(leaf);
-    while let Some(entry) = current {
-        path.push(entry.clone());
-        current = entry.parent_id().and_then(|pid| by_id.get(pid));
-    }
-    path.reverse();
-
+/// Thinking level / model from the session path (TS `getSessionContextSettings`).
+fn session_context_settings(path: &[&SessionEntry]) -> (String, Option<ModelInfo>) {
     let mut thinking_level = "off".to_string();
     let mut model: Option<ModelInfo> = None;
-    let mut compaction_id: Option<String> = None;
-
-    for entry in &path {
+    for entry in path {
         match entry {
             SessionEntry::ThinkingLevelChange {
                 thinking_level: tl, ..
@@ -993,77 +1089,82 @@ pub fn build_session_context(
                     model_id: model_id.clone(),
                 });
             }
-            SessionEntry::Compaction { id, .. } => {
-                compaction_id = Some(id.clone());
-            }
             _ => {}
         }
     }
+    (thinking_level, model)
+}
 
-    let mut messages = Vec::new();
+/// Build provenance-preserving, compaction-aware model context
+/// (TS `buildSessionProjection`).
+pub fn build_session_projection(
+    entries: &[SessionEntry],
+    by_id: &HashMap<String, SessionEntry>,
+    leaf_id: Option<&str>,
+) -> SessionProjection {
+    if entries.is_empty() {
+        return SessionProjection {
+            entries: Vec::new(),
+            messages: Vec::new(),
+            thinking_level: "off".to_string(),
+            model: None,
+        };
+    }
 
-    let append_message = |entry: &SessionEntry, msgs: &mut Vec<serde_json::Value>| match entry {
-        SessionEntry::Message { message, .. } => {
-            msgs.push(message.clone());
-        }
-        SessionEntry::BranchSummary { summary, .. } => {
-            let compact_msg = serde_json::json!({
-                "role": "user",
-                "content": format!("[Branch Summary]\n{}", summary),
-            });
-            msgs.push(compact_msg);
-        }
-        SessionEntry::CustomMessage { content, .. } => {
-            let custom_msg = serde_json::json!({
-                "role": "user",
-                "content": content,
-            });
-            msgs.push(custom_msg);
-        }
-        _ => {}
-    };
+    let path = build_session_path(entries, leaf_id, by_id);
+    let (thinking_level, model) = session_context_settings(&path);
 
-    if let Some(ref cid) = compaction_id {
-        let compaction_idx = path.iter().position(|e| e.id() == cid).unwrap_or(0);
+    let context_entries = build_context_entries(entries, by_id, leaf_id);
 
-        let compaction_entry = &path[compaction_idx];
-        if let SessionEntry::Compaction {
-            summary,
-            first_kept_entry_id,
-            tokens_before,
-            ..
-        } = compaction_entry
-        {
-            let compact_msg = serde_json::json!({
-                "role": "user",
-                "content": format!("[Compaction Summary ({} tokens before)]\n{}", tokens_before, summary),
-            });
-            messages.push(compact_msg);
-
-            let mut found_first_kept = false;
-            for entry in &path[..compaction_idx] {
-                if entry.id() == first_kept_entry_id {
-                    found_first_kept = true;
-                }
-                if found_first_kept {
-                    append_message(entry, &mut messages);
-                }
-            }
-
-            for entry in &path[compaction_idx + 1..] {
-                append_message(entry, &mut messages);
-            }
-        }
-    } else {
-        for entry in &path {
-            append_message(entry, &mut messages);
+    // The latest edit targeting an entry wins (append-only).
+    let mut edits: HashMap<String, &SessionEntry> = HashMap::new();
+    for entry in &context_entries {
+        if let SessionEntry::ContextEdit { target_id, .. } = entry {
+            edits.insert(target_id.clone(), entry);
         }
     }
 
-    SessionContext {
+    let projected_entries: Vec<ProjectedSessionEntry> = context_entries
+        .iter()
+        .enumerate()
+        .map(|(index, source_entry)| {
+            // Only the newest compaction at index zero contributes a checkpoint
+            // and summary; an older retained compaction entry does not.
+            let messages = if matches!(source_entry, SessionEntry::Compaction { .. }) && index > 0 {
+                Vec::new()
+            } else {
+                project_context_entry(source_entry, edits.get(source_entry.id()).copied())
+            };
+            ProjectedSessionEntry {
+                source_entry: source_entry.clone(),
+                messages,
+            }
+        })
+        .collect();
+
+    let messages = projected_entries
+        .iter()
+        .flat_map(|entry| entry.messages.clone())
+        .collect();
+
+    SessionProjection {
+        entries: projected_entries,
         messages,
         thinking_level,
         model,
+    }
+}
+
+pub fn build_session_context(
+    entries: &[SessionEntry],
+    by_id: &HashMap<String, SessionEntry>,
+    leaf_id: Option<&str>,
+) -> SessionContext {
+    let projection = build_session_projection(entries, by_id, leaf_id);
+    SessionContext {
+        messages: projection.messages,
+        thinking_level: projection.thinking_level,
+        model: projection.model,
     }
 }
 
@@ -1085,6 +1186,7 @@ pub trait ReadonlySessionManager {
     fn get_entries(&self) -> Vec<&SessionEntry>;
     fn get_tree(&self) -> Vec<SessionTreeNode>;
     fn build_context(&self) -> SessionContext;
+    fn build_session_projection(&self) -> SessionProjection;
     fn build_context_entries(&self) -> Vec<SessionEntry>;
     fn is_persisted(&self) -> bool;
     fn uses_default_session_dir(&self) -> bool;
@@ -1477,7 +1579,7 @@ impl SessionManager {
     pub fn append_compaction(
         &mut self,
         summary: &str,
-        first_kept_entry_id: &str,
+        first_kept_entry_id: Option<&str>,
         tokens_before: u64,
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
@@ -1485,12 +1587,17 @@ impl SessionManager {
     ) -> String {
         let id = generate_id(&self.by_id);
         let timestamp = Utc::now().to_rfc3339();
+        // `null` creates a self-retaining compaction that keeps no preceding
+        // entries (TS `firstKeptEntryId ?? id`).
+        let first_kept = first_kept_entry_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| id.clone());
         let entry = SessionEntry::Compaction {
             id: id.clone(),
             parent_id: self.leaf_id.clone(),
             timestamp,
             summary: summary.to_string(),
-            first_kept_entry_id: first_kept_entry_id.to_string(),
+            first_kept_entry_id: first_kept,
             tokens_before,
             details,
             usage,
@@ -1502,6 +1609,80 @@ impl SessionManager {
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
+    }
+
+    pub fn append_context_edit(
+        &mut self,
+        target_id: &str,
+        replacement: serde_json::Value,
+    ) -> Result<String, String> {
+        let valid = replacement.is_null()
+            || (replacement.is_object()
+                && replacement
+                    .get("content")
+                    .is_some_and(|c| c.is_string() || c.is_array()));
+        if !valid {
+            return Err(
+                "Context edit replacement must be null or contain string/array content".into(),
+            );
+        }
+        let Some(target) = self.by_id.get(target_id) else {
+            return Err(format!("Entry {target_id} not found"));
+        };
+        if !self.get_branch(None).iter().any(|e| e.id() == target_id) {
+            return Err(format!("Entry {target_id} is not on the active branch"));
+        }
+        let editable = match target {
+            SessionEntry::CustomMessage { .. } => true,
+            SessionEntry::Message { message, .. } => matches!(
+                message.get("role").and_then(|r| r.as_str()),
+                Some("user") | Some("assistant") | Some("toolResult")
+            ),
+            _ => false,
+        };
+        if !editable {
+            return Err(format!(
+                "Entry {target_id} does not contribute editable model content"
+            ));
+        }
+        let target_role = match target {
+            SessionEntry::Message { message, .. } => message
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string(),
+            _ => "custom".to_string(),
+        };
+        // assistant/toolResult content is an array; normalize a string
+        // replacement into a text block (TS `appendContextEdit`).
+        let normalized = if !replacement.is_null()
+            && (target_role == "assistant" || target_role == "toolResult")
+            && replacement.get("content").is_some_and(|c| c.is_string())
+        {
+            let text = replacement
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or_default()
+                .to_string();
+            serde_json::json!({ "content": [{ "type": "text", "text": text }] })
+        } else {
+            replacement
+        };
+
+        let id = generate_id(&self.by_id);
+        let entry = SessionEntry::ContextEdit {
+            id: id.clone(),
+            parent_id: self.leaf_id.clone(),
+            timestamp: Utc::now().to_rfc3339(),
+            target_id: target_id.to_string(),
+            replacement: normalized,
+        };
+        let json = serde_json::to_string(&entry).unwrap_or_default();
+        self.file_entries.push(FileEntry::Entry(entry.clone()));
+        self.by_id.insert(id.clone(), entry);
+        self.leaf_id = Some(id.clone());
+        self.persist_entry_str(&json);
+        Ok(id)
     }
 
     pub fn append_branch_summary(
@@ -1716,6 +1897,9 @@ impl ReadonlySessionManager for SessionManager {
     fn build_context(&self) -> SessionContext {
         self.build_context()
     }
+    fn build_session_projection(&self) -> SessionProjection {
+        self.build_session_projection()
+    }
     fn build_context_entries(&self) -> Vec<SessionEntry> {
         self.build_context_entries()
     }
@@ -1784,6 +1968,11 @@ impl SessionManager {
     pub fn build_context(&self) -> SessionContext {
         let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
         build_session_context(&entries, &self.by_id, self.leaf_id.as_deref())
+    }
+
+    pub fn build_session_projection(&self) -> SessionProjection {
+        let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
+        build_session_projection(&entries, &self.by_id, self.leaf_id.as_deref())
     }
 
     pub fn navigate_to(&mut self, entry_id: &str) -> bool {
@@ -1920,6 +2109,9 @@ impl SessionManager {
                     ref mut parent_id, ..
                 }
                 | SessionEntry::CustomMessage {
+                    ref mut parent_id, ..
+                }
+                | SessionEntry::ContextEdit {
                     ref mut parent_id, ..
                 }
                 | SessionEntry::SessionInfo {
@@ -2762,8 +2954,117 @@ mod tests {
             "content": "Hello"
         }));
 
-        let id = mgr.append_compaction("Summary text", &msg_id, 1000, None, None, None);
+        let id = mgr.append_compaction("Summary text", Some(&msg_id), 1000, None, None, None);
         assert!(!id.is_empty());
+    }
+
+    fn new_test_manager(dir: &tempfile::TempDir) -> SessionManager {
+        SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None)
+    }
+
+    #[test]
+    fn test_context_edit_null_omits_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        let msg_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "secret"
+        }));
+        assert_eq!(mgr.build_context().messages.len(), 1);
+
+        mgr.append_context_edit(&msg_id, serde_json::Value::Null).unwrap();
+        let ctx = mgr.build_context();
+        assert!(
+            ctx.messages.is_empty(),
+            "omitted target contributes no messages: {:?}",
+            ctx.messages
+        );
+    }
+
+    #[test]
+    fn test_context_edit_replaces_content_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        let msg_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "original"
+        }));
+        mgr.append_context_edit(&msg_id, serde_json::json!({ "content": "redacted" }))
+            .unwrap();
+        let ctx = mgr.build_context();
+        assert_eq!(ctx.messages.len(), 1);
+        assert_eq!(ctx.messages[0].get("content").unwrap(), "redacted");
+        // Metadata (role) is preserved.
+        assert_eq!(ctx.messages[0].get("role").unwrap(), "user");
+    }
+
+    #[test]
+    fn test_context_edit_normalizes_string_for_assistant() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        let msg_id = mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "api": "a", "provider": "p", "model": "m",
+            "usage": {},
+            "stopReason": "stop",
+            "timestamp": 0
+        }));
+        mgr.append_context_edit(&msg_id, serde_json::json!({ "content": "replacement text" }))
+            .unwrap();
+        let ctx = mgr.build_context();
+        assert_eq!(ctx.messages.len(), 1);
+        let content = ctx.messages[0].get("content").unwrap();
+        assert!(content.is_array(), "assistant content stays an array: {content:?}");
+        assert_eq!(content[0]["text"], "replacement text");
+    }
+
+    #[test]
+    fn test_context_edit_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        let msg_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "x"
+        }));
+        // Unknown target.
+        assert!(mgr
+            .append_context_edit("missing", serde_json::Value::Null)
+            .is_err());
+        // Invalid replacement shape.
+        assert!(mgr
+            .append_context_edit(&msg_id, serde_json::json!(42))
+            .is_err());
+        assert!(mgr
+            .append_context_edit(&msg_id, serde_json::json!({ "other": 1 }))
+            .is_err());
+        // Non-editable target (thinking-level change / label).
+        let tl_id = mgr.append_thinking_level_change("high");
+        assert!(mgr
+            .append_context_edit(&tl_id, serde_json::Value::Null)
+            .is_err());
+    }
+
+    #[test]
+    fn test_append_compaction_null_is_self_retaining() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "one"
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "two"
+        }));
+        mgr.append_compaction("summary text", None, 10, None, None, None);
+        let ctx = mgr.build_context();
+        assert_eq!(ctx.messages.len(), 1, "keeps no preceding entries: {:?}", ctx.messages);
+        assert!(ctx.messages[0]
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap()
+            .contains("summary text"));
     }
 
     #[test]
@@ -2776,7 +3077,7 @@ mod tests {
             "role": "user",
             "content": "Old message"
         }));
-        mgr.append_compaction("Summary of old messages", &msg_id, 1000, None, None, None);
+        mgr.append_compaction("Summary of old messages", Some(&msg_id), 1000, None, None, None);
         mgr.append_message(serde_json::json!({
             "role": "user",
             "content": "New message"
@@ -2810,7 +3111,7 @@ mod tests {
         }));
         mgr.append_compaction(
             "Summary of old messages",
-            &kept_msg_id,
+            Some(&kept_msg_id),
             1000,
             None,
             None,
@@ -2855,7 +3156,7 @@ mod tests {
             "content": "Response 2"
         }));
         // First compaction
-        mgr.append_compaction("First summary", &msg2, 1000, None, None, None);
+        mgr.append_compaction("First summary", Some(&msg2), 1000, None, None, None);
         let msg3 = mgr.append_message(serde_json::json!({
             "role": "user",
             "content": "Third"
@@ -2865,7 +3166,7 @@ mod tests {
             "content": "Response 3"
         }));
         // Second compaction
-        mgr.append_compaction("Second summary", &msg3, 2000, None, None, None);
+        mgr.append_compaction("Second summary", Some(&msg3), 2000, None, None, None);
         mgr.append_message(serde_json::json!({
             "role": "user",
             "content": "Fourth"

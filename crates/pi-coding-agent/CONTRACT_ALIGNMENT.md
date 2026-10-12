@@ -416,3 +416,12 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 单条消息估算 `estimateTokens(AgentMessage)` | 按 role 取原始 UTF-16 字符数：user/custom/toolResult 文本+图片(4800 字符)、assistant text+thinking+toolCall(name+JSON args)、bash `command.length+output.length`、summary `summary.length`；`Math.ceil(chars/4)` | `estimate_agent_message_tokens` 逐 role 同款（UTF-16 长度、图片 4800、bash 命令+输出、summary 仅 summary），`chars.div_ceil(4)` | 是 | 原 CJK 加权启发式（`cjk*1.5 + non_cjk/4`、图片 100）已移除，对齐 TS |
 | `calculateContextTokens(usage)` | `totalTokens \|\| input+output+cacheRead+cacheWrite` | `calculate_context_tokens_from_usage` 同款 | 是 | |
 | 上下文百分比 | `estimate.tokens / contextWindow * 100`（不做 clamp） | `usage_percentage()` 同款（footer 也不 clamp） | 是 | |
+
+## Session context 投影与 context edit（`core/session_manager.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 追加式 context edit | `appendContextEdit(targetId, replacement \| null)`：`null` 从模型上下文省略目标，`{content}` 只替换内容（assistant/toolResult 的字符串 content 归一为 text block） | `SessionManager::append_context_edit` 同款（校验 target 存在 / 在活动分支 / 可编辑） | 是 | |
+| 会话投影 | `buildSessionProjection` 保留 provenance（`ProjectedSessionEntry`）；只有最新 compaction（index 0）贡献 checkpoint/summary | `build_session_projection` 同款 | 是 | |
+| self-retaining compaction | `appendCompaction(summary, null, ...)` → `firstKeptEntryId = id`（不保留任何前置条目） | `append_compaction(..., None, ...)` 同款 | 是 | |
+| 逐请求权威投影 | `AgentSession._installAgentRequestProjection` 每次 provider 请求用 projection.messages 覆盖 context，并安装 `finishTurn`/`emitBoundary` 边界 | 未接线（待完成） | 否（待完成） | P0-4 剩余部分 |

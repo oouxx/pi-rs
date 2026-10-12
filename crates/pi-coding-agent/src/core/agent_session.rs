@@ -4527,7 +4527,7 @@ References are relative to {}.
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             mgr.append_compaction(
                 &summary,
-                &first_kept_entry_id,
+                Some(&first_kept_entry_id),
                 total_tokens,
                 None,
                 None,

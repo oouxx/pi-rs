@@ -1308,6 +1308,31 @@ impl AgentSession {
                     })
                 }))
             },
+            // SessionManager is canonical for provider requests: every request
+            // rebuilds `context.messages` from the (edit-aware) session
+            // projection, matching TS `_installAgentRequestProjection`.
+            prepare_request: {
+                let session_ref = bash_session_manager.clone();
+                Some(Arc::new(move |request, _signal| {
+                    let session_ref = session_ref.clone();
+                    Box::pin(async move {
+                        let messages = {
+                            let mgr = session_ref
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            mgr.build_projected_context_messages()
+                        };
+                        Some(pi_agent_core::types::AgentRequestUpdate {
+                            context: Some(pi_agent_core::types::AgentContext {
+                                system_prompt: request.context.system_prompt,
+                                messages,
+                                tools: request.context.tools,
+                            }),
+                            ..Default::default()
+                        })
+                    })
+                }))
+            },
             ..Default::default()
         };
 
@@ -3523,14 +3548,12 @@ References are relative to {}.
             return;
         }
         for msg_value in &messages {
-            if let Ok(agent_msg) = serde_json::from_value::<AgentMessage>(msg_value.clone()) {
-                // Write through the shared state — `state()` returns a clone.
-                self.agent
-                    .update_state(|s| s.messages.push(agent_msg))
-                    .await;
-                // Note: session persistence is handled by the agent event handler
-            }
+            // Persist to the canonical session and refresh the finalized context
+            // once after all queued bash messages are appended (TS
+            // `_flushPendingBashMessages`).
+            self.get_session_manager().append_message(msg_value.clone());
         }
+        self.refresh_context().await;
     }
 
     /// Send a prompt with options and inject pending next-turn messages as context,
@@ -5584,13 +5607,21 @@ impl AgentSession {
             let value = serde_json::to_value(&bash_message).unwrap_or_default();
             self.pending_bash_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(value);
         } else {
-            // Add to agent state immediately
-            // Write through the shared state — `state()` returns a clone.
-            self.agent
-                .update_state(|s| s.messages.push(bash_message))
-                .await;
-            // Note: session persistence is handled by the agent event handler
+            // Not streaming: persist to the session and refresh the finalized
+            // context (matching TS `recordBashResult` → `appendMessage` +
+            // `_refreshFinalizedContext`).
+            let value = serde_json::to_value(&bash_message).unwrap_or_default();
+            self.get_session_manager().append_message(value);
+            self.refresh_context().await;
         }
+    }
+
+    /// Rebuild the agent's message context from the canonical session projection
+    /// (TS `_refreshFinalizedContext`). Extension/session-side context edits take
+    /// effect after this call.
+    pub async fn refresh_context(&self) {
+        let messages = { self.get_session_manager().build_projected_context_messages() };
+        self.agent.set_initial_messages(messages).await;
     }
 
     /// Whether there are pending bash messages waiting to be flushed,

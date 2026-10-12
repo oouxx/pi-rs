@@ -1975,6 +1975,16 @@ impl SessionManager {
         build_session_projection(&entries, &self.by_id, self.leaf_id.as_deref())
     }
 
+    /// Finalized, edit-aware typed model context (TS projection `.messages`).
+    pub fn build_projected_context_messages(&self) -> Vec<pi_agent_core::types::AgentMessage> {
+        let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
+        crate::core::compaction::build_projected_context_messages(
+            &entries,
+            &self.by_id,
+            self.leaf_id.as_deref(),
+        )
+    }
+
     pub fn navigate_to(&mut self, entry_id: &str) -> bool {
         if self.by_id.contains_key(entry_id) {
             self.leaf_id = Some(entry_id.to_string());
@@ -3017,6 +3027,35 @@ mod tests {
         let content = ctx.messages[0].get("content").unwrap();
         assert!(content.is_array(), "assistant content stays an array: {content:?}");
         assert_eq!(content[0]["text"], "replacement text");
+    }
+
+    #[test]
+    fn test_build_projected_context_messages_applies_edits() {
+        use pi_agent_core::types::AgentMessage;
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        let user_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "secret"}],
+            "timestamp": 0
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "keep"}],
+            "timestamp": 0
+        }));
+        // No edit yet: both messages are present.
+        assert_eq!(mgr.build_projected_context_messages().len(), 2);
+
+        mgr.append_context_edit(&user_id, serde_json::Value::Null).unwrap();
+        let messages = mgr.build_projected_context_messages();
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            AgentMessage::User { content, .. } => {
+                assert_eq!(content.len(), 1);
+            }
+            other => panic!("expected remaining user message, got {other:?}"),
+        }
     }
 
     #[test]

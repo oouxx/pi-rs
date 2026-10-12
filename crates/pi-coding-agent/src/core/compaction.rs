@@ -173,6 +173,135 @@ pub fn session_entry_to_context_messages(entry: &SessionEntry) -> Vec<AgentMessa
     }
 }
 
+/// Convert replacement content into typed content blocks; a string becomes one
+/// text block (TS content normalization for assistant/toolResult).
+fn replacement_content_blocks(
+    replacement: &serde_json::Value,
+) -> Vec<pi_agent_core::pi_ai_types::ContentBlock> {
+    let content = replacement
+        .get("content")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(text) = content.as_str() {
+        vec![pi_agent_core::pi_ai_types::ContentBlock::text(text)]
+    } else {
+        serde_json::from_value(content).unwrap_or_default()
+    }
+}
+
+/// Apply an append-only context edit to a typed entry's messages
+/// (TS `projectContextEntry`, `AgentMessage` form).
+pub fn project_entry_context_messages(
+    entry: &SessionEntry,
+    edit: Option<&SessionEntry>,
+) -> Vec<AgentMessage> {
+    let messages = session_entry_to_context_messages(entry);
+    let Some(SessionEntry::ContextEdit { replacement, .. }) = edit else {
+        return messages;
+    };
+    if replacement.is_null() {
+        return Vec::new();
+    }
+    let blocks = replacement_content_blocks(replacement);
+    let custom_text = replacement
+        .get("content")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string());
+    messages
+        .into_iter()
+        .map(|message| match message {
+            AgentMessage::User { timestamp, .. } => AgentMessage::User {
+                content: blocks.clone(),
+                timestamp,
+            },
+            AgentMessage::Assistant {
+                api,
+                provider,
+                model,
+                usage,
+                stop_reason,
+                error_message,
+                timestamp,
+                ..
+            } => AgentMessage::Assistant {
+                content: blocks.clone(),
+                api,
+                provider,
+                model,
+                usage,
+                stop_reason,
+                error_message,
+                timestamp,
+            },
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                details,
+                is_error,
+                added_tool_names,
+                usage,
+                timestamp,
+                ..
+            } => AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content: blocks.clone(),
+                details,
+                is_error,
+                added_tool_names,
+                usage,
+                timestamp,
+            },
+            AgentMessage::Custom {
+                custom_type,
+                display,
+                details,
+                timestamp,
+                ..
+            } => AgentMessage::Custom {
+                custom_type,
+                content: match custom_text.clone() {
+                    Some(s) => CustomContent::Text(s),
+                    None => CustomContent::Blocks(blocks.clone()),
+                },
+                display,
+                details,
+                timestamp,
+            },
+            other => other,
+        })
+        .collect()
+}
+
+/// Build the finalized, edit-aware typed model context from session entries
+/// (compaction-aware; only the newest compaction contributes a summary).
+pub fn build_projected_context_messages(
+    entries: &[SessionEntry],
+    by_id: &std::collections::HashMap<String, SessionEntry>,
+    leaf_id: Option<&str>,
+) -> Vec<AgentMessage> {
+    let context_entries =
+        crate::core::session_manager::build_context_entries(entries, by_id, leaf_id);
+    let mut edits: std::collections::HashMap<String, &SessionEntry> =
+        std::collections::HashMap::new();
+    for entry in &context_entries {
+        if let SessionEntry::ContextEdit { target_id, .. } = entry {
+            edits.insert(target_id.clone(), entry);
+        }
+    }
+    let mut messages = Vec::new();
+    for (index, entry) in context_entries.iter().enumerate() {
+        if matches!(entry, SessionEntry::Compaction { .. }) && index > 0 {
+            continue;
+        }
+        messages.extend(project_entry_context_messages(
+            entry,
+            edits.get(entry.id()).copied(),
+        ));
+    }
+    messages
+}
+
 fn entry_timestamp_ms(ts: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(ts)
         .map(|dt| dt.timestamp_millis())

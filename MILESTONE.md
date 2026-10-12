@@ -42,7 +42,7 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 | --- | --- | --- |
 | P0-2 `message_update` delta-only（JSON/RPC） | ✅ 已完成（此前 cherry-pick） | `modes/json_event.rs::to_json_event` 已去除 `message`/`partial`，print/RPC 均已接线 |
 | P0-3 agent loop 边界：`finishTurn`/`prepareRequest`/`peekQueuedMessages` + `TurnEndEvent` 扩展 + `AgentBeforeSettleEvent`/`emitBoundary` | 部分完成 | agent-core 部分（`finish_turn`/`prepare_request`/`peek_queued_messages` + `terminate` 语义）已完成；扩展边界事件（`AgentBeforeSettle`/`emitBoundary`/`TurnEndEvent` 字段）依赖 P0-4 的 session 投影/`ContextEditEntry`，随 P0-4 落地 |
-| P0-4 `ContextEditEntry` + SessionManager 权威化 | 部分完成 | SessionManager 层已完成：`ContextEdit` 条目、`build_session_projection`/`ProjectedSessionEntry`/`SessionProjection`、`append_context_edit`（校验 + 内容归一化）、`append_compaction(first_kept: Option<&str>)`（`None` 自保留）；`build_context` 改为经 projection。剩余：agent-session 逐请求投影（typed AgentMessage）+ `refreshContext` + 边界事件（`AgentBeforeSettle`/`emitBoundary`/`TurnEndEvent` 字段） |
+| P0-4 `ContextEditEntry` + SessionManager 权威化 | 大部分完成 | SessionManager 层 + 逐请求权威投影已完成（typed projection、`prepare_request` 覆盖 context、`refresh_context`、bash 结果持久化）。剩余：扩展边界事件（`AgentBeforeSettle`/`emitBoundary`/`TurnEndEvent` 字段） |
 | P0-5 `ToolCall.arguments`/`details` 限 JSON + `user_bash` fail-closed | 部分 | 类型层面 `serde_json::Value` 已满足；`user_bash` 目前 fail-open（`operations` 未接线，非法结果回落本地执行），需对齐或登记偏差 |
 | P0-1 / P0-6 provider / coding-agent 修复批次 | 长尾，待逐项审计 | 与 `TranscriptContext`（P1-7）纠缠的修复留给 P1 |
 

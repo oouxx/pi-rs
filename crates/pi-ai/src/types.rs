@@ -151,9 +151,42 @@ pub enum StopReason {
 // Messages
 // ============================================================================
 
+/// System message content: a plain string or text content blocks (TS
+/// `content: string | TextContent[]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SystemContent {
+    Text(String),
+    Blocks(Vec<ContentBlock>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "role")]
 pub enum Message {
+    /// System instructions and tool declarations at one point in the transcript
+    /// (TS `SystemMessage`). The leading system message is the prompt; later
+    /// ones change it via `content`/`sections`/`toolsAdded`/`toolsRemoved`.
+    #[serde(rename = "system")]
+    System {
+        content: SystemContent,
+        /// Named prompt sections; `null` removes one. Replayed by
+        /// `utils::transcript::get_current_system_message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sections: Option<std::collections::HashMap<String, Option<String>>>,
+        #[serde(
+            rename = "toolsAdded",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        tools_added: Option<Vec<Tool>>,
+        #[serde(
+            rename = "toolsRemoved",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        tools_removed: Option<Vec<ToolReference>>,
+        timestamp: i64,
+    },
     #[serde(rename = "user")]
     User {
         content: Vec<ContentBlock>,
@@ -1130,6 +1163,36 @@ pub struct ImagesModel {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// `SystemMessage` serializes to the TS wire shape and round-trips, and the
+    /// transcript helpers can replay a typed system message.
+    #[test]
+    fn system_message_round_trips_and_replays() {
+        let tool = Tool {
+            name: "a".into(),
+            description: "".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: None,
+        };
+        let message = Message::System {
+            content: SystemContent::Text("base".into()),
+            sections: None,
+            tools_added: Some(vec![tool]),
+            tools_removed: None,
+            timestamp: 0,
+        };
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(value["role"], "system");
+        assert_eq!(value["content"], "base");
+        assert_eq!(value["toolsAdded"][0]["name"], "a");
+
+        let back: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(back, message);
+
+        let head = crate::utils::transcript::get_current_system_message(&[value]).unwrap();
+        assert_eq!(head["content"], "base");
+        assert_eq!(crate::utils::transcript::get_current_tools(&[serde_json::to_value(&message).unwrap()]).len(), 1);
+    }
 
     /// `StreamOptions::clone` must preserve `sampling_params` / `http_client`
     /// (the manual Clone impl used to drop them) and `env`.

@@ -255,6 +255,8 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                     parts.push(format!("[User]: {text}"));
                 }
             }
+            // TS `serializeConversation` ignores system messages.
+            Message::System { .. } => {}
             Message::Assistant { content, .. } => {
                 let mut text_parts = Vec::new();
                 let mut thinking_parts = Vec::new();

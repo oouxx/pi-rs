@@ -693,6 +693,8 @@ fn serialize_conversation(messages: &[Message]) -> String {
                     }
                 }
             }
+            // System messages are not part of the conversation summary.
+            Message::System { .. } => {}
             Message::Assistant { content, .. } => {
                 text.push_str("## Assistant\n");
                 for block in content {

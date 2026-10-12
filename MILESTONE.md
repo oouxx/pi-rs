@@ -50,8 +50,8 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 
 **P1-7 `Context` → `TranscriptContext`（进行中）**：TS `9e05370b2` 把 system prompt / tool 声明改成 transcript 里的 system 消息（`toolsAdded`/`toolsRemoved`/`sections`），provider 用 `getCurrentSystemPrompt`/`getCurrentTools` 重放。分阶段：
 
-1. ✅ pi-ai transcript 纯函数（`utils/transcript.rs`：normalize / collapse / resolve / replay / tool-delta 探测）+ `ToolReference` 类型（本步完成，7 测试）
-2. 类型层：`SystemMessage` 变体进 `Message` 并迁移匹配点；`TranscriptContext` 品牌类型
+1. ✅ pi-ai transcript 纯函数（`utils/transcript.rs`：normalize / collapse / resolve / replay / tool-delta 探测）+ `ToolReference` 类型（7 测试）
+2. ✅ 类型层：`SystemMessage` 变体进 `Message`（`SystemContent` string|blocks、`sections`、`toolsAdded`/`toolsRemoved`）+ 迁移全部匹配点（providers / estimate / transform / serialize_conversation；provider 暂以 no-op arm 占位，待第 3 步接管）；serde 往返测试
 3. provider 请求构建：从 `context.systemPrompt`/`context.tools` 改为 transcript helpers；支持 mid-convo system 的 provider 原样发送，其余 collapse
 4. agent-core：`declareToolChanges` / transcript 系统消息生成；中途 system/tool 变更
 5. coding-agent system-prompt 重写（sections/tools delta）+ 恢复/分支导航保留变更

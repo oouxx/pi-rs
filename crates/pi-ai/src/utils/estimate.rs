@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 
+use serde_json::json;
+
 use crate::types::{ContentBlock, Context, Message, StopReason, Tool, Usage};
 
 const CHARS_PER_TOKEN: u64 = 4;
@@ -62,6 +64,42 @@ fn content_chars(content: &[ContentBlock]) -> u64 {
 /// TS `estimateMessageTokens`.
 #[must_use]
 pub fn estimate_message_tokens(message: &Message) -> u64 {
+    if let Message::System {
+        content,
+        sections,
+        tools_added,
+        tools_removed,
+        ..
+    } = message
+    {
+        let mut parts: Vec<String> = vec![match content {
+            crate::types::SystemContent::Text(text) => text.clone(),
+            crate::types::SystemContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }];
+        if let Some(sections) = sections {
+            for value in sections.values().flatten() {
+                parts.push(value.clone());
+            }
+        }
+        let text = parts
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let mut total = estimate_text_tokens(&text);
+        total += estimate_tools_tokens(tools_added.as_deref());
+        if let Some(removed) = tools_removed {
+            total += estimate_text_tokens(&safe_json_stringify(&json!(removed)));
+        }
+        return total;
+    }
     let chars = match message {
         Message::User { content, .. } | Message::ToolResult { content, .. } => content_chars(content),
         Message::Assistant { content, .. } => content
@@ -75,6 +113,7 @@ pub fn estimate_message_tokens(message: &Message) -> u64 {
                 _ => 0,
             })
             .sum(),
+        Message::System { .. } => 0,
     };
     ceil_div(chars, CHARS_PER_TOKEN)
 }
@@ -96,6 +135,7 @@ fn message_timestamp(message: &Message) -> i64 {
     match message {
         Message::User { timestamp, .. }
         | Message::Assistant { timestamp, .. }
+        | Message::System { timestamp, .. }
         | Message::ToolResult { timestamp, .. } => *timestamp,
     }
 }

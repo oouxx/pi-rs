@@ -654,6 +654,10 @@ pub(crate) fn convert_messages(
                 });
                 continue;
             }
+            // System messages are replayed into the prompt by the request
+            // builder (P1-7 step 3); the leading prompt currently still
+            // arrives via `Context.systemPrompt`.
+            Message::System { .. } => {}
         }
         i += 1;
     }

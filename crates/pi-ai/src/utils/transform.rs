@@ -107,6 +107,9 @@ pub fn transform_messages(
     let transformed: Vec<Message> = image_aware
         .iter()
         .map(|msg| match msg {
+            // System messages are prompt/tool deltas replayed by the provider
+            // request builder (P1-7 step 3), not transformed here.
+            Message::System { .. } => msg.clone(),
             // User messages pass through unchanged.
             Message::User { .. } => msg.clone(),
             // toolResult：若 toolCallId 有归一化映射则替换。
@@ -298,6 +301,9 @@ pub fn transform_messages(
                     &mut pending_tool_calls,
                     &mut existing_tool_result_ids,
                 );
+                result.push(msg.clone());
+            }
+            Message::System { .. } => {
                 result.push(msg.clone());
             }
         }

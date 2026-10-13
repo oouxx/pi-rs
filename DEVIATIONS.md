@@ -166,3 +166,9 @@ TS 9e05370b2 的 transcript system/tool 变更中，以下尚未完成，但它�
 - `AgentContext.systemPrompt` 移除（TS 已移除，pi-rs 暂作为输入源保留）
 
 进展与阶段记录见 [`MILESTONE.md`](MILESTONE.md) 的 P1-7 条目。
+
+## `user_bash` operations（2026-10-12，pi-coding-agent）
+
+| 位置（文件:行/函数名） | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
+| ---------------------- | ---------- | ------------- | -------- | -------- |
+| `interactive.rs`/`agent_session.rs:interpret_user_bash_result` | `UserBashEventResult` 可为 `{ operations: BashOperations }`（自定义 exec 路由）或 `{ result }`；两者恰好一个 | Rust 接受 `{ result }`；`{ operations }` 一律返回 `Err`（fail-closed，不回落本地执行） | Rust 扩展为程序化注册，`operations` 是一个含 `exec` 函数的 JS 对象，无法用 `serde_json::Value` 表示；保留 fail-closed 语义避免静默回落本地 | 已确认保留 |

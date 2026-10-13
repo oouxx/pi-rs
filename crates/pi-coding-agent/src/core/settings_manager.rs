@@ -1567,6 +1567,16 @@ impl SettingsManager {
 }
 
 // ============================================================================
+// Telemetry trait implementation
+// ============================================================================
+
+impl crate::core::telemetry::HasTelemetrySetting for SettingsManager {
+    fn get_enable_install_telemetry(&self) -> bool {
+        SettingsManager::get_enable_install_telemetry(self)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2179,11 +2189,5 @@ mod tests {
 
         let errors = mgr.drain_errors();
         assert!(errors.is_empty());
-    }
-}
-
-impl crate::core::telemetry::HasTelemetrySetting for SettingsManager {
-    fn get_enable_install_telemetry(&self) -> bool {
-        SettingsManager::get_enable_install_telemetry(self)
     }
 }

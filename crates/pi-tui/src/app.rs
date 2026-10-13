@@ -5126,7 +5126,7 @@ mod tests {
         terminal.draw(|frame| view(&mut model, frame)).expect("draw");
         let buf = terminal.backend().buffer();
 
-        // Logo row: `Pi` in accent bold, ` v1.83.1` dim.
+        // Logo row: `Pi` wordmark in accent bold with a dim version label.
         assert_eq!(buf[(0, 0)].symbol(), "P", "logo P");
         assert_eq!(buf[(0, 0)].fg, theme::ACCENT, "logo accent");
         assert!(buf[(0, 0)].modifier.contains(Modifier::BOLD), "logo bold");

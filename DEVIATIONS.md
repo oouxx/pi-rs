@@ -72,7 +72,7 @@
   + 引号/`~`/`./`/绝对路径 + 目录不加空格可继续补全；② 命令参数补全——
   `/model` 用可用模型快照 fuzzy 过滤（对齐 TS `getModelSearchText`），扩展命令
   走其 `get_argument_completions`（pi-extension-api 原有回调，此处接线）；
-  `/login` 参数补全未做（Rust 无 `/login` 命令，见下方"待确认"）；③ fuzzy 匹配：
+  `/login` 参数补全未做（API-key 版 `/login`/`/logout` 已实现，OAuth 仍为范围外）；③ fuzzy 匹配：
   移植 `fuzzy.ts`（子序列打分 + 数字字母换位回退），slash 命令与 `/model`
   参数共用；④ 触发上下文——行首 `/`、`@` 仅 token 边界（行首/空白后）触发、
   附件补全 20ms debounce（TS `ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS`）、Tab
@@ -156,16 +156,15 @@
 | `pi-extension-api/src/hook.rs`（turn_end 通知 hook） | TS 466db0fec 把 `turn_end` 从 void 事件改为 `emitBoundary` 边界（handler 可返回 entries/continue），同一事件不再以 void 形式分发 | pi-rs 新增 `on_turn_end_boundary`/`on_agent_before_settle_boundary` 边界（`HookRunner::run_boundary`，顺序、可返回结果），**同时保留** void `on_turn_end` 作为 pi-rs 内部通知通道 | Rust 扩展为程序化注册，已有内置扩展可能依赖 void `on_turn_end` 通知；边界与通知职责分离更清晰 | 已确认保留 |
 | `pi-extension-api` 边界参与标志 | TS 由 `hasHandlers(type)` 从注册表推导 handler 是否处理某事件 | Rust 需 handler 显式覆写 `participates_in_boundary(kind)`（无法反射检测方法覆写）；未覆写则不参与，caller 可整段跳过预览构建 | 避免无参与者时也做 O(n) 的 session 预览克隆 | 已确认保留 |
 
-## P1-7 TranscriptContext 剩余工作（非偏差，跟踪在 MILESTONE.md）
+## P1-7 TranscriptContext 已完成项与保留差异
 
-TS 9e05370b2 的 transcript system/tool 变更中，以下尚未完成，但它们**是可对齐的
-实现工作**，不是有意保留的行为差异，因此不登记为偏差：
+TS `9e05370b2` 的 transcript system/tool 变更已在当前 `.version` 基准内完成：
 
-- `system-prompt.rs` 的 sections 化（`buildSystemPromptSections` / sections diff）
-- provider native mid-convo system 发送（`tool_addition`/`tool_removal`）
-- `AgentContext.systemPrompt` 移除（TS 已移除，pi-rs 暂作为输入源保留）
+- `system-prompt` sections 化；
+- provider native mid-conversation system/tool change 发送；
+- `AgentContext.systemPrompt` 仍作为兼容输入源保留。
 
-进展与阶段记录见 [`MILESTONE.md`](MILESTONE.md) 的 P1-7 条目。
+具体实现阶段见 [`MILESTONE.md`](MILESTONE.md) 的 P1-7 条目；兼容输入源等有意差异见各 crate 的 `DEVIATIONS.md`。
 
 ## `user_bash` operations（2026-10-12，pi-coding-agent）
 

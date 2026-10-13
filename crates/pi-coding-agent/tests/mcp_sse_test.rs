@@ -7,6 +7,7 @@
 //! GET stream + `endpoint` event + POST + JSON-RPC response over SSE.
 
 #![cfg(feature = "mcp")]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

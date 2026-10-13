@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 
 use pi_agent_core::pi_ai_types::{ContentBlock, Message, StopReason, Usage};
@@ -661,6 +663,7 @@ pub fn build_turn_prefix_summarization_prompt(messages: &[AgentMessage]) -> Stri
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 fn messages_to_entries(messages: Vec<AgentMessage>) -> Vec<SessionEntry> {
     let mut previous: Option<String> = None;
     messages

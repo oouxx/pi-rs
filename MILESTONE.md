@@ -55,7 +55,7 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 3. 🔄 provider 请求构建：三个适配器入口调 `Context::collapsed()`（把 transcript system 消息折叠回 `systemPrompt`/`tools` 并丢弃，对齐 `collapseSystemMessages`）——**collapse 路径已接线**；支持 mid-convo system 的 provider 原样发送待后续
 4. ✅ agent-core：`AgentMessage::System` + `declare_tool_changes` **已接线**——`run_agent_loop` 把 base prompt/tools 实体化为前置 system 消息并在 pending 前声明工具 delta；`stream_assistant_response` 改为从 transcript 构建请求（`systemPrompt`/`tools` 侧道不再传入，仅作为输入源）；直接调用者回退补前置 system 消息
 5. ✅ coding-agent：`build_system_prompt_message` 把 sections 落到前置 system 消息（初始消息带 sections）；system 消息参与持久化与投影（`refresh_context` 保留）；`diff_system_prompt_sections` 已就绪。段顺序由 `preserve_order` + `IndexMap` 保证
-6. 🔄 provider native mid-convo：**前置元数据已完成**（compat 字段 + xtask Anthropic 判定 + 目录显式值）；**请求层 native 发送待续**（Anthropic `tool_addition`/`tool_removal` + `defer_loading` + beta flags、Responses developer 消息）；当前统一走 `Context::collapsed()`（行为正确，native 只为保留缓存前缀）
+6. 🔄 provider native mid-convo：前置元数据 ✅；**Anthropic native 已做**（支持模型保留 transcript，leading system → `params.system`，后续 system 消息在下一个 assistant 前就地发送）；**Responses native 待续**；不支持者仍 `collapsed()`
 
 - **P1-8** ModelRuntime / ai Models 运行时 API（auth signal / stored+publish / isSubscription）
 - **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差

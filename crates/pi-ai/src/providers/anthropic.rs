@@ -440,11 +440,17 @@ pub(crate) fn convert_messages(
     model: &Model,
     cache_control: Option<&AnthropicCacheControl>,
     deferred_tool_names: &std::collections::HashSet<String>,
+    native_system_messages: bool,
 ) -> Vec<AnthropicMessageParam> {
     let allow_empty_signature = get_anthropic_compat(model)
         .allow_empty_signature
         .unwrap_or(false);
     let mut params: Vec<AnthropicMessageParam> = Vec::new();
+    // Later system messages are held back and emitted directly before the next
+    // assistant message (or at the end). Anthropic requires `tool_result` blocks
+    // to immediately follow their `tool_use`, so a system message between them
+    // is rejected (TS `pendingSystemMessages`).
+    let mut pending_system_messages: Vec<AnthropicMessageParam> = Vec::new();
     // 对齐 TS convertMessages 的 loadedToolNames（跨 toolResult 跟踪已
     // 加载的 deferred 工具，避免重复 tool_reference）。
     let mut loaded_tool_names: std::collections::HashSet<String> =
@@ -508,6 +514,9 @@ pub(crate) fn convert_messages(
                 });
             }
             Message::Assistant { content, .. } => {
+                // Pending system updates land right before the next assistant
+                // (TS flushPendingSystemMessages).
+                params.append(&mut pending_system_messages);
                 let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
                 for b in content {
                     match b {
@@ -657,10 +666,23 @@ pub(crate) fn convert_messages(
                 });
                 continue;
             }
-            // System messages are replayed into the prompt by the request
-            // builder (P1-7 step 3); the leading prompt currently still
-            // arrives via `Context.systemPrompt`.
-            Message::System { .. } => {}
+            // Later system messages only reach this point on models that accept
+            // them natively; otherwise the transcript is collapsed first.
+            Message::System { .. } => {
+                if native_system_messages {
+                    let text =
+                        crate::utils::transcript::typed_render_system_message_update(msg);
+                    if !text.is_empty() {
+                        pending_system_messages.push(AnthropicMessageParam {
+                            role: "system".to_string(),
+                            content: AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
+                                text,
+                                cache_control: None,
+                            }]),
+                        });
+                    }
+                }
+            }
         }
         i += 1;
     }
@@ -693,6 +715,7 @@ pub(crate) fn convert_messages(
         }
     }
 
+    params.append(&mut pending_system_messages);
     params
 }
 
@@ -934,8 +957,16 @@ pub fn stream_anthropic(
     options: Option<&StreamOptions>,
 ) -> AssistantMessageEventStream {
     let model = model.clone();
-    // Collapse transcript system messages into the leading prompt/tools (P1-7).
-    let context = context.collapsed();
+    // Native mid-convo models keep the transcript system messages; others fold
+    // them into the leading prompt/tools (P1-7).
+    let supports_mid_convo = get_anthropic_compat(&model)
+        .supports_mid_convo_system_messages
+        .unwrap_or(false);
+    let context = if supports_mid_convo {
+        context.clone()
+    } else {
+        context.collapsed()
+    };
     let owned_options = options.cloned();
     // Auth resolution (match TS `anthropicApiKeyAuth().resolve` for the
     // `anthropic` provider):
@@ -1028,6 +1059,7 @@ async fn stream_anthropic_inner(
     };
 
     let compat = get_anthropic_compat(model);
+    let supports_mid_convo = compat.supports_mid_convo_system_messages.unwrap_or(false);
     let temperature = options.and_then(|o| o.temperature);
     let max_tokens = options
         .and_then(|o| o.max_tokens)
@@ -1130,6 +1162,23 @@ async fn stream_anthropic_inner(
         model,
         &|id: &str, _m: &Model, _p: &str, _a: &str| normalize_tool_call_id(id),
     );
+    // Native mid-convo: the leading system message carries the prompt and later
+    // system messages are sent in place; otherwise the transcript was collapsed
+    // into `context.system_prompt`.
+    let (initial_system_text, conversation): (Option<String>, &[Message]) = if supports_mid_convo {
+        match transformed.first() {
+            Some(m @ Message::System { .. }) => {
+                let text = crate::utils::transcript::typed_system_message_text(m);
+                (
+                    if text.is_empty() { None } else { Some(text) },
+                    &transformed[1..],
+                )
+            }
+            _ => (context.system_prompt.clone(), &transformed[..]),
+        }
+    } else {
+        (context.system_prompt.clone(), &transformed[..])
+    };
     // 对齐 TS buildParams：splitDeferredTools（按 supportsToolReferences
     // 与消息中的 toolCall/addedToolNames 拆分 immediate/deferred 工具）。
     let supports_tool_references = compat
@@ -1156,10 +1205,11 @@ async fn stream_anthropic_inner(
     let deferred_tool_names: std::collections::HashSet<String> =
         deferred_tools.keys().cloned().collect();
     let messages = convert_messages(
-        &transformed,
+        conversation,
         model,
         cache_control.as_ref(),
         &deferred_tool_names,
+        supports_mid_convo,
     );
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
@@ -1167,7 +1217,7 @@ async fn stream_anthropic_inner(
     body.insert("max_tokens".to_string(), Value::Number(max_tokens.into()));
     body.insert("stream".to_string(), Value::Bool(true));
 
-    if let Some(ref sp) = context.system_prompt {
+    if let Some(ref sp) = initial_system_text {
         // System prompt with anthropic cache_control (match TS buildParams).
         let mut system_text = serde_json::Map::new();
         system_text.insert("type".into(), json!("text"));
@@ -1756,6 +1806,87 @@ mod tests {
     use super::*;
     use crate::types::ModelCost;
 
+    fn test_model() -> Model {
+        Model {
+            id: "m".into(),
+            name: "m".into(),
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![],
+            cost: ModelCost::default(),
+            context_window: 200_000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// P1-7 native mid-convo: later system messages flush right before the next
+    /// assistant (or at the end); without native support they are dropped
+    /// (the transcript was collapsed into the leading prompt).
+    #[test]
+    fn native_system_messages_flush_before_assistant() {
+        let model = test_model();
+        let user = Message::User {
+            content: vec![ContentBlock::text("hi")],
+            timestamp: 0,
+        };
+        let system = Message::System {
+            content: crate::types::SystemContent::Text("update".into()),
+            sections: None,
+            tools_added: None,
+            tools_removed: None,
+            timestamp: 1,
+        };
+        let assistant = Message::Assistant {
+            content: vec![ContentBlock::text("ok")],
+            api: "a".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 2,
+        };
+
+        let native = convert_messages(
+            &[user.clone(), system.clone(), assistant.clone()],
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            true,
+        );
+        let roles: Vec<&str> = native.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "system", "assistant"]);
+
+        let collapsed = convert_messages(
+            &[user.clone(), system.clone(), assistant.clone()],
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            false,
+        );
+        let roles: Vec<&str> = collapsed.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant"]);
+
+        let trailing = convert_messages(
+            &[user, assistant, system],
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            true,
+        );
+        let roles: Vec<&str> = trailing.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "system"]);
+    }
+
     /// TS `anthropicApiKeyAuth().resolve`: an explicit/stored key beats every env var.
     #[test]
     fn test_resolve_anthropic_auth_explicit_key_wins() {
@@ -2057,7 +2188,7 @@ mod tests {
             content: vec![ContentBlock::text("Hello")],
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -2078,7 +2209,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
     }
@@ -2096,7 +2227,7 @@ mod tests {
             added_tool_names: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -2142,7 +2273,7 @@ mod tests {
                 timestamp: 1000,
             },
         ];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 3);
         assert_eq!(converted[0].role, "user");
         assert_eq!(converted[1].role, "assistant");
@@ -2172,7 +2303,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
         // Thinking blocks should be filtered out from the API request
@@ -2185,7 +2316,7 @@ mod tests {
             content: vec![ContentBlock::text("")],
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         // Empty user messages should be skipped
         assert_eq!(converted.len(), 0);
     }
@@ -2212,7 +2343,7 @@ mod tests {
             error_message: None,
             timestamp: 1000,
         }];
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 1);
         if let AnthropicContent::Blocks(blocks) = &converted[0].content {
             if let AnthropicContentBlock::ToolUse { id, .. } = &blocks[0] {
@@ -2292,7 +2423,7 @@ mod tests {
             usage: None,
             timestamp: 0,
         }];
-        let converted = convert_messages(&messages, &model_for_tests(), None, &deferred);
+        let converted = convert_messages(&messages, &model_for_tests(), None, &deferred, false);
         assert_eq!(converted.len(), 1);
         if let AnthropicContent::Blocks(blocks) = &converted[0].content {
             // tool_result block 内容为 tool_reference
@@ -2346,7 +2477,7 @@ mod tests {
                 timestamp: 0,
             },
         ];
-        let converted = convert_messages(&messages, &model_for_tests(), None, &deferred);
+        let converted = convert_messages(&messages, &model_for_tests(), None, &deferred, false);
         if let AnthropicContent::Blocks(blocks) = &converted[0].content {
             // tool_reference 嵌套在 tool_result block 的 content 内。
             let refs = blocks
@@ -2459,7 +2590,7 @@ mod tests {
             cache_type: "ephemeral".to_string(),
             ttl: Some("1h".to_string()),
         };
-        let converted = convert_messages(&messages, &model, Some(&cc), &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, Some(&cc), &std::collections::HashSet::new(), false);
         assert_eq!(converted.len(), 2);
         match &converted[1].content {
             AnthropicContent::Blocks(blocks) => match &blocks[0] {
@@ -2475,7 +2606,7 @@ mod tests {
             _ => panic!("expected blocks"),
         }
         // Without cache control the plain string form is preserved.
-        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new());
+        let converted = convert_messages(&messages, &model, None, &std::collections::HashSet::new(), false);
         assert!(matches!(converted[1].content, AnthropicContent::String(_)));
     }
 

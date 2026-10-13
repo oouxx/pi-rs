@@ -26,6 +26,71 @@ fn is_system(message: &Value) -> bool {
     message.get("role").and_then(|r| r.as_str()) == Some("system")
 }
 
+fn system_content_text(content: &crate::types::SystemContent, separator: &str) -> String {
+    match content {
+        crate::types::SystemContent::Text(text) => text.clone(),
+        crate::types::SystemContent::Blocks(blocks) => blocks
+            .iter()
+            .filter(|b| matches!(b, crate::types::ContentBlock::Text { .. }))
+            .filter_map(|b| match b {
+                crate::types::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(separator),
+    }
+}
+
+/// TS `getSystemMessageText` for a typed system message (content, then the
+/// non-null sections, blank-line joined).
+#[must_use]
+pub fn typed_system_message_text(message: &crate::types::Message) -> String {
+    let crate::types::Message::System {
+        content, sections, ..
+    } = message
+    else {
+        return String::new();
+    };
+    let mut parts: Vec<String> = vec![system_content_text(content, "\n")];
+    if let Some(sections) = sections {
+        for value in sections.values().flatten() {
+            parts.push(value.clone());
+        }
+    }
+    parts
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// TS `renderSystemMessageUpdate` for a typed system message.
+#[must_use]
+pub fn typed_render_system_message_update(message: &crate::types::Message) -> String {
+    let crate::types::Message::System {
+        content, sections, ..
+    } = message
+    else {
+        return String::new();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let text = system_content_text(content, "\n");
+    if !text.is_empty() {
+        parts.push(text);
+    }
+    if let Some(sections) = sections {
+        for (name, value) in sections {
+            match value {
+                Some(text) => parts.push(format!(
+                    "Updated system prompt section \"{name}\":\n\n{text}"
+                )),
+                None => parts.push(format!("Removed system prompt section \"{name}\".")),
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
 /// TS `contentText(content, separator)`: string content verbatim, otherwise the
 /// joined text blocks.
 pub fn content_text_value(content: &Value, separator: &str) -> String {

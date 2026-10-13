@@ -57,12 +57,12 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 5. ✅ coding-agent：`build_system_prompt_message` 把 sections 落到前置 system 消息（初始消息带 sections）；system 消息参与持久化与投影（`refresh_context` 保留）；`diff_system_prompt_sections` 已就绪。段顺序由 `preserve_order` + `IndexMap` 保证
 6. ✅ provider native mid-convo：元数据 + Anthropic（system 消息 + **tool changes**：`tool_removal`/`tool_addition`、初始工具缓存断点、placeholder/later `defer_loading`、beta flag）+ Responses（system 消息；工具变更由已有 `split_deferred_tools` 覆盖），不支持者 `collapsed()`。**P1-7 全部完成**
 
-- **P1-8 ModelRuntime / ai `Models` 运行时 API**（进行中，分阶段）
-  1. 分析 TS `ModelRuntime` / ai `Models` 与 pi-rs `ModelRegistry` 的公开 API 差异
-  2. 补齐非 OAuth 的运行时访问器/能力：`getError`、`getAvailableSnapshot`、`getModel`、`getRegisteredProviderIds`、`isUsingSubscription`、`getProviderAuthStatus`、`setRuntimeApiKey`/`removeRuntimeApiKey`、`listCredentials`
-  3. provider-resolved `streamSimple`/`completeSimple` 包装
-  4. auth abort signal / `context.stored`+`publish` 刷新契约（与 `remote_catalog` 差异）
-  5. OAuth 登录/登出（`login`/`logout`）——依赖 OAuth，属已登记范围外，待定
+- **P1-8 ModelRuntime / ai `Models` 运行时 API**（基本完成，OAuth 除外）
+  1. ✅ 访问器：`getError`、`getAvailableSnapshot`、`getModel`、`getRegisteredProviderIds`、`isUsingSubscription`、`getProviderAuthStatus`
+  2. ✅ 运行时密钥：`setRuntimeApiKey`/`removeRuntimeApiKey`、`listCredentials`（共享 `AuthStorage` 接入 `ModelRegistry`，优先于文件 resolver）
+  3. ✅ provider-resolved `streamSimple`/`completeSimple`（解析 auth 后调 pi-ai）
+  4. ⏳ auth abort signal / `context.stored`+`publish` 刷新契约（与 `remote_catalog` 差异，待决定）
+  5. ⛔ OAuth `login`/`logout`：用户明确不做（已登记范围外）
 - **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差
 ## 权威文档
 

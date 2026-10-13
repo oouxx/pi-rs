@@ -29,6 +29,12 @@ pub struct ModelRegistry {
     /// Credential resolver consulted for API-key resolution, matching TS
     /// `getAuth` (auth.json is the canonical place GUI-set keys live).
     api_key_resolver: Option<ApiKeyResolver>,
+    /// Shared credential store (TS `ModelRuntime` owns its auth storage).
+    /// When set, it is consulted before the file resolver so runtime API keys
+    /// (`setRuntimeApiKey`) and stored `/login` keys are honored.
+    auth_storage: Option<Arc<std::sync::Mutex<crate::core::auth_storage::AuthStorage>>>,
+    /// Last refresh/composition error (TS `ModelRuntime.getError`).
+    last_error: Arc<RwLock<Option<String>>>,
 }
 
 impl Clone for ModelRegistry {
@@ -40,6 +46,8 @@ impl Clone for ModelRegistry {
             replaced_models: Arc::clone(&self.replaced_models),
             models_path: self.models_path.clone(),
             api_key_resolver: self.api_key_resolver.clone(),
+            auth_storage: self.auth_storage.clone(),
+            last_error: Arc::clone(&self.last_error),
         }
     }
 }
@@ -148,6 +156,8 @@ impl ModelRegistry {
             replaced_models: Arc::new(RwLock::new(HashMap::new())),
             models_path: Some(models_path),
             api_key_resolver: None,
+            auth_storage: None,
+            last_error: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -177,9 +187,122 @@ impl ModelRegistry {
         }));
     }
 
-    /// Resolve a stored API key from the attached credential resolver, if any.
+    /// Resolve a stored API key: the shared auth storage (runtime override or
+    /// stored credential) first, then the attached file resolver.
     fn resolved_stored_key(&self, provider: &str) -> Option<String> {
+        if let Some(storage) = &self.auth_storage {
+            if let Some(key) = storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stored_api_key(provider)
+            {
+                return Some(key);
+            }
+        }
         self.api_key_resolver.as_ref().and_then(|r| r(provider))
+    }
+
+    /// Attach a shared credential store (TS `ModelRuntime` auth storage).
+    pub fn set_auth_storage(
+        &mut self,
+        storage: Arc<std::sync::Mutex<crate::core::auth_storage::AuthStorage>>,
+    ) {
+        self.auth_storage = Some(storage);
+    }
+
+    /// TS `ModelRuntime.setRuntimeApiKey`: an in-memory API-key override that is
+    /// not persisted.
+    pub fn set_runtime_api_key(&self, provider: &str, api_key: String) {
+        if let Some(storage) = &self.auth_storage {
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .set_runtime_api_key(provider, api_key);
+        }
+    }
+
+    /// TS `ModelRuntime.removeRuntimeApiKey`.
+    pub fn remove_runtime_api_key(&self, provider: &str) {
+        if let Some(storage) = &self.auth_storage {
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove_runtime_api_key(provider);
+        }
+    }
+
+    /// TS `ModelRuntime.listCredentials`: providers with a stored credential.
+    #[must_use]
+    pub fn list_credentials(&self) -> Vec<String> {
+        self.auth_storage
+            .as_ref()
+            .map(|storage| {
+                storage
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .list_credentials()
+            })
+            .unwrap_or_default()
+    }
+
+    /// TS `ModelRuntime.getProviderAuthStatus`.
+    #[must_use]
+    pub fn get_provider_auth_status(
+        &self,
+        provider: &str,
+    ) -> crate::core::auth_storage::AuthStatus {
+        if let Some(storage) = &self.auth_storage {
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_auth_status(provider)
+        } else {
+            crate::core::auth_storage::AuthStatus {
+                configured: self.is_provider_configured(provider),
+                source: None,
+                label: None,
+            }
+        }
+    }
+
+    /// TS `ModelRuntime.streamSimple`: resolve provider auth, then stream.
+    pub async fn stream_simple(
+        &self,
+        model: &Model,
+        context: &pi_agent_core::pi_ai_types::Context,
+        mut options: pi_agent_core::pi_ai_types::SimpleStreamOptions,
+    ) -> Result<
+        pi_agent_core::pi_ai::utils::event_stream::AssistantMessageEventStream,
+        String,
+    > {
+        let auth = self.get_api_key_and_headers(model).await?;
+        if !auth.ok {
+            return Err(auth.error);
+        }
+        if options.base.api_key.is_none() {
+            options.base.api_key = Some(auth.api_key);
+        }
+        if let Some(headers) = auth.headers {
+            options.base.headers = Some(headers);
+        }
+        Ok(pi_agent_core::pi_ai::stream::stream_simple(
+            model,
+            context,
+            Some(options),
+        ))
+    }
+
+    /// TS `ModelRuntime.completeSimple`.
+    pub async fn complete_simple(
+        &self,
+        model: &Model,
+        context: &pi_agent_core::pi_ai_types::Context,
+        options: pi_agent_core::pi_ai_types::SimpleStreamOptions,
+    ) -> Result<pi_agent_core::pi_ai_types::AssistantMessage, String> {
+        self.stream_simple(model, context, options)
+            .await?
+            .result()
+            .await
     }
 
     /// Create a new ModelRegistry with models from a specific models.json path.
@@ -195,6 +318,8 @@ impl ModelRegistry {
             replaced_models: Arc::new(RwLock::new(HashMap::new())),
             models_path: Some(models_path.to_path_buf()),
             api_key_resolver: None,
+            auth_storage: None,
+            last_error: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -207,6 +332,37 @@ impl ModelRegistry {
     /// short-circuits with `aborted: true`; load errors are surfaced in
     /// `errors` instead of being discarded.
     pub async fn refresh(&self, options: Option<&ModelsRefreshOptions>) -> ModelsRefreshResult {
+        let result = self.refresh_inner(options).await;
+        let error = if result.errors.is_empty() {
+            None
+        } else {
+            Some(
+                result
+                    .errors
+                    .iter()
+                    .map(|(provider, message)| format!("Provider \"{provider}\": {message}"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            )
+        };
+        *self
+            .last_error
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = error;
+        result
+    }
+
+    /// TS `ModelRuntime.getError`. pi-rs only records refresh/composition
+    /// errors (config load errors are surfaced through `refresh`'s `errors`).
+    #[must_use]
+    pub fn get_error(&self) -> Option<String> {
+        self.last_error
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn refresh_inner(&self, options: Option<&ModelsRefreshOptions>) -> ModelsRefreshResult {
         let mut result = ModelsRefreshResult::default();
         if let Some(rx) = options.and_then(|o| o.signal.as_ref()) {
             if *rx.borrow() {
@@ -1184,6 +1340,30 @@ mod tests {
         assert_eq!(m.id, "claude-sonnet-4-6");
         assert_eq!(m.provider, "anthropic");
         assert!(m.reasoning);
+    }
+
+    /// TS `ModelRuntime.setRuntimeApiKey` / `removeRuntimeApiKey` /
+    /// `getProviderAuthStatus` / `listCredentials`.
+    #[test]
+    fn runtime_api_key_and_auth_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::core::auth_storage::AuthStorage::create(dir.path().join("auth.json")),
+        ));
+        let mut registry = ModelRegistry::new(vec![]);
+        registry.set_auth_storage(storage);
+
+        assert!(!registry.get_provider_auth_status("acme").configured);
+        assert!(registry.list_credentials().is_empty());
+
+        registry.set_runtime_api_key("acme", "secret".into());
+        let status = registry.get_provider_auth_status("acme");
+        assert!(status.configured);
+        assert_eq!(status.source.as_deref(), Some("runtime"));
+        assert!(registry.is_provider_configured("acme"));
+
+        registry.remove_runtime_api_key("acme");
+        assert!(!registry.get_provider_auth_status("acme").configured);
     }
 
     /// TS `ModelRuntime` accessor parity: `getModel`, `getAvailableSnapshot`,

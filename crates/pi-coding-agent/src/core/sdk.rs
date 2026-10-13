@@ -464,6 +464,13 @@ pub async fn create_agent_session(
     // Stored credentials (`/login` → auth.json) must be visible to auth checks
     // and requests, exactly like TS `RuntimeCredentials` → `Models.getAuth`.
     model_registry.wire_auth_resolver(std::path::Path::new(&agent_dir).join("auth.json"));
+    // Shared credential store (TS `ModelRuntime` owns it) so runtime API keys
+    // and stored credentials participate in resolution and auth status.
+    model_registry.set_auth_storage(std::sync::Arc::new(std::sync::Mutex::new(
+        crate::core::auth_storage::AuthStorage::create(
+            std::path::Path::new(&agent_dir).join("auth.json"),
+        ),
+    )));
 
     let default_provider = settings_manager.get_settings().default_provider.clone();
     let default_model_id = settings_manager.get_settings().default_model.clone();

@@ -278,6 +278,34 @@ impl AuthStorage {
         self.data.get(provider)
     }
 
+    /// Effective stored API key for a provider: runtime override first, then a
+    /// stored `ApiKey` credential (TS `ModelRuntime.getAuth` API-key branch;
+    /// ambient env is resolved separately by the registry).
+    #[must_use]
+    pub fn stored_api_key(&self, provider: &str) -> Option<String> {
+        if let Some(key) = self.runtime_overrides.get(provider) {
+            return Some(key.clone());
+        }
+        match self.data.get(provider) {
+            Some(AuthCredential::ApiKey { key, env }) => key
+                .as_deref()
+                .and_then(|k| {
+                    crate::core::resolve_config_value::resolve_config_value_with_env(
+                        k,
+                        env.as_ref(),
+                    )
+                }),
+            _ => None,
+        }
+    }
+
+    /// Providers with a stored credential (TS `listCredentials`), excluding
+    /// runtime overrides which are not persisted.
+    #[must_use]
+    pub fn list_credentials(&self) -> Vec<String> {
+        self.list()
+    }
+
     pub fn set(&mut self, provider: &str, credential: AuthCredential) {
         self.data.insert(provider.to_string(), credential.clone());
         self.persist_provider_change(provider, Some(&credential));

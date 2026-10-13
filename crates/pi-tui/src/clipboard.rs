@@ -71,6 +71,8 @@ fn copy_x11(text: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn linux_copy(text: &str) -> bool {
+    // TS `copyToClipboard` Linux direct-write order, gated on the same env:
+    // termux → Wayland → X11 (only when a display is exported).
     if std::env::var("TERMUX_VERSION").is_ok() && pipe_to("termux-clipboard-set", &[], text).is_ok() {
         return true;
     }
@@ -80,9 +82,47 @@ fn linux_copy(text: &str) -> bool {
     if std::env::var("DISPLAY").is_ok() && copy_x11(text) {
         return true;
     }
-    // No DISPLAY/WAYLAND_DISPLAY env: try xclip/xsel anyway (some setups
-    // hardcode the display in XAUTHORITY).
-    copy_x11(text)
+    false
+}
+
+/// TS `isWSL(env)`.
+#[cfg(target_os = "linux")]
+fn is_wsl() -> bool {
+    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSLENV").is_ok() {
+        return true;
+    }
+    std::fs::read_to_string("/proc/version")
+        .map(|release| {
+            let lower = release.to_lowercase();
+            lower.contains("microsoft") || lower.contains("wsl")
+        })
+        .unwrap_or(false)
+}
+
+/// TS `copyViaWindowsClipboard`: WSL without WSLg has no Linux display, so the
+/// Windows clipboard is written through interop. PowerShell reads the text from
+/// a UTF-8 file (clip.exe / piped stdin mangle non-ASCII via the console code
+/// page).
+#[cfg(target_os = "linux")]
+fn copy_via_windows_clipboard(text: &str) -> bool {
+    let tmp_file = std::env::temp_dir().join(format!("pi-wsl-clip-{}.txt", uuid::Uuid::new_v4()));
+    let result = (|| -> Option<bool> {
+        std::fs::write(&tmp_file, text).ok()?;
+        let win_path = read_from("wslpath", &["-w", &tmp_file.to_string_lossy()])?
+            .trim()
+            .to_string();
+        if win_path.is_empty() {
+            return Some(false);
+        }
+        let escaped = win_path.replace('\'', "''");
+        let script = format!(
+            "Set-Clipboard -Value ([System.IO.File]::ReadAllText('{escaped}', [System.Text.Encoding]::UTF8))"
+        );
+        Some(pipe_to("powershell.exe", &["-NoProfile", "-Command", &script], "").is_ok())
+    })()
+    .unwrap_or(false);
+    let _ = std::fs::remove_file(&tmp_file);
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -145,24 +185,76 @@ fn emit_osc52(text: &str) -> bool {
 /// Platform tools first; OSC 52 is emitted when the session is remote or no
 /// tool succeeded. Returns an error only when every transport failed.
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    if is_remote_session() && emit_osc52(text) {
+    // Direct platform writes precede OSC 52 so the terminal cannot race the
+    // native writer (TS `copyToClipboard`).
+    #[cfg(target_os = "macos")]
+    let mut copied = pipe_to("pbcopy", &[], text).is_ok();
+    #[cfg(target_os = "windows")]
+    let mut copied = pipe_to("clip", &[], text).is_ok();
+    #[cfg(target_os = "linux")]
+    let mut copied = linux_copy(text);
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let mut copied = false;
+
+    // WSL without WSLg: prefer OSC 52 in Windows Terminal, else write the
+    // Windows clipboard through PowerShell interop (TS #9688).
+    #[cfg(target_os = "linux")]
+    let mut osc52_emitted = false;
+    #[cfg(not(target_os = "linux"))]
+    let osc52_emitted = false;
+    #[cfg(target_os = "linux")]
+    if !copied && is_wsl() {
+        if std::env::var("WT_SESSION").is_ok() {
+            osc52_emitted = emit_osc52(text);
+        }
+        copied = osc52_emitted || copy_via_windows_clipboard(text);
+    }
+
+    // OSC 52 cannot be verified, so a desktop session with a display reports
+    // the failure instead (#9618). Without a display the terminal is the only
+    // route (containers, WSL without WSLg), and remote sessions always emit it
+    // to reach the client clipboard.
+    #[cfg(target_os = "linux")]
+    let headless = std::env::var("DISPLAY").is_err()
+        && std::env::var("WAYLAND_DISPLAY").is_err()
+        && std::env::var("TERMUX_VERSION").is_err();
+    #[cfg(not(target_os = "linux"))]
+    let headless = false;
+
+    let mut oversized = false;
+    if !osc52_emitted && (is_remote_session() || (!copied && headless)) {
+        if emit_osc52(text) {
+            copied = true;
+        } else {
+            oversized = true;
+        }
+    }
+    if copied {
         return Ok(());
     }
-
-    #[cfg(target_os = "macos")]
-    let copied = pipe_to("pbcopy", &[], text).is_ok();
-    #[cfg(target_os = "windows")]
-    let copied = pipe_to("clip", &[], text).is_ok();
-    #[cfg(target_os = "linux")]
-    let copied = linux_copy(text);
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    let copied = false;
-
-    if copied || emit_osc52(text) {
-        Ok(())
-    } else {
-        Err("Failed to copy to clipboard (no clipboard tool and OSC 52 unavailable)".into())
+    if oversized {
+        return Err("Clipboard unavailable: text exceeds the OSC 52 size limit".into());
     }
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("TERMUX_VERSION").is_ok() {
+            return Err(
+                "Clipboard unavailable: install the Termux:API app and `termux-api` package".into(),
+            );
+        }
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            return Err(
+                "Clipboard unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access"
+                    .into(),
+            );
+        }
+        if std::env::var("DISPLAY").is_ok() {
+            return Err(
+                "Clipboard unavailable: install `xclip` or `xsel`, or check X11 access".into(),
+            );
+        }
+    }
+    Err("Clipboard unavailable".into())
 }
 
 /// Read plain text from the system clipboard (TS `readClipboardText`).

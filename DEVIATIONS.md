@@ -156,15 +156,13 @@
 | `pi-extension-api/src/hook.rs`（turn_end 通知 hook） | TS 466db0fec 把 `turn_end` 从 void 事件改为 `emitBoundary` 边界（handler 可返回 entries/continue），同一事件不再以 void 形式分发 | pi-rs 新增 `on_turn_end_boundary`/`on_agent_before_settle_boundary` 边界（`HookRunner::run_boundary`，顺序、可返回结果），**同时保留** void `on_turn_end` 作为 pi-rs 内部通知通道 | Rust 扩展为程序化注册，已有内置扩展可能依赖 void `on_turn_end` 通知；边界与通知职责分离更清晰 | 已确认保留 |
 | `pi-extension-api` 边界参与标志 | TS 由 `hasHandlers(type)` 从注册表推导 handler 是否处理某事件 | Rust 需 handler 显式覆写 `participates_in_boundary(kind)`（无法反射检测方法覆写）；未覆写则不参与，caller 可整段跳过预览构建 | 避免无参与者时也做 O(n) 的 session 预览克隆 | 已确认保留 |
 
-## P1-7 TranscriptContext 残差（2026-10-12，pi-ai / pi-agent-core / pi-coding-agent）
+## P1-7 TranscriptContext 剩余工作（非偏差，跟踪在 MILESTONE.md）
 
-TS 9e05370b2 把 system prompt / tool 声明迁入 transcript 的 system 消息，并支持
-中途 system/tool 变更（native 或 collapse）。pi-rs 已实现：transcript system
-消息类型、纯函数回放、provider collapse、agent 把 base prompt/tools 物化进
-transcript 并声明工具 delta。以下为有意保留的残差：
+TS 9e05370b2 的 transcript system/tool 变更中，以下尚未完成，但它们**是可对齐的
+实现工作**，不是有意保留的行为差异，因此不登记为偏差：
 
-| 位置（文件:行/函数名） | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
-| ---------------------- | ---------- | ------------- | -------- | -------- |
-| `pi-agent-core/src/types.rs` `AgentContext` | P1-7 后 `AgentContext` 只有 `messages`/`tools`，system prompt 完全来自 transcript 系统消息 | 仍保留 `AgentContext.system_prompt` 字段作为**输入源**，由 `run_agent_loop` 物化进前置 system 消息；`stream_assistant_response` 不再把它作为侧道传给 provider | 移除该字段需改遍 agent-core/coding-agent 所有构造与 `AgentState.systemPrompt`（TS 用 getter 派生），改造面大且行为在 collapse 路径等价；保留作为输入更小风险 | 已确认保留 |
-| `pi-coding-agent/src/core/system-prompt.rs` | `buildSystemPrompt` 返回**有序 sections**（`preamble` + 具名 tag 段），进入 `SystemMessage.sections`，支持中途按名替换/删除 | 仍构造单一 prompt 字符串（作为 `AgentContext.system_prompt` 输入，物化为一个 system 消息的 content） | sections 化的收益是"中途更新 prompt 段"（需 native mid-convo 配合）；pi-rs 目前走 collapse，sections 暂无可观察差异 | 已确认保留 |
-| `pi-ai` providers（anthropic / openai-responses 等） | 支持 mid-convo system 的模型：每个 system 消息按 `renderSystemMessageUpdate` 就地发送（含 anthropic `tool_addition`/`tool_removal`），保留缓存前缀 | 统一走 `Context::collapsed()`（把所有 system 消息折叠回一条前置 prompt + 当前 tools） | native 路径是为支持它的 provider 保留 prompt 缓存前缀的优化；pi-rs 先用 collapse 保证正确性，native 发送待后续 | 已确认保留 |
+- `system-prompt.rs` 的 sections 化（`buildSystemPromptSections` / sections diff）
+- provider native mid-convo system 发送（`tool_addition`/`tool_removal`）
+- `AgentContext.systemPrompt` 移除（TS 已移除，pi-rs 暂作为输入源保留）
+
+进展与阶段记录见 [`MILESTONE.md`](MILESTONE.md) 的 P1-7 条目。

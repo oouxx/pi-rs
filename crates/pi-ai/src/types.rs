@@ -169,10 +169,11 @@ pub enum Message {
     #[serde(rename = "system")]
     System {
         content: SystemContent,
-        /// Named prompt sections; `null` removes one. Replayed by
+        /// Named prompt sections; `null` removes one. Insertion order is the
+        /// render order (TS object key order). Replayed by
         /// `utils::transcript::get_current_system_message`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        sections: Option<std::collections::HashMap<String, Option<String>>>,
+        sections: Option<indexmap::IndexMap<String, Option<String>>>,
         #[serde(
             rename = "toolsAdded",
             default,

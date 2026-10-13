@@ -8,6 +8,7 @@ description = "General-purpose agent with transport abstraction, state managemen
 [dependencies]
 pi-ai = { workspace = true }
 serde = { workspace = true }
+indexmap = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true, features = ["v7"] }

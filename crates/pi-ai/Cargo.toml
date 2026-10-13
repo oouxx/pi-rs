@@ -8,6 +8,7 @@ rust-version = "1.80.0"
 
 [dependencies]
 serde = { workspace = true }
+indexmap = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 tokio-stream = { workspace = true }

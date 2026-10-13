@@ -18,7 +18,7 @@ pub enum AgentMessage {
     System {
         content: crate::pi_ai_types::SystemContent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        sections: Option<std::collections::HashMap<String, Option<String>>>,
+        sections: Option<indexmap::IndexMap<String, Option<String>>>,
         #[serde(
             rename = "toolsAdded",
             default,

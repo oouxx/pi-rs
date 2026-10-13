@@ -1030,6 +1030,7 @@ impl AgentSession {
             prompt_guidelines: Some(prompt_guidelines),
             context_files: Some(options.context_files),
             skills: Some(options.skills),
+            ..Default::default()
         };
         let system_prompt = system_prompt::build_system_prompt(&system_prompt_options);
 

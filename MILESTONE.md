@@ -61,8 +61,10 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
   1. ✅ 访问器：`getError`、`getAvailableSnapshot`、`getModel`、`getRegisteredProviderIds`、`isUsingSubscription`、`getProviderAuthStatus`
   2. ✅ 运行时密钥：`setRuntimeApiKey`/`removeRuntimeApiKey`、`listCredentials`（共享 `AuthStorage` 接入 `ModelRegistry`，优先于文件 resolver）
   3. ✅ provider-resolved `streamSimple`/`completeSimple`（解析 auth 后调 pi-ai）
-  4. ⏳ auth abort signal / `context.stored`+`publish` 刷新契约（与 `remote_catalog` 差异，待决定）
+  4. N/A：`refresh` 已支持 abort signal；`context.stored`/`publish` 是自定义 provider 动态刷新契约，而 pi-rs `register_provider` 不支持 `refreshModels`（`DEVIATIONS.md` #23），不适用
   5. ⛔ OAuth `login`/`logout`：用户明确不做（已登记范围外）
+
+**P0 / P1 均已收口。** 剩余未做项均为“不适用 / 已登记偏差 / 范围外”：TUI 组件（选择器、图片渲染、diff widget 等）、MCP 高级（codemode/exposure/resources/OAuth）、OAuth 登录、Google/Bedrock/Mistral 适配器、harness 多 lane。
 - **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差
 ## 权威文档
 

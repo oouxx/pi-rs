@@ -112,6 +112,19 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                         .messages
                         .iter()
                         .map(|m| match m {
+                            Message::System {
+                                content,
+                                sections,
+                                tools_added,
+                                tools_removed,
+                                timestamp,
+                            } => pi_agent_core::pi_ai::types::Message::System {
+                                content: content.clone(),
+                                sections: sections.clone(),
+                                tools_added: tools_added.clone(),
+                                tools_removed: tools_removed.clone(),
+                                timestamp: *timestamp,
+                            },
                             Message::User { content, timestamp } => {
                                 pi_agent_core::pi_ai::types::Message::User {
                                     content: content.clone(),

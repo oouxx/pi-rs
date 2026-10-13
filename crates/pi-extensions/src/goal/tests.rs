@@ -552,20 +552,16 @@ async fn test_user_input_wakes_waiting_and_continues() {
         ..active_goal()
     };
     ext.set_goal_for_test(Some(goal.clone()));
-    // 先有 ctx 事件（before_agent_start 用 last_ctx）。
-    let _ = ext
-        .handle_tool_call(GOAL_COMPLETE_TOOL, json!({ "goal_id": "x" }), &h.ctx)
-        .await;
     // 用户输入 → 清 wait + 重置安全纪元。
     let res = ext
-        .on_input("status? ".to_string(), None, "user".into(), None)
+        .on_input("status? ".to_string(), None, "user".into(), None, &h.ctx)
         .await;
     assert!(res.is_continue());
     assert!(ext.goal_snapshot().unwrap().waiting.is_none());
 
     // before_agent_start：run 归属 goal（manual）。
     let res = ext
-        .before_agent_start("status?".into(), None, "sys".into(), None)
+        .before_agent_start("status?".into(), None, "sys".into(), None, &h.ctx)
         .await;
     if let HookResult::Continue((_, sp, _)) = res {
         // A1：每次 run 注入 goal 系统 prompt。
@@ -576,7 +572,7 @@ async fn test_user_input_wakes_waiting_and_continues() {
     }
 
     // agent_start：pending → agent_run（真实事件序）。
-    ext.on_agent_start().await;
+    ext.on_agent_start(Some(&h.ctx)).await;
     // agent_end：续发 continuation。
     let msgs = vec![assistant_msg("stop", None, 50)];
     ext.on_agent_end(&msgs, Some(&h.ctx)).await;

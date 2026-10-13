@@ -895,9 +895,6 @@ struct GoalInner {
     wait_waker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 无进展轮数上限（测试覆盖；None = 未覆盖，用 NO_PROGRESS_TURNS）。
     no_progress_turns_override: Mutex<Option<u32>>,
-    /// 最近一次有 ctx 的事件上下文（before_agent_start / before_tool_call
-    /// 无 ctx 参数，需要时用最近 ctx 做恢复/持久化）。
-    last_ctx: Mutex<Option<ExtensionContext>>,
     /// complete 状态栏 8 秒后清空的 timer。
     completion_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 自引用（弱引用），供 spawn 的 waker task 调用实例方法。
@@ -917,7 +914,6 @@ impl GoalInner {
             stale_blocked: AtomicBool::new(false),
             wait_waker: Mutex::new(None),
             no_progress_turns_override: Mutex::new(None),
-            last_ctx: Mutex::new(None),
             completion_timer: Mutex::new(None),
             weak_self: Mutex::new(None),
             restored: AtomicBool::new(false),
@@ -938,17 +934,8 @@ impl GoalInner {
             .and_then(|w| w.upgrade())
     }
 
-    /// 记住最近一次带 ctx 的事件（before 类 hook 复用持久化/通知）。
-    fn remember_ctx(&self, ctx: &ExtensionContext) {
-        *self
-            .last_ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
-    }
-
     /// 惰性恢复：首次有 ctx 的事件时从会话 custom entries 恢复 goal 状态。
     fn ensure_restored(&self, ctx: &ExtensionContext) {
-        self.remember_ctx(ctx);
         let restored = self.restored.load(Ordering::SeqCst);
         if restored {
             return;
@@ -2194,7 +2181,13 @@ impl GoalInner {
     }
 
     /// 用户输入唤醒 waiting + 安全纪元重置（on_input，对齐原版 input 事件）。
-    fn on_input_impl(&self, text: &str, source: &str, streaming_behavior: Option<&str>) {
+    fn on_input_impl(
+        &self,
+        text: &str,
+        source: &str,
+        streaming_behavior: Option<&str>,
+        ctx: &ExtensionContext,
+    ) {
         // 扩展自身/命令产生的输入不处理（原版 event.source === "extension"
         // 与 /^\/goal/ 前缀直接 return）。
         if source == "extension" {
@@ -2230,18 +2223,11 @@ impl GoalInner {
                 self.set_goal(Some(g.clone()));
                 changed = true;
             }
-            // on_input 无 ctx 参数：用最近 ctx 持久化（原版 clearGoalWait /
-            // resetActiveSafetyEpoch 都会 persist + updateStatus）。
+            // 原版 clearGoalWait / resetActiveSafetyEpoch 都会 persist +
+            // updateStatus；on_input 事件携带 ctx，直接用它。
             if changed {
-                if let Some(ctx) = self
-                    .last_ctx
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-                {
-                    self.persist_goal(&ctx, &g);
-                    self.update_status(&ctx, &g);
-                }
+                self.persist_goal(ctx, &g);
+                self.update_status(ctx, &g);
             }
         }
     }
@@ -2451,13 +2437,15 @@ impl HookHandler for GoalExtension {
 
     // ── 生命周期事件 ────────────────────────────────────────
 
-    async fn on_session_start(&self, _reason: &str, _previous_session_file: Option<&str>) {
-        // 会话创建时无 ctx（HookHandler::on_session_start 不携带），恢复
-        // 在首次有 ctx 的事件（handle_tool_call / 命令 / agent_end）前由
-        // `ensure_restored` 惰性完成。
+    async fn on_session_start(
+        &self,
+        _reason: &str,
+        _previous_session_file: Option<&str>,
+        _ctx: Option<&ExtensionContext>,
+    ) {
     }
 
-    async fn on_agent_start(&self) {
+    async fn on_agent_start(&self, _ctx: Option<&ExtensionContext>) {
         self.inner.begin_agent_run();
     }
 
@@ -2473,18 +2461,10 @@ impl HookHandler for GoalExtension {
         _images: Option<Vec<Value>>,
         system_prompt: String,
         _system_prompt_options: Option<Value>,
+        ctx: &ExtensionContext,
     ) -> HookResult<(String, String, Option<Vec<Value>>)> {
         let inner = &self.inner;
-        // 无 ctx 参数：用最近一次带 ctx 事件记住的上下文做恢复/持久化。
-        let Some(ctx) = inner
-            .last_ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        else {
-            return HookResult::Continue((prompt, system_prompt, None));
-        };
-        self.ensure_restored(&ctx);
+        self.ensure_restored(ctx);
         let Some(goal) = inner.goal_snapshot() else {
             return HookResult::Continue((prompt, system_prompt, None));
         };
@@ -2493,7 +2473,7 @@ impl HookHandler for GoalExtension {
         }
         if goal.waiting.is_some() {
             // 原版 before_agent_start：非 owned prompt 边界清 wait。
-            inner.clear_wait_and_persist(&ctx);
+            inner.clear_wait_and_persist(ctx);
         }
         // 无 pending 归属（非 continuation/非 owned prompt）→ 归属 goal。
         let pending = inner
@@ -2516,7 +2496,13 @@ impl HookHandler for GoalExtension {
         HookResult::Continue((prompt, injected, None))
     }
 
-    async fn on_tool_execution_start(&self, _tool_call_id: &str, _tool_name: &str, _args: &Value) {
+    async fn on_tool_execution_start(
+        &self,
+        _tool_call_id: &str,
+        _tool_name: &str,
+        _args: &Value,
+        _ctx: Option<&ExtensionContext>,
+    ) {
         self.inner.mark_tool_attempted();
     }
 
@@ -2525,7 +2511,6 @@ impl HookHandler for GoalExtension {
             return;
         };
         self.ensure_restored(ctx);
-        self.inner.remember_ctx(ctx);
         self.inner.on_agent_end_impl(ctx, messages);
     }
 
@@ -2534,7 +2519,6 @@ impl HookHandler for GoalExtension {
             return;
         };
         self.ensure_restored(ctx);
-        self.inner.remember_ctx(ctx);
         self.inner.on_agent_settled_impl(ctx);
     }
 
@@ -2544,9 +2528,10 @@ impl HookHandler for GoalExtension {
         _images: Option<Vec<Value>>,
         source: String,
         streaming_behavior: Option<String>,
+        ctx: &ExtensionContext,
     ) -> HookResult<(String, Option<Vec<Value>>)> {
         // 用户输入唤醒 waiting goal + 重置安全纪元（原版 input 事件）。
-        self.inner.on_input_impl(&text, &source, streaming_behavior.as_deref());
+        self.inner.on_input_impl(&text, &source, streaming_behavior.as_deref(), ctx);
         let _ = &text;
         HookResult::Continue((text, None))
     }
@@ -2563,7 +2548,6 @@ impl HookHandler for GoalExtension {
         ctx: &ExtensionContext,
     ) -> HookResult<(String, Value)> {
         self.ensure_restored(ctx);
-        self.inner.remember_ctx(ctx);
         if self.inner.should_block_tool_call() {
             // 原版：abortCurrentTurn + block:true（blocked 结果会再触发模型
             // 调用，abort 防止无界循环烧配额）。
@@ -2583,7 +2567,6 @@ impl HookHandler for GoalExtension {
         ctx: &ExtensionContext,
     ) -> Option<ToolCallOutput> {
         self.ensure_restored(ctx);
-        self.inner.remember_ctx(ctx);
         match tool_name {
             GOAL_COMPLETE_TOOL => Some(self.inner.handle_goal_complete(ctx, &params)),
             GOAL_BLOCKED_TOOL => Some(self.inner.handle_goal_blocked(ctx, &params)),

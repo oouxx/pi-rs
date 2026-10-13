@@ -231,6 +231,7 @@ impl AgentSessionRuntime {
                 .run_before_session_switch(
                     reason.to_string(),
                     target_session_file.map(|s| s.to_string()),
+                    self.session.get_extension_context(),
                 )
                 .await;
             if result.is_cancel() {
@@ -246,7 +247,11 @@ impl AgentSessionRuntime {
         if let Some(ref registry) = self.session.get_extension_registry() {
             let result = registry
                 .hook_runner()
-                .run_before_session_fork(entry_id.to_string(), position.to_string())
+                .run_before_session_fork(
+                    entry_id.to_string(),
+                    position.to_string(),
+                    self.session.get_extension_context(),
+                )
                 .await;
             if result.is_cancel() {
                 return true;
@@ -267,7 +272,11 @@ impl AgentSessionRuntime {
         if let Some(ref registry) = self.session.get_extension_registry() {
             registry
                 .hook_runner()
-                .fire_session_shutdown(reason, target_session_file)
+                .fire_session_shutdown(
+                    reason,
+                    target_session_file,
+                    Some(self.session.get_extension_context()),
+                )
                 .await;
         }
 

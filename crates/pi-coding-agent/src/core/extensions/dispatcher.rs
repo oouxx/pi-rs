@@ -148,13 +148,13 @@ pub fn tool_result_payload(ctx: &AfterToolCallContext) -> serde_json::Value {
 pub async fn dispatch_tool_result(
     registry: &ExtensionRegistry,
     ctx: &AfterToolCallContext,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Option<AfterToolCallResult> {
     let result_value = serde_json::to_value(&ctx.result.content).unwrap_or_default();
     // First fire the void hook (notification)
     registry
         .hook_runner()
-        .run_after_tool_call(&ctx.tool_call.name, &result_value, ctx.is_error)
+        .run_after_tool_call(&ctx.tool_call.name, &result_value, ctx.is_error, ext_ctx)
         .await;
     // Then run the modifying hook to allow extensions to merge content/details/isError
     // Convert ContentBlock → Value for the hook (pi-extension-api can't depend on pi-agent-core)
@@ -165,7 +165,7 @@ pub async fn dispatch_tool_result(
     let details = Some(ctx.result.details.clone());
     let result = registry
         .hook_runner()
-        .run_on_tool_result(&ctx.tool_call.name, content_json, details, ctx.is_error)
+        .run_on_tool_result(&ctx.tool_call.name, content_json, details, ctx.is_error, ext_ctx)
         .await;
     match result {
         HookResult::Continue((content_json, details, is_error)) => {
@@ -206,11 +206,11 @@ pub async fn dispatch_tool_result(
 pub async fn dispatch_context(
     registry: &ExtensionRegistry,
     messages: &[serde_json::Value],
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Vec<serde_json::Value> {
     let result = registry
         .hook_runner()
-        .run_on_context(messages.to_vec())
+        .run_on_context(messages.to_vec(), ext_ctx)
         .await;
     match result {
         HookResult::Continue(m) => m,
@@ -229,11 +229,11 @@ pub async fn dispatch_context(
 pub async fn dispatch_message_end(
     registry: &ExtensionRegistry,
     message: &serde_json::Value,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Option<serde_json::Value> {
     let result = registry
         .hook_runner()
-        .run_on_message_end(message.clone())
+        .run_on_message_end(message.clone(), ext_ctx)
         .await;
     match result {
         HookResult::Continue(m) => {
@@ -257,11 +257,11 @@ pub async fn dispatch_message_end(
 pub async fn dispatch_before_provider_request(
     registry: &ExtensionRegistry,
     payload: serde_json::Value,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Option<serde_json::Value> {
     let result = registry
         .hook_runner()
-        .run_before_provider_request(payload)
+        .run_before_provider_request(payload, ext_ctx)
         .await;
     match result {
         HookResult::Continue(modified) => Some(modified),
@@ -277,12 +277,12 @@ pub async fn dispatch_before_provider_request(
 pub async fn dispatch_session_start(
     registry: &ExtensionRegistry,
     reason: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
     previous_session_file: Option<&str>,
 ) {
     registry
         .hook_runner()
-        .fire_session_start(reason, previous_session_file)
+        .fire_session_start(reason, previous_session_file, Some(ext_ctx))
         .await;
 }
 
@@ -294,11 +294,11 @@ pub async fn dispatch_session_start(
 pub async fn dispatch_session_shutdown(
     registry: &ExtensionRegistry,
     reason: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) {
     registry
         .hook_runner()
-        .fire_session_shutdown(reason, None)
+        .fire_session_shutdown(reason, None, Some(ext_ctx))
         .await;
 }
 
@@ -312,11 +312,11 @@ pub async fn dispatch_session_before_compact(
     registry: &ExtensionRegistry,
     reason: &str,
     will_retry: bool,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> bool {
     let result = registry
         .hook_runner()
-        .run_before_session_compact(reason.to_string(), will_retry)
+        .run_before_session_compact(reason.to_string(), will_retry, ext_ctx)
         .await;
     result.is_cancel()
 }
@@ -331,7 +331,7 @@ pub async fn dispatch_session_compact(
 ) {
     params.registry
         .hook_runner()
-        .fire_compact(params.summary, params.tokens_before)
+        .fire_compact(params.summary, params.tokens_before, Some(params.ext_ctx))
         .await;
 }
 
@@ -344,7 +344,7 @@ pub async fn dispatch_session_compact(
 pub async fn dispatch_session_before_switch(
     registry: &ExtensionRegistry,
     target_session_file: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> bool {
     let result = registry
         .hook_runner()
@@ -355,6 +355,7 @@ pub async fn dispatch_session_before_switch(
             } else {
                 Some(target_session_file.to_string())
             },
+            ext_ctx,
         )
         .await;
     result.is_cancel()
@@ -369,11 +370,11 @@ pub async fn dispatch_session_before_switch(
 pub async fn dispatch_session_before_fork(
     registry: &ExtensionRegistry,
     entry_id: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> bool {
     let result = registry
         .hook_runner()
-        .run_before_session_fork(entry_id.to_string(), "current".to_string())
+        .run_before_session_fork(entry_id.to_string(), "current".to_string(), ext_ctx)
         .await;
     result.is_cancel()
 }
@@ -387,11 +388,11 @@ pub async fn dispatch_session_before_fork(
 pub async fn dispatch_session_before_tree(
     registry: &ExtensionRegistry,
     target_id: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> bool {
     let result = registry
         .hook_runner()
-        .run_before_session_tree(target_id)
+        .run_before_session_tree(target_id, ext_ctx)
         .await;
     result.is_cancel()
 }
@@ -404,11 +405,11 @@ pub async fn dispatch_session_before_tree(
 pub async fn dispatch_session_info_changed(
     registry: &ExtensionRegistry,
     name: Option<&str>,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) {
     registry
         .hook_runner()
-        .fire_session_info_changed(name)
+        .fire_session_info_changed(name, Some(ext_ctx))
         .await;
 }
 
@@ -454,7 +455,7 @@ pub async fn dispatch_before_agent_start(
 
     let result = params.registry
         .hook_runner()
-        .run_before_agent_start(prompt, images_value, params.system_prompt.to_string(), params.system_prompt_options.clone())
+        .run_before_agent_start(prompt, images_value, params.system_prompt.to_string(), params.system_prompt_options.clone(), params.ext_ctx)
         .await;
     match result {
         HookResult::Cancel(_) => BeforeAgentStartResult {
@@ -501,6 +502,7 @@ pub async fn dispatch_input(
             images_value,
             params.source.to_string(),
             params.streaming_behavior.map(|s| s.to_string()),
+            params.ext_ctx,
         )
         .await;
     match result {
@@ -530,7 +532,7 @@ pub async fn dispatch_model_select(
 ) {
     params.registry
         .hook_runner()
-        .fire_model_select(params.model, params.previous_model, params.source)
+        .fire_model_select(params.model, params.previous_model, params.source, Some(params.ext_ctx))
         .await;
 }
 
@@ -544,7 +546,7 @@ pub async fn dispatch_thinking_level_select(
 ) {
     params.registry
         .hook_runner()
-        .fire_thinking_level_select(params.level, params.previous_level)
+        .fire_thinking_level_select(params.level, params.previous_level, Some(params.ext_ctx))
         .await;
 }
 // ============================================================================
@@ -556,11 +558,11 @@ pub async fn dispatch_user_bash(
     registry: &ExtensionRegistry,
     command: &str,
     cwd: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Option<crate::core::extensions::UserBashResult> {
     registry
         .hook_runner()
-        .fire_user_bash(command, cwd)
+        .fire_user_bash(command, cwd, Some(ext_ctx))
         .await
 }
 
@@ -572,11 +574,11 @@ pub async fn dispatch_user_bash(
 pub async fn dispatch_project_trust(
     registry: &ExtensionRegistry,
     cwd: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> Option<crate::core::extensions::ProjectTrustResult> {
     registry
         .hook_runner()
-        .fire_project_trust(cwd)
+        .fire_project_trust(cwd, Some(ext_ctx))
         .await
 }
 
@@ -589,11 +591,11 @@ pub async fn dispatch_resources_discover(
     registry: &ExtensionRegistry,
     cwd: &str,
     reason: &str,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> crate::core::extensions::ResourcesDiscoverResult {
     registry
         .hook_runner()
-        .fire_resources_discover(cwd, reason)
+        .fire_resources_discover(cwd, reason, Some(ext_ctx))
         .await
 }
 
@@ -609,11 +611,11 @@ use std::collections::HashMap;
 pub async fn dispatch_before_provider_headers(
     registry: &ExtensionRegistry,
     headers: HashMap<String, String>,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) -> HashMap<String, String> {
     let result = registry
         .hook_runner()
-        .run_before_provider_headers(headers)
+        .run_before_provider_headers(headers, ext_ctx)
         .await;
     match result {
         HookResult::Continue(h) => h,
@@ -630,11 +632,11 @@ pub async fn dispatch_after_provider_response(
     registry: &ExtensionRegistry,
     status: u16,
     headers: HashMap<String, String>,
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
 ) {
     let _ = registry
         .hook_runner()
-        .run_after_provider_response(status, headers)
+        .run_after_provider_response(status, headers, ext_ctx)
         .await;
 }
 

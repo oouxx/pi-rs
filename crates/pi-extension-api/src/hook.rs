@@ -301,16 +301,33 @@ pub trait HookHandler: Send + Sync {
     // ── Void hooks（并行、fire-and-forget） ──────────────────────────
 
     /// Session 启动时触发。
-    async fn on_session_start(&self, _reason: &str, _previous_session_file: Option<&str>) {}
+    async fn on_session_start(
+        &self,
+        _reason: &str,
+        _previous_session_file: Option<&str>,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// Session 关闭时触发。
-    async fn on_session_shutdown(&self, _reason: &str, _target_session_file: Option<&str>) {}
+    async fn on_session_shutdown(
+        &self,
+        _reason: &str,
+        _target_session_file: Option<&str>,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// Session 信息变更时触发。
-    async fn on_session_info_changed(&self, _name: Option<&str>) {}
+    async fn on_session_info_changed(
+        &self,
+        _name: Option<&str>,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// Agent 开始处理时触发。
-    async fn on_agent_start(&self) {}
+    async fn on_agent_start(&self, _ctx: Option<&crate::ExtensionContext>) {}
 
     /// Agent 处理完成时触发。
     ///
@@ -325,7 +342,13 @@ pub trait HookHandler: Send + Sync {
 
     /// Turn 开始时触发。
     /// Turn 开始时触发。`timestamp` 是毫秒时间戳（匹配 TS `turn_start` 事件）。
-    async fn on_turn_start(&self, _turn_index: u32, _timestamp: i64) {}
+    async fn on_turn_start(
+        &self,
+        _turn_index: u32,
+        _timestamp: i64,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// Turn 结束时触发。
     ///
@@ -370,28 +393,42 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// 消息开始时触发。
-    async fn on_message_start(&self, _message: &Value) {}
+    async fn on_message_start(&self, _message: &Value, _ctx: Option<&crate::ExtensionContext>) {}
 
     /// 消息更新时触发。
     /// 消息更新时触发。`assistant_message_event` 是流式 delta 事件
     /// （匹配 TS `message_update` 事件的 assistantMessageEvent 字段）。
-    async fn on_message_update(&self, _message: &Value, _assistant_message_event: &Value) {}
+    async fn on_message_update(
+        &self,
+        _message: &Value,
+        _assistant_message_event: &Value,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// 消息结束时触发。
-    async fn on_message_end(&self, _message: &Value) {}
+    async fn on_message_end(&self, _message: &Value, _ctx: Option<&crate::ExtensionContext>) {}
 
     /// 消息结束时触发（modifying 版本）。
     /// 可以修改消息内容。按 priority 顺序执行。
     async fn on_message_end_mut(
         &self,
         _message: Value,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<Value> {
         HookResult::Continue(_message)
     }
 
 
     /// 工具执行开始时触发。
-    async fn on_tool_execution_start(&self, _tool_call_id: &str, _tool_name: &str, _args: &Value) {}
+    async fn on_tool_execution_start(
+        &self,
+        _tool_call_id: &str,
+        _tool_name: &str,
+        _args: &Value,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// 工具执行更新时触发（高频事件，用于流式输出进度）。
     async fn on_tool_execution_update(
@@ -400,6 +437,7 @@ pub trait HookHandler: Send + Sync {
         _tool_name: &str,
         _args: &Value,
         _partial_result: &Value,
+        _ctx: Option<&crate::ExtensionContext>,
     ) {
     }
 
@@ -411,6 +449,7 @@ pub trait HookHandler: Send + Sync {
         _tool_name: &str,
         _result: &Value,
         _is_error: bool,
+        _ctx: Option<&crate::ExtensionContext>,
     ) {
     }
 
@@ -422,39 +461,66 @@ pub trait HookHandler: Send + Sync {
         _model: &str,
         _previous_model: Option<&str>,
         _source: &str,
+        _ctx: Option<&crate::ExtensionContext>,
     ) {
     }
 
     /// Thinking level 切换时触发。
-    async fn on_thinking_level_select(&self, _level: &str, _previous_level: &str) {}
+    async fn on_thinking_level_select(
+        &self,
+        _level: &str,
+        _previous_level: &str,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// 压缩完成时触发。
-    async fn on_compact(&self, _summary: &str, _tokens_before: u64) {}
+    async fn on_compact(
+        &self,
+        _summary: &str,
+        _tokens_before: u64,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// 树导航完成时触发。
-    async fn on_tree(&self, _new_leaf_id: Option<&str>, _old_leaf_id: Option<&str>) {}
+    async fn on_tree(
+        &self,
+        _new_leaf_id: Option<&str>,
+        _old_leaf_id: Option<&str>,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) {
+    }
 
     /// 资源发现时触发。返回扩展提供的额外资源路径。
-    async fn on_resources_discover(&self, _cwd: &str, _reason: &str) -> Option<crate::ResourcesDiscoverResult> {
+    async fn on_resources_discover(&self, _cwd: &str, _reason: &str, _ctx: Option<&crate::ExtensionContext>) -> Option<crate::ResourcesDiscoverResult> {
         None
     }
 
     /// Project trust 变更时触发。返回信任决策。
-    async fn on_project_trust(&self, _cwd: &str) -> Option<crate::ProjectTrustResult> {
+    async fn on_project_trust(
+        &self,
+        _cwd: &str,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::ProjectTrustResult> {
         None
     }
 
     /// 上下文消息更新时触发。
-    async fn on_context(&self, _messages: &[Value]) {}
+    async fn on_context(&self, _messages: &[Value], _ctx: Option<&crate::ExtensionContext>) {}
 
     /// 上下文消息更新时触发（modifying 版本）。
     /// 可以修改消息列表。按 priority 顺序执行。
-    async fn on_context_mut(&self, _messages: Vec<Value>) -> HookResult<Vec<Value>> {
+    async fn on_context_mut(
+        &self,
+        _messages: Vec<Value>,
+        _ctx: &crate::ExtensionContext,
+    ) -> HookResult<Vec<Value>> {
         HookResult::Continue(_messages)
     }
 
     /// 用户 bash 执行时触发。
-    async fn on_user_bash(&self, _command: &str, _cwd: &str) -> Option<crate::UserBashResult> { None }
+    async fn on_user_bash(&self, _command: &str, _cwd: &str, _ctx: Option<&crate::ExtensionContext>) -> Option<crate::UserBashResult> { None }
 
     // ── Modifying hooks（按 priority 顺序执行，可 Cancel） ──────────
 
@@ -477,6 +543,7 @@ pub trait HookHandler: Send + Sync {
         _tool_name: &str,
         _result: &Value,
         _is_error: bool,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
@@ -490,6 +557,7 @@ pub trait HookHandler: Send + Sync {
         _content: Vec<Value>,
         _details: Option<Value>,
         _is_error: bool,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
         HookResult::Continue((_content, _details, _is_error))
     }
@@ -502,6 +570,7 @@ pub trait HookHandler: Send + Sync {
         _images: Option<Vec<Value>>,
         _system_prompt: String,
         _system_prompt_options: Option<Value>,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<(String, String, Option<Vec<Value>>)> {
         HookResult::Continue((_prompt, _system_prompt, None))
     }
@@ -516,12 +585,17 @@ pub trait HookHandler: Send + Sync {
         _images: Option<Vec<Value>>,
         _source: String,
         _streaming_behavior: Option<String>,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<(String, Option<Vec<Value>>)> {
         HookResult::Continue((_text, None))
     }
 
     /// Provider 请求前触发。可修改 payload。
-    async fn before_provider_request(&self, _payload: Value) -> HookResult<Value> {
+    async fn before_provider_request(
+        &self,
+        _payload: Value,
+        _ctx: &crate::ExtensionContext,
+    ) -> HookResult<Value> {
         HookResult::Continue(_payload)
     }
 
@@ -529,6 +603,7 @@ pub trait HookHandler: Send + Sync {
     async fn before_provider_headers(
         &self,
         _headers: HashMap<String, String>,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<HashMap<String, String>> {
         HookResult::Continue(_headers)
     }
@@ -538,6 +613,7 @@ pub trait HookHandler: Send + Sync {
         &self,
         _status: u16,
         _headers: HashMap<String, String>,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
@@ -547,6 +623,7 @@ pub trait HookHandler: Send + Sync {
         &self,
         _reason: String,
         _target_session_file: Option<String>,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
@@ -556,6 +633,7 @@ pub trait HookHandler: Send + Sync {
         &self,
         _entry_id: String,
         _position: String,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
@@ -565,12 +643,17 @@ pub trait HookHandler: Send + Sync {
         &self,
         _reason: String,
         _will_retry: bool,
+        _ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
 
     /// Session 树导航前触发。可取消导航。
-    async fn before_session_tree(&self, _target_id: String) -> HookResult<()> {
+    async fn before_session_tree(
+        &self,
+        _target_id: String,
+        _ctx: &crate::ExtensionContext,
+    ) -> HookResult<()> {
         HookResult::Continue(())
     }
 }
@@ -620,38 +703,56 @@ impl HookRunner {
     // ── Void hook dispatch (parallel, fire-and-forget) ──────────────
 
     /// Fire `on_session_start` to all handlers (parallel).
-    pub async fn fire_session_start(&self, reason: &str, previous_session_file: Option<&str>) {
+    pub async fn fire_session_start(
+        &self,
+        reason: &str,
+        previous_session_file: Option<&str>,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_session_start(reason, previous_session_file))
+            .map(|h| h.on_session_start(reason, previous_session_file, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_session_shutdown` to all handlers (parallel).
-    pub async fn fire_session_shutdown(&self, reason: &str, target_session_file: Option<&str>) {
+    pub async fn fire_session_shutdown(
+        &self,
+        reason: &str,
+        target_session_file: Option<&str>,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_session_shutdown(reason, target_session_file))
+            .map(|h| h.on_session_shutdown(reason, target_session_file, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_session_info_changed` to all handlers (parallel).
-    pub async fn fire_session_info_changed(&self, name: Option<&str>) {
+    pub async fn fire_session_info_changed(
+        &self,
+        name: Option<&str>,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_session_info_changed(name))
+            .map(|h| h.on_session_info_changed(name, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_agent_start` to all handlers (parallel).
-    pub async fn fire_agent_start(&self) {
-        let futures: Vec<_> = self.handlers.iter().map(|h| h.on_agent_start()).collect();
+    pub async fn fire_agent_start(&self, ctx: Option<&crate::ExtensionContext>) {
+        let futures: Vec<_> = self
+            .handlers
+            .iter()
+            .map(|h| h.on_agent_start(ctx))
+            .collect();
         futures::future::join_all(futures).await;
     }
 
@@ -676,11 +777,16 @@ impl HookRunner {
     }
 
     /// Fire `on_turn_start` to all handlers (parallel).
-    pub async fn fire_turn_start(&self, turn_index: u32, timestamp: i64) {
+    pub async fn fire_turn_start(
+        &self,
+        turn_index: u32,
+        timestamp: i64,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_turn_start(turn_index, timestamp))
+            .map(|h| h.on_turn_start(turn_index, timestamp, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -785,31 +891,36 @@ impl HookRunner {
     }
 
     /// Fire `on_message_start` to all handlers (parallel).
-    pub async fn fire_message_start(&self, message: &Value) {
+    pub async fn fire_message_start(&self, message: &Value, ctx: Option<&crate::ExtensionContext>) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_message_start(message))
+            .map(|h| h.on_message_start(message, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_message_update` to all handlers (parallel).
-    pub async fn fire_message_update(&self, message: &Value, assistant_message_event: &Value) {
+    pub async fn fire_message_update(
+        &self,
+        message: &Value,
+        assistant_message_event: &Value,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_message_update(message, assistant_message_event))
+            .map(|h| h.on_message_update(message, assistant_message_event, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_message_end` to all handlers (parallel).
-    pub async fn fire_message_end(&self, message: &Value) {
+    pub async fn fire_message_end(&self, message: &Value, ctx: Option<&crate::ExtensionContext>) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_message_end(message))
+            .map(|h| h.on_message_end(message, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -819,10 +930,11 @@ impl HookRunner {
     pub async fn run_on_message_end(
         &self,
         message: Value,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<Value> {
         let mut current = message;
         for handler in &self.handlers {
-            match handler.on_message_end_mut(current.clone()).await {
+            match handler.on_message_end_mut(current.clone(), ctx).await {
                 HookResult::Continue(m) => {
                     // A message_end handler must return a message with the same
                     // role (matching TS emitMessageEnd which rejects role
@@ -845,11 +957,12 @@ impl HookRunner {
         tool_call_id: &str,
         tool_name: &str,
         args: &Value,
+        ctx: Option<&crate::ExtensionContext>,
     ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_tool_execution_start(tool_call_id, tool_name, args))
+            .map(|h| h.on_tool_execution_start(tool_call_id, tool_name, args, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -861,11 +974,12 @@ impl HookRunner {
         tool_name: &str,
         args: &Value,
         partial_result: &Value,
+        ctx: Option<&crate::ExtensionContext>,
     ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_tool_execution_update(tool_call_id, tool_name, args, partial_result))
+            .map(|h| h.on_tool_execution_update(tool_call_id, tool_name, args, partial_result, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -878,11 +992,12 @@ impl HookRunner {
         tool_name: &str,
         result: &Value,
         is_error: bool,
+        ctx: Option<&crate::ExtensionContext>,
     ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_tool_execution_end(tool_call_id, tool_name, result, is_error))
+            .map(|h| h.on_tool_execution_end(tool_call_id, tool_name, result, is_error, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -893,51 +1008,67 @@ impl HookRunner {
         model: &str,
         previous_model: Option<&str>,
         source: &str,
+        ctx: Option<&crate::ExtensionContext>,
     ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_model_select(model, previous_model, source))
+            .map(|h| h.on_model_select(model, previous_model, source, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_thinking_level_select` to all handlers (parallel).
-    pub async fn fire_thinking_level_select(&self, level: &str, previous_level: &str) {
+    pub async fn fire_thinking_level_select(
+        &self,
+        level: &str,
+        previous_level: &str,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_thinking_level_select(level, previous_level))
+            .map(|h| h.on_thinking_level_select(level, previous_level, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_compact` to all handlers (parallel).
-    pub async fn fire_compact(&self, summary: &str, tokens_before: u64) {
+    pub async fn fire_compact(
+        &self,
+        summary: &str,
+        tokens_before: u64,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_compact(summary, tokens_before))
+            .map(|h| h.on_compact(summary, tokens_before, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_tree` to all handlers (parallel).
-    pub async fn fire_tree(&self, new_leaf_id: Option<&str>, old_leaf_id: Option<&str>) {
+    pub async fn fire_tree(
+        &self,
+        new_leaf_id: Option<&str>,
+        old_leaf_id: Option<&str>,
+        ctx: Option<&crate::ExtensionContext>,
+    ) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_tree(new_leaf_id, old_leaf_id))
+            .map(|h| h.on_tree(new_leaf_id, old_leaf_id, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
 
     /// Fire `on_resources_discover` to all handlers (parallel).
-    pub async fn fire_resources_discover(&self, cwd: &str, reason: &str) -> crate::ResourcesDiscoverResult {
+    pub async fn fire_resources_discover(&self, cwd: &str, reason: &str, ctx: Option<&crate::ExtensionContext>) -> crate::ResourcesDiscoverResult {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_resources_discover(cwd, reason))
+            .map(|h| h.on_resources_discover(cwd, reason, ctx))
             .collect();
         let results = futures::future::join_all(futures).await;
         let mut combined = crate::ResourcesDiscoverResult::default();
@@ -950,11 +1081,15 @@ impl HookRunner {
     }
 
     /// Fire `on_project_trust` to all handlers (parallel).
-    pub async fn fire_project_trust(&self, cwd: &str) -> Option<crate::ProjectTrustResult> {
+    pub async fn fire_project_trust(
+        &self,
+        cwd: &str,
+        ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::ProjectTrustResult> {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_project_trust(cwd))
+            .map(|h| h.on_project_trust(cwd, ctx))
             .collect();
         let results = futures::future::join_all(futures).await;
         for result in results.into_iter().flatten() {
@@ -966,11 +1101,11 @@ impl HookRunner {
     }
 
     /// Fire `on_context` to all handlers (parallel).
-    pub async fn fire_context(&self, messages: &[Value]) {
+    pub async fn fire_context(&self, messages: &[Value], ctx: Option<&crate::ExtensionContext>) {
         let futures: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.on_context(messages))
+            .map(|h| h.on_context(messages, ctx))
             .collect();
         futures::future::join_all(futures).await;
     }
@@ -980,10 +1115,11 @@ impl HookRunner {
     pub async fn run_on_context(
         &self,
         messages: Vec<Value>,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<Vec<Value>> {
         let mut current = messages;
         for handler in &self.handlers {
-            match handler.on_context_mut(current).await {
+            match handler.on_context_mut(current, ctx).await {
                 HookResult::Continue(m) => {
                     current = m;
                 }
@@ -994,9 +1130,14 @@ impl HookRunner {
     }
 
     /// Fire `on_user_bash` to all handlers (sequential, first-return-wins).
-    pub async fn fire_user_bash(&self, command: &str, cwd: &str) -> Option<crate::UserBashResult> {
+    pub async fn fire_user_bash(
+        &self,
+        command: &str,
+        cwd: &str,
+        ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::UserBashResult> {
         for handler in &self.handlers {
-            if let Some(result) = handler.on_user_bash(command, cwd).await {
+            if let Some(result) = handler.on_user_bash(command, cwd, ctx).await {
                 return Some(result);
             }
         }
@@ -1030,9 +1171,13 @@ impl HookRunner {
         tool_name: &str,
         result: &Value,
         is_error: bool,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
-            match handler.after_tool_call(tool_name, result, is_error).await {
+            match handler
+                .after_tool_call(tool_name, result, is_error, ctx)
+                .await
+            {
                 HookResult::Continue(()) => {}
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -1048,11 +1193,18 @@ impl HookRunner {
         content: Vec<Value>,
         details: Option<Value>,
         is_error: bool,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
         let mut current = (content, details, is_error);
         for handler in &self.handlers {
             match handler
-                .on_tool_result_mut(tool_name, current.0.clone(), current.1.clone(), current.2)
+                .on_tool_result_mut(
+                    tool_name,
+                    current.0.clone(),
+                    current.1.clone(),
+                    current.2,
+                    ctx,
+                )
                 .await
             {
                 HookResult::Continue((c, d, e)) => {
@@ -1071,6 +1223,7 @@ impl HookRunner {
         images: Option<Vec<Value>>,
         system_prompt: String,
         system_prompt_options: Option<Value>,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<(String, String, Option<Vec<Value>>)> {
         let mut current = (prompt, system_prompt);
         // Collect messages from all handlers (matching TS emitBeforeAgentStart
@@ -1078,7 +1231,7 @@ impl HookRunner {
         let mut messages: Vec<Value> = Vec::new();
         for handler in &self.handlers {
             match handler
-                .before_agent_start(current.0.clone(), images.clone(), current.1.clone(), system_prompt_options.clone())
+                .before_agent_start(current.0.clone(), images.clone(), current.1.clone(), system_prompt_options.clone(), ctx)
                 .await
             {
                 HookResult::Continue((p, s, msgs)) => {
@@ -1108,6 +1261,7 @@ impl HookRunner {
         images: Option<Vec<Value>>,
         source: String,
         streaming_behavior: Option<String>,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<(String, Option<Vec<Value>>)> {
         let mut current = (text, images);
         for handler in &self.handlers {
@@ -1117,6 +1271,7 @@ impl HookRunner {
                     current.1.clone(),
                     source.clone(),
                     streaming_behavior.clone(),
+                    ctx,
                 )
                 .await
             {
@@ -1132,10 +1287,14 @@ impl HookRunner {
     }
 
     /// Run `before_provider_request` handlers in priority order.
-    pub async fn run_before_provider_request(&self, payload: Value) -> HookResult<Value> {
+    pub async fn run_before_provider_request(
+        &self,
+        payload: Value,
+        ctx: &crate::ExtensionContext,
+    ) -> HookResult<Value> {
         let mut current = payload;
         for handler in &self.handlers {
-            match handler.before_provider_request(current).await {
+            match handler.before_provider_request(current, ctx).await {
                 HookResult::Continue(modified) => {
                     current = modified;
                 }
@@ -1149,10 +1308,11 @@ impl HookRunner {
     pub async fn run_before_provider_headers(
         &self,
         headers: HashMap<String, String>,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<HashMap<String, String>> {
         let mut current = headers;
         for handler in &self.handlers {
-            match handler.before_provider_headers(current).await {
+            match handler.before_provider_headers(current, ctx).await {
                 HookResult::Continue(h) => {
                     current = h;
                 }
@@ -1167,9 +1327,10 @@ impl HookRunner {
         &self,
         status: u16,
         headers: HashMap<String, String>,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
-            match handler.after_provider_response(status, headers.clone()).await {
+            match handler.after_provider_response(status, headers.clone(), ctx).await {
                 HookResult::Continue(()) => {}
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -1182,10 +1343,11 @@ impl HookRunner {
         &self,
         reason: String,
         target_session_file: Option<String>,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
             match handler
-                .before_session_switch(reason.clone(), target_session_file.clone())
+                .before_session_switch(reason.clone(), target_session_file.clone(), ctx)
                 .await
             {
                 HookResult::Continue(()) => {}
@@ -1200,10 +1362,11 @@ impl HookRunner {
         &self,
         entry_id: String,
         position: String,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
             match handler
-                .before_session_fork(entry_id.clone(), position.clone())
+                .before_session_fork(entry_id.clone(), position.clone(), ctx)
                 .await
             {
                 HookResult::Continue(()) => {}
@@ -1218,10 +1381,11 @@ impl HookRunner {
         &self,
         reason: String,
         will_retry: bool,
+        ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
             match handler
-                .before_session_compact(reason.clone(), will_retry)
+                .before_session_compact(reason.clone(), will_retry, ctx)
                 .await
             {
                 HookResult::Continue(()) => {}
@@ -1232,9 +1396,16 @@ impl HookRunner {
     }
 
     /// Run `before_session_tree` handlers in priority order.
-    pub async fn run_before_session_tree(&self, target_id: &str) -> HookResult<()> {
+    pub async fn run_before_session_tree(
+        &self,
+        target_id: &str,
+        ctx: &crate::ExtensionContext,
+    ) -> HookResult<()> {
         for handler in &self.handlers {
-            match handler.before_session_tree(target_id.to_string()).await {
+            match handler
+                .before_session_tree(target_id.to_string(), ctx)
+                .await
+            {
                 HookResult::Continue(()) => {}
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -1407,7 +1578,7 @@ mod tests {
             fn name(&self) -> &str {
                 &self.name
             }
-            async fn on_agent_start(&self) {
+            async fn on_agent_start(&self, _ctx: Option<&crate::ExtensionContext>) {
                 self.count.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -1424,7 +1595,7 @@ mod tests {
             count: count.clone(),
         }));
 
-        runner.fire_agent_start().await;
+        runner.fire_agent_start(None).await;
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
@@ -1490,8 +1661,8 @@ mod tests {
     #[tokio::test]
     async fn empty_runner_void_hooks_are_noops() {
         let runner = HookRunner::new();
-        runner.fire_agent_start().await;
-        runner.fire_session_start("test", None).await;
+        runner.fire_agent_start(None).await;
+        runner.fire_session_start("test", None, None).await;
     }
 
     #[tokio::test]
@@ -1523,7 +1694,7 @@ mod tests {
             fn priority(&self) -> i32 {
                 self.priority
             }
-            async fn on_agent_start(&self) {
+            async fn on_agent_start(&self, _ctx: Option<&crate::ExtensionContext>) {
                 if let Ok(mut order) = self.execution_order.lock() {
                 order.push(self.name.clone());
             }
@@ -1549,7 +1720,7 @@ mod tests {
             execution_order: order.clone(),
         }));
 
-        runner.fire_agent_start().await;
+        runner.fire_agent_start(None).await;
 
         let Ok(guard) = order.lock() else { return; };
         let order = &*guard;

@@ -2040,7 +2040,7 @@ impl AgentSession {
                     match &event {
                         AgentEvent::AgentStart => {
                             *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
-                            hr.fire_agent_start().await;
+                            hr.fire_agent_start(Some(&ext_ctx)).await;
                         }
                         AgentEvent::AgentEnd { messages } => {
                             let msgs: Vec<serde_json::Value> = messages
@@ -2052,7 +2052,7 @@ impl AgentSession {
                         }
                         AgentEvent::TurnStart => {
                             let ti = *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            hr.fire_turn_start(ti, chrono::Utc::now().timestamp_millis()).await;
+                            hr.fire_turn_start(ti, chrono::Utc::now().timestamp_millis(), Some(&ext_ctx)).await;
                         }
                         AgentEvent::TurnEnd {
                             message,
@@ -2077,7 +2077,7 @@ impl AgentSession {
                         }
                         AgentEvent::MessageStart { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
-                            hr.fire_message_start(&msg_val).await;
+                            hr.fire_message_start(&msg_val, Some(&ext_ctx)).await;
                         }
                         AgentEvent::MessageUpdate {
                             message,
@@ -2086,12 +2086,12 @@ impl AgentSession {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             let ame_val =
                                 serde_json::to_value(assistant_message_event).unwrap_or_default();
-                            hr.fire_message_update(&msg_val, &ame_val).await;
+                            hr.fire_message_update(&msg_val, &ame_val, Some(&ext_ctx)).await;
                         }
                         AgentEvent::MessageEnd { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             // Fire void hook (notification) to all handlers
-                            hr.fire_message_end(&msg_val).await;
+                            hr.fire_message_end(&msg_val, Some(&ext_ctx)).await;
                             // Run modifying hook to allow extensions to modify the message
                             if let Some(ref registry) = reg {
                                 if let Some(mut replacement_val) =
@@ -2141,6 +2141,7 @@ impl AgentSession {
                                 tool_call_id.as_str(),
                                 tool_name.as_str(),
                                 args,
+                                Some(&ext_ctx),
                             )
                             .await;
                         }
@@ -2155,6 +2156,7 @@ impl AgentSession {
                                 tool_name.as_str(),
                                 args,
                                 partial_result,
+                                Some(&ext_ctx),
                             )
                             .await;
                         }
@@ -2170,6 +2172,7 @@ impl AgentSession {
                                 tool_name.as_str(),
                                 result,
                                 *is_error,
+                                Some(&ext_ctx),
                             )
                             .await;
                         }
@@ -4844,7 +4847,10 @@ References are relative to {}.
 
         // Dispatch session_tree event to extensions (fire-and-forget)
         if let Some(ref registry) = self.extension_registry {
-            registry.hook_runner().fire_tree(None, None).await;
+            registry
+                .hook_runner()
+                .fire_tree(None, None, Some(&self.ext_ctx))
+                .await;
         }
 
         result

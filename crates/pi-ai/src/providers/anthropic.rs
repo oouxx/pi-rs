@@ -24,6 +24,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 #[allow(dead_code)]
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+const MID_CONVERSATION_TOOL_CHANGES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
 /// Substring that marks a Claude Code OAuth token (match TS `isOAuthToken`).
 const OAUTH_TOKEN_MARKER: &str = "sk-ant-oat";
 /// Claude Code CLI version advertised on OAuth requests (match TS `claudeCodeVersion`).
@@ -99,6 +100,10 @@ enum AnthropicContentBlock {
     },
     #[serde(rename = "tool_reference")]
     ToolReference { tool_name: String },
+    #[serde(rename = "tool_removal")]
+    ToolRemoval { tool: AnthropicToolReference },
+    #[serde(rename = "tool_addition")]
+    ToolAddition { tool: AnthropicToolReference },
     #[serde(rename = "tool_result")]
     ToolResult {
         #[serde(rename = "tool_use_id")]
@@ -119,6 +124,14 @@ enum AnthropicContentBlock {
 enum AnthropicToolResultContent {
     String(String),
     Blocks(Vec<AnthropicContentBlock>),
+}
+
+/// A tool reference inside a `tool_removal`/`tool_addition` block.
+#[derive(Debug, Clone, Serialize)]
+struct AnthropicToolReference {
+    #[serde(rename = "type")]
+    type_field: String,
+    tool_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -435,12 +448,31 @@ fn default_supports_tool_references(model: &Model) -> bool {
 }
 
 /// Convert pi-ai messages to Anthropic API message params.
+#[cfg(test)]
 pub(crate) fn convert_messages(
     messages: &[Message],
     model: &Model,
     cache_control: Option<&AnthropicCacheControl>,
     deferred_tool_names: &std::collections::HashSet<String>,
     native_system_messages: bool,
+) -> Vec<AnthropicMessageParam> {
+    convert_messages_full(
+        messages,
+        model,
+        cache_control,
+        deferred_tool_names,
+        native_system_messages,
+        false,
+    )
+}
+
+pub(crate) fn convert_messages_full(
+    messages: &[Message],
+    model: &Model,
+    cache_control: Option<&AnthropicCacheControl>,
+    deferred_tool_names: &std::collections::HashSet<String>,
+    native_system_messages: bool,
+    native_tool_changes: bool,
 ) -> Vec<AnthropicMessageParam> {
     let allow_empty_signature = get_anthropic_compat(model)
         .allow_empty_signature
@@ -672,13 +704,42 @@ pub(crate) fn convert_messages(
                 if native_system_messages {
                     let text =
                         crate::utils::transcript::typed_render_system_message_update(msg);
+                    let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
                     if !text.is_empty() {
+                        blocks.push(AnthropicContentBlock::Text {
+                            text,
+                            cache_control: None,
+                        });
+                    }
+                    if native_tool_changes {
+                        if let Message::System {
+                            tools_removed,
+                            tools_added,
+                            ..
+                        } = msg
+                        {
+                            for tool in tools_removed.iter().flatten() {
+                                blocks.push(AnthropicContentBlock::ToolRemoval {
+                                    tool: AnthropicToolReference {
+                                        type_field: "tool_reference".to_string(),
+                                        tool_name: tool.name.clone(),
+                                    },
+                                });
+                            }
+                            for tool in tools_added.iter().flatten() {
+                                blocks.push(AnthropicContentBlock::ToolAddition {
+                                    tool: AnthropicToolReference {
+                                        type_field: "tool_reference".to_string(),
+                                        tool_name: tool.name.clone(),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    if !blocks.is_empty() {
                         pending_system_messages.push(AnthropicMessageParam {
                             role: "system".to_string(),
-                            content: AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
-                                text,
-                                cache_control: None,
-                            }]),
+                            content: AnthropicContent::Blocks(blocks),
                         });
                     }
                 }
@@ -1060,6 +1121,35 @@ async fn stream_anthropic_inner(
 
     let compat = get_anthropic_compat(model);
     let supports_mid_convo = compat.supports_mid_convo_system_messages.unwrap_or(false);
+    // Native tool changes (TS `nativeToolChanges`): only when the model accepts
+    // mid-convo system messages and tool changes, has an initial active tool,
+    // and no tool name is redefined.
+    let (native_initial_tools, native_later_tools, native_tool_changes) = if supports_mid_convo
+        && compat.supports_mid_convo_tool_changes.unwrap_or(false)
+    {
+        let values: Vec<Value> = serde_json::to_value(&context.messages)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        let initial: Vec<crate::types::Tool> = match context.messages.first() {
+            Some(Message::System {
+                tools_added: Some(tools),
+                ..
+            }) => tools.clone(),
+            _ => Vec::new(),
+        };
+        let initial_names: std::collections::HashSet<String> =
+            initial.iter().map(|t| t.name.clone()).collect();
+        let later: Vec<crate::types::Tool> = crate::utils::transcript::get_declared_tools(&values)
+            .into_iter()
+            .filter(|t| !initial_names.contains(&t.name))
+            .collect();
+        let active = !initial.is_empty()
+            && !crate::utils::transcript::has_tool_redefinitions(&values);
+        (initial, later, active)
+    } else {
+        (Vec::new(), Vec::new(), false)
+    };
     let temperature = options.and_then(|o| o.temperature);
     let max_tokens = options
         .and_then(|o| o.max_tokens)
@@ -1117,6 +1207,9 @@ async fn stream_anthropic_inner(
     // (match TS createClient `needsInterleavedBeta`).
     if compat.force_adaptive_thinking != Some(true) {
         beta_features.push(INTERLEAVED_THINKING_BETA.to_string());
+    }
+    if native_tool_changes {
+        beta_features.push(MID_CONVERSATION_TOOL_CHANGES_BETA.to_string());
     }
     if !beta_features.is_empty() {
         header_map.insert(
@@ -1204,12 +1297,13 @@ async fn stream_anthropic_inner(
     };
     let deferred_tool_names: std::collections::HashSet<String> =
         deferred_tools.keys().cloned().collect();
-    let messages = convert_messages(
+    let messages = convert_messages_full(
         conversation,
         model,
         cache_control.as_ref(),
         &deferred_tool_names,
         supports_mid_convo,
+        native_tool_changes,
     );
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), Value::String(model.id.clone()));
@@ -1238,29 +1332,54 @@ async fn stream_anthropic_inner(
         );
     }
 
-    if !immediate_tools.is_empty() || !deferred_tools.is_empty() {
+    let tools_cache_control = if compat.supports_cache_control_on_tools.unwrap_or(false) {
+        cache_control.as_ref()
+    } else {
+        None
+    };
+    let supports_strict_tools = compat.supports_strict_tools.unwrap_or(false);
+    if native_tool_changes {
+        // Initial tools stay active with the cache breakpoint on the last one;
+        // later declarations are deferred (only surfaced by their
+        // `tool_addition` block), and removed tools are withdrawn by
+        // `tool_removal`. The request-level list only grows, keeping the cached
+        // prefix intact (TS native tool changes).
+        let mut all_tools = convert_tools(
+            &native_initial_tools,
+            tools_cache_control,
+            false,
+            supports_strict_tools,
+        )?;
+        all_tools.push(AnthropicTool {
+            name: "__pi_deferred_placeholder__".to_string(),
+            description: "Reserved placeholder. Never available. Never call this."
+                .to_string(),
+            input_schema: json!({"type": "object", "properties": {}, "required": []}),
+            cache_control: None,
+            defer_loading: Some(true),
+            strict: None,
+        });
+        all_tools.extend(convert_tools(
+            &native_later_tools,
+            None,
+            true,
+            supports_strict_tools,
+        )?);
+        body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
+    } else if !immediate_tools.is_empty() || !deferred_tools.is_empty() {
         // cache_control on the last tool (match TS convertTools) only when
         // the provider supports it；deferred 工具带 defer_loading。
-        let tools_cache_control = if compat.supports_cache_control_on_tools.unwrap_or(false) {
-            cache_control.as_ref()
-        } else {
-            None
-        };
         let mut all_tools = convert_tools(
             &immediate_tools,
             tools_cache_control,
             false,
-            get_anthropic_compat(model)
-                .supports_strict_tools
-                .unwrap_or(false),
+            supports_strict_tools,
         )?;
         all_tools.extend(convert_tools(
             &deferred_tools.into_values().collect::<Vec<_>>(),
             None,
             true,
-            get_anthropic_compat(model)
-                .supports_strict_tools
-                .unwrap_or(false),
+            supports_strict_tools,
         )?);
         body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
     }
@@ -1823,6 +1942,86 @@ mod tests {
             headers: None,
             compat: None,
         }
+    }
+
+    /// Native tool changes emit `tool_removal`/`tool_addition` blocks in the
+    /// pending system message (TS native tool changes).
+    #[test]
+    fn native_tool_changes_emit_tool_blocks() {
+        let model = test_model();
+        let user = Message::User {
+            content: vec![ContentBlock::text("hi")],
+            timestamp: 0,
+        };
+        let assistant = Message::Assistant {
+            content: vec![ContentBlock::text("ok")],
+            api: "a".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 2,
+        };
+        let system = Message::System {
+            content: crate::types::SystemContent::Text(String::new()),
+            sections: None,
+            tools_added: Some(vec![crate::types::Tool {
+                name: "b".into(),
+                description: String::new(),
+                parameters: serde_json::json!({"type": "object"}),
+                constrained_sampling: None,
+            }]),
+            tools_removed: Some(vec![crate::types::ToolReference { name: "a".into() }]),
+            timestamp: 1,
+        };
+        let out = convert_messages_full(
+            &[user, system, assistant],
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            true,
+            true,
+        );
+        let vals = serde_json::to_value(&out).unwrap();
+        assert_eq!(vals[1]["role"], "system");
+        assert_eq!(vals[1]["content"][0]["type"], "tool_removal");
+        assert_eq!(vals[1]["content"][0]["tool"]["tool_name"], "a");
+        assert_eq!(vals[1]["content"][1]["type"], "tool_addition");
+        assert_eq!(vals[1]["content"][1]["tool"]["tool_name"], "b");
+
+        // Without native tool changes the same system message only carries text
+        // (empty here → no system message).
+        let plain = convert_messages_full(
+            &[
+                Message::User {
+                    content: vec![ContentBlock::text("hi")],
+                    timestamp: 0,
+                },
+                Message::System {
+                    content: crate::types::SystemContent::Text(String::new()),
+                    sections: None,
+                    tools_added: Some(vec![crate::types::Tool {
+                        name: "b".into(),
+                        description: String::new(),
+                        parameters: serde_json::json!({"type": "object"}),
+                        constrained_sampling: None,
+                    }]),
+                    tools_removed: None,
+                    timestamp: 1,
+                },
+            ],
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            true,
+            false,
+        );
+        let roles: Vec<&str> = plain.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user"]);
     }
 
     /// P1-7 native mid-convo: later system messages flush right before the next

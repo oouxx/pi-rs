@@ -4927,6 +4927,12 @@ References are relative to {}.
     /// queued, matching TS `_throwIfExtensionCommand`). Expands skill commands
     /// and prompt templates before queueing.
     pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), String> {
+        // Extension `input` handlers run before queueing (TS #8718: direct
+        // steer/follow_up must not bypass them).
+        let Some((text, images)) = self.dispatch_queued_input(text, images).await? else {
+            return Ok(());
+        };
+        let text = text.as_str();
         if text.starts_with('/') {
             self._throw_if_extension_command(text)?;
         }
@@ -4940,6 +4946,10 @@ References are relative to {}.
     /// Queue a follow-up message (waits for the current stream), matching TS
     /// `followUp()`. Errors on extension commands; expands skills/templates.
     pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), String> {
+        let Some((text, images)) = self.dispatch_queued_input(text, images).await? else {
+            return Ok(());
+        };
+        let text = text.as_str();
         if text.starts_with('/') {
             self._throw_if_extension_command(text)?;
         }
@@ -4948,6 +4958,35 @@ References are relative to {}.
             crate::core::prompt_templates::expand_prompt_template(&expanded_text, &self.prompt_templates());
         self._queue_follow_up(&expanded_text, images).await;
         Ok(())
+    }
+
+    /// Run extension `input` handlers for a queued steer/follow-up message.
+    /// Returns `Ok(None)` when an extension handled the input (do not queue).
+    async fn dispatch_queued_input(
+        &self,
+        text: &str,
+        images: Option<Vec<ContentBlock>>,
+    ) -> Result<Option<(String, Option<Vec<ContentBlock>>)>, String> {
+        let Some(registry) = &self.extension_registry else {
+            return Ok(Some((text.to_string(), images)));
+        };
+        match crate::core::extensions::dispatcher::dispatch_input(
+            crate::core::extensions::dispatcher::DispatchInputParams {
+                registry,
+                text,
+                source: "interactive",
+                images: images.as_deref(),
+                streaming_behavior: None,
+                ext_ctx: &self.ext_ctx,
+            },
+        )
+        .await
+        {
+            crate::core::extensions::dispatcher::InputEventResult::Handled => Ok(None),
+            crate::core::extensions::dispatcher::InputEventResult::Continue { text, images } => {
+                Ok(Some((text, images)))
+            }
+        }
     }
 
     /// Internal: enqueue an already-expanded steering message (matching TS

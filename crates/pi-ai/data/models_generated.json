@@ -15627,7 +15627,8 @@
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.4-mini": {
@@ -15662,7 +15663,8 @@
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.4-nano": {
@@ -15739,7 +15741,8 @@
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.5": {
@@ -15783,7 +15786,8 @@
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.5-pro": {
@@ -15870,7 +15874,8 @@
         "supportsExplicitPromptCacheMode": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.6-sol": {
@@ -15915,7 +15920,8 @@
         "supportsExplicitPromptCacheMode": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.6-terra": {
@@ -15960,7 +15966,8 @@
         "supportsExplicitPromptCacheMode": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-6-astra": {
@@ -16005,7 +16012,8 @@
         "supportsExplicitPromptCacheMode": true,
         "supportsOpenAIGrammarTools": true,
         "supportsStrictMode": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-realtime-2.1": {
@@ -16293,7 +16301,8 @@
       "maxTokens": 128000,
       "compat": {
         "supportsOpenAIGrammarTools": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.6-luna": {
@@ -16332,7 +16341,8 @@
       "compat": {
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.6-sol": {
@@ -16371,7 +16381,8 @@
       "compat": {
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-5.6-terra": {
@@ -16410,7 +16421,8 @@
       "compat": {
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "gpt-6-astra": {
@@ -16453,7 +16465,8 @@
       "compat": {
         "supportsAdditionalTools": true,
         "supportsOpenAIGrammarTools": true,
-        "supportsToolSearch": true
+        "supportsToolSearch": true,
+        "supportsMidConvoSystemMessages": true
       }
     }
   },

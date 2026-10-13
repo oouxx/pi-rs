@@ -356,13 +356,29 @@ fn assistant_text_message(
 }
 
 /// Convert pi-ai messages to Responses API `input` items.
+#[cfg(test)]
 fn convert_responses_messages(
     model: &Model,
     context: &Context,
     deferred_tools: &std::collections::HashMap<String, Tool>,
     compat: &OpenAIResponsesCompat,
 ) -> Result<Vec<Value>, String> {
+    convert_responses_messages_inner(model, context, deferred_tools, compat, false)
+}
+
+fn convert_responses_messages_inner(
+    model: &Model,
+    context: &Context,
+    deferred_tools: &std::collections::HashMap<String, Tool>,
+    compat: &OpenAIResponsesCompat,
+    native_system_messages: bool,
+) -> Result<Vec<Value>, String> {
     let mut messages: Vec<Value> = Vec::new();
+    let instruction_role = if model.reasoning && compat_supports_developer_role(compat) {
+        "developer"
+    } else {
+        "system"
+    };
 
     // Deferred-tool loading mode (TS `deferredToolsMode`): message-anchored
     // `additional_tools` preferred when supported, else client-executed tool
@@ -384,13 +400,10 @@ fn convert_responses_messages(
     let grammar_tool_input_properties =
         grammar_tool_input_properties(context, supports_openai_grammar_tools);
 
-    if let Some(sp) = &context.system_prompt {
-        let role = if model.reasoning && compat_supports_developer_role(compat) {
-            "developer"
-        } else {
-            "system"
-        };
-        messages.push(json!({ "role": role, "content": sp }));
+    if !native_system_messages {
+        if let Some(sp) = &context.system_prompt {
+            messages.push(json!({ "role": instruction_role, "content": sp }));
+        }
     }
 
     let mut msg_index = 0usize;
@@ -637,10 +650,22 @@ fn convert_responses_messages(
                     }
                 }
             }
-            // System messages are replayed into the prompt by the request
-            // builder (P1-7 step 3); the leading prompt currently still
-            // arrives via `Context.systemPrompt`.
-            Message::System { .. } => {}
+            // Later system messages only reach this point on models that accept
+            // them natively; otherwise the transcript is collapsed first.
+            // The leading system message carries the prompt; later ones render
+            // as in-place updates (TS `convertResponsesMessages`).
+            Message::System { .. } => {
+                if native_system_messages {
+                    let text = if msg_index == 0 {
+                        crate::utils::transcript::typed_system_message_text(msg)
+                    } else {
+                        crate::utils::transcript::typed_render_system_message_update(msg)
+                    };
+                    if !text.is_empty() {
+                        messages.push(json!({ "role": instruction_role, "content": text }));
+                    }
+                }
+            }
         }
         msg_index += 1;
     }
@@ -1926,7 +1951,13 @@ fn build_request_body(
         messages: transformed,
         tools: context.tools.clone(),
     };
-    let messages = convert_responses_messages(model, &transformed_context, &deferred_tools, &compat)?;
+    let messages = convert_responses_messages_inner(
+        model,
+        &transformed_context,
+        &deferred_tools,
+        &compat,
+        compat.supports_mid_convo_system_messages.unwrap_or(false),
+    )?;
     let tools = if immediate_tools.is_empty() {
         None
     } else {
@@ -2023,8 +2054,16 @@ pub fn stream_openai_responses(
     options: Option<&StreamOptions>,
 ) -> AssistantMessageEventStream {
     let model = model.clone();
-    // Collapse transcript system messages into the leading prompt/tools (P1-7).
-    let context = context.collapsed();
+    // Native mid-convo models keep the transcript system messages; others fold
+    // them into the leading prompt/tools (P1-7).
+    let supports_mid_convo = get_compat(&model)
+        .supports_mid_convo_system_messages
+        .unwrap_or(false);
+    let context = if supports_mid_convo {
+        context.clone()
+    } else {
+        context.collapsed()
+    };
     let owned_options = options.cloned();
     let api_key = owned_options
         .as_ref()
@@ -2316,6 +2355,67 @@ mod tests {
         ));
         let body = build_request_body(&disabled, &context, Some(&opts)).unwrap();
         assert!(body.get("max_output_tokens").is_none());
+    }
+
+    /// P1-7 native mid-convo: later system messages are sent in place as
+    /// instruction-role input items; without native support they are dropped
+    /// (the transcript is collapsed into the leading prompt first).
+    #[test]
+    fn native_system_messages_are_sent_in_place() {
+        let model = make_model();
+        let context = Context {
+            system_prompt: None,
+            messages: vec![
+                Message::System {
+                    content: crate::types::SystemContent::Text("base".into()),
+                    sections: None,
+                    tools_added: None,
+                    tools_removed: None,
+                    timestamp: 0,
+                },
+                Message::User {
+                    content: vec![ContentBlock::text("hi")],
+                    timestamp: 1,
+                },
+                Message::System {
+                    content: crate::types::SystemContent::Text("update".into()),
+                    sections: None,
+                    tools_added: None,
+                    tools_removed: None,
+                    timestamp: 2,
+                },
+            ],
+            tools: None,
+        };
+        let items = convert_responses_messages_inner(
+            &model,
+            &context,
+            &std::collections::HashMap::new(),
+            &OpenAIResponsesCompat::default(),
+            true,
+        )
+        .unwrap();
+        let roles: Vec<&str> = items
+            .iter()
+            .filter_map(|m| m.get("role").and_then(|r| r.as_str()))
+            .collect();
+        assert_eq!(roles, vec!["developer", "user", "developer"]);
+        assert_eq!(items[0]["content"], "base");
+        assert_eq!(items[2]["content"], "update");
+
+        let non_native = convert_responses_messages_inner(
+            &model,
+            &context,
+            &std::collections::HashMap::new(),
+            &OpenAIResponsesCompat::default(),
+            false,
+        )
+        .unwrap();
+        let roles: Vec<&str> = non_native
+            .iter()
+            .filter_map(|m| m.get("role").and_then(|r| r.as_str()))
+            .collect();
+        assert_eq!(roles, vec!["user"]);
     }
 
     #[test]

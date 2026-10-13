@@ -2945,6 +2945,9 @@ fn apply_openai_tool_search_metadata(model: &mut BuildModel) {
         merge_compat(model, &[("supportsAdditionalTools", b(true))]);
     }
     merge_compat(model, &[("supportsToolSearch", b(true))]);
+    // TS `applyOpenAIResponsesTranscriptMetadata`: these models accept
+    // developer messages after the conversation has started.
+    merge_compat(model, &[("supportsMidConvoSystemMessages", b(true))]);
 }
 
 fn apply_openai_explicit_prompt_cache_metadata(model: &mut BuildModel) {

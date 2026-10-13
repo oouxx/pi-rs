@@ -723,6 +723,28 @@ impl ModelRegistry {
         providers.keys().cloned().collect()
     }
 
+    /// TS `ModelRuntime.getRegisteredProviderIds`.
+    pub fn get_registered_provider_ids(&self) -> Vec<String> {
+        self.get_registered_providers()
+    }
+
+    /// TS `ModelRuntime.getAvailableSnapshot` (synchronous available snapshot).
+    pub fn get_available_snapshot(&self) -> Vec<Model> {
+        self.get_available()
+    }
+
+    /// TS `ModelRuntime.getModel`.
+    pub fn get_model(&self, provider: &str, model_id: &str) -> Option<Model> {
+        self.find(provider, model_id)
+    }
+
+    /// TS `ModelRuntime.isUsingSubscription`: OAuth-backed and the provider is
+    /// marked subscription-backed (pi-rs: Kimi Coding; OAuth itself is not
+    /// implemented, see DEVIATIONS).
+    pub fn is_using_subscription(&self, model: &Model) -> bool {
+        model.provider == "kimi-coding" || self.is_using_oauth(model)
+    }
+
     fn load_models_from_path(
         models: &mut Vec<Model>,
         models_path: &std::path::Path,
@@ -1162,6 +1184,25 @@ mod tests {
         assert_eq!(m.id, "claude-sonnet-4-6");
         assert_eq!(m.provider, "anthropic");
         assert!(m.reasoning);
+    }
+
+    /// TS `ModelRuntime` accessor parity: `getModel`, `getAvailableSnapshot`,
+    /// `getRegisteredProviderIds`, `isUsingSubscription`.
+    #[test]
+    fn runtime_accessors_align_with_ts() {
+        pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
+        let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
+        assert!(registry.get_model("anthropic", "claude-sonnet-4-6").is_some());
+        let _snapshot = registry.get_available_snapshot();
+        let _ids = registry.get_registered_provider_ids();
+
+        let base = registry.find("anthropic", "claude-sonnet-4-6").unwrap();
+        let mut kimi = base.clone();
+        kimi.provider = "kimi-coding".to_string();
+        assert!(registry.is_using_subscription(&kimi), "kimi-coding is subscription-backed");
+        let mut plain = base.clone();
+        plain.provider = "anthropic".to_string();
+        assert!(!registry.is_using_subscription(&plain));
     }
 
     /// 回归：`/model` 切换后立即发消息不能 panic。

@@ -2022,8 +2022,7 @@ fn spawn_agent_command_task(
                                 ));
                                 continue;
                             };
-                            let using_subscription = provider == "kimi-coding"
-                                || sess.get_model_registry().is_using_oauth(&model);
+                            let using_subscription = sess.get_model_registry().is_using_subscription(&model);
                             // Surface the outcome (the slash command already
                             // claimed success optimistically; set_model can
                             // fail on auth, and a silent drop left the footer
@@ -2056,8 +2055,7 @@ fn spawn_agent_command_task(
                                 let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(model.provider.clone())));
                                 let _ = result_tx.send(pi_tui::Msg::SetReasoning(model.reasoning));
                                 let _ = result_tx.send(pi_tui::Msg::SetContextWindow(model.context_window));
-                                let using_subscription = model.provider == "kimi-coding"
-                                    || sess.get_model_registry().is_using_oauth(&model);
+                                let using_subscription = sess.get_model_registry().is_using_subscription(&model);
                                 let _ = result_tx.send(pi_tui::Msg::SetUsingSubscription(using_subscription));
                                 let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                     "system".into(),
@@ -2509,8 +2507,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         state.model.available_provider_count = providers.len();
         // Subscription-backed provider (TS `usingSubscription`: Kimi Coding
         // or OAuth) → footer appends ` (sub)` to the cost.
-        state.model.using_subscription = model.provider == "kimi-coding"
-            || session.get_model_registry().is_using_oauth(&model);
+        state.model.using_subscription = session.get_model_registry().is_using_subscription(&model);
         state.model.experimental = crate::core::experimental::are_experimental_features_enabled();
         state.model.provider = Some(model.provider);
         state.model.reasoning = model.reasoning;

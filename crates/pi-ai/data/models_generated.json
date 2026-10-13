@@ -3729,7 +3729,9 @@
           }
         ],
         "forceAdaptiveThinking": true,
-        "supportsStrictTools": true
+        "supportsStrictTools": true,
+        "supportsMidConvoSystemMessages": true,
+        "supportsMidConvoToolChanges": true
       }
     },
     "claude-fable-5-1": {
@@ -3759,7 +3761,9 @@
       "compat": {
         "forceAdaptiveThinking": true,
         "supportsMidConvoEffort": true,
-        "supportsStrictTools": true
+        "supportsStrictTools": true,
+        "supportsMidConvoSystemMessages": true,
+        "supportsMidConvoToolChanges": true
       }
     },
     "claude-haiku-4-5": {
@@ -3936,7 +3940,9 @@
       "compat": {
         "forceAdaptiveThinking": true,
         "supportsStrictTools": true,
-        "supportsTemperature": false
+        "supportsTemperature": false,
+        "supportsMidConvoSystemMessages": true,
+        "supportsMidConvoToolChanges": true
       }
     },
     "claude-opus-5": {
@@ -3967,7 +3973,9 @@
         "forceAdaptiveThinking": true,
         "supportsMidConvoEffort": true,
         "supportsStrictTools": true,
-        "supportsTemperature": false
+        "supportsTemperature": false,
+        "supportsMidConvoSystemMessages": true,
+        "supportsMidConvoToolChanges": true
       }
     },
     "claude-sonnet-4-5": {
@@ -9265,7 +9273,8 @@
         "User-Agent": "GitHubCopilotChat/0.35.0"
       },
       "compat": {
-        "forceAdaptiveThinking": true
+        "forceAdaptiveThinking": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-fable-5.1": {
@@ -9299,7 +9308,8 @@
         "User-Agent": "GitHubCopilotChat/0.35.0"
       },
       "compat": {
-        "forceAdaptiveThinking": true
+        "forceAdaptiveThinking": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-haiku-4.5": {
@@ -9398,7 +9408,8 @@
       },
       "compat": {
         "forceAdaptiveThinking": true,
-        "supportsTemperature": false
+        "supportsTemperature": false,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-opus-5": {
@@ -9433,7 +9444,8 @@
       },
       "compat": {
         "forceAdaptiveThinking": true,
-        "supportsTemperature": false
+        "supportsTemperature": false,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-sonnet-4.6": {
@@ -16496,7 +16508,8 @@
       "contextWindow": 1000000,
       "maxTokens": 128000,
       "compat": {
-        "forceAdaptiveThinking": true
+        "forceAdaptiveThinking": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-fable-5-1": {
@@ -16524,7 +16537,8 @@
       "contextWindow": 1000000,
       "maxTokens": 128000,
       "compat": {
-        "forceAdaptiveThinking": true
+        "forceAdaptiveThinking": true,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-haiku-4-5": {
@@ -16646,7 +16660,8 @@
       "maxTokens": 128000,
       "compat": {
         "forceAdaptiveThinking": true,
-        "supportsTemperature": false
+        "supportsTemperature": false,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-opus-5": {
@@ -16674,7 +16689,8 @@
       "maxTokens": 128000,
       "compat": {
         "forceAdaptiveThinking": true,
-        "supportsTemperature": false
+        "supportsTemperature": false,
+        "supportsMidConvoSystemMessages": true
       }
     },
     "claude-sonnet-4": {

@@ -53,6 +53,8 @@ fn get_compat(model: &Model) -> OpenAIResponsesCompat {
             supports_additional_tools: None,
             supports_explicit_prompt_cache_mode: None,
             supports_max_output_tokens: None,
+            supports_mid_convo_system_messages: None,
+            supports_mid_convo_tool_additions: None,
         },
     }
 }
@@ -2510,6 +2512,8 @@ mod tests {
                 supports_additional_tools: None,
                 supports_explicit_prompt_cache_mode: None,
                 supports_max_output_tokens: None,
+                supports_mid_convo_system_messages: None,
+                supports_mid_convo_tool_additions: None,
             },
         ));
         let tool = Tool {

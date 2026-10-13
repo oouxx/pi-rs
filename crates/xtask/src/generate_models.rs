@@ -2459,12 +2459,35 @@ fn supports_anthropic_mid_convo_effort(model_id: &str) -> bool {
     is_opus_5 || is_fable_5_1
 }
 
+fn supports_anthropic_mid_convo_system_messages(model_id: &str) -> bool {
+    // TS: /^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/ or
+    //     /^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$/
+    use std::sync::OnceLock;
+    static OPUS: OnceLock<Option<regex::Regex>> = OnceLock::new();
+    static FABLE: OnceLock<Option<regex::Regex>> = OnceLock::new();
+    let opus = OPUS.get_or_init(|| regex::Regex::new(r"^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$").ok());
+    let fable = FABLE.get_or_init(|| regex::Regex::new(r"^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$").ok());
+    opus.as_ref().is_some_and(|r| r.is_match(model_id))
+        || fable.as_ref().is_some_and(|r| r.is_match(model_id))
+}
+
 fn get_anthropic_messages_compat(provider: &str, model_id: &str) -> Option<serde_json::Value> {
     let mut compat = serde_json::Map::new();
     if VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS.contains(&provider)
         && supports_anthropic_mid_convo_effort(model_id)
     {
         compat.insert("supportsMidConvoEffort".into(), b(true));
+    }
+    if provider == "anthropic" && supports_anthropic_mid_convo_system_messages(&model_id.to_lowercase()) {
+        compat.insert("supportsMidConvoSystemMessages".into(), b(true));
+        compat.insert("supportsMidConvoToolChanges".into(), b(true));
+    }
+    // OpenCode Zen and GitHub Copilot forward mid-conversation system messages
+    // but reject tool_addition/tool_removal blocks, so tool changes stay top-level.
+    if (provider == "opencode" || provider == "github-copilot")
+        && supports_anthropic_mid_convo_system_messages(&model_id.to_lowercase())
+    {
+        compat.insert("supportsMidConvoSystemMessages".into(), b(true));
     }
     if EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS
         .contains(&format!("{provider}:{model_id}").as_str())

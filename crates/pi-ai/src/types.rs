@@ -526,6 +526,15 @@ pub struct OpenAIResponsesCompat {
     /// it. Default: true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_max_output_tokens: Option<bool>,
+    /// Whether the model accepts system messages mid-conversation (TS
+    /// `supportsMidConvoSystemMessages`). Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_system_messages: Option<bool>,
+    /// Whether system messages can add tools mid-conversation (TS
+    /// `supportsMidConvoToolAdditions`). Requires
+    /// `supportsMidConvoSystemMessages`. Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_tool_additions: Option<bool>,
 }
 
 /// Session-affinity header format for OpenAI Responses providers.
@@ -561,6 +570,19 @@ pub struct AnthropicMessagesCompat {
     /// `supportsStrictTools`). Default: false; generated Anthropic models
     /// enable it explicitly.
     pub supports_strict_tools: Option<bool>,
+    /// Whether the model accepts system messages mid-conversation (TS
+    /// `supportsMidConvoSystemMessages`). Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_system_messages: Option<bool>,
+    /// Whether the model accepts mid-conversation `tool_addition`/
+    /// `tool_removal` blocks (TS `supportsMidConvoToolChanges`). Requires
+    /// `supportsMidConvoSystemMessages`. Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_tool_changes: Option<bool>,
+    /// Exact-model managed-effort system messages (TS `supportsMidConvoEffort`).
+    /// Default: false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_effort: Option<bool>,
 }
 
 // ============================================================================

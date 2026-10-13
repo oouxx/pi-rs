@@ -333,6 +333,9 @@ fn get_anthropic_compat(model: &Model) -> AnthropicMessagesCompat {
             force_adaptive_thinking: None,
             supports_tool_references: None,
             supports_strict_tools: None,
+            supports_mid_convo_system_messages: None,
+            supports_mid_convo_tool_changes: None,
+            supports_mid_convo_effort: None,
         },
     }
 }

@@ -4053,7 +4053,10 @@ References are relative to {}.
                 true
             }
             Err(e) => {
-                if e == "Compaction not needed" {
+                // Preparation not possible (nothing to compact / already
+                // compacted): TS `_runAutoCompaction` returns false without
+                // emitting an event.
+                if e == "Nothing to compact (session too small)" || e == "Already compacted" {
                     return false;
                 }
                 // An extension cancelling compaction is an abort, not a failure
@@ -4483,15 +4486,21 @@ References are relative to {}.
         compaction::should_compact(total_tokens, context_window, &settings)
     }
 
-    /// Check whether compaction should be triggered, using token estimation.
-    /// Returns true if the context is above the threshold.
+    /// Check whether compaction should be triggered, using the provider-reported
+    /// usage when available (matching TS `_checkCompaction` Case 3).
+    ///
+    /// TS prefers `calculateContextTokens(assistantMessage.usage)` as the real
+    /// context size and only falls back to `estimateContextTokens(messages)`
+    /// when the assistant message errored or carried zero usage. Using the
+    /// chars/4 estimate unconditionally fired threshold compaction at a point
+    /// that could differ substantially from the original.
     pub async fn check_auto_compact(&self) -> bool {
         use crate::core::compaction;
 
         let state = self.agent.state().await;
-        let messages = state.messages;
-        let total_tokens = compaction::estimate_agent_messages_tokens(&messages);
         let context_window = state.model.context_window.max(1);
+        let messages = state.messages;
+        let total_tokens = compaction::compaction_trigger_tokens(&messages);
 
         let settings = self
             .compaction_settings
@@ -4524,6 +4533,12 @@ References are relative to {}.
             .compaction_abort
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        // TS manual compact() emits compaction_start at the top, before
+        // preparation (the auto paths emit it from `_compact_inner` after
+        // preparation succeeds).
+        self._emit(AgentSessionEvent::CompactionStart {
+            reason: CompactionReason::Manual,
+        });
         let result = self
             ._compact_inner(custom_instructions, CompactionReason::Manual)
             .await;
@@ -4566,16 +4581,14 @@ References are relative to {}.
     ) -> Result<crate::core::compaction::CompactionResult, String> {
         use crate::core::compaction;
 
-        // Dispatch session_before_compact to extensions.
-        // If an extension cancels, return early.
+        // Dispatch session_before_compact to extensions. The reason is the
+        // real trigger ("manual"/"threshold"/"overflow"), matching the TS
+        // `session_before_compact` event payload (`_compact_inner` is shared by
+        // the manual and automatic paths).
         if let Some(ref registry) = self.extension_registry {
             let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_compact(
                 registry,
-                if custom_instructions.is_some() {
-                    "manual"
-                } else {
-                    "auto"
-                },
+                &reason.to_string(),
                 false,
                 &self.ext_ctx,
             )
@@ -4585,16 +4598,11 @@ References are relative to {}.
             }
         }
 
-        let (path_entries, context_window) = {
-            let state = self.agent.state().await;
-            let context_window = state.model.context_window.max(1);
-            let path_entries = self
-                .session_manager
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_branch(None);
-            (path_entries, context_window)
-        };
+        let path_entries = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_branch(None);
 
         let compaction_settings = {
             let settings = self
@@ -4605,35 +4613,37 @@ References are relative to {}.
         };
 
         // Prepare compaction from the session branch (matching TS
-        // `prepareCompaction`). Returns None when not applicable.
+        // `prepareCompaction`). Returns None when nothing can be compacted;
+        // distinguish "already compacted" from "too small" like TS.
         let prepared = match compaction::prepare_compaction(&path_entries, &compaction_settings) {
             Some(p) => p,
-            None => return Err("Nothing to compact (session too small)".to_string()),
+            None => {
+                let already_compacted = path_entries.last().is_some_and(|e| {
+                    matches!(
+                        e,
+                        crate::core::session_manager::SessionEntry::Compaction { .. }
+                    )
+                });
+                return Err(if already_compacted {
+                    "Already compacted".to_string()
+                } else {
+                    "Nothing to compact (session too small)".to_string()
+                });
+            }
         };
         let total_tokens = prepared.tokens_before;
 
-        {
-            let settings = self
-                .compaction_settings
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !compaction::should_compact(total_tokens, context_window, &settings) {
-                return Err("Compaction not needed".to_string());
-            }
+        // Emit compaction_start once the run is actually going to happen.
+        // Manual `compact()` emits it at the top before preparation; the auto
+        // paths emit it here, after preparation succeeds (matching TS
+        // `_runAutoCompaction`).
+        if reason != CompactionReason::Manual {
+            self._emit(AgentSessionEvent::CompactionStart { reason });
         }
 
-        // Emit compaction_start once the run is actually going to happen
-        // (matching TS: manual compact() emits it at the top; auto-compaction
-        // emits it after preparation succeeds). Emitting only after the
-        // should_compact check avoids a dangling compaction_start when
-        // compaction is not needed.
-        self._emit(AgentSessionEvent::CompactionStart { reason });
-
-        let retry_reason = if custom_instructions.is_some() {
-            "manual"
-        } else {
-            "threshold"
-        };
+        // Retry/summarization reason reported by the retry events: the real
+        // trigger, matching TS `{ source: "compaction", reason }`.
+        let retry_reason = reason.to_string();
 
         // Generate the summary (matching TS `compact()`): a single history
         // summary, or - for split turns - a history summary plus a separate
@@ -4646,8 +4656,12 @@ References are relative to {}.
                 prepared.previous_summary.as_deref(),
                 custom_instructions,
             );
-            self._summarize_for_compaction(prompt, prepared.messages_to_summarize.len(), retry_reason)
-                .await
+            self._summarize_for_compaction(
+                prompt,
+                prepared.messages_to_summarize.len(),
+                &retry_reason,
+            )
+            .await
         };
 
         let summary = if prepared.is_split_turn && !prepared.turn_prefix_messages.is_empty() {
@@ -4657,7 +4671,7 @@ References are relative to {}.
                 ._summarize_for_compaction(
                     prefix_prompt,
                     prepared.turn_prefix_messages.len(),
-                    retry_reason,
+                    &retry_reason,
                 )
                 .await;
             format!(

@@ -1190,7 +1190,16 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             // TS handleCompactCommand：错误/结果经 CompactionEnd 事件回显
             //（TUI 显示 + flush 队列）；先 abort 在飞 run（TS compact() 同
             // 款），压缩任务在 run 结束后执行。
-            let instructions = if args.is_empty() { None } else { Some(args.to_string()) };
+            let instructions = {
+                // TS `text.slice(9).trim()`: trim the custom focus; an empty
+                // (or whitespace-only) value means "no custom instructions".
+                let trimmed = args.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            };
             vec![Effect::Compact { instructions }]
         }
         "/help" => {
@@ -4181,6 +4190,23 @@ mod tests {
                 instructions: Some("focus on the auth module".into()),
             }]
         );
+    }
+
+    /// /compact 指令前后空白被 trim（TS `text.slice(9).trim()`）。
+    #[test]
+    fn compact_command_trims_instructions() {
+        let mut s = state();
+        let effects = slash_command(&mut s, "/compact   focus on the auth module  ");
+        assert_eq!(
+            effects,
+            vec![Effect::Compact {
+                instructions: Some("focus on the auth module".into()),
+            }]
+        );
+        // 只有空白的指令等于无自定义指令。
+        let mut s = state();
+        let effects = slash_command(&mut s, "/compact   ");
+        assert_eq!(effects, vec![Effect::Compact { instructions: None }]);
     }
 
     /// /compact 在压缩中同样路由（TS 内建命令先于 isCompacting 分支）。

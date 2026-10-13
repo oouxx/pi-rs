@@ -415,6 +415,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | `estimateContextTokens` 基准 | 取最后一条有效 assistant usage（跳过 aborted/error/全零）作为已用 token，只对之后的 `trailing` 消息做估算 | 同左（`get_last_assistant_usage_info` + `estimate_agent_messages_tokens(trailing)`） | 是 | |
 | 单条消息估算 `estimateTokens(AgentMessage)` | 按 role 取原始 UTF-16 字符数：user/custom/toolResult 文本+图片(4800 字符)、assistant text+thinking+toolCall(name+JSON args)、bash `command.length+output.length`、summary `summary.length`；`Math.ceil(chars/4)` | `estimate_agent_message_tokens` 逐 role 同款（UTF-16 长度、图片 4800、bash 命令+输出、summary 仅 summary），`chars.div_ceil(4)` | 是 | 原 CJK 加权启发式（`cjk*1.5 + non_cjk/4`、图片 100）已移除，对齐 TS |
 | `calculateContextTokens(usage)` | `totalTokens \|\| input+output+cacheRead+cacheWrite` | `calculate_context_tokens_from_usage` 同款 | 是 | |
+| 自动压缩阈值触发 token 来源 | `_checkCompaction` Case 3：优先最后一条 assistant 的 usage（`calculateContextTokens`），error 或零 usage 才回落 `estimateContextTokens(messages)`（含 stale-pre-compaction 校验） | `compaction::compaction_trigger_tokens` 同款：最后一条 assistant 非 error 且 usage>0 → usage，否则 `estimate_context_tokens`；`check_auto_compact` 用它 | 是 | 见 PORTING_MISTAKES.md #134。context-edit 投影估算分支（TS `estimateProjectedContextTokens`）未单独实现，但 pi-rs `refresh_context` 已把投影写回 agent state，故触发时读到的即投影后消息 |
 | 上下文百分比 | `estimate.tokens / contextWindow * 100`（不做 clamp） | `usage_percentage()` 同款（footer 也不 clamp） | 是 | |
 
 ## Session context 投影与 context edit（`core/session_manager.rs`）

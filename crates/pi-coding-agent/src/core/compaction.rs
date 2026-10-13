@@ -909,6 +909,32 @@ pub fn estimate_context_tokens(
     }
 }
 
+/// Context token count used by the automatic threshold trigger, matching TS
+/// `_checkCompaction` Case 3.
+///
+/// TS prefers the provider-reported usage of the just-finished assistant message
+/// (`calculateContextTokens(assistantMessage.usage)`) as the real context size
+/// and only falls back to `estimateContextTokens(messages)` when that message
+/// errored or carried zero usage. Using the chars/4 estimate unconditionally
+/// (the previous pi-rs behavior) fires threshold compaction at a different point
+/// than the original.
+pub fn compaction_trigger_tokens(messages: &[AgentMessage]) -> u64 {
+    let direct = messages.iter().rev().find_map(|m| match m {
+        AgentMessage::Assistant {
+            usage,
+            stop_reason,
+            ..
+        } => Some((stop_reason.clone(), calculate_context_tokens_from_usage(usage))),
+        _ => None,
+    });
+    match direct {
+        Some((stop_reason, tokens)) if stop_reason != Some(StopReason::Error) && tokens > 0 => {
+            tokens
+        }
+        _ => estimate_context_tokens(messages).tokens,
+    }
+}
+
 // ============================================================================
 // Message extraction from session entries
 // ============================================================================
@@ -1717,4 +1743,56 @@ fn test_estimate_context_tokens_falls_back_to_component_sum() {
     let est = estimate_context_tokens(&messages);
     assert_eq!(est.usage_tokens, 300 + 200 + 100 + 50);
     assert_eq!(est.last_usage_index, Some(0));
+}
+
+/// TS `_checkCompaction` Case 3: a successful assistant message with usage uses
+/// the provider-reported token count directly (not a chars/4 re-estimate), so
+/// the threshold fires based on the real context size.
+#[test]
+fn test_compaction_trigger_tokens_prefers_provider_usage() {
+    // Tiny transcript: the chars/4 estimate is far below the reported usage.
+    let messages = vec![
+        AgentMessage::User {
+            content: vec![ContentBlock::text("hi")],
+            timestamp: 1,
+        },
+        assistant_with_usage(90_000, Some(StopReason::Stop)),
+    ];
+    assert_eq!(compaction_trigger_tokens(&messages), 90_000);
+    let settings = CompactionSettings::default(); // reserve_tokens 16384
+    assert!(should_compact(
+        compaction_trigger_tokens(&messages),
+        100_000,
+        &settings
+    ));
+}
+
+/// TS `_checkCompaction` Case 3 fallback: an errored or zero-usage assistant
+/// message carries no usable usage, so the estimate is used instead.
+#[test]
+fn test_compaction_trigger_tokens_falls_back_for_error_or_zero_usage() {
+    let error = vec![assistant_with_usage(0, Some(StopReason::Error))];
+    assert_eq!(
+        compaction_trigger_tokens(&error),
+        estimate_context_tokens(&error).tokens
+    );
+    let zero = vec![assistant_with_usage(0, Some(StopReason::Stop))];
+    assert_eq!(
+        compaction_trigger_tokens(&zero),
+        estimate_context_tokens(&zero).tokens
+    );
+}
+
+/// Without any assistant message the trigger falls back to the whole-transcript
+/// estimate.
+#[test]
+fn test_compaction_trigger_tokens_estimate_without_assistant() {
+    let messages = vec![AgentMessage::User {
+        content: vec![ContentBlock::text("hello world")],
+        timestamp: 1,
+    }];
+    assert_eq!(
+        compaction_trigger_tokens(&messages),
+        estimate_agent_messages_tokens(&messages)
+    );
 }

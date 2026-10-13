@@ -1032,6 +1032,7 @@ impl AgentSession {
             skills: Some(options.skills),
             ..Default::default()
         };
+        let system_prompt_message = system_prompt::build_system_prompt_message(&system_prompt_options);
         let system_prompt = system_prompt::build_system_prompt(&system_prompt_options);
 
         // 6. Apply initial_active_tool_names: only built-in tools are gated
@@ -1074,7 +1075,7 @@ impl AgentSession {
             model: options.model.clone(),
             thinking_level: options.thinking_level,
             tools,
-            messages: Vec::new(),
+            messages: vec![system_prompt_message],
             is_streaming: false,
             streaming_message: None,
             pending_tool_calls: Default::default(),
@@ -2293,7 +2294,8 @@ impl AgentSession {
                                     );
                                 }
                             }
-                            AgentMessage::User { .. }
+                            AgentMessage::System { .. }
+                            | AgentMessage::User { .. }
                             | AgentMessage::Assistant { .. }
                             | AgentMessage::ToolResult { .. } => {
                                 let msg_value = serde_json::to_value(message)

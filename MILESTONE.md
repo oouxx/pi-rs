@@ -54,7 +54,8 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 2. ✅ 类型层：`SystemMessage` 变体进 `Message`（`SystemContent` string|blocks、`sections`、`toolsAdded`/`toolsRemoved`）+ 迁移全部匹配点（providers / estimate / transform / serialize_conversation；provider 暂以 no-op arm 占位，待第 3 步接管）；serde 往返测试
 3. 🔄 provider 请求构建：三个适配器入口调 `Context::collapsed()`（把 transcript system 消息折叠回 `systemPrompt`/`tools` 并丢弃，对齐 `collapseSystemMessages`）——**collapse 路径已接线**；支持 mid-convo system 的 provider 原样发送待后续
 4. ✅ agent-core：`AgentMessage::System` + `declare_tool_changes` **已接线**——`run_agent_loop` 把 base prompt/tools 实体化为前置 system 消息并在 pending 前声明工具 delta；`stream_assistant_response` 改为从 transcript 构建请求（`systemPrompt`/`tools` 侧道不再传入，仅作为输入源）；直接调用者回退补前置 system 消息
-5. 🔄 coding-agent：prompt/tools 已随 transcript 传递并在恢复/分支时空保留；**sections-based prompt 重建（system-prompt.ts）与 mid-convo capability 元数据**待续
+5. ✅ coding-agent：`build_system_prompt_message` 把 sections 落到前置 system 消息（初始消息带 sections）；system 消息参与持久化与投影（`refresh_context` 保留）；`diff_system_prompt_sections` 已就绪。段顺序由 `preserve_order` + `IndexMap` 保证
+6. ⏳ provider：native mid-convo system 发送（`tool_addition`/`tool_removal`）未做；统一走 `Context::collapsed()`（可对齐，非偏差）
 
 - **P1-8** ModelRuntime / ai Models 运行时 API（auth signal / stored+publish / isSubscription）
 - **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差

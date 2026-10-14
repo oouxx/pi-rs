@@ -11,14 +11,38 @@ use crate::components::CompletionItem;
 
 const PATH_DELIMITERS: [char; 5] = [' ', '\t', '"', '\'', '='];
 
+/// Whether a character separates prose from a completion token. CJK letters
+/// stay inside words and paths; only CJK punctuation breaks a token, so typing
+/// `查看，@REA` still triggers a completion (TS `autocompleteSeparatorRegex`).
+#[must_use]
+pub fn is_separator(c: char) -> bool {
+    if c.is_whitespace() {
+        return true;
+    }
+    // CJK Symbols and Punctuation, and the fullwidth forms (，：（ etc.).
+    if ('\u{3000}'..='\u{303F}').contains(&c) || ('\u{FF01}'..='\u{FF65}').contains(&c) {
+        return true;
+    }
+    // The punctuation the original lists explicitly that lives outside those
+    // blocks.
+    matches!(c, '\u{2026}' | '\u{2014}' | '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')
+}
+
 /// TS `toDisplayPath`: normalize separators to `/`.
 pub fn to_display_path(value: &str) -> String {
     value.replace('\\', "/")
 }
 
-/// TS `findLastDelimiter`: byte index of the last path delimiter.
+/// TS `findLastDelimiter`: byte index of the last delimiter (an ASCII path
+/// delimiter or a [`is_separator`] character).
 pub fn find_last_delimiter(text: &str) -> Option<usize> {
-    text.rfind(PATH_DELIMITERS)
+    let mut last = None;
+    for (index, c) in text.char_indices() {
+        if PATH_DELIMITERS.contains(&c) || is_separator(c) {
+            last = Some(index);
+        }
+    }
+    last
 }
 
 fn find_unclosed_quote_start(text: &str) -> Option<usize> {
@@ -36,7 +60,9 @@ fn find_unclosed_quote_start(text: &str) -> Option<usize> {
 }
 
 fn is_token_start(text: &str, index: usize) -> bool {
-    index == 0 || text[..index].ends_with(PATH_DELIMITERS)
+    index == 0
+        || text[..index].ends_with(PATH_DELIMITERS)
+        || text[..index].chars().next_back().is_some_and(is_separator)
 }
 
 /// TS `extractQuotedPrefix`.
@@ -70,7 +96,7 @@ pub fn parse_path_prefix(prefix: &str) -> (String, bool, bool) {
 /// TS `buildCompletionValue`.
 pub fn build_completion_value(path: &str, is_directory: bool, is_at_prefix: bool, is_quoted_prefix: bool) -> String {
     let _ = is_directory; // 路径本身已带尾随 `/`，无需再拼
-    let needs_quotes = is_quoted_prefix || path.contains(' ');
+    let needs_quotes = is_quoted_prefix || path.chars().any(is_separator);
     let prefix = if is_at_prefix { "@" } else { "" };
     if !needs_quotes {
         format!("{prefix}{path}")
@@ -220,6 +246,47 @@ pub fn file_suggestions(cwd: &str, prefix: &str) -> Vec<CompletionItem> {
         }
     });
     suggestions
+}
+
+#[cfg(test)]
+mod cjk_separator_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// CJK punctuation ends a token, so a completion triggers after it, while
+    /// CJK letters stay inside the token (TS #9746).
+    #[test]
+    fn cjk_punctuation_separates_tokens() {
+        let text = "查看，@REA";
+        let last = find_last_delimiter(text).expect("the ，is a delimiter");
+        assert_eq!(&text[last + '，'.len_utf8()..], "@REA");
+        assert!(is_token_start(text, last + '，'.len_utf8()));
+
+        // A CJK letter is not a separator.
+        assert!(!is_separator('查'));
+        assert!(!is_separator('あ'));
+        assert!(!is_separator('/'));
+        assert!(is_separator('，'));
+        assert!(is_separator('。'));
+        assert!(is_separator('（'));
+        assert!(is_separator('…'));
+        assert!(is_separator(' '));
+    }
+
+    /// A path containing a separator is quoted so the inserted text stays one
+    /// token.
+    #[test]
+    fn separators_inside_a_path_force_quoting() {
+        assert_eq!(
+            build_completion_value("我的，文档/", true, true, false),
+            "@\"我的，文档/\""
+        );
+        assert_eq!(build_completion_value("src/main.rs", false, true, false), "@src/main.rs");
+        assert_eq!(
+            build_completion_value("my dir/", true, true, false),
+            "@\"my dir/\""
+        );
+    }
 }
 
 /// TS `scoreEntry`：文件名精确 100 / 前缀 80 / 包含 50 / 全路径包含 30；

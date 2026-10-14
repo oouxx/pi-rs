@@ -1751,7 +1751,21 @@ fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd
 /// slash 命令候选：fuzzy 过滤（对齐 TS `fuzzyFilter` on command name），
 /// 展示 label = name、描述 = hint — desc（对齐 TS `autocomplete.ts`）。
 fn slash_completion_items(commands: &[CompletionCommand], query: &str) -> Vec<CompletionItem> {
-    let idx = crate::fuzzy::fuzzy_filter_indices(commands, query, |c| c.name.clone());
+    // A skill command is ranked by its bare name: typing `idea` should surface
+    // `skill:research-idea`, not `skill:deep-research` — the prefix is Pi's, not
+    // the user's (TS #9120). Queries that already spell the prefix keep
+    // matching it.
+    let query_is_skill_prefix = query.trim_start().starts_with("skill:");
+    let idx = crate::fuzzy::fuzzy_filter_indices(commands, query, |c| {
+        if query_is_skill_prefix {
+            c.name.clone()
+        } else {
+            c.name
+                .strip_prefix("skill:")
+                .unwrap_or(c.name.as_str())
+                .to_string()
+        }
+    });
     idx.into_iter()
         .map(|(i, _)| {
             let c = &commands[i];
@@ -4158,6 +4172,67 @@ pub async fn run(
                 model.selection_auto_scroll();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_ranking_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::components::completer::CompletionCommand;
+
+    fn commands() -> Vec<CompletionCommand> {
+        vec![
+            CompletionCommand::new("skill:deep-research", "Multi-agent deep research"),
+            CompletionCommand::new("skill:research-idea", "Refine a raw idea"),
+            CompletionCommand::new("skill:to-sidecar", "Route work to a sidecar"),
+            CompletionCommand::new("model", "Select the active model"),
+        ]
+    }
+
+    fn names(query: &str) -> Vec<String> {
+        slash_completion_items(&commands(), query)
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    }
+
+    /// Skills rank by their bare name, so the Pi-owned prefix does not
+    /// dominate the match (TS #9120).
+    #[test]
+    fn skill_commands_rank_by_bare_name() {
+        let ranked = names("idea");
+        assert!(
+            ranked.contains(&"skill:research-idea".to_string()),
+            "the matching skill is offered: {ranked:?}"
+        );
+        // `skill:deep-research` only matches through the prefix, so a query
+        // that never spells it must not rank it.
+        assert_eq!(
+            ranked.first().map(String::as_str),
+            Some("skill:research-idea"),
+            "the best match comes first: {ranked:?}"
+        );
+        assert!(
+            !ranked.contains(&"skill:deep-research".to_string()),
+            "the prefix must not create a false match: {ranked:?}"
+        );
+    }
+
+    /// A query that spells the prefix still matches the full name.
+    #[test]
+    fn explicit_skill_prefix_still_matches() {
+        let ranked = names("skill:idea");
+        assert!(
+            ranked.contains(&"skill:research-idea".to_string()),
+            "{ranked:?}"
+        );
+    }
+
+    /// Non-skill commands are unaffected.
+    #[test]
+    fn plain_commands_still_match_their_names() {
+        assert!(names("model").contains(&"model".to_string()));
     }
 }
 

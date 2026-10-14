@@ -64,8 +64,28 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
   4. N/A：`refresh` 已支持 abort signal；`context.stored`/`publish` 是自定义 provider 动态刷新契约，而 pi-rs `register_provider` 不支持 `refreshModels`（`DEVIATIONS.md` #23），不适用
   5. ⛔ OAuth `login`/`logout`：用户明确不做（已登记范围外）
 
-**P0 / P1 均已收口。** 剩余未做项均为“不适用 / 已登记偏差 / 范围外”：TUI 组件（选择器、图片渲染、diff widget 等）、MCP 高级（codemode/exposure/resources/OAuth）、OAuth 登录、Google/Bedrock/Mistral 适配器、harness 多 lane。
 - **P1-9** harness v4 lane——拟维持 pi-rs 单 lane + 登记偏差
+
+**P0 / P1 的收口结论已于 2026-10-14 复核并修正。** 当时的“均已收口”不成立：
+复核发现 P0（mid-convo 模型请求体丢失工具声明）、P1 若干（边界守卫、`agent_settled` 顺序、
+`_pendingCustomMessages`、内置工具采样、`findCutPoint` 回退、`toolcall_start` 线格式、
+请求级 deferred 拆分、per-model 压缩预算、retry 退避上限、`context_with_system` 等）
+并未真正对齐，且“剩余未做项均为不适用/已登记偏差/范围外”也不准确——其中多项当时
+既未实现**也未登记**。
+
+修正后的口径：
+
+- 上述 P0/P1 已完成修复，逐条见 `PORTING_MISTAKES.md` 与各 crate 的 `CONTRACT_ALIGNMENT.md`；
+- 未实现的**特性**已逐条登记为偏差（状态 `待确认`）：`pi-ai/DEVIATIONS.md` #14–#17
+  （per-turn thinking effort、reasoning_details 流式、image input limits、meta/radius provider）、
+  `pi-coding-agent/DEVIATIONS.md` #27、#29、#30（cache warming 展示面、`/bug`、PowerShell 工具）；
+- 仍未决的既有偏差：`pi-coding-agent/DEVIATIONS.md` #13（mistral 模型在目录但无适配器）；
+- 其余范围外项不变：TUI 组件逐行复刻、MCP 高级（codemode/exposure/resources/OAuth）、
+  OAuth 登录、Google/Bedrock/Mistral 适配器、harness 多 lane。
+
+**结论：以 `.version` 为基准的核心行为已对齐；剩余差距以 `DEVIATIONS.md` 的登记清单为准，
+不再用“已收口”这类笼统表述。**
+
 ## 权威文档
 
 - 历史对齐差距：[`docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md`](docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md)

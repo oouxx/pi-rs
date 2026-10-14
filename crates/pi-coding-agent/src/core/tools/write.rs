@@ -206,7 +206,6 @@ format!("Error writing file: {}", e),
                                     ))],
                                     details: serde_json::Value::Null,
                                     usage: None,
-                                    added_tool_names: None,
                                     terminate: None,
                                 }
                             )
@@ -219,7 +218,6 @@ format!("Error writing file: {}", e),
                             content: vec![ContentBlock::text(format!("Write error: {}", e))],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
                             terminate: None,
                         }),
                     }

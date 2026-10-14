@@ -69,7 +69,6 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
                 content,
                 details,
                 is_error,
-                added_tool_names,
                 usage,
                 timestamp,
             } => Message::ToolResult {
@@ -81,7 +80,6 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
                 ),
                 details: details.clone(),
                 is_error: *is_error,
-                added_tool_names: added_tool_names.clone(),
                 usage: usage.clone(),
                 timestamp: *timestamp,
             },
@@ -119,7 +117,6 @@ pub fn transform_messages(
                 content,
                 details,
                 is_error,
-                added_tool_names,
                 usage,
                 timestamp,
             } => {
@@ -132,7 +129,6 @@ pub fn transform_messages(
                     content: content.clone(),
                     details: details.clone(),
                     is_error: *is_error,
-                    added_tool_names: added_tool_names.clone(),
                     usage: usage.clone(),
                     timestamp: *timestamp,
                 }
@@ -253,7 +249,6 @@ pub fn transform_messages(
                         content: vec![ContentBlock::text("No result provided")],
                         details: None,
                         is_error: true,
-                        added_tool_names: None,
                         usage: None,
                         timestamp: chrono::Utc::now().timestamp_millis(),
                     });
@@ -442,7 +437,6 @@ mod tests {
             content: vec![img],
             details: None,
             is_error: false,
-            added_tool_names: None,
             usage: None,
             timestamp: 0,
         }];
@@ -522,7 +516,6 @@ mod tests {
                 content: vec![ContentBlock::text("out")],
                 details: None,
                 is_error: false,
-                added_tool_names: None,
                 usage: None,
                 timestamp: 0,
             },

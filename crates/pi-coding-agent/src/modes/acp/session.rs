@@ -2485,7 +2485,6 @@ mod tests {
                             }],
                             details: serde_json::json!({}),
                             is_error: false,
-                            added_tool_names: None,
                             usage: None,
                             timestamp: 0,
                         },

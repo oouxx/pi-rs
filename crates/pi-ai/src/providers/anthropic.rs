@@ -2316,7 +2316,6 @@ mod tests {
             details: None,
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 1000,
         }];
         let converted = convert_messages(&messages, &model, None, false);
@@ -2361,7 +2360,6 @@ mod tests {
                 details: None,
                 is_error: false,
                 usage: None,
-                added_tool_names: None,
                 timestamp: 1000,
             },
         ];
@@ -2479,7 +2477,6 @@ mod tests {
             content: vec![ContentBlock::text("output text")],
             details: None,
             is_error: false,
-            added_tool_names: Some(vec!["mcp_tool".to_string()]),
             usage: None,
             timestamp: 0,
         }];

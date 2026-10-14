@@ -195,7 +195,6 @@ pub fn create_grep_tool(
                                 content: vec![ContentBlock::text("Operation aborted")],
                                 details: serde_json::Value::Null,
                                 usage: None,
-                                added_tool_names: None,
 
                                 terminate: None,
                             });
@@ -220,7 +219,6 @@ pub fn create_grep_tool(
                                 ))],
                                 details: serde_json::Value::Null,
                                 usage: None,
-                                added_tool_names: None,
                                 terminate: None,
                             });
                         }
@@ -249,7 +247,6 @@ pub fn create_grep_tool(
                                 ))],
                                 details: serde_json::Value::Null,
                                 usage: None,
-                                added_tool_names: None,
                                 terminate: None,
                             });
                         }
@@ -273,7 +270,6 @@ pub fn create_grep_tool(
                                 ))],
                                 details: serde_json::Value::Null,
                                 usage: None,
-                                added_tool_names: None,
                                 terminate: None,
                             });
                         }
@@ -285,7 +281,6 @@ pub fn create_grep_tool(
                             ))],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
                             terminate: None,
                         });
                     }
@@ -295,7 +290,6 @@ pub fn create_grep_tool(
                             content: vec![ContentBlock::text("No matches found")],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
 
                             terminate: None,
                         });
@@ -346,7 +340,6 @@ pub fn create_grep_tool(
                         content: vec![ContentBlock::text(result_text)],
                         details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
                         usage: None,
-                        added_tool_names: None,
 
                         terminate: None,
                     })

@@ -405,7 +405,6 @@ e.to_string(),
                                         first_changed_line: diff_result.first_changed_line,
                                     }).unwrap_or(serde_json::Value::Null),
                                     usage: None,
-                                    added_tool_names: None,
                                     terminate: None,
                                 }
                             )

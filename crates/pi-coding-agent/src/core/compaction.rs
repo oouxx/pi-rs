@@ -284,7 +284,6 @@ pub fn project_entry_context_messages(
                 tool_name,
                 details,
                 is_error,
-                added_tool_names,
                 usage,
                 timestamp,
                 ..
@@ -294,7 +293,6 @@ pub fn project_entry_context_messages(
                 content: blocks.clone(),
                 details,
                 is_error,
-                added_tool_names,
                 usage,
                 timestamp,
             },
@@ -1275,7 +1273,6 @@ mod tests {
                 content: vec![ContentBlock::text("x".repeat(4000))],
                 details: serde_json::json!({}),
                 is_error: false,
-                added_tool_names: None,
                 usage: None,
                 timestamp: 3,
             },

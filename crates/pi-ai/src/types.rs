@@ -226,9 +226,6 @@ pub enum Message {
         details: Option<serde_json::Value>,
         #[serde(rename = "isError")]
         is_error: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(rename = "addedToolNames")]
-        added_tool_names: Option<Vec<String>>,
         /// Usage from the tool execution itself, if available. Not part of main
         /// LLM context accounting (match TS `ToolResultMessage.usage`).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1451,7 +1448,6 @@ mod tests {
             details: Some(serde_json::json!({"status": "ok"})),
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 123_456,
         };
         let json = serde_json::to_string(&msg).unwrap();

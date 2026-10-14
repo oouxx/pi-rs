@@ -77,7 +77,6 @@ where
                     content,
                     details,
                     usage: None,
-                    added_tool_names: None,
 
                     terminate: None,
                 })

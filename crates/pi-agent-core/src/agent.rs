@@ -588,7 +588,20 @@ impl Agent {
         drop(active);
         self.clear_all_queues().await;
         let mut state = self.state.write().await;
-        state.messages.clear();
+        // Keep the replayed system baseline so the prompt survives a reset
+        // (TS: `messages = [getCurrentSystemMessage(messages)] ?? []`).
+        let baseline = {
+            let values: Vec<serde_json::Value> = state
+                .messages
+                .iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect();
+            pi_ai::utils::transcript::get_current_system_message(&values)
+        };
+        state.messages = baseline
+            .and_then(|value| serde_json::from_value::<AgentMessage>(value).ok())
+            .into_iter()
+            .collect();
         state.is_streaming = false;
         state.streaming_message = None;
         state.pending_tool_calls.clear();
@@ -638,7 +651,13 @@ impl Agent {
 
         {
             let state = self.state.read().await;
-            if state.messages.is_empty() {
+            // A transcript made only of system messages has nothing to continue
+            // from (TS `continue()` guards on `every(role === "system")`).
+            if state
+                .messages
+                .iter()
+                .all(|message| message.role() == "system")
+            {
                 return Err("Cannot continue: no messages in context".into());
             }
 
@@ -2055,9 +2074,19 @@ mod tests {
         agent.reset().await.unwrap();
 
         let state = agent.state().await;
-        assert!(state.messages.is_empty());
+        assert!(
+            state.messages.iter().all(|m| m.role() == "system"),
+            "reset keeps only the replayed system baseline: {:?}",
+            state.messages
+        );
         assert!(!state.is_streaming);
         assert!(state.error_message.is_none());
+
+        // A transcript of only system messages is not continuable (TS guard).
+        assert!(
+            agent.continue_run().await.is_err(),
+            "nothing to continue from after a reset"
+        );
     }
 
     /// TS 0.84.1 (#7717): reset rejects while a run is active instead of
@@ -2395,7 +2424,6 @@ mod tests {
                         content: vec![ContentBlock::text("ok")],
                         details: serde_json::json!({}),
                         usage: None,
-                        added_tool_names: None,
                         terminate: None,
                     })
                 })
@@ -2443,7 +2471,6 @@ mod tests {
                             content: vec![ContentBlock::text("running")],
                             details: serde_json::json!({"status": "running"}),
                             usage: None,
-                            added_tool_names: None,
                             terminate: None,
                         });
                     }
@@ -2452,7 +2479,6 @@ mod tests {
                         content: vec![ContentBlock::text("ok")],
                         details: serde_json::json!({"status": "done"}),
                         usage: None,
-                        added_tool_names: None,
                         terminate: Some(true),
                     })
                 })
@@ -2523,7 +2549,6 @@ mod tests {
                     content: vec![ContentBlock::text("late")],
                     details: serde_json::json!({"status": "late"}),
                     usage: None,
-                    added_tool_names: None,
                     terminate: None,
                 });
             }
@@ -2574,7 +2599,6 @@ mod tests {
                         content: vec![ContentBlock::text("done")],
                         details: serde_json::json!({"status": "done"}),
                         usage: None,
-                        added_tool_names: None,
                         terminate: Some(true),
                     })
                 })
@@ -2605,7 +2629,6 @@ mod tests {
                         content: vec![ContentBlock::text("done")],
                         details: serde_json::json!({"status": "done"}),
                         usage: None,
-                        added_tool_names: None,
                         terminate: Some(true),
                     })
                 })
@@ -2699,7 +2722,6 @@ mod tests {
                     content: vec![ContentBlock::text("late")],
                     details: serde_json::json!({"status": "late"}),
                     usage: None,
-                    added_tool_names: None,
                     terminate: None,
                 });
             }

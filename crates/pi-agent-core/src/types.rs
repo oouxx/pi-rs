@@ -56,9 +56,6 @@ pub enum AgentMessage {
         content: Vec<ContentBlock>,
         details: serde_json::Value,
         is_error: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(rename = "addedToolNames")]
-        added_tool_names: Option<Vec<String>>,
         /// Usage from the tool execution itself, if available (match TS
         /// `ToolResultMessage.usage`; not used for main LLM context accounting).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,10 +138,6 @@ pub struct AgentToolResult<T: Clone + Send + Sync + 'static> {
     /// Not used for main LLM context accounting (match TS `AgentToolResult.usage`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
-    /// Names of tools introduced by this result and available from this transcript
-    /// point onward (match TS `AgentToolResult.addedToolNames`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub added_tool_names: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminate: Option<bool>,
 }

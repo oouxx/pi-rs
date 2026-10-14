@@ -2456,7 +2456,6 @@ mod tests {
                 details: None,
                 is_error: false,
                 usage: None,
-                added_tool_names: None,
                 timestamp: 1000,
             }],
             tools: None,

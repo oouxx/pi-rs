@@ -187,7 +187,6 @@ pub fn create_ls_tool(
                                 content: vec![ContentBlock::text("Operation aborted")],
                                 details: serde_json::Value::Null,
                                 usage: None,
-                                added_tool_names: None,
 
                                 terminate: None,
                             });
@@ -204,7 +203,6 @@ pub fn create_ls_tool(
                             ))],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
                             terminate: None,
                         });
                     }
@@ -219,7 +217,6 @@ pub fn create_ls_tool(
                             ))],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
                             terminate: None,
                         });
                     }
@@ -235,7 +232,6 @@ pub fn create_ls_tool(
                                 ))],
                                 details: serde_json::Value::Null,
                                 usage: None,
-                                added_tool_names: None,
                                 terminate: None,
                             });
                         }
@@ -263,7 +259,6 @@ pub fn create_ls_tool(
                             content: vec![ContentBlock::text("(empty directory)".to_string())],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
 
                             terminate: None,
                         });
@@ -301,7 +296,6 @@ pub fn create_ls_tool(
                         content: vec![ContentBlock::text(result_text)],
                         details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
                         usage: None,
-                        added_tool_names: None,
 
                         terminate: None,
                     })

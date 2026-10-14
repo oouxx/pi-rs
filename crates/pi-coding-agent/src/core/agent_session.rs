@@ -1034,7 +1034,6 @@ impl AgentSession {
                                 content,
                                 details: output.details.unwrap_or(serde_json::Value::Null),
                                 usage: None,
-                                added_tool_names: None,
                                 terminate: output.terminate,
                             })
                         })
@@ -1123,7 +1122,6 @@ impl AgentSession {
                                     content,
                                     details: output.details.unwrap_or(serde_json::Value::Null),
                                     usage: None,
-                                    added_tool_names: None,
                                     terminate: output.terminate,
                                 })
                             }

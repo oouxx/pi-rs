@@ -159,8 +159,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 content,
                                 details,
                                 is_error,
-                                added_tool_names,
-                                usage,
+                                        usage,
                                 timestamp,
                             } => pi_agent_core::pi_ai::types::Message::ToolResult {
                                 tool_call_id: tool_call_id.clone(),
@@ -169,7 +168,6 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 details: details.clone(),
                                 is_error: *is_error,
                                 usage: usage.clone(),
-                                added_tool_names: added_tool_names.clone(),
                                 timestamp: *timestamp,
                             },
                         })

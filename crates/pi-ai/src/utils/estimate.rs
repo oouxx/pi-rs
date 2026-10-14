@@ -3,7 +3,6 @@
 //! Used by `clampMaxTokensToContext` (simple streaming options) to keep the
 //! requested output under the model's context window.
 
-use std::collections::HashSet;
 
 use serde_json::json;
 
@@ -193,40 +192,10 @@ fn estimate_messages(messages: &[Message]) -> ContextUsageEstimate {
 #[must_use]
 pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
     let estimate = estimate_messages(&context.messages);
-    if let Some(index) = estimate.last_usage_index {
-        let added_names: HashSet<&str> = context.messages[index + 1..]
-            .iter()
-            .filter_map(|message| match message {
-                Message::ToolResult {
-                    added_tool_names, ..
-                } => added_tool_names.as_ref(),
-                _ => None,
-            })
-            .flatten()
-            .map(String::as_str)
-            .collect();
-        let added_tools: Vec<Tool> = context
-            .tools
-            .as_ref()
-            .map(|tools| {
-                tools
-                    .iter()
-                    .filter(|tool| added_names.contains(tool.name.as_str()))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let added_tool_tokens = estimate_tools_tokens(if added_tools.is_empty() {
-            None
-        } else {
-            Some(&added_tools)
-        });
-        return ContextUsageEstimate {
-            tokens: estimate.tokens + added_tool_tokens,
-            usage_tokens: estimate.usage_tokens,
-            trailing_tokens: estimate.trailing_tokens + added_tool_tokens,
-            last_usage_index: estimate.last_usage_index,
-        };
+    if estimate.last_usage_index.is_some() {
+        // Usage covers the prompt as sent; only the messages after it are
+        // estimated (TS `estimateContextTokens`).
+        return estimate;
     }
 
     let prefix_tokens = context

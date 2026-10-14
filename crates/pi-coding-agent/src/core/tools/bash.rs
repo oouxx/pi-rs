@@ -925,7 +925,6 @@ pub fn create_bash_tool(
                             content: vec![],
                             details: serde_json::Value::Null,
                             usage: None,
-                            added_tool_names: None,
 
                             terminate: None,
                         });
@@ -986,7 +985,6 @@ pub fn create_bash_tool(
                                             details: serde_json::to_value(details)
                                                 .unwrap_or(serde_json::Value::Null),
                                             usage: None,
-                                            added_tool_names: None,
 
                                             terminate: None,
                                         });
@@ -1049,7 +1047,6 @@ pub fn create_bash_tool(
                                 details: serde_json::to_value(&final_details)
                                     .unwrap_or(serde_json::Value::Null),
                                 usage: None,
-                                added_tool_names: None,
 
                                 terminate: None,
                             });
@@ -1090,7 +1087,6 @@ pub fn create_bash_tool(
                                 details: serde_json::to_value(details)
                                     .unwrap_or(serde_json::Value::Null),
                                 usage: None,
-                                added_tool_names: None,
 
                                 terminate: None,
                             })

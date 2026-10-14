@@ -127,7 +127,6 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 content,
                 details,
                 is_error,
-                added_tool_names,
                 usage,
                 timestamp,
             } => Some(Message::ToolResult {
@@ -136,7 +135,6 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 content: content.clone(),
                 details: Some(details.clone()),
                 is_error: *is_error,
-                added_tool_names: added_tool_names.clone(),
                 usage: usage.clone(),
                 timestamp: *timestamp,
             }),
@@ -341,7 +339,6 @@ mod tests {
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 1000,
         }];
         let result = convert_to_llm(&messages);

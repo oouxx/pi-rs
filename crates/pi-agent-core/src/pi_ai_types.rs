@@ -50,7 +50,6 @@ pub fn create_error_tool_result(message: &str) -> crate::types::AgentToolResult<
         content: vec![text_block(message)],
         details: serde_json::Value::Object(Default::default()),
         usage: None,
-        added_tool_names: None,
         terminate: None,
     }
 }
@@ -199,7 +198,6 @@ pub fn tool_result_msg(
         content,
         details: None,
         is_error,
-        added_tool_names: None,
         usage: None,
         timestamp,
     }

@@ -162,7 +162,6 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 content,
                 details,
                 is_error,
-                added_tool_names,
                 usage,
                 timestamp,
             } => Some(Message::ToolResult {
@@ -171,7 +170,6 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 content: content.clone(),
                 details: Some(details.clone()),
                 is_error: *is_error,
-                added_tool_names: added_tool_names.clone(),
                 usage: usage.clone(),
                 timestamp: *timestamp,
             }),
@@ -371,7 +369,6 @@ mod tests {
             details: None,
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 0,
         };
         normalize_ingested_message(&mut msg);

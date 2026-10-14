@@ -319,7 +319,6 @@ mod tests {
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 1000,
         }
     }

@@ -596,7 +596,6 @@ mod tests {
             details: serde_json::Value::Object(Default::default()),
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 1000,
         }
     }
@@ -981,7 +980,6 @@ mod tests {
             details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 1000,
         }];
         let result = serialize_conversation(&messages);
@@ -1050,7 +1048,6 @@ mod tests {
             details: Some(serde_json::Value::Object(Default::default())),
             is_error: false,
             usage: None,
-            added_tool_names: None,
             timestamp: 1000,
         }];
         let result = serialize_conversation(&messages);

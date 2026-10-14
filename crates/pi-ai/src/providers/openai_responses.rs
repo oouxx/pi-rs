@@ -861,13 +861,14 @@ pub(crate) fn grammar_tool_input_properties(
 ) -> std::collections::HashMap<String, String> {
     let mut properties: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    if let Some(tools) = &context.tools {
-        for tool in tools {
-            if let Ok(Some(grammar)) =
-                resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)
-            {
-                properties.insert(tool.name.clone(), grammar.input_property);
-            }
+    // The declarations live in the transcript (TS `getDeclaredTools`).
+    let tools =
+        crate::utils::transcript::declared_tools(&context.messages, context.tools.as_deref());
+    for tool in &tools {
+        if let Ok(Some(grammar)) =
+            resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)
+        {
+            properties.insert(tool.name.clone(), grammar.input_property);
         }
     }
     properties
@@ -911,12 +912,13 @@ pub(crate) fn append_custom_tool_call_input(
 }
 
 pub(crate) fn split_deferred_tools(
-    context: &Context,
+    messages: &[Message],
+    tools: Option<&[Tool]>,
     enabled: bool,
 ) -> (Vec<Tool>, std::collections::HashMap<String, Tool>) {
     let mut unique_tools: std::collections::HashMap<String, Tool> =
         std::collections::HashMap::new();
-    if let Some(tools) = &context.tools {
+    if let Some(tools) = tools {
         for tool in tools {
             unique_tools.insert(tool.name.clone(), tool.clone());
         }
@@ -930,7 +932,7 @@ pub(crate) fn split_deferred_tools(
 
     let mut deferred_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for message in &context.messages {
+    for message in messages {
         match message {
             Message::Assistant { content, .. } => {
                 for block in content {
@@ -1938,8 +1940,20 @@ fn build_request_body(
     // (TS `deferredToolsMode !== undefined` gates splitDeferredTools).
     let deferred_loading_enabled = compat.supports_additional_tools.unwrap_or(false)
         || compat.supports_tool_search.unwrap_or(false);
-    let (immediate_tools, deferred_tools) =
-        split_deferred_tools(context, deferred_loading_enabled);
+    // Tools come from the transcript (TS `getCurrentTools(context.messages)`);
+    // the request-level shorthand is only filled when the transcript was
+    // collapsed for a model without mid-conversation system messages.
+    let request_tools =
+        crate::utils::transcript::request_tools(&context.messages, context.tools.as_deref());
+    let (immediate_tools, deferred_tools) = split_deferred_tools(
+        &context.messages,
+        if request_tools.is_empty() {
+            None
+        } else {
+            Some(&request_tools)
+        },
+        deferred_loading_enabled,
+    );
     // 对齐 TS convertResponsesMessages：先 transformMessages 再转换。
     let transformed = crate::utils::transform::transform_messages(
         &context.messages,
@@ -2305,6 +2319,7 @@ mod tests {
 
     fn make_model() -> Model {
         Model {
+            prompt_cache: None,
             id: "gpt-5".into(),
             name: "GPT-5".into(),
             api: "openai-responses".into(),
@@ -3162,6 +3177,52 @@ mod tests {
         assert_eq!(types, vec!["function_call_output"]);
     }
 
+    /// Mid-conversation models keep the transcript system messages, so the
+    /// request-level tool list must be replayed from the transcript rather than
+    /// read from `Context.tools` (TS `resolveTranscriptTools`).
+    #[test]
+    fn transcript_tools_are_declared_for_mid_convo_models() {
+        let model = Model {
+            compat: Some(crate::types::ModelCompat::OpenAIResponses(
+                OpenAIResponsesCompat {
+                    supports_mid_convo_system_messages: Some(true),
+                    ..Default::default()
+                },
+            )),
+            ..make_model()
+        };
+        let context = Context {
+            system_prompt: None,
+            tools: None,
+            messages: vec![
+                Message::System {
+                    content: crate::types::SystemContent::Text("sys".into()),
+                    sections: None,
+                    tools_added: Some(vec![Tool {
+                        name: "read".into(),
+                        description: String::new(),
+                        parameters: serde_json::json!({"type": "object"}),
+                        constrained_sampling: None,
+                    }]),
+                    tools_removed: None,
+                    timestamp: 0,
+                },
+                Message::User {
+                    content: vec![ContentBlock::text("hi")],
+                    timestamp: 1,
+                },
+            ],
+        };
+
+        let body = build_request_body(&model, &context, None).unwrap();
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("tools must be declared: {body}"))
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["read"]);
+    }
 }
 
 #[cfg(test)]
@@ -3172,6 +3233,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: "gpt-test".to_string(),
             name: "GPT Test".to_string(),
             api: "openai-responses".to_string(),

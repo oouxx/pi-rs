@@ -648,6 +648,18 @@ pub struct ModelCost {
     pub tiers: Vec<ModelCostTier>,
 }
 
+/// Prompt cache lifetimes per retention tier, in seconds (TS
+/// `ModelPromptCache`). Unset when the provider's cache behavior is unknown.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelPromptCache {
+    /// Lifetime of a short-retention cache entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short: Option<u64>,
+    /// Lifetime of a long-retention cache entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCostTier {
@@ -678,6 +690,9 @@ pub struct Model {
     pub thinking_level_map: Option<ThinkingLevelMap>,
     pub input: Vec<String>,
     pub cost: ModelCost,
+    /// Prompt cache lifetimes per retention tier (TS `Model.promptCache`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<ModelPromptCache>,
     #[serde(rename = "contextWindow")]
     pub context_window: u64,
     #[serde(rename = "maxTokens")]
@@ -710,6 +725,8 @@ struct ModelRepr {
     thinking_level_map: Option<ThinkingLevelMap>,
     input: Vec<String>,
     cost: ModelCost,
+    #[serde(default)]
+    prompt_cache: Option<ModelPromptCache>,
     context_window: u64,
     max_tokens: u64,
     #[serde(default)]
@@ -760,6 +777,7 @@ impl<'de> Deserialize<'de> for Model {
             thinking_level_map: repr.thinking_level_map,
             input: repr.input,
             cost: repr.cost,
+            prompt_cache: repr.prompt_cache,
             context_window: repr.context_window,
             max_tokens: repr.max_tokens,
             sampling_params: repr.sampling_params,
@@ -1477,6 +1495,7 @@ mod tests {
     #[test]
     fn test_model_serialization() {
         let model = Model {
+            prompt_cache: None,
             id: "claude-sonnet-4-6".into(),
             name: "Claude Sonnet 4.6".into(),
             api: "anthropic-messages".into(),
@@ -1731,6 +1750,7 @@ mod tests {
     #[test]
     fn test_model_with_compat_openai() {
         let model = Model {
+            prompt_cache: None,
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),
             api: "openai-completions".into(),

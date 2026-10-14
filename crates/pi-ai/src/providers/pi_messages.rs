@@ -942,6 +942,7 @@ mod tests {
 
     fn make_model() -> Model {
         Model {
+            prompt_cache: None,
             id: "radius-model".into(),
             name: "Radius Model".into(),
             api: "pi-messages".into(),
@@ -1312,6 +1313,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: "pi-test".to_string(),
             name: "Pi Test".to_string(),
             api: "pi-messages".to_string(),

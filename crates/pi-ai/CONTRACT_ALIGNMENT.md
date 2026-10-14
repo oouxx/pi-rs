@@ -67,6 +67,7 @@
 | 早期流结束重试 | "stream ended before a terminal response event" 分类为可重试（v0.81.0 #6727） | `_is_retryable_error_message` 已含该模式 | 是 | 修复见 PORTING_MISTAKES.md |
 | tool-call id 归一化（openai-completions） | pipe 分隔 ID 归一化 + isSameModel 门控 + toolCallIdMap（v0.81.0 #6854） | `normalize_tool_call_id` 已移植 | 是 | 修复见 PORTING_MISTAKES.md |
 | `ToolResultMessage.usage` | 工具可报告 LLM usage（v0.81.0 #6671） | `Message::ToolResult.usage: Option<Usage>` 已加 | 是 | 修复见 PORTING_MISTAKES.md |
+| mid-convo 模型的工具声明读取（anthropic-messages / openai-responses） | 保留 transcript system 消息的模型一律从 transcript 取工具：请求体工具列表用 `getCurrentTools(context.messages)`（`anthropic-messages.ts:1139`、`openai-responses.ts:293`）、fine-grained streaming beta 判定用 `getCurrentTools`（`anthropic-messages.ts:1454`）、grammar 输入属性用 `getDeclaredTools`（`openai-responses.ts:289`）；native tool-changes 分支另用 `getDeclaredTools` + `initialTools` | 同左：`utils/transcript.rs::request_tools`/`declared_tools`（transcript 含 system 消息时按 transcript 解析，否则回退 `Context.tools` 简写），上述四处读取点均改用 | 是 | 修复见 PORTING_MISTAKES.md（此前只有 native tool-changes 分支读 transcript，其余 25 个 mid-convo 模型请求体缺 `tools`） |
 
 ## API-key 认证（A1 流程）
 

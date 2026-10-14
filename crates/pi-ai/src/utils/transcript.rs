@@ -249,6 +249,53 @@ pub fn get_current_tools(messages: &[Value]) -> Vec<Tool> {
     order.into_iter().filter_map(|n| by_name.remove(&n)).collect()
 }
 
+/// Serialize typed messages into the shape the transcript helpers read, or
+/// `None` when the transcript carries no system message.
+///
+/// After P1-7 the declarations live in the transcript's system messages and
+/// callers send no `Context.tools` shorthand. `Context::collapsed()` is the
+/// exception: for models without mid-conversation system messages it moves the
+/// declarations into the shorthand and drops the system messages, so the
+/// shorthand is authoritative exactly when no system message is present.
+fn transcript_values(messages: &[crate::types::Message]) -> Option<Vec<Value>> {
+    if !messages
+        .iter()
+        .any(|m| matches!(m, crate::types::Message::System { .. }))
+    {
+        return None;
+    }
+    serde_json::to_value(messages).ok()?.as_array().cloned()
+}
+
+fn shorthand_or_empty(shorthand: Option<&[Tool]>) -> Vec<Tool> {
+    shorthand.map_or_else(Vec::new, <[Tool]>::to_vec)
+}
+
+/// Tools a request must declare (TS `getCurrentTools(context.messages)`).
+#[must_use]
+pub fn request_tools(
+    messages: &[crate::types::Message],
+    shorthand: Option<&[Tool]>,
+) -> Vec<Tool> {
+    transcript_values(messages).map_or_else(
+        || shorthand_or_empty(shorthand),
+        |values| get_current_tools(&values),
+    )
+}
+
+/// Every tool declared anywhere in the transcript
+/// (TS `getDeclaredTools(context.messages)`).
+#[must_use]
+pub fn declared_tools(
+    messages: &[crate::types::Message],
+    shorthand: Option<&[Tool]>,
+) -> Vec<Tool> {
+    transcript_values(messages).map_or_else(
+        || shorthand_or_empty(shorthand),
+        |values| get_declared_tools(&values),
+    )
+}
+
 /// TS `getCurrentSystemMessage`: replay all system messages into one.
 pub fn get_current_system_message(messages: &[Value]) -> Option<Value> {
     let mut content: Vec<String> = Vec::new();
@@ -599,5 +646,52 @@ mod tests {
             json!({"role":"system","content":"","toolsAdded":[a2],"timestamp":1}),
         ];
         assert!(has_tool_redefinitions(&redefine));
+    }
+
+    #[test]
+    fn request_tools_replays_the_transcript() {
+        // Declarations live in the transcript's system messages.
+        let messages = vec![
+            crate::types::Message::System {
+                content: crate::types::SystemContent::Text("sys".into()),
+                sections: None,
+                tools_added: Some(vec![tool("a"), tool("b")]),
+                tools_removed: None,
+                timestamp: 0,
+            },
+            crate::types::Message::User {
+                content: vec![crate::types::ContentBlock::text("hi")],
+                timestamp: 1,
+            },
+            crate::types::Message::System {
+                content: crate::types::SystemContent::Text(String::new()),
+                sections: None,
+                tools_added: None,
+                tools_removed: Some(vec![ToolReference { name: "a".into() }]),
+                timestamp: 2,
+            },
+        ];
+        let names: Vec<String> = request_tools(&messages, None)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, vec!["b"]);
+    }
+
+    #[test]
+    fn request_tools_uses_the_shorthand_without_system_messages() {
+        // `Context::collapsed()` folds the declarations into the shorthand and
+        // drops the system messages; the shorthand is then authoritative.
+        let shorthand = vec![tool("a")];
+        let messages = vec![crate::types::Message::User {
+            content: vec![crate::types::ContentBlock::text("hi")],
+            timestamp: 0,
+        }];
+        let names: Vec<String> = request_tools(&messages, Some(&shorthand))
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, vec!["a"]);
+        assert!(request_tools(&messages, None).is_empty());
     }
 }

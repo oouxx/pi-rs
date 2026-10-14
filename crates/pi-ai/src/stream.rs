@@ -105,6 +105,7 @@ mod tests {
 
     fn model(api: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),
             api: api.into(),

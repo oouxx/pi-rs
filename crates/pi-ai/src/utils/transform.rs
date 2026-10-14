@@ -325,6 +325,7 @@ mod tests {
 
     fn model_with_input(input: Vec<&str>) -> Model {
         Model {
+            prompt_cache: None,
             id: "test-model".into(),
             name: "Test".into(),
             api: "openai-completions".into(),

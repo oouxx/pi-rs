@@ -203,6 +203,7 @@ mod tests {
 
     fn test_model(context_window: u64, max_tokens: u64) -> Model {
         Model {
+            prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
             api: "anthropic-messages".into(),
@@ -350,6 +351,7 @@ mod tests {
     #[test]
     fn test_build_base_options_no_options() {
         let model = crate::types::Model {
+            prompt_cache: None,
             id: "test".into(),
             name: "test".into(),
             api: "test".into(),
@@ -375,6 +377,7 @@ mod tests {
     #[test]
     fn test_build_base_options_merges_sampling_params() {
         let model = crate::types::Model {
+            prompt_cache: None,
             id: "test".into(),
             name: "test".into(),
             api: "openai-completions".into(),
@@ -421,6 +424,7 @@ mod tests {
     #[test]
     fn test_build_base_options_http_client_injection() {
         let model = crate::types::Model {
+            prompt_cache: None,
             id: "test".into(),
             name: "test".into(),
             api: "openai-completions".into(),

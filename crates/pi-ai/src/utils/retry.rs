@@ -8,9 +8,13 @@ use tokio::sync::watch;
 
 use crate::types::{AssistantMessage, StopReason};
 
+/// Default cap for agent-level retry delays (TS
+/// `DEFAULT_MAX_AGENT_RETRY_DELAY_MS`).
+pub const DEFAULT_MAX_AGENT_RETRY_DELAY_MS: u64 = 60_000;
+
 /// Retry policy: bounded attempts with exponential backoff
-/// (`baseDelayMs * 2^(attempt-1)`). Matches `settings.retry`
-/// (`enabled`, `maxRetries`, `baseDelayMs`) in coding-agent.
+/// (`baseDelayMs * 2^(attempt-1)`), capped per delay. Matches `settings.retry`
+/// (`enabled`, `maxRetries`, `baseDelayMs`, `maxAgentDelayMs`) in coding-agent.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     pub enabled: bool,
@@ -18,6 +22,23 @@ pub struct RetryPolicy {
     pub max_retries: u32,
     /// Base delay in ms. Per-attempt delay is `baseDelayMs * 2^(attempt-1)` before jitter.
     pub base_delay_ms: u64,
+    /// Cap for each computed delay in ms; `None` uses
+    /// [`DEFAULT_MAX_AGENT_RETRY_DELAY_MS`].
+    pub max_agent_delay_ms: Option<u64>,
+}
+
+/// Delay before retry `attempt` (1-indexed), capped at the policy's
+/// `maxAgentDelayMs` and saturated instead of overflowing
+/// (TS `retryDelayMs`).
+#[must_use]
+pub fn retry_delay_ms(
+    base_delay_ms: u64,
+    max_agent_delay_ms: Option<u64>,
+    attempt: u32,
+) -> u64 {
+    let exponent = attempt.saturating_sub(1);
+    let delay = base_delay_ms.checked_shl(exponent).unwrap_or(u64::MAX);
+    delay.min(max_agent_delay_ms.unwrap_or(DEFAULT_MAX_AGENT_RETRY_DELAY_MS))
 }
 
 /// Optional callbacks emitted by [`retry_assistant_call`] around each retry.
@@ -183,7 +204,11 @@ where
         let error_message = response.error_message.clone().unwrap_or_else(|| "Unknown error".to_string());
         last_retry = Some((attempt, error_message.clone()));
         let base_delay = policy.map(|p| p.base_delay_ms).unwrap_or(0);
-        let delay_ms = base_delay * 2u64.pow(attempt - 1);
+        let delay_ms = retry_delay_ms(
+            base_delay,
+            policy.and_then(|p| p.max_agent_delay_ms),
+            attempt,
+        );
         if let Some(cb) = callbacks.and_then(|c| c.on_retry_scheduled.as_ref()) {
             cb(attempt, max_attempts, delay_ms, error_message.clone());
         }
@@ -266,7 +291,6 @@ mod tests {
             timestamp: 0,
         }
     }
-
     #[test]
     fn test_is_retryable_assistant_error() {
         assert!(is_retryable_assistant_error(&error_msg("stream ended before a terminal response event")));
@@ -299,6 +323,7 @@ mod tests {
                 }
             },
             Some(RetryPolicy {
+                max_agent_delay_ms: None,
                 enabled: true,
                 max_retries: 3,
                 base_delay_ms: 1,
@@ -323,6 +348,7 @@ mod tests {
                 }
             },
             Some(RetryPolicy {
+                max_agent_delay_ms: None,
                 enabled: true,
                 max_retries: 2,
                 base_delay_ms: 1,
@@ -347,6 +373,7 @@ mod tests {
                 }
             },
             Some(RetryPolicy {
+                max_agent_delay_ms: None,
                 enabled: true,
                 max_retries: 3,
                 base_delay_ms: 1,
@@ -365,6 +392,7 @@ mod tests {
         let result = retry_assistant_call(
             || async { error_msg("503 Service Unavailable") },
             Some(RetryPolicy {
+                max_agent_delay_ms: None,
                 enabled: true,
                 max_retries: 3,
                 base_delay_ms: 10_000,
@@ -380,4 +408,19 @@ mod tests {
         let (result, _) = tokio::join!(result, abort);
         assert_eq!(result.stop_reason, StopReason::Aborted);
     }
+    /// Each delay is capped so a long retry run stays responsive
+    /// (TS `retryDelayMs` / #8826).
+    #[test]
+    fn retry_delay_is_capped() {
+        // Unbounded exponential backoff would reach 512s by attempt 10.
+        assert_eq!(retry_delay_ms(1_000, None, 1), 1_000);
+        assert_eq!(retry_delay_ms(1_000, None, 3), 4_000);
+        assert_eq!(retry_delay_ms(1_000, None, 10), 60_000);
+        // A caller-supplied cap wins.
+        assert_eq!(retry_delay_ms(1_000, Some(30_000), 10), 30_000);
+        assert_eq!(retry_delay_ms(1_000, Some(500), 1), 500);
+        // Overflow saturates instead of wrapping.
+        assert_eq!(retry_delay_ms(u64::MAX, None, 3), 60_000);
+    }
+
 }

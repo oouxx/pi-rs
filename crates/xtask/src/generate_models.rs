@@ -142,6 +142,12 @@ struct BuildModel {
     headers: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compat: Option<Compat>,
+    /// Prompt cache lifetimes per retention tier in seconds (TS
+    /// `Model.promptCache`); only set for providers whose cache lifetimes are
+    /// documented (see `apply_prompt_cache_metadata`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "promptCache")]
+    prompt_cache: Option<serde_json::Value>,
     /// models.dev `reasoning_options` (not serialized; feeds the metadata
     /// pipeline's verified thinking-level map).
     #[serde(skip)]
@@ -392,6 +398,7 @@ fn fetch_ai_gateway_models(client: &reqwest::blocking::Client) -> Result<Vec<Bui
             input_cache_write: None,
         });
         models.push(BuildModel {
+            prompt_cache: None,
             id: model.id.clone(),
             name: model.name.unwrap_or_else(|| model.id.clone()),
             api: "anthropic-messages".into(),
@@ -585,6 +592,7 @@ fn build_model(
     compat: Option<Compat>,
 ) -> BuildModel {
     BuildModel {
+        prompt_cache: None,
         id: id.to_string(),
         name: model_name(model, id),
         api: api.to_string(),
@@ -1871,6 +1879,7 @@ fn manual_model(
         vec!["text".to_string()]
     };
     BuildModel {
+        prompt_cache: None,
         id: id.to_string(),
         name: name.to_string(),
         api: api.to_string(),
@@ -1975,6 +1984,7 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
             let use_anthropic_messages =
                 m.id.starts_with("anthropic/") && !m.id.ends_with(":batch");
             BuildModel {
+                prompt_cache: None,
                 id: m.id.clone(),
                 name: m.name,
                 api: if use_anthropic_messages {
@@ -3179,6 +3189,17 @@ fn apply_overrides_all(models: &mut [BuildModel]) {
     }
 }
 
+/// TS `applyPromptCacheMetadata`: Anthropic ephemeral entries live five
+/// minutes, and `ttl: "1h"` extends that to an hour. Only direct Anthropic is
+/// annotated so cache warming never assumes equivalent behavior through
+/// proxies; OpenAI lifetimes are deliberately left unset until observed
+/// expiry, replay and billing behavior have been re-evaluated.
+fn apply_prompt_cache_metadata(model: &mut BuildModel) {
+    if model.provider == "anthropic" && model.api == "anthropic-messages" {
+        model.prompt_cache = Some(serde_json::json!({"short": 300, "long": 3600}));
+    }
+}
+
 fn apply_metadata(models: &mut [BuildModel]) {
     for model in models.iter_mut() {
         apply_openai_completions_compat_metadata(model);
@@ -3189,6 +3210,7 @@ fn apply_metadata(models: &mut [BuildModel]) {
         apply_openai_grammar_tool_compat_metadata(model);
         apply_openai_tool_search_metadata(model);
         apply_openai_explicit_prompt_cache_metadata(model);
+        apply_prompt_cache_metadata(model);
     }
     apply_anthropic_allowed_fallback_model_metadata(models);
 }

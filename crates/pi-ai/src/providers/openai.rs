@@ -2189,6 +2189,7 @@ mod tests {
 
     fn test_model(provider: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
             api: "openai-completions".to_string(),
@@ -2329,6 +2330,7 @@ mod tests {
 
     fn make_test_model() -> Model {
         Model {
+            prompt_cache: None,
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),
             api: "openai-completions".into(),
@@ -2846,6 +2848,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
             api: "openai-completions".to_string(),
@@ -3031,6 +3034,7 @@ mod abort_tests {
         });
 
         let model = Model {
+            prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
             api: "openai-completions".to_string(),

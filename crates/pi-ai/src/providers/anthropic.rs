@@ -1121,6 +1121,11 @@ async fn stream_anthropic_inner(
 
     let compat = get_anthropic_compat(model);
     let supports_mid_convo = compat.supports_mid_convo_system_messages.unwrap_or(false);
+    // Tools come from the transcript (TS `getCurrentTools(context.messages)`);
+    // the request-level shorthand is only filled when the transcript was
+    // collapsed for a model without mid-conversation system messages.
+    let request_tools =
+        crate::utils::transcript::request_tools(&context.messages, context.tools.as_deref());
     // Native tool changes (TS `nativeToolChanges`): only when the model accepts
     // mid-convo system messages and tool changes, has an initial active tool,
     // and no tool name is redefined.
@@ -1189,7 +1194,7 @@ async fn stream_anthropic_inner(
     // Fine-grained tool streaming beta: only when tools are present AND the
     // provider does not support eager tool input streaming (match TS
     // `shouldUseFineGrainedToolStreamingBeta`).
-    let has_tools = context.tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+    let has_tools = !request_tools.is_empty();
     let mut beta_features: Vec<String> = Vec::new();
     // Claude Code OAuth requests advertise the identity betas (match TS
     // `getBetaFeatures`); Copilot auth is Bearer but not OAuth.
@@ -1277,14 +1282,14 @@ async fn stream_anthropic_inner(
     let supports_tool_references = compat
         .supports_tool_references
         .unwrap_or_else(|| default_supports_tool_references(model));
-    let transformed_context = Context {
-        system_prompt: context.system_prompt.clone(),
-        messages: transformed.clone(),
-        tools: context.tools.clone(),
-    };
     let (immediate_tools, deferred_tools) =
         crate::providers::openai_responses::split_deferred_tools(
-            &transformed_context,
+            &transformed,
+            if request_tools.is_empty() {
+                None
+            } else {
+                Some(&request_tools)
+            },
             supports_tool_references,
         );
     let (immediate_tools, deferred_tools) = if immediate_tools.is_empty()
@@ -1927,6 +1932,7 @@ mod tests {
 
     fn test_model() -> Model {
         Model {
+            prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
             api: "anthropic-messages".into(),
@@ -2255,6 +2261,7 @@ mod tests {
 
     fn make_test_model() -> Model {
         Model {
+            prompt_cache: None,
             id: "claude-sonnet-4-6".into(),
             name: "Claude Sonnet 4.6".into(),
             api: "anthropic-messages".into(),
@@ -2564,6 +2571,7 @@ mod tests {
     #[test]
     fn test_default_supports_tool_references() {
         let mut model = Model {
+            prompt_cache: None,
             id: "claude-opus-4-5".into(),
             name: "x".into(),
             api: "anthropic-messages".into(),
@@ -2707,6 +2715,7 @@ mod tests {
 
     fn model_for_tests() -> Model {
         Model {
+            prompt_cache: None,
             id: "claude-sonnet-4-5".into(),
             name: "x".into(),
             api: "anthropic-messages".into(),
@@ -2809,6 +2818,77 @@ mod tests {
         assert!(matches!(converted[1].content, AnthropicContent::String(_)));
     }
 
+    /// Mid-conversation models without native tool changes keep the transcript
+    /// system messages, so the request-level tool list must be replayed from
+    /// the transcript rather than read from `Context.tools`
+    /// (TS `getCurrentTools(context.messages)`).
+    #[tokio::test]
+    async fn transcript_tools_are_declared_without_native_tool_changes() {
+        let model = Model {
+            compat: Some(crate::types::ModelCompat::AnthropicMessages(
+                crate::types::AnthropicMessagesCompat {
+                    supports_mid_convo_system_messages: Some(true),
+                    ..Default::default()
+                },
+            )),
+            ..test_model()
+        };
+        let context = Context {
+            system_prompt: None,
+            tools: None,
+            messages: vec![
+                Message::System {
+                    content: crate::types::SystemContent::Text("sys".into()),
+                    sections: None,
+                    tools_added: Some(vec![crate::types::Tool {
+                        name: "read".into(),
+                        description: String::new(),
+                        parameters: serde_json::json!({"type": "object"}),
+                        constrained_sampling: None,
+                    }]),
+                    tools_removed: None,
+                    timestamp: 0,
+                },
+                Message::User {
+                    content: vec![ContentBlock::text("hi")],
+                    timestamp: 1,
+                },
+            ],
+        };
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        let options = StreamOptions {
+            api_key: Some("test-key".into()),
+            // Cancels the request after recording the payload.
+            on_payload: Some(std::sync::Arc::new(
+                move |payload: serde_json::Value| {
+                    let sink = sink.clone();
+                    Box::pin(async move {
+                        *sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(payload);
+                        None
+                    })
+                },
+            )),
+            ..Default::default()
+        };
+
+        let _ = stream_anthropic(&model, &context, Some(&options)).result().await;
+
+        let body = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| panic!("request payload must be captured"));
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("tools must be declared: {body}"))
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["read"]);
+    }
+
 }
 
 #[cfg(test)]
@@ -2819,6 +2899,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: "claude-test".to_string(),
             name: "Claude Test".to_string(),
             api: "anthropic".to_string(),

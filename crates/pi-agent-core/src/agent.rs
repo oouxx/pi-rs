@@ -257,6 +257,7 @@ impl Default for AgentState {
         Self {
             system_prompt: String::new(),
             model: Model {
+                prompt_cache: None,
                 provider: String::new(),
                 api: String::new(),
                 id: String::new(),
@@ -288,6 +289,7 @@ impl Agent {
         let state = options.initial_state.unwrap_or_else(|| AgentState {
             system_prompt: String::new(),
             model: Model {
+                prompt_cache: None,
                 provider: String::new(),
                 api: String::new(),
                 id: String::new(),
@@ -424,6 +426,14 @@ impl Agent {
 
     pub async fn state(&self) -> AgentState {
         self.state.read().await.clone()
+    }
+
+    /// Snapshot of the agent state without awaiting, for callers that cannot
+    /// be async (e.g. a predicate polled from a sync closure). Returns `None`
+    /// while a writer holds the lock.
+    #[must_use]
+    pub fn try_state(&self) -> Option<AgentState> {
+        self.state.try_read().ok().map(|state| state.clone())
     }
 
     /// Apply a mutation to the shared agent state under the write lock.
@@ -1143,6 +1153,7 @@ mod tests {
 
     fn make_model() -> Model {
         Model {
+            prompt_cache: None,
             id: "test-model".into(),
             name: "test".into(),
             api: "test-api".into(),

@@ -1427,6 +1427,7 @@ mod helper_tests {
     #[test]
     fn test_create_failure_message_aborted() {
         let model = Model {
+            prompt_cache: None,
             provider: "test".into(),
             api: "test-api".into(),
             id: "test-model".into(),

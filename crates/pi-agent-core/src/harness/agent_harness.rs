@@ -1699,6 +1699,7 @@ mod tests {
     #[test]
     fn test_create_failure_message_error() {
         let model = Model {
+            prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),
             api: "test-api".into(),
@@ -1735,6 +1736,7 @@ mod tests {
     #[test]
     fn test_create_failure_message_aborted() {
         let model = Model {
+            prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),
             api: "test-api".into(),

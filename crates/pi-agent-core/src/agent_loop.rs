@@ -550,6 +550,15 @@ async fn execute_tool_calls_parallel(
                 let emit_c = emit.clone();
 
                 let fut = Box::pin(async move {
+                    // A call that was prepared before the abort must not start
+                    // afterwards (TS `executeToolCallsParallel`).
+                    if is_aborted(&sig) {
+                        return FinalizedToolCallOutcome {
+                            tool_call: tc.clone(),
+                            result: create_error_tool_result("Operation aborted"),
+                            is_error: true,
+                        };
+                    }
                     let executed =
                         execute_prepared_tool_call(&tool, &tc, &args, &sig, &emit_c).await;
                     finalize_executed_tool_call(&ctx, &msg, &tc, &args, executed, &after_fn, &sig)
@@ -1816,6 +1825,7 @@ mod tests {
         let tool_execution = crate::pi_ai_types::ToolExecutionMode::Parallel;
         let config = AgentLoopConfig {
             model: Model {
+                prompt_cache: None,
                 id: "test".into(),
                 name: "test".into(),
                 api: "test".into(),
@@ -2790,6 +2800,87 @@ mod tests {
         }
     }
 
+    /// A call prepared before the abort must not start afterwards: it
+    /// finalizes as an "Operation aborted" error (TS `executeToolCallsParallel`).
+    #[tokio::test]
+    async fn test_parallel_preflight_abort_skips_prepared_execution() {
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tool: Arc<DynTool> = {
+            let executed = executed.clone();
+            Arc::new(AgentTool {
+                constrained_sampling: None,
+                name: "t1".to_string(),
+                description: String::new(),
+                label: "t1".to_string(),
+                prompt_snippet: None,
+                prompt_guidelines: None,
+                parameters_schema: serde_json::json!({}),
+                execution_mode: None,
+                prepare_arguments: None,
+                execute: Arc::new(move |_id, _args, _signal, _on_update| {
+                    let executed = executed.clone();
+                    Box::pin(async move {
+                        executed.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(AgentToolResult {
+                            content: vec![],
+                            details: serde_json::json!({}),
+                            usage: None,
+                            added_tool_names: None,
+                            terminate: None,
+                        })
+                    })
+                }),
+            })
+        };
+        let ctx = dummy_context(vec![tool]);
+        let calls = vec![dummy_tool_call("1", "t1", serde_json::json!({}))];
+        let msg = dummy_assistant_message();
+
+        // The preflight hook aborts the run without blocking the call.
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let before: BeforeToolCallFn = Arc::new(move |_ctx, _signal| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(true);
+                None
+            })
+        });
+
+        let batch = execute_tool_calls_parallel(
+            &ctx,
+            &msg,
+            &calls,
+            &Some(before),
+            &None,
+            &Some(rx),
+            &dummy_event_sink(),
+        )
+        .await;
+
+        assert!(
+            !executed.load(std::sync::atomic::Ordering::SeqCst),
+            "a call prepared before the abort must not execute"
+        );
+        assert_eq!(batch.messages.len(), 1);
+        match &batch.messages[0] {
+            AgentMessage::ToolResult {
+                content,
+                is_error,
+                ..
+            } => {
+                assert!(is_error, "aborted call is an error result");
+                assert!(
+                    matches!(
+                        content.first(),
+                        Some(ContentBlock::Text { text, .. }) if text == "Operation aborted"
+                    ),
+                    "unexpected content: {content:?}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
     // ============================================================
     // execute_tool_calls  (dispatcher)
     // ============================================================
@@ -2919,6 +3010,7 @@ mod tests {
     fn minimal_loop_config() -> AgentLoopConfig {
         AgentLoopConfig {
             model: Model {
+                prompt_cache: None,
                 id: "test".into(),
                 name: "test".into(),
                 api: "test".into(),

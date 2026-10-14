@@ -234,6 +234,42 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    /// The success message names the file and carries no byte count
+    /// (TS #8979 removed it; a `.contains("Successfully wrote")` assertion would
+    /// not catch a regression).
+    #[tokio::test]
+    async fn write_success_message_reports_no_byte_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = create_write_tool(dir.path().to_str().unwrap(), None);
+        let result = (tool.execute)(
+            "call-1".to_string(),
+            serde_json::json!({
+                "path": dir.path().join("out.txt").to_str().unwrap(),
+                "content": "hello",
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = result
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert!(
+            text.starts_with("Successfully wrote to "),
+            "unexpected message: {text:?}"
+        );
+        assert!(
+            !text.contains("bytes") && !text.contains("5 "),
+            "no byte count belongs in the message: {text:?}"
+        );
+    }
+
     #[test]
     fn test_write_tool_input_deserialization() {
         let json = serde_json::json!({

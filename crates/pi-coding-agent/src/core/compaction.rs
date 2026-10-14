@@ -1193,6 +1193,32 @@ mod tests {
         assert!(!cut.is_split_turn);
     }
 
+    /// The split-turn summary prompt separates the conversation from the
+    /// instructions and uses continuation-oriented wording (TS #9908: Fable
+    /// refuses summaries that read as a fresh request).
+    #[test]
+    fn build_turn_prefix_summarization_prompt_separates_the_conversation() {
+        let prompt = build_turn_prefix_summarization_prompt(&[AgentMessage::User {
+            content: vec![ContentBlock::text("keep going")],
+            timestamp: 1,
+        }]);
+        let (conversation, instructions) = prompt
+            .split_once("\n\n# Instructions\n")
+            .expect("a clear Markdown boundary separates the two parts");
+        assert!(
+            conversation.starts_with("# Conversation\n"),
+            "the conversation comes first: {conversation:?}"
+        );
+        assert!(
+            conversation.contains("keep going"),
+            "the conversation content is included"
+        );
+        assert!(
+            instructions.contains("Only summarize information explicitly present above"),
+            "continuation-oriented instructions follow: {instructions:?}"
+        );
+    }
+
     /// Per-model budgets win over the ordinary settings, and a partial override
     /// keeps the ordinary value for the other field
     /// (TS `getCompactionTokenSetting` precedence).

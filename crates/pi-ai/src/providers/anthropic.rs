@@ -25,6 +25,9 @@ const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025
 #[allow(dead_code)]
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 const MID_CONVERSATION_TOOL_CHANGES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
+/// Advertises the server-side fallback models sent in `params.fallbacks`
+/// (TS `SERVER_SIDE_FALLBACK_BETA`).
+const SERVER_SIDE_FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 /// Substring that marks a Claude Code OAuth token (match TS `isOAuthToken`).
 const OAUTH_TOKEN_MARKER: &str = "sk-ant-oat";
 /// Claude Code CLI version advertised on OAuth requests (match TS `claudeCodeVersion`).
@@ -336,6 +339,7 @@ fn get_anthropic_compat(model: &Model) -> AnthropicMessagesCompat {
     match &model.compat {
         Some(ModelCompat::AnthropicMessages(compat)) => compat.clone(),
         _ => AnthropicMessagesCompat {
+            allowed_fallback_models: None,
             supports_eager_tool_input_streaming: None,
             supports_long_cache_retention: None,
             send_session_affinity_headers: None,
@@ -1135,6 +1139,10 @@ async fn stream_anthropic_inner(
     if native_tool_changes {
         beta_features.push(MID_CONVERSATION_TOOL_CHANGES_BETA.to_string());
     }
+    let allowed_fallback_models = compat.allowed_fallback_models.clone().unwrap_or_default();
+    if !allowed_fallback_models.is_empty() {
+        beta_features.push(SERVER_SIDE_FALLBACK_BETA.to_string());
+    }
     if !beta_features.is_empty() {
         header_map.insert(
             "anthropic-beta".to_string(),
@@ -1278,6 +1286,16 @@ async fn stream_anthropic_inner(
             supports_strict_tools,
         )?;
         body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
+    }
+
+    if !allowed_fallback_models.is_empty() {
+        // Server-side fallbacks are advertised as model ids only; the
+        // provider decides when to use them (TS `params.fallbacks`).
+        let fallbacks: Vec<Value> = allowed_fallback_models
+            .iter()
+            .map(|fallback| json!({ "model": fallback.model }))
+            .collect();
+        body.insert("fallbacks".to_string(), Value::Array(fallbacks));
     }
 
     // Configure thinking mode: adaptive, budget-based, or explicitly disabled
@@ -1431,6 +1449,9 @@ async fn stream_anthropic_inner(
     futures::pin_mut!(events);
 
     // Initialize output
+    // Set when a server-side fallback model answered: pricing then follows the
+    // fallback's own rates (TS `usageModel`).
+    let mut usage_model_cost: Option<crate::types::ModelCost> = None;
     let mut output = AssistantMessage {
         content: vec![],
         api: model.api.clone(),
@@ -1531,7 +1552,19 @@ async fn stream_anthropic_inner(
         match event {
             AnthropicSseEvent::MessageStart { message } => {
                 output.response_id = Some(message.id);
-                output.response_model = Some(message.model);
+                // Only report a response model when the provider answered with a
+                // different one (TS `if (responseModel !== model.id)`).
+                if message.model != model.id {
+                    output.response_model = Some(message.model.clone());
+                }
+                // A fallback model answers at its own price (TS `usageModel`).
+                if message.model != model.id {
+                    if let Some(fallback) = allowed_fallback_models.iter().find(|fallback| {
+                        fallback.provider == model.provider && fallback.model == message.model
+                    }) {
+                        usage_model_cost = Some(fallback.cost.clone());
+                    }
+                }
                 output.usage.input = message.usage.input_tokens.unwrap_or(0);
                 output.usage.output = message.usage.output_tokens.unwrap_or(0);
                 output.usage.cache_read = message.usage.cache_read_input_tokens.unwrap_or(0);
@@ -1767,8 +1800,18 @@ async fn stream_anthropic_inner(
         }
     }
 
-    // Calculate cost
-    crate::models::calculate_cost(model, &mut output.usage);
+    // Calculate cost; a fallback answer is priced with the fallback's rates.
+    match usage_model_cost {
+        Some(cost) => {
+            let mut fallback_model = model.clone();
+            fallback_model.cost = cost;
+            if let Some(response_model) = output.response_model.clone() {
+                fallback_model.id = response_model;
+            }
+            crate::models::calculate_cost(&fallback_model, &mut output.usage);
+        }
+        None => crate::models::calculate_cost(model, &mut output.usage),
+    }
 
     // If the stream ended normally but an abort was requested (e.g. the
     // provider closed the connection right as the user cancelled), mark the
@@ -2673,6 +2716,104 @@ mod tests {
         assert_eq!(names, vec!["read"]);
     }
 
+    /// A model with server-side fallbacks advertises them plus the matching
+    /// beta header (TS `params.fallbacks` / `SERVER_SIDE_FALLBACK_BETA`).
+    #[tokio::test]
+    async fn server_side_fallbacks_are_advertised() {
+        let captured: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        let model = Model {
+            compat: Some(crate::types::ModelCompat::AnthropicMessages(
+                crate::types::AnthropicMessagesCompat {
+                    allowed_fallback_models: Some(vec![crate::types::AnthropicAllowedFallbackModel {
+                        provider: "anthropic".to_string(),
+                        model: "claude-opus-4-8".to_string(),
+                        cost: crate::types::ModelCost {
+                            input: 5.0,
+                            output: 25.0,
+                            cache_read: 0.5,
+                            cache_write: 6.25,
+                            tiers: vec![],
+                        },
+                    }]),
+                    ..Default::default()
+                },
+            )),
+            ..test_model()
+        };
+        let context = Context {
+            system_prompt: None,
+            tools: None,
+            messages: vec![Message::User {
+                content: vec![ContentBlock::text("hi")],
+                timestamp: 0,
+            }],
+        };
+        let options = StreamOptions {
+            api_key: Some("test-key".into()),
+            on_payload: Some(std::sync::Arc::new(move |payload: serde_json::Value| {
+                let sink = sink.clone();
+                Box::pin(async move {
+                    *sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(payload);
+                    None
+                })
+            })),
+            ..Default::default()
+        };
+
+        let _ = stream_anthropic(&model, &context, Some(&options)).result().await;
+
+        let body = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| panic!("request payload must be captured"));
+        assert_eq!(
+            body["fallbacks"],
+            serde_json::json!([{"model": "claude-opus-4-8"}]),
+            "fallbacks carry model ids only: {body}"
+        );
+    }
+
+    /// Without fallbacks neither the parameter nor the beta is sent.
+    #[tokio::test]
+    async fn no_fallbacks_means_no_parameter() {
+        let captured: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        let context = Context {
+            system_prompt: None,
+            tools: None,
+            messages: vec![Message::User {
+                content: vec![ContentBlock::text("hi")],
+                timestamp: 0,
+            }],
+        };
+        let options = StreamOptions {
+            api_key: Some("test-key".into()),
+            on_payload: Some(std::sync::Arc::new(move |payload: serde_json::Value| {
+                let sink = sink.clone();
+                Box::pin(async move {
+                    *sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(payload);
+                    None
+                })
+            })),
+            ..Default::default()
+        };
+
+        let _ = stream_anthropic(&test_model(), &context, Some(&options)).result().await;
+
+        let body = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| panic!("request payload must be captured"));
+        assert!(body.get("fallbacks").is_none(), "{body}");
+    }
+
 }
 
 #[cfg(test)]
@@ -2766,4 +2907,5 @@ mod abort_tests {
             other => panic!("expected Error(Aborted), got {other:?}"),
         }
     }
+
 }

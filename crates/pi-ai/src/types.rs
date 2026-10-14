@@ -550,7 +550,20 @@ pub enum SessionAffinityFormat {
     Openrouter,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// A model Anthropic may fall back to server-side, with the pricing to use
+/// when it answers (TS `AnthropicAllowedFallbackModel`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AnthropicAllowedFallbackModel {
+    /// Provider the fallback belongs to.
+    pub provider: String,
+    /// Fallback model id.
+    pub model: String,
+    /// Pricing for a response produced by this fallback.
+    pub cost: ModelCost,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicMessagesCompat {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -565,6 +578,10 @@ pub struct AnthropicMessagesCompat {
     pub force_adaptive_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_empty_signature: Option<bool>,
+    /// Models Anthropic may fall back to server-side; when present the request
+    /// advertises them and their beta (TS `allowedFallbackModels`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_fallback_models: Option<Vec<AnthropicAllowedFallbackModel>>,
     /// Whether the provider supports Anthropic strict tool schemas (TS
     /// `supportsStrictTools`). Default: false; generated Anthropic models
     /// enable it explicitly.
@@ -786,7 +803,7 @@ impl<'de> Deserialize<'de> for Model {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ModelCompat {
     OpenAICompletions(Box<OpenAICompletionsCompat>),

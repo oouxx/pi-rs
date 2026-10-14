@@ -92,6 +92,10 @@ pub enum PendingSessionWrite {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+// The variants carry whole messages, resources and stream options; the spread
+// between the smallest and largest is inherent to the event shape (TS has the
+// same union), so the boxed-variant lint is not actionable here.
+#[allow(clippy::large_enum_variant)]
 pub enum AgentHarnessOwnEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     QueueUpdate {
         steer_queue: Vec<AgentMessage>,

@@ -198,7 +198,19 @@ impl Input {
         let _ = self.buf.set_cursor_byte(end);
     }
     pub fn clear(&mut self) { self.buf = EditBuffer::new(); self.clear_pastes(); }
+
+    /// TS `setText`: replaces the text **and** drops the paste registry, because
+    /// the new text is unrelated to the old one (programmatic set, restore,
+    /// extension-driven editor text).
     pub fn set_value(&mut self, value: &str) { self.buf = EditBuffer::from_text(value); self.clear_pastes(); }
+
+    /// Replace the text while keeping the paste registry — for edits derived
+    /// from the current text that still carry its paste markers (TS applies
+    /// completions by mutating `state.lines` in place, so the registry
+    /// survives and a later `getExpandedText` still resolves the markers).
+    pub fn set_value_preserving_pastes(&mut self, value: &str) {
+        self.buf = EditBuffer::from_text(value);
+    }
 }
 
 /// Renumber paste markers with id > `target_id` down by one (TS
@@ -227,19 +239,28 @@ fn renumber_markers_after(text: &str, target_id: u64) -> String {
 }
 
 /// Parse a paste marker at the start of `s`. Returns `(paste_id, byte_len)`.
-/// Marker forms: `[paste #N +N lines]` or `[paste #N N chars]`.
+///
+/// Marker forms (TS `/\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/`):
+/// `[paste #N]`, `[paste #N +N lines]` or `[paste #N N chars]`. The match is
+/// bounded — the marker may be followed by more text in the same line, which
+/// is the common case once anything is typed after a paste.
 fn parse_paste_marker(s: &str) -> Option<(u64, usize)> {
     let rest = s.strip_prefix("[paste #")?;
     let id_end = rest.find(|c: char| !c.is_ascii_digit())?;
     let id: u64 = rest[..id_end].parse().ok()?;
     let suffix = &rest[id_end..];
-    let valid = (suffix.starts_with(" +")
-        && suffix.ends_with(" lines]"))
-        || (suffix.starts_with(' ') && suffix.ends_with(" chars]"));
-    if !valid {
-        return None;
-    }
-    let marker_len = "[paste #".len() + id_end + suffix.len();
+    // Everything after the closing `]` of this marker.
+    let after_marker = if let Some(after) = suffix.strip_prefix(']') {
+        after
+    } else if let Some(after) = suffix.strip_prefix(" +") {
+        let digits_end = after.find(|c: char| !c.is_ascii_digit())?;
+        after[digits_end..].strip_prefix(" lines]")?
+    } else {
+        let after = suffix.strip_prefix(' ')?;
+        let digits_end = after.find(|c: char| !c.is_ascii_digit())?;
+        after[digits_end..].strip_prefix(" chars]")?
+    };
+    let marker_len = s.len() - after_marker.len();
     Some((id, marker_len))
 }
 
@@ -332,6 +353,54 @@ mod tests {
         input.handle_paste(&big);
         assert_eq!(input.value(), "[paste #1 1001 chars]");
         assert_eq!(input.expanded_value(), big);
+    }
+
+    /// marker 后面还有文本时也必须展开（TS 的 marker 正则是**有界**的：
+    /// `/\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/`）。曾经的实现用
+    /// `ends_with(" chars]")` 校验**整段剩余字符串的结尾**，于是只要粘贴后
+    /// 再输入任何内容，marker 就被原样当成普通文本提交。
+    #[test]
+    fn paste_marker_expands_when_followed_by_text() {
+        let mut input = Input::new();
+        let big = "x".repeat(20_000);
+        input.handle_paste(&big);
+        input.insert_str(" tail");
+        assert_eq!(input.value(), "[paste #1 20000 chars] tail");
+        assert_eq!(
+            input.expanded_value(),
+            format!("{big} tail"),
+            "marker 后有文本时也要展开"
+        );
+
+        // 多行形式同理，且在中间（前后都有文本）。
+        let mut multi = Input::new();
+        let lines = (0..11).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        multi.insert_str("before ");
+        multi.handle_paste(&lines);
+        multi.insert_str(" after");
+        assert_eq!(
+            multi.expanded_value(),
+            format!("before {lines} after")
+        );
+    }
+
+    /// 保留粘贴表的文本替换（补全应用路径用）：marker 仍能展开。
+    #[test]
+    fn set_value_preserving_pastes_keeps_the_registry() {
+        let mut input = Input::new();
+        let big = "x".repeat(20_000);
+        input.handle_paste(&big);
+        let value = input.value().to_string();
+        assert_eq!(value, "[paste #1 20000 chars]");
+        input.set_value_preserving_pastes(&format!("{value} tail"));
+        assert_eq!(
+            input.expanded_value(),
+            format!("{big} tail"),
+            "marker 必须仍能展开"
+        );
+        // 对照：set_value 是 TS setText 语义，会清表（marker 变成字面文本）。
+        input.set_value("[paste #1 20000 chars] tail");
+        assert_eq!(input.expanded_value(), "[paste #1 20000 chars] tail");
     }
 
     /// TS `handlePaste`: small pastes are inserted verbatim (normalized).

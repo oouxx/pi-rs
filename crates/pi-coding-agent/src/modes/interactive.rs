@@ -751,7 +751,10 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                         .completer
                         .apply_selected(state.model.input.value())
                     {
-                        state.model.input.set_value(&new_value);
+                        // 保留粘贴表：新文本由当前文本派生、仍含其 marker；
+                        // 用 `set_value` 会清表，导致之后提交的是 marker 原文
+                        // （对齐 TS `applyCompletion` 直接改 lines 的语义）。
+                        state.model.input.set_value_preserving_pastes(&new_value);
                     }
                     state.model.completer.deactivate();
                     // 对齐 TS：仅 `/` 补全应用后继续走（提交执行命令）；
@@ -3552,6 +3555,142 @@ mod tests {
         );
         assert_eq!(s.model.input.value(), "", "提交后输入被清空");
         assert!(!s.model.completer.visible);
+    }
+
+    /// 粘贴后接受 `@` 补全再提交：接受补全走的是 `set_value`（TS 的
+    /// `applyCompletion` 直接改 lines、**不清粘贴表**），若清表，第二次 Enter
+    /// 提交的就是 marker 原文而不是粘贴内容。
+    #[test]
+    fn accepting_a_completion_keeps_the_paste_registry() {
+        let mut s = state();
+        let big = "x".repeat(20_000);
+        app::update(&mut s.model, pi_tui::Msg::Paste(big.clone()));
+        s.model.input.insert_str(" @src");
+        s.model
+            .completer
+            .begin(pi_tui::components::CompletionTrigger::At, "@src", "src");
+        s.model.completer.apply_results(
+            1,
+            vec![pi_tui::CompletionItem::new("@src/main.rs", "main.rs", "src/main.rs")],
+        );
+        assert!(s.model.completer.visible);
+
+        let enter = || {
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            )
+        };
+        // 第一次 Enter：应用 `@` 补全，不提交（TS `@` 分支）。
+        let first = handle_key(&mut s, enter());
+        assert_eq!(first, vec![], "@ 补全应用后不提交");
+        let after_accept = s.model.input.expanded_value();
+        assert!(
+            after_accept.contains(&big),
+            "接受补全后粘贴表必须仍在（expanded_value 应展开），实际: {:?}",
+            &after_accept[..after_accept.len().min(60)]
+        );
+
+        // 第二次 Enter：提交，内容必须是展开后的原文。
+        let effects = handle_key(&mut s, enter());
+        let sent = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::AgentCommand(AgentCmd::SendMessage(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a SendMessage effect, got {effects:?}"));
+        assert!(
+            sent.contains(&big),
+            "提交内容必须含展开后的 20000 字符，实际: {:?}",
+            &sent[..sent.len().min(80)]
+        );
+        assert!(!sent.contains("[paste #"), "marker 不能进提交内容: {sent:?}");
+    }
+
+    /// 复现：粘贴大段文本后按 Enter，提交的必须是展开后的原文（不能是 marker）。
+    #[test]
+    fn paste_then_enter_never_submits_the_marker() {
+        let big = "x".repeat(20_000);
+        let enter = || {
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            )
+        };
+        let extract = |effects: &[Effect]| -> Option<String> {
+            effects.iter().find_map(|e| match e {
+                Effect::AgentCommand(AgentCmd::SendMessage(text)) => Some(text.clone()),
+                Effect::QueueSteer(text) | Effect::QueueFollowUp(text) => Some(text.clone()),
+                _ => None,
+            })
+        };
+
+        // 场景 A：真实循环入口（app::update(Msg::Paste)）后 Enter。
+        {
+            let mut s = state();
+            app::update(&mut s.model, pi_tui::Msg::Paste(big.clone()));
+            assert_eq!(s.model.input.value(), "[paste #1 20000 chars]");
+            let sent = extract(&handle_key(&mut s, enter()));
+            assert_eq!(
+                sent.as_deref().map(str::len),
+                Some(big.len()),
+                "A: 空闲提交必须展开, 实际 {sent:?}"
+            );
+        }
+
+        // 场景 B：streaming 中 Enter（入 steering 队列）。
+        {
+            let mut s = state();
+            app::update(&mut s.model, pi_tui::Msg::Paste(big.clone()));
+            s.model.is_streaming = true;
+            let sent = extract(&handle_key(&mut s, enter()));
+            assert_eq!(
+                sent.as_deref().map(str::len),
+                Some(big.len()),
+                "B: 排队消息必须展开, 实际 {sent:?}"
+            );
+        }
+
+        // 场景 C：压缩中 Enter（入 compaction 队列，提交时无 effect，检查队列）。
+        {
+            let mut s = state();
+            app::update(&mut s.model, pi_tui::Msg::Paste(big.clone()));
+            s.model.is_compacting = true;
+            let _ = handle_key(&mut s, enter());
+            let queued = s.model.compaction_queue.first().map(|(t, _)| t.clone());
+            assert_eq!(
+                queued.as_deref().map(str::len),
+                Some(big.len()),
+                "C: compaction 队列必须展开, 实际 {queued:?}"
+            );
+        }
+
+        // 场景 D：粘贴在已有文本之后（含前导空格），Enter 提交。
+        {
+            let mut s = state();
+            s.model.input.set_value("look at this: ");
+            app::update(&mut s.model, pi_tui::Msg::Paste(big.clone()));
+            let sent = extract(&handle_key(&mut s, enter()));
+            assert!(
+                sent.as_deref().is_some_and(|t| t.contains(&big)),
+                "D: 前后文 + 粘贴必须展开, 实际 {:?}",
+                sent.as_deref().map(|t| &t[..t.len().min(60)])
+            );
+        }
+
+        // 场景 E：`/` 开头的内置命令 + 粘贴参数。
+        {
+            let mut s = state();
+            s.model.input.set_value("/compact ");
+            app::update(&mut s.model, pi_tui::Msg::Paste(big.clone()));
+            let effects = handle_key(&mut s, enter());
+            let leaked = format!("{effects:?}");
+            assert!(
+                !leaked.contains("[paste #"),
+                "E: 命令参数不能把 marker 传下去, 实际 {leaked}"
+            );
+        }
     }
 
     /// Enter 应用 `@` 文件补全后**不提交**（对齐 TS：非 `/` 前缀应用后

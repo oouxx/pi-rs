@@ -825,6 +825,28 @@ impl ExtensionRegistry {
         &self.flags
     }
 
+    /// Tools that cannot be sent to a provider: an extension tool must declare
+    /// an object parameter schema (TS #9300). Returns one message per offending
+    /// tool so a loader can report them.
+    #[must_use]
+    pub fn validate_tools(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        for tool in &self.tools {
+            let valid = tool
+                .definition
+                .parameters
+                .as_ref()
+                .is_some_and(serde_json::Value::is_object);
+            if !valid {
+                errors.push(format!(
+                    "Tool \"{}\" must define an object parameter schema.",
+                    tool.definition.name
+                ));
+            }
+        }
+        errors
+    }
+
     /// Consume and return collected tools.
     pub fn collect_tools(&mut self) -> Vec<RegisteredTool> {
         std::mem::take(&mut self.tools)

@@ -862,7 +862,7 @@ pub async fn create_agent_session(
         initial_active_tool_names: Some(initial_active_tool_names),
         allowed_tool_names,
         excluded_tool_names,
-        extension_registry: Some(extension_registry_arc),
+        extension_registry: Some(std::sync::Arc::clone(&extension_registry_arc)),
         ui_context: options.ui_context.clone(),
         resource_loader: Some(Box::new(resource_loader_instance)),
         custom_tools,
@@ -882,11 +882,22 @@ pub async fn create_agent_session(
         }
     }
 
-    // Build extensions result from pre-collected names
+    // Build extensions result from pre-collected names. Tools that cannot be
+    // sent to a provider are reported here (TS #9300 rejects the extension at
+    // load; Rust extensions register programmatically, so the tool is dropped
+    // and surfaced as a load error).
     let extensions_result = if options.enable_extensions {
+        let errors = extension_registry_arc
+            .validate_tools()
+            .into_iter()
+            .map(|error| ExtensionError {
+                path: "<extension>".to_string(),
+                error,
+            })
+            .collect();
         Some(ExtensionsResult {
             extensions: extension_names,
-            errors: Vec::new(),
+            errors,
         })
     } else {
         None

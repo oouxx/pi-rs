@@ -1076,6 +1076,30 @@ impl AgentSession {
             let collected = registry.tools().to_vec();
             for rt in collected {
                 let def = rt.definition;
+                // A tool without an object parameter schema would break the
+                // provider request; reject it at registration instead
+                // (TS #9300). Rust extensions register programmatically, so the
+                // tool is dropped and reported rather than failing a load.
+                let has_object_schema = def
+                    .parameters
+                    .as_ref()
+                    .is_some_and(serde_json::Value::is_object);
+                if !has_object_schema {
+                    emit_to_error_listener(
+                        &extension_error_listener,
+                        if rt.source_info.path.is_empty() {
+                            "<extension>"
+                        } else {
+                            rt.source_info.path.as_str()
+                        },
+                        "tool_registration",
+                        &format!(
+                            "Tool \"{}\" must define an object parameter schema.",
+                            def.name
+                        ),
+                    );
+                    continue;
+                }
                 let ext_tool_name = def.name.clone();
                 let ext_reg = Arc::clone(registry);
                 let ext_ctx_clone = Arc::clone(&shared_ext_ctx);
@@ -7391,6 +7415,58 @@ mod tests {
                 .iter()
                 .any(|m| matches!(m, AgentMessage::Custom { .. })),
             "the flush appends it"
+        );
+    }
+
+    /// An extension tool without an object parameter schema is dropped instead
+    /// of breaking provider requests, and the extension registry reports it as
+    /// a load error (TS #9300).
+    #[tokio::test]
+    async fn extension_tools_without_an_object_schema_are_rejected() {
+        use pi_extension_api::hook::HookHandler;
+
+        struct SchemaLessTool;
+        #[async_trait::async_trait]
+        impl HookHandler for SchemaLessTool {
+            fn name(&self) -> &'static str {
+                "schema_less"
+            }
+            fn register_tools(&self, tools: &mut pi_extension_api::ToolRegistry) {
+                tools.register(
+                    "noop",
+                    pi_extension_api::ToolDefinition {
+                        name: "noop".into(),
+                        description: "Do nothing".into(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let mut registry = crate::core::extensions::ExtensionRegistry::new();
+        registry.register(
+            Box::new(SchemaLessTool),
+            pi_extension_api::create_builtin_source_info("schema_less"),
+        );
+        let errors = registry.validate_tools();
+        assert_eq!(errors.len(), 1, "the registry reports the offending tool");
+        assert!(
+            errors[0].contains("must define an object parameter schema"),
+            "unexpected message: {}",
+            errors[0]
+        );
+
+        // The session drops it from the tool list it sends to providers.
+        let session = build_settle_test_session(Some(Arc::new(registry))).await;
+        assert!(
+            !session
+                .agent
+                .state()
+                .await
+                .tools
+                .iter()
+                .any(|t| t.name == "noop"),
+            "a schema-less tool must not reach the provider"
         );
     }
 

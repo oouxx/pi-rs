@@ -249,8 +249,51 @@ mod tests {
         );
     }
 
+    /// Clears the provider env vars a test asserts the absence of, and restores
+    /// them afterwards.
+    ///
+    /// `get_provider_env_value` falls back to the process env exactly like TS
+    /// `getProviderEnvValue`, so a machine that exports `ANTHROPIC_API_KEY`
+    /// would otherwise make "no key configured" assertions fail.
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn clear(names: &[&'static str]) -> Self {
+            static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let saved = names
+                .iter()
+                .map(|name| {
+                    let previous = std::env::var(name).ok();
+                    std::env::remove_var(name);
+                    (*name, previous)
+                })
+                .collect();
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, previous) in &self.saved {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_get_env_api_key_skips_anthropic_auth_token() {
+        let _guard = EnvGuard::clear(&[
+            ANTHROPIC_API_KEY_ENV,
+            ANTHROPIC_OAUTH_TOKEN_ENV,
+            ANTHROPIC_AUTH_TOKEN_ENV,
+        ]);
         // Only the gateway bearer token is set: it is not an API key, so
         // discovery must not return it (match TS `getEnvApiKey`).
         let auth_only = overlay(&[(ANTHROPIC_AUTH_TOKEN_ENV, "bearer")]);
@@ -269,6 +312,7 @@ mod tests {
 
     #[test]
     fn test_get_env_api_key_prefers_anthropic_oauth_over_api_key() {
+        let _guard = EnvGuard::clear(&[ANTHROPIC_API_KEY_ENV, ANTHROPIC_OAUTH_TOKEN_ENV]);
         let env = overlay(&[
             (ANTHROPIC_OAUTH_TOKEN_ENV, "oauth"),
             (ANTHROPIC_API_KEY_ENV, "key"),

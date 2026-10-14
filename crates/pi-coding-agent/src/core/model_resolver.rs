@@ -29,11 +29,11 @@ pub static DEFAULT_MODEL_PER_PROVIDER: LazyLock<HashMap<&'static str, &'static s
         m.insert("github-copilot", "gpt-5.4");
         m.insert("openrouter", "moonshotai/kimi-k2.6");
         m.insert("vercel-ai-gateway", "zai/glm-5.1");
-        m.insert("xai", "grok-4.20-0309-reasoning");
+        m.insert("xai", "grok-4.6");
         m.insert("groq", "openai/gpt-oss-120b");
-        m.insert("cerebras", "zai-glm-4.7");
-        m.insert("zai", "glm-5.1");
-        m.insert("zai-coding-cn", "glm-5.1");
+        m.insert("cerebras", "gpt-oss-120b");
+        m.insert("zai", "glm-5.3");
+        m.insert("zai-coding-cn", "glm-5.3");
         m.insert("minimax", "MiniMax-M2.7");
         m.insert("minimax-cn", "MiniMax-M2.7");
         m.insert("moonshotai", "kimi-k2.6");

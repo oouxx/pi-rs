@@ -892,20 +892,9 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
 
     push_simple_providers(&mut models, data, &simple);
 
-    // Curated exclusions that match the original script.
-    models.retain(|m| !(m.provider == "openai" && m.id == "gpt-5.6"));
-    models.retain(|m| {
-        m.provider != "xai"
-            || !matches!(
-                m.id.as_str(),
-                "grok-3"
-                    | "grok-3-fast"
-                    | "grok-4.20-0309-non-reasoning"
-                    | "grok-4.20-0309-reasoning"
-                    | "grok-build-0.1"
-                    | "grok-code-fast-1"
-            )
-    });
+    // Curated exclusions are applied to the combined list at the end (see
+    // `apply_curated_exclusions`): a retain here only sees the models pushed so
+    // far, while xAI arrives later, which silently made the xAI list a no-op.
 
     // ---- Amazon Bedrock（按 id 选择 region baseUrl、跳过不支持流式工具的模型） ----
     if let Some(items) = models_object(data, "amazon-bedrock") {
@@ -1840,6 +1829,84 @@ fn manual_models() -> Vec<BuildModel> {
         Some(deepseek_compat),
     ));
 
+    // Claude Opus 5.5 until models.dev includes it (TS keeps this hand entry).
+    models.push(manual_model(
+        "claude-opus-5-5",
+        "Claude Opus 5.5",
+        "anthropic-messages",
+        "anthropic",
+        "https://api.anthropic.com",
+        true,
+        &["text", "image"],
+        [4.0, 20.0, 0.2, 5.0],
+        1_000_000,
+        128_000,
+        None,
+    ));
+
+    // GPT-6 Sol / Luna hand entries (TS `OPENAI_STANDARD_COSTS`); long-context
+    // pricing and the context cap are applied by `apply_overrides`.
+    for (id, name, cost) in [
+        ("gpt-6-sol", "GPT-6 Sol", [2.0, 10.0, 0.2, 2.5]),
+        ("gpt-6-luna", "GPT-6 Luna", [0.1, 0.5, 0.01, 0.125]),
+    ] {
+        models.push(manual_model(
+            id,
+            name,
+            "openai-responses",
+            "openai",
+            "https://api.openai.com/v1",
+            true,
+            &["text", "image"],
+            cost,
+            OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+            128_000,
+            None,
+        ));
+    }
+
+    // The authenticated Copilot catalog advertised these on 2026-09-22 while
+    // models.dev lagged (TS `missingCopilotModels`).
+    for (id, name, api, cost) in [
+        (
+            "claude-opus-5.5",
+            "Claude Opus 5.5",
+            "anthropic-messages",
+            [4.0, 20.0, 0.2, 5.0],
+        ),
+        ("gpt-6-sol", "GPT-6 Sol", "openai-responses", [2.0, 10.0, 0.2, 2.5]),
+        (
+            "gpt-6-luna",
+            "GPT-6 Luna",
+            "openai-responses",
+            [0.1, 0.5, 0.01, 0.125],
+        ),
+    ] {
+        let mut entry = manual_model(
+            id,
+            name,
+            api,
+            "github-copilot",
+            "https://api.individual.githubcopilot.com",
+            true,
+            &["text", "image"],
+            cost,
+            1_000_000,
+            128_000,
+            None,
+        );
+        // Copilot hand entries carry long-context pricing directly: the
+        // override loop only prices `openai` models.
+        entry.cost = with_openai_long_context_pricing(&entry.cost);
+        entry.headers = Some(
+            COPILOT_HEADERS
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        );
+        models.push(entry);
+    }
+
     // Mistral Medium 3.5 (until models.dev includes it).
     models.push(manual_model(
         "mistral-medium-3.5",
@@ -2098,6 +2165,8 @@ pub fn run(out: &std::path::Path, check_only: bool) -> Result<()> {
             None,
         ));
     }
+
+    apply_curated_exclusions(&mut all_models);
 
     // 覆盖修正 → Azure 镜像 → 深层元数据（对齐 TS 顺序）。
     apply_overrides_all(&mut all_models);
@@ -2460,10 +2529,18 @@ fn supports_anthropic_mid_convo_effort(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
     let id = id.strip_prefix('~').unwrap_or(&id);
     let id = id.strip_prefix("anthropic/").unwrap_or(id);
-    let is_opus_5 = id == "claude-opus-5"
-        || (id.starts_with("claude-opus-5-")
-            && id.len() == "claude-opus-5-".len() + 8
-            && id["claude-opus-5-".len()..].chars().all(|c| c.is_ascii_digit()));
+    // TS `/^claude-opus-(?:5|5[.-]5)(?:-\d{8})?$/`: the bare id, the 5.5 ids,
+    // and either with a date suffix.
+    let date_suffix = |suffix: &str| {
+        suffix.is_empty()
+            || (suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()))
+    };
+    let is_opus_5 = id.strip_prefix("claude-opus-5").is_some_and(|suffix| {
+        date_suffix(suffix)
+            || suffix
+                .strip_prefix(['.', '-'])
+                .is_some_and(|rest| rest.strip_prefix('5').is_some_and(date_suffix))
+    });
     let is_fable_5_1 = (id.starts_with("claude-fable-5") || id.starts_with("claude-mythos-5"))
         && (id.contains(".1") || id.contains("-1"));
     is_opus_5 || is_fable_5_1
@@ -2606,6 +2683,8 @@ fn openai_responses_none_reasoning(model_id: &str) -> bool {
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-6-sol",
+        "gpt-6-luna",
     ]
     .contains(&model_id)
 }
@@ -2870,6 +2949,22 @@ fn apply_thinking_level_metadata(model: &mut BuildModel) {
             ]),
         );
     }
+    // Claude Opus 5.5 carries the full effort range (TS merges this map for the
+    // hand entry and for any models.dev entry that lists it early).
+    if api == "anthropic-messages" && id == "claude-opus-5-5" {
+        merge_thinking(
+            model,
+            &thinking_values(&[
+                ("off", None),
+                ("minimal", None),
+                ("low", Some("low")),
+                ("medium", Some("medium")),
+                ("high", Some("high")),
+                ("xhigh", Some("xhigh")),
+                ("max", Some("max")),
+            ]),
+        );
+    }
     if provider == "github-copilot" {
         type ThinkingOverride = (&'static str, &'static [(&'static str, Option<&'static str>)]);
         let overrides: &[ThinkingOverride] = &[
@@ -2937,9 +3032,17 @@ const OPENAI_TOOL_SEARCH_MODEL_IDS: &[&str] = &[
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
 ];
-const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS: &[&str] =
-    &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"];
+const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS: &[&str] = &[
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+];
 
 fn apply_openai_tool_search_metadata(model: &mut BuildModel) {
     let is_openai_responses = model.provider == "openai" && model.api == "openai-responses";
@@ -3052,6 +3155,21 @@ fn openai_gpt_56_standard_cost(model_id: &str) -> Option<BuildModelCost> {
             cache_write: 2.5,
             tiers: Vec::new(),
         }),
+        // TS `OPENAI_STANDARD_COSTS` for the GPT-6 pair.
+        "gpt-6-sol" => Some(BuildModelCost {
+            input: 2.0,
+            output: 10.0,
+            cache_read: 0.2,
+            cache_write: 2.5,
+            tiers: Vec::new(),
+        }),
+        "gpt-6-luna" => Some(BuildModelCost {
+            input: 0.1,
+            output: 0.5,
+            cache_read: 0.01,
+            cache_write: 0.125,
+            tiers: Vec::new(),
+        }),
         _ => None,
     }
 }
@@ -3067,6 +3185,10 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.4",
     "gpt-5.5",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "claude-opus-5.5",
 ];
 const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS: &[&str] = &[
     "gpt-5.4",
@@ -3075,6 +3197,8 @@ const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS: &[&str] = &[
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
 ];
 const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS: &[&str] = &[
     "gpt-5.4",
@@ -3085,6 +3209,8 @@ const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS: &[&str] = &[
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
 ];
 const OPENROUTER_KIMI_K3_MODEL_IDS: &[&str] = &["moonshotai/kimi-k3", "~moonshotai/kimi-latest"];
 
@@ -3183,6 +3309,32 @@ fn apply_overrides(model: &mut BuildModel) {
 
 /// Run the full metadata pipeline over the combined catalog (match the TS
 /// `for (const model of allModels) { apply* }` block).
+/// xAI models the original script never ships, and the models.dev OpenAI entry
+/// it drops (TS `XAI_BUILTIN_EXCLUDED_MODEL_IDS` /
+/// `MODELS_DEV_OPENAI_UNSUPPORTED_MODEL_IDS`), applied to the combined list the
+/// way the original filters `allModels`.
+fn apply_curated_exclusions(models: &mut Vec<BuildModel>) {
+    models.retain(|m| {
+        if m.provider == "openai" && m.id == "gpt-5.6" {
+            return false;
+        }
+        if m.provider == "xai"
+            && matches!(
+                m.id.as_str(),
+                "grok-3"
+                    | "grok-3-fast"
+                    | "grok-4.20-0309-non-reasoning"
+                    | "grok-4.20-0309-reasoning"
+                    | "grok-build-0.1"
+                    | "grok-code-fast-1"
+            )
+        {
+            return false;
+        }
+        true
+    });
+}
+
 fn apply_overrides_all(models: &mut [BuildModel]) {
     for model in models.iter_mut() {
         apply_overrides(model);

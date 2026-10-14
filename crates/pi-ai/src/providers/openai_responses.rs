@@ -360,16 +360,16 @@ fn assistant_text_message(
 fn convert_responses_messages(
     model: &Model,
     context: &Context,
-    deferred_tools: &std::collections::HashMap<String, Tool>,
+    anchors_additions: bool,
     compat: &OpenAIResponsesCompat,
 ) -> Result<Vec<Value>, String> {
-    convert_responses_messages_inner(model, context, deferred_tools, compat, false)
+    convert_responses_messages_inner(model, context, anchors_additions, compat, false)
 }
 
 fn convert_responses_messages_inner(
     model: &Model,
     context: &Context,
-    deferred_tools: &std::collections::HashMap<String, Tool>,
+    anchors_additions: bool,
     compat: &OpenAIResponsesCompat,
     native_system_messages: bool,
 ) -> Result<Vec<Value>, String> {
@@ -392,8 +392,7 @@ fn convert_responses_messages_inner(
     };
     // Loaded tool names, deduplicated across the whole message list (TS
     // `loadedToolNames` at `convertResponsesMessages` scope).
-    let mut loaded_tool_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+
 
     // Map of grammar-constrained tool name -> input property.
     let supports_openai_grammar_tools = compat.supports_openai_grammar_tools.unwrap_or(false);
@@ -506,10 +505,10 @@ fn convert_responses_messages_inner(
                                 used_id.split_once('|').unwrap_or((&used_id, ""));
                             let mut item_id: Option<String> = Some(item_id_raw.to_string());
                             let custom_input_property = grammar_tool_input_properties.get(name);
-                            // TS `canReplayNamespace`: same model, or the tool
-                            // is a deferred tool loaded from the transcript.
-                            let can_replay_namespace = is_same_model
-                                || deferred_tools.contains_key(name.as_str());
+                            // TS: a tool-call namespace only replays on the
+                            // same model. The deferred-tool exception went away
+                            // with the request-level split (#9548).
+                            let can_replay_namespace = is_same_model;
                             // Drop non-fc_* ids and foreign fc_* ids (unless the
                             // tool is grammar-constrained, which keeps its id).
                             // Match TS: drop iff `(!isSameModel && fc_)` OR
@@ -569,7 +568,6 @@ fn convert_responses_messages_inner(
                 tool_call_id,
                 tool_name,
                 content,
-                added_tool_names,
                 ..
             } => {
                 // transform_messages 已归一化 toolResult 的 toolCallId。
@@ -589,72 +587,12 @@ fn convert_responses_messages_inner(
                         "output": output,
                     }));
                 }
-
-                // Deferred tools: load tools added by this tool result
-                // (TS 0.84.2): prefer a message-anchored `additional_tools`
-                // item when the model supports it, else emit
-                // `tool_search_call` + `tool_search_output`. Names are
-                // deduplicated across the whole message list.
-                let mut deferred: Vec<Tool> = Vec::new();
-                if let Some(names) = added_tool_names {
-                    for name in names {
-                        if let Some(tool) = deferred_tools.get(name) {
-                            if loaded_tool_names.insert(name.clone()) {
-                                deferred.push(tool.clone());
-                            }
-                        }
-                    }
-                }
-                if !deferred.is_empty() {
-                    if deferred_tools_mode == Some("additional-tools") {
-                        // Message-anchored additional_tools (no defer_loading
-                        // marker, matching TS convertResponsesTools without
-                        // deferLoading in this mode).
-                        messages.push(json!({
-                            "type": "additional_tools",
-                            "role": "developer",
-                            "tools": convert_responses_tools(
-                                &deferred,
-                                compat_supports_strict_mode(compat),
-                                supports_openai_grammar_tools,
-                                false,
-                            )
-                            .unwrap_or_default(),
-                        }));
-                    } else if deferred_tools_mode == Some("tool-search") {
-                        let names: Vec<String> = deferred.iter().map(|t| t.name.clone()).collect();
-                        let search_call_id = format!(
-                            "pi_tool_load_{}",
-                            short_hash(&format!("{used_id}:{}", names.join(",")))
-                        );
-                        messages.push(json!({
-                            "type": "tool_search_call",
-                            "call_id": search_call_id,
-                            "execution": "client",
-                            "status": "completed",
-                            "arguments": { "query": names.join(" "), "limit": names.len() },
-                        }));
-                        messages.push(json!({
-                            "type": "tool_search_output",
-                            "call_id": search_call_id,
-                            "execution": "client",
-                            "status": "completed",
-                            "tools": convert_responses_tools(
-                                &deferred,
-                                compat_supports_strict_mode(compat),
-                                supports_openai_grammar_tools,
-                                true,
-                            )
-                            .unwrap_or_default(),
-                        }));
-                    }
-                }
             }
             // Later system messages only reach this point on models that accept
             // them natively; otherwise the transcript is collapsed first.
             // The leading system message carries the prompt; later ones render
             // as in-place updates (TS `convertResponsesMessages`).
-            Message::System { .. } => {
+            Message::System { tools_added, .. } => {
                 if native_system_messages {
                     let text = if msg_index == 0 {
                         crate::utils::transcript::typed_system_message_text(msg)
@@ -664,6 +602,59 @@ fn convert_responses_messages_inner(
                     if !text.is_empty() {
                         messages.push(json!({ "role": instruction_role, "content": text }));
                     }
+                }
+
+                // Tool changes are anchored on the system message that declared
+                // them, and only when additions may anchor the request list
+                // (TS `appendSystemToolAdditions`). The request-level deferred
+                // split was removed with #9548.
+                let additions: Vec<Tool> = if anchors_additions {
+                    tools_added.clone().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                if additions.is_empty() {
+                    continue;
+                }
+                if deferred_tools_mode == Some("additional-tools") {
+                    messages.push(json!({
+                        "type": "additional_tools",
+                        "role": "developer",
+                        "tools": convert_responses_tools(
+                            &additions,
+                            compat_supports_strict_mode(compat),
+                            supports_openai_grammar_tools,
+                            false,
+                        )
+                        .unwrap_or_default(),
+                    }));
+                } else if deferred_tools_mode == Some("tool-search") {
+                    let names: Vec<String> =
+                        additions.iter().map(|t| t.name.clone()).collect();
+                    let search_call_id = format!(
+                        "pi_tool_load_{}",
+                        short_hash(&format!("{msg_index}:{}", names.join(",")))
+                    );
+                    messages.push(json!({
+                        "type": "tool_search_call",
+                        "call_id": search_call_id,
+                        "execution": "client",
+                        "status": "completed",
+                        "arguments": { "query": names.join(" "), "limit": names.len() },
+                    }));
+                    messages.push(json!({
+                        "type": "tool_search_output",
+                        "call_id": search_call_id,
+                        "execution": "client",
+                        "status": "completed",
+                        "tools": convert_responses_tools(
+                            &additions,
+                            compat_supports_strict_mode(compat),
+                            supports_openai_grammar_tools,
+                            true,
+                        )
+                        .unwrap_or_default(),
+                    }));
                 }
             }
         }
@@ -909,63 +900,6 @@ pub(crate) fn append_custom_tool_call_input(
         map.insert(property, Value::String(next_input));
     }
     Ok(delta)
-}
-
-pub(crate) fn split_deferred_tools(
-    messages: &[Message],
-    tools: Option<&[Tool]>,
-    enabled: bool,
-) -> (Vec<Tool>, std::collections::HashMap<String, Tool>) {
-    let mut unique_tools: std::collections::HashMap<String, Tool> =
-        std::collections::HashMap::new();
-    if let Some(tools) = tools {
-        for tool in tools {
-            unique_tools.insert(tool.name.clone(), tool.clone());
-        }
-    }
-    if !enabled {
-        return (
-            unique_tools.into_values().collect(),
-            std::collections::HashMap::new(),
-        );
-    }
-
-    let mut deferred_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for message in messages {
-        match message {
-            Message::Assistant { content, .. } => {
-                for block in content {
-                    if let ContentBlock::ToolCall { name, .. } = block {
-                        used_names.insert(name.clone());
-                    }
-                }
-            }
-            Message::ToolResult {
-                usage: None,
-                added_tool_names: Some(names),
-                ..
-            } => {
-                for name in names {
-                    if !used_names.contains(name) {
-                        deferred_names.insert(name.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut immediate: Vec<Tool> = Vec::new();
-    let mut deferred: std::collections::HashMap<String, Tool> = std::collections::HashMap::new();
-    for (name, tool) in unique_tools {
-        if deferred_names.contains(&name) {
-            deferred.insert(name, tool);
-        } else {
-            immediate.push(tool);
-        }
-    }
-    (immediate, deferred)
 }
 
 fn convert_responses_tools(
@@ -1936,23 +1870,18 @@ fn build_request_body(
     options: Option<&StreamOptions>,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     let compat = get_compat(model);
-    // Deferred loading is enabled when either loading mode is supported
-    // (TS `deferredToolsMode !== undefined` gates splitDeferredTools).
+    // Deferred loading is enabled when either loading mode is supported; tool
+    // changes are then anchored on the system messages that declared them
+    // (TS `resolveTranscriptTools` + `appendSystemToolAdditions`).
     let deferred_loading_enabled = compat.supports_additional_tools.unwrap_or(false)
         || compat.supports_tool_search.unwrap_or(false);
-    // Tools come from the transcript (TS `getCurrentTools(context.messages)`);
-    // the request-level shorthand is only filled when the transcript was
-    // collapsed for a model without mid-conversation system messages.
-    let request_tools =
-        crate::utils::transcript::request_tools(&context.messages, context.tools.as_deref());
-    let (immediate_tools, deferred_tools) = split_deferred_tools(
+    // The request-level list is the initial `toolsAdded` when additions anchor
+    // it, else the current tool list (TS `resolveTranscriptTools`). The
+    // shorthand fills in when the transcript was collapsed.
+    let (request_tools, anchors_additions) = crate::utils::transcript::transcript_request_tools(
         &context.messages,
-        if request_tools.is_empty() {
-            None
-        } else {
-            Some(&request_tools)
-        },
         deferred_loading_enabled,
+        context.tools.as_deref(),
     );
     // 对齐 TS convertResponsesMessages：先 transformMessages 再转换。
     let transformed = crate::utils::transform::transform_messages(
@@ -1968,15 +1897,15 @@ fn build_request_body(
     let messages = convert_responses_messages_inner(
         model,
         &transformed_context,
-        &deferred_tools,
+        anchors_additions,
         &compat,
         compat.supports_mid_convo_system_messages.unwrap_or(false),
     )?;
-    let tools = if immediate_tools.is_empty() {
+    let tools = if request_tools.is_empty() {
         None
     } else {
         Some(convert_responses_tools(
-            &immediate_tools,
+            &request_tools,
             compat_supports_strict_mode(&compat),
             compat.supports_openai_grammar_tools.unwrap_or(false),
             false,
@@ -2405,7 +2334,7 @@ mod tests {
         let items = convert_responses_messages_inner(
             &model,
             &context,
-            &std::collections::HashMap::new(),
+            false,
             &OpenAIResponsesCompat::default(),
             true,
         )
@@ -2421,7 +2350,7 @@ mod tests {
         let non_native = convert_responses_messages_inner(
             &model,
             &context,
-            &std::collections::HashMap::new(),
+            false,
             &OpenAIResponsesCompat::default(),
             false,
         )
@@ -2480,7 +2409,7 @@ mod tests {
         let items = convert_responses_messages(
             &model,
             &context,
-            &std::collections::HashMap::new(),
+            false,
             &get_compat(&model),
         ).unwrap();
         assert_eq!(items.len(), 2);
@@ -2513,7 +2442,7 @@ mod tests {
         let items = convert_responses_messages(
             &model,
             &context,
-            &std::collections::HashMap::new(),
+            false,
             &get_compat(&model),
         ).unwrap();
         assert_eq!(items.len(), 1);
@@ -2543,7 +2472,7 @@ mod tests {
         let items = convert_responses_messages(
             &model,
             &context,
-            &std::collections::HashMap::new(),
+            false,
             &get_compat(&model),
         ).unwrap();
         assert_eq!(items.len(), 1);
@@ -2685,13 +2614,8 @@ mod tests {
         // Invalid grammar input must error (match TS throw), not send empty input.
         for invalid in [serde_json::json!({}), serde_json::json!({ "payload": 42 })] {
             let ctx = make_context(invalid);
-            let err = convert_responses_messages(
-                &model,
-                &ctx,
-                &std::collections::HashMap::new(),
-                &get_compat(&model),
-            )
-            .unwrap_err();
+            let err = convert_responses_messages(&model, &ctx, false, &get_compat(&model))
+                .unwrap_err();
             assert!(
                 err.contains("requires argument \"payload\" to be a string"),
                 "unexpected error: {err}"
@@ -2700,13 +2624,8 @@ mod tests {
 
         // Valid input replays as a custom_tool_call + custom_tool_call_output.
         let ctx = make_context(serde_json::json!({ "payload": "abc" }));
-        let items = convert_responses_messages(
-            &model,
-            &ctx,
-            &std::collections::HashMap::new(),
-            &get_compat(&model),
-        )
-        .unwrap();
+        let items = convert_responses_messages(&model, &ctx, false, &get_compat(&model))
+            .unwrap();
         assert!(items.iter().any(|i| i.get("type") == Some(&json!("custom_tool_call"))
             && i.get("call_id") == Some(&json!("call_1"))
             && i.get("id") == Some(&json!("ctc_1"))
@@ -3093,88 +3012,83 @@ mod tests {
     }
 
     #[test]
-    fn deferred_tools_additional_tools_mode() {
+    fn tool_additions_are_anchored_on_system_messages() {
+        // Tool changes are declared where they happened: a system message that
+        // adds tools produces the `additional_tools` (or tool-search) item
+        // (TS `appendSystemToolAdditions`), not the tool result.
         let model = make_model();
         let context = Context {
             system_prompt: None,
-            messages: vec![Message::ToolResult {
-                tool_call_id: "call_1".into(),
-                tool_name: "bash".into(),
-                content: vec![ContentBlock::text("done")],
-                details: None,
-                is_error: false,
-                usage: None,
-                added_tool_names: Some(vec!["goal".to_string()]),
-                timestamp: 0,
-            }],
-            tools: Some(vec![make_tool()]),
+            messages: vec![
+                Message::System {
+                    content: crate::types::SystemContent::Text("prompt".into()),
+                    sections: None,
+                    tools_added: Some(vec![make_tool()]),
+                    tools_removed: None,
+                    timestamp: 0,
+                },
+                Message::User {
+                    content: vec![ContentBlock::text("hi")],
+                    timestamp: 1,
+                },
+                Message::System {
+                    content: crate::types::SystemContent::Text(String::new()),
+                    sections: None,
+                    tools_added: Some(vec![make_tool()]),
+                    tools_removed: None,
+                    timestamp: 2,
+                },
+            ],
+            tools: None,
         };
-        let deferred: std::collections::HashMap<String, Tool> =
-            std::collections::HashMap::from([("goal".to_string(), make_tool())]);
 
-        // additional-tools mode -> one anchored `additional_tools` item, no
-        // tool search items, no defer_loading marker.
+        // additional-tools mode: the later declaration anchors one item.
         let compat = OpenAIResponsesCompat {
             supports_additional_tools: Some(true),
+            supports_mid_convo_system_messages: Some(true),
             ..Default::default()
         };
-        let messages = convert_responses_messages(&model, &context, &deferred, &compat).unwrap();
-        let types: Vec<&str> = messages
+        let messages = convert_responses_messages(&model, &context, true, &compat).unwrap();
+        let additional: Vec<&Value> = messages
             .iter()
-            .filter_map(|m| m.get("type").and_then(|t| t.as_str()))
+            .filter(|m| m.get("type").and_then(Value::as_str) == Some("additional_tools"))
             .collect();
         assert_eq!(
-            types,
-            vec!["function_call_output", "additional_tools"],
-            "additional-tools mode must anchor additional_tools after the tool result"
+            additional.len(),
+            2,
+            "one anchored item per declaring system message"
         );
-        let at = &messages[1];
-        assert_eq!(at["role"], "developer");
-        let tools = at["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
+        assert_eq!(additional[0]["role"], "developer");
+        let tools = additional[0]["tools"].as_array().unwrap();
         assert_eq!(tools[0]["name"], "goal");
         assert!(
             tools[0].get("defer_loading").is_none(),
             "additional_tools mode has no defer_loading marker"
         );
+
+        // Without anchoring the same declarations produce no tool items.
+        let messages = convert_responses_messages(&model, &context, false, &compat).unwrap();
         assert!(
-            !types.contains(&"tool_search_call"),
-            "additional-tools mode must not emit tool search"
+            !messages
+                .iter()
+                .any(|m| m.get("type").and_then(Value::as_str) == Some("additional_tools")),
+            "additions only anchor when the resolver says so"
         );
 
-        // tool-search fallback mode → tool_search_call + tool_search_output.
+        // tool-search fallback mode keeps the call + output pair.
         let compat_search = OpenAIResponsesCompat {
             supports_tool_search: Some(true),
             supports_additional_tools: None,
+            supports_mid_convo_system_messages: Some(true),
             ..Default::default()
         };
-        let messages =
-            convert_responses_messages(&model, &context, &deferred, &compat_search).unwrap();
+        let messages = convert_responses_messages(&model, &context, true, &compat_search).unwrap();
         let types: Vec<&str> = messages
             .iter()
             .filter_map(|m| m.get("type").and_then(|t| t.as_str()))
             .collect();
-        assert_eq!(
-            types,
-            vec!["function_call_output", "tool_search_call", "tool_search_output"],
-            "tool-search mode keeps the fallback path"
-        );
-        let output = messages[2].clone();
-        let tools = output["tools"].as_array().unwrap();
-        assert_eq!(tools[0]["name"], "goal");
-        assert_eq!(
-            tools[0]["defer_loading"],
-            serde_json::json!(true),
-            "tool-search mode marks tools defer_loading"
-        );
-
-        // No deferred support -> plain function_call_output only.
-        let ms = convert_responses_messages(&model, &context, &deferred, &OpenAIResponsesCompat::default()).unwrap();
-        let types: Vec<&str> = ms
-            .iter()
-            .filter_map(|m| m.get("type").and_then(|t| t.as_str()))
-            .collect();
-        assert_eq!(types, vec!["function_call_output"]);
+        assert!(types.contains(&"tool_search_call"));
+        assert!(types.contains(&"tool_search_output"));
     }
 
     /// Mid-conversation models keep the transcript system messages, so the

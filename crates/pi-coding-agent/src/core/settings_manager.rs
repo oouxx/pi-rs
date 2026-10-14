@@ -664,8 +664,11 @@ impl SettingsManager {
 
         match raw_content {
             Some(content) => {
-                // Parse JSON and migrate
-                match serde_json::from_str::<serde_json::Value>(&content) {
+                // Parse JSON and migrate. A leading UTF-8 BOM is dropped first:
+                // settings files written by other tools may carry one, and
+                // `serde_json` rejects it (TS #8337 `stripBom`).
+                let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
+                match serde_json::from_str::<serde_json::Value>(content) {
                     Ok(mut json) => {
                         migrate_settings(&mut json);
                         match serde_json::from_value::<Settings>(json) {
@@ -1997,6 +2000,29 @@ mod tests {
 
         mgr.set_compaction_enabled(false);
         assert!(!mgr.get_compaction_enabled());
+    }
+
+    /// A leading UTF-8 BOM on a settings file is ignored (TS #8337).
+    #[test]
+    fn test_settings_file_with_leading_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            format!(
+                "\u{FEFF}{}",
+                serde_json::json!({"defaultModel": "global-model"})
+            ),
+        )
+        .unwrap();
+
+        let mgr = SettingsManager::create(dir.path().to_str().unwrap(), Some(agent_dir.to_str().unwrap()));
+        assert_eq!(
+            mgr.get_default_model(),
+            Some("global-model"),
+            "a BOM must not hide the settings"
+        );
     }
 
     /// `compaction.modelOverrides` parses from the settings file and reaches

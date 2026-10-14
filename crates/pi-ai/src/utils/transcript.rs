@@ -283,6 +283,24 @@ pub fn request_tools(
     )
 }
 
+/// Tools the request must declare plus whether `toolsAdded` on system messages
+/// may anchor that list (TS `resolveTranscriptTools`).
+///
+/// When additions anchor the list the request declares only the initial
+/// `toolsAdded`; later additions are declared where they happened. Falls back
+/// to the shorthand when the transcript carries no system message.
+#[must_use]
+pub fn transcript_request_tools(
+    messages: &[crate::types::Message],
+    supports_tool_additions: bool,
+    shorthand: Option<&[Tool]>,
+) -> (Vec<Tool>, bool) {
+    transcript_values(messages).map_or_else(
+        || (shorthand_or_empty(shorthand), false),
+        |values| resolve_transcript_tools(&values, supports_tool_additions),
+    )
+}
+
 /// Every tool declared anywhere in the transcript
 /// (TS `getDeclaredTools(context.messages)`).
 #[must_use]

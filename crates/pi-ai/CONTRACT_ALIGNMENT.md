@@ -61,7 +61,7 @@
 | usage 解析 | input 减 cached+write、reasoning 从 `output_tokens_details` | 同左 | 是 | — |
 | stop reason 映射 | completed→stop、incomplete+max_output_tokens→length、failed/cancelled→error、有 toolCall 且 stop→toolUse | 同左 | 是 | — |
 | grammar 约束采样 | `custom_tool_call` + grammar JSON buffer | 已实现（`Tool.constrained_sampling` + `GrammarVariants` + 增量重建） | 是 | 见 DEVIATIONS.md #5 |
-| deferred tools | `tool_search_call`/`tool_search_output` | 已实现（`split_deferred_tools` + `defer_loading:true`） | 是 | 见 DEVIATIONS.md #5 |
+| deferred tools | `resolveTranscriptTools` + `appendSystemToolAdditions`：请求级工具列表为初始 `toolsAdded`（可锚定时）否则当前工具；工具变更由**声明它的 system 消息**锚定成 `additional_tools`（或 `tool_search_call`+`tool_search_output`） | 同左（`transcript::transcript_request_tools` + system 消息分支发射；请求级 `split_deferred_tools` 已删除） | 是 | 见 DEVIATIONS.md #5；修复见 PORTING_MISTAKES.md |
 | service tier 定价 | flex/priority 倍率 | 已实现 | 是 | 见 DEVIATIONS.md #5 |
 | `rawStopReason` | 输出字段 | 已实现 | 是 | 见 DEVIATIONS.md #5 |
 | 早期流结束重试 | "stream ended before a terminal response event" 分类为可重试（v0.81.0 #6727） | `_is_retryable_error_message` 已含该模式 | 是 | 修复见 PORTING_MISTAKES.md |

@@ -1369,7 +1369,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 let force_adaptive = has_reasoning_option(model, "effort")
                     || FIREWORKS_ADAPTIVE_THINKING_FALLBACK_MODELS.contains(&id.as_str());
                 let mut compat = Compat::new()
-                    .set("supportsToolReferences", true)
                     .set("allowEmptySignature", true)
                     .session_affinity(true)
                     .set("supportsEagerToolInputStreaming", false)

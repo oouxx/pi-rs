@@ -14,9 +14,16 @@ fn normalize_newlines(value: &str) -> String {
     value.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+/// Drop a leading UTF-8 BOM. `serde`/`yaml` frontmatter is read from files
+/// written by other tools, and a BOM would otherwise hide the opening `---`
+/// (TS #8337 `stripBom`).
+fn strip_bom(content: &str) -> &str {
+    content.strip_prefix('\u{FEFF}').unwrap_or(content)
+}
+
 /// Extract raw YAML frontmatter string from content.
 fn extract_frontmatter(content: &str) -> (Option<String>, String) {
-    let normalized = normalize_newlines(content);
+    let normalized = normalize_newlines(strip_bom(content));
 
     if !normalized.starts_with("---") {
         return (None, normalized);

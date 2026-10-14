@@ -8207,8 +8207,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/deepseek-v4-flash-vision-exp": {
@@ -8245,8 +8244,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/deepseek-v4-pro": {
@@ -8282,8 +8280,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/deepseek-v4-pro-0813": {
@@ -8319,8 +8316,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/deepseek-v4p1-flash": {
@@ -8357,8 +8353,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/glm-5p2": {
@@ -8500,8 +8495,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/inkling": {
@@ -8528,8 +8522,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/kimi-k2p6": {
@@ -8556,8 +8549,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/kimi-k2p7-code": {
@@ -8584,8 +8576,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/kimi-k3": {
@@ -8660,8 +8651,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/minimax-m3": {
@@ -8697,8 +8687,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/mistral-large-3-fp8": {
@@ -8725,8 +8714,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/muse-glimmer-30b": {
@@ -8763,8 +8751,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/nemotron-3-ultra-nvfp4": {
@@ -8790,8 +8777,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b": {
@@ -8817,8 +8803,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/qwen3p7-plus": {
@@ -8855,8 +8840,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/qwen3p8-2p4t-a95b": {
@@ -8892,8 +8876,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/models/qwen3p8-max": {
@@ -8930,8 +8913,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/routers/deepseek-flash-latest": {
@@ -8968,8 +8950,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/routers/deepseek-pro-latest": {
@@ -9005,8 +8986,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/routers/glm-5p2-fast": {
@@ -9219,8 +9199,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/routers/kimi-k3-fast": {
@@ -9296,8 +9275,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     },
     "accounts/fireworks/routers/minimax-latest": {
@@ -9333,8 +9311,7 @@
         "sendSessionAffinityHeaders": true,
         "supportsCacheControlOnTools": false,
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": false,
-        "supportsToolReferences": true
+        "supportsLongCacheRetention": false
       }
     }
   },

@@ -156,7 +156,12 @@ impl Input {
             return;
         }
         let before = &self.buf[..cursor];
-        if let Some((target_id, marker_len)) = marker_before_cursor(before) {
+        // TS `segment()` only merges markers whose id is still in the registry
+        // (`segmentWithMarkers(text, …, validPasteIds())`), so a marker left
+        // without an entry is ordinary text and backspace deletes one grapheme.
+        if let Some((target_id, marker_len)) = marker_before_cursor(before)
+            .filter(|(id, _)| self.pastes.contains_key(id))
+        {
             // Drop the paste, decrement the counter, shift higher ids down
             // and renumber markers (TS `handleBackspace`).
             self.pastes.remove(&target_id);
@@ -179,17 +184,49 @@ impl Input {
         let _ = self.buf.apply(EditCommand::DeleteGraphemeBackward);
     }
 
+    /// Delete forward (TS `handleForwardDelete`): the grapheme at the cursor,
+    /// which the marker-aware segmentation makes a whole paste marker when its
+    /// id is valid. TS leaves the registry entry in place (and does not
+    /// renumber) — only backspace drops the entry.
     pub fn delete(&mut self) {
+        let cursor = self.buf.cursor_byte();
+        let marker = parse_paste_marker(&self.buf.text()[cursor..])
+            .filter(|(id, _)| self.pastes.contains_key(id))
+            .map(|(_, marker_len)| marker_len);
+        if let Some(marker_len) = marker {
+            let mut new_text = self.buf.text().to_string();
+            new_text.replace_range(cursor..cursor + marker_len, "");
+            self.buf = EditBuffer::from_parts(new_text, cursor);
+            return;
+        }
         let _ = self.buf.apply(EditCommand::DeleteGraphemeForward);
     }
 
     /// Move left by one grapheme (vendored kernel: CJK/emoji-cluster safe).
+    /// A valid paste marker is one grapheme (TS `moveCursor` uses the
+    /// marker-aware `segment(text, "grapheme")`).
     pub fn move_left(&mut self) {
+        let cursor = self.buf.cursor_byte();
+        if let Some((_, marker_len)) = marker_before_cursor(&self.buf[..cursor])
+            .filter(|(id, _)| self.pastes.contains_key(id))
+        {
+            let _ = self.buf.set_cursor_byte(cursor - marker_len);
+            return;
+        }
         let _ = self.buf.apply(EditCommand::MoveGraphemeLeft);
     }
 
-    /// Move right by one grapheme (vendored kernel).
+    /// Move right by one grapheme (vendored kernel); a valid paste marker is
+    /// one grapheme (TS `moveCursor`).
     pub fn move_right(&mut self) {
+        let cursor = self.buf.cursor_byte();
+        let marker = parse_paste_marker(&self.buf.text()[cursor..])
+            .filter(|(id, _)| self.pastes.contains_key(id))
+            .map(|(_, marker_len)| marker_len);
+        if let Some(marker_len) = marker {
+            let _ = self.buf.set_cursor_byte(cursor + marker_len);
+            return;
+        }
         let _ = self.buf.apply(EditCommand::MoveGraphemeRight);
     }
     pub fn move_home(&mut self) { let _ = self.buf.set_cursor_byte(0); }
@@ -265,10 +302,17 @@ fn parse_paste_marker(s: &str) -> Option<(u64, usize)> {
 }
 
 /// If `before` ends with a paste marker, return `(paste_id, marker_byte_len)`.
+///
+/// The marker must end **exactly** at the cursor: TS asks whether the last
+/// grapheme before the cursor is a marker, so a marker followed by more text is
+/// not "before the cursor" even though it parses on its own.
 fn marker_before_cursor(before: &str) -> Option<(u64, usize)> {
     let start = before.rfind("[paste #")?;
-    let tail = &before[start..];
-    parse_paste_marker(tail)
+    let (id, marker_len) = parse_paste_marker(&before[start..])?;
+    if start + marker_len != before.len() {
+        return None;
+    }
+    Some((id, marker_len))
 }
 
 impl Default for Input {
@@ -353,6 +397,90 @@ mod tests {
         input.handle_paste(&big);
         assert_eq!(input.value(), "[paste #1 1001 chars]");
         assert_eq!(input.expanded_value(), big);
+    }
+
+    /// 光标左右移动把有效 marker 当一个字素（TS `moveCursor` 用 marker-aware
+    /// 的 `segment`），悬空 marker 则按普通文本逐字移动。
+    #[test]
+    fn cursor_moves_treat_a_valid_marker_as_one_grapheme() {
+        let mut input = Input::new();
+        let big = "x".repeat(20_000);
+        input.handle_paste(&big);
+        input.insert_str(" tail");
+
+        let marker_len = "[paste #1 20000 chars]".len();
+        // 行首一次右移即跨过整个 marker（不是 21 次）。
+        input.move_home();
+        input.move_right();
+        assert_eq!(input.cursor_pos(), marker_len, "一次跨过整个 marker");
+        // 再过一格是 marker 后的第一个字符。
+        input.move_right();
+        assert_eq!(input.cursor_pos(), marker_len + 1, "之后按字素移动");
+        // 左移同理：回到 marker 末尾，再一次跨回行首。
+        input.move_left();
+        assert_eq!(input.cursor_pos(), marker_len);
+        input.move_left();
+        assert_eq!(input.cursor_pos(), 0, "一次跨回 marker 起点");
+
+        // 悬空 marker：逐字移动。
+        let mut dangling = Input::new();
+        dangling.set_value("[paste #1 20000 chars]");
+        dangling.move_home();
+        dangling.move_right();
+        assert_eq!(dangling.cursor_pos(), 1, "悬空 marker 只移动一个字素");
+    }
+
+    /// 悬空 marker（文本还在、表项已无）按普通文本处理：TS 的
+    /// `segmentWithMarkers` 只合并**有效 id**，所以退格删一个字符、
+    /// 前向删除也只删一个字符。
+    #[test]
+    fn dangling_paste_marker_is_plain_text() {
+        let mut input = Input::new();
+        // `set_value` 是 TS `setText` 语义：清表，但文本里的 marker 留下。
+        input.set_value("[paste #1 20000 chars]");
+        assert_eq!(input.expanded_value(), "[paste #1 20000 chars]");
+
+        input.backspace();
+        assert_eq!(
+            input.value(),
+            "[paste #1 20000 chars",
+            "悬空 marker 的退格只删一个字符"
+        );
+
+        input.move_home();
+        input.delete();
+        assert_eq!(
+            input.value(),
+            "paste #1 20000 chars",
+            "悬空 marker 的前向删除也只删一个字符"
+        );
+    }
+
+    /// 有效 marker：退格整块删 + 删表项 + 重编号；前向删除整块删但保留表项
+    /// （TS `handleBackspace` / `handleForwardDelete` 的非对称语义）。
+    #[test]
+    fn valid_paste_marker_is_atomic_for_both_deletions() {
+        let mut input = Input::new();
+        let big = "x".repeat(20_000);
+        input.handle_paste(&big);
+        input.insert_str(" tail");
+
+        // 前向删除：光标移到行首（marker 之前），整块删掉 marker。
+        input.move_home();
+        input.delete();
+        assert_eq!(input.value(), " tail", "前向删除整块移除 marker");
+        assert_eq!(
+            input.expanded_value(),
+            " tail",
+            "表项保留但 marker 文本已删，展开无影响"
+        );
+
+        // 退格：重建后整体删掉 marker 并清表项。
+        let mut input = Input::new();
+        input.handle_paste(&big);
+        input.backspace();
+        assert_eq!(input.value(), "");
+        assert_eq!(input.expanded_value(), "", "退格后表项已移除");
     }
 
     /// marker 后面还有文本时也必须展开（TS 的 marker 正则是**有界**的：
@@ -456,27 +584,15 @@ mod tests {
         assert_eq!(input.value(), "[paste #1 +11 lines][paste #2 +11 lines]");
         // Move cursor to the start of the second marker, then backspace over
         // the first marker.
+        // 光标移到第一个 marker 之后：marker 是一个字素，一次右移即跨过
+        // （TS `moveCursor` 用 marker-aware 的 `segment`）。
         input.move_home();
-        input.move_right(); // over '['
-        input.move_right(); // over 'p'
-        input.move_right(); // over 'a'
-        input.move_right(); // over 's'
-        input.move_right(); // over 't'
-        input.move_right(); // over 'e'
-        input.move_right(); // over ' '
-        input.move_right(); // over '#'
-        input.move_right(); // over '1'
-        input.move_right(); // over ' '
-        input.move_right(); // over '+'
-        input.move_right(); // over '1'
-        input.move_right(); // over '1'
-        input.move_right(); // over ' '
-        input.move_right(); // over 'l'
-        input.move_right(); // over 'i'
-        input.move_right(); // over 'n'
-        input.move_right(); // over 'e'
-        input.move_right(); // over 's'
-        input.move_right(); // over ']'
+        input.move_right();
+        assert_eq!(
+            input.cursor_pos(),
+            "[paste #1 +11 lines]".len(),
+            "一次跨过第一个 marker"
+        );
         // Cursor is now right after the first marker. Backspace removes it.
         input.backspace();
         assert_eq!(input.value(), "[paste #1 +11 lines]", "second marker renumbered to #1");

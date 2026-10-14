@@ -149,6 +149,20 @@ pub async fn handle_command(
             Some(rpc_success(id, "abort_bash", None))
         }
 
+        // Clear queued steering and follow-up messages, returning their text so
+        // a client can restore them into its editor (TS `clear_queue`).
+        RpcCommand::ClearQueue { id } => {
+            let (steering, follow_up) = session.clear_all_queues().await;
+            Some(rpc_success(
+                id,
+                "clear_queue",
+                Some(serde_json::json!({
+                    "steering": steering,
+                    "followUp": follow_up,
+                })),
+            ))
+        }
+
         RpcCommand::Bash {
             id,
             command,

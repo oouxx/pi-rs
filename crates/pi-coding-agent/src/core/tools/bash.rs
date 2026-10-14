@@ -646,7 +646,7 @@ impl BashOperations for LocalBashOperations {
 
 /// Map an exit status to a conventional exit code (TS a8b3dd199): signal
 /// termination has no `code()`, so report `128 + signal` on Unix.
-fn exit_code_from_status(status: std::process::ExitStatus) -> Option<i32> {
+pub(crate) fn exit_code_from_status(status: std::process::ExitStatus) -> Option<i32> {
     if let Some(code) = status.code() {
         return Some(code);
     }

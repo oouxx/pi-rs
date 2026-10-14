@@ -226,18 +226,25 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--no-skills" => result.no_skills = true,
 
             "--mode" => {
-                i += 1;
-                if i < args.len() {
-                    match args[i].as_str() {
-                        "json" => result.mode = OutputMode::Json,
-                        "rpc" => result.mode = OutputMode::Rpc,
-                        "interactive" | "tui" => result.mode = OutputMode::Interactive,
-                        "acp" => result.mode = OutputMode::Acp,
-                        "text" => result.mode = OutputMode::Text,
-                        other => result.invalid_mode = Some(other.to_string()),
+                // A missing value, or one that is another flag, is reported and
+                // the flag itself is NOT consumed, so `--mode --version` still
+                // sets `version` (TS #9045).
+                match args.get(i + 1) {
+                    None => result.invalid_mode = Some(String::new()),
+                    Some(next) if next.starts_with('-') => {
+                        result.invalid_mode = Some(String::new());
                     }
-                } else {
-                    result.invalid_mode = Some(String::new());
+                    Some(next) => {
+                        i += 1;
+                        match next.as_str() {
+                            "json" => result.mode = OutputMode::Json,
+                            "rpc" => result.mode = OutputMode::Rpc,
+                            "interactive" | "tui" => result.mode = OutputMode::Interactive,
+                            "acp" => result.mode = OutputMode::Acp,
+                            "text" => result.mode = OutputMode::Text,
+                            other => result.invalid_mode = Some(other.to_string()),
+                        }
+                    }
                 }
             }
 
@@ -511,6 +518,17 @@ mod tests {
         let args = parse_args(&["--mode".into(), "json".into()]);
         assert_eq!(args.mode, OutputMode::Json);
         assert!(args.invalid_mode.is_none());
+
+        // A following flag is not eaten as the mode value (TS #9045): the mode
+        // is reported missing and `--version` still applies.
+        let args = parse_args(&["--mode".into(), "--version".into()]);
+        assert_eq!(args.invalid_mode.as_deref(), Some(""));
+        assert!(args.version);
+
+        // An invalid value is reported and the flag after it still applies.
+        let args = parse_args(&["--mode".into(), "yaml".into(), "--version".into()]);
+        assert_eq!(args.invalid_mode.as_deref(), Some("yaml"));
+        assert!(args.version);
     }
 
     #[test]

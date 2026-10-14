@@ -66,6 +66,14 @@ pub enum RpcCommand {
         exclude_from_context: Option<bool>,
     },
 
+    /// Remove queued steering and follow-up messages, returning their text
+    /// (TS `clear_queue`).
+    #[serde(rename_all = "camelCase")]
+    ClearQueue {
+        #[serde(default)]
+        id: Option<String>,
+    },
+
     /// Start a new session
     #[serde(rename_all = "camelCase")]
     NewSession {
@@ -348,6 +356,32 @@ mod tests {
 
     /// `get_state` must omit the `model` field when no model is selected
     /// (matching TS `RpcSessionState.model?: Model`).
+    /// `clear_queue` parses and answers with both queue texts (TS `clear_queue`).
+    #[test]
+    fn clear_queue_round_trips() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "id": "c1",
+            "type": "clear_queue",
+        }))
+        .unwrap();
+        assert!(matches!(command, RpcCommand::ClearQueue { .. }));
+
+        let response = rpc_success(
+            Some("c1".to_string()),
+            "clear_queue",
+            Some(serde_json::json!({
+                "steering": ["Change direction"],
+                "followUp": ["Summarize when finished"],
+            })),
+        );
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["type"], "response");
+        assert_eq!(value["command"], "clear_queue");
+        assert_eq!(value["success"], true);
+        assert_eq!(value["data"]["steering"][0], "Change direction");
+        assert_eq!(value["data"]["followUp"][0], "Summarize when finished");
+    }
+
     #[test]
     fn session_state_omits_model_when_none() {
         let state = RpcSessionState {

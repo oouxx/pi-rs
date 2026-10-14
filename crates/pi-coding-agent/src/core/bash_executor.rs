@@ -158,7 +158,12 @@ impl BashExecutor {
                 }
             }
             match tokio::time::timeout(std::time::Duration::from_millis(100), child.wait()).await {
-                Ok(Ok(status)) => break status.code(),
+                // A signal-terminated command has no exit code: report
+                // `128 + signal` so callers see a failure, not a silent
+                // success (TS #9577).
+                Ok(Ok(status)) => {
+                    break crate::core::tools::bash::exit_code_from_status(status);
+                }
                 Ok(Err(_)) => break None,
                 Err(_) => continue,
             }
@@ -237,6 +242,19 @@ mod tests {
     #[test]
     fn test_validate_timeout_oversized() {
         assert!(validate_bash_timeout(3601).is_err());
+    }
+
+    /// A signal-terminated command reports `128 + signal` instead of no exit
+    /// code, so callers treat it as a failure (TS #9577).
+    #[tokio::test]
+    async fn test_bash_executor_signal_termination_reports_failure() {
+        let executor = BashExecutor::new("/tmp");
+        let result = executor.execute("kill -TERM $$", None).await.unwrap();
+        assert_eq!(
+            result.exit_code,
+            Some(143),
+            "SIGTERM must surface as 128 + 15"
+        );
     }
 
     #[tokio::test]

@@ -8608,7 +8608,6 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "deferredToolsMode": "kimi",
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
@@ -9231,7 +9230,6 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "deferredToolsMode": "kimi",
         "requiresReasoningContentOnAssistantMessages": true,
         "sendSessionAffinityHeaders": true,
         "supportsDeveloperRole": false,
@@ -14441,7 +14439,6 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "deferredToolsMode": "kimi",
         "maxTokensField": "max_tokens",
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,
@@ -14572,7 +14569,6 @@
       "contextWindow": 1048576,
       "maxTokens": 131072,
       "compat": {
-        "deferredToolsMode": "kimi",
         "maxTokensField": "max_tokens",
         "requiresReasoningContentOnAssistantMessages": true,
         "supportsDeveloperRole": false,

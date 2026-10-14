@@ -1316,8 +1316,10 @@ async fn run_loop(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut config_model = initial_config.model.clone();
     let mut config_reasoning = initial_config.reasoning.clone();
-    let mut first_turn = true;
     let mut explicit_continuation = false;
+    // Set once a turn finished; the next iteration's preparation consumes it, so
+    // `prepareNextTurn` only runs when another turn actually starts (TS #6879).
+    let mut last_completed_turn: Option<AgentTurnContext> = None;
 
     let mut pending_messages: Vec<AgentMessage> =
         if let Some(get_steering) = &initial_config.get_steering_messages {
@@ -1330,19 +1332,51 @@ async fn run_loop(
         let mut has_more_tool_calls = true;
 
         while has_more_tool_calls || !pending_messages.is_empty() {
-            if !first_turn {
+            let mut prepared_messages: Vec<AgentMessage> = Vec::new();
+            if let Some(completed_turn) = last_completed_turn.take() {
+                // Preparation may replace the context, add messages for the next
+                // request, or retarget the model/thinking level (TS
+                // `prepareNextTurn`).
+                if let Some(prepare_next_turn) = &initial_config.prepare_next_turn {
+                    if let Some(update) = prepare_next_turn(completed_turn, signal.clone()).await {
+                        if let Some(ctx) = update.context {
+                            *current_context = ctx;
+                        }
+                        prepared_messages = update.messages.unwrap_or_default();
+                        if let Some(m) = update.model {
+                            config_model = m;
+                        }
+                        if let Some(tl) = update.thinking_level {
+                            config_reasoning = Some(tl);
+                        }
+                    }
+                }
+                // Preparation can be long-running (for example, compaction). Pick
+                // up steering queued while it ran; only poll again when the
+                // earlier poll returned nothing, otherwise one-at-a-time mode
+                // would deliver two messages in this turn.
+                if pending_messages.is_empty() {
+                    pending_messages = if let Some(get_steering) =
+                        &initial_config.get_steering_messages
+                    {
+                        get_steering().await
+                    } else {
+                        Vec::new()
+                    };
+                }
                 emit(AgentEvent::TurnStart).await;
-            } else {
-                first_turn = false;
             }
 
-            if !pending_messages.is_empty() {
-                // Declare any tool-loadout change before the queued messages
-                // (TS `declareToolChanges`).
+            // Declare any tool-loadout change before the next provider request,
+            // over the prepared and queued messages together. The call is
+            // unconditional: a changed loadout is announced even with nothing to
+            // append (TS `declareToolChanges(currentContext, [...prepared, ...pending])`).
+            {
+                let mut queued = prepared_messages;
+                queued.append(&mut pending_messages);
                 let declarations = tool_declarations(current_context.tools.as_deref());
                 let declared =
-                    declare_tool_changes(&current_context.messages, &declarations, &pending_messages);
-                pending_messages.clear();
+                    declare_tool_changes(&current_context.messages, &declarations, &queued);
                 for message in declared {
                     emit(AgentEvent::MessageStart {
                         message: message.clone(),
@@ -1518,21 +1552,8 @@ async fn run_loop(
                 return Ok(());
             }
 
-            if let Some(prepare_next_turn) = &initial_config.prepare_next_turn {
-                if let Some(update) =
-                    prepare_next_turn(completed_turn, signal.clone()).await
-                {
-                    if let Some(ctx) = update.context {
-                        *current_context = ctx;
-                    }
-                    if let Some(m) = update.model {
-                        config_model = m;
-                    }
-                    if let Some(tl) = update.thinking_level {
-                        config_reasoning = Some(tl);
-                    }
-                }
-            }
+            // Consumed by the next iteration's preparation.
+            last_completed_turn = Some(completed_turn);
 
             explicit_continuation = decision == Some(AgentTurnDecision::Continue);
             pending_messages = if let Some(get_steering) = &initial_config.get_steering_messages {
@@ -3158,6 +3179,34 @@ mod tests {
         Arc::new(|_model, _ctx, _thinking, _opts| done_stream_fn_inner())
     }
 
+    /// Stream fn that answers with one tool call, so the loop runs another turn.
+    fn tool_call_stream_fn(id: &'static str, name: &'static str) -> StreamFn {
+        Arc::new(move |_model, _ctx, _thinking, _opts| {
+            Box::pin(async move {
+                let mut message = dummy_assistant_message_llm();
+                message.content = vec![ContentBlock::ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    arguments: serde_json::json!({}),
+                    namespace: None,
+                    thought_signature: None,
+                }];
+                message.stop_reason = StopReason::ToolUse;
+                let events: Box<
+                    dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent>
+                        + Send
+                        + Unpin,
+                > = Box::new(futures::stream::iter([
+                    crate::pi_ai_types::AssistantMessageEvent::Done {
+                        reason: StopReason::ToolUse,
+                        message,
+                    },
+                ]));
+                Ok(events)
+            })
+        })
+    }
+
     fn user_prompt() -> AgentMessage {
         AgentMessage::User {
             content: vec![ContentBlock::text("hi")],
@@ -3221,6 +3270,280 @@ mod tests {
         let agent_end = log.iter().position(|s| s == "agent_end").expect("agent_end");
         assert!(finish < turn_end, "finishTurn runs before turn_end: {log:?}");
         assert!(turn_end < agent_end, "turn_end before agent_end: {log:?}");
+    }
+
+    /// `prepareNextTurn` only runs when another turn actually starts, and the
+    /// messages it returns are appended (with lifecycle events) before the next
+    /// request (TS #6879 / `AgentLoopTurnUpdate.messages`).
+    #[tokio::test]
+    async fn test_prepare_next_turn_runs_once_per_following_turn() {
+        // First request answers with a tool call so a second turn starts; the
+        // second answers finally.
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stream_fn: StreamFn = {
+            let calls = calls.clone();
+            Arc::new(move |_model, _ctx, _thinking, _opts| {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    tool_call_stream_fn("1", "read")(_model, _ctx, _thinking, _opts)
+                } else {
+                    done_stream_fn_inner()
+                }
+            })
+        };
+
+        let prepared_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let prepare: PrepareNextTurnFn = {
+            let prepared_calls = prepared_calls.clone();
+            Arc::new(move |_turn: AgentTurnContext, _sig| {
+                let prepared_calls = prepared_calls.clone();
+                Box::pin(async move {
+                    prepared_calls.fetch_add(1, Ordering::SeqCst);
+                    Some(crate::types::AgentLoopTurnUpdate {
+                        messages: Some(vec![AgentMessage::Custom {
+                            custom_type: "steer".to_string(),
+                            content: crate::types::CustomContent::Text(
+                                "context note".to_string(),
+                            ),
+                            display: false,
+                            details: None,
+                            timestamp: 0,
+                        }]),
+                        ..Default::default()
+                    })
+                })
+            })
+        };
+
+        let mut config = minimal_loop_config();
+        config.prepare_next_turn = Some(prepare);
+        // The tool call must execute so the loop continues.
+        let mut context = test_context();
+        context.tools = Some(vec![dummy_agent_tool(
+            "read",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            }),
+        )]);
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: AgentEventSink = {
+            let events = events.clone();
+            Arc::new(move |event: AgentEvent| {
+                let events = events.clone();
+                Box::pin(async move {
+                    events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(event);
+                })
+            })
+        };
+
+        run_agent_loop(vec![user_prompt()], context, &config, &sink, &None, &stream_fn)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            prepared_calls.load(Ordering::SeqCst),
+            1,
+            "preparation runs once, for the turn that follows the tool call"
+        );
+
+        let events = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let custom_events: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| match e {
+                AgentEvent::MessageStart { message } | AgentEvent::MessageEnd { message } => {
+                    matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == "steer")
+                }
+                _ => false,
+            })
+            .collect();
+        assert_eq!(
+            custom_events.len(),
+            2,
+            "the prepared message gets message_start and message_end: {custom_events:?}"
+        );
+
+        // It lands after `turn_start` (TS emits the boundary first) and before
+        // the provider request that follows it.
+        let turn_start_index = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::TurnStart))
+            .expect("a second turn started");
+        let custom_index = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::MessageStart { message } if matches!(message, AgentMessage::Custom { .. })))
+            .expect("prepared message emitted");
+        let next_request_index = events
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| {
+                *i > custom_index
+                    && matches!(e, AgentEvent::MessageStart { message } if matches!(message, AgentMessage::Assistant { .. }))
+            })
+            .map(|(i, _)| i)
+            .next()
+            .expect("the following request streams an assistant message");
+        assert!(
+            turn_start_index < custom_index,
+            "turn_start precedes the prepared messages (TS order)"
+        );
+        assert!(
+            custom_index < next_request_index,
+            "prepared messages are appended before the following provider request"
+        );
+    }
+
+    /// A changed tool loadout is announced even when there is nothing to append:
+    /// the declaration call is unconditional (TS `declareToolChanges`).
+    #[tokio::test]
+    async fn test_tool_loadout_change_is_declared_without_pending_messages() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stream_fn: StreamFn = {
+            let calls = calls.clone();
+            Arc::new(move |_model, _ctx, _thinking, _opts| {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    tool_call_stream_fn("1", "read")(_model, _ctx, _thinking, _opts)
+                } else {
+                    done_stream_fn_inner()
+                }
+            })
+        };
+
+        // The turn after the tool call gains a second executable tool, and adds
+        // no messages of its own.
+        let prepare: PrepareNextTurnFn = Arc::new(move |turn: AgentTurnContext, _sig| {
+            Box::pin(async move {
+                let mut context = turn.context;
+                context.tools = Some(vec![
+                    dummy_agent_tool(
+                        "read",
+                        serde_json::json!({}),
+                        None,
+                        Ok(AgentToolResult {
+                            content: vec![],
+                            details: serde_json::json!({}),
+                            usage: None,
+                            added_tool_names: None,
+                            terminate: None,
+                        }),
+                    ),
+                    dummy_agent_tool(
+                        "write",
+                        serde_json::json!({}),
+                        None,
+                        Ok(AgentToolResult {
+                            content: vec![],
+                            details: serde_json::json!({}),
+                            usage: None,
+                            added_tool_names: None,
+                            terminate: None,
+                        }),
+                    ),
+                ]);
+                Some(crate::types::AgentLoopTurnUpdate {
+                    context: Some(context),
+                    messages: None,
+                    ..Default::default()
+                })
+            })
+        });
+
+        let mut config = minimal_loop_config();
+        config.prepare_next_turn = Some(prepare);
+
+        let mut context = test_context();
+        context.tools = Some(vec![dummy_agent_tool(
+            "read",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            }),
+        )]);
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: AgentEventSink = {
+            let events = events.clone();
+            Arc::new(move |event: AgentEvent| {
+                let events = events.clone();
+                Box::pin(async move {
+                    events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(event);
+                })
+            })
+        };
+
+        run_agent_loop(vec![user_prompt()], context, &config, &sink, &None, &stream_fn)
+            .await
+            .unwrap();
+
+        let events = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let declared_write = events.iter().any(|e| match e {
+            AgentEvent::MessageStart { message } | AgentEvent::MessageEnd { message } => {
+                match message {
+                    AgentMessage::System { tools_added, .. } => tools_added
+                        .as_ref()
+                        .is_some_and(|tools| tools.iter().any(|t| t.name == "write")),
+                    _ => false,
+                }
+            }
+            _ => false,
+        });
+        assert!(
+            declared_write,
+            "the newly executable tool is declared even with no pending messages"
+        );
+    }
+
+    /// A terminating turn must not run `prepareNextTurn` (nothing follows).
+    #[tokio::test]
+    async fn test_prepare_next_turn_skipped_on_the_final_turn() {
+        let prepared_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let prepare: PrepareNextTurnFn = {
+            let prepared_calls = prepared_calls.clone();
+            Arc::new(move |_turn, _sig| {
+                let prepared_calls = prepared_calls.clone();
+                Box::pin(async move {
+                    prepared_calls.fetch_add(1, Ordering::SeqCst);
+                    None
+                })
+            })
+        };
+        let mut config = minimal_loop_config();
+        config.prepare_next_turn = Some(prepare);
+
+        run_agent_loop(
+            vec![user_prompt()],
+            test_context(),
+            &config,
+            &dummy_event_sink(),
+            &None,
+            &done_stream_fn(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            prepared_calls.load(Ordering::SeqCst),
+            0,
+            "a final turn does not prepare another one"
+        );
     }
 
     #[tokio::test]

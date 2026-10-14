@@ -410,9 +410,18 @@ pub struct AgentRequestUpdate {
     pub thinking_level: Option<ThinkingLevel>,
 }
 
+/// What `prepareNextTurn` may change for the next provider request (TS
+/// `AgentLoopTurnUpdate`).
+#[derive(Default)]
 pub struct AgentLoopTurnUpdate {
+    /// Context for the next provider request.
     pub context: Option<AgentContext>,
+    /// Messages to append before the next provider request, with the normal
+    /// message lifecycle events (TS `messages`).
+    pub messages: Option<Vec<AgentMessage>>,
+    /// Model for the next provider request.
     pub model: Option<Model>,
+    /// Thinking level for the next provider request.
     pub thinking_level: Option<ThinkingLevel>,
 }
 

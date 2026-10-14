@@ -43,9 +43,13 @@ pub struct ResolvedOpenAICompletionsCompat {
     pub supports_openai_grammar_tools: bool,
     pub cache_control_format: Option<String>,
     pub send_session_affinity_headers: bool,
-    pub deferred_tools_mode: Option<String>,
     pub session_affinity_format: String,
     pub supports_long_cache_retention: bool,
+    /// Whether the model accepts mid-conversation system messages, and whether
+    /// tool additions may anchor the request-level list (TS
+    /// `supportsMidConvoSystemMessages` / `supportsMidConvoToolAdditions`).
+    pub supports_mid_convo_system_messages: bool,
+    pub supports_mid_convo_tool_additions: bool,
 }
 
 /// Auto-detect compatibility settings from provider name and baseUrl
@@ -159,7 +163,8 @@ fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         supports_openai_grammar_tools: false,
         cache_control_format,
         send_session_affinity_headers: false,
-        deferred_tools_mode: None,
+        supports_mid_convo_system_messages: false,
+        supports_mid_convo_tool_additions: false,
         session_affinity_format: if is_openrouter {
             "openrouter".to_string()
         } else {
@@ -249,10 +254,12 @@ fn get_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         send_session_affinity_headers: compat
             .send_session_affinity_headers
             .unwrap_or(detected.send_session_affinity_headers),
-        deferred_tools_mode: compat
-            .deferred_tools_mode
-            .clone()
-            .or(detected.deferred_tools_mode),
+        supports_mid_convo_system_messages: compat
+            .supports_mid_convo_system_messages
+            .unwrap_or(detected.supports_mid_convo_system_messages),
+        supports_mid_convo_tool_additions: compat
+            .supports_mid_convo_tool_additions
+            .unwrap_or(detected.supports_mid_convo_tool_additions),
         session_affinity_format: compat
             .session_affinity_format
             .clone()
@@ -379,6 +386,7 @@ fn convert_messages(
     context: &Context,
     compat: &ResolvedOpenAICompletionsCompat,
     grammar_properties: &std::collections::HashMap<String, String>,
+    anchors_additions: bool,
 ) -> Result<Vec<Value>, String> {
     let mut params: Vec<Value> = Vec::new();
 
@@ -618,8 +626,6 @@ fn convert_messages(
                 // `tool` message per result, then a single user image message
                 // (match TS convertMessages).
                 let mut image_blocks: Vec<Value> = Vec::new();
-                let mut deferred_names: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
                 let mut j = i;
                 while j < context.messages.len() {
                     if !matches!(context.messages[j], Message::ToolResult { .. }) {
@@ -629,7 +635,6 @@ fn convert_messages(
                         tool_call_id,
                         tool_name,
                         content,
-                        added_tool_names,
                         ..
                     } = &context.messages[j]
                     else {
@@ -665,14 +670,6 @@ fn convert_messages(
                     }
                     params.push(Value::Object(tool_msg));
 
-                    if compat.deferred_tools_mode.as_deref() == Some("kimi") {
-                        if let Some(names) = added_tool_names {
-                            for name in names {
-                                deferred_names.insert(name.clone());
-                            }
-                        }
-                    }
-
                     if model.input.iter().any(|t| t == "image") {
                         for b in content {
                             if let ContentBlock::Image { data, mime_type } = b {
@@ -704,36 +701,30 @@ fn convert_messages(
                 } else {
                     last_role = Some("toolResult".to_string());
                 }
-
-                if !deferred_names.is_empty() && compat.deferred_tools_mode.as_deref() == Some("kimi") {
-                    let deferred_tools: Vec<Tool> = context
-                        .tools
-                        .as_ref()
-                        .map(|tools| {
-                            tools
-                                .iter()
-                                .filter(|t| deferred_names.contains(&t.name))
-                                .cloned()
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if !deferred_tools.is_empty() {
-                        // Kimi accepts a system message with tools but omits the
-                        // standard content field.
+            }
+            // A later system message may declare tool changes. The leading
+            // message's tools are the request-level list, so only later
+            // declarations become a Kimi-style `{role:"system", tools}` message
+            // (TS `convertCompletionsMessages`: `i > 0 && anchorsAdditions`).
+            Message::System {
+                content,
+                tools_added,
+                ..
+            } => {
+                if i > 0 && anchors_additions {
+                    let added_tools: Vec<Tool> = tools_added.clone().unwrap_or_default();
+                    if !added_tools.is_empty() {
                         let mut kimi = serde_json::Map::new();
                         kimi.insert("role".into(), json!("system"));
                         kimi.insert(
                             "tools".into(),
-                            json!(convert_tools(&deferred_tools, compat)?),
+                            json!(convert_tools(&added_tools, compat)?),
                         );
                         params.push(Value::Object(kimi));
                     }
                 }
+                let _ = content;
             }
-            // System messages are replayed into the prompt by the request
-            // builder (P1-7 step 3); the leading prompt currently still
-            // arrives via `Context.systemPrompt`.
-            Message::System { .. } => {}
         }
         i += 1;
     }
@@ -965,24 +956,6 @@ fn has_tool_history(messages: &[Message]) -> bool {
         }
     }
     false
-}
-
-/// Tool names added by tool results (kimi deferred tools; match TS `getDeferredToolNames`).
-fn get_deferred_tool_names(messages: &[Message]) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
-    for msg in messages {
-        if let Message::ToolResult {
-            usage: None,
-            added_tool_names: Some(added),
-            ..
-        } = msg
-        {
-            for name in added {
-                names.insert(name.clone());
-            }
-        }
-    }
-    names
 }
 
 fn clamp_openai_prompt_cache_key(key: Option<&str>) -> Option<String> {
@@ -1377,6 +1350,11 @@ async fn stream_openai_inner(
         .and_then(|o| o.http_client.clone())
         .unwrap_or_else(|| std::sync::Arc::new(HttpClient::new()));
     let compat = get_compat(model);
+    // Later system messages may anchor tool additions (TS
+    // `resolveTranscriptTools(context.messages, supportsMidConvoSystemMessages &&
+    // supportsMidConvoToolAdditions)`).
+    let anchors_additions =
+        compat.supports_mid_convo_system_messages && compat.supports_mid_convo_tool_additions;
 
     let grammar_properties = super::openai_responses::grammar_tool_input_properties(
         context,
@@ -1395,7 +1373,13 @@ async fn stream_openai_inner(
         tools: context.tools.clone(),
     };
     let mut messages =
-        convert_messages(model, &transformed_context, &compat, &grammar_properties)?;
+        convert_messages(
+            model,
+            &transformed_context,
+            &compat,
+            &grammar_properties,
+            anchors_additions,
+        )?;
 
     // Cache retention (match TS `resolveCacheRetention`).
     let cache_retention = options
@@ -1429,32 +1413,24 @@ async fn stream_openai_inner(
         None
     };
 
-    // Tools: kimi deferred tools are excluded from the active tool set; some
+    // Tools come from the transcript (TS `resolveTranscriptTools`): the initial
+    // `toolsAdded` when additions anchor the list, else the current set. Some
     // providers require a tools param when the conversation has tool history.
-    let deferred_tool_names = if compat.deferred_tools_mode.as_deref() == Some("kimi") {
-        get_deferred_tool_names(&context.messages)
-    } else {
-        std::collections::HashSet::new()
-    };
-    let active_tools: Vec<Tool> = context
-        .tools
-        .as_ref()
-        .map(|tools| {
-            tools
-                .iter()
-                .filter(|t| !deferred_tool_names.contains(&t.name))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut tools = if active_tools.is_empty() {
+    let anchors_additions = compat.supports_mid_convo_system_messages
+        && compat.supports_mid_convo_tool_additions;
+    let (request_tools, _) = crate::utils::transcript::transcript_request_tools(
+        &context.messages,
+        anchors_additions,
+        context.tools.as_deref(),
+    );
+    let mut tools = if request_tools.is_empty() {
         if has_tool_history(&context.messages) {
             Some(Vec::new())
         } else {
             None
         }
     } else {
-        Some(convert_tools(&active_tools, &compat)?)
+        Some(convert_tools(&request_tools, &compat)?)
     };
 
     // Anthropic-style cache control on messages/tools.
@@ -2366,7 +2342,7 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
             .unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "user");
@@ -2386,7 +2362,7 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
             .unwrap();
         assert_eq!(converted.len(), 2);
         assert_eq!(converted[0]["role"], "developer");
@@ -2420,7 +2396,7 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
             .unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "assistant");
@@ -2460,7 +2436,7 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
             .unwrap();
         assert_eq!(converted[0]["role"], "assistant");
         assert_eq!(converted[0]["content"], "answer");
@@ -2485,7 +2461,7 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
             .unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "tool");
@@ -2504,7 +2480,7 @@ mod tests {
             }],
             tools: None,
         };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new())
+        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
             .unwrap();
         assert_eq!(converted.len(), 0);
     }
@@ -2643,7 +2619,7 @@ mod tests {
             }],
             tools: None,
         };
-        let err = convert_messages(&model, &context, &compat, &grammar_properties)
+        let err = convert_messages(&model, &context, &compat, &grammar_properties, false)
             .unwrap_err();
         assert!(err.contains("requires argument \"input\""), "unexpected error: {err}");
     }

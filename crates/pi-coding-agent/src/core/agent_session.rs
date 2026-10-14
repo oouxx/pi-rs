@@ -1625,6 +1625,7 @@ impl AgentSession {
                                 messages: turn.context.messages,
                                 tools: Some(state.tools),
                             }),
+                            messages: None,
                             model: Some(state.model),
                             thinking_level: Some(state.thinking_level),
                         })

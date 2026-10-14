@@ -485,8 +485,13 @@ pub struct OpenAICompletionsCompat {
     pub supports_thinking_token_budget: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_openai_grammar_tools: Option<bool>,
+    /// Whether the model accepts mid-conversation system messages, and whether
+    /// its later `toolsAdded` may anchor the request-level tool list (TS
+    /// `supportsMidConvoSystemMessages` / `supportsMidConvoToolAdditions`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deferred_tools_mode: Option<String>,
+    pub supports_mid_convo_system_messages: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_tool_additions: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_affinity_format: Option<String>,
 }

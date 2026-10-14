@@ -1362,7 +1362,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     compat = compat
                         .set("requiresReasoningContentOnAssistantMessages", true)
                         .thinking_format("openai")
-                        .set("deferredToolsMode", "kimi");
                 }
                 ("openai-completions", "https://api.fireworks.ai/inference/v1", Some(compat))
             } else {
@@ -1460,7 +1459,6 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             if id == "kimi-k3" {
                 compat = compat
                     .requires_reasoning_content(true)
-                    .set("deferredToolsMode", "kimi")
                     .thinking_format("openai")
                     .reasoning_effort(true);
             }

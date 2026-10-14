@@ -36,6 +36,25 @@ pub fn to_json_event(event: &AgentSessionEvent) -> Value {
     if let Some(obj) = ame.as_object_mut() {
         obj.remove("partial");
     }
+    // `toolcall_start` strips `partial` but exposes the tool's identity instead,
+    // so a consumer can label the call before its arguments stream in
+    // (TS `toJsonAssistantMessageEvent`).
+    if let pi_agent_core::pi_ai_types::AssistantMessageEvent::ToolCallStart {
+        content_index,
+        partial,
+    } = assistant_message_event
+    {
+        let tool_call = match partial.content.get(*content_index) {
+            Some(pi_agent_core::pi_ai_types::ContentBlock::ToolCall { id, name, .. }) => {
+                Some((id.clone(), name.clone()))
+            }
+            _ => None,
+        };
+        if let (Some((id, name)), Some(obj)) = (tool_call, ame.as_object_mut()) {
+            obj.insert("id".to_string(), Value::String(id));
+            obj.insert("toolName".to_string(), Value::String(name));
+        }
+    }
 
     serde_json::json!({
         "type": "message_update",
@@ -94,6 +113,34 @@ mod tests {
         // Non-message_update events keep their full payload (matching TS
         // `toJsonEvent` passthrough).
         assert!(v.get("message").is_some(), "message_end keeps message");
+    }
+
+    /// `toolcall_start` drops `partial` but carries the tool's identity, so a
+    /// consumer can label the call before arguments stream in
+    /// (TS #7953 `toJsonAssistantMessageEvent`).
+    #[test]
+    fn toolcall_start_exposes_id_and_tool_name() {
+        let mut partial = sample_assistant_message();
+        partial.content = vec![pi_agent_core::pi_ai::types::ContentBlock::ToolCall {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+            namespace: None,
+            thought_signature: None,
+        }];
+        let e = AgentSessionEvent::MessageUpdate {
+            message: sample_agent_message(),
+            assistant_message_event: AssistantMessageEvent::ToolCallStart {
+                content_index: 0,
+                partial,
+            },
+        };
+        let v = to_json_event(&e);
+        let ame = &v["assistantMessageEvent"];
+        assert_eq!(ame["type"], "toolcall_start");
+        assert!(ame.get("partial").is_none(), "partial stays off the wire");
+        assert_eq!(ame["id"], "call_1");
+        assert_eq!(ame["toolName"], "read");
     }
 
     #[test]

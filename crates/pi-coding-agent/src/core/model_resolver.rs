@@ -785,6 +785,7 @@ mod tests {
 
     fn make_test_model(provider: &str, id: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: id.to_string(),
             name: id.to_string(),
             api: "openai-completions".to_string(),

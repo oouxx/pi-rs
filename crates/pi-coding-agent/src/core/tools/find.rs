@@ -197,7 +197,7 @@ pub fn create_find_tool(
     let operations = opts.operations.clone();
 
     AgentTool {
-        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
+        constrained_sampling: None,
         name: "find".to_string(),
         description: format!(
             "Find files matching a glob pattern. Returns matching file paths relative to the search directory. \

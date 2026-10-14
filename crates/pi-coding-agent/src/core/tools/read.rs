@@ -144,7 +144,7 @@ pub fn create_read_tool(
     let auto_resize_images = opts.auto_resize_images;
 
     AgentTool {
-        constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
+        constrained_sampling: super::preferred_json_schema_sampling(),
         name: "read".to_string(),
         description: format!(
             "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). \

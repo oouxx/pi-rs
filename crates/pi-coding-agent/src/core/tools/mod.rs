@@ -1,3 +1,14 @@
+/// Constrained sampling the built-in `read`, `bash`, `edit` and `write` tools
+/// declare: strict-prefer JSON-schema sampling, enabled by default without
+/// `PI_EXPERIMENTAL` (TS enables it on those four tool definitions). `grep`,
+/// `find` and `ls` deliberately declare none, matching TS.
+#[must_use]
+pub fn preferred_json_schema_sampling() -> Option<pi_ai::types::ConstrainedSamplingConfig> {
+    Some(pi_ai::types::ConstrainedSamplingConfig::JsonSchema {
+        strict: pi_ai::types::JsonSchemaStrict::Prefer,
+    })
+}
+
 pub mod bash;
 pub mod edit;
 pub mod edit_diff;
@@ -106,4 +117,42 @@ pub fn create_read_only_tools(cwd: &str, options: Option<&ToolsOptions>) -> Vec<
         find::create_find_tool(cwd, opts.find),
         ls::create_ls_tool(cwd, opts.ls),
     ]
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use pi_ai::types::{ConstrainedSamplingConfig, JsonSchemaStrict};
+
+    /// The built-in tools declare strict-prefer JSON-schema sampling by default
+    /// — only the four the original declares it on. `grep`, `find` and `ls`
+    /// must stay unconstrained (TS `read`/`bash`/`edit`/`write` only).
+    #[test]
+    fn builtin_tool_sampling_matches_ts() {
+        let expected = Some(ConstrainedSamplingConfig::JsonSchema {
+            strict: JsonSchemaStrict::Prefer,
+        });
+        let strict = [
+            super::read::create_read_tool("/tmp", None).constrained_sampling,
+            super::bash::create_bash_tool("/tmp", None).constrained_sampling,
+            super::edit::create_edit_tool("/tmp", None).constrained_sampling,
+            super::write::create_write_tool("/tmp", None).constrained_sampling,
+        ];
+        for (index, sampling) in strict.iter().enumerate() {
+            assert_eq!(
+                sampling, &expected,
+                "built-in tool {index} must declare strict-prefer sampling"
+            );
+        }
+
+        let unconstrained = [
+            super::grep::create_grep_tool("/tmp", None).constrained_sampling,
+            super::find::create_find_tool("/tmp", None).constrained_sampling,
+            super::ls::create_ls_tool("/tmp", None).constrained_sampling,
+        ];
+        for (index, sampling) in unconstrained.iter().enumerate() {
+            assert!(sampling.is_none(), "grep/find/ls entry {index} must stay unconstrained");
+        }
+    }
 }

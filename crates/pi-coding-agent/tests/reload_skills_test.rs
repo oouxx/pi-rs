@@ -22,6 +22,7 @@ use pi_coding_agent::core::session_manager::SessionManager;
 
 fn test_model() -> pi_agent_core::pi_ai_types::Model {
     pi_agent_core::pi_ai_types::Model {
+        prompt_cache: None,
         id: "test-model".to_string(),
         name: "Test Model".to_string(),
         api: "test-api".to_string(),

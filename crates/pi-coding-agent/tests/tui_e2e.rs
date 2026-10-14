@@ -60,6 +60,7 @@ const REAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn mock_model() -> pi_agent_core::pi_ai_types::Model {
     pi_agent_core::pi_ai_types::Model {
+        prompt_cache: None,
         id: "mock-model".into(),
         name: "Mock Model".into(),
         api: "mock-api".into(),
@@ -519,6 +520,7 @@ impl HookHandler for TestCmdHandler {
 /// `OLLAMA_API_KEY` by the parent test — pi-ai has no `ollama` provider key).
 fn ollama_model() -> pi_agent_core::pi_ai_types::Model {
     pi_agent_core::pi_ai_types::Model {
+        prompt_cache: None,
         id: OLLAMA_MODEL.into(),
         name: "Ollama Cloud (deepseek-v4-flash)".into(),
         api: "openai-completions".into(),

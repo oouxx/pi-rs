@@ -1899,6 +1899,7 @@ mod tests {
 
     fn fake_model() -> pi_agent_core::pi_ai_types::Model {
         pi_agent_core::pi_ai_types::Model {
+            prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),
             api: "test-api".into(),

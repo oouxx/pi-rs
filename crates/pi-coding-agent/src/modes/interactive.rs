@@ -3759,6 +3759,7 @@ mod tests {
     async fn model_argument_completions_fuzzy_filter_models() {
         let models = vec![
             pi_agent_core::pi_ai_types::Model {
+                prompt_cache: None,
                 id: "gpt-4o".into(),
                 name: "GPT-4o".into(),
                 api: "openai".into(),
@@ -3775,6 +3776,7 @@ mod tests {
                 compat: None,
             },
             pi_agent_core::pi_ai_types::Model {
+                prompt_cache: None,
                 id: "gpt-4o-mini".into(),
                 name: "GPT-4o mini".into(),
                 api: "openai".into(),
@@ -3806,6 +3808,7 @@ mod tests {
         let f = model_argument_completions(snapshot.clone());
         assert!(f(String::new()).await.is_none(), "空快照 → 无补全");
         *snapshot.write().expect("snapshot write") = vec![pi_agent_core::pi_ai_types::Model {
+            prompt_cache: None,
             id: "kimi-k2".into(),
             name: "Kimi K2".into(),
             api: "openai-completions".into(),

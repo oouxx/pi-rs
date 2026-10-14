@@ -822,6 +822,7 @@ impl ModelRegistry {
                         )
                     })?;
                 Ok(Model {
+                    prompt_cache: None,
                     id: definition.id.clone(),
                     name: definition.name.clone(),
                     api,
@@ -979,6 +980,7 @@ impl ModelRegistry {
                                 });
 
                                 let new_model = Model {
+                                    prompt_cache: None,
                                     id: model_def.id.clone(),
                                     name,
                                     api,
@@ -1302,6 +1304,7 @@ fn get_pi_ai_models() -> Vec<Model> {
 
 pub fn builtin_models() -> Vec<Model> {
     vec![Model {
+        prompt_cache: None,
         provider: "test-provider-xyz".into(),
         api: "openai-completions".into(),
         id: "free".into(),
@@ -1538,6 +1541,7 @@ mod tests {
         std::fs::write(&models_path, json_content).unwrap();
 
         let builtin = vec![Model {
+            prompt_cache: None,
             provider: "openai".into(),
             api: "openai-completions".into(),
             id: "gpt-4o".into(),
@@ -1580,6 +1584,7 @@ mod tests {
         let mut registry = ModelRegistry::new(vec![]);
         // No env key, no models.json entry → no auth by default.
         assert!(!registry.has_configured_auth(&Model {
+            prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
             api: "openai-completions".into(),
@@ -1607,6 +1612,7 @@ mod tests {
             (provider == "test-provider-xyz").then(|| "sk-stored-123".to_string())
         }));
         assert!(registry.has_configured_auth(&Model {
+            prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
             api: "openai-completions".into(),
@@ -1745,6 +1751,7 @@ mod tests {
 
     fn extension_test_model(id: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: id.to_string(),
             name: id.to_string(),
             api: "anthropic-messages".to_string(),

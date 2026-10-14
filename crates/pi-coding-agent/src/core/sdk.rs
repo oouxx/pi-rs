@@ -15,6 +15,71 @@ use crate::core::system_prompt::{ContextFile, SkillInfo};
 
 /// Create the default StreamFn that bridges to the pi-ai provider system.
 /// Public for testing.
+/// Everything one stream call needs to build its request options.
+pub struct StreamOptionsInput<'a> {
+    /// Model the request targets (clamps the default output cap).
+    pub model: &'a pi_agent_core::pi_ai_types::Model,
+    /// Provider context (used with the model to clamp the output cap).
+    pub context: &'a pi_agent_core::pi_ai_types::Context,
+    /// Reasoning level for this call.
+    pub thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+    /// Call-level options as the agent loop passed them.
+    pub options: pi_agent_core::types::StreamFnOptions,
+    /// Parsed transport override.
+    pub transport: Option<pi_agent_core::pi_ai::types::Transport>,
+}
+
+/// Build the provider request options for one stream call (match TS
+/// `streamSimple` options spread). Shared with prompt cache warming, which
+/// replays the very same options with a one-token output cap.
+#[must_use]
+pub fn build_stream_options(
+    input: StreamOptionsInput<'_>,
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> pi_agent_core::pi_ai::types::StreamOptions {
+    let StreamOptionsInput {
+        model,
+        context,
+        thinking,
+        options,
+        transport,
+    } = input;
+    pi_agent_core::pi_ai::types::StreamOptions {
+        temperature: options.temperature,
+        // Default the output cap to the model's max, clamped to the context
+        // window (match TS `buildBaseOptions`).
+        max_tokens: options.max_tokens.or_else(|| {
+            Some(
+                pi_agent_core::pi_ai::providers::simple_options::clamp_max_tokens_to_context(
+                    model,
+                    context,
+                    model.max_tokens,
+                ),
+            )
+        }),
+        signal: options.signal,
+        api_key: options.api_key,
+        transport,
+        cache_retention: options.cache_retention,
+        session_id: options.session_id,
+        headers,
+        timeout_ms: options.timeout_ms,
+        websocket_connect_timeout_ms: options.websocket_connect_timeout_ms,
+        max_retries: options.max_retries,
+        max_retry_delay_ms: options.max_retry_delay_ms,
+        metadata: options.metadata,
+        env: options.env,
+        tool_choice: options.tool_choice,
+        service_tier: options.service_tier,
+        reasoning_effort: thinking,
+        thinking_budgets: options.thinking_budgets,
+        on_payload: options.on_payload,
+        on_headers: options.on_headers,
+        on_provider_response: options.on_provider_response,
+        ..Default::default()
+    }
+}
+
 pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::StreamFn {
     use pi_agent_core::pi_ai_types::StreamResponse;
 
@@ -51,40 +116,16 @@ pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::St
                     )
                     .ok()
                 });
-                let stream_opts = pi_agent_core::pi_ai::types::StreamOptions {
-                    temperature: options.temperature,
-                    // Default the output cap to the model's max, clamped to the
-                    // context window (match TS `buildBaseOptions`).
-                    max_tokens: options.max_tokens.or_else(|| {
-                        Some(
-                            pi_agent_core::pi_ai::providers::simple_options::clamp_max_tokens_to_context(
-                                &model,
-                                &context,
-                                model.max_tokens,
-                            ),
-                        )
-                    }),
-                    signal: options.signal,
-                    api_key: options.api_key,
-                    transport,
-                    cache_retention: options.cache_retention,
-                    session_id: options.session_id,
+                let stream_opts = build_stream_options(
+                    StreamOptionsInput {
+                        model: &model,
+                        context: &context,
+                        thinking,
+                        options,
+                        transport,
+                    },
                     headers,
-                    timeout_ms: options.timeout_ms,
-                    websocket_connect_timeout_ms: options.websocket_connect_timeout_ms,
-                    max_retries: options.max_retries,
-                    max_retry_delay_ms: options.max_retry_delay_ms,
-                    metadata: options.metadata,
-                    env: options.env,
-                    tool_choice: options.tool_choice,
-                    service_tier: options.service_tier,
-                    reasoning_effort: thinking,
-                    thinking_budgets: options.thinking_budgets,
-                    on_payload: options.on_payload,
-                    on_headers: options.on_headers,
-                    on_provider_response: options.on_provider_response,
-                    ..Default::default()
-                };
+                );
 
 
 
@@ -621,6 +662,7 @@ pub async fn create_agent_session(
         }
         None => {
             let empty_model = Model {
+                prompt_cache: None,
                 id: String::new(),
                 name: String::new(),
                 api: String::new(),
@@ -870,6 +912,7 @@ mod tests {
     /// Minimal model definition for the session-restore tests.
     fn test_model(provider: &str, id: &str, reasoning: bool) -> Model {
         Model {
+            prompt_cache: None,
             id: id.to_string(),
             name: id.to_string(),
             api: "openai-completions".to_string(),

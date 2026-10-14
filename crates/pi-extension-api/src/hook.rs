@@ -519,8 +519,29 @@ pub trait HookHandler: Send + Sync {
         HookResult::Continue(_messages)
     }
 
+    /// 完整 transcript（含 system 消息）更新时触发（TS `context_with_system`），
+    /// 在 `context` handler 之后运行。返回 `Some(messages)` 时该结果**原样**作为
+    /// provider 上下文，Pi 不再补回 system 消息。
+    async fn on_context_with_system(
+        &self,
+        _messages: &[Value],
+        _ctx: &crate::ExtensionContext,
+    ) -> Option<Vec<Value>> {
+        None
+    }
+
     /// 用户 bash 执行时触发。
     async fn on_user_bash(&self, _command: &str, _cwd: &str, _ctx: Option<&crate::ExtensionContext>) -> Option<crate::UserBashResult> { None }
+
+    /// 每次 prompt 缓存刷新前触发（TS `cache_warming_decision`）。返回的
+    /// `action` 覆盖 pi 自身的判断；返回 `None` 表示不干预。
+    async fn on_cache_warming_decision(
+        &self,
+        _event: &crate::CacheWarmingDecisionEvent,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::CacheWarmingAction> {
+        None
+    }
 
     // ── Modifying hooks（按 priority 顺序执行，可 Cancel） ──────────
 
@@ -658,12 +679,31 @@ pub trait HookHandler: Send + Sync {
     }
 }
 
+/// Whether a serialized transcript message is a system message.
+fn is_system_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("system")
+}
+
+/// Structural equality for transcript lists (TS `sameMessages`).
+fn same_messages(left: &[Value], right: &[Value]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a == b)
+}
+
+/// Re-attach the prompt and tool state after a `context` handler
+/// (TS `restoreSystemMessages`).
+fn restore_system_messages(current: &[Value], returned: &[Value]) -> Vec<Value> {
+    match pi_ai::utils::transcript::get_current_system_message(current) {
+        Some(head) => std::iter::once(head).chain(returned.iter().cloned()).collect(),
+        None => returned.to_vec(),
+    }
+}
+
 // ============================================================================
 // HookRunner
 // ============================================================================
 
-#[derive(Default)]
 /// 管理所有注册的 HookHandler，按 priority 排序分发事件。
+#[derive(Default)]
 pub struct HookRunner {
     handlers: Vec<Box<dyn HookHandler>>,
 }
@@ -1117,16 +1157,57 @@ impl HookRunner {
         messages: Vec<Value>,
         ctx: &crate::ExtensionContext,
     ) -> HookResult<Vec<Value>> {
+        // TS `emitContext`: a `context` handler only sees the conversation, and
+        // Pi restores the prompt and tool state afterwards. An unchanged
+        // conversation keeps every system message in place, so models with
+        // mid-conversation support keep their cached prefix; a changed one gets
+        // the replayed prompt sections and tool declarations as one leading
+        // system message, so pruning or windowing cannot drop them.
         let mut current = messages;
         for handler in &self.handlers {
-            match handler.on_context_mut(current, ctx).await {
-                HookResult::Continue(m) => {
-                    current = m;
-                }
+            let visible: Vec<Value> = current
+                .iter()
+                .filter(|message| !is_system_message(message))
+                .cloned()
+                .collect();
+            let snapshot = visible.clone();
+            match handler.on_context_mut(visible, ctx).await {
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
+                HookResult::Continue(returned) => {
+                    if same_messages(&returned, &snapshot) {
+                        continue;
+                    }
+                    current = restore_system_messages(&current, &returned);
+                }
             }
         }
         HookResult::Continue(current)
+    }
+
+    /// Run `context_with_system` handlers after `run_on_context`
+    /// (TS `emitContext`'s second phase). Returns the messages a provider should
+    /// use plus the name of a handler that dropped the leading system message,
+    /// when one did.
+    pub async fn run_context_with_system(
+        &self,
+        messages: Vec<Value>,
+        ctx: &crate::ExtensionContext,
+    ) -> (Vec<Value>, Option<String>) {
+        let mut current = messages;
+        let mut dropped_leading_system = None;
+        for handler in &self.handlers {
+            let had_leading_system = current.first().is_some_and(is_system_message);
+            let Some(returned) = handler.on_context_with_system(&current, ctx).await else {
+                continue;
+            };
+            current = returned;
+            // Providers read the prompt and initial tools from the leading
+            // system message; the handler's output is still honoured.
+            if had_leading_system && !current.first().is_some_and(is_system_message) {
+                dropped_leading_system = Some(handler.name().to_string());
+            }
+        }
+        (current, dropped_leading_system)
     }
 
     /// Fire `on_user_bash` to all handlers (sequential, first-return-wins).
@@ -1145,6 +1226,23 @@ impl HookRunner {
     }
 
     // ── Modifying hook dispatch (sequential, priority-ordered, cancellable) ──
+
+    /// Fire `cache_warming_decision` to all handlers. The last non-`None`
+    /// action wins (TS `emitCacheWarmingDecision` lets every handler override);
+    /// handler failures leave pi's decision untouched.
+    pub async fn fire_cache_warming_decision(
+        &self,
+        event: &crate::CacheWarmingDecisionEvent,
+        ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::CacheWarmingAction> {
+        let mut action = None;
+        for handler in &self.handlers {
+            if let Some(override_action) = handler.on_cache_warming_decision(event, ctx).await {
+                action = Some(override_action);
+            }
+        }
+        action
+    }
 
     /// Run `before_tool_call` handlers in priority order. Returns Cancel on first cancel.
     pub async fn run_before_tool_call(
@@ -1728,5 +1826,129 @@ mod tests {
         assert!(order.contains(&"low".to_string()));
         assert!(order.contains(&"medium".to_string()));
         assert!(order.contains(&"high".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod context_phase_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::ExtensionContext;
+
+    fn system(text: &str) -> Value {
+        serde_json::json!({"role": "system", "content": text, "timestamp": 0})
+    }
+    fn user(text: &str) -> Value {
+        serde_json::json!({"role": "user", "content": text, "timestamp": 1})
+    }
+
+    /// A `context` handler never sees system messages; an unchanged list keeps
+    /// every system message in place (TS `emitContext`).
+    struct SeesConversationOnly {
+        seen: std::sync::Arc<std::sync::Mutex<bool>>,
+    }
+    #[async_trait]
+    impl HookHandler for SeesConversationOnly {
+        fn name(&self) -> &'static str {
+            "sees_conversation_only"
+        }
+        async fn on_context_mut(
+            &self,
+            messages: Vec<Value>,
+            _ctx: &ExtensionContext,
+        ) -> HookResult<Vec<Value>> {
+            *self.seen.lock().unwrap() = messages
+                .iter()
+                .all(|m| m.get("role").and_then(Value::as_str) != Some("system"));
+            HookResult::Continue(messages)
+        }
+    }
+
+    #[tokio::test]
+    async fn context_handlers_see_the_conversation_only() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let mut runner = HookRunner::new();
+        runner.register(Box::new(SeesConversationOnly { seen: seen.clone() }));
+        let ctx = ExtensionContext::new("/tmp".to_string(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+
+        let messages = vec![system("prompt"), user("hi")];
+        let out = match runner.run_on_context(messages.clone(), &ctx).await {
+            HookResult::Continue(m) => m,
+            HookResult::Cancel(r) => panic!("unexpected cancel: {r}"),
+        };
+        assert!(*seen.lock().unwrap(), "handlers must not see system messages");
+        assert_eq!(out, messages, "an unchanged conversation keeps its system messages");
+    }
+
+    /// A handler that prunes the conversation gets the replayed prompt and tool
+    /// declarations back as one leading system message
+    /// (TS `restoreSystemMessages`).
+    struct Prunes;
+    #[async_trait]
+    impl HookHandler for Prunes {
+        fn name(&self) -> &'static str {
+            "prunes"
+        }
+        async fn on_context_mut(
+            &self,
+            messages: Vec<Value>,
+            _ctx: &ExtensionContext,
+        ) -> HookResult<Vec<Value>> {
+            HookResult::Continue(messages.into_iter().take(1).collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pruned_context_gets_the_prompt_back() {
+        let mut runner = HookRunner::new();
+        runner.register(Box::new(Prunes));
+        let ctx = ExtensionContext::new("/tmp".to_string(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+
+        let out = match runner
+            .run_on_context(vec![system("prompt"), user("a"), user("b")], &ctx)
+            .await
+        {
+            HookResult::Continue(m) => m,
+            HookResult::Cancel(r) => panic!("unexpected cancel: {r}"),
+        };
+        assert_eq!(out.len(), 2, "prompt restored in front of the pruned list");
+        assert_eq!(out[0]["role"], "system");
+        assert_eq!(out[0]["content"], "prompt");
+        assert_eq!(out[1], user("a"));
+    }
+
+    /// The `context_with_system` phase sees the full transcript and its result
+    /// is used verbatim; dropping the leading system message is reported
+    /// (TS `emitContext`'s second phase).
+    struct DropsSystem;
+    #[async_trait]
+    impl HookHandler for DropsSystem {
+        fn name(&self) -> &'static str {
+            "drops_system"
+        }
+        async fn on_context_with_system(
+            &self,
+            messages: &[Value],
+            _ctx: &ExtensionContext,
+        ) -> Option<Vec<Value>> {
+            assert!(
+                messages.iter().any(|m| m.get("role").and_then(Value::as_str) == Some("system")),
+                "this phase sees system messages"
+            );
+            Some(messages.iter().skip(1).cloned().collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn context_with_system_sees_everything_and_reports_dropped_prompts() {
+        let mut runner = HookRunner::new();
+        runner.register(Box::new(DropsSystem));
+        let ctx = ExtensionContext::new("/tmp".to_string(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+
+        let (out, dropped) = runner
+            .run_context_with_system(vec![system("prompt"), user("hi")], &ctx)
+            .await;
+        assert_eq!(out, vec![user("hi")], "the handler's list is used verbatim");
+        assert_eq!(dropped.as_deref(), Some("drops_system"));
     }
 }

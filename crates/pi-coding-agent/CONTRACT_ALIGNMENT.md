@@ -424,6 +424,41 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | -------- | ----------- | ------------- | -------- | ---------------- |
 | 追加式 context edit | `appendContextEdit(targetId, replacement \| null)`：`null` 从模型上下文省略目标，`{content}` 只替换内容（assistant/toolResult 的字符串 content 归一为 text block） | `SessionManager::append_context_edit` 同款（校验 target 存在 / 在活动分支 / 可编辑） | 是 | |
 | 会话投影 | `buildSessionProjection` 保留 provenance（`ProjectedSessionEntry`）；只有最新 compaction（index 0）贡献 checkpoint/summary | `build_session_projection` 同款 | 是 | |
+| `SessionEntry` union 增 `usage` | `UsageEntry`：`{type:"usage", kind, provider, model, usage, note?}`，由 `appendUsage()` 追加，不进模型上下文 | `SessionEntry::Usage` 同款（`append_usage` 返回该条目，note 为 `Option<String>` 且 skip none） | 是 | cache warming（#9668）前置；此前无 usage 条目 |
 | self-retaining compaction | `appendCompaction(summary, null, ...)` → `firstKeptEntryId = id`（不保留任何前置条目） | `append_compaction(..., None, ...)` 同款 | 是 | |
 | 逐请求权威投影 + 扩展边界 | `AgentSession._installAgentRequestProjection` 每次 provider 请求用 projection.messages 覆盖 context；`_installAgentBoundaryHooks` 在 `finishTurn` 分发 `turn_end` 边界，settle 前分发 `agent_before_settle`（草稿先预览后提交、支持 `continue`）| `prepare_request` 每次请求用 `build_projected_context_messages()` 覆盖 context.messages；`finish_turn` 分发 `turn_end` 边界（`run_boundary` + `build_boundary_preview` + `apply_boundary_drafts`，失败丢弃）；`run_settled_continuations` 调 `dispatch_before_settle_boundary` 并支持 `continue_run` | 是（有意偏差：void `on_turn_end` 通知 hook 保留） | 见 DEVIATIONS.md 扩展系统条目 |
 | bash 结果持久化 | `recordBashResult` 将 bashExecution 消息 append 到 session，随后 `_refreshFinalizedContext`；运行的排队在 flush 时同样处理 | `record_bash_result` / `_flush_pending_bash_messages` append 到 session 后 `refresh_context()` | 是 | 保证投影不丢 bash 消息（此前只在 agent state，未持久化） |
+| 边界延续的可运行性判定 | `_buildBoundaryContext`：`canContinue = (hasNonSystemContext && finalRole !== "assistant") \|\| pendingCustomContext \|\| (turn_end ? hasQueuedMessages() : finalRole === "assistant" && hasQueuedMessages())`；`turn_end` / `agent_before_settle` 在 `continue` 且 `!canContinue` 时经 `_reportInvalidBoundaryContinuation` 上报 `<boundary>` 错误并拒绝该延续 | `build_boundary_preview(boundary, has_queued_messages, pending_custom_context)` 复刻同一公式；两处边界都在提交草稿后用 `build(&[])` 取基线校验 `can_continue`，拒绝时调 `report_invalid_boundary_continuation`（新增 `ErrorListenerHandle` 供 agent 闭包内上报）；`agent_before_settle` 同时补上 `continue \|\| hasQueuedMessages` 项 | 是 | 修复见 PORTING_MISTAKES.md #137/#139 |
+
+## `agent_settled` 派发与延迟续跑（`core/agent_session.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 事件顺序 | `_emitAgentSettled`：`_isAgentRunActive = false` → 扩展 `emit({type:"agent_settled"})` → 会话 `_emit(...)` | 同左（扩展先于会话监听器，`is_emitting_agent_settled` 覆盖整个派发窗口） | 是 | 修复见 PORTING_MISTAKES.md #138（此前顺序相反） |
+| 派发期间的续跑请求 | `_isEmittingAgentSettled` 期间 `prompt()` / `sendCustomMessage({triggerTurn})` 压入 `_deferredSettledActions`，派发结束后按序回放，再 `_resolveIdleWaitIfIdle()` | 同左（`DeferredSettledAction::{Prompt, CustomTurn}` 队列 + `run_deferred_settled_actions`）；`send_message` 的 `triggerTurn` 分支在追加 session entry 前入队 | 是 | handler 因此不会看到重入的 `agent_start` |
+| `agent_settled` 时缓存预热 | `_cacheWarmer?.onAgentSettled()` | 无（cache warming #9668 实现中） | 见 DEVIATIONS.md #27 | |
+
+## Prompt cache warming（`core/cache_warmer.rs`，TS #9668）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 刷新时机 | `getCacheWarmingDelayMs`：`min(ttl*0.9, ttl-10s)`，`ttl <= 10s` 不刷新 | 同左（`get_cache_warming_delay_ms`） | 是 | |
+| 缓存寿命 | `getPromptCacheTtlMs`：按 `options.cacheRetention`（缺省时看 `PI_CACHE_RETENTION`）取 `model.promptCache[tier]`；`none` → 不刷新 | 同左；`promptCache` 由生成器只为 `anthropic` + `anthropic-messages` 写入（同 TS `applyPromptCacheMetadata`） | 是 | |
+| 可重放性 | `isReplayable`：非 reasoning 或非 anthropic-messages → true；否则要求 `forceAdaptiveThinking === true` | 同左 | 是 | |
+| 经济性判定 | `evaluate`：`warmCost` = cache read + 1 output token；`missCost` = max(0, cacheWrite-or-input − cacheRead)；`continuationProbability` = idle ? 0.15 : 1；`expectedSavings >= $0.05` 才 warm | 同左（`evaluate`，阈值 `CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS`） | 是 | |
+| 安全窗口 | `MAX_WARMING_AGE_MS` 1h（streaming）/ `MAX_IDLE_WARMING_AGE_MS` 30m（idle）+ `refreshDeadlineAt`（过期即停） | 同左（`schedule`/`refresh_deadline_missed`） | 是 | |
+| 模式与生命周期 | `_cacheWarmer`：`onAgentSettled`（streaming 模式在 settle 时停）、`onModeChanged`、`cancel`、`status`；`agent_settled` 派发时最先调用 | 同左（`AgentSession::_emit_agent_settled` 先调 `on_agent_settled`；`dispose_inner` 里 `on_warmed = None` + `cancel`；`cache_warming_status`/`cache_warming_mode_changed` 公开） | 是 | |
+| 刷新请求来源 | `streamFn` 包装：仅 `options.sessionId === sessionManager.getSessionId()` 时 `start()`（compaction/summary 的路由 id 不重置缓存条目）；`isCurrent` 比较 model + 消息前缀 | 同左（`AgentSession::new` 里的 stream_fn 包装 + `CacheWarmerSlot`；前缀比较用值相等而非对象同一性，等价于 TS 的不可变消息对象语义） | 是 | |
+| 决策事件 | `cache_warming_decision`：handler 可返回 `{action}` 覆盖；handler 抛错回落到 pi 的判断 | 同左（`pi-extension-api::HookHandler::on_cache_warming_decision` + `fire_cache_warming_decision`；`DecideFn` 回落） | 是 | |
+| 刷新记账 | 成功刷新经 `appendUsage("cache_warm", provider, model, usage, note?)` 落一条 `usage` 条目 | 同左（`append_usage` + `SessionEntry::Usage`），`on_warmed` 回调可用于发出 `entry_appended` | 是 | |
+| 展示面 | `/session` 状态行、转录 notice、设置选择器 | 格式化函数已移植但无调用方 | 见 DEVIATIONS.md #27 | 展示面属 TUI 组件层 |
+
+## P1 批次：工具采样、重试上限、压缩预算、context 相位
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 内置工具 constrained sampling | `read`/`bash`/`edit`/`write` 默认声明 `{type:"json_schema",strict:"prefer"}`（不需要 `PI_EXPERIMENTAL`）；`grep`/`find`/`ls` 不声明；扩展工具用自己声明的值 | 同左（`tools::preferred_json_schema_sampling()` + 扩展 `def.constrained_sampling`） | 是 | 修复见 PORTING_MISTAKES.md #141 |
+| agent 重试退避上限 | 每档 delay 上限 `maxAgentDelayMs ?? 60_000`，可由 `retry.maxAgentDelayMs` 配置 | 同左（`retry_delay_ms` + `RetrySettings.max_agent_delay_ms()`） | 是 | 修复见 PORTING_MISTAKES.md #143 |
+| per-model 压缩预算 | `compaction.modelOverrides["provider/id"]` → 普通设置 → 内置默认 | 同左（`CompactionSettings::for_model`，自动压缩与压缩触发点按当前模型解析） | 是 | 修复见 PORTING_MISTAKES.md #144 |
+| `context` / `context_with_system` 相位 | `context` handler 只见对话，Pi 跑完补回 prompt/工具声明；`context_with_system` 见全量 transcript、结果原样生效、丢首条 system 报错 | 同左（`run_on_context` 过滤+恢复、`run_context_with_system` + dispatcher + transform_context 串联） | 是 | 修复见 PORTING_MISTAKES.md #145 |
+| `toolcall_start` 线事件 | 剥 `partial` 并补 `id`/`toolName`（#7953） | 同左 | 是 | 修复见 PORTING_MISTAKES.md #140 |

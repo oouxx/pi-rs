@@ -43,6 +43,162 @@ pub struct ExtensionError {
 /// Listener for extension errors, matching TS `bindExtensions({ onError })`.
 pub type ErrorListener = Box<dyn Fn(&ExtensionError) + Send + Sync>;
 
+/// The future a stream function returns.
+type StreamFnFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    pi_agent_core::pi_ai_types::StreamResponse,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
+            > + Send,
+    >,
+>;
+
+/// Shares the prompt cache warmer with the request wrapper installed on the
+/// agent, which is built before the warmer exists.
+#[derive(Clone)]
+struct CacheWarmerSlot {
+    /// The warmer itself.
+    warmer: Arc<tokio::sync::Mutex<crate::core::cache_warmer::CacheWarmer>>,
+    /// Session id whose requests restart warming; other routing ids (compaction
+    /// and summaries) must not replace the entry.
+    session_id: String,
+}
+
+/// Shared handle to the bound error listener, so long-lived closures installed
+/// on the agent can report extension errors without borrowing the session.
+pub type ErrorListenerHandle = Arc<std::sync::Mutex<Option<ErrorListener>>>;
+
+/// A run requested from an `agent_settled` handler. TS stores thunks
+/// (`_deferredSettledActions`); Rust stores the arguments, because the callers
+/// are `'static` closures that cannot borrow a stored `&self`.
+#[derive(Clone)]
+pub enum DeferredSettledAction {
+    /// TS `() => this.prompt(text, options)`.
+    Prompt {
+        /// Prompt text, replayed verbatim.
+        text: String,
+        /// Prompt options, replayed verbatim.
+        options: Option<PromptOptions>,
+    },
+    /// TS `() => this._runAgentPrompt(appMessage)`: the custom-message entry is
+    /// appended when the action replays, not when it is queued.
+    CustomTurn {
+        /// Custom message type recorded on the session entry.
+        custom_type: String,
+        /// The custom message to append and run.
+        message: AgentMessage,
+    },
+}
+
+/// Report to a bound error listener (TS `ExtensionRunner.emitError`); no-op
+/// when none is bound.
+fn emit_to_error_listener(
+    handle: &ErrorListenerHandle,
+    extension_path: &str,
+    event: &str,
+    error: &str,
+) {
+    if let Some(listener) = handle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        listener(&ExtensionError {
+            extension_path: extension_path.to_string(),
+            event: event.to_string(),
+            error: error.to_string(),
+        });
+    }
+}
+
+/// Append a custom message entry, refresh the provider context from the
+/// session projection, then publish `message_start` / `message_end`
+/// (TS `_appendCustomMessage`).
+async fn append_custom_message(
+    session_manager: &Arc<std::sync::Mutex<crate::core::session_manager::SessionManager>>,
+    listeners: &Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    agent: &Arc<pi_agent_core::agent::Agent>,
+    message: AgentMessage,
+) {
+    let AgentMessage::Custom {
+        custom_type,
+        display,
+        details,
+        ..
+    } = &message
+    else {
+        return;
+    };
+    session_manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .append_custom_message_entry(
+            custom_type,
+            serde_json::to_value(&message).unwrap_or_default(),
+            *display,
+            details.clone(),
+        );
+    let messages = session_manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .build_projected_context_messages();
+    agent.set_initial_messages(messages).await;
+    emit_session_event(
+        listeners,
+        AgentSessionEvent::MessageStart {
+            message: message.clone(),
+        },
+    );
+    emit_session_event(listeners, AgentSessionEvent::MessageEnd { message });
+}
+
+/// Append every queued custom message (TS `_flushPendingCustomMessages`).
+async fn flush_pending_custom_messages(
+    pending: &Arc<std::sync::Mutex<Vec<AgentMessage>>>,
+    session_manager: &Arc<std::sync::Mutex<crate::core::session_manager::SessionManager>>,
+    listeners: &Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    agent: &Arc<pi_agent_core::agent::Agent>,
+) {
+    let messages = {
+        let mut queue = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *queue)
+    };
+    for message in messages {
+        append_custom_message(session_manager, listeners, agent, message).await;
+    }
+}
+
+/// Publishes a session event to every bound listener.
+fn emit_session_event(
+    listeners: &Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    event: AgentSessionEvent,
+) {
+    let batch = {
+        let listeners = listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        listeners.iter().cloned().collect::<Vec<_>>()
+    };
+    for listener in batch {
+        listener(event.clone());
+    }
+}
+
+/// Report a boundary handler that asked to continue without a runnable model
+/// context (TS `_reportInvalidBoundaryContinuation`).
+fn report_invalid_boundary_continuation(handle: &ErrorListenerHandle, event: &str) {
+    emit_to_error_listener(
+        handle,
+        "<boundary>",
+        event,
+        &format!("{event} requested continuation without runnable model context"),
+    );
+}
+
 /// Output-chunk callback for `execute_bash` (not an error listener).
 pub type ChunkCallback = Box<dyn Fn(&str) + Send + Sync>;
 /// Send a custom message (bound to this session).
@@ -186,7 +342,7 @@ pub struct SendUserMessageOptions {
 }
 
 /// Options for prompt(), matching TS PromptOptions interface.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PromptOptions {
     /// Whether to expand file-based prompt templates (default: true).
     pub expand_prompt_templates: Option<bool>,
@@ -568,6 +724,13 @@ pub struct AgentSession {
     turn_index: Arc<std::sync::Mutex<u32>>,
     /// Whether the agent is currently processing a run.
     is_agent_run_active: Arc<std::sync::Mutex<bool>>,
+    /// Whether `agent_settled` is being dispatched to extensions; runs
+    /// requested meanwhile are deferred until every handler finished
+    /// (matching TS `_isEmittingAgentSettled`).
+    is_emitting_agent_settled: Arc<std::sync::Mutex<bool>>,
+    /// Runs requested from `agent_settled` handlers (TS
+    /// `_deferredSettledActions`).
+    deferred_settled_actions: Arc<std::sync::Mutex<Vec<DeferredSettledAction>>>,
     /// Notifier for idle detection (wakes wait_for_idle callers).
     idle_notify: Arc<Notify>,
     /// Tracks pending steering messages for UI display. Removed when delivered.
@@ -577,6 +740,12 @@ pub struct AgentSession {
     /// Pending next-turn messages (custom messages queued for next prompt()),
     /// matching TS `_pendingNextTurnMessages`.
     pending_next_turn_messages: Arc<std::sync::Mutex<Vec<AgentMessage>>>,
+    /// Custom messages queued while the agent was running: appending them then
+    /// would land between an assistant tool call and its result, so they are
+    /// flushed at the next safe boundary (matching TS `_pendingCustomMessages`).
+    pending_custom_messages: Arc<std::sync::Mutex<Vec<AgentMessage>>>,
+    /// Prompt cache warmer for session requests (TS `_cacheWarmer`).
+    cache_warmer: Option<Arc<tokio::sync::Mutex<crate::core::cache_warmer::CacheWarmer>>>,
     /// Current retry attempt (0 if not retrying).
     retry_attempt: Arc<std::sync::Mutex<u32>>,
     /// Abort controller for retry backoff, matching TS `_retryAbortController`.
@@ -739,6 +908,18 @@ impl AgentSession {
         model_registry: ModelRegistry,
         options: AgentSessionConfig,
     ) -> Self {
+        // Shared with the agent's boundary hooks so they can report extension
+        // errors without borrowing the session (still being constructed here).
+        let extension_error_listener: ErrorListenerHandle =
+            Arc::new(std::sync::Mutex::new(None));
+        // Also read by the boundary hooks, which run before the session exists.
+        let pending_custom_messages: Arc<std::sync::Mutex<Vec<AgentMessage>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        // The prompt cache warmer is built after the session exists (it needs
+        // the session manager and registry), but the request wrapper installed
+        // on the agent must be able to reach it: a slot bridges the two.
+        let cache_warmer_slot: Arc<std::sync::Mutex<Option<CacheWarmerSlot>>> =
+            Arc::new(std::sync::Mutex::new(None));
         // ── Extension context (needed early for extension tool dispatch) ──
         // RuntimeHandle 提供真实 cwd/agent_dir（noop() 返回空串，扩展 spawn
         // 子进程或写状态文件时会失败/落错位置）。
@@ -867,7 +1048,7 @@ impl AgentSession {
                     })
                 };
                 tool_list.push(pi_agent_core::types::AgentTool {
-                    constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
+                    constrained_sampling: def.constrained_sampling.clone(),
                     name: def.name.clone(),
                     description: def.description.clone(),
                     label: def.label.clone().unwrap_or_default(),
@@ -929,7 +1110,7 @@ impl AgentSession {
                     })
                 });
                 tool_list.push(pi_agent_core::types::AgentTool {
-                    constrained_sampling: crate::core::experimental::get_experimental_tool_sampling(),
+                    constrained_sampling: def.constrained_sampling.clone(),
                     name: def.name,
                     description: def.description,
                     label: def.label.unwrap_or_default(),
@@ -1086,7 +1267,7 @@ impl AgentSession {
             .convert_to_llm
             .unwrap_or_else(|| Arc::new(messages::convert_to_llm));
 
-        let stream_fn = options.stream_fn.unwrap_or_else(|| {
+        let base_stream_fn = options.stream_fn.unwrap_or_else(|| {
             Arc::new(|_model, _ctx, _thinking, _opts| {
                 Box::pin(async {
                     Err::<pi_agent_core::pi_ai_types::StreamResponse, _>(
@@ -1095,6 +1276,104 @@ impl AgentSession {
                 })
             })
         });
+        // Wrap the configured stream function so a session request restarts
+        // prompt cache warming (TS sdk.ts `streamFn`). Compaction and summary
+        // requests carry their own routing ids and must not replace the entry.
+        let stream_fn = {
+            let base = Arc::clone(&base_stream_fn);
+            let slot = Arc::clone(&cache_warmer_slot);
+            let agent_slot = Arc::clone(&bash_agent_ref);
+            Arc::new(
+                move |model: pi_agent_core::pi_ai_types::Model,
+                      context: pi_agent_core::pi_ai_types::Context,
+                      thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+                      request_options: pi_agent_core::types::StreamFnOptions| {
+                    let base = Arc::clone(&base);
+                    let slot = Arc::clone(&slot);
+                    let agent_slot = Arc::clone(&agent_slot);
+                    let fut: StreamFnFuture = Box::pin(async move {
+                        let warmer = {
+                            let guard = slot
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            guard.clone()
+                        };
+                        if let Some(slot_value) = warmer {
+                            let is_session_request = request_options.session_id.as_deref()
+                                == Some(slot_value.session_id.as_str());
+                            if is_session_request {
+                                let agent = agent_slot
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .clone();
+                                if let Some(agent) = agent {
+                                    let state = agent.state().await;
+                                    let request_messages = state.messages.clone();
+                                    let request_model = model.clone();
+                                    let is_current = {
+                                        let agent = Arc::clone(&agent);
+                                        let request_messages = request_messages.clone();
+                                        let request_model = request_model.clone();
+                                        Arc::new(move || {
+                                            let Some(current) = agent.try_state() else {
+                                                // A writer is mid-update: treat the run as
+                                                // still current; the next refresh re-checks.
+                                                return true;
+                                            };
+                                            current.model.provider == request_model.provider
+                                                && current.model.id == request_model.id
+                                                && request_messages.len()
+                                                    <= current.messages.len()
+                                                && request_messages
+                                                    .iter()
+                                                    .zip(current.messages.iter())
+                                                    .all(|(a, b)| a == b)
+                                        })
+                                    };
+                                    let options = {
+                                        let transport = request_options.transport.as_ref().and_then(
+                                            |t| {
+                                                serde_json::from_value::<
+                                                    pi_agent_core::pi_ai::types::Transport,
+                                                >(serde_json::json!(t))
+                                                .ok()
+                                            },
+                                        );
+                                        let base_options =
+                                            crate::core::sdk::build_stream_options(
+                                                crate::core::sdk::StreamOptionsInput {
+                                                    model: &request_model,
+                                                    context: &context,
+                                                    thinking: thinking.clone(),
+                                                    options: request_options.clone(),
+                                                    transport,
+                                                },
+                                                request_options.headers.clone(),
+                                            );
+                                        pi_agent_core::pi_ai_types::SimpleStreamOptions {
+                                            base: base_options,
+                                            reasoning: thinking.clone(),
+                                            thinking_budgets: request_options
+                                                .thinking_budgets
+                                                .clone(),
+                                            debug: None,
+                                        }
+                                    };
+                                    let request = crate::core::cache_warmer::CacheWarmRequest {
+                                        model: request_model.clone(),
+                                        context: context.clone(),
+                                        options,
+                                    };
+                                    slot_value.warmer.lock().await.start(request, is_current);
+                                }
+                            }
+                        }
+                        base(model, context, thinking, request_options).await
+                    });
+                    fut
+                },
+            )
+        };
 
         // Wire extension before/after_tool_call hooks into the agent's tool
         // execution loop. When an extension registry is present, each tool call
@@ -1138,35 +1417,53 @@ impl AgentSession {
             options.extension_registry.as_ref().map(|registry| {
                 let dispatch_reg = Arc::clone(registry);
                 let ctx_clone = Arc::clone(&shared_ext_ctx);
+                let error_listener = Arc::clone(&extension_error_listener);
                 let closure =
                     move |messages: Vec<AgentMessage>,
                           _signal: Option<tokio::sync::watch::Receiver<bool>>| {
                         let reg = Arc::clone(&dispatch_reg);
                         let ctx_ref = Arc::clone(&ctx_clone);
+                        let error_listener = Arc::clone(&error_listener);
                         Box::pin(async move {
                             let serialized: Vec<serde_json::Value> = messages
                                 .iter()
                                 .map(|m| serde_json::to_value(m).unwrap_or_default())
                                 .collect();
-                            let modified = crate::core::extensions::dispatcher::dispatch_context(
+                            // `context` handlers see the conversation only and Pi
+                            // restores the prompt/tool state; `context_with_system`
+                            // then runs on the full transcript and its result is
+                            // sent verbatim (TS `emitContext`).
+                            let with_system = crate::core::extensions::dispatcher::dispatch_context(
                                 &reg,
                                 &serialized,
                                 &ctx_ref,
                             )
                             .await;
-                            // Deserialize modified messages back, or fall back to originals
-                            if modified.len() == messages.len() {
-                                let deserialized: Vec<Option<AgentMessage>> = modified
-                                    .into_iter()
-                                    .map(|v| serde_json::from_value(v).ok())
-                                    .collect();
-                                if let Some(deserialized) =
-                                    deserialized.into_iter().collect::<Option<Vec<_>>>()
-                                {
-                                    return deserialized;
-                                }
+                            let (modified, dropped_leading_system) =
+                                crate::core::extensions::dispatcher::dispatch_context_with_system(
+                                    &reg,
+                                    with_system,
+                                    &ctx_ref,
+                                )
+                                .await;
+                            if let Some(handler) = dropped_leading_system {
+                                emit_to_error_listener(
+                                    &error_listener,
+                                    &handler,
+                                    "context_with_system",
+                                    "Handler removed the leading system message; the request has no prompt or initial tool declarations. Keep it at index 0 or replace a dropped prefix with the current system message.",
+                                );
                             }
-                            messages
+                            // Deserialize back; an unconvertible list falls back
+                            // to the original transcript.
+                            let deserialized: Vec<Option<AgentMessage>> = modified
+                                .into_iter()
+                                .map(|v| serde_json::from_value(v).ok())
+                                .collect();
+                            match deserialized.into_iter().collect::<Option<Vec<_>>>() {
+                                Some(deserialized) => deserialized,
+                                None => messages,
+                            }
                         })
                             as std::pin::Pin<
                                 Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>,
@@ -1342,6 +1639,8 @@ impl AgentSession {
                 let registry = options.extension_registry.clone();
                 let session_ref = bash_session_manager.clone();
                 let agent_ref = bash_agent_ref.clone();
+                let error_listener = Arc::clone(&extension_error_listener);
+                let pending_custom = Arc::clone(&pending_custom_messages);
                 match registry {
                     Some(registry) => Some(Arc::new(move |
                         turn: pi_agent_core::types::AgentTurnContext,
@@ -1350,6 +1649,8 @@ impl AgentSession {
                         let registry = registry.clone();
                         let session_ref = session_ref.clone();
                         let agent_ref = agent_ref.clone();
+                        let error_listener = Arc::clone(&error_listener);
+                        let pending_custom = pending_custom.clone();
                         Box::pin(async move {
                             use pi_extension_api::{
                                 AgentActivityOutcome, BoundaryContextPreview, BoundaryKind,
@@ -1376,29 +1677,54 @@ impl AgentSession {
                                 },
                                 _ => AgentActivityOutcome::Completed,
                             };
-                            let pending: Vec<serde_json::Value> = {
+                            // TS `_getPendingBoundaryMessages`: queued steering /
+                            // follow-up messages plus custom messages awaiting a
+                            // safe boundary.
+                            let mut pending_messages = {
                                 let agent = agent_ref
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .clone();
                                 match agent {
-                                    Some(a) => a
-                                        .peek_queued_messages()
-                                        .await
-                                        .iter()
-                                        .map(|m| {
-                                            serde_json::to_value(m)
-                                                .unwrap_or(serde_json::Value::Null)
-                                        })
-                                        .collect(),
+                                    Some(a) => a.peek_queued_messages().await,
                                     None => Vec::new(),
                                 }
+                            };
+                            pending_messages.extend(
+                                pending_custom
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .iter()
+                                    .cloned(),
+                            );
+                            let pending_custom_context = !pending_custom
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .is_empty();
+                            let pending: Vec<serde_json::Value> = pending_messages
+                                .iter()
+                                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                                .collect();
+                            let agent = agent_ref
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .clone();
+                            let has_queued = match agent {
+                                Some(a) => a.has_queued_messages().await,
+                                None => false,
                             };
                             let build = |drafts: &[SessionBoundaryDraft]| {
                                 let sm = session_ref
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                build_boundary_preview(&sm, drafts, pending.clone())
+                                build_boundary_preview(
+                                    &sm,
+                                    drafts,
+                                    pending.clone(),
+                                    BoundaryKind::TurnEnd,
+                                    has_queued,
+                                    pending_custom_context,
+                                )
                             };
                             let initial = build(&[]).unwrap_or(BoundaryContextPreview {
                                 context_entries: Vec::new(),
@@ -1437,6 +1763,18 @@ impl AgentSession {
                                 }
                             }
                             if result.valid && result.continue_ {
+                                // A continuation needs runnable model context:
+                                // rebuild the baseline preview (drafts are
+                                // already committed) and reject otherwise
+                                // (TS `_dispatchTurnEndBoundary`).
+                                let can_continue = build(&[]).map(|p| p.can_continue).unwrap_or(false);
+                                if !can_continue {
+                                    report_invalid_boundary_continuation(
+                                        &error_listener,
+                                        "turn_end",
+                                    );
+                                    return None;
+                                }
                                 Some(pi_agent_core::types::AgentTurnDecision::Continue)
                             } else {
                                 None
@@ -1512,6 +1850,9 @@ impl AgentSession {
                 reserve_tokens: reserve,
                 compact_on_threshold: enabled,
                 keep_recent_tokens: keep_recent,
+                model_overrides: settings_manager
+                    .get_compaction_settings()
+                    .model_overrides,
             }
         };
 
@@ -1568,15 +1909,19 @@ impl AgentSession {
                 .extension_action_rx
                 .map(|rx| Arc::new(std::sync::Mutex::new(rx))),
             js_invalidator: None,
-            extension_error_listener: Arc::new(std::sync::Mutex::new(None)),
+            extension_error_listener: Arc::clone(&extension_error_listener),
             event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
             _agent_subscription: Arc::new(std::sync::Mutex::new(None)),
             turn_index: Arc::new(std::sync::Mutex::new(0)),
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
+            is_emitting_agent_settled: Arc::new(std::sync::Mutex::new(false)),
+            deferred_settled_actions: Arc::new(std::sync::Mutex::new(Vec::new())),
             idle_notify: Arc::new(Notify::new()),
             steering_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
             follow_up_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
             pending_next_turn_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_custom_messages: Arc::clone(&pending_custom_messages),
+            cache_warmer: None,
             retry_attempt: Arc::new(std::sync::Mutex::new(0)),
             retry_abort: Arc::new(std::sync::Mutex::new(None)),
             overflow_recovery_attempted: Arc::new(std::sync::Mutex::new(false)),
@@ -1601,11 +1946,19 @@ impl AgentSession {
                 let session_manager = session_manager.clone();
                 let is_agent_run_active = is_agent_run_active.clone();
                 let pending_next_turn = pending_next_turn.clone();
+                let is_emitting_agent_settled = session.is_emitting_agent_settled.clone();
+                let deferred_settled_actions = session.deferred_settled_actions.clone();
+                let pending_custom_messages = session.pending_custom_messages.clone();
+                let event_listeners = session.event_listeners.clone();
                 std::sync::Arc::new(move |message: String, options: Option<serde_json::Value>| {
                     let agent = agent.clone();
                     let session_manager = session_manager.clone();
                     let is_agent_run_active = is_agent_run_active.clone();
                     let pending_next_turn = pending_next_turn.clone();
+                    let is_emitting_agent_settled = is_emitting_agent_settled.clone();
+                    let deferred_settled_actions = deferred_settled_actions.clone();
+                    let pending_custom_messages = pending_custom_messages.clone();
+                    let event_listeners = event_listeners.clone();
                     tokio::spawn(async move {
                         // The message is a JSON string (extensions serialize
                         // their event); derive customType from its "type" field.
@@ -1617,10 +1970,10 @@ impl AgentSession {
                             .unwrap_or("custom")
                             .to_string();
                         let opts = options.unwrap_or(serde_json::Value::Null);
-                        let trigger_turn = opts
-                            .get("triggerTurn")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
+                        // Keep "absent" distinct from `false`: TS tests
+                        // `triggerTurn !== false` for the streaming branch and
+                        // truthiness for the trigger branch.
+                        let trigger_turn = opts.get("triggerTurn").and_then(|v| v.as_bool());
                         let deliver_as = opts
                             .get("deliverAs")
                             .and_then(|v| v.as_str())
@@ -1640,10 +1993,11 @@ impl AgentSession {
                                 .push(app_message);
                             return;
                         }
-                        if *is_agent_run_active
+                        let is_active = *is_agent_run_active
                             .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        {
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        // Branches follow TS `sendCustomMessage` in order.
+                        if is_active && trigger_turn != Some(false) {
                             if deliver_as.as_deref() == Some("followUp") {
                                 agent.follow_up(app_message).await;
                             } else {
@@ -1651,22 +2005,52 @@ impl AgentSession {
                             }
                             return;
                         }
-                        session_manager
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .append_custom_message_entry(
-                                &custom_type,
-                                serde_json::to_value(&app_message).unwrap_or_default(),
-                                true,
-                                None,
-                            );
-                        if trigger_turn {
+                        if trigger_turn == Some(true) {
+                            // A turn requested from an `agent_settled` handler
+                            // starts after every handler finished; the session
+                            // entry is appended then too (TS defers before
+                            // appending anything).
+                            if *is_emitting_agent_settled
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            {
+                                deferred_settled_actions
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .push(DeferredSettledAction::CustomTurn {
+                                        custom_type: custom_type.clone(),
+                                        message: app_message,
+                                    });
+                                return;
+                            }
+                            session_manager
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .append_custom_message_entry(
+                                    &custom_type,
+                                    serde_json::to_value(&app_message).unwrap_or_default(),
+                                    true,
+                                    None,
+                                );
                             agent.process(vec![app_message]).await.ok();
-                        } else {
-                            agent
-                                .update_state(|s| s.messages.push(app_message))
-                                .await;
+                            return;
                         }
+                        if is_active {
+                            // Appending now would land between an assistant tool
+                            // call and its result; flush at the next boundary.
+                            pending_custom_messages
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push(app_message);
+                            return;
+                        }
+                        append_custom_message(
+                            &session_manager,
+                            &event_listeners,
+                            &agent,
+                            app_message,
+                        )
+                        .await;
                     });
                 })
             };
@@ -1871,6 +2255,91 @@ impl AgentSession {
             }
         }
 
+        // ── Prompt cache warming (TS sdk.ts `CacheWarmer`) ──
+        // Built here because it needs the session manager, the registry and the
+        // settings all in one place; the request wrapper installed above reaches
+        // it through the slot.
+        {
+            let session_id = session
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_session_id()
+                .to_string();
+            let decide: crate::core::cache_warmer::DecideFn = {
+                let registry = session.extension_registry.clone();
+                let ext_ctx = session.ext_ctx.clone();
+                Arc::new(move |event: crate::core::cache_warmer::CacheWarmingDecisionEvent| {
+                    let registry = registry.clone();
+                    let ext_ctx = ext_ctx.clone();
+                    Box::pin(async move {
+                        let Some(registry) = registry else {
+                            return event.action;
+                        };
+                        let wire = pi_extension_api::CacheWarmingDecisionEvent {
+                            kind: event.kind.clone(),
+                            warm_cost: event.warm_cost,
+                            miss_cost: event.miss_cost,
+                            continuation_probability: event.continuation_probability,
+                            action: match event.action {
+                                crate::core::cache_warmer::CacheWarmingAction::Warm => {
+                                    pi_extension_api::CacheWarmingAction::Warm
+                                }
+                                crate::core::cache_warmer::CacheWarmingAction::Stop => {
+                                    pi_extension_api::CacheWarmingAction::Stop
+                                }
+                            },
+                        };
+                        match registry
+                            .hook_runner()
+                            .fire_cache_warming_decision(&wire, Some(&ext_ctx))
+                            .await
+                        {
+                            Some(pi_extension_api::CacheWarmingAction::Warm) => {
+                                crate::core::cache_warmer::CacheWarmingAction::Warm
+                            }
+                            Some(pi_extension_api::CacheWarmingAction::Stop) => {
+                                crate::core::cache_warmer::CacheWarmingAction::Stop
+                            }
+                            None => event.action,
+                        }
+                    })
+                })
+            };
+            let get_mode: Arc<dyn Fn() -> crate::core::settings_manager::CacheWarmingMode + Send + Sync> = {
+                let settings = Arc::clone(&session.settings_manager);
+                Arc::new(move || {
+                    settings
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_cache_warming_mode()
+                })
+            };
+            let warmer = Arc::new(tokio::sync::Mutex::new(
+                crate::core::cache_warmer::CacheWarmer::new(
+                    Arc::new(crate::core::cache_warmer::RegistryCacheWarmModels {
+                        registry: Arc::new(session.model_registry.clone()),
+                    }),
+                    Arc::new(crate::core::cache_warmer::ManagerCacheWarmSession {
+                        manager: Arc::clone(&session.session_manager),
+                    }),
+                    get_mode,
+                    decide,
+                ),
+            ));
+            warmer.lock().await.attach(&warmer);
+            {
+                let mut guard = cache_warmer_slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *guard = Some(CacheWarmerSlot {
+                    warmer: Arc::clone(&warmer),
+                    session_id,
+                });
+            }
+            session.cache_warmer = Some(warmer);
+        }
+
         // ── Register internal agent event handler ──
         // Folds persistence, extension dispatch, and session event dispatch
         // into a single subscription, matching TS `_handleAgentEvent`.
@@ -1935,6 +2404,7 @@ impl AgentSession {
         let _inner_idle = self.idle_notify.clone();
         let inner_ext_ctx = self.ext_ctx.clone();
         let inner_agent = self.agent.clone();
+        let inner_pending_custom = self.pending_custom_messages.clone();
         let inner_settings = self.settings_manager.clone();
         let turn_index = self.turn_index.clone();
         Arc::new(move |event: AgentEvent, _signal| {
@@ -1951,6 +2421,7 @@ impl AgentSession {
             let _is_active = _inner_is_active.clone();
             let _idle = _inner_idle.clone();
             let agent = inner_agent.clone();
+            let pending_custom = inner_pending_custom.clone();
             let turn_index = turn_index.clone();
             let inner_settings = inner_settings.clone();
 
@@ -2266,6 +2737,16 @@ impl AgentSession {
                     for listener in batch {
                         listener(session_event.clone());
                     }
+                }
+
+                // A turn ends after its assistant message and every tool result
+                // has been appended, so this is the first point where a
+                // context-only custom message can be inserted without landing
+                // between a tool call and its result. Flushing after the
+                // extension and listener dispatch also picks up messages that
+                // `turn_end` handlers queued (TS `_handleAgentEvent`).
+                if matches!(event, AgentEvent::TurnEnd { .. }) {
+                    flush_pending_custom_messages(&pending_custom, &sm, &listeners, &agent).await;
                 }
 
                 // ── 4. Handle session persistence ──
@@ -2742,18 +3223,7 @@ impl AgentSession {
     /// Report an extension error to the bound error listener (matching TS
     /// `ExtensionRunner.emitError`). No-op when no listener is bound.
     pub fn emit_extension_error(&self, extension_path: &str, event: &str, error: &str) {
-        if let Some(listener) = self
-            .extension_error_listener
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            listener(&ExtensionError {
-                extension_path: extension_path.to_string(),
-                event: event.to_string(),
-                error: error.to_string(),
-            });
-        }
+        emit_to_error_listener(&self.extension_error_listener, extension_path, event, error);
     }
 
     /// Emit `session_start` to extensions with the given reason, matching TS
@@ -3300,6 +3770,22 @@ impl AgentSession {
     /// (RPC/ACP modes) must surface the error to the client instead of reporting a
     /// generic "run failed" failure.
     pub async fn prompt(&self, text: &str, options: Option<PromptOptions>) -> Result<(), String> {
+        // A run requested from an `agent_settled` handler starts after every
+        // handler finished (TS `prompt()` deferral).
+        if *self
+            .is_emitting_agent_settled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            self.deferred_settled_actions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(DeferredSettledAction::Prompt {
+                    text: text.to_string(),
+                    options,
+                });
+            return Ok(());
+        }
         // Refresh session state before starting the next turn.
         self.session_manager
             .lock()
@@ -3399,9 +3885,10 @@ impl AgentSession {
             return Ok(());
         }
 
-        // Flush any pending bash messages before the new prompt,
-        // matching TS _flushPendingBashMessages().
+        // Flush any pending bash and custom messages before the new prompt,
+        // matching TS prompt()'s _flushPendingBashMessages()/_flushPendingCustomMessages().
         self._flush_pending_bash_messages().await;
+        self._flush_pending_custom_messages().await;
 
         // Validate model and auth before sending,
         // matching TS prompt() which checks model and auth.
@@ -3476,9 +3963,10 @@ impl AgentSession {
                 break;
             }
         }
-        // Flush any bash messages queued while the agent was streaming
-        // (matching TS _runAgentPrompt's finally block).
+        // Flush any bash and custom messages queued while the agent was
+        // streaming (matching TS _runAgentPrompt's finally block).
         self._flush_pending_bash_messages().await;
+        self._flush_pending_custom_messages().await;
         // 自动延续：扩展（如 /goal）在 agent_settled 边界可能同步排入
         // follow-up。循环消费直到扩展不再入队（matching TS 交互模式 idle
         // 循环消费 followUp 队列）。
@@ -4502,10 +4990,13 @@ References are relative to {}.
         let messages = state.messages;
         let total_tokens = compaction::compaction_trigger_tokens(&messages);
 
+        // Per-model budgets apply to the model the session is on
+        // (TS `getCompactionSettings(this.model)`).
         let settings = self
             .compaction_settings
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .for_model(&state.model.provider, &state.model.id);
         compaction::should_compact(total_tokens, context_window, &settings)
     }
 
@@ -4604,12 +5095,19 @@ References are relative to {}.
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_branch(None);
 
+        // Per-model budgets apply to the model the session is on
+        // (TS `getCompactionSettings(this.model)`); drop the lock before
+        // awaiting agent state.
         let compaction_settings = {
-            let settings = self
-                .compaction_settings
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            settings.clone()
+            let base = {
+                let settings = self
+                    .compaction_settings
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                settings.clone()
+            };
+            let model = self.agent.state().await.model;
+            base.for_model(&model.provider, &model.id)
         };
 
         // Prepare compaction from the session branch (matching TS
@@ -4779,6 +5277,7 @@ References are relative to {}.
             enabled: retry_settings.enabled.unwrap_or(true),
             max_retries: retry_settings.max_retries.unwrap_or(0),
             base_delay_ms: retry_settings.base_delay_ms.unwrap_or(1000),
+            max_agent_delay_ms: Some(retry_settings.max_agent_delay_ms()),
         };
         let callbacks = self._summarization_retry_callbacks("compaction", Some(reason.to_string()));
 
@@ -5234,13 +5733,49 @@ References are relative to {}.
     }
 
     fn _emit(&self, event: AgentSessionEvent) {
-        let batch = {
-            let listeners = self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            listeners.iter().cloned().collect::<Vec<_>>()
-        };
-        for listener in batch {
-            listener(event.clone());
-        }
+        emit_session_event(&self.event_listeners, event);
+    }
+
+    /// Append a custom message to the session and publish its events
+    /// (TS `_appendCustomMessage`).
+    async fn _append_custom_message(&self, message: AgentMessage) {
+        append_custom_message(
+            &self.session_manager,
+            &self.event_listeners,
+            &self.agent,
+            message,
+        )
+        .await;
+    }
+
+    /// Append the custom messages queued while the agent was running
+    /// (TS `_flushPendingCustomMessages`).
+    async fn _flush_pending_custom_messages(&self) {
+        flush_pending_custom_messages(
+            &self.pending_custom_messages,
+            &self.session_manager,
+            &self.event_listeners,
+            &self.agent,
+        )
+        .await;
+    }
+
+    /// Messages handed to boundary handlers as pending context: queued steering
+    /// or follow-up messages plus custom messages awaiting a safe boundary
+    /// (TS `_getPendingBoundaryMessages`).
+    async fn _get_pending_boundary_messages(&self) -> Vec<serde_json::Value> {
+        let mut messages = self.agent.peek_queued_messages().await;
+        messages.extend(
+            self.pending_custom_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned(),
+        );
+        messages
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+            .collect()
     }
 
     /// Emit a queue_update event with current steering and follow-up messages.
@@ -5284,16 +5819,23 @@ References are relative to {}.
                 _ => AgentActivityOutcome::Completed,
             }
         };
-        let pending: Vec<serde_json::Value> = self
-            .agent
-            .peek_queued_messages()
-            .await
-            .iter()
-            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
-            .collect();
+        let pending = self._get_pending_boundary_messages().await;
+        let has_queued = self.agent.has_queued_messages().await;
+        let pending_custom_context = !self
+            .pending_custom_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty();
         let build = |drafts: &[pi_extension_api::SessionBoundaryDraft]| {
             let sm = self.get_session_manager();
-            build_boundary_preview(&sm, drafts, pending.clone())
+            build_boundary_preview(
+                &sm,
+                drafts,
+                pending.clone(),
+                BoundaryKind::AgentBeforeSettle,
+                has_queued,
+                pending_custom_context,
+            )
         };
         let initial = build(&[]).unwrap_or(BoundaryContextPreview {
             context_entries: Vec::new(),
@@ -5318,17 +5860,84 @@ References are relative to {}.
             }
             self.refresh_context().await;
         }
-        result.valid && result.continue_ && result.context.can_continue
+        // TS `_runBeforeSettleBoundary` flushes the deferred custom messages
+        // right after committing the drafts, before the final context check.
+        self._flush_pending_custom_messages().await;
+        // TS `_runBeforeSettleBoundary`: queued messages alone also ask for one
+        // more turn, and either way the committed context must be runnable.
+        let should_continue = result.valid && (result.continue_ || has_queued);
+        if !should_continue {
+            return false;
+        }
+        let can_continue = build(&[]).map(|p| p.can_continue).unwrap_or(false);
+        if !can_continue {
+            if result.continue_ {
+                report_invalid_boundary_continuation(&self.extension_error_listener, "agent_before_settle");
+            }
+            return false;
+        }
+        true
     }
 
-    /// Emit agent_settled and resolve idle waiters.
+    /// Emit agent_settled and resolve idle waiters (TS `_emitAgentSettled`).
+    ///
+    /// Extensions see the event first, then session listeners; runs requested
+    /// while handlers are running are deferred until every handler finished, so
+    /// a handler never observes a reentrant `agent_start`.
     async fn _emit_agent_settled(&self) {
+        // TS `_emitAgentSettled` notifies the warmer before clearing the active
+        // flag: in `streaming` mode settling is what stops warming.
+        if let Some(warmer) = &self.cache_warmer {
+            warmer.lock().await.on_agent_settled();
+        }
         *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
-        self._emit(AgentSessionEvent::AgentSettled);
+        *self
+            .is_emitting_agent_settled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         // Fire agent_settled to extensions（携带 ctx，扩展可在空闲边界发送
         // 自动延续消息，如 /goal 的 continuation）。
         if let Some(ref registry) = self.extension_registry {
             registry.hook_runner().fire_agent_settled(Some(&self.ext_ctx)).await;
+        }
+        self._emit(AgentSessionEvent::AgentSettled);
+        *self
+            .is_emitting_agent_settled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        self.run_deferred_settled_actions().await;
+    }
+
+    /// Replay the runs requested from `agent_settled` handlers, then resolve
+    /// idle waiters (TS `_emitAgentSettled`'s deferred drain).
+    async fn run_deferred_settled_actions(&self) {
+        let actions = {
+            let mut queue = self
+                .deferred_settled_actions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *queue)
+        };
+        for action in actions {
+            match action {
+                DeferredSettledAction::Prompt { text, options } => {
+                    // Boxed: replaying a prompt re-enters the settle loop, so the
+                    // call graph is recursive.
+                    let _ = Box::pin(self.prompt(&text, options)).await;
+                }
+                DeferredSettledAction::CustomTurn {
+                    custom_type,
+                    message,
+                } => {
+                    self.get_session_manager().append_custom_message_entry(
+                        &custom_type,
+                        serde_json::to_value(&message).unwrap_or_default(),
+                        true,
+                        None,
+                    );
+                    self.agent.process(vec![message]).await.ok();
+                }
+            }
         }
         self.idle_notify.notify_waiters();
     }
@@ -6086,8 +6695,30 @@ impl AgentSession {
         if let Some(handle) = handle {
             handle.unsubscribe().await;
         }
+        // Stop prompt cache warming (TS dispose: `onWarmed = undefined; cancel()`).
+        if let Some(warmer) = &self.cache_warmer {
+            let mut warmer = warmer.lock().await;
+            warmer.on_warmed = None;
+            warmer.cancel();
+        }
         // Clear event listeners
         self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    }
+
+    /// Prompt cache warming status for `/session` (TS `get cacheWarmingStatus`).
+    pub async fn cache_warming_status(&self) -> Option<crate::core::cache_warmer::CacheWarmingStatus> {
+        match &self.cache_warmer {
+            Some(warmer) => Some(warmer.lock().await.status()),
+            None => None,
+        }
+    }
+
+    /// Reconcile warming after the persisted mode changed
+    /// (TS `cacheWarmingModeChanged`).
+    pub async fn cache_warming_mode_changed(&self) {
+        if let Some(warmer) = &self.cache_warmer {
+            warmer.lock().await.on_mode_changed();
+        }
     }
 
     /// Replace the session manager and reload messages from the new session.
@@ -6230,7 +6861,12 @@ fn build_boundary_preview(
     sm: &crate::core::session_manager::SessionManager,
     drafts: &[pi_extension_api::SessionBoundaryDraft],
     pending_messages: Vec<serde_json::Value>,
+    boundary: pi_extension_api::BoundaryKind,
+    has_queued_messages: bool,
+    pending_custom_context: bool,
 ) -> Result<pi_extension_api::BoundaryContextPreview, String> {
+    use pi_extension_api::BoundaryKind;
+
     let mut preview = sm.preview_clone();
     apply_boundary_drafts(&mut preview, drafts)?;
     let projection = preview.build_session_projection();
@@ -6240,14 +6876,27 @@ fn build_boundary_preview(
         .map(|e| serde_json::to_value(&e.source_entry).unwrap_or(serde_json::Value::Null))
         .collect();
     let agent_messages = preview.build_projected_context_messages();
-    let llm_messages: Vec<serde_json::Value> =
-        crate::core::messages::convert_to_llm(&agent_messages)
-            .iter()
-            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
-            .collect();
-    let last_role = agent_messages.last().map(|m| m.role().to_string());
-    let has_context = !agent_messages.is_empty();
-    let can_continue = has_context && last_role.as_deref() != Some("assistant");
+    let llm = crate::core::messages::convert_to_llm(&agent_messages);
+    let llm_messages: Vec<serde_json::Value> = llm
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .collect();
+    // TS `_buildBoundaryContext`: a context can continue when it holds
+    // non-system content that does not end on an assistant message, or when a
+    // queued message would drive the next turn.
+    let final_is_assistant = matches!(
+        llm.last(),
+        Some(pi_agent_core::pi_ai_types::Message::Assistant { .. })
+    );
+    let has_non_system_context = llm
+        .iter()
+        .any(|m| !matches!(m, pi_agent_core::pi_ai_types::Message::System { .. }));
+    let context_can_continue = has_non_system_context && !final_is_assistant;
+    let queued_can_continue = match boundary {
+        BoundaryKind::TurnEnd => has_queued_messages,
+        BoundaryKind::AgentBeforeSettle => final_is_assistant && has_queued_messages,
+    };
+    let can_continue = context_can_continue || pending_custom_context || queued_can_continue;
     Ok(pi_extension_api::BoundaryContextPreview {
         context_entries,
         context_messages: projection.messages,
@@ -6547,6 +7196,314 @@ mod tests {
     use super::*;
     use crate::core::session_manager::SessionEntry;
 
+    /// Minimal session for the settle-path tests. No provider is reachable, so
+    /// a run that actually starts fails; the tests only observe dispatch order
+    /// and deferral.
+    async fn build_settle_test_session(
+        registry: Option<Arc<crate::core::extensions::ExtensionRegistry>>,
+    ) -> AgentSession {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap().to_string();
+        let session_manager =
+            crate::core::session_manager::SessionManager::new(&cwd, &cwd, None, false, None);
+        let settings_manager = crate::core::settings_manager::SettingsManager::create(&cwd, None);
+        let model_registry = crate::core::model_registry::ModelRegistry::new(
+            crate::core::model_registry::ModelRegistry::builtin_models_list(),
+        );
+        let model = model_registry
+            .get_available()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| pi_agent_core::pi_ai_types::Model {
+                prompt_cache: None,
+                id: "test-model".to_string(),
+                name: "Test Model".to_string(),
+                api: "anthropic-messages".to_string(),
+                provider: "anthropic".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: Vec::new(),
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                context_window: 128_000,
+                max_tokens: 4096,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            });
+        AgentSession::new(
+            session_manager,
+            settings_manager,
+            model_registry,
+            AgentSessionConfig {
+                cwd,
+                model,
+                thinking_level: "medium".to_string(),
+                custom_prompt: None,
+                append_system_prompt: None,
+                selected_tools: None,
+                tool_snippets: None,
+                prompt_guidelines: None,
+                context_files: Vec::new(),
+                skills: Vec::new(),
+                session_name: None,
+                stream_fn: None,
+                convert_to_llm: None,
+                initial_active_tool_names: None,
+                allowed_tool_names: None,
+                excluded_tool_names: None,
+                extension_registry: registry,
+                ui_context: None,
+                custom_tools: None,
+                tools_options: None,
+                resource_loader: None,
+                extension_state_view: None,
+                extension_action_rx: None,
+            },
+        )
+        .await
+    }
+
+    /// Extensions observe `agent_settled` before session listeners
+    /// (TS `_emitAgentSettled`).
+    #[tokio::test]
+    async fn agent_settled_fires_extensions_before_session_listeners() {
+        use pi_extension_api::hook::HookHandler;
+
+        struct Recorder(Arc<std::sync::Mutex<Vec<&'static str>>>);
+        #[async_trait::async_trait]
+        impl HookHandler for Recorder {
+            fn name(&self) -> &'static str {
+                "recorder"
+            }
+            async fn on_agent_settled(&self, _ctx: Option<&pi_extension_api::ExtensionContext>) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("extension");
+            }
+        }
+
+        let order: Arc<std::sync::Mutex<Vec<&'static str>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = crate::core::extensions::ExtensionRegistry::new();
+        registry.register(
+            Box::new(Recorder(order.clone())),
+            pi_extension_api::create_builtin_source_info("test"),
+        );
+        let session = build_settle_test_session(Some(Arc::new(registry))).await;
+        {
+            let order = order.clone();
+            session.subscribe_session_events(Arc::new(move |event| {
+                if matches!(event, AgentSessionEvent::AgentSettled) {
+                    order
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push("session");
+                }
+            }));
+        }
+
+        session.run_settled_continuations().await;
+
+        assert_eq!(
+            *order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["extension", "session"]
+        );
+    }
+
+    /// While a run is active, a context-only custom message is queued and only
+    /// appended at a safe boundary; omitting `triggerTurn` still steers
+    /// (TS `sendCustomMessage` branches).
+    #[tokio::test]
+    async fn custom_message_during_run_is_flushed_at_a_boundary() {
+        let session = build_settle_test_session(None).await;
+        *session
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+
+        let send = |opts: serde_json::Value| {
+            session.ext_ctx.runtime.send_message.clone()(
+                serde_json::json!({"type": "note"}).to_string(),
+                Some(opts),
+            )
+        };
+        // No `triggerTurn` while running: steer, do not queue as context.
+        send(serde_json::json!({}));
+        for _ in 0..100 {
+            if !session.agent.peek_queued_messages().await.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !session.agent.peek_queued_messages().await.is_empty(),
+            "a missing triggerTurn steers while running"
+        );
+
+        // Explicit `triggerTurn: false`: queue until a safe boundary.
+        send(serde_json::json!({"triggerTurn": false}));
+        for _ in 0..100 {
+            if !session
+                .pending_custom_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            session
+                .pending_custom_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1,
+            "queued while the run is active"
+        );
+        assert!(
+            !session
+                .get_session_manager()
+                .build_projected_context_messages()
+                .iter()
+                .any(|m| matches!(m, AgentMessage::Custom { .. })),
+            "not appended before a boundary"
+        );
+
+        session._flush_pending_custom_messages().await;
+
+        assert!(
+            session
+                .pending_custom_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        assert!(
+            session
+                .get_session_manager()
+                .build_projected_context_messages()
+                .iter()
+                .any(|m| matches!(m, AgentMessage::Custom { .. })),
+            "the flush appends it"
+        );
+    }
+
+    /// A session request restarts prompt cache warming; requests with another
+    /// routing id (compaction, summaries) leave the entry alone
+    /// (TS sdk.ts `streamFn`).
+    #[tokio::test]
+    async fn only_session_requests_start_cache_warming() {
+        let session = build_settle_test_session(None).await;
+        let stream_fn = session
+            .agent
+            .get_stream_fn()
+            .expect("the agent always has a stream function");
+        let session_id = session.get_session_manager().get_session_id().to_string();
+
+        fn pi_ai_core_text(text: &str) -> pi_agent_core::pi_ai_types::ContentBlock {
+            pi_agent_core::pi_ai_types::ContentBlock::text(text)
+        }
+        let warmable_model = || {
+            let mut model = pi_agent_core::pi_ai_types::Model {
+                id: "claude-sonnet-5".into(),
+                name: "Claude Sonnet 5".into(),
+                api: "anthropic-messages".into(),
+                provider: "anthropic".into(),
+                base_url: "https://api.anthropic.com".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec!["text".into()],
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                prompt_cache: None,
+                context_window: 200_000,
+                max_tokens: 8192,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            };
+            model.prompt_cache = Some(pi_ai::types::ModelPromptCache {
+                short: Some(300),
+                long: Some(3600),
+            });
+            model
+        };
+        let context = || pi_agent_core::pi_ai_types::Context {
+            system_prompt: None,
+            messages: vec![pi_agent_core::pi_ai_types::Message::User {
+                content: vec![pi_ai_core_text("hi")],
+                timestamp: 0,
+            }],
+            tools: None,
+        };
+
+        // Compaction and summary requests keep their own routing id.
+        let other = pi_agent_core::types::StreamFnOptions {
+            session_id: Some("compaction-routing-id".to_string()),
+            ..Default::default()
+        };
+        let _ = stream_fn(warmable_model(), context(), None, other).await;
+        assert_eq!(
+            session
+                .cache_warming_status()
+                .await
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("waiting for first request"),
+            "a foreign routing id must not start warming"
+        );
+
+        // A session request arms a refresh.
+        let session_request = pi_agent_core::types::StreamFnOptions {
+            session_id: Some(session_id),
+            ..Default::default()
+        };
+        let _ = stream_fn(warmable_model(), context(), None, session_request).await;
+        let status = session.cache_warming_status().await.unwrap();
+        assert_ne!(
+            status.reason.as_deref(),
+            Some("waiting for first request"),
+            "a session request starts warming"
+        );
+    }
+
+    /// A run requested while `agent_settled` is being dispatched is queued
+    /// instead of starting inside the dispatch (TS `_deferredSettledActions`).
+    #[tokio::test]
+    async fn prompt_during_agent_settled_dispatch_is_deferred() {
+        let session = build_settle_test_session(None).await;
+        *session
+            .is_emitting_agent_settled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+
+        session.prompt("from a settled handler", None).await.unwrap();
+
+        let queued = session
+            .deferred_settled_actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(queued.len(), 1, "the run must be queued, not started");
+        assert!(matches!(
+            queued[0],
+            DeferredSettledAction::Prompt { ref text, .. } if text == "from a settled handler"
+        ));
+        drop(queued);
+        assert!(
+            !*session
+                .is_agent_run_active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "dispatching handlers must not start a run"
+        );
+    }
+
     #[test]
     fn apply_and_preview_boundary_drafts() {
         use pi_extension_api::SessionBoundaryDraft as D;
@@ -6570,7 +7527,15 @@ mod tests {
             target_id: user_id.clone(),
             replacement: serde_json::Value::Null,
         }];
-        let preview = build_boundary_preview(&mgr, &drafts, vec![]).unwrap();
+        let preview = build_boundary_preview(
+            &mgr,
+            &drafts,
+            vec![],
+            pi_extension_api::BoundaryKind::TurnEnd,
+            false,
+            false,
+        )
+        .unwrap();
         assert!(preview.context_messages.is_empty(), "omitted in preview");
         assert_eq!(
             mgr.build_projected_context_messages().len(),
@@ -6603,6 +7568,97 @@ mod tests {
                 .any(|m| matches!(m, pi_agent_core::types::AgentMessage::User { .. })),
             "user omitted after commit"
         );
+    }
+
+    /// TS `_buildBoundaryContext`: a boundary continuation is only runnable when
+    /// the context holds non-system content that does not end on an assistant
+    /// message, or a queued message would drive the next turn (the queued
+    /// allowance differs per boundary).
+    #[test]
+    fn boundary_preview_can_continue_matches_ts() {
+        use pi_extension_api::BoundaryKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = crate::core::session_manager::SessionManager::new(
+            "/tmp/test",
+            dir.path().to_str().unwrap(),
+            None,
+            false,
+            None,
+        );
+        let preview = |mgr: &crate::core::session_manager::SessionManager,
+                       boundary: BoundaryKind,
+                       queued: bool| {
+            build_boundary_preview(mgr, &[], vec![], boundary, queued, false)
+                .unwrap()
+                .can_continue
+        };
+
+        // Empty transcript: `turn_end` still continues for a queued message,
+        // `agent_before_settle` needs an assistant message to follow.
+        assert!(!preview(&mgr, BoundaryKind::TurnEnd, false));
+        assert!(preview(&mgr, BoundaryKind::TurnEnd, true));
+        assert!(!preview(&mgr, BoundaryKind::AgentBeforeSettle, true));
+
+        // User message last: runnable without any queued message.
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": 0
+        }));
+        assert!(preview(&mgr, BoundaryKind::TurnEnd, false));
+        assert!(preview(&mgr, BoundaryKind::AgentBeforeSettle, false));
+
+        // Assistant message last: only a queued message makes it runnable.
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "m",
+            "usage": {},
+            "stopReason": "stop",
+            "timestamp": 1
+        }));
+        assert!(!preview(&mgr, BoundaryKind::TurnEnd, false));
+        assert!(!preview(&mgr, BoundaryKind::AgentBeforeSettle, false));
+        assert!(preview(&mgr, BoundaryKind::TurnEnd, true));
+        assert!(preview(&mgr, BoundaryKind::AgentBeforeSettle, true));
+    }
+
+    /// A transcript holding only system content is not runnable: `turn_end`
+    /// still allows the queued-message continuation, `agent_before_settle` does
+    /// not (TS `_buildBoundaryContext`).
+    #[test]
+    fn boundary_preview_system_only_context_differs_per_boundary() {
+        use pi_extension_api::BoundaryKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = crate::core::session_manager::SessionManager::new(
+            "/tmp/test",
+            dir.path().to_str().unwrap(),
+            None,
+            false,
+            None,
+        );
+        let user_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": 0
+        }));
+        // Omit the only non-system message: the context is system-only.
+        let drafts = vec![pi_extension_api::SessionBoundaryDraft::ContextEdit {
+            target_id: user_id,
+            replacement: serde_json::Value::Null,
+        }];
+        let can_continue = |boundary, queued| {
+            build_boundary_preview(&mgr, &drafts, vec![], boundary, queued, false)
+                .unwrap()
+                .can_continue
+        };
+        assert!(!can_continue(BoundaryKind::TurnEnd, false));
+        assert!(can_continue(BoundaryKind::TurnEnd, true));
+        assert!(!can_continue(BoundaryKind::AgentBeforeSettle, true));
     }
 
     #[test]

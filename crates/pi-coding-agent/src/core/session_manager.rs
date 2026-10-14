@@ -42,6 +42,23 @@ pub enum SessionEntry {
         timestamp: String,
         message: serde_json::Value,
     },
+    /// Arbitrary usage category recorded on the branch, such as `cache_warm`
+    /// (TS `UsageEntry`). Contributes to footer totals but not to model
+    /// context.
+    #[serde(rename = "usage")]
+    Usage {
+        id: String,
+        parent_id: Option<String>,
+        timestamp: String,
+        /// Usage category, e.g. `cache_warm`.
+        kind: String,
+        provider: String,
+        model: String,
+        usage: pi_agent_core::pi_ai_types::Usage,
+        /// Optional human-readable qualifier for usage notices.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     #[serde(rename = "thinking_level_change")]
     ThinkingLevelChange {
         id: String,
@@ -140,6 +157,7 @@ impl SessionEntry {
     pub fn id(&self) -> &str {
         match self {
             SessionEntry::Message { id, .. }
+            | SessionEntry::Usage { id, .. }
             | SessionEntry::ThinkingLevelChange { id, .. }
             | SessionEntry::ModelChange { id, .. }
             | SessionEntry::Compaction { id, .. }
@@ -155,6 +173,7 @@ impl SessionEntry {
     pub fn parent_id(&self) -> Option<&str> {
         match self {
             SessionEntry::Message { parent_id, .. }
+            | SessionEntry::Usage { parent_id, .. }
             | SessionEntry::ThinkingLevelChange { parent_id, .. }
             | SessionEntry::ModelChange { parent_id, .. }
             | SessionEntry::Compaction { parent_id, .. }
@@ -170,6 +189,7 @@ impl SessionEntry {
     pub fn timestamp(&self) -> &str {
         match self {
             SessionEntry::Message { timestamp, .. }
+            | SessionEntry::Usage { timestamp, .. }
             | SessionEntry::ThinkingLevelChange { timestamp, .. }
             | SessionEntry::ModelChange { timestamp, .. }
             | SessionEntry::Compaction { timestamp, .. }
@@ -653,6 +673,23 @@ fn add_ids_to_entry(entry: SessionEntry, id: &str, parent_id: Option<String>) ->
             timestamp,
             message,
         },
+        SessionEntry::Usage {
+            kind,
+            provider,
+            model,
+            usage,
+            note,
+            ..
+        } => SessionEntry::Usage {
+            id: id.to_string(),
+            parent_id,
+            timestamp,
+            kind,
+            provider,
+            model,
+            usage,
+            note,
+        },
         SessionEntry::ThinkingLevelChange { thinking_level, .. } => {
             SessionEntry::ThinkingLevelChange {
                 id: id.to_string(),
@@ -773,6 +810,25 @@ fn set_timestamp_on_entry(entry: SessionEntry, timestamp: &str) -> SessionEntry 
             parent_id,
             timestamp: ts,
             message,
+        },
+        SessionEntry::Usage {
+            id,
+            parent_id,
+            kind,
+            provider,
+            model,
+            usage,
+            note,
+            ..
+        } => SessionEntry::Usage {
+            id,
+            parent_id,
+            timestamp: ts,
+            kind,
+            provider,
+            model,
+            usage,
+            note,
         },
         SessionEntry::ThinkingLevelChange {
             id,
@@ -1560,6 +1616,39 @@ impl SessionManager {
         id
     }
 
+    /// Append a usage entry on the current branch (TS `appendUsage`).
+    ///
+    /// Usage entries carry no model context; they record what a request cost,
+    /// such as a `cache_warm` refresh, so footer totals and notices can report
+    /// it.
+    pub fn append_usage(
+        &mut self,
+        kind: &str,
+        provider: &str,
+        model: &str,
+        usage: pi_agent_core::pi_ai_types::Usage,
+        note: Option<&str>,
+    ) -> SessionEntry {
+        let id = generate_id(&self.by_id);
+        let timestamp = Utc::now().to_rfc3339();
+        let entry = SessionEntry::Usage {
+            id: id.clone(),
+            parent_id: self.leaf_id.clone(),
+            timestamp,
+            kind: kind.to_string(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            usage,
+            note: note.map(std::string::ToString::to_string),
+        };
+        let json = serde_json::to_string(&entry).unwrap_or_default();
+        self.file_entries.push(FileEntry::Entry(entry.clone()));
+        self.by_id.insert(id.clone(), entry.clone());
+        self.leaf_id = Some(id);
+        self.persist_entry_str(&json);
+        entry
+    }
+
     pub fn append_thinking_level_change(&mut self, thinking_level: &str) -> String {
         let id = generate_id(&self.by_id);
         let timestamp = Utc::now().to_rfc3339();
@@ -2120,6 +2209,9 @@ impl SessionManager {
             // Re-chain parentId
             match &mut cloned {
                 SessionEntry::Message {
+                    ref mut parent_id, ..
+                }
+                | SessionEntry::Usage {
                     ref mut parent_id, ..
                 }
                 | SessionEntry::ThinkingLevelChange {
@@ -2856,6 +2948,50 @@ mod tests {
         let ctx = mgr.build_context();
         assert_eq!(ctx.thinking_level, "medium");
         assert_eq!(ctx.messages.len(), 2);
+    }
+
+    /// Usage entries chain onto the branch, stay out of model context, and
+    /// round-trip through the session file (TS `appendUsage`).
+    #[test]
+    fn test_append_usage_stays_out_of_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            crate::core::session_manager::SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+        let user_id = mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": 0
+        }));
+        let usage = pi_agent_core::pi_ai_types::Usage {
+            input: 1000,
+            cache_read: 900,
+            ..Default::default()
+        };
+        let entry = mgr.append_usage(
+            "cache_warm",
+            "anthropic",
+            "claude-sonnet-5",
+            usage,
+            Some("extension override"),
+        );
+
+        assert_eq!(entry.parent_id(), Some(user_id.as_str()));
+        assert!(matches!(
+            &entry,
+            SessionEntry::Usage { kind, note: Some(note), .. }
+                if kind == "cache_warm" && note == "extension override"
+        ));
+        assert!(
+            mgr.get_branch(None)
+                .iter()
+                .any(|e| matches!(e, SessionEntry::Usage { .. })),
+            "usage entry is on the branch"
+        );
+        assert_eq!(
+            mgr.build_projected_context_messages().len(),
+            1,
+            "a usage entry adds no model context"
+        );
     }
 
     #[test]

@@ -16,6 +16,11 @@ pub struct CompactionSettings {
     pub enabled: Option<bool>,
     pub reserve_tokens: Option<u64>,
     pub keep_recent_tokens: Option<u64>,
+    /// Per-model token budgets keyed by `provider/modelId`
+    /// (TS `compaction.modelOverrides`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_overrides:
+        Option<std::collections::HashMap<String, crate::core::compaction::CompactionModelOverride>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -39,7 +44,20 @@ pub struct RetrySettings {
     pub enabled: Option<bool>,
     pub max_retries: Option<u32>,
     pub base_delay_ms: Option<u64>,
+    /// Cap for each agent-level retry delay in ms (TS `retry.maxAgentDelayMs`,
+    /// default 60s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agent_delay_ms: Option<u64>,
     pub provider: Option<ProviderRetrySettings>,
+}
+
+impl RetrySettings {
+    /// The effective delay cap (TS `DEFAULT_RETRY_POLICY.maxAgentDelayMs`).
+    #[must_use]
+    pub fn max_agent_delay_ms(&self) -> u64 {
+        self.max_agent_delay_ms
+            .unwrap_or(pi_ai::utils::retry::DEFAULT_MAX_AGENT_RETRY_DELAY_MS)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -188,6 +206,23 @@ pub enum TransportSetting {
     Auto,
 }
 
+/// Prompt cache warming modes (TS `CACHE_WARMING_MODES`).
+pub const CACHE_WARMING_MODES: [&str; 3] = ["off", "streaming", "idle"];
+
+/// How long prompt caches are kept warm after a real request
+/// (TS `CacheWarmingMode`). Global only, because each refresh costs money.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheWarmingMode {
+    /// Never warm.
+    Off,
+    /// Warm only while the agent run that sent the request is active.
+    #[default]
+    Streaming,
+    /// Keep warming while the session is idle, up to the idle horizon.
+    Idle,
+}
+
 /// Main Settings struct matching TS `Settings` interface.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -208,6 +243,9 @@ pub struct Settings {
     pub retry: Option<RetrySettings>,
     pub hide_thinking_block: Option<bool>,
     pub show_cache_miss_notices: Option<bool>,
+    /// Prompt cache warming mode (TS `cacheWarming`, default "streaming").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_warming: Option<CacheWarmingMode>,
 
     // Editor / shell settings
     pub external_editor: Option<String>,
@@ -961,6 +999,20 @@ impl SettingsManager {
         }
     }
 
+    /// Prompt cache warming mode (TS `getCacheWarmingMode`): unknown or missing
+    /// values fall back to the default `streaming`.
+    pub fn get_cache_warming_mode(&self) -> CacheWarmingMode {
+        self.global_settings.cache_warming.unwrap_or_default()
+    }
+
+    /// Persist the warming mode (TS `setCacheWarmingMode`). Global only.
+    pub fn set_cache_warming_mode(&mut self, mode: CacheWarmingMode) {
+        self.global_settings.cache_warming = Some(mode);
+        self.mark_modified("cacheWarming", None);
+        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.persist_scope(SettingsScope::Global);
+    }
+
     pub fn set_theme(&mut self, theme: &str) {
         self.global_settings.theme = Some(theme.to_string());
         self.mark_modified("theme", None);
@@ -1020,6 +1072,7 @@ impl SettingsManager {
     pub fn get_compaction_settings(&self) -> CompactionSettings {
         self.settings.compaction.clone().unwrap_or_default()
     }
+
 
     // --- branchSummary ---
 
@@ -1614,6 +1667,7 @@ mod tests {
     fn test_deep_merge_nested_objects() {
         let base = Settings {
             compaction: Some(CompactionSettings {
+                model_overrides: None,
                 enabled: Some(true),
                 reserve_tokens: Some(1000),
                 keep_recent_tokens: Some(500),
@@ -1943,6 +1997,60 @@ mod tests {
 
         mgr.set_compaction_enabled(false);
         assert!(!mgr.get_compaction_enabled());
+    }
+
+    /// `compaction.modelOverrides` parses from the settings file and reaches
+    /// the runtime shape (TS `compaction.modelOverrides`).
+    #[test]
+    fn test_compaction_model_overrides_parse() {
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let global: Settings = serde_json::from_value(serde_json::json!({
+            "compaction": {
+                "reserveTokens": 16384,
+                "keepRecentTokens": 20000,
+                "modelOverrides": {
+                    "anthropic/claude-sonnet-5": {
+                        "reserveTokens": 4096,
+                        "keepRecentTokens": 8000
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mgr = SettingsManager::new(storage, global, Settings::default());
+
+        let overrides = mgr
+            .get_compaction_settings()
+            .model_overrides
+            .expect("overrides parsed");
+        let entry = overrides
+            .get("anthropic/claude-sonnet-5")
+            .expect("entry keyed by provider/modelId");
+        assert_eq!(entry.reserve_tokens, Some(4096));
+        assert_eq!(entry.keep_recent_tokens, Some(8000));
+        // The ordinary settings are untouched.
+        assert_eq!(mgr.get_compaction_reserve_tokens(), 16384);
+    }
+
+    /// A retry delay cap configured in the settings file is honoured, and the
+    /// default is the documented 60 seconds
+    /// (TS `settings.retry.maxAgentDelayMs`).
+    #[test]
+    fn test_retry_max_agent_delay_defaults_and_override() {
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let mgr = SettingsManager::new(storage, Settings::default(), Settings::default());
+        assert_eq!(
+            mgr.get_retry_settings().max_agent_delay_ms(),
+            pi_ai::utils::retry::DEFAULT_MAX_AGENT_RETRY_DELAY_MS
+        );
+
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let global: Settings = serde_json::from_value(serde_json::json!({
+            "retry": {"maxAgentDelayMs": 5000}
+        }))
+        .unwrap();
+        let mgr = SettingsManager::new(storage, global, Settings::default());
+        assert_eq!(mgr.get_retry_settings().max_agent_delay_ms(), 5000);
     }
 
     #[test]

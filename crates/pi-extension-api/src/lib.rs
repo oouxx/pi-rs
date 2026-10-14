@@ -627,6 +627,35 @@ pub struct BoundaryContextPreview {
     pub can_continue: bool,
 }
 
+/// Which way pi leans on a prompt cache refresh (TS `CacheWarmingAction`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheWarmingAction {
+    /// Send the refresh.
+    Warm,
+    /// Stop warming until the next real request.
+    Stop,
+}
+
+/// Fired before each prompt cache refresh (TS `CacheWarmingDecisionEvent`).
+/// Everything else an extension might want (model, idle state, context size)
+/// is on the context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheWarmingDecisionEvent {
+    /// Event discriminator, always `"cache_warming_decision"`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Price of this refresh.
+    pub warm_cost: f64,
+    /// Extra price of the next real request if the entry is lost.
+    pub miss_cost: f64,
+    /// Estimated chance the cache is used again before it expires.
+    pub continuation_probability: f64,
+    /// Pi's own decision, which the handler may override.
+    pub action: CacheWarmingAction,
+}
+
 /// Mutable boundary state visible to each handler (TS `BoundaryState`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -45,6 +45,7 @@ fn test_model_id() -> String {
 fn make_model() -> Model {
     let id = test_model_id();
     Model {
+        prompt_cache: None,
         id: id.clone(),
         name: format!("Test: {id}"),
         api: "openai-completions".to_string(),
@@ -84,6 +85,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
             let key = key.clone();
             Box::pin(async move {
                 let pi_model = pi_agent_core::pi_ai::types::Model {
+                    prompt_cache: None,
                     id: model.id,
                     name: model.name,
                     api: model.api,

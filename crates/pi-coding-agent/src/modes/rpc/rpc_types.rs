@@ -376,6 +376,7 @@ mod tests {
     fn session_state_includes_model_when_selected() {
         let state = RpcSessionState {
             model: Some(pi_agent_core::pi_ai_types::Model {
+                prompt_cache: None,
                 id: "gpt-5.5".to_string(),
                 name: "GPT-5.5".to_string(),
                 api: "openai-completions".to_string(),

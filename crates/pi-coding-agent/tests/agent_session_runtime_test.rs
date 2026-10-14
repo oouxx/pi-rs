@@ -48,6 +48,7 @@ async fn create_test_session(
         .into_iter()
         .next()
         .unwrap_or_else(|| pi_agent_core::pi_ai_types::Model {
+            prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
             api: "test-api".to_string(),
@@ -492,6 +493,7 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
     // Directly constructed thinking-capable model (the builtin models don't
     // support thinking, which would clamp set_thinking_level to "off").
     let model = pi_agent_core::pi_ai_types::Model {
+        prompt_cache: None,
         id: "test-model".to_string(),
         name: "Test Model".to_string(),
         api: "test-api".to_string(),
@@ -627,6 +629,7 @@ async fn test_session_switch_invalidates_js_runtime() {
     let settings_manager =
         pi_coding_agent::core::settings_manager::SettingsManager::create(&cwd, None);
     let model = pi_agent_core::pi_ai_types::Model {
+        prompt_cache: None,
         id: "test-model".to_string(),
         name: "Test Model".to_string(),
         api: "test-api".to_string(),

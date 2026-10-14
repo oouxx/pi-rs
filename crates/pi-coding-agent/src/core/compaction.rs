@@ -47,6 +47,19 @@ Create a concise checkpoint of the user's request and the progress shown above. 
 
 Only summarize information explicitly present above. Do not infer or recreate later messages."#;
 
+/// Per-model compaction token budgets (TS `CompactionModelOverride`), keyed by
+/// `provider/modelId`.
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionModelOverride {
+    /// Tokens reserved for the prompt and response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    /// Recent-context tokens to retain (not summarized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_recent_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompactionSettings {
     // Tokens reserved for the LLM's response. Compaction triggers once the
@@ -57,6 +70,31 @@ pub struct CompactionSettings {
     // Recent-context tokens to retain (not summarized), matching TS
     // `keepRecentTokens` (default 20000).
     pub keep_recent_tokens: u64,
+    // Per-model token budgets, keyed by `provider/modelId`
+    // (TS `compaction.modelOverrides`).
+    pub model_overrides: Option<HashMap<String, CompactionModelOverride>>,
+}
+
+impl CompactionSettings {
+    /// These settings with the overrides that apply to one model folded in:
+    /// per-model override → ordinary setting → built-in default
+    /// (TS `getCompactionTokenSetting`).
+    #[must_use]
+    pub fn for_model(&self, provider: &str, model_id: &str) -> Self {
+        let Some(overrides) = &self.model_overrides else {
+            return self.clone();
+        };
+        let Some(entry) = overrides.get(&format!("{provider}/{model_id}")) else {
+            return self.clone();
+        };
+        Self {
+            reserve_tokens: entry.reserve_tokens.unwrap_or(self.reserve_tokens),
+            keep_recent_tokens: entry
+                .keep_recent_tokens
+                .unwrap_or(self.keep_recent_tokens),
+            ..self.clone()
+        }
+    }
 }
 
 impl Default for CompactionSettings {
@@ -65,6 +103,7 @@ impl Default for CompactionSettings {
             reserve_tokens: 16384,
             compact_on_threshold: true,
             keep_recent_tokens: 20000,
+            model_overrides: None,
         }
     }
 }
@@ -398,11 +437,17 @@ pub fn find_cut_point(
         }
         accumulated_tokens += message_tokens;
         if accumulated_tokens >= keep_recent_tokens {
-            for &c in &cut_points {
-                if c >= i {
-                    cut_index = c;
-                    break;
-                }
+            // Prefer the closest valid cut point at or after this entry. If the
+            // trailing tool results exceed the budget by themselves, keep their
+            // preceding assistant tool call instead of falling back to the
+            // first message (TS #9740).
+            if let Some(preferred) = cut_points
+                .iter()
+                .copied()
+                .find(|&candidate| candidate >= i)
+                .or_else(|| cut_points.last().copied())
+            {
+                cut_index = preferred;
             }
             break;
         }
@@ -1146,6 +1191,77 @@ mod tests {
         let cut = find_cut_point(&entries, 0, entries.len(), u64::MAX);
         assert_eq!(cut.first_kept_entry_index, 0);
         assert!(!cut.is_split_turn);
+    }
+
+    /// Per-model budgets win over the ordinary settings, and a partial override
+    /// keeps the ordinary value for the other field
+    /// (TS `getCompactionTokenSetting` precedence).
+    #[test]
+    fn test_compaction_settings_resolve_per_model() {
+        let settings = CompactionSettings {
+            reserve_tokens: 16384,
+            compact_on_threshold: true,
+            keep_recent_tokens: 20000,
+            model_overrides: Some(std::collections::HashMap::from([(
+                "anthropic/claude-sonnet-5".to_string(),
+                CompactionModelOverride {
+                    reserve_tokens: Some(4096),
+                    keep_recent_tokens: None,
+                },
+            )])),
+        };
+
+        let resolved = settings.for_model("anthropic", "claude-sonnet-5");
+        assert_eq!(resolved.reserve_tokens, 4096, "override wins");
+        assert_eq!(
+            resolved.keep_recent_tokens, 20000,
+            "an unset override field keeps the ordinary setting"
+        );
+
+        let other = settings.for_model("openai", "gpt-5.5");
+        assert_eq!(other.reserve_tokens, 16384);
+        assert_eq!(other.keep_recent_tokens, 20000);
+    }
+
+    /// When the trailing tool results alone exceed the keep budget, the cut
+    /// keeps their preceding turn instead of falling back to the first message
+    /// (TS #9740 `findCutPoint`'s `?? cutPoints[last]`).
+    #[test]
+    fn test_find_cut_point_falls_back_to_the_latest_cut_point() {
+        let entries = messages_to_entries(vec![
+            AgentMessage::User {
+                content: vec![ContentBlock::text("a")],
+                timestamp: 1,
+            },
+            AgentMessage::Assistant {
+                content: vec![ContentBlock::text("ok")],
+                api: "test".into(),
+                provider: "test".into(),
+                model: "test".into(),
+                usage: Default::default(),
+                stop_reason: None,
+                error_message: None,
+                timestamp: 2,
+            },
+            AgentMessage::ToolResult {
+                tool_call_id: "call-1".into(),
+                tool_name: "read".into(),
+                content: vec![ContentBlock::text("x".repeat(4000))],
+                details: serde_json::json!({}),
+                is_error: false,
+                added_tool_names: None,
+                usage: None,
+                timestamp: 3,
+            },
+        ]);
+
+        // The budget is exceeded by the tool result alone, at an index past
+        // every valid cut point.
+        let cut = find_cut_point(&entries, 0, entries.len(), 5);
+        assert_eq!(
+            cut.first_kept_entry_index, 1,
+            "keep the assistant tool call that precedes the oversized result"
+        );
     }
 
     #[test]

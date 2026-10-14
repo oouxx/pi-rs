@@ -218,6 +218,21 @@ pub async fn dispatch_context(
     }
 }
 
+/// Dispatch the `context_with_system` phase, which runs after `context`
+/// handlers on the full transcript (TS `emitContext`'s second phase). Returns
+/// the messages to send plus the name of a handler that dropped the leading
+/// system message, when one did.
+pub async fn dispatch_context_with_system(
+    registry: &ExtensionRegistry,
+    messages: Vec<serde_json::Value>,
+    ext_ctx: &ExtensionContext,
+) -> (Vec<serde_json::Value>, Option<String>) {
+    registry
+        .hook_runner()
+        .run_context_with_system(messages, ext_ctx)
+        .await
+}
+
 // ============================================================================
 // message_end — modifying
 // ============================================================================

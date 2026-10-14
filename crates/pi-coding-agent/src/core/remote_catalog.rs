@@ -280,6 +280,7 @@ mod tests {
 
     fn make_model(id: &str) -> Model {
         Model {
+            prompt_cache: None,
             id: id.to_string(),
             name: id.to_string(),
             api: "openai-completions".into(),

@@ -663,11 +663,11 @@ impl SessionTask {
                     self.on_cancel().await;
                 }
                 NextEvent::Command(Some(SessionCommand::SetModel { model, reply })) => {
-                    let result = self.session.set_model(model).await;
+                    let result = self.session.set_model(model, false).await;
                     let _ = reply.send(result);
                 }
                 NextEvent::Command(Some(SessionCommand::SetThinkingLevel { level, reply })) => {
-                    self.session.set_thinking_level(&level).await;
+                    self.session.set_thinking_level(&level, false).await;
                     let _ = reply.send(Ok(()));
                 }
                 NextEvent::Command(Some(SessionCommand::GetConfigOptions { reply })) => {

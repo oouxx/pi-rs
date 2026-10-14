@@ -3731,13 +3731,13 @@ impl AgentSession {
                         self.set_active_tools_by_name(&tools).await;
                     }
                     ExtensionAction::SetThinkingLevel(level) => {
-                        self.set_thinking_level(&level).await;
+                        self.set_thinking_level(&level, false).await;
                     }
                     ExtensionAction::SetModel(model_id) => {
                         // "provider/model" string, resolved via the model registry.
                         if let Some((provider, id)) = model_id.split_once('/') {
                             if let Some(model) = self.model_registry.find(provider, id) {
-                                let _ = self.set_model(model).await;
+                                let _ = self.set_model(model, false).await;
                             }
                         }
                     }
@@ -4667,7 +4667,12 @@ References are relative to {}.
 
     /// Set the model on the agent, matching the original setModel().
     /// Persists to session and settings, re-clamps thinking level, and emits events.
-    pub async fn set_model(&self, model: Model) -> Result<(), String> {
+    /// Switch the session's model.
+    ///
+    /// The change is session-scoped unless `persist` is true, matching TS
+    /// `setModel(model, { persist })` after #8356: only an explicit settings
+    /// action rewrites the global defaults.
+    pub async fn set_model(&self, model: Model, persist: bool) -> Result<(), String> {
         // Check auth before setting model, matching TS _modelRuntime.checkAuth()
         let auth_result = self.model_registry.get_api_key_and_headers(&model).await?;
         if !auth_result.ok {
@@ -4687,7 +4692,7 @@ References are relative to {}.
             Some(previous_model_id.clone())
         };
         // Write through the shared state — `state()` returns a clone.
-        self.agent.set_model(model).await;
+        self.agent.set_model(model.clone()).await;
 
         // Persist to session (matching TS sessionManager.appendModelChange)
         self.session_manager
@@ -4695,14 +4700,24 @@ References are relative to {}.
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .append_model_change(&model_provider, &model_id);
 
-        // Persist to settings (matching TS settingsManager.setDefaultModelAndProvider)
-        if let Ok(mut sm) = self.settings_manager.lock() {
-            sm.set_default_model_and_provider(&model_provider, &model_id);
+        if persist {
+            // Only an explicit settings action rewrites the global defaults
+            // (TS #8356).
+            if let Ok(mut sm) = self.settings_manager.lock() {
+                sm.set_default_model_and_provider(&model_provider, &model_id);
+            }
         }
 
-        // Re-clamp thinking level for new model's capabilities (matching TS setThinkingLevel call)
-        self.set_thinking_level(&self._get_thinking_level_for_model_switch(None).await)
-            .await;
+        // Re-clamp thinking level for new model's capabilities; a per-model
+        // default for the target takes priority over the session's carry-over
+        // (TS #8356).
+        self.set_thinking_level(
+            &self
+                ._get_thinking_level_for_model_switch(None, Some(&model))
+                .await,
+            false,
+        )
+        .await;
 
         // Dispatch model_select to extensions (matching TS _emitModelSelect
         // which skips when modelsAreEqual(previous, next)).
@@ -4726,29 +4741,47 @@ References are relative to {}.
         Ok(())
     }
 
-    /// Get the thinking level to use when switching models, matching TS _getThinkingLevelForModelSwitch().
-    async fn _get_thinking_level_for_model_switch(&self, explicit_level: Option<&str>) -> String {
+    /// Thinking level to use when switching models (TS
+    /// `_getThinkingLevelForModelSwitch`): an explicit level wins, then the
+    /// target model's per-model override, then the global default, then the
+    /// level the session already carries.
+    async fn _get_thinking_level_for_model_switch(
+        &self,
+        explicit_level: Option<&str>,
+        target_model: Option<&Model>,
+    ) -> String {
         if let Some(level) = explicit_level {
             return level.to_string();
         }
-        if !self.supports_thinking().await {
-            return self
+        // Resolve from settings without holding the lock across the await.
+        let from_settings = {
+            let settings = self
                 .settings_manager
                 .lock()
-                .map(|sm| {
-                    sm.get_default_thinking_level()
-                        .unwrap_or("medium")
-                        .to_string()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            target_model
+                .and_then(|model| {
+                    settings.get_model_thinking_level(&model.provider, &model.id)
+                        .map(std::string::ToString::to_string)
                 })
-                .unwrap_or_else(|_| "medium".to_string());
+                .or_else(|| {
+                    settings
+                        .get_default_thinking_level()
+                        .map(std::string::ToString::to_string)
+                })
+        };
+        if let Some(level) = from_settings {
+            return level;
         }
         self.agent.state().await.thinking_level
     }
 
     /// Set the thinking level on the agent.
-    /// Clamps to model capabilities, matching TS setThinkingLevel().
-    /// Persists to session and settings, emits events, dispatches to extensions.
-    pub async fn set_thinking_level(&self, level: &str) {
+    /// Set the thinking level, clamped to the model's capabilities.
+    ///
+    /// Session-scoped unless `persist` is true (TS
+    /// `setThinkingLevel(level, { persist })`, #8356).
+    pub async fn set_thinking_level(&self, level: &str, persist: bool) {
         let state = self.agent.state().await;
         let available = pi_agent_core::pi_ai_types::get_supported_thinking_levels(&state.model);
         let effective = if available.contains(&level) {
@@ -4760,22 +4793,25 @@ References are relative to {}.
         let is_changing = effective != previous_level;
         drop(state);
 
-        if is_changing {
-            // Write through the shared state — `state()` returns a clone.
-            self.agent.set_thinking_level(effective.clone()).await;
+        // Write through the shared state — `state()` returns a clone. The
+        // level applies either way; only the persistence and the notification
+        // depend on whether it actually changed (TS `setThinkingLevel`).
+        self.agent.set_thinking_level(effective.clone()).await;
 
+        // Only an explicit settings action rewrites the global default
+        // (TS #8356) — it happens even when the level did not change.
+        if persist {
+            if let Ok(mut sm) = self.settings_manager.lock() {
+                sm.set_default_thinking_level(&effective);
+            }
+        }
+
+        if is_changing {
             // Persist to session (matching TS sessionManager.appendThinkingLevelChange)
             self.session_manager
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .append_thinking_level_change(&effective);
-
-            // Persist to settings (matching TS settingsManager.setDefaultThinkingLevel)
-            if self.supports_thinking().await || effective != "off" {
-                if let Ok(mut sm) = self.settings_manager.lock() {
-                    sm.set_default_thinking_level(&effective);
-                }
-            }
 
             // Emit thinking_level_changed event (matching TS _emit)
             self._emit(AgentSessionEvent::ThinkingLevelChanged {
@@ -4823,7 +4859,7 @@ References are relative to {}.
             None => 0,
         };
         let next = levels[next_idx].to_string();
-        self.set_thinking_level(&next).await;
+        self.set_thinking_level(&next, false).await;
         Some(next)
     }
 
@@ -4897,9 +4933,9 @@ References are relative to {}.
 
         // Apply thinking level (matching TS setThinkingLevel call in _cycleScopedModel)
         let tl = self
-            ._get_thinking_level_for_model_switch(thinking_level.as_deref())
+            ._get_thinking_level_for_model_switch(thinking_level.as_deref(), None)
             .await;
-        self.set_thinking_level(&tl).await;
+        self.set_thinking_level(&tl, false).await;
         // TS returns this.thinkingLevel (the clamped current value).
         let effective_tl = self.agent.state().await.thinking_level;
 
@@ -4963,8 +4999,8 @@ References are relative to {}.
         }
 
         // Re-clamp thinking level for the new model's capabilities.
-        let tl = self._get_thinking_level_for_model_switch(None).await;
-        self.set_thinking_level(&tl).await;
+        let tl = self._get_thinking_level_for_model_switch(None, None).await;
+        self.set_thinking_level(&tl, false).await;
         let effective_tl = self.agent.state().await.thinking_level;
 
         // Dispatch model_select to extensions (matching TS _emitModelSelect)
@@ -5350,7 +5386,20 @@ References are relative to {}.
 
     /// Navigate the session tree, matching the original navigateTree().
     /// `direction` can be "up", "down", "root", or an entry ID.
+    ///
+    /// Returns `false` without navigating while a run or a compaction is in
+    /// flight: navigating then would race the compaction and replace its
+    /// progress (TS #9179 rejects those with an error; the caller reports it).
     pub async fn navigate_tree(&self, direction: &str) -> bool {
+        if *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            || self.is_compacting()
+        {
+            return false;
+        }
+
         // Dispatch session_before_tree event to extensions
         if let Some(ref registry) = self.extension_registry {
             crate::core::extensions::dispatcher::dispatch_session_before_tree(
@@ -7230,7 +7279,14 @@ mod tests {
         let cwd = dir.path().to_str().unwrap().to_string();
         let session_manager =
             crate::core::session_manager::SessionManager::new(&cwd, &cwd, None, false, None);
-        let settings_manager = crate::core::settings_manager::SettingsManager::create(&cwd, None);
+        // Point the agent dir at the temp directory: settings setters persist,
+        // and a test must never write into the real agent dir.
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let settings_manager = crate::core::settings_manager::SettingsManager::create(
+            &cwd,
+            Some(agent_dir.to_str().unwrap()),
+        );
         let model_registry = crate::core::model_registry::ModelRegistry::new(
             crate::core::model_registry::ModelRegistry::builtin_models_list(),
         );
@@ -7415,6 +7471,134 @@ mod tests {
                 .iter()
                 .any(|m| matches!(m, AgentMessage::Custom { .. })),
             "the flush appends it"
+        );
+    }
+
+    /// A thinking-level change is session-scoped unless the caller asks to
+    /// persist it, so a session never rewrites the global default on its own
+    /// (TS #8356).
+    #[tokio::test]
+    async fn thinking_level_changes_are_session_scoped() {
+        let session = build_settle_test_session(None).await;
+        let settings = Arc::clone(&session.settings_manager);
+        let default_level = |s: &Arc<std::sync::Mutex<crate::core::settings_manager::SettingsManager>>| {
+            s.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_default_thinking_level()
+                .map(std::string::ToString::to_string)
+        };
+        assert_eq!(default_level(&settings), None, "fresh settings");
+
+        session.set_thinking_level("high", false).await;
+        assert_eq!(
+            default_level(&settings),
+            None,
+            "a session-scoped change must not rewrite the global default"
+        );
+
+        session.set_thinking_level("high", true).await;
+        assert!(
+            default_level(&settings).is_some(),
+            "an explicit persist writes the global default"
+        );
+    }
+
+    /// A per-model default thinking level wins over the global default when
+    /// switching to that model (TS #8356).
+    #[tokio::test]
+    async fn model_switch_prefers_the_per_model_thinking_level() {
+        let session = build_settle_test_session(None).await;
+        let mut target = session.agent.state().await.model;
+        target.id = "claude-sonnet-5".to_string();
+        target.provider = "anthropic".to_string();
+
+        // Only the global default is set.
+        session
+            .settings_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_default_thinking_level("low");
+        assert_eq!(
+            session
+                ._get_thinking_level_for_model_switch(None, Some(&target))
+                .await,
+            "low"
+        );
+
+        // The target model's own default takes priority.
+        session
+            .settings_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_model_thinking_level("anthropic", "claude-sonnet-5", "high");
+        assert_eq!(
+            session
+                ._get_thinking_level_for_model_switch(None, Some(&target))
+                .await,
+            "high",
+            "per-model override wins over the global default"
+        );
+
+        // An explicit level still wins over both.
+        assert_eq!(
+            session
+                ._get_thinking_level_for_model_switch(Some("medium"), Some(&target))
+                .await,
+            "medium"
+        );
+
+        // Another model keeps the global default.
+        let mut other = target.clone();
+        other.id = "gpt-5.5".to_string();
+        other.provider = "openai".to_string();
+        assert_eq!(
+            session
+                ._get_thinking_level_for_model_switch(None, Some(&other))
+                .await,
+            "low"
+        );
+    }
+
+    /// Tree navigation is rejected while a run or a compaction is in flight
+    /// (TS #9179).
+    #[tokio::test]
+    async fn navigate_tree_is_rejected_while_busy() {
+        let session = build_settle_test_session(None).await;
+        session
+            .get_session_manager()
+            .append_message(serde_json::json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+                "timestamp": 0
+            }));
+        assert!(
+            session.navigate_tree("root").await,
+            "an idle session navigates"
+        );
+
+        // A running agent blocks navigation.
+        *session
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        assert!(
+            !session.navigate_tree("root").await,
+            "a running agent must not navigate the tree"
+        );
+        *session
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+
+        // So does an active compaction.
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        *session
+            .compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        assert!(
+            !session.navigate_tree("root").await,
+            "an active compaction must not navigate the tree"
         );
     }
 

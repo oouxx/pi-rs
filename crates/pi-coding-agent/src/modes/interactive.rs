@@ -2036,7 +2036,7 @@ fn spawn_agent_command_task(
                             // claimed success optimistically; set_model can
                             // fail on auth, and a silent drop left the footer
                             // model name stale).
-                            match sess.set_model(model).await {
+                            match sess.set_model(model, false).await {
                                 Ok(()) => {
                                     let _ = result_tx.send(pi_tui::Msg::SetModelName(model_id.clone()));
                                     let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(provider.clone())));
@@ -2174,7 +2174,7 @@ fn spawn_agent_command_task(
                                             .find(|m| m.id.as_str() == *default_id)
                                         {
                                             let default_id = model.id.clone();
-                                            match sess.set_model(model).await {
+                                            match sess.set_model(model, false).await {
                                                 Ok(()) => message
                                                     .push_str(&format!(". Selected {default_id}.")),
                                                 Err(e) => message.push_str(&format!(

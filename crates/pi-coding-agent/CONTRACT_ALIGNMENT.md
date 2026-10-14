@@ -462,3 +462,6 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | per-model 压缩预算 | `compaction.modelOverrides["provider/id"]` → 普通设置 → 内置默认 | 同左（`CompactionSettings::for_model`，自动压缩与压缩触发点按当前模型解析） | 是 | 修复见 PORTING_MISTAKES.md #144 |
 | `context` / `context_with_system` 相位 | `context` handler 只见对话，Pi 跑完补回 prompt/工具声明；`context_with_system` 见全量 transcript、结果原样生效、丢首条 system 报错 | 同左（`run_on_context` 过滤+恢复、`run_context_with_system` + dispatcher + transform_context 串联） | 是 | 修复见 PORTING_MISTAKES.md #145 |
 | `toolcall_start` 线事件 | 剥 `partial` 并补 `id`/`toolName`（#7953） | 同左 | 是 | 修复见 PORTING_MISTAKES.md #140 |
+| 模型/思考级别变更的作用域 | `setModel(model, {persist})` / `setThinkingLevel(level, {persist})`：默认**会话内**，仅显式 persist 才写全局默认（#8356） | 同左（两个 setter 都有 `persist: bool`；interactive/RPC/ACP 调用点传 `false`） | 是 | 修复见 PORTING_MISTAKES.md #149 |
+| per-model 思考级别 | `modelThinkingLevels["provider/modelId"]`：切换模型时 显式 → per-model → 全局默认 → 会话当前 | 同左（`Settings.model_thinking_levels` + `_get_thinking_level_for_model_switch`） | 是 | 修复见 PORTING_MISTAKES.md #151 |
+| 会话树导航前置检查 | 运行中 / 压缩中拒绝导航（#9179） | 同左（返回 `false`，不抛错） | 是 | 修复见 PORTING_MISTAKES.md #150 |

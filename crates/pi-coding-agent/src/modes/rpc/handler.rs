@@ -254,7 +254,7 @@ pub async fn handle_command(
             let model = models.iter().find(|m| m.provider == provider && m.id == model_id).cloned();
             match model {
                 Some(m) => {
-                    match session.set_model(m.clone()).await {
+                    match session.set_model(m.clone(), false).await {
                         Ok(_) => Some(rpc_success(
                             id,
                             "set_model",
@@ -309,7 +309,7 @@ pub async fn handle_command(
         // ── Thinking ──────────────────────────────────────────────────────
 
         RpcCommand::SetThinkingLevel { id, level } => {
-            session.set_thinking_level(&level).await;
+            session.set_thinking_level(&level, false).await;
             Some(rpc_success(id, "set_thinking_level", None))
         }
 

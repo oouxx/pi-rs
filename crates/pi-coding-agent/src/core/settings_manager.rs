@@ -232,6 +232,10 @@ pub struct Settings {
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
     pub default_thinking_level: Option<String>,
+    /// Per-model default thinking level overrides keyed by `provider/modelId`
+    /// (TS `modelThinkingLevels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_thinking_levels: Option<std::collections::HashMap<String, String>>,
     pub transport: Option<TransportSetting>,
     pub steering_mode: Option<SteeringMode>,
     pub follow_up_mode: Option<FollowUpMode>,
@@ -1027,6 +1031,48 @@ impl SettingsManager {
 
     pub fn get_default_thinking_level(&self) -> Option<&str> {
         self.settings.default_thinking_level.as_deref()
+    }
+
+    /// Per-model default thinking level, keyed by `provider/modelId`
+    /// (TS `getModelThinkingLevel`).
+    pub fn get_model_thinking_level(&self, provider: &str, model_id: &str) -> Option<&str> {
+        self.settings
+            .model_thinking_levels
+            .as_ref()?
+            .get(&format!("{provider}/{model_id}"))
+            .map(String::as_str)
+    }
+
+    /// All per-model thinking levels (TS `getAllModelThinkingLevels`).
+    #[must_use]
+    pub fn get_all_model_thinking_levels(&self) -> std::collections::HashMap<String, String> {
+        self.settings.model_thinking_levels.clone().unwrap_or_default()
+    }
+
+    /// Persist a per-model default thinking level (TS `setModelThinkingLevel`).
+    pub fn set_model_thinking_level(&mut self, provider: &str, model_id: &str, level: &str) {
+        self.global_settings
+            .model_thinking_levels
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(format!("{provider}/{model_id}"), level.to_string());
+        self.mark_modified("modelThinkingLevels", None);
+        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.persist_scope(SettingsScope::Global);
+    }
+
+    /// Drop a per-model default, removing the map when it becomes empty
+    /// (TS `removeModelThinkingLevel`).
+    pub fn remove_model_thinking_level(&mut self, provider: &str, model_id: &str) {
+        let Some(levels) = self.global_settings.model_thinking_levels.as_mut() else {
+            return;
+        };
+        levels.remove(&format!("{provider}/{model_id}"));
+        if levels.is_empty() {
+            self.global_settings.model_thinking_levels = None;
+        }
+        self.mark_modified("modelThinkingLevels", None);
+        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.persist_scope(SettingsScope::Global);
     }
 
     pub fn set_default_thinking_level(&mut self, level: &str) {

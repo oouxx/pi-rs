@@ -1537,7 +1537,7 @@ async fn test_state_mutations_persist_to_agent() {
     new_model.id = "new-model-id".to_string();
     new_model.name = "New Model".to_string();
     session
-        .set_model(new_model)
+        .set_model(new_model, false)
         .await
         .expect("set_model should succeed with a keyed provider");
     assert_eq!(
@@ -1547,7 +1547,7 @@ async fn test_state_mutations_persist_to_agent() {
     );
 
     // ── set_thinking_level ──
-    session.set_thinking_level("high").await;
+    session.set_thinking_level("high", false).await;
     assert_eq!(
         session.get_thinking_level().await,
         "high",

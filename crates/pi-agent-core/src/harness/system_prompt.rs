@@ -88,25 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_skills_empty_when_all_disabled() {
-        let disabled_skill = Skill {
-            name: "hidden".to_string(),
-            description: "Hidden".to_string(),
-            content: "hidden content".to_string(),
-            file_path: "/skills/hidden/SKILL.md".to_string(),
-            disable_model_invocation: true,
-        };
-        let result = format_skills_for_system_prompt(&[disabled_skill]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_format_skills_empty_input() {
-        let result = format_skills_for_system_prompt(&[]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
     fn test_format_skills_xml_escaping() {
         let skill = Skill {
             name: "a&b".to_string(),

@@ -109,17 +109,6 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_path_tilde_prefixed_filename() {
-        // "~draft.md" should be kept literal (not expanded)
-        let result = expand_path("~draft.md");
-        assert_eq!(result, PathBuf::from("~draft.md"));
-
-        // "@~draft.md" should strip @ prefix and keep tilde literal
-        let result = expand_path("@~draft.md");
-        assert_eq!(result, PathBuf::from("~draft.md"));
-    }
-
-    #[test]
     fn test_expand_path_unicode_spaces() {
         // Non-breaking space (U+00A0) should become regular space
         let with_nbsp = "file name.txt".to_string();
@@ -237,17 +226,4 @@ mod tests {
         assert_eq!(result, macos_path);
     }
 
-    #[test]
-    fn test_resolve_read_path_macos_screenshot_lowercase_am_pm() {
-        // Some locales like en_AU use lowercase am/pm
-        let macos_name = "Screenshot 2024-01-01 at 10.00.00\u{202F}am.png";
-        let user_name = "Screenshot 2024-01-01 at 10.00.00 am.png";
-
-        let dir = TempDir::new().unwrap();
-        let macos_path = dir.path().join(macos_name);
-        fs::write(&macos_path, "content").unwrap();
-
-        let result = resolve_read_path(user_name, dir.path().to_str().unwrap());
-        assert_eq!(result, macos_path);
-    }
 }

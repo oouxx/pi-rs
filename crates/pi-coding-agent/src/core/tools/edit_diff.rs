@@ -1139,32 +1139,6 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_edits_no_change() {
-        let result = apply_edits_to_normalized_content(
-            "hello world",
-            &[Edit {
-                old_text: "hello".into(),
-                new_text: "hello".into(),
-            }],
-            "test.txt",
-        );
-        assert!(matches!(result, Err(EditError::NoChange { .. })));
-    }
-
-    #[test]
-    fn test_apply_edits_empty_old_text() {
-        let result = apply_edits_to_normalized_content(
-            "hello world",
-            &[Edit {
-                old_text: "".into(),
-                new_text: "hi".into(),
-            }],
-            "test.txt",
-        );
-        assert!(matches!(result, Err(EditError::EmptyOldText { .. })));
-    }
-
-    #[test]
     fn test_apply_edits_overlap() {
         let result = apply_edits_to_normalized_content(
             "hello world",

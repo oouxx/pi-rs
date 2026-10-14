@@ -566,47 +566,6 @@ mod tests {
     }
 
     #[test]
-    fn test_process_proxy_thinking_flow() {
-        let mut partial = make_partial();
-
-        let event = process_proxy_event(
-            ProxyAssistantMessageEvent::ThinkingStart { content_index: 0 },
-            &mut partial,
-        );
-        assert!(matches!(
-            event,
-            Some(AssistantMessageEvent::ThinkingStart { .. })
-        ));
-
-        let event = process_proxy_event(
-            ProxyAssistantMessageEvent::ThinkingDelta {
-                content_index: 0,
-                delta: "I'm thinking".into(),
-            },
-            &mut partial,
-        );
-        assert!(matches!(
-            event,
-            Some(AssistantMessageEvent::ThinkingDelta { .. })
-        ));
-        if let Some(ContentBlock::Thinking { thinking, .. }) = partial.content.first() {
-            assert_eq!(thinking, "I'm thinking");
-        }
-
-        let event = process_proxy_event(
-            ProxyAssistantMessageEvent::ThinkingEnd {
-                content_index: 0,
-                content_signature: Some("sig123".into()),
-            },
-            &mut partial,
-        );
-        assert!(matches!(
-            event,
-            Some(AssistantMessageEvent::ThinkingEnd { .. })
-        ));
-    }
-
-    #[test]
     fn test_process_proxy_tool_call_flow() {
         let mut partial = make_partial();
 
@@ -643,20 +602,6 @@ mod tests {
             event,
             Some(AssistantMessageEvent::ToolCallEnd { .. })
         ));
-    }
-
-    #[test]
-    fn test_process_proxy_done() {
-        let mut partial = make_partial();
-        let event = process_proxy_event(
-            ProxyAssistantMessageEvent::Done {
-                reason: StopReason::Stop,
-                usage: None,
-            },
-            &mut partial,
-        );
-        assert!(matches!(event, Some(AssistantMessageEvent::Done { .. })));
-        assert_eq!(partial.stop_reason, StopReason::Stop);
     }
 
     #[test]

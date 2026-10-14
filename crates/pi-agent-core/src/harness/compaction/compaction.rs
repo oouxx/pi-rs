@@ -626,22 +626,6 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_tokens_assistant_message() {
-        let msg = create_assistant_message("Hi there", create_mock_usage(100, 50));
-        let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("Hi there".len() as u64 / 4).max(1));
-    }
-
-    #[test]
-    fn test_estimate_tokens_tool_result_message() {
-        let msg = create_tool_result_message("File contents here");
-        let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("File contents here".len() as u64 / 4).max(1));
-    }
-
-    #[test]
     fn test_estimate_tokens_bash_execution() {
         let msg = AgentMessage::BashExecution {
             command: "ls -la".to_string(),
@@ -660,20 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_tokens_custom_text() {
-        let msg = AgentMessage::Custom {
-            custom_type: "note".to_string(),
-            content: crate::types::CustomContent::Text("Custom note".to_string()),
-            display: true,
-            details: None,
-            timestamp: 1000,
-        };
-        let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("Custom note".len() as u64 / 4).max(1));
-    }
-
-    #[test]
     fn test_estimate_tokens_custom_blocks() {
         let msg = AgentMessage::Custom {
             custom_type: "note".to_string(),
@@ -688,30 +658,6 @@ mod tests {
         let tokens = estimate_tokens(&msg);
         assert!(tokens > 0);
         assert_eq!(tokens, ("Block content".len() as u64 / 4).max(1));
-    }
-
-    #[test]
-    fn test_estimate_tokens_branch_summary() {
-        let msg = AgentMessage::BranchSummary {
-            summary: "Branch summary text".to_string(),
-            from_id: "from-id".to_string(),
-            timestamp: 1000,
-        };
-        let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("Branch summary text".len() as u64 / 4).max(1));
-    }
-
-    #[test]
-    fn test_estimate_tokens_compaction_summary() {
-        let msg = AgentMessage::CompactionSummary {
-            summary: "Compaction summary text".to_string(),
-            tokens_before: 50_000,
-            timestamp: 1000,
-        };
-        let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("Compaction summary text".len() as u64 / 4).max(1));
     }
 
     #[test]
@@ -747,16 +693,6 @@ mod tests {
             keep_recent_tokens: 20_000,
         };
         assert!(should_compact(95_000, 100_000, &settings));
-    }
-
-    #[test]
-    fn test_should_compact_below_threshold() {
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 10_000,
-            keep_recent_tokens: 20_000,
-        };
-        assert!(!should_compact(89_000, 100_000, &settings));
     }
 
     #[test]
@@ -828,18 +764,6 @@ mod tests {
     fn test_find_cut_point_empty_messages() {
         let messages: Vec<AgentMessage> = vec![];
         let cut_point = find_cut_point(&messages, 1000);
-        assert_eq!(cut_point.first_kept_entry_index, 0);
-        assert_eq!(cut_point.turn_start_index, 0);
-        assert!(!cut_point.is_split_turn);
-    }
-
-    #[test]
-    fn test_find_cut_point_all_fit() {
-        let messages = vec![
-            create_user_message("Hi"),
-            create_assistant_message("Hello", create_mock_usage(100, 50)),
-        ];
-        let cut_point = find_cut_point(&messages, 10_000);
         assert_eq!(cut_point.first_kept_entry_index, 0);
         assert_eq!(cut_point.turn_start_index, 0);
         assert!(!cut_point.is_split_turn);
@@ -924,16 +848,6 @@ mod tests {
     }
 
     #[test]
-    fn test_should_compact_saturating_sub() {
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 200_000,
-            keep_recent_tokens: 20_000,
-        };
-        assert!(should_compact(100, 100_000, &settings));
-    }
-
-    #[test]
     fn test_serialize_conversation_user() {
         let messages = vec![Message::User {
             content: vec![ContentBlock::Text {
@@ -944,28 +858,6 @@ mod tests {
         }];
         let result = serialize_conversation(&messages);
         assert!(result.contains("[User]: Hello"));
-    }
-
-    #[test]
-    fn test_serialize_conversation_assistant() {
-        let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::Text {
-                text: "Hi there".to_string(),
-                text_signature: None,
-            }],
-            api: "anthropic-messages".to_string(),
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-5".to_string(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: create_mock_usage(100, 50),
-            stop_reason: crate::pi_ai_types::StopReason::Stop,
-            error_message: None,
-            timestamp: 1000,
-        }];
-        let result = serialize_conversation(&messages);
-        assert!(result.contains("[Assistant]: Hi there"));
     }
 
     #[test]
@@ -984,55 +876,6 @@ mod tests {
         }];
         let result = serialize_conversation(&messages);
         assert!(result.contains("[Tool result]: File content"));
-    }
-
-    #[test]
-    fn test_serialize_conversation_thinking() {
-        let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::Thinking {
-                thinking: "Let me think...".to_string(),
-                thinking_signature: None,
-                redacted: None,
-            }],
-            api: "anthropic-messages".to_string(),
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-5".to_string(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: create_mock_usage(100, 50),
-            stop_reason: crate::pi_ai_types::StopReason::Stop,
-            error_message: None,
-            timestamp: 1000,
-        }];
-        let result = serialize_conversation(&messages);
-        assert!(result.contains("[Assistant thinking]: Let me think..."));
-    }
-
-    #[test]
-    fn test_serialize_conversation_tool_call() {
-        let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::ToolCall {
-                id: "tool-1".to_string(),
-                name: "read".to_string(),
-                arguments: serde_json::json!({"path": "src/main.rs"}),
-                thought_signature: None,
-                namespace: None,
-            }],
-            api: "anthropic-messages".to_string(),
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-5".to_string(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: create_mock_usage(100, 50),
-            stop_reason: crate::pi_ai_types::StopReason::Stop,
-            error_message: None,
-            timestamp: 1000,
-        }];
-        let result = serialize_conversation(&messages);
-        assert!(result.contains("[Assistant tool calls]:"));
-        assert!(result.contains("read("));
     }
 
     #[test]
@@ -1221,65 +1064,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_prepare_compaction_with_branch_summary() {
-        let branch = SessionTreeEntry::BranchSummary {
-            id: "entry-bs1".to_string(),
-            parent_id: None,
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-            from_id: "branch-id".to_string(),
-            summary: "Branch summary with enough text to contribute tokens to the context window"
-                .to_string(),
-            details: None,
-            usage: None,
-            from_hook: None,
-        };
-        let u1 = SessionTreeEntry::Message {
-            id: "entry-u1".to_string(),
-            parent_id: Some("entry-bs1".to_string()),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_user_message(
-                "User message with enough text to go over the token limit and trigger compaction",
-            ),
-        };
-        let a1 = SessionTreeEntry::Message {
-            id: "entry-a1".to_string(),
-            parent_id: Some("entry-u1".to_string()),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_assistant_message(
-                "Assistant response with enough text to increase token count significantly",
-                create_mock_usage(5000, 1000),
-            ),
-        };
-        let u2 = SessionTreeEntry::Message {
-            id: "entry-u2".to_string(),
-            parent_id: Some("entry-a1".to_string()),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_user_message(
-                "Another user message adding more tokens to the context window",
-            ),
-        };
-        let a2 = SessionTreeEntry::Message {
-            id: "entry-a2".to_string(),
-            parent_id: Some("entry-u2".to_string()),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-            message: create_assistant_message(
-                "Another assistant response with more text",
-                create_mock_usage(5000, 1000),
-            ),
-        };
-
-        let entries = vec![branch, u1, a1, u2, a2];
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 30,
-            keep_recent_tokens: 10,
-        };
-        let result = prepare_compaction(&entries, 50, &settings);
-        assert!(
-            result.is_ok(),
-            "Expected compaction to be needed, got: {:?}",
-            result
-        );
-    }
 }

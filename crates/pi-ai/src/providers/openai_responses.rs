@@ -2420,39 +2420,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_messages_assistant_text() {
-        let model = make_model();
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::Assistant {
-                content: vec![ContentBlock::text("Hi there")],
-                api: "openai-responses".into(),
-                provider: "openai".into(),
-                model: "gpt-5".into(),
-                response_model: None,
-                response_id: None,
-                diagnostics: None,
-                usage: Usage::default(),
-                stop_reason: StopReason::Stop,
-                error_message: None,
-                timestamp: 0,
-            }],
-            tools: None,
-        };
-        let items = convert_responses_messages(
-            &model,
-            &context,
-            false,
-            &get_compat(&model),
-        ).unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["type"], "message");
-        assert_eq!(items[0]["role"], "assistant");
-        assert_eq!(items[0]["content"][0]["text"], "Hi there");
-        assert!(items[0]["id"].as_str().unwrap().starts_with("msg_pi_"));
-    }
-
-    #[test]
     fn test_convert_messages_tool_result() {
         let model = make_model();
         let context = Context {

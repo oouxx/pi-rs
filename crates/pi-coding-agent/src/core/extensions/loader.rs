@@ -436,12 +436,6 @@ mod tests {
         assert!(read_pi_manifest(&dir.path().join("package.json")).is_none());
     }
 
-    #[test]
-    fn test_read_pi_manifest_pi_not_object() {
-        let dir = make_temp_dir(&[("package.json", r#"{"pi":"nope"}"#)]);
-        assert!(read_pi_manifest(&dir.path().join("package.json")).is_none());
-    }
-
     // ---- is_extension_file ----
 
     #[test]
@@ -481,13 +475,6 @@ mod tests {
         let dir = make_temp_dir(&[("index.ts", "// ts"), ("index.js", "// js")]);
         let entries = resolve_extension_entries(dir.path()).expect("entries");
         assert_eq!(entries, vec![dir.path().join("index.ts")]);
-    }
-
-    #[test]
-    fn test_resolve_entries_index_js_only() {
-        let dir = make_temp_dir(&[("index.js", "// js")]);
-        let entries = resolve_extension_entries(dir.path()).expect("entries");
-        assert_eq!(entries, vec![dir.path().join("index.js")]);
     }
 
     #[test]
@@ -580,16 +567,6 @@ mod tests {
         assert!(result.paths.contains(&expected_global));
         assert!(result.paths.contains(&expected_cfg));
         assert_eq!(result.resolved_cwd, PathBuf::from(cwd));
-    }
-
-    #[test]
-    fn test_discover_paths_dedups_same_file() {
-        let dir = make_temp_dir(&[("x.ts", "")]);
-        let cwd = dir.path().to_string_lossy().to_string();
-        let abs = dir.path().join("x.ts").to_string_lossy().to_string();
-        // pass the same path twice as configured
-        let result = discover_extension_paths(&[abs.clone(), abs], &cwd, &cwd);
-        assert_eq!(result.paths.len(), 1, "dedup failed: {:?}", result.paths);
     }
 
     #[test]

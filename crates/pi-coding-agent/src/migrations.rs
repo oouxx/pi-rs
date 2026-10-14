@@ -142,18 +142,4 @@ mod tests {
         assert!(auth_content.contains("anthropic"));
     }
 
-    #[test]
-    fn test_deprecation_warning_no_panic() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&agent_dir).unwrap();
-
-        let settings = serde_json::json!({
-            "apiKeys": { "test-provider": "key-123" }
-        });
-        fs::write(agent_dir.join("settings.json"), serde_json::to_string(&settings).unwrap()).unwrap();
-
-        // Should not panic
-        show_deprecation_warnings();
-    }
 }

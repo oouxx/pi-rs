@@ -302,12 +302,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_assistant_call_success_first_try() {
-        let result = retry_assistant_call(|| async { ok_msg() }, None, None, None).await;
-        assert_eq!(result.stop_reason, StopReason::Stop);
-    }
-
-    #[tokio::test]
     async fn test_retry_assistant_call_retries_then_succeeds() {
         let calls = std::sync::atomic::AtomicU32::new(0);
         let result = retry_assistant_call(

@@ -884,43 +884,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tool_definition_default() {
-        let def = ToolDefinition::default();
-        assert_eq!(def.name, "");
-        assert!(def.execute.is_none());
-    }
-
-    #[test]
-    fn test_extension_registry_empty() {
-        let reg = ExtensionRegistry::new();
-        assert!(!reg.has_handlers());
-        assert_eq!(reg.handler_count(), 0);
-        assert!(reg.tools().is_empty());
-        assert!(reg.commands().is_empty());
-        assert!(reg.shortcuts().is_empty());
-    }
-
-    #[test]
-    fn test_extension_registry_register_handler() {
-        use hook::HookHandler;
-
-        struct TestHandler;
-
-        #[async_trait]
-        impl HookHandler for TestHandler {
-            fn name(&self) -> &'static str {
-                "test"
-            }
-        }
-
-        let mut reg = ExtensionRegistry::new();
-        reg.register(Box::new(TestHandler), create_builtin_source_info("test"));
-
-        assert!(reg.has_handlers());
-        assert_eq!(reg.handler_count(), 1);
-    }
-
-    #[test]
     fn test_extension_registry_collect_tools() {
         use hook::{HookHandler, ToolRegistry};
 

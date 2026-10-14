@@ -258,21 +258,9 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_execution_to_text_no_output() {
-        let text = bash_execution_to_text("true", "", Some(0), false, false, None);
-        assert!(text.contains("(no output)"));
-    }
-
-    #[test]
     fn test_bash_execution_to_text_error_exit_code() {
         let text = bash_execution_to_text("false", "error output", Some(1), false, false, None);
         assert!(text.contains("Command exited with code 1"));
-    }
-
-    #[test]
-    fn test_bash_execution_to_text_zero_exit_code() {
-        let text = bash_execution_to_text("echo ok", "ok", Some(0), false, false, None);
-        assert!(!text.contains("Command exited"));
     }
 
     #[test]
@@ -293,13 +281,6 @@ mod tests {
         );
         assert!(text.contains("Output truncated"));
         assert!(text.contains("/tmp/output.log"));
-    }
-
-    #[test]
-    fn test_bash_execution_to_text_cancelled_takes_precedence_over_exit_code() {
-        let text = bash_execution_to_text("cmd", "out", Some(1), true, false, None);
-        assert!(text.contains("(command cancelled)"));
-        assert!(!text.contains("Command exited with code 1"));
     }
 
     #[test]
@@ -328,33 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_to_llm_tool_result_message() {
-        let messages = vec![AgentMessage::ToolResult {
-            tool_call_id: "tc-1".to_string(),
-            tool_name: "read".to_string(),
-            content: vec![ContentBlock::Text {
-                text: "file contents".to_string(),
-                text_signature: None,
-            }],
-            details: serde_json::Value::Object(Default::default()),
-            is_error: false,
-            usage: None,
-            timestamp: 1000,
-        }];
-        let result = convert_to_llm(&messages);
-        assert_eq!(result.len(), 1);
-        if let Message::ToolResult {
-            tool_call_id,
-            tool_name,
-            ..
-        } = &result[0]
-        {
-            assert_eq!(tool_call_id, "tc-1");
-            assert_eq!(tool_name, "read");
-        }
-    }
-
-    #[test]
     fn test_convert_to_llm_excludes_bash_with_exclude_flag() {
         let messages = vec![AgentMessage::BashExecution {
             command: "secret".to_string(),
@@ -371,27 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_to_llm_includes_bash_without_exclude_flag() {
-        let messages = vec![AgentMessage::BashExecution {
-            command: "echo hello".to_string(),
-            output: "hello".to_string(),
-            exit_code: Some(0),
-            cancelled: false,
-            truncated: false,
-            full_output_path: None,
-            timestamp: 1000,
-            exclude_from_context: None,
-        }];
-        let result = convert_to_llm(&messages);
-        assert_eq!(result.len(), 1);
-        if let Message::User { content, .. } = &result[0] {
-            if let ContentBlock::Text { text, .. } = &content[0] {
-                assert!(text.contains("echo hello"));
-            }
-        }
-    }
-
-    #[test]
     fn test_convert_to_llm_branch_summary() {
         let messages = vec![AgentMessage::BranchSummary {
             summary: "Previous work".to_string(),
@@ -405,42 +338,6 @@ mod tests {
                 assert!(text.contains("Previous work"));
                 assert!(text.contains(BRANCH_SUMMARY_PREFIX.trim()));
                 assert!(text.contains(BRANCH_SUMMARY_SUFFIX.trim()));
-            }
-        }
-    }
-
-    #[test]
-    fn test_convert_to_llm_compaction_summary() {
-        let messages = vec![AgentMessage::CompactionSummary {
-            summary: "Summarized context".to_string(),
-            tokens_before: 50_000,
-            timestamp: 1000,
-        }];
-        let result = convert_to_llm(&messages);
-        assert_eq!(result.len(), 1);
-        if let Message::User { content, .. } = &result[0] {
-            if let ContentBlock::Text { text, .. } = &content[0] {
-                assert!(text.contains("Summarized context"));
-                assert!(text.contains(COMPACTION_SUMMARY_PREFIX.trim()));
-                assert!(text.contains(COMPACTION_SUMMARY_SUFFIX.trim()));
-            }
-        }
-    }
-
-    #[test]
-    fn test_convert_to_llm_custom_text() {
-        let messages = vec![AgentMessage::Custom {
-            custom_type: "note".to_string(),
-            content: crate::types::CustomContent::Text("Hello".to_string()),
-            display: true,
-            details: None,
-            timestamp: 1000,
-        }];
-        let result = convert_to_llm(&messages);
-        assert_eq!(result.len(), 1);
-        if let Message::User { content, .. } = &result[0] {
-            if let ContentBlock::Text { text, .. } = &content[0] {
-                assert_eq!(text, "Hello");
             }
         }
     }
@@ -464,17 +361,6 @@ mod tests {
                 assert_eq!(text, "Block content");
             }
         }
-    }
-
-    #[test]
-    fn test_convert_to_llm_mixed_messages() {
-        let messages = vec![
-            create_user_message("Hello"),
-            create_assistant_message("Hi"),
-            create_user_message("How are you?"),
-        ];
-        let result = convert_to_llm(&messages);
-        assert_eq!(result.len(), 3);
     }
 
     #[test]

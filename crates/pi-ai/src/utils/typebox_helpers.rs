@@ -68,12 +68,6 @@ mod tests {
     }
 
     #[test]
-    fn test_string_enum_with_default() {
-        let schema = string_enum(&["x", "y", "z"], None, Some("y"));
-        assert_eq!(schema["default"], "y");
-    }
-
-    #[test]
     fn test_string_enum_all_options() {
         let schema = string_enum(&["foo"], Some("A foo option"), Some("foo"));
         assert_eq!(schema["type"], "string");

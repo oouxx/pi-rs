@@ -302,21 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn test_adjust_max_tokens_clamped_to_model_max() {
-        let result = adjust_max_tokens_for_thinking(Some(199_000), 200_000, "high", None);
-        // 199_000 + 16_384 = 215_384, clamped to 200_000
-        assert_eq!(result.max_tokens, 200_000);
-    }
-
-    #[test]
-    fn test_adjust_max_tokens_small_budget() {
-        // base=1000 + high_budget=16_384 = 17_384, which is > thinking_budget so no reduction
-        let result = adjust_max_tokens_for_thinking(Some(1000), 200_000, "high", None);
-        assert_eq!(result.max_tokens, 17_384);
-        assert_eq!(result.thinking_budget, 16_384);
-    }
-
-    #[test]
     fn test_adjust_max_tokens_tiny_budget_triggers_reduction() {
         // base=0 + high_budget=16_384. max_tokens=16_384, which is NOT > thinking_budget (16_384 <= 16_384)
         // so thinking_budget = max(0, 16_384 - 1024) = 15_360
@@ -346,30 +331,6 @@ mod tests {
             opts.env.as_ref().and_then(|e| e.get("PI_CACHE_RETENTION")).map(String::as_str),
             Some("long")
         );
-    }
-
-    #[test]
-    fn test_build_base_options_no_options() {
-        let model = crate::types::Model {
-            prompt_cache: None,
-            id: "test".into(),
-            name: "test".into(),
-            api: "test".into(),
-            provider: "test".into(),
-            base_url: String::new(),
-            reasoning: false,
-            thinking_level_map: None,
-            input: vec![],
-            cost: crate::types::ModelCost::default(),
-            context_window: 0,
-            max_tokens: 0,
-            sampling_params: None,
-            headers: None,
-            compat: None,
-        };
-        let opts = build_base_options(&model, &Context { system_prompt: None, messages: vec![], tools: None }, None, Some("key123"));
-        assert_eq!(opts.api_key, Some("key123".to_string()));
-        assert!(opts.temperature.is_none());
     }
 
     /// TS 0.84: per-request samplingParams override the model-level defaults

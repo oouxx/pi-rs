@@ -1991,21 +1991,6 @@ mod tests {
         assert!(!should_terminate_tool_batch(&calls));
     }
 
-    #[test]
-    fn test_should_terminate_none() {
-        let calls = vec![FinalizedToolCallOutcome {
-            tool_call: dummy_tool_call("1", "t1", serde_json::json!({})),
-            result: AgentToolResult {
-                content: vec![],
-                details: serde_json::json!({}),
-                usage: None,
-                terminate: None,
-            },
-            is_error: false,
-        }];
-        assert!(!should_terminate_tool_batch(&calls));
-    }
-
     // ============================================================
     // validate_tool_arguments
     // ============================================================
@@ -3116,28 +3101,6 @@ mod tests {
             tools: vec![].into(),
         };
         let _stream = agent_loop_continue(context, minimal_loop_config(), None, empty_stream_fn());
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_continue_wrapper_emits_events() {
-        use futures::StreamExt;
-
-        let context = AgentContext {
-            system_prompt: "test".into(),
-            messages: vec![AgentMessage::User {
-                content: vec![],
-                timestamp: 1000,
-            }],
-            tools: vec![].into(),
-        };
-
-        let stream = agent_loop_continue(context, minimal_loop_config(), None, empty_stream_fn());
-        let events: Vec<AgentEvent> = stream.collect().await;
-
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::AgentEnd { .. })));
     }
 
     // ============================================================

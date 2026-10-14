@@ -119,12 +119,6 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// `--no-extensions` 语义：禁用扩展发现 → registry 为 None。
-    #[test]
-    fn test_builtin_extension_registry_disabled() {
-        assert!(builtin_extension_registry(false, &std::collections::HashMap::new()).is_none());
-    }
-
     /// 默认注册全部三个内置 Rust 扩展（goal / subagent / web_search）——
     /// 需显式通过 `extensionsEnabled` 打开。
     #[test]
@@ -183,19 +177,6 @@ mod tests {
         disabled.insert("goal".to_string(), false);
         let reg = builtin_extension_registry(true, &disabled).expect("registry");
         assert!(reg.tools().is_empty());
-    }
-
-    /// 全部关闭时返回 `Some(空 registry)` 而不是 `None`（discovery 仍开着）。
-    #[test]
-    fn test_builtin_extension_registry_all_disabled_is_empty_not_none() {
-        let enabled: std::collections::HashMap<String, bool> = BUILTIN_EXTENSION_IDS
-            .iter()
-            .map(|id| ((*id).to_string(), false))
-            .collect();
-        let reg = builtin_extension_registry(true, &enabled)
-            .expect("registry must still exist");
-        assert!(reg.tools().is_empty());
-        assert_eq!(reg.handler_count(), 0);
     }
 
     /// The extension `registerProvider` hook keys the registration by

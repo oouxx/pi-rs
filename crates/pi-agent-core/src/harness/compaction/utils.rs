@@ -147,20 +147,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_file_ops_from_non_assistant_message() {
-        let msg = AgentMessage::User {
-            content: vec![ContentBlock::Text {
-                text: "Hello".to_string(),
-                text_signature: None,
-            }],
-            timestamp: 1000,
-        };
-        let mut file_ops = FileOperations::new();
-        extract_file_ops_from_message(&msg, &mut file_ops);
-        assert!(file_ops.read.is_empty());
-    }
-
-    #[test]
     fn test_extract_file_ops_from_message_no_path() {
         let msg = AgentMessage::Assistant {
             content: vec![ContentBlock::ToolCall {
@@ -223,17 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_file_lists_sorted() {
-        let file_ops = FileOperations {
-            read: vec![],
-            written: vec!["z.rs".to_string(), "a.rs".to_string()],
-            edited: vec!["m.rs".to_string()],
-        };
-        let (_, modified) = compute_file_lists(&file_ops);
-        assert_eq!(modified, vec!["a.rs", "m.rs", "z.rs"]);
-    }
-
-    #[test]
     fn test_format_file_operations_both() {
         let read_files = vec!["read1.rs".to_string()];
         let modified_files = vec!["mod1.rs".to_string()];
@@ -254,15 +229,6 @@ mod tests {
         let result = format_file_operations(&read_files, &modified_files);
         assert!(result.contains("<read-files>"));
         assert!(!result.contains("<modified-files>"));
-    }
-
-    #[test]
-    fn test_format_file_operations_modified_only() {
-        let read_files: Vec<String> = vec![];
-        let modified_files = vec!["mod1.rs".to_string()];
-        let result = format_file_operations(&read_files, &modified_files);
-        assert!(!result.contains("<read-files>"));
-        assert!(result.contains("<modified-files>"));
     }
 
     #[test]

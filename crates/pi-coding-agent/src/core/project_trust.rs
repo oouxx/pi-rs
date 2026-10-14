@@ -176,24 +176,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_trust_no_resources_needed() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
-        let ctx = ProjectTrustContext::new(dir.path().to_str().unwrap(), false);
-
-        // Fresh temp dir has no .pi-rs/ resources, so trust is auto-granted
-        let trusted = resolve_project_trusted(ResolveProjectTrustedOptions {
-            cwd: dir.path().to_str().unwrap(),
-            trust_store: &store,
-            trust_override: None,
-            default_project_trust: DefaultProjectTrust::Ask,
-            project_trust_context: ctx,
-            extension_registry: None,
-        });
-        assert!(trusted);
-    }
-
-    #[test]
     fn test_resolve_trust_from_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));

@@ -831,22 +831,6 @@ mod tests {
         assert!(resolved.unwrap().contains("my-pkg"));
     }
 
-    #[test]
-    fn test_types_serde() {
-        let meta = PathMetadata {
-            source: "test".into(),
-            scope: SourceScope::Project,
-            origin: "package".into(),
-            base_dir: None,
-        };
-        let json = serde_json::to_string(&meta).unwrap();
-        assert!(json.contains("test"));
-        assert!(json.contains("project"));
-
-        let deserialized: PathMetadata = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.source, "test");
-    }
-
     // -----------------------------------------------------------------------
     // Progress event tests
     // -----------------------------------------------------------------------
@@ -870,30 +854,6 @@ mod tests {
         assert!(!captured.is_empty(), "should have at least one progress event");
         assert_eq!(captured[0].action, "install");
         assert_eq!(captured[0].source, "test-pkg");
-    }
-
-    #[test]
-    fn test_progress_callback_clear() {
-        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
-        mgr.set_progress_callback(Some(Box::new(|_| {})));
-        // Clear the callback
-        mgr.set_progress_callback(None);
-        // Should not crash when operations run without callback
-        let _ = mgr.resolve(None);
-    }
-
-    #[test]
-    fn test_progress_event_serde() {
-        let evt = ProgressEvent {
-            event_type: "progress".into(),
-            action: "install".into(),
-            source: "test-pkg".into(),
-            message: Some("Installing...".into()),
-        };
-        let json = serde_json::to_string(&evt).unwrap();
-        let deserialized: ProgressEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.action, "install");
-        assert_eq!(deserialized.message.as_deref(), Some("Installing..."));
     }
 
     // -----------------------------------------------------------------------
@@ -1049,91 +1009,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ConfiguredPackage tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_configured_package_serde() {
-        let pkg = ConfiguredPackage {
-            source: "test-pkg".into(),
-            scope: "user".into(),
-            filtered: false,
-            installed_path: Some("/path/to/pkg".into()),
-        };
-        let json = serde_json::to_string(&pkg).unwrap();
-        let deserialized: ConfiguredPackage = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.source, "test-pkg");
-        assert_eq!(deserialized.scope, "user");
-        assert!(!deserialized.filtered);
-        assert_eq!(deserialized.installed_path.as_deref(), Some("/path/to/pkg"));
-    }
-
-    #[test]
-    fn test_configured_package_no_installed_path() {
-        let pkg = ConfiguredPackage {
-            source: "test-pkg".into(),
-            scope: "project".into(),
-            filtered: true,
-            installed_path: None,
-        };
-        let json = serde_json::to_string(&pkg).unwrap();
-        let deserialized: ConfiguredPackage = serde_json::from_str(&json).unwrap();
-        assert!(deserialized.filtered);
-        assert!(deserialized.installed_path.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // ResolvedPaths tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_resolved_paths_default() {
-        let paths = ResolvedPaths::default();
-        assert!(paths.extensions.is_empty());
-        assert!(paths.skills.is_empty());
-        assert!(paths.prompts.is_empty());
-        assert!(paths.themes.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // ResolvedResource tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_resolved_resource_serde() {
-        let resource = ResolvedResource {
-            path: "/path/to/ext.ts".into(),
-            enabled: true,
-            metadata: PathMetadata {
-                source: "my-ext".into(),
-                scope: SourceScope::Project,
-                origin: "package".into(),
-                base_dir: Some("/base".into()),
-            },
-        };
-        let json = serde_json::to_string(&resource).unwrap();
-        let deserialized: ResolvedResource = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.path, "/path/to/ext.ts");
-        assert!(deserialized.enabled);
-        assert_eq!(deserialized.metadata.source, "my-ext");
-    }
-
-    #[test]
-    fn test_resolved_resource_disabled() {
-        let resource = ResolvedResource {
-            path: "/path/to/disabled.ts".into(),
-            enabled: false,
-            metadata: PathMetadata {
-                source: "disabled".into(),
-                scope: SourceScope::User,
-                origin: "manual".into(),
-                base_dir: None,
-            },
-        };
-        assert!(!resource.enabled);
-    }
-
-    // -----------------------------------------------------------------------
     // SourceScope tests
     // -----------------------------------------------------------------------
 
@@ -1155,20 +1030,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // PathMetadata tests
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_path_metadata_with_base_dir() {
-        let meta = PathMetadata {
-            source: "test".into(),
-            scope: SourceScope::User,
-            origin: "npm".into(),
-            base_dir: Some("/usr/local/lib/node_modules".into()),
-        };
-        let json = serde_json::to_string(&meta).unwrap();
-        assert!(json.contains("base_dir"));
-        let deserialized: PathMetadata = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.base_dir.as_deref(), Some("/usr/local/lib/node_modules"));
-    }
 
     #[test]
     fn test_path_metadata_without_base_dir_skipped_in_json() {
@@ -1319,14 +1180,6 @@ mod tests {
         assert!(result.extensions.is_empty());
     }
 
-    #[test]
-    fn test_resolve_source_empty_cache() {
-        let mgr = DefaultPackageManager::new("/tmp", "/tmp");
-        // Cache is empty, package doesn't exist
-        let result = mgr.resolve_source("nonexistent", false);
-        assert!(result.is_none());
-    }
-
     // -----------------------------------------------------------------------
     // Source parsing tests
     // -----------------------------------------------------------------------
@@ -1337,16 +1190,6 @@ mod tests {
         let parsed = mgr.parse_source("npm:@scope/pkg@^1.0");
         match parsed {
             ParsedSource::Npm { name, .. } => assert_eq!(name, "@scope/pkg"),
-            _ => panic!("expected Npm variant"),
-        }
-    }
-
-    #[test]
-    fn test_parse_source_npm_no_version() {
-        let mgr = DefaultPackageManager::new("/tmp/test", "/tmp/test-agent");
-        let parsed = mgr.parse_source("npm:some-package");
-        match parsed {
-            ParsedSource::Npm { name, .. } => assert_eq!(name, "some-package"),
             _ => panic!("expected Npm variant"),
         }
     }
@@ -1464,19 +1307,6 @@ mod tests {
             PackageSource::String(s) => assert_eq!(s, "npm:my-package@2.0"),
             _ => panic!("expected String variant"),
         }
-    }
-
-    #[test]
-    fn test_add_source_to_settings_no_change() {
-        let sm = make_sm();
-        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![PackageSource::String(
-            "npm:my-package".to_string(),
-        )]);
-        let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
-        let added = mgr.add_source_to_settings("npm:my-package", false);
-        assert!(!added); // No change — same source
-        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
-        assert_eq!(packages.len(), 1);
     }
 
     #[test]

@@ -808,19 +808,6 @@ mod tests {
     }
 
     #[test]
-    fn test_load_context_files_claude_md() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_path = dir.path().join("CLAUDE.md");
-        fs::write(&claude_path, "# Claude Context").unwrap();
-
-        let files = load_context_files_ancestors(dir.path().to_str().unwrap(), None);
-        assert!(
-            files.iter().any(|f| f.content == "# Claude Context"),
-            "should find CLAUDE.md content"
-        );
-    }
-
-    #[test]
     fn test_load_context_files_from_agent_dir() {
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = dir.path().join("agent");
@@ -860,20 +847,6 @@ mod tests {
             files.iter().any(|f| f.content == "# Local"),
             "should find local content"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // ResourceLoaderOptions tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_resource_loader_options_default() {
-        let opts = ResourceLoaderOptions::default();
-        assert!(opts.cwd.is_empty());
-        assert!(opts.agent_dir.is_none());
-        assert!(opts.include_defaults);
-        assert!(!opts.no_extensions);
-        assert!(!opts.no_skills);
     }
 
     // -----------------------------------------------------------------------

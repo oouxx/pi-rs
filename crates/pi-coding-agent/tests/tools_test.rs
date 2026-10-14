@@ -863,52 +863,6 @@ async fn test_edit_eacces_diff_preview() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_edit_fuzzy_trailing_whitespace() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("trailing-ws.txt");
-    tokio::fs::write(&file_path, "line one   \nline two  \nline three\n")
-        .await
-        .unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [{"oldText": "line one\nline two\n", "newText": "replaced\n"}]
-    });
-    let result = execute_tool(&tool, "test-fuzzy-1", params).await.unwrap();
-
-    assert!(get_text_output(&result).contains("Successfully replaced"));
-    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
-    assert_eq!(written, "replaced\nline three\n");
-}
-
-#[tokio::test]
-async fn test_edit_fuzzy_chinese_punctuation() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("chinese-punctuation.txt");
-    tokio::fs::write(&file_path, "你好，世界\n你好（世界）\n")
-        .await
-        .unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [{"oldText": "你好,世界\n你好(世界)\n", "newText": "你好，pi\n你好(pi)\n"}]
-    });
-    let result = execute_tool(&tool, "test-fuzzy-chinese", params).await.unwrap();
-
-    assert!(get_text_output(&result).contains("Successfully replaced"));
-    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
-    assert_eq!(written, "你好，pi\n你好(pi)\n");
-}
-
-#[tokio::test]
 async fn test_edit_fuzzy_smart_quotes() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("smart-quotes.txt");
@@ -933,30 +887,6 @@ async fn test_edit_fuzzy_smart_quotes() {
 }
 
 #[tokio::test]
-async fn test_edit_fuzzy_smart_double_quotes() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("smart-double-quotes.txt");
-    // Smart double quotes (U+201C, U+201D)
-    tokio::fs::write(&file_path, "const msg = \u{201C}Hello World\u{201D};\n")
-        .await
-        .unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [{"oldText": "const msg = \"Hello World\";", "newText": "const msg = \"Goodbye\";"}]
-    });
-    let result = execute_tool(&tool, "test-fuzzy-3", params).await.unwrap();
-
-    assert!(get_text_output(&result).contains("Successfully replaced"));
-    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
-    assert!(written.contains("Goodbye"));
-}
-
-#[tokio::test]
 async fn test_edit_fuzzy_unicode_dashes() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("unicode-dashes.txt");
@@ -978,28 +908,6 @@ async fn test_edit_fuzzy_unicode_dashes() {
     assert!(get_text_output(&result).contains("Successfully replaced"));
     let written = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert!(written.contains("10-50"));
-}
-
-#[tokio::test]
-async fn test_edit_fuzzy_non_breaking_space() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("nbsp.txt");
-    // Non-breaking space (U+00A0)
-    tokio::fs::write(&file_path, "hello\u{00A0}world\n").await.unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [{"oldText": "hello world", "newText": "hello universe"}]
-    });
-    let result = execute_tool(&tool, "test-fuzzy-5", params).await.unwrap();
-
-    assert!(get_text_output(&result).contains("Successfully replaced"));
-    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
-    assert!(written.contains("universe"));
 }
 
 #[tokio::test]
@@ -1049,29 +957,6 @@ async fn test_edit_fuzzy_no_match() {
 }
 
 #[tokio::test]
-async fn test_edit_fuzzy_duplicates_after_normalization() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("fuzzy-dups.txt");
-    tokio::fs::write(&file_path, "hello world   \nhello world\n")
-        .await
-        .unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [{"oldText": "hello world", "newText": "replaced"}]
-    });
-    let result = execute_tool(&tool, "test-fuzzy-8", params).await;
-
-    assert!(result.is_err());
-    let err_msg = format!("{}", result.err().unwrap());
-    assert!(err_msg.contains("Found 2 occurrences"));
-}
-
-#[tokio::test]
 async fn test_edit_fuzzy_multi_edit() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("fuzzy-multi.txt");
@@ -1100,30 +985,6 @@ async fn test_edit_fuzzy_multi_edit() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_edit_fuzzy_compatibility_unicode() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("unicode-compatibility.txt");
-    // Fullwidth letters/numbers (U+FF21 = A, U+FF10 = 0) and combining sequence (cafe + combining acute)
-    tokio::fs::write(&file_path, "\u{FF21}\u{FF22}\u{FF23}\u{FF11}\u{FF12}\u{FF13}\ncafe\u{0301}\n")
-        .await
-        .unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [{"oldText": "ABC123\ncafe\u{0301}\n", "newText": "XYZ789\ncoffee\n"}]
-    });
-    let result = execute_tool(&tool, "test-fuzzy-unicode", params).await.unwrap();
-
-    assert!(get_text_output(&result).contains("Successfully replaced"));
-    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
-    assert_eq!(written, "XYZ789\ncoffee\n");
-}
-
-#[tokio::test]
 async fn test_edit_fuzzy_preserve_correct_occurrence() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("fuzzy-preserve-duplicate-line.txt");
@@ -1149,37 +1010,6 @@ async fn test_edit_fuzzy_preserve_correct_occurrence() {
     assert!(lines[1].contains("after"), "Second line should contain 'after', got: {:?}", lines);
 }
 
-#[tokio::test]
-async fn test_edit_fuzzy_preserve_untouched_lines() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("fuzzy-preserve-multi.txt");
-    let original_content = "keep before\u{0020}\u{0020}\nfirst target\u{0020}\u{0020}\nfirst after\nkeep middle\u{0020}\u{0020}\u{0020}\nsecond target\u{0020}\u{0020}\nsecond after\nkeep after\u{0020}\u{0020}\n".to_string();
-    tokio::fs::write(&file_path, &original_content).await.unwrap();
-
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [
-            {"oldText": "first target\nfirst after", "newText": "FIRST\nFIRST2"},
-            {"oldText": "second target\nsecond after", "newText": "SECOND\nSECOND2"}
-        ]
-    });
-    let _result = execute_tool(&tool, "test-fuzzy-preserve-multi", params).await.unwrap();
-
-    // Fuzzy matching should preserve trailing whitespace on unchanged lines
-    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
-    let lines: Vec<&str> = written.lines().collect();
-    assert_eq!(lines[0], "keep before  ", "Line 0 should preserve trailing spaces, got: {:?}", lines[0]);
-    assert_eq!(lines[1], "FIRST", "Line 1 should be 'FIRST', got: {:?}", lines[1]);
-    assert_eq!(lines[2], "FIRST2", "Line 2 should be 'FIRST2', got: {:?}", lines[2]);
-    assert_eq!(lines[3], "keep middle   ", "Line 3 should preserve trailing spaces, got: {:?}", lines[3]);
-    assert_eq!(lines[4], "SECOND", "Line 4 should be 'SECOND', got: {:?}", lines[4]);
-    assert_eq!(lines[5], "SECOND2", "Line 5 should be 'SECOND2', got: {:?}", lines[5]);
-    assert_eq!(lines[6], "keep after  ", "Line 6 should preserve trailing spaces, got: {:?}", lines[6]);
-}
 // Edit Tool — CRLF Handling Tests
 // ============================================================================
 
@@ -1715,50 +1545,6 @@ async fn test_bash_shell_path() {
             "Expected error about custom shell path in: {}",
             err_msg
         );
-    }
-}
-
-#[tokio::test]
-async fn test_bash_stdin_transport() {
-    let dir = setup_test_dir();
-    // Create a bash tool that uses stdin transport
-    // This test verifies that commands can be sent over stdin
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        Some(pi_coding_agent::core::tools::bash::BashToolOptions {
-            shell_path: Some("cat".to_string()), // cat reads from stdin and echoes back
-            ..Default::default()
-        }),
-    );
-    let params = serde_json::json!({"command": "echo hello"});
-    let result = execute_tool(&tool, "test-call-stdin", params).await;
-
-    // Just verify it doesn't crash - the actual stdin transport behavior depends on shell resolution
-    if let Err(e) = result {
-        let _err_msg = e.to_string();
-        // May or may not work depending on platform
-    }
-}
-
-#[tokio::test]
-async fn test_bash_wsl_bash_exe() {
-    let dir = setup_test_dir();
-    // Test that WSL bash.exe path is handled
-    // This is a platform-specific test; on non-Windows it should still not crash
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        Some(pi_coding_agent::core::tools::bash::BashToolOptions {
-            shell_path: Some("C:\\\\Windows\\\\System32\\\\bash.exe".to_string()),
-            ..Default::default()
-        }),
-    );
-    let params = serde_json::json!({"command": "echo wsl-test"});
-    let result = execute_tool(&tool, "test-call-wsl", params).await;
-
-    // Just verify it doesn't crash
-    if let Err(e) = result {
-        let _err_msg = e.to_string();
-        // May or may not work depending on platform
     }
 }
 

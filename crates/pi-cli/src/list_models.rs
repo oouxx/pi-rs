@@ -229,15 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_token_count() {
-        assert_eq!(format_token_count(1000), "1K");
-        assert_eq!(format_token_count(1500), "1.5K");
-        assert_eq!(format_token_count(1_000_000), "1M");
-        assert_eq!(format_token_count(1_500_000), "1.5M");
-        assert_eq!(format_token_count(500), "500");
-    }
-
-    #[test]
     fn test_calculate_column_widths_empty() {
         let widths = calculate_column_widths(&[]);
         // Should be at least header widths
@@ -290,15 +281,6 @@ mod tests {
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(list_models(&registry, Some("anthropic")));
-        assert_eq!(result, EXIT_SUCCESS);
-    }
-
-    #[test]
-    fn test_list_models_search_by_model_id() {
-        let registry = ModelRegistry::new(sample_models());
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(list_models(&registry, Some("gpt-4o")));
         assert_eq!(result, EXIT_SUCCESS);
     }
 

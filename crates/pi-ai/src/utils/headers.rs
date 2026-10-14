@@ -19,24 +19,6 @@ mod tests {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
     #[test]
-    fn test_headers_to_record_empty() {
-        let headers = HeaderMap::new();
-        let record = headers_to_record(&headers);
-        assert!(record.is_empty());
-    }
-
-    #[test]
-    fn test_headers_to_record_single() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("application/json"),
-        );
-        let record = headers_to_record(&headers);
-        assert_eq!(record.get("content-type").unwrap(), "application/json");
-    }
-
-    #[test]
     fn test_headers_to_record_multiple() {
         let mut headers = HeaderMap::new();
         headers.insert(

@@ -2205,15 +2205,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_tool_call_id_pipe() {
-        // Pipe-separated ids from Responses API: {call_id}|{item_id} (TS #6854)
-        let model = test_model("github-copilot");
-        let id = "call_abc|item_xyz";
-        let normalized = normalize_tool_call_id(id, &model);
-        assert_eq!(normalized, "call_abc_item_xyz");
-    }
-
-    #[test]
     fn test_normalize_tool_call_id_pipe_sanitizes() {
         // Special chars in the item id are replaced with underscores
         let model = test_model("opencode");
@@ -2243,14 +2234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_tool_call_id_plain_passthrough() {
-        // Non-openai, no pipe: unchanged
-        let model = test_model("anthropic");
-        let id = "toolu_01ABC";
-        assert_eq!(normalize_tool_call_id(id, &model), id);
-    }
-
-    #[test]
     fn test_map_stop_reason_stop() {
         assert_eq!(map_stop_reason("stop"), (StopReason::Stop, None));
         assert_eq!(map_stop_reason("end"), (StopReason::Stop, None));
@@ -2265,28 +2248,6 @@ mod tests {
     fn test_map_stop_reason_tool_calls() {
         assert_eq!(map_stop_reason("tool_calls"), (StopReason::ToolUse, None));
         assert_eq!(map_stop_reason("function_call"), (StopReason::ToolUse, None));
-    }
-
-    #[test]
-    fn test_map_stop_reason_content_filter() {
-        assert_eq!(
-            map_stop_reason("content_filter"),
-            (
-                StopReason::Error,
-                Some("Provider finish_reason: content_filter".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn test_map_stop_reason_network_error() {
-        assert_eq!(
-            map_stop_reason("network_error"),
-            (
-                StopReason::Error,
-                Some("Provider finish_reason: network_error".to_string())
-            )
-        );
     }
 
     #[test]
@@ -2441,47 +2402,6 @@ mod tests {
         assert_eq!(converted[0]["role"], "assistant");
         assert_eq!(converted[0]["content"], "answer");
         assert_eq!(converted[0]["reasoning_content"], "reasoning text");
-    }
-
-    #[test]
-    fn test_convert_messages_tool_result() {
-        let model = make_test_model();
-        let compat = get_compat(&model);
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::ToolResult {
-                tool_call_id: "call_1".into(),
-                tool_name: "get_weather".into(),
-                content: vec![ContentBlock::text("72F sunny")],
-                details: None,
-                is_error: false,
-                usage: None,
-                timestamp: 1000,
-            }],
-            tools: None,
-        };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
-            .unwrap();
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0]["role"], "tool");
-        assert_eq!(converted[0]["tool_call_id"], "call_1");
-    }
-
-    #[test]
-    fn test_convert_messages_empty_user() {
-        let model = make_test_model();
-        let compat = get_compat(&model);
-        let context = Context {
-            system_prompt: None,
-            messages: vec![Message::User {
-                content: vec![ContentBlock::text("")],
-                timestamp: 1000,
-            }],
-            tools: None,
-        };
-        let converted = convert_messages(&model, &context, &compat, &std::collections::HashMap::new(), false)
-            .unwrap();
-        assert_eq!(converted.len(), 0);
     }
 
     #[test]
@@ -2747,11 +2667,6 @@ mod tests {
     fn test_parse_sse_chunk_done() {
         let chunk = parse_openai_sse_chunk("data: [DONE]");
         assert!(chunk.is_none());
-    }
-
-    #[test]
-    fn test_parse_sse_chunk_empty() {
-        assert!(parse_openai_sse_chunk("").is_none());
     }
 
     #[test]

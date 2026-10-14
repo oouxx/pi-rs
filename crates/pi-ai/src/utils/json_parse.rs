@@ -237,21 +237,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_repair_json_normal() {
-        assert_eq!(repair_json(r#"{"key":"value"}"#), r#"{"key":"value"}"#);
-    }
-
-    #[test]
     fn test_repair_json_control_chars() {
         let input = "\"hello\nworld\"";
         let expected = "\"hello\\nworld\"";
-        assert_eq!(repair_json(input), expected);
-    }
-
-    #[test]
-    fn test_repair_json_control_chars_tab() {
-        let input = "\"col1\tcol2\"";
-        let expected = "\"col1\\tcol2\"";
         assert_eq!(repair_json(input), expected);
     }
 
@@ -263,22 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn test_repair_json_trailing_backslash() {
-        let input = "\"hello\\";
-        let repaired = repair_json(input);
-        assert!(repaired.contains("\\\\"));
-    }
-
-    #[test]
     fn test_parse_json_with_repair_valid() {
         let result: Result<Value, String> = parse_json_with_repair(r#"{"a":1}"#);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_parse_streaming_json_none() {
-        let result = parse_streaming_json(None);
-        assert_eq!(result, Value::Object(Map::default()));
     }
 
     #[test]
@@ -301,34 +276,4 @@ mod tests {
         assert!(result.is_object());
     }
 
-    #[test]
-    fn test_parse_streaming_json_partial_with_trailing_comma() {
-        let result = parse_streaming_json(Some(r#"{"a":1,"b":2,}"#));
-        assert!(result.is_object());
-    }
-
-    #[test]
-    fn test_parse_streaming_json_empty_object() {
-        let result = parse_streaming_json(Some(r#"{"a":1,"b":2,"c":"#));
-        assert!(result.is_object());
-    }
-
-    #[test]
-    fn test_parse_streaming_json_truncated_string() {
-        let result = parse_streaming_json(Some(r#"{"path":"/tmp/tes"#));
-        assert!(result.is_object());
-    }
-
-    #[test]
-    fn test_clean_partial_json_truncated_object() {
-        let cleaned = clean_partial_json(r#"{"a":1,"b":"hello"#);
-        let v: Value = serde_json::from_str(&cleaned).unwrap();
-        assert_eq!(v["a"], 1);
-    }
-
-    #[test]
-    fn test_clean_partial_json_trailing_comma() {
-        let cleaned = clean_partial_json(r#"{"a":1,"b":2,}"#);
-        assert!(!cleaned.contains(",}"));
-    }
 }

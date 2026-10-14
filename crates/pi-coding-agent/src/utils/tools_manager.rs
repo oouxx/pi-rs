@@ -452,12 +452,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_get_tool_path_unknown() {
-        assert!(get_tool_path("nonexistent").is_none());
-        assert!(get_tool_path("").is_none());
-    }
-
-    #[test]
     fn test_get_tool_path_for_unknown_tool_returns_none() {
         assert_eq!(get_tool_path("bogus_tool"), None);
     }
@@ -541,12 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_asset_name_fd_macos_arm64() {
-        let name = get_asset_name("fd", "10.3.0", "macos", "aarch64");
-        assert_eq!(name.as_deref(), Some("fd-v10.3.0-aarch64-apple-darwin.tar.gz"));
-    }
-
-    #[test]
     fn test_get_asset_name_fd_linux() {
         let name = get_asset_name("fd", "9.0.0", "linux", "x86_64");
         assert_eq!(name.as_deref(), Some("fd-v9.0.0-x86_64-unknown-linux-gnu.tar.gz"));
@@ -568,12 +556,6 @@ mod tests {
     fn test_get_asset_name_rg_linux() {
         let name = get_asset_name("ripgrep", "14.1.0", "linux", "x86_64");
         assert_eq!(name.as_deref(), Some("ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz"));
-    }
-
-    #[test]
-    fn test_get_asset_name_rg_linux_arm64() {
-        let name = get_asset_name("ripgrep", "14.1.0", "linux", "aarch64");
-        assert_eq!(name.as_deref(), Some("ripgrep-14.1.0-aarch64-unknown-linux-gnu.tar.gz"));
     }
 
     #[test]

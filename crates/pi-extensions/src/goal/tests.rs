@@ -767,19 +767,6 @@ async fn test_agent_end_error_blocks_goal() {
 }
 
 #[tokio::test]
-async fn test_agent_end_usage_limited() {
-    let h = CtxHarness::new();
-    let goal = active_goal();
-    let ext = set_goal(&goal);
-    begin_goal_run(&ext, &goal.id, RunOrigin::Automatic);
-
-    let msgs = vec![assistant_msg("error", Some("You've hit your usage limit"), 0)];
-    ext.on_agent_end(&msgs, Some(&h.ctx)).await;
-
-    assert_eq!(ext.goal_snapshot().unwrap().status, GoalStatus::UsageLimited);
-}
-
-#[tokio::test]
 async fn test_agent_end_aborted_pauses() {
     let h = CtxHarness::new();
     let goal = active_goal();

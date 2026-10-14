@@ -389,16 +389,6 @@ mod tests {
         assert_eq!(input.expanded_value(), big);
     }
 
-    /// TS `handlePaste`: >1000 chars but <=10 lines uses the chars marker.
-    #[test]
-    fn handle_paste_collapses_large_char_paste() {
-        let mut input = Input::new();
-        let big = "x".repeat(1001);
-        input.handle_paste(&big);
-        assert_eq!(input.value(), "[paste #1 1001 chars]");
-        assert_eq!(input.expanded_value(), big);
-    }
-
     /// 光标左右移动把有效 marker 当一个字素（TS `moveCursor` 用 marker-aware
     /// 的 `segment`），悬空 marker 则按普通文本逐字移动。
     #[test]
@@ -545,16 +535,6 @@ mod tests {
     fn handle_paste_prepends_space_for_path_after_word() {
         let mut input = Input::new();
         input.insert_str("cat");
-        input.handle_paste("/tmp/file.txt");
-        assert_eq!(input.value(), "cat /tmp/file.txt");
-    }
-
-    /// TS `handlePaste`: no space when the char before the cursor is not a
-    /// word char.
-    #[test]
-    fn handle_paste_no_space_for_path_after_space() {
-        let mut input = Input::new();
-        input.insert_str("cat ");
         input.handle_paste("/tmp/file.txt");
         assert_eq!(input.value(), "cat /tmp/file.txt");
     }

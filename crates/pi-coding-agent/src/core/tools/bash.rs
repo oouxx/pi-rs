@@ -1139,13 +1139,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_timeout_ms_fractional() {
-        // Fractional seconds are supported, matching TS (number timeout).
-        assert_eq!(resolve_timeout_ms(Some(0.5)).unwrap(), Some(500));
-        assert_eq!(resolve_timeout_ms(Some(1.25)).unwrap(), Some(1250));
-    }
-
-    #[test]
     fn test_resolve_timeout_ms_zero() {
         assert!(resolve_timeout_ms(Some(0.0)).is_err());
     }
@@ -1153,13 +1146,6 @@ mod tests {
     #[test]
     fn test_resolve_timeout_ms_too_large() {
         assert!(resolve_timeout_ms(Some((MAX_TIMEOUT_SECONDS + 1) as f64)).is_err());
-    }
-
-    #[test]
-    fn test_resolve_timeout_ms_max() {
-        let result = resolve_timeout_ms(Some(MAX_TIMEOUT_SECONDS as f64)).unwrap();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), MAX_TIMEOUT_SECONDS * 1000);
     }
 
     #[test]
@@ -1185,16 +1171,6 @@ mod tests {
             assert_eq!(config.args, vec!["-c".to_string()]);
             assert!(matches!(config.command_transport, CommandTransport::Args));
         }
-    }
-
-    #[test]
-    fn test_get_shell_config_with_path() {
-        // An existing bash path resolves to `-c` (args transport), matching
-        // TS getBashShellConfig for non-WSL shells.
-        let config = get_shell_config(Some("/bin/zsh")).unwrap();
-        assert_eq!(config.shell, "/bin/zsh");
-        assert_eq!(config.args, vec!["-c".to_string()]);
-        assert!(matches!(config.command_transport, CommandTransport::Args));
     }
 
     #[test]

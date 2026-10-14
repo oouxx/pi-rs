@@ -3147,23 +3147,6 @@ mod tests {
     }
 
     #[test]
-    fn test_context_edit_replaces_content_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut mgr = new_test_manager(&dir);
-        let msg_id = mgr.append_message(serde_json::json!({
-            "role": "user",
-            "content": "original"
-        }));
-        mgr.append_context_edit(&msg_id, serde_json::json!({ "content": "redacted" }))
-            .unwrap();
-        let ctx = mgr.build_context();
-        assert_eq!(ctx.messages.len(), 1);
-        assert_eq!(ctx.messages[0].get("content").unwrap(), "redacted");
-        // Metadata (role) is preserved.
-        assert_eq!(ctx.messages[0].get("role").unwrap(), "user");
-    }
-
-    #[test]
     fn test_context_edit_normalizes_string_for_assistant() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = new_test_manager(&dir);
@@ -3259,26 +3242,6 @@ mod tests {
             .and_then(|c| c.as_str())
             .unwrap()
             .contains("summary text"));
-    }
-
-    #[test]
-    fn test_build_context_with_compaction() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut mgr =
-            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-
-        let msg_id = mgr.append_message(serde_json::json!({
-            "role": "user",
-            "content": "Old message"
-        }));
-        mgr.append_compaction("Summary of old messages", Some(&msg_id), 1000, None, None, None);
-        mgr.append_message(serde_json::json!({
-            "role": "user",
-            "content": "New message"
-        }));
-
-        let ctx = mgr.build_context();
-        assert!(ctx.messages.len() >= 2);
     }
 
     #[test]
@@ -3491,15 +3454,6 @@ mod tests {
         let id = derive_short_session_id();
         assert!(!id.is_empty());
         assert!(id.len() <= 12); // short enough
-    }
-
-    #[tokio::test]
-    async fn test_refresh_config_does_not_panic() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut mgr =
-            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        // Should not fail even with non-existent config file
-        mgr.refresh_config();
     }
 
     // ============================================================

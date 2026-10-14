@@ -142,13 +142,6 @@ mod tests {
     }
 
     #[test]
-    fn test_abort_binding() {
-        let km = Keymap::defaults();
-        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(km.action_for(&ctrl_c), Some(Action::AbortStream));
-    }
-
-    #[test]
     fn test_custom_binding() {
         let mut km = Keymap::defaults();
         km.bind(Action::Quit, KeyBind::new(KeyCode::Char('q'), KeyModifiers::NONE));

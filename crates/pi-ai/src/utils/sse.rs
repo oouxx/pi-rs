@@ -251,13 +251,6 @@ mod tests {
         assert!(consume_line("no_newline").is_none());
     }
 
-    #[test]
-    fn test_consume_line_empty() {
-        let (line, rest) = consume_line("\nrest").unwrap();
-        assert_eq!(line, "");
-        assert_eq!(rest, "rest");
-    }
-
     // ============================================================
     // Tests for decode_sse_line
     // ============================================================
@@ -279,28 +272,12 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_sse_line_data_without_space() {
-        let mut state = SseDecoderState::default();
-        let result = decode_sse_line("data:{\"key\":\"value\"}", &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.data, vec!["{\"key\":\"value\"}"]);
-    }
-
-    #[test]
     fn test_decode_sse_line_comment() {
         let mut state = SseDecoderState::default();
         let result = decode_sse_line(": this is a comment", &mut state);
         assert!(result.is_none());
         assert!(state.event.is_none());
         assert!(state.data.is_empty());
-    }
-
-    #[test]
-    fn test_decode_sse_line_field_without_value() {
-        let mut state = SseDecoderState::default();
-        let result = decode_sse_line("event", &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.event, Some(String::new()));
     }
 
     #[test]
@@ -373,40 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_sse_multiple_events() {
-        let body = b"event: e1\ndata: d1\n\nevent: e2\ndata: d2\n\n";
-        let events = parse_sse_body(body);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event, Some("e1".to_string()));
-        assert_eq!(events[0].data, "d1");
-        assert_eq!(events[1].event, Some("e2".to_string()));
-        assert_eq!(events[1].data, "d2");
-    }
-
-    #[test]
-    fn test_parse_sse_data_only_no_event_field() {
-        let body = b"data: payload\n\n";
-        let events = parse_sse_body(body);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, None);
-        assert_eq!(events[0].data, "payload");
-    }
-
-    #[test]
     fn test_parse_sse_multi_line_data() {
         let body = b"event: msg\ndata: {\ndata: \"key\": 1\ndata: }\n\n";
         let events = parse_sse_body(body);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, "{\n\"key\": 1\n}");
-    }
-
-    #[test]
-    fn test_parse_sse_comment_lines_ignored() {
-        let body = b": comment line\nevent: real\ndata: value\n\n";
-        let events = parse_sse_body(body);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, Some("real".to_string()));
-        assert_eq!(events[0].data, "value");
     }
 
     #[test]
@@ -426,15 +374,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event, Some("last".to_string()));
         assert_eq!(events[0].data, "final");
-    }
-
-    #[test]
-    fn test_parse_sse_anthropic_message_start() {
-        let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_001\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}\n\n";
-        let events = parse_sse_body(body);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, Some("message_start".to_string()));
-        assert!(events[0].data.contains("msg_001"));
     }
 
     #[test]

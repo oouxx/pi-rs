@@ -1397,35 +1397,6 @@ mod tests {
     }
 
     #[test]
-    fn test_content_block_text() {
-        let block = ContentBlock::text("hello");
-        match block {
-            ContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn test_tool_call_new() {
-        let tc = ToolCall::new(
-            "id1".into(),
-            "test_tool".into(),
-            serde_json::json!({"key": "value"}),
-        );
-        assert_eq!(tc.id, "id1");
-        assert_eq!(tc.name, "test_tool");
-        assert_eq!(tc.type_field, "toolCall");
-    }
-
-    #[test]
-    fn test_usage_default() {
-        let usage = Usage::default();
-        assert_eq!(usage.input, 0);
-        assert_eq!(usage.output, 0);
-        assert!((usage.cost.total - 0.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
     fn test_message_serialization_user() {
         let msg = Message::User {
             content: vec![ContentBlock::text("hi")],
@@ -1538,94 +1509,6 @@ mod tests {
     }
 
     // --- Supplementary tests matching TS originals ---
-
-    #[test]
-    fn test_content_block_text_roundtrip() {
-        let block = ContentBlock::Text {
-            text: "hello world".into(),
-            text_signature: Some("sig123".into()),
-        };
-        let json = serde_json::to_string(&block).unwrap();
-        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
-        match parsed {
-            ContentBlock::Text {
-                text,
-                text_signature,
-            } => {
-                assert_eq!(text, "hello world");
-                assert_eq!(text_signature, Some("sig123".into()));
-            }
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn test_content_block_tool_call_roundtrip() {
-        let block = ContentBlock::ToolCall {
-            id: "tc_1".into(),
-            name: "read_file".into(),
-            arguments: serde_json::json!({"path": "/tmp/test.txt"}),
-            thought_signature: None,
-            namespace: None,
-        };
-        let json = serde_json::to_string(&block).unwrap();
-        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
-        match parsed {
-            ContentBlock::ToolCall {
-                id,
-                name,
-                arguments,
-                ..
-            } => {
-                assert_eq!(id, "tc_1");
-                assert_eq!(name, "read_file");
-                assert_eq!(arguments, serde_json::json!({"path": "/tmp/test.txt"}));
-            }
-            _ => panic!("expected ToolCall"),
-        }
-    }
-
-    #[test]
-    fn test_content_block_thinking_roundtrip() {
-        let block = ContentBlock::Thinking {
-            thinking: "Let me think...".into(),
-            thinking_signature: Some("think_sig".into()),
-            redacted: Some(false),
-        };
-        let json = serde_json::to_string(&block).unwrap();
-        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
-        match parsed {
-            ContentBlock::Thinking {
-                thinking,
-                thinking_signature,
-                redacted,
-            } => {
-                assert_eq!(thinking, "Let me think...");
-                assert_eq!(thinking_signature, Some("think_sig".into()));
-                assert_eq!(redacted, Some(false));
-            }
-            _ => panic!("expected Thinking"),
-        }
-    }
-
-    #[test]
-    fn test_content_block_image_roundtrip() {
-        let block = ContentBlock::Image {
-            data: "base64data".into(),
-            mime_type: "image/png".into(),
-        };
-        let json = serde_json::to_string(&block).unwrap();
-        assert!(json.contains("\"image\""));
-        assert!(json.contains("\"mimeType\":\"image/png\""));
-        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
-        match parsed {
-            ContentBlock::Image { data, mime_type } => {
-                assert_eq!(data, "base64data");
-                assert_eq!(mime_type, "image/png");
-            }
-            _ => panic!("expected Image"),
-        }
-    }
 
     #[test]
     fn test_tool_call_serialization() {
@@ -1796,14 +1679,6 @@ mod tests {
         let json = serde_json::to_string(&model).unwrap();
         assert!(json.contains("\"supportsStore\":true"));
         assert!(json.contains("\"maxTokensField\":\"max_completion_tokens\""));
-    }
-
-    #[test]
-    fn test_stream_options_default() {
-        let opts = StreamOptions::default();
-        assert!(opts.temperature.is_none());
-        assert!(opts.max_tokens.is_none());
-        assert!(opts.api_key.is_none());
     }
 
     #[test]

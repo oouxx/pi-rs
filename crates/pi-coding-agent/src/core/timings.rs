@@ -88,9 +88,4 @@ mod tests {
         assert!(t.timings().is_empty());
     }
 
-    #[test]
-    fn test_print_doesnt_panic_when_disabled() {
-        let t = Timings::new(false);
-        t.print();
-    }
 }

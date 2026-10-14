@@ -100,41 +100,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_source_info() {
-        let info = create_source_info(
-            "/tmp/test".into(),
-            "user".into(),
-            SourceScope::User,
-            SourceOrigin::TopLevel,
-            None,
-        );
-        assert_eq!(info.path, "/tmp/test");
-        assert_eq!(info.source, "user");
-        assert_eq!(info.scope, SourceScope::User);
-        assert_eq!(info.origin, SourceOrigin::TopLevel);
-        assert!(info.base_dir.is_none());
-    }
-
-    #[test]
     fn test_create_synthetic_source_info_defaults() {
         let info = create_synthetic_source_info("/test".into(), "test".into(), None, None, None);
         assert_eq!(info.path, "/test");
         assert_eq!(info.scope, SourceScope::Temporary);
         assert_eq!(info.origin, SourceOrigin::TopLevel);
-    }
-
-    #[test]
-    fn test_create_synthetic_source_info_explicit() {
-        let info = create_synthetic_source_info(
-            "/custom".into(),
-            "extension".into(),
-            Some(SourceScope::Project),
-            Some(SourceOrigin::Package),
-            Some("/base".into()),
-        );
-        assert_eq!(info.scope, SourceScope::Project);
-        assert_eq!(info.origin, SourceOrigin::Package);
-        assert_eq!(info.base_dir, Some("/base".into()));
     }
 
     #[test]

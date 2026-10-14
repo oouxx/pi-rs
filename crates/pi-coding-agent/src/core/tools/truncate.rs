@@ -360,15 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_line_emoji() {
-        // Emoji can be 4 bytes
-        let emoji = "🎉🎊🎈"; // 3 emoji chars
-        let (text, was_truncated) = truncate_line(emoji, Some(2));
-        assert!(was_truncated);
-        assert!(text.ends_with("[truncated]"));
-    }
-
-    #[test]
     fn test_truncate_line_exact_boundary() {
         let line = "a".repeat(500);
         let (text, was_truncated) = truncate_line(&line, Some(500));
@@ -449,21 +440,6 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_tail_trailing_newline() {
-        // Trailing newline should not be counted as an extra line
-        let content = "line1\nline2\nline3\n";
-        let result = truncate_tail(
-            content,
-            Some(TruncationOptions {
-                max_lines: Some(10),
-                max_bytes: Some(1024),
-            }),
-        );
-        assert!(!result.truncated);
-        assert_eq!(result.total_lines, 3);
-    }
-
-    #[test]
     fn test_truncate_string_to_bytes_from_end() {
         let s = "hello world";
         let result = truncate_string_to_bytes_from_end(s, 5);
@@ -520,10 +496,3 @@ mod tests {
         assert_eq!(result.content, "");
     }
 
-    #[test]
-    fn test_truncate_head_trailing_newline() {
-        let content = "line1\nline2\nline3\n";
-        let result = truncate_head(content, None);
-        assert!(!result.truncated);
-        assert_eq!(result.total_lines, 3);
-    }

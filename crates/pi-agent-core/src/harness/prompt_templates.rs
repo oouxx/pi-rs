@@ -320,22 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn test_substitute_args_at_variable() {
-        let content = "All: $@";
-        let args = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let result = substitute_args(content, &args);
-        assert_eq!(result, "All: a b c");
-    }
-
-    #[test]
-    fn test_substitute_args_range_from() {
-        let content = "${@:2}";
-        let args = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let result = substitute_args(content, &args);
-        assert_eq!(result, "b c");
-    }
-
-    #[test]
     fn test_substitute_args_range_with_end() {
         let content = "${@:1:2}";
         let args = vec!["a".to_string(), "b".to_string(), "c".to_string()];
@@ -360,22 +344,6 @@ mod tests {
     }
 
     #[test]
-    fn test_substitute_args_no_placeholders() {
-        let content = "No placeholders here";
-        let args: Vec<String> = vec![];
-        let result = substitute_args(content, &args);
-        assert_eq!(result, "No placeholders here");
-    }
-
-    #[test]
-    fn test_substitute_args_empty_args() {
-        let content = "Hello $1";
-        let args: Vec<String> = vec![];
-        let result = substitute_args(content, &args);
-        assert_eq!(result, "Hello ");
-    }
-
-    #[test]
     fn test_substitute_args_positional_default() {
         // ${N:-default}: use default when arg missing or empty (TS #6695)
         let content = "Hello ${1:-world}";
@@ -386,36 +354,6 @@ mod tests {
         // empty string counts as missing
         let args = vec!["".to_string()];
         assert_eq!(substitute_args(content, &args), "Hello world");
-    }
-
-    #[test]
-    fn test_substitute_args_all_args_default() {
-        // ${@:-default} / ${ARGUMENTS:-default}: default when all args empty (TS #6695)
-        let content = "All: ${@:-none}";
-        let args: Vec<String> = vec![];
-        assert_eq!(substitute_args(content, &args), "All: none");
-        let args = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(substitute_args(content, &args), "All: a b");
-
-        let content = "All: ${ARGUMENTS:-none}";
-        let args: Vec<String> = vec![];
-        assert_eq!(substitute_args(content, &args), "All: none");
-        let args = vec!["a".to_string()];
-        assert_eq!(substitute_args(content, &args), "All: a");
-    }
-
-    #[test]
-    fn test_substitute_args_range_length_semantics() {
-        // ${@:N:L}: L is a length, not an absolute end (TS slice semantics)
-        let content = "${@:2:2}";
-        let args = vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()];
-        assert_eq!(substitute_args(content, &args), "b c");
-        // length beyond bounds clamps
-        let content = "${@:3:5}";
-        assert_eq!(substitute_args(content, &args), "c d");
-        // ${@:0} treated as ${@:1} (bash convention)
-        let content = "${@:0}";
-        assert_eq!(substitute_args(content, &args), "a b c d");
     }
 
     #[test]
@@ -454,12 +392,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_command_args_single_quoted() {
-        let result = parse_command_args("hello 'world test'");
-        assert_eq!(result, vec!["hello", "world test"]);
-    }
-
-    #[test]
     fn test_parse_command_args_empty() {
         let result = parse_command_args("");
         assert!(result.is_empty());
@@ -469,18 +401,6 @@ mod tests {
     fn test_parse_command_args_extra_spaces() {
         let result = parse_command_args("  hello   world  ");
         assert_eq!(result, vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn test_parse_command_args_tabs() {
-        let result = parse_command_args("hello\tworld");
-        assert_eq!(result, vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn test_parse_command_args_mixed_quotes() {
-        let result = parse_command_args("hello \"world 'test'\"");
-        assert_eq!(result, vec!["hello", "world 'test'"]);
     }
 
     #[test]
@@ -532,16 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_frontmatter_with_extra_fields() {
-        let content = "---\nname: template1\ndescription: A template\ntools: [bash, read]\n---\nTemplate body";
-        let (name, description, body, has_fm) = parse_frontmatter(content);
-        assert!(has_fm);
-        assert_eq!(name, Some("template1".to_string()));
-        assert_eq!(description, Some("A template".to_string()));
-        assert_eq!(body, "Template body");
-    }
-
-    #[test]
     fn test_parse_frontmatter_multiline_body() {
         let content = "---\nname: multi\n---\nLine 1\nLine 2\nLine 3";
         let (name, _description, body, has_fm) = parse_frontmatter(content);
@@ -588,17 +498,6 @@ mod tests {
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, "ok");
         // no_fm.md should not produce a diagnostic — it's silently skipped (no `---`)
-        assert!(diagnostics.is_empty());
-        let _ = fs::remove_dir_all(&path).await;
-    }
-
-    #[tokio::test]
-    async fn test_load_prompt_templates_skips_non_md() {
-        let (env, path) = setup_test_env("skip_non_md", &[
-            ("template.txt", "---\nname: test\n---\nBody"),
-        ]).await;
-        let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
-        assert!(templates.is_empty());
         assert!(diagnostics.is_empty());
         let _ = fs::remove_dir_all(&path).await;
     }

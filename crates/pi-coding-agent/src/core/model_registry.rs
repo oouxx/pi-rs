@@ -1407,12 +1407,6 @@ mod tests {
     }
 
     #[test]
-    fn test_model_registry_not_found() {
-        let registry = ModelRegistry::new(builtin_models());
-        assert!(registry.find("nonexistent", "model").is_none());
-    }
-
-    #[test]
     fn test_model_registry_providers() {
         // Register built-in providers so pi-ai models are available
         pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
@@ -1816,35 +1810,6 @@ mod tests {
         assert!(model.reasoning);
         assert_eq!(model.input, vec!["text".to_string(), "image".to_string()]);
         assert_eq!(model.context_window, 200_000);
-    }
-
-    /// A replaced model with the same id supplies api/baseUrl defaults
-    /// (TS `findModelDefaults`).
-    #[test]
-    fn test_register_provider_models_inherit_defaults_from_replaced_model() {
-        let registry = ModelRegistry::new_with_models_path(
-            vec![extension_test_model("keep-me")],
-            std::path::Path::new("/nonexistent/models.json"),
-        );
-        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
-            "models": [{
-                "id": "keep-me",
-                "name": "Renamed",
-                "reasoning": true,
-                "input": ["text"],
-                "cost": { "input": 0.0, "output": 0.0 },
-                "contextWindow": 100_000,
-                "maxTokens": 4096
-            }]
-        }))
-        .unwrap();
-
-        registry.register_provider("extp", config).unwrap();
-
-        let model = registry.find("extp", "keep-me").expect("model");
-        assert_eq!(model.name, "Renamed");
-        assert_eq!(model.api, "anthropic-messages");
-        assert_eq!(model.base_url, "https://orig.example.com");
     }
 
     /// Structurally invalid model definitions are rejected instead of

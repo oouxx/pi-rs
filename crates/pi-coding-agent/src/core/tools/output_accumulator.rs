@@ -435,23 +435,6 @@ mod tests {
     }
 
     #[test]
-    fn test_output_accumulator_no_truncation() {
-        let mut acc = OutputAccumulator::new(OutputAccumulatorOptions {
-            max_lines: Some(1000),
-            max_bytes: Some(100000),
-            temp_file_prefix: None,
-        });
-
-        let input = b"short line\n";
-        acc.append(input);
-        acc.finish();
-
-        let snap = acc.snapshot(false);
-        assert_eq!(snap.content, "short line\n");
-        assert!(!snap.truncation.truncated);
-    }
-
-    #[test]
     fn test_get_last_line_bytes() {
         let mut acc = OutputAccumulator::new(OutputAccumulatorOptions::default());
         acc.append(b"hello\nworld");

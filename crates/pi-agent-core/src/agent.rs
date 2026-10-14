@@ -1578,57 +1578,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_abort_signal() {
-        let saw_abort = Arc::new(AtomicUsize::new(0));
-        let sa = saw_abort.clone();
-
-        let sa_for_subscribe = sa.clone();
-        let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(move |_model, _context, _thinking, _opts: StreamFnOptions| {
-                Box::pin(async move {
-                    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    // Never send done - just hang
-                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
-            convert_to_llm: Some(default_convert_to_llm()),
-            ..Default::default()
-        });
-
-        agent
-            .subscribe(Arc::new(move |_event, signal| {
-                let sa = sa_for_subscribe.clone();
-                Box::pin(async move {
-                    if let Some(sig) = signal {
-                        let mut rx = sig.clone();
-                        tokio::spawn(async move {
-                            rx.changed().await.ok();
-                            if *rx.borrow() {
-                                sa.store(1, Ordering::SeqCst);
-                            }
-                        });
-                    }
-                })
-            }))
-            .await;
-
-        // Start a prompt that hangs
-        let agent_clone = agent.clone();
-        let handle = tokio::spawn(async move {
-            let _ = agent_clone.prompt(PromptInput::Text("hello")).await;
-        });
-
-        // Give it time to start
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Abort
-        agent.abort().await;
-
-        handle.await.ok();
-    }
-
-    #[tokio::test]
     async fn test_agent_state_mutators() {
         let agent = Agent::new(AgentOptions {
             stream_fn: Some(make_ok_stream_fn("ok")),

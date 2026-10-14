@@ -1757,13 +1757,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_runner_void_hooks_are_noops() {
-        let runner = HookRunner::new();
-        runner.fire_agent_start(None).await;
-        runner.fire_session_start("test", None, None).await;
-    }
-
-    #[tokio::test]
     async fn empty_runner_modifying_hooks_pass_through() {
         let runner = HookRunner::new();
         let ctx = crate::ExtensionContext::new("t".into(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());

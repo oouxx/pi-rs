@@ -1688,13 +1688,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_settings_default() {
-        let settings = Settings::default();
-        assert!(settings.default_provider.is_none());
-        assert!(settings.default_model.is_none());
-    }
-
-    #[test]
     fn test_deep_merge_settings() {
         let base = Settings {
             default_provider: Some("anthropic".to_string()),

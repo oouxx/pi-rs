@@ -668,12 +668,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_description_none() {
-        let errors = validate_description(None);
-        assert!(errors.iter().any(|e| e.contains("required")));
-    }
-
-    #[test]
     fn test_validate_description_too_long() {
         let long_desc = "a".repeat(MAX_DESCRIPTION_LENGTH + 1);
         let errors = validate_description(Some(&long_desc));

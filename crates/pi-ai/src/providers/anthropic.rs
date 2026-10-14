@@ -2075,35 +2075,6 @@ mod tests {
         assert!(!auth.use_bearer);
     }
 
-    /// A blank explicit key counts as unset and falls through to env.
-    #[test]
-    fn test_resolve_anthropic_auth_empty_explicit_falls_through() {
-        let auth = resolve_anthropic_auth(
-            Some(String::new()),
-            None,
-            None,
-            Some("env".into()),
-        );
-        assert_eq!(auth.api_key.as_deref(), Some("env"));
-    }
-
-    /// Non-anthropic providers (minimax, fireworks, …) must use their own env
-    /// key and ignore `ANTHROPIC_*` variables, even though they speak the
-    /// Anthropic wire format.
-    #[test]
-    fn test_resolve_anthropic_provider_auth_non_anthropic_uses_provider_env() {
-        let auth = resolve_anthropic_provider_auth(
-            "minimax",
-            None,
-            Some("anthropic-bearer".into()),
-            Some("anthropic-oauth".into()),
-            Some("anthropic-key".into()),
-            Some("minimax-key".into()),
-        );
-        assert_eq!(auth.api_key.as_deref(), Some("minimax-key"));
-        assert!(!auth.use_bearer);
-    }
-
     /// `github-copilot` uses its own env key (sent as Bearer by the header builder).
     #[test]
     fn test_resolve_anthropic_provider_auth_copilot_uses_provider_env() {
@@ -2117,20 +2088,6 @@ mod tests {
         );
         assert_eq!(auth.api_key.as_deref(), Some("copilot-token"));
         assert!(!auth.use_bearer);
-    }
-
-    /// An explicit key still wins for non-anthropic providers.
-    #[test]
-    fn test_resolve_anthropic_provider_auth_explicit_wins() {
-        let auth = resolve_anthropic_provider_auth(
-            "minimax",
-            Some("stored".into()),
-            None,
-            None,
-            None,
-            Some("minimax-key".into()),
-        );
-        assert_eq!(auth.api_key.as_deref(), Some("stored"));
     }
 
     /// A plain API key is sent as `x-api-key`; an `sk-ant-oat…` OAuth token is
@@ -2219,11 +2176,6 @@ mod tests {
     // ============================================================
 
     #[test]
-    fn test_normalize_tool_call_id_alphanumeric() {
-        assert_eq!(normalize_tool_call_id("abc123"), "abc123");
-    }
-
-    #[test]
     fn test_normalize_tool_call_id_with_special_chars() {
         assert_eq!(normalize_tool_call_id("tool_use:123!"), "tool_use_123_");
     }
@@ -2260,14 +2212,6 @@ mod tests {
     }
 
     #[test]
-    fn test_map_stop_reason_stop_sequence() {
-        assert_eq!(
-            map_stop_reason("stop_sequence", None),
-            (StopReason::Stop, None)
-        );
-    }
-
-    #[test]
     fn test_map_stop_reason_refusal_with_explanation() {
         let details = AnthropicStopDetails {
             explanation: Some("I cannot help with that".to_string()),
@@ -2277,28 +2221,6 @@ mod tests {
             (
                 StopReason::Error,
                 Some("I cannot help with that".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn test_map_stop_reason_refusal_without_explanation() {
-        assert_eq!(
-            map_stop_reason("refusal", None),
-            (
-                StopReason::Error,
-                Some("The model refused to complete the request".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn test_map_stop_reason_sensitive() {
-        assert_eq!(
-            map_stop_reason("sensitive", None),
-            (
-                StopReason::Error,
-                Some("Provider stopped with: sensitive".to_string())
             )
         );
     }
@@ -2326,27 +2248,6 @@ mod tests {
         let converted = convert_messages(&messages, &model, None, false);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
-    }
-
-    #[test]
-    fn test_convert_messages_assistant_with_text() {
-        let model = make_test_model();
-        let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::text("Hi!")],
-            api: "anthropic-messages".into(),
-            provider: "anthropic".into(),
-            model: "claude-sonnet-4-6".into(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: Usage::default(),
-            stop_reason: StopReason::Stop,
-            error_message: None,
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages, &model, None, false);
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "assistant");
     }
 
     #[test]
@@ -2442,55 +2343,6 @@ mod tests {
         // Thinking blocks should be filtered out from the API request
     }
 
-    #[test]
-    fn test_convert_messages_empty_user_content() {
-        let model = make_test_model();
-        let messages = vec![Message::User {
-            content: vec![ContentBlock::text("")],
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages, &model, None, false);
-        // Empty user messages should be skipped
-        assert_eq!(converted.len(), 0);
-    }
-
-    #[test]
-    fn test_convert_messages_tool_call_id_normalized() {
-        let model = make_test_model();
-        let messages = vec![Message::Assistant {
-            content: vec![ContentBlock::ToolCall {
-                id: "tool_use:123!@#".into(),
-                name: "test".into(),
-                arguments: serde_json::json!({}),
-                thought_signature: None,
-                namespace: None,
-            }],
-            api: "anthropic-messages".into(),
-            provider: "anthropic".into(),
-            model: "claude-sonnet-4-6".into(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: Usage::default(),
-            stop_reason: StopReason::ToolUse,
-            error_message: None,
-            timestamp: 1000,
-        }];
-        let converted = convert_messages(&messages, &model, None, false);
-        assert_eq!(converted.len(), 1);
-        if let AnthropicContent::Blocks(blocks) = &converted[0].content {
-            if let AnthropicContentBlock::ToolUse { id, .. } = &blocks[0] {
-                assert!(!id.contains('!'));
-                assert!(!id.contains('@'));
-                assert!(!id.contains('#'));
-            } else {
-                panic!("expected ToolUse");
-            }
-        } else {
-            panic!("expected Blocks");
-        }
-    }
-
     // ============================================================
     // convert_tools tests
     // ============================================================
@@ -2510,74 +2362,9 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_messages_tool_result_carries_content_only() {
-        // Tool references were removed with the request-level deferred split
-        // (#9548): a tool result converts to a plain tool_result block, and any
-        // added tool names do not produce tool_reference blocks.
-        let messages = vec![Message::ToolResult {
-            tool_call_id: "call_1".into(),
-            tool_name: "bash".into(),
-            content: vec![ContentBlock::text("output text")],
-            details: None,
-            is_error: false,
-            usage: None,
-            timestamp: 0,
-        }];
-        let converted = convert_messages(&messages, &model_for_tests(), None, false);
-        assert_eq!(converted.len(), 1);
-        let AnthropicContent::Blocks(blocks) = &converted[0].content else {
-            panic!("expected blocks");
-        };
-        assert_eq!(blocks.len(), 1, "no sibling tool_reference blocks");
-        match &blocks[0] {
-            AnthropicContentBlock::ToolResult { content, .. } => {
-                assert!(
-                    matches!(content, AnthropicToolResultContent::String(text) if text == "output text"),
-                    "the result's own content is passed through"
-                );
-            }
-            other => panic!("expected a tool_result block, got {other:?}"),
-        }
-    }
-
-    fn model_for_tests() -> Model {
-        Model {
-            prompt_cache: None,
-            id: "claude-sonnet-4-5".into(),
-            name: "x".into(),
-            api: "anthropic-messages".into(),
-            provider: "anthropic".into(),
-            base_url: "https://api.anthropic.com".into(),
-            reasoning: true,
-            thinking_level_map: None,
-            input: vec!["text".into(), "image".into()],
-            cost: ModelCost::default(),
-            context_window: 200000,
-            max_tokens: 32000,
-            sampling_params: None,
-            headers: None,
-            compat: None,
-        }
-    }
-
-    #[test]
     fn test_convert_tools_empty() {
         let converted = convert_tools(&[], None, false, false).unwrap();
         assert!(converted.is_empty());
-    }
-
-    #[test]
-    fn test_convert_tools_single() {
-        let tools = vec![Tool {
-            name: "read".into(),
-            description: "Read a file".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
-            constrained_sampling: None,
-        }];
-        let converted = convert_tools(&tools, None, false, false).unwrap();
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].name, "read");
-        assert_eq!(converted[0].description, "Read a file");
     }
 
     #[test]

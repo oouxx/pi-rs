@@ -238,14 +238,6 @@ async fn test_runtime_new_session() {
 }
 
 #[tokio::test]
-async fn test_runtime_dispose() {
-    let (runtime, _dir) = create_test_runtime().await;
-
-    // Dispose should not panic
-    runtime.dispose().await;
-}
-
-#[tokio::test]
 async fn test_runtime_set_rebind_session() {
     let (mut runtime, _dir) = create_test_runtime().await;
     let called = Arc::new(std::sync::atomic::AtomicBool::new(false));

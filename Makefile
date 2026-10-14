@@ -82,7 +82,7 @@ _tag-release:
 	tag="v$$v"; \
 	git tag -l "$$tag" | grep -q "$$tag" && { echo "❌ Tag $$tag 已存在"; exit 1; }; \
 	echo "🚀 发版 $$tag"; \
-	cargo generate-lockfile && \
+	cargo update --workspace && \
 	git add -A && git commit -m "chore: bump to version $$tag"; \
 	git tag "$$tag"; \
 	git push origin main --tags; \

@@ -1,22 +1,9 @@
-//! Extension action bus — lets JS extension actions reach the `AgentSession`.
+//! Extension action bus — bridges JS extension actions to `AgentSession`.
 //!
-//! The V8 runtime thread is separate from the thread that owns the
-//! `AgentSession`, and the session is driven synchronously by its owner
-//! (CLI / RPC / ACP mode). This module provides the bridge:
-//!
-//! - **`ExtensionStateView`** — a shared snapshot of session state, refreshed
-//!   by the session at drain points (turn boundaries). Read-actions
-//!   (`getActiveTools`, `getAllTools`, `getSessionName`, `getThinkingLevel`,
-//!   `getCommands`) read this snapshot synchronously.
-//! - **`ExtensionAction`** — write-commands queued by the extension and
-//!   applied by the session at the next drain point (`sendMessage`,
-//!   `sendUserMessage`, `appendEntry`, `setSessionName`, `setLabel`,
-//!   `setActiveTools`, `setThinkingLevel`, `setModel`).
-//!
-//! This mirrors TS's `ExtensionRunner.bindCore()` closures: the JS side calls
-//! an op, the op invokes a closure that either reads the snapshot or enqueues
-//! a command; the session applies commands when it is driven next.
-
+//! The V8 runtime and the session live on different threads. `ExtensionStateView`
+//! is a shared snapshot refreshed at turn boundaries for read-actions;
+//! `ExtensionAction` queues write-commands the session applies at the next drain
+//! point. Mirrors TS's `ExtensionRunner.bindCore()` closures.
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;

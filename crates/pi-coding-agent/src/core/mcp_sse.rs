@@ -1,20 +1,8 @@
-//! Legacy MCP SSE client transport (protocol revision 2024-11-05).
-//!
-//! rmcp 1.8 ships only stdio and streamable-HTTP client transports, so pi
-//! implements the legacy SSE transport on top of rmcp's [`Transport`] trait:
-//!
-//! 1. `GET` the SSE URL with `Accept: text/event-stream`.
-//! 2. The server's first event is `event: endpoint` whose data is the URL the
-//!    client POSTs JSON-RPC messages to (relative URLs resolve against the SSE
-//!    URL).
-//! 3. Every other event carries a JSON-RPC message for the client.
-//!
-//! The reader task is spawned by [`SseClientTransport::connect`], which waits
-//! for the endpoint event before returning so [`Transport::send`] never races
-//! the handshake.
-//!
-//! This module is feature-gated behind `mcp` (default-on).
-
+//! Legacy MCP SSE client transport (protocol revision 2024-11-05), implemented
+//! on rmcp's `Transport` trait: GET the SSE URL, read the `endpoint` event for
+//! the POST URL, then stream JSON-RPC messages. `SseClientTransport::connect`
+//! waits for the endpoint event so `send` never races the handshake.
+//! Feature-gated behind `mcp` (default-on).
 use std::collections::BTreeMap;
 use std::time::Duration;
 

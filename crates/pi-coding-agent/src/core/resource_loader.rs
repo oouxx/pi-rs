@@ -1,18 +1,7 @@
-//! Resource loader — orchestrates loading of extensions, skills, prompts, themes,
-//! and context files for the agent session.
-//!
-//! Ported from `packages/coding-agent/src/core/resource-loader.ts`.
-//!
-//! The `DefaultResourceLoader` manages the full reload cycle:
-//!   1. (Optional) Pre-trust extension load → resolve project trust → post-trust reload
-//!   2. Resolve packages via `PackageManager`
-//!   3. Load extensions (with caching)
-//!   4. Detect extension conflicts (tools, flags)
-//!   5. Load skills, prompts, themes from resolved paths
-//!   6. Load AGENTS.md/CLAUDE.md context files (cwd → root)
-//!   7. Discover SYSTEM.md / APPEND_SYSTEM.md
-//!   8. Apply override functions per resource type
-
+//! Resource loader — orchestrates the full reload cycle for the agent session
+//! (port of `resource-loader.ts`): trust/extension load → package resolution →
+//! extensions (cached) + conflict detection → skills/prompts/themes → context
+//! files (AGENTS.md/CLAUDE.md) → SYSTEM.md/APPEND_SYSTEM.md → override functions.
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -523,11 +512,9 @@ fn find_shadowed_context_file(cwd: &str) -> Option<String> {
     if !worktree_root.starts_with(&format!("{main_repo_root}{sep}")) {
         return None;
     }
-    // The parent of the common git dir is the main worktree root only when
-    // that dir is itself checked out from the same repo. In a bare layout
-    // (`proj/.bare` + `proj/main`) it is just the directory holding `.bare`;
-    // a submodule's gitdir has no `commondir`, so it lands under
-    // `.git/modules`.
+    // The parent of the common git dir is the main worktree root only when it is
+    // checked out from the same repo: in a bare layout (`.bare` + `main`) it just
+    // holds `.bare`, and a submodule's gitdir (no `commondir`) lands under `.git/modules`.
     let main_git = std::path::Path::new(&main_repo_root)
         .join(".git")
         .to_string_lossy()

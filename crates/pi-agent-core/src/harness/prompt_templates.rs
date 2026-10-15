@@ -183,12 +183,10 @@ fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String, 
 }
 
 pub fn substitute_args(content: &str, args: &[String]) -> String {
-    // Match TS `substituteArgs` (packages/coding-agent/src/core/prompt-templates.ts):
-    //   ${N:-default} | ${ARGUMENTS:-default} | ${@:-default}  (default when missing/empty)
-    //   ${@:N} | ${@:N:L}  (bash-style slicing; L is a length, not an absolute end)
-    //   $ARGUMENTS | $@ | $N
-    // Replacement happens on the template string only; argument and default values
-    // containing patterns like $1, $@, or $ARGUMENTS are NOT recursively substituted.
+    // TS `substituteArgs` (prompt-templates.ts): `${N:-default}` /
+    // `${ARGUMENTS:-default}` / `${@:-default}`, bash-style `${@:N}` / `${@:N:L}`
+    // (L = length, not an end), and `$ARGUMENTS` / `$@` / `$N`. Substitution is
+    // non-recursive (values containing `$1`/`$@` are not expanded).
     let re = regex::Regex::new(
         r"\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)",
     )

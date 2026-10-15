@@ -1,21 +1,11 @@
-//! Application-owned text selection — Rust port of the fullscreen selection
-//! subsystem in the TS original (`packages/tui/src/tui-alt-screen.ts`:
-//! `SelectionPoint` / `getWordSelection` / `getSelectionColumns` /
-//! `getActiveSelectionText` / `handleSelectionMouseEvent`).
+//! Application-owned text selection — port of the TS fullscreen selection
+//! subsystem (`tui-alt-screen.ts`: `SelectionPoint` / `getWordSelection` /
+//! `getSelectionColumns` / `getActiveSelectionText`).
 //!
-//! The original owns mouse selection in fullscreen mode (regular mode
-//! delegates to the terminal emulator): drag / double-click word / triple-click
-//! line selection, copy-on-select, and auto-scroll while dragging past the
-//! viewport edge. pi-rs renders fullscreen, so this module holds the pure
-//! selection logic; the ratatui wiring (mouse routing, highlight, clipboard
-//! command) lives in [`crate::app`].
-//!
-//! Coordinate spaces (original `SelectionPoint.scrollView`):
-//! - [`SelSpace::Content`] — the transcript's **content rows** (0 = first
-//!   block row, independent of the viewport scroll offset).
-//! - [`SelSpace::Screen`] — docked regions (status / editor / footer), where
-//!   the row is the physical screen row.
-
+//! Holds the pure selection logic (drag / double-click word / triple-click line,
+//! copy-on-select, edge auto-scroll); the ratatui wiring lives in [`crate::app`].
+//! Coordinate spaces: `Content` (transcript content rows, scroll-independent)
+//! and `Screen` (docked regions, physical rows).
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 

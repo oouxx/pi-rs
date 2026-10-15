@@ -1,38 +1,11 @@
-//! pi-web-search — `web_search` / `web_fetch` 工具扩展。
+//! pi-web-search — `web_search` / `web_fetch` 工具扩展（对应 npm 包
+//! `@ollama/pi-web-search`，经本地 Ollama 实验性 API 提供搜索/抓取）。
 //!
-//! 对应 npm 包 `@ollama/pi-web-search`（v0.0.5，Ollama 官方，MIT）：
-//! 通过本地 Ollama 实例的实验性 API 提供实时搜索与网页内容提取：
-//! - `POST {host}/api/experimental/web_search`  body `{query, max_results}`
-//! - `POST {host}/api/experimental/web_fetch`   body `{url}`
+//! 工具名、参数 schema、输出文本与 `details`、错误文本均与原版一致
+//! （`max_results` 默认 5；401 → "Unauthorized. Run `ollama signin`…"）。
 //!
-//! 行为对齐原版 `index.ts`：
-//! - 工具名 `web_search` / `web_fetch`，label/description 与原版一致，
-//!   参数 JSON Schema 与 typebox 输出一致（`required: ["query"]` /
-//!   `required: ["url"]`，`max_results` 可选、默认 5）
-//! - 输出文本格式一致：搜索为 `1. {title}\n   URL: {url}\n   {content}`
-//!   逐条 `\n\n` 连接（空结果 → "No results found."）；fetch 为
-//!   `Title: ...` + `Content:` + `Links found: N` + 最多 10 条 `  - link`
-//! - `details` 结构与原版一致：搜索 `{results: [...]}`、fetch
-//!   `{title, content, links}`
-//! - 错误文本一致：401 → "Unauthorized. Run `ollama signin` to authenticate."；
-//!   其他非 2xx → `Search/Fetch API error (status N): <body|statusText>`；
-//!   连接失败 → "Could not connect to Ollama at {host}. Make sure Ollama is
-//!   running and web_search|web_fetch is enabled."
-//!
-//! 有意差异（pi-rs 增强，见各文件 doc 注明）：
-//! - 宿主可配：默认 `http://localhost:11434`（与原版 `getOllamaHost()` 一致），
-//!   可用 `OLLAMA_HOST` / `OLLAMA_BASE_URL` 环境变量覆盖（与 pi-ai 的
-//!   ollama provider 的端点覆盖规则一致，见 crates/pi-ai/DEVIATIONS.md #4）
-//! - 请求加 60s 超时（原版依赖调用方 signal 取消，无显式超时；本地服务
-//!   挂死不应卡死 agent 循环）
-//! - 连接失败判定用 reqwest `is_connect()`（覆盖 ECONNREFUSED 及同类
-//!   localhost 连接错误），消息文本与原版一致
-//!
-//! 注：扩展工具的 `ToolCallOutput.is_error` 在 agent 循环边界（
-//! `agent_session.rs` 的 dispatch 包装）当前不传递到
-//! `AgentMessage::ToolResult.is_error`（与 goal/subagent 扩展相同的既有
-//! 架构约定）；错误通过 content 文本 + `is_error: true` 表达。
-
+//! 有意差异：宿主可用 `OLLAMA_HOST` / `OLLAMA_BASE_URL` 覆盖，请求加 60s
+//! 超时（见 DEVIATIONS.md #4）。
 use std::time::Duration;
 
 use async_trait::async_trait;

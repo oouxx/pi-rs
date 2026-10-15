@@ -1,20 +1,7 @@
-//! Line-level differential renderer for the alternate screen — the same
-//! strategy as the TS original (`TuiAltScreen.doRender` / grok-build):
-//!
-//! - The frame is rendered into a ratatui buffer, then serialized into one
-//!   ANSI-styled string per row.
-//! - Rows are compared **as whole strings** against the previous frame;
-//!   changed rows are rewritten in full (`ESC[{row};1H` + `ESC[2K` + the
-//!   whole row). There are no cell-level partial updates, so a terminal can
-//!   never be left with a half-overwritten wide character — the stale-cell
-//!   residue class that cell-level diffs (ratatui `Buffer::diff`) are
-//!   vulnerable to on terminals with imperfect wide-char handling.
-//! - A full clear-and-repaint (`ESC[2J` + every row) happens only on the
-//!   first frame and on width/height changes (TS `fullRedraw`).
-//! - Every update batch is wrapped in synchronized output
-//!   (`ESC[?2026h/l`) so the terminal presents it as one frame (no
-//!   flicker), exactly like the TS original.
-
+//! Line-level differential renderer for the alternate screen (TS
+//! `TuiAltScreen.doRender`): rows are compared and rewritten as whole strings
+//! (no cell-level updates, so no half-overwritten wide chars); full clear only
+//! on the first frame / size change; each batch wrapped in synchronized output.
 use std::io::{self, Write};
 
 /// Begin / end synchronized output (flicker-free batches).
@@ -67,12 +54,9 @@ fn buffer_row_to_ansi(row: &[ratatui::buffer::Cell]) -> String {
             continue;
         }
         prev_wide = width == 2;
-        // A modifier that turns off mid-row (e.g. the end of a selection
-        // highlight) must emit an off code. SGR has no single "clear
-        // modifiers" sequence that is always safe across terminals, so reset
-        // everything and re-apply the current colors below (trackers are
-        // cleared to force re-emission). Without this, reverse video leaks
-        // from the selection to the end of the row.
+        // A modifier turning off mid-row must emit an off code. SGR has no safe
+        // "clear modifiers" sequence, so reset all and re-apply colors below —
+        // otherwise reverse video leaks to the end of the row.
         if !mods.is_empty() && !cell.modifier.contains(mods) {
             out.push_str("\x1b[0m");
             fg = None;

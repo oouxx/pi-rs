@@ -1,18 +1,7 @@
 //! HTTP idle-timeout helpers (match TS `httpIdleTimeoutMs` → undici
-//! `bodyTimeout` / `headersTimeout` in `packages/coding-agent/src/core/http-dispatcher.ts`).
-//!
-//! TS installs an undici global dispatcher with `headersTimeout` and
-//! `bodyTimeout` set to `httpIdleTimeoutMs` (default 300s). The timeout is an
-//! *idle* timeout: it fires only when no response data arrives for that long,
-//! so a long-but-active stream is never cut off. When it fires, the fetch body
-//! read rejects with a timeout error, which the agent-level auto-retry
-//! classifies as retryable.
-//!
-//! The Rust providers previously accepted `StreamOptions.timeout_ms` but never
-//! applied it, so a stalled upstream hung forever (observed: a 4.5-minute hang
-//! that the user manually interrupted). These helpers wire the setting into the
-//! SSE read loops.
-
+//! `headersTimeout`/`bodyTimeout`). The timeout is an *idle* timeout: it fires
+//! only when no response data arrives for that long, so an active stream is never
+//! cut off; providers previously ignored `StreamOptions.timeout_ms` and hung.
 use std::time::Duration;
 
 /// Largest `timeout_ms` value the SDKs treat as "disabled" (TS uses

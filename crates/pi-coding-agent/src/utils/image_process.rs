@@ -1,22 +1,12 @@
 //! Image normalization + resize for the tool/attachment pipeline.
 //!
-//! Port of `packages/coding-agent/src/utils/image-process.ts` and
-//! `image-resize-core.ts`. The TS original decodes/resizes with Photon
-//! (Rust/WASM) inside a worker thread; Rust uses the `image` crate directly
-//! (no worker needed — decoding is already native).
+//! Port of `image-process.ts` / `image-resize-core.ts`; Rust uses the `image`
+//! crate directly instead of Photon/WASM in a worker.
 //!
-//! Semantics kept identical:
-//! - Supported inline formats: PNG / JPEG / GIF / WebP. Anything else
-//!   (e.g. BMP) is converted to PNG.
-//! - Default limits: 2000x2000 px, 4.5MB base64 payload (headroom under
-//!   Anthropic's 5MB limit), JPEG quality 80.
-//! - Images already within all limits pass through untouched; otherwise they
-//!   are resized, encoded as PNG and JPEG (quality 80/85/70/55/40) and the
-//!   first candidate under the byte limit wins; if none fit, dimensions are
-//!   scaled down 25% at a time until 1x1.
-//! - A dimension note is emitted when the image was resized so the model can
-//!   map coordinates back to the original.
-
+//! Semantics kept identical: PNG/JPEG/GIF/WebP inline (others → PNG); limits
+//! 2000x2000 px, 4.5MB base64, JPEG quality 80; images within limits pass
+//! through, otherwise resized and re-encoded (first candidate under the byte
+//! limit wins, else scale down 25% to 1x1); a dimension note is emitted when resized.
 use std::io::Cursor;
 
 use base64::Engine;

@@ -218,14 +218,10 @@ pub async fn create_agent_session_from_services(
         }
     };
 
-    // Build the options struct and delegate to the single entry point.
-    // `create_agent_session` handles extension registry wrapping,
-    // prompt_guidelines collection, resource loading, and session assembly.
-    //
-    // NOTE: resource_loader is passed as None because the Rust SDK expects
-    // ResourceLoaderOptions (loading options), not LoadedResources (loaded data).
-    // The services' resources are reloaded from disk inside create_agent_session().
-    // This is a known deviation from TS (see DEVIATIONS.md).
+    // Delegate to the single entry point (handles extension wrapping, prompt
+    // guidelines, resource loading, session assembly). `resource_loader: None`
+    // is a known deviation — resources are reloaded inside `create_agent_session`
+    // (see DEVIATIONS.md).
     let sdk_options = crate::core::sdk::CreateAgentSessionOptions {
         cwd,
         agent_dir: Some(agent_dir),

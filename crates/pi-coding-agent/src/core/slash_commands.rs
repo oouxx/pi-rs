@@ -353,12 +353,10 @@ mod tests {
 
     #[test]
     fn test_resolve_extension_commands_single_builtin_name_no_suffix() {
-        // An extension registering a name that *happens* to match a builtin
-        // (e.g. "model") is resolved among extensions only: since it is the
-        // sole extension with that name, it keeps the bare name (no `:2`).
-        // This matches TS resolveRegisteredCommands, which never folds in
-        // builtins. The builtin/extension collision is reported separately by
-        // getBuiltInCommandConflictDiagnostics in the TUI, not here.
+        // An extension named like a builtin ("model") resolves among extensions
+        // only: a sole match keeps the bare name (no `:2`). TS
+        // `resolveRegisteredCommands` never folds in builtins; the collision is
+        // reported separately by `getBuiltInCommandConflictDiagnostics` in the TUI.
         let ext_cmds = vec![make_ext_cmd("model", "My model command")];
         let resolved = resolve_extension_commands(&ext_cmds);
         assert_eq!(resolved.len(), 1);

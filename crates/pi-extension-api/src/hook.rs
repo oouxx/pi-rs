@@ -1157,12 +1157,10 @@ impl HookRunner {
         messages: Vec<Value>,
         ctx: &crate::ExtensionContext,
     ) -> HookResult<Vec<Value>> {
-        // TS `emitContext`: a `context` handler only sees the conversation, and
-        // Pi restores the prompt and tool state afterwards. An unchanged
-        // conversation keeps every system message in place, so models with
-        // mid-conversation support keep their cached prefix; a changed one gets
-        // the replayed prompt sections and tool declarations as one leading
-        // system message, so pruning or windowing cannot drop them.
+        // TS `emitContext`: a `context` handler only sees the conversation; Pi
+        // restores prompt/tool state afterwards. An unchanged conversation keeps
+        // system messages in place (cached prefix); a changed one gets the replayed
+        // prompt sections + tool declarations as one leading system message.
         let mut current = messages;
         for handler in &self.handlers {
             let visible: Vec<Value> = current

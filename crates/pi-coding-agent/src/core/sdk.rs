@@ -322,13 +322,8 @@ pub struct ExtensionError {
 }
 
 // ============================================================================
-// SDK Re-exports — pi-coding-agent public API for downstream consumers
-//
-// Use via:
+// SDK re-exports — public API for downstream consumers:
 //   use pi_coding_agent::sdk::prelude::*;
-//
-// This prelude groups the public API so that sdk.rs can keep its internal
-// `use` imports (for function bodies) without name conflicts.
 // ============================================================================
 
 pub mod prelude {
@@ -531,11 +526,8 @@ pub async fn create_agent_session(
         })
         .unwrap_or_default();
 
-    // Resolve session directory: --session-dir overrides default. The default
-    // is the encoded-cwd subdirectory (`sessions/--<encoded-cwd>--`), matching
-    // TS `getDefaultSessionDir`. Using the bare `sessions/` root here made
-    // `usesDefaultSessionDir()` never true (so the resume hint always printed
-    // `--session-dir`) and made id lookups miss sessions created by default.
+    // --session-dir overrides; default is the encoded-cwd subdirectory
+    // (`sessions/--<encoded-cwd>--`, TS `getDefaultSessionDir`).
     let session_dir = options.session_dir.clone().unwrap_or_else(|| {
         crate::config::get_default_session_dir(&cwd, Some(&agent_dir))
             .to_string_lossy()
@@ -591,11 +583,9 @@ pub async fn create_agent_session(
         }
     }
 
-    // Thinking level: an explicit caller/CLI value wins, then the session's
-    // recorded level, then the settings default (TS sdk.ts order). The CLI
-    // passes the raw `--models` scope instead of pre-resolving it, so a scoped
-    // pattern's explicit level (`provider/id:high`, applied by TS main.ts to
-    // `options.thinkingLevel`) is folded in here for new sessions.
+    // Thinking level precedence (TS sdk.ts): explicit caller/CLI value, then the
+    // session's recorded level, then the settings default. A scoped pattern's
+    // explicit level is folded in here for new sessions.
     let mut resolved_thinking_level: Option<String> = options.thinking_level.clone().or_else(|| {
         if options.model.is_none() && !has_existing_session {
             scoped.first().and_then(|s| s.thinking_level.clone())
@@ -817,10 +807,8 @@ pub async fn create_agent_session(
     );
 
     // MCP servers from `mcp.json` (global + project). Connection failures are
-    // reported but never fatal: the session starts with the servers that
-    // connected. The returned tools keep their connections alive through an
-    // `Arc` captured in each tool's execute closure, so the handles here can be
-    // dropped right after building the tool list.
+    // non-fatal: the session starts with whatever connected. The tools keep
+    // their connections alive via an `Arc` in each execute closure.
     #[cfg(feature = "mcp")]
     let custom_tools = {
         let (specs, mut errors) = crate::core::mcp_config::load_specs(&cwd, &agent_dir);

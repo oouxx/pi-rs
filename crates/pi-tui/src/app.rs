@@ -1383,11 +1383,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             vec![]
         }
         Msg::Tick => { model.tick += 1; vec![] }
-        // TS ScrollView: `scroll_offset` = viewport top offset in content
-        // rows (0 = top; max = bottom). ScrollUp looks at older content
-        // (offset decreases), ScrollDown newer; reaching the bottom
-        // re-engages follow (grok/TS `follow_by_overscroll` semantics —
-        // the clamp+re-engage happens in render_body).
+        // TS ScrollView: `scroll_offset` = viewport-top offset (0 = top, max =
+        // bottom); ScrollUp decreases it, ScrollDown increases. Reaching the
+        // bottom re-engages follow (clamp+re-engage in render_body).
         Msg::ScrollUp(amount) => {
             model.auto_scroll = false;
             model.scroll_offset = model.scroll_offset.saturating_sub(amount as usize);
@@ -1519,13 +1517,10 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             model.completer.deactivate();
             return vec![];
         }
-        // Ctrl+D 的 app.exit 拦截已移除（见 DEVIATIONS.md）：Ctrl+D 不再退出，
-        // 落到下方 AppMode::Chat 的 readline 键位，恒为 delete-char-forward。
-        // Ctrl+V: app.clipboard.pasteImage（对齐 TS `handleClipboardPaste`）——
-        // 先读剪贴板图片（`readClipboardImage`）：有则写临时文件
-        // `pi-clipboard-{uuid}.{ext}` 并把文件路径插入光标处（read 工具随后
-        // 会把图片作为附件交给模型）；否则读文本，经 `handle_paste` 归一化/
-        // 过滤/大段折叠后插入。两者都读不到时静默忽略。
+        // Ctrl+D: the app.exit intercept is gone (see DEVIATIONS.md); falls
+        // through to Chat's delete-char-forward.
+        // Ctrl+V: paste an image if the clipboard holds one (temp-file path
+        // inserted), else paste text via `handle_paste` (normalized/folded).
         if key.code == KeyCode::Char('v') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
             // TS: when the clipboard holds an image, it is used exclusively
             // (a failed temp-file write is silently ignored, no text fallback).
@@ -1543,13 +1538,9 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     }
     match &mut model.mode {
         AppMode::Chat => {
-            // Ctrl/Alt-modified Character chords route through the vendored
-            // readline keymap (Ctrl+A/E/B/F/K/U/W/D/H, Alt+B/F/W, word
-            // moves/deletes); `classify_key_event` owns classification and the
-            // vendored EditBuffer does the editing — unmapped chords are
-            // swallowed, never inserted as literal letters (e.g. Ctrl+F used
-            // to type "f"). (Ctrl+B abort-bash is handled upstream by
-            // pi-coding-agent before reaching here.)
+            // Ctrl/Alt+char chords route through the vendored readline keymap
+            // (Ctrl+A/E/B/F/K/U/W/D/H, Alt+B/F/W); unmapped chords are swallowed,
+            // never inserted as letters. Ctrl+B abort-bash is handled upstream.
             let editing_chord = matches!(key.code, KeyCode::Char(_))
                 && key.modifiers.intersects(
                     crossterm::event::KeyModifiers::CONTROL
@@ -2241,13 +2232,9 @@ fn render_body(model: &mut Model, frame: &mut Buffer, area: Rect, t: &Theme) {
         .collect();
     let (gaps, leads) = block_gaps(&blocks);
 
-    // Scroll-window rendering (TS ScrollView semantics): `scroll_offset` is
-    // the viewport-top offset in content rows (0 = top, max = follow
-    // bottom). The content is laid out top-down; every row renderer clips
-    // to `area` (`render_body_row` / `render_boxed_row`), so rows above the
-    // viewport (negative `ly`) and below it are skipped automatically —
-    // this is the internal scrollback: the transcript lives in the model,
-    // not the terminal.
+    // TS ScrollView semantics: `scroll_offset` is the viewport-top offset in
+    // content rows. Row renderers clip to `area`, so off-screen rows are skipped
+    // automatically (internal scrollback: the transcript lives in the model).
     let total_h: u16 = heights
         .iter()
         .zip(&gaps)
@@ -2255,12 +2242,9 @@ fn render_body(model: &mut Model, frame: &mut Buffer, area: Rect, t: &Theme) {
         .map(|((h, g), l)| h + g + l)
         .sum();
     let max_scroll = (total_h as usize).saturating_sub(area.height as usize);
-    // Clamp + overscroll re-engage: a scroll-down that lands at the bottom
-    // re-enables follow on this frame (grok `follow_by_overscroll`), so a
-    // fast PageDown ending there keeps streaming content pinned to bottom.
-    // Follow state mirrors the viewport position (TS ScrollView keeps
-    // scrollTop == maxScrollTop while following), so ScrollUp from the
-    // bottom starts at the real bottom rather than at 0.
+    // Clamp + overscroll re-engage (grok `follow_by_overscroll`): a scroll-down
+    // that lands at the bottom re-enables follow. Follow mirrors viewport position
+    // (TS ScrollView keeps scrollTop == maxScrollTop while following).
     let scroll = if model.auto_scroll {
         model.scroll_offset = max_scroll;
         max_scroll

@@ -1,20 +1,10 @@
 //! Extension discovery + module cache — the runtime-agnostic half of TS
-//! `core/extensions/loader.ts`.
+//! `core/extensions/loader.ts`: manifest parsing, entry resolution, directory
+//! scanning, and the cwd-invalidating module cache. (Factory invocation lives on
+//! the Bun-subprocess branch.)
 //!
-//! This module ports the pieces of `loader.ts` that need **no JavaScript
-//! runtime**: manifest parsing, entry-point resolution, directory scanning,
-//! and the cwd-invalidating module cache. The factory-invocation half
-//! (`loadExtensionModule` / `loadExtension` / `createExtensionAPI`) lives on
-//! the `feat/bun-extension-compat` branch (Bun subprocess runtime).
-//! Anything in this file is reusable regardless of which runtime backend is
-//! later chosen.
-//!
-//! TS source: `packages/coding-agent/src/core/extensions/loader.ts`.
-//! The functions below mirror the named TS functions 1:1 in behavior; error
-//! handling intentionally matches TS (read/parse failures return `None` /
-//! empty, *not* `Result::Err`) because the TS original `try/catch`es and
-//! returns `null`/`[]` — this is faithful porting, not silent fallback.
-
+//! Error handling matches TS: read/parse failures return `None`/empty, not
+//! `Err`, because the TS original try/catches and returns `null`/`[]`.
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

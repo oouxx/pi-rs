@@ -395,19 +395,16 @@ pub async fn run_rpc_mode(
     let mut handler_state =
         handler::RpcHandlerState::new(output_tx.clone(), pending_extension_requests.clone());
 
-    // Shutdown coordination: the `shutdown` command sets
-    // `handler_state.shutdown_requested`; if a prompt is running, the main
-    // loop waits for `agent_settled` before exiting (matching TS
-    // `checkShutdownRequested` on agent_settled). The watch channel signals
-    // the main loop from the event subscription.
+    // Shutdown coordination: `shutdown` sets `handler_state.shutdown_requested`;
+    // if a prompt is running, the main loop waits for `agent_settled` (TS
+    // `checkShutdownRequested`). The watch channel signals it from the subscription.
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     // ── Global session event subscription ──────────────────────────────
-    // Subscribe to ALL session events and forward them to stdout,
-    // matching TS: session.subscribe((event) => { output(event); ... })
-    // The subscription is re-created after new_session/switch_session
-    // (matching TS rebindSession which re-subscribes).
+    // Subscribe to ALL session events and forward to stdout (TS
+    // `session.subscribe`); the subscription is re-created after
+    // new_session/switch_session (TS `rebindSession`).
     let subscribe_events = |session: &AgentSession| {
         let output_tx_for_session = output_tx.clone();
         let shutdown_flag_for_events = shutdown_requested.clone();

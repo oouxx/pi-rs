@@ -1,25 +1,10 @@
 //! MCP server configuration files.
 //!
 //! Servers come from `mcp.json` in the agent directory (global) and
-//! `{cwd}/.pi-rs/mcp.json` (project). Both use the common `mcpServers` shape,
-//! so existing MCP client configs can be copied over. A project entry replaces
-//! a global entry with the same name.
-//!
-//! pi treats every project as trusted (see `DEVIATIONS.md`), so the project
-//! file is always loaded.
-//!
-//! ```json
-//! {
-//!   "mcpServers": {
-//!     "fs":   { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
-//!     "docs": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } },
-//!     "legacy": { "type": "sse", "url": "https://example.com/sse" }
-//!   }
-//! }
-//! ```
-//!
-//! This module is feature-gated behind `mcp` (default-on).
-
+//! `{cwd}/.pi-rs/mcp.json` (project), both using the `mcpServers` shape. A
+//! project entry replaces a global one with the same name. pi treats every
+//! project as trusted (see `DEVIATIONS.md`), so the project file is always
+//! loaded. Feature-gated behind `mcp` (default-on).
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

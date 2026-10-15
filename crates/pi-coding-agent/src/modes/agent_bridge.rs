@@ -1,17 +1,8 @@
-//! Agent bridge — typed events from AgentSession to TUI.
+//! Agent bridge — typed events from AgentSession to TUI (plans.md §5.1).
 //!
-//! Mirrors `agent_bridge/` from plans.md Section 5.1.
-//!
-//! Tool events carry the **tool call id** (not just the tool name): the TUI
-//! keys tool rows by call id, so two calls of the same tool (two `bash`
-//! runs, two `read`s) never corrupt each other's state/output.
-//!
-//! Tool output events carry the **full accumulated snapshot** of the
-//! partial result (the bash tool throttles snapshots of the whole output;
-//! the ACP translator's delta logic confirms this by computing deltas
-//! downstream). The TUI **replaces** the row's output on every update —
-//! appending snapshots would duplicate the text.
-
+//! Tool events carry the tool call id, so two calls of the same tool never
+//! corrupt each other's rows. Tool output events carry the full accumulated
+//! snapshot; the TUI replaces the row's output on each update.
 use std::sync::Arc;
 
 use pi_agent_core::pi_ai_types::AssistantMessageEvent;

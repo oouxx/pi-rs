@@ -1,26 +1,10 @@
 //! Translate pi `AgentSessionEvent`s into ACP `SessionNotification`s.
 //!
-//! Mirrors the mapping done by the TS `pi-acp` adapter
-//! (github.com/svkozak/pi-acp, `src/acp/session.ts` + `src/acp/translate/*`),
-//! but natively in Rust: pi's streaming events become ACP `agent_message_chunk` /
-//! `agent_thought_chunk` / `tool_call` / `tool_call_update` notifications.
-//!
-//! Beyond the plain event mapping, the translator adds the same client-facing
-//! enrichments pi-acp does:
-//! - **Tool call locations**: relative file paths in tool args are resolved
-//!   against the session cwd and emitted as ACP `locations`, enabling
-//!   follow-along features in clients like Zed. For `edit`, a 1-based line
-//!   number is inferred from a unique `oldText` match in the pre-edit file.
-//! - **Structured diffs**: for `edit`/`write`, the file is snapshotted before
-//!   the tool runs and an ACP `Diff` (`oldText`/`newText`) is emitted on
-//!   completion.
-//! - **Bash terminals**: `bash` tool calls are rendered as ACP terminals
-//!   (`terminal_info` / `terminal_output` / `terminal_exit` meta) so clients
-//!   show a display-only terminal instead of a plain tool card.
-//! - **Tool-call streaming**: tool calls are surfaced as soon as the model
-//!   starts streaming their arguments (`toolcall_start`/`toolcall_delta`/
-//!   `toolcall_end` inside `message_update`), not only when execution starts.
-
+//! Mirrors the TS `pi-acp` adapter natively in Rust: streaming events become
+//! `agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
+//! `tool_call_update`, plus the same client enrichments — tool-call `locations`
+//! (resolved against cwd), structured diffs for edit/write, bash rendered as ACP
+//! terminals, and tool calls streamed as the model emits their arguments.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -372,14 +356,9 @@ impl EventTranslator {
                     .raw_output(result.clone());
 
                 if is_bash_tool(tool_name) {
-                    // Flush the remaining output into the terminal and close it
-                    // with the exit code, matching pi-acp's `emitBashOutputUpdate`
-                    // on `tool_execution_end`: a fast command may never have hit
-                    // the 100ms update throttle, so the final result text (or its
-                    // tail, e.g. the truncation notice / status line) must be
-                    // delivered here — otherwise the terminal stays empty.
-                    // Both keys go into ONE meta — `meta()` replaces rather than
-                    // merges, so two chained calls would drop the output.
+                    // pi-acp `emitBashOutputUpdate` on `tool_execution_end`: flush
+                    // the final output (a fast command may never hit the 100ms
+                    // throttle). Both keys go into ONE `meta()` — it replaces, not merges.
                     let text = bash_result_text(result);
                     let prev = self.bash_outputs.get(tool_call_id).cloned().unwrap_or_default();
                     let delta = if text.starts_with(&prev) {

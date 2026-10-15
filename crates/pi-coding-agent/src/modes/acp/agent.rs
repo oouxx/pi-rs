@@ -274,13 +274,9 @@ impl acp::Agent for PiAcpAgent {
                 .clone()
         };
 
-        // All pi sessions under this agent's storage root (ACP-created ones
-        // live under `{base_dir}/acp/`, regular CLI sessions under
-        // `{base_dir}/<cwd>/…`), matching pi-acp's `listPiSessions` recursive
-        // walk. Scoped to the registry's base dir so tests stay isolated.
-        // Registry-tracked sessions (in-memory + persisted map) are merged in
-        // so a just-created session whose JSONL header hasn't been flushed yet
-        // still appears.
+        // All pi sessions under the agent's storage root, matching pi-acp's
+        // `listPiSessions` walk; registry-tracked sessions are merged in so a
+        // just-created (not-yet-flushed) session still appears.
         let mut by_id = {
             let reg = self.registry.lock().await;
             let mut by_id: std::collections::HashMap<String, super::session::PiSessionItem> =

@@ -1860,11 +1860,9 @@ impl AgentSession {
         // Clone registry ref for extension provider registration (before it's moved into self)
         let model_registry_for_ext = model_registry.clone();
 
-        // Sync the runtime compaction settings from the settings manager so the
-        // interactive session honors configured compaction `enabled` /
-        // `reserveTokens` / `keepRecentTokens` (matching TS
-        // `settingsManager.getCompactionSettings()`). `keepRecentTokens` drives
-        // the cut-point selection in `_compact_inner`.
+        // Apply configured compaction settings (`enabled`/`reserveTokens`/
+        // `keepRecentTokens`) from the settings manager (TS
+        // `getCompactionSettings()`). `keepRecentTokens` drives cut-point selection.
         let compaction_runtime_settings = {
             let reserve = settings_manager.get_compaction_reserve_tokens();
             let enabled = settings_manager.get_compaction_enabled();
@@ -2762,22 +2760,17 @@ impl AgentSession {
                     }
                 }
 
-                // A turn ends after its assistant message and every tool result
-                // has been appended, so this is the first point where a
-                // context-only custom message can be inserted without landing
-                // between a tool call and its result. Flushing after the
-                // extension and listener dispatch also picks up messages that
-                // `turn_end` handlers queued (TS `_handleAgentEvent`).
+                // A turn ends after its assistant message and every tool result, so
+                // this is the first point a context-only custom message can be inserted
+                // without splitting a tool call from its result. Flushing here also
+                // picks up messages queued by `turn_end` handlers (TS `_handleAgentEvent`).
                 if matches!(event, AgentEvent::TurnEnd { .. }) {
                     flush_pending_custom_messages(&pending_custom, &sm, &listeners, &agent).await;
                 }
 
                 // ── 4. Handle session persistence ──
-                // NOTE: We re-read the last message from agent state rather than
-                // using event.message directly. This matches TS _replaceMessageInPlace
-                // semantics: extensions may modify the message in step 2 via
-                // agent.replace_last_message(), and persistence must use the
-                // replacement, not the original event reference.
+                // NOTE: re-read the last message from agent state (not `event.message`)
+                // so an extension's `replace_last_message` is what gets persisted.
                 if let AgentEvent::MessageEnd { .. } = event {
                     let state = agent.state().await;
                     let persist_msg = state.messages.last().cloned();
@@ -3890,11 +3883,8 @@ impl AgentSession {
             current_text
         };
 
-        // If streaming, queue via steer() or followUp() based on streamingBehavior option,
-        // matching TS prompt() which checks isStreaming. Uses the internal
-        // `_queue_steer`/`_queue_follow_up` (pre-expanded text, no extension
-        // command check) matching TS prompt() which calls `_queueSteer`/
-        // `_queueFollowUp` directly.
+        // Streaming: queue via `_queue_steer`/`_queue_follow_up` (pre-expanded
+        // text), matching TS prompt()'s isStreaming branch.
         if self.is_streaming().await {
             let behavior = opts.streaming_behavior.as_deref().unwrap_or("steer");
             if behavior == "follow_up" || behavior == "followUp" {
@@ -4527,19 +4517,13 @@ References are relative to {}.
         // compact() emits it at the top; _runAutoCompaction emits it after
         // preparation succeeds, which compact() re-checks).
 
-        // Create abort signal
         let (tx, rx) = tokio::sync::watch::channel(false);
         *self.auto_compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
-        // Run compaction. The auto path must NOT go through the full
-        // `compact()` wrapper (disconnect/abort/wait-for-idle): when called
-        // from the post-agent-run loop `is_agent_run_active` is still set
-        // (cleared only in `_emit_agent_settled`, which runs after this loop),
-        // so `abort()` -> `wait_for_idle()` waits forever on the idle
-        // notification and never resolves — the ACP `session/prompt` response
-        // is then never sent (client shows a spinner forever and queues
-        // further prompts). Matches TS `_runAutoCompaction`, which calls the
-        // standalone `compact()` helper directly and never `this.abort()`.
+        // Auto path must NOT use the full `compact()` wrapper (disconnect/abort/
+        // wait-for-idle): `is_agent_run_active` is still set here, so `abort()`
+        // would wait for idle forever and the ACP `session/prompt` reply would
+        // never be sent. Matches TS `_runAutoCompaction` (calls `compact()` directly).
         match self._compact_inner(None, compaction_reason).await {
             Ok(_summary) => {
                 // Check if aborted
@@ -5071,13 +5055,10 @@ References are relative to {}.
         // isn't processed / persisted).
         self._disconnect_from_agent().await;
         self.abort().await;
-        // Register the manual-compaction abort signal (matching TS
-        // `_compactionAbortController = new AbortController()`): makes
-        // `is_compacting()` true, lets `abort_compaction()` cancel it, and
-        // makes `prompt()` throw while it runs (TS parity). The
-        // summarization request itself is not cancellable mid-flight in
-        // this port; the signal is checked after the call (matching TS
-        // `signal.aborted` handling in compact()).
+        // Manual-compaction abort signal (TS `_compactionAbortController`): makes
+        // `is_compacting()` true, lets `abort_compaction()` cancel it, and makes
+        // `prompt()` throw while it runs. The summarization call isn't cancellable
+        // mid-flight; the signal is checked after it (matching TS).
         let (tx, rx) = tokio::sync::watch::channel(false);
         *self
             .compaction_abort

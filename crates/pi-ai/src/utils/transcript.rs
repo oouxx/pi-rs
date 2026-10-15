@@ -1,21 +1,11 @@
-//! Mid-conversation system/tool transcript helpers.
+//! Mid-conversation system/tool transcript helpers (port of
+//! `packages/ai/src/utils/transcript.ts`). After P1-7 the prompt and tool
+//! declarations live in the transcript's system messages; providers replay them
+//! with these helpers instead of reading `Context.systemPrompt` / `Context.tools`.
 //!
-//! Port of `packages/ai/src/utils/transcript.ts` (TS 9e05370b2). After P1-7 the
-//! prompt and tool declarations live in the transcript's system messages;
-//! providers replay them with these helpers instead of reading
-//! `Context.systemPrompt` / `Context.tools`.
-//!
-//! Messages are represented as `serde_json::Value` here because TS's transcript
-//! helpers are structurally typed (`TranscriptMessages = readonly {role}[]`,
-//! deliberately tolerant of custom roles). This module lands the algorithm
-//! without changing crate-wide types; the typed `SystemMessage` variant and
-//! provider migration follow in later P1-7 steps.
-//!
-//! Note: `serde_json` maps (without the `preserve_order` feature) iterate keys
-//! in sorted order, whereas TS object iteration is insertion order. Section
-//! ordering in `get_current_system_message` therefore follows sorted key order;
-//! pi-rs does not yet use prompt sections, so this is not observable today.
-
+//! Messages are `serde_json::Value` because TS's helpers are structurally typed.
+//! Note: `serde_json` iterates keys sorted (TS uses insertion order), so section
+//! ordering follows sorted keys — not observable today (no prompt sections yet).
 use std::collections::HashMap;
 
 use serde_json::{json, Value};

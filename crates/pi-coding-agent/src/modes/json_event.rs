@@ -1,15 +1,9 @@
-//! Mirror of TS `modes/json-event.ts` — the session-event wire shape shared
-//! by the JSON (`--mode json`) and RPC stdout protocols.
+//! Mirror of TS `modes/json-event.ts` — the session-event wire shape shared by
+//! the JSON (`--mode json`) and RPC stdout protocols.
 //!
-//! Matches TS 0.84 `toJsonEvent()`:
-//! - non-`message_update` events pass through unchanged (camelCase, complete);
-//! - `message_update` carries only the delta: `{ type, usage,
-//!   assistantMessageEvent }` with the cumulative `message` snapshot and the
-//!   `assistantMessageEvent.partial` snapshot removed (`message_start`
-//!   provides the initial message, deltas build it, `message_end` provides
-//!   the final authoritative message). Cumulative `usage` is kept because its
-//!   size is constant.
-
+//! Matches TS 0.84 `toJsonEvent()`: non-`message_update` events pass through
+//! unchanged; `message_update` carries only the delta (`{type, usage,
+//! assistantMessageEvent}`), with the cumulative `message` snapshot removed.
 use serde_json::Value;
 
 use pi_agent_core::types::AgentMessage;

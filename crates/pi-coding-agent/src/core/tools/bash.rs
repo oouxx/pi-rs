@@ -500,16 +500,11 @@ impl BashOperations for LocalBashOperations {
 
             use tokio::io::AsyncReadExt;
 
-            // ── Main loop: wait for exit, stream output, handle abort/timeout ──
-            // Matching TS `createLocalBashOperations` + `waitForChildProcess`:
-            // - abort (polled here; TS is event-driven) and timeout both call
-            //   `killProcessTree` and then keep waiting for the process to exit
-            //   and the pipes to fall idle.
-            // - after the shell exits we wait for the stdio pipes: if both end
-            //   we finish immediately; if a detached descendant keeps a pipe
-            //   open we release once it has been idle for EXIT_STDIO_GRACE_MS
-            //   (re-armed on every chunk), so we never hang on inherited handles
-            //   and never drop output that is still being written.
+            // Main loop: wait for exit, stream output, handle abort/timeout.
+            // Abort (polled; TS is event-driven) and timeout call `killProcessTree`
+            // then wait for exit + pipes to go idle. After exit, a detached
+            // descendant holding a pipe open is released after EXIT_STDIO_GRACE_MS
+            // idle (re-armed per chunk) — never hangs, never drops pending output.
             const EXIT_STDIO_GRACE_MS: u64 = 100;
             loop {
                 // Cancellation (matching TS onAbort; kill happens once).
@@ -943,12 +938,9 @@ pub fn create_bash_tool(
                         let on_data_last_update = on_data_last_update.clone();
 
                         Arc::new(move |data: &[u8]| {
-                            // Append to accumulator. Scope the guard so it is
-                            // released before the throttled snapshot re-locks
-                            // below — std::sync::Mutex is not reentrant, so
-                            // holding it across the second lock() would
-                            // deadlock the stdout/stderr reader tasks and hang
-                            // the bash tool forever.
+                            // Append under a scoped guard: release before the throttled
+                            // snapshot re-locks (std::sync::Mutex isn't reentrant, so
+                            // holding it would deadlock the reader tasks).
                             {
                                 let mut acc = on_data_output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                                 acc.append(data);
@@ -1033,13 +1025,10 @@ pub fn create_bash_tool(
                         None
                     };
 
-                    // Matching TS `finishOutput` → `emitOutputUpdate`: flush any
-                    // output that arrived since the last throttled update so the
-                    // client streams the complete text (the ACP translator's
-                    // delta logic filters empty updates downstream). Without this,
-                    // a fast command that never hit the 100ms throttle would
-                    // deliver its output only at `tool_execution_end` — and a
-                    // successful command never emits a final update at all.
+                    // TS `finishOutput` → `emitOutputUpdate`: flush output that
+                    // arrived since the last throttled update (a fast command may
+                    // never hit the 100ms throttle, and a successful command emits
+                    // no final update).
                     if update_dirty.load(Ordering::SeqCst) {
                         if let Some(ref cb) = on_update {
                             cb(AgentToolResult {
@@ -1058,13 +1047,9 @@ pub fn create_bash_tool(
                         Ok(exec_result) => {
                             let (output_text, details) = format_output(&snapshot, last_line_bytes, "(no output)");
 
-                            // If exit code is non-zero, treat as error. Matching
-                            // TS: the thrown error carries the FULL output + status
-                            // (`appendStatus(outputText, "Command exited with code
-                            // N")`) so the output lands in the tool result message
-                            // and the ACP terminal — not a bare status line.
-                            // Matching TS a8b3dd199: a null exit code fails the
-                            // command (custom operations / signal termination).
+                            // Non-zero (or null) exit code → error carrying the FULL
+                            // output + status (TS `appendStatus`), so it lands in the
+                            // tool result and ACP terminal. Null = failure.
                             let exit_code = match exec_result.exit_code {
                                 None => {
                                     return Err(Box::new(std::io::Error::other(

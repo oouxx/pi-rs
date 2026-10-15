@@ -1705,11 +1705,8 @@ async fn stream_openai_inner(
 
     use futures::StreamExt;
 
-    // Abort future: completes when the abort signal flips to true. When there
-    // is no signal, it never completes (matching TS, where the fetch is passed
-    // the AbortSignal and aborts actively — here we select on the signal so an
-    // abort interrupts the SSE read immediately instead of waiting for the
-    // next chunk).
+    // Abort future completes when the signal flips true; with no signal it never
+    // completes. Selecting on it interrupts the SSE read immediately on abort.
     let abort_fut = async {
         if let Some(mut rx) = signal.clone() {
             loop {
@@ -1855,11 +1852,9 @@ async fn stream_openai_inner(
             }
         }
 
-        // Reasoning/thinking content. Some endpoints return reasoning in
-        // reasoning_content (llama.cpp), or reasoning (other OpenAI-compatible
-        // endpoints). Use the FIRST non-empty reasoning field to avoid
-        // duplication (e.g. chutes.ai returns both reasoning_content and
-        // reasoning with the same content) — match TS openai-completions.
+        // Reasoning content: use the FIRST non-empty of reasoning_content
+        // (llama.cpp) / reasoning / reasoning_text (match TS openai-completions),
+        // to avoid duplicates when endpoints return more than one.
         let reasoning_field = ["reasoning_content", "reasoning", "reasoning_text"]
             .iter()
             .find(|f| delta.get(**f).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
@@ -2070,11 +2065,9 @@ async fn stream_openai_inner(
         }
     }
 
-    // Match TS: check that we received a finish_reason. If the stream ended
-    // but an abort was requested (e.g. the provider closed the connection
-    // right as the user cancelled), mark the message as aborted — matching TS
-    // `output.stopReason = signal.aborted ? "aborted" : "error"` — so
-    // downstream compaction/retry checks skip it.
+    // If the stream ended with an abort requested, mark the message aborted
+    // (TS `stopReason = signal.aborted ? "aborted" : "error"`) so downstream
+    // compaction/retry skip it.
     if let Some(ref rx) = signal {
         if *rx.borrow() {
             output.stop_reason = StopReason::Aborted;

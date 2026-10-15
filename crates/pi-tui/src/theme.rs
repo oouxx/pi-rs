@@ -2,32 +2,8 @@
 //!
 //! Source of truth: the TS monorepo's built-in dark theme
 //! (`packages/coding-agent/src/modes/interactive/theme/dark.json` @ `v0.82.1`),
-//! with `vars` resolved to their hex values. Every pi-tui surface (scrollback
-//! boxes, editor borders, dialogs, completers, diff views) uses these tokens
-//! so the whole UI agrees on one palette — the same way the TS original drives
-//! all components from one `Theme` instance.
-//!
-//! Reference values (v0.82.1 `dark.json`):
-//!
-//! | token | hex |
-//! | --- | --- |
-//! | accent | `#8abeb7` |
-//! | border / borderAccent / borderMuted | `#5f87ff` / `#00d7ff` / `#505050` |
-//! | success / error / warning | `#b5bd68` / `#cc6666` / `#ffff00` |
-//! | muted / dim / text / thinkingText | `#808080` / `#666666` / `#d4d4d4` / `#808080` |
-//! | selectedBg | `#3a3a4a` |
-//! | userMessageBg / userMessageText | `#343541` / `#d4d4d4` |
-//! | customMessageBg / customMessageText / customMessageLabel | `#2d2838` / `#d4d4d4` / `#9575cd` |
-//! | toolPendingBg / toolSuccessBg / toolErrorBg | `#282832` / `#283228` / `#3c2828` |
-//! | toolTitle / toolOutput | `#d4d4d4` / `#808080` |
-//! | mdHeading / mdLink / mdLinkUrl | `#f0c674` / `#81a2be` / `#666666` |
-//! | mdCode / mdCodeBlock / mdCodeBlockBorder | `#8abeb7` / `#b5bd68` / `#808080` |
-//! | mdQuote / mdQuoteBorder / mdHr / mdListBullet | `#808080` / `#808080` / `#808080` / `#8abeb7` |
-//! | toolDiffAdded / toolDiffRemoved / toolDiffContext | `#b5bd68` / `#cc6666` / `#808080` |
-//! | syntaxComment … syntaxPunctuation | `#6A9955` … `#D4D4D4` (VS Code Dark+) |
-//! | thinkingOff … thinkingMax | `#505050` … `#ff5fff` |
-//! | bashMode | `#b5bd68` |
-
+//! with `vars` resolved to hex. Every pi-tui surface uses these tokens so the
+//! whole UI agrees on one palette.
 use ratatui::style::Color;
 
 /// Build a `Color::Rgb` from a 0xRRGGBB value (const-friendly).

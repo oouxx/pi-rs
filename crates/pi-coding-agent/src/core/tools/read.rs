@@ -227,11 +227,9 @@ pub fn create_read_tool(
                         }
                     };
 
-                    // Image files are returned as inline attachments (TS read
-                    // tool image branch): a text note + the (optionally
-                    // resized) image block. Detected from magic bytes, so the
-                    // check runs before the UTF-8 decode that would otherwise
-                    // report "Binary file".
+                    // Images are returned as inline attachments (text note + optional
+                    // resized image). Detected from magic bytes before the UTF-8
+                    // decode that would report "Binary file".
                     if let Some(mime) = crate::utils::mime::detect_supported_image_mime_type(&bytes) {
                         let mime = mime.to_string();
                         let content = match crate::utils::image_process::process_image(

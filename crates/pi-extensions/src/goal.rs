@@ -1,39 +1,14 @@
-//! pi-goal — /goal 命令，目标追踪扩展（简化版，对齐 codex /goal 风格：
-//! 无 per-goal 预算、无 TUI 菜单；核心状态机对齐 `@narumitw/pi-goal`
-//! v0.52.2，github.com/narumiruna/pi-extensions 的 packages/pi-goal）。
+//! pi-goal — /goal 命令与目标追踪扩展（核心状态机对齐 `@narumitw/pi-goal`
+//! v0.52.2）。
 //!
-//! 核心：
-//! - **5 态状态机**：active / paused / blocked / usage_limited / complete
-//! - **三个工具**：`goal_complete({goal_id, summary})`（带 stale-turn guard
-//!   与矛盾 summary 拒绝）、`goal_blocked({goal_id, reason, evidence,
-//!   repeated_turns})`（真僵局，需 ≥3 轮同 blocker）、`goal_wait({goal_id,
-//!   reason, resume_after_ms?})`（外部事件等待，钳制 + 到期唤醒）
-//! - **自动延续状态机**：agent_end 决策（aborted→paused、error→retryable/
-//!   usage_limited/blocked、正常→无进展限制）→ agent_settled 空闲边界恰好
-//!   发一次 continuation，直到完成/暂停/等待/阻塞
-//! - **安全机制**：goal_id guard（resume/edit 轮换新 id）、stale tool call
-//!   拦截、矛盾 summary 拒绝、无进展重复检测（默认 3 轮，codex spin 抑制
-//!   的等价物）、provider usage-limit 错误文本识别
-//! - **会话内持久化**：goal 状态作为 `customType: "goal-state"` 的 custom
-//!   entry 写入当前会话（对齐原版 `loadGoalStateFromSession`），跨
-//!   manual/threshold/overflow compaction 保留、重启可恢复
-//! - **/goal 命令**：start、status（无参数）、pause、resume、clear、edit
+//! 5 态状态机（active/paused/blocked/usage_limited/complete）；三个工具
+//! `goal_complete` / `goal_blocked` / `goal_wait`；agent_end → agent_settled
+//! 空闲边界自动续跑；goal_id guard、stale tool call 拦截、无进展重复检测等
+//! 安全机制；状态以 `customType: "goal-state"` 写入会话并可跨 compaction 恢复。
 //!
-//! 有意简化（pi-rs 适配，按 DEVIATIONS 惯例）：
-//! - **无 per-goal 预算**：删 `--tokens`、`token_budget`、`BudgetLimited`
-//!   状态、`limit_for_budget`、prompt 预算行（对齐 codex——codex 的
-//!   budget-limited 是全局 token/cost 预算，不是 per-goal）
-//! - **无 TUI 菜单/设置 UI**：删 menu.ts / settings-ui.ts 移植（/goal 无
-//!   参数直接显示文本状态）；`pi-goal.json` 设置文件删除，无进展阈值
-//!   硬编码 `NO_PROGRESS_TURNS`；`pi.events` 协议不做；legacy 实验性队列
-//!   （多目标）不支持
-//! - 工具始终注册（原版按 `toolVisibility` 默认隐藏、首次 /goal 后显现）；
-//!   未激活/无 goal 时工具按原版验证链拒绝（"no active goal" 等）
-//! - prompt 所有权 marker 机制（pi-goal-prompt/claimed/cancelled）不做：
-//!   pending_run 同步入队 + agent_start 消费已覆盖主要路径
-//! - retryable 错误判定不含 context-overflow；指纹不做 NFKC/sha256；
-//!   长度口径用 UTF-16 code units（对齐 JS `.length`）
-
+//! 有意简化（见 DEVIATIONS.md）：无 per-goal 预算、无 TUI 菜单/设置 UI、
+//! 工具始终注册、不做 prompt 所有权 marker、retryable 判定不含 context-overflow、
+//! 长度口径用 UTF-16 code units。
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

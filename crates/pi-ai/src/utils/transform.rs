@@ -1,21 +1,9 @@
 //! 消息预处理层 — 对齐 TS `transform-messages.ts` 的 `transformMessages`。
 //!
-//! 所有 provider 在 convert 之前调用本层（TS 中 anthropic-messages /
-//! openai-completions / openai-responses / google / mistral 等全部先
-//! `transformMessages` 再 `convertMessages`）。职责：
-//! - **图片降级**（`downgradeUnsupportedImages`）：`model.input` 不含
-//!   `"image"` 时，user 消息图片 → `"(image omitted: model does not support
-//!   images)"`，toolResult 图片 → `"(tool image omitted: model does not
-//!   support images)"`；连续图片只插一个占位（`previousWasPlaceholder` 去重）
-//! - **thinking 块处理**：redacted 仅同模型保留；同模型带签名保留；空
-//!   thinking 跳过；跨模型转纯文本
-//! - **tool call id 归一化**：仅对不同模型（`isSameModel` 门控）的消息
-//!   归一化，映射用于匹配 toolResult id
-//! - **孤儿 tool call 合成**：assistant 的 tool call 无对应 toolResult 时，
-//!   插入 `"No result provided"` 的 isError toolResult（保 thinking 签名、
-//!   满足 API 要求）
-//! - **跳过 errored/aborted 的 assistant 消息**（不完整 turn 不应回放）
-
+//! 所有 provider 在 convert 之前调用：不支持图片的模型做图片降级（连续图片
+//! 只插一个占位）；thinking 块按同模型/签名/redacted 规则保留或降级为纯文本；
+//! 跨模型时归一化 tool call id；孤儿 tool call 合成 `"No result provided"` 的
+//! isError toolResult；跳过 errored/aborted 的 assistant 消息。
 use crate::types::{ContentBlock, Message, Model, StopReason};
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";

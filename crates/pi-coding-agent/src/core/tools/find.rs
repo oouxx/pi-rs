@@ -102,14 +102,9 @@ impl FindOperations for LocalFindOperations {
             };
 
             let mut results = Vec::new();
-            // Walk with gitignore awareness (ripgrep's ignore crate), matching
-            // the TS find tool's fd-based behavior:
-            // - hidden files are included (fd --hidden);
-            // - .gitignore / .ignore / .git/info/exclude are respected;
-            // - inside a git repo, parent .gitignore rules stop at nested git
-            //   repo boundaries (https://github.com/earendil-works/pi/issues/5960);
-            // - outside a git repo, .gitignore is still respected (fd
-            //   --no-require-git).
+            // Gitignore-aware walk (ripgrep `ignore`), matching the TS fd behavior:
+            // hidden files included; .gitignore/.ignore/.git/info/exclude respected
+            // even outside a git repo; parent rules stop at nested repo boundaries.
             let inside_git = is_inside_git_repo(std::path::Path::new(&cwd));
             let walker = ignore::WalkBuilder::new(&cwd)
                 // `hidden(false)` = do NOT ignore hidden files (include them,

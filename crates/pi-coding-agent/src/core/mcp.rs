@@ -1,18 +1,10 @@
 //! MCP (Model Context Protocol) client support.
 //!
-//! pi connects to MCP servers from two sources:
-//!
-//! - `mcp.json` in the agent directory and the project `{cwd}/.pi-rs/mcp.json`
-//!   (see [`crate::core::mcp_config`]); and
-//! - the `mcpServers` an ACP client sends in `session/new` / `session/load`.
-//!
-//! Both are normalized to [`McpServerSpec`]. Connecting enumerates each
-//! server's tools and exposes them to pi as custom tools whose `execute`
-//! forwards the call to the server over stdio, streamable HTTP, or the legacy
-//! SSE transport.
-//!
-//! This module is feature-gated behind `mcp` (default-on).
-
+//! Servers come from `mcp.json` (agent + project, see `mcp_config`) and from the
+//! `mcpServers` an ACP client sends in `session/new` / `session/load`. Both are
+//! normalized to `McpServerSpec`; their tools are exposed as custom tools that
+//! forward over stdio, streamable HTTP, or legacy SSE.
+//! Feature-gated behind `mcp` (default-on).
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;

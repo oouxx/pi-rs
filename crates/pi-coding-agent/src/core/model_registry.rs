@@ -712,11 +712,9 @@ impl ModelRegistry {
             None => None,
         };
 
-        // Snapshot the provider's original models before the first mutation so
-        // `unregister_provider` can restore them (TS `recomposeProvider`
-        // rebuilds from built-ins). Only the first snapshot is kept: later
-        // re-registrations must resolve defaults against the original layer,
-        // not a previous extension layer.
+        // Snapshot the provider's original models once so `unregister_provider`
+        // can restore them (TS `recomposeProvider`). Only the first snapshot is
+        // kept: later re-registrations resolve defaults against the original layer.
         if replacement.is_some() || config.base_url.is_some() {
             let already_snapshotted = self
                 .replaced_models

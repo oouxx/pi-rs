@@ -833,11 +833,9 @@ impl SessionTask {
                             acp::ToolCallUpdateFields::new().status(status),
                         );
                         if is_bash {
-                            // Stream the captured output + close the terminal
-                            // with the exit code. Both keys go into ONE meta
-                            // (matching pi-acp's spread) — `meta()` replaces
-                            // rather than merges, so two chained calls would
-                            // drop the output.
+                            // Stream the captured output + close the terminal with the
+                            // exit code. Both keys go into ONE `meta()` (it replaces,
+                            // not merges).
                             let id = update.tool_call_id.0.clone();
                             let mut meta = super::translate::bash_terminal_output_meta(
                                 &id,

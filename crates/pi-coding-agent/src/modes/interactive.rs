@@ -1,22 +1,7 @@
-//! Interactive TUI mode — Elm architecture with Action/Effect dispatch.
-//!
-//! Layer layout mirrors grok-build's pager (`app/event_loop.rs` +
-//! `app/dispatch/` + `app/effects.rs`):
-//!
-//! ```text
-//! event sources (keyboard / agent events / tick)
-//!      │  Event → [`Action`]
-//!      ▼
-//! [`update`]  — pure: Action → state mutation + [`Effect`]s
-//!      │
-//!      ▼
-//! [`execute_effect`] — async side effects (agent commands, abort)
-//! ```
-//!
-//! `update` never performs I/O: it only mutates `AppState` (which owns the
-//! pi-tui Elm `Model`) and returns a list of `Effect`s for the event loop to
-//! run. The event loop is the only place that touches channels / the agent.
-
+//! Interactive TUI mode — Elm architecture with Action/Effect dispatch
+//! (layout mirrors grok-build's pager): event sources → `update` (pure: mutates
+//! `AppState`, returns `Effect`s) → `execute_effect` (async side effects). Only
+//! the event loop touches channels / the agent.
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Instant;
@@ -662,19 +647,13 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
         KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL => {
             vec![Effect::AgentCommand(AgentCmd::CycleThinkingLevel)]
         }
-        // NOTE: Ctrl+B is deliberately NOT bound here. The TS original binds
-        // `tui.editor.cursorLeft` to left/ctrl+b (packages/tui keybindings),
-        // and aborts a running bash command with Esc/`session.abortBash()` —
-        // never with Ctrl+B. Intercepting it here made Ctrl+F (cursorRight)
-        // work while Ctrl+B (cursorLeft) was swallowed as `AbortBash`.
-        // Esc: 对齐 TS `onEscape`（interactive-mode.ts setupKeyHandlers）——
-        // **不退出**（退出是双击 Ctrl+C / /quit）：
-        // 1) 压缩进行中 → 中止压缩（TS compaction_start 把 onEscape 换成
-        //    abortCompaction，优先于其他分支）
-        // 2) 流式/运行中 → 中断 + 清排队 follow-up（TS restoreQueuedMessagesToEditor）
-        // 3) bash 运行中 → abort bash
-        // 4) 空编辑器双击 Esc → TS 弹 tree/fork 选择器（本 port 未实现，见
-        //    DEVIATIONS）→ 无操作，仅记录时间。
+        // NOTE: Ctrl+B is deliberately NOT bound here. TS binds cursorLeft to
+        // ctrl+b and aborts bash with Esc, not Ctrl+B; intercepting it swallowed
+        // middle-Ctrl+B (cursorLeft) as `AbortBash`.
+        // Esc: TS `onEscape` (never quits — that's double Ctrl+C / /quit):
+        // 1) compacting → abort compaction; 2) streaming/running → interrupt +
+        // restore queued follow-ups; 3) bash running → abort bash; 4) empty editor
+        // double-Esc → tree/fork picker (not ported, see DEVIATIONS) → no-op.
         KeyCode::Esc => {
             // 补全弹窗打开时 Esc 只关闭弹窗（app.rs Completer 语义），不
             // 触发 onEscape 链。
@@ -726,11 +705,9 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 vec![]
             }
         }
-        // Enter: submit message or slash command (Shift+Enter inserts a
-        // newline — TS `tui.input.newLine`; Alt+Enter is the follow-up queue
-        // keybinding, TS `app.message.followUp`). While the slash-command
-        // menu is open, Enter picks the highlighted completion and runs it
-        // (TS dropdown behavior).
+        // Enter: submit or pick the highlighted completion. Shift+Enter inserts a
+        // newline; Alt+Enter queues a follow-up (TS `tui.input.newLine` /
+        // `app.message.followUp`).
         KeyCode::Enter => {
             if key.modifiers == KeyModifiers::SHIFT {
                 app::update(&mut state.model, pi_tui::Msg::InputNewline);
@@ -1114,11 +1091,8 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
 
     match command {
         "/new" => {
-            // The session manager is swapped to a fresh session; clear the
-            // transcript so the TUI matches the new session (TS `/new`
-            // clears the chat).
-            // TS renderCurrentSessionState：会话重建/切换时清空 pending
-            // 区与 compaction 队列。
+            // `/new`: swap to a fresh session, then clear the transcript and pending/
+            // compaction queues to match it (TS `/new`, renderCurrentSessionState).
             state.model.pending_steering.clear();
             state.model.pending_follow_up.clear();
             state.model.compaction_queue.clear();
@@ -1668,12 +1642,10 @@ async fn execute_effect(
             agent_handle.abort().await;
         }
         Effect::AbortAndClearQueues(current_text) => {
-            // 对齐 TS restoreQueuedMessagesToEditor({abort:true}) 的顺序：
-            // 先清 agent 队列（防止中止后 settled 循环消费排队 follow-up
-            // 自动续跑），再中断当前 run。agent 队列与 session 锁无关，可在
-            // 后台任务持有 session 锁期间安全调用；队列文本的镜像保存在
-            // session 上，由随后的 RestoreQueuedToEditor 命令（run 结束后
-            // 拿到锁）还原回编辑器。
+            // TS `restoreQueuedMessagesToEditor({abort:true})` order: clear the agent
+            // queue first (so the settled loop can't auto-continue), then abort. The
+            // queued text is restored to the editor by `RestoreQueuedToEditor` once
+            // the run ends.
             agent_handle.clear_all_queues().await;
             agent_handle.abort().await;
             let _ = cmd_tx.send(AgentCmd::RestoreQueuedToEditor(current_text));
@@ -1978,11 +1950,10 @@ fn spawn_agent_command_task(
                     let mut sess = session.lock().await;
                     match cmd {
                         AgentCmd::SendMessage(text) => {
-                            // TUI 也走 session.prompt()（与 ACP/print/RPC 一致），而不是
-                            // 一条 Rust 专属的轻量路径。prompt() 内部做扩展命令执行、
-                            // skill/template 展开、streaming 排队、compact 检查、
-                            // post-agent-run 重试与 /goal 自动延续，并返回 Result
-                            //（可把错误回显到 UI），还正确清理 is_agent_run_active。
+                            // Route through session.prompt() like ACP/print/RPC: it runs
+                            // extension commands, template/skill expansion, streaming
+                            // queueing, compaction, post-run retries, /goal continuation,
+                            // and maintains `is_agent_run_active`.
                             let result = sess
                                 .prompt(
                                     &text,
@@ -2021,11 +1992,9 @@ fn spawn_agent_command_task(
                         }
                         AgentCmd::AbortBash => sess.abort().await,
                         AgentCmd::SetModel(provider, model_id) => {
-                            // Resolve the full model (api/base_url/etc.) from the
-                            // model registry, matching TS `findExactModelMatch`.
-                            // Constructing a Model by hand with an empty `api`
-                            // used to panic in pi-ai's `resolve_api_provider`
-                            // when a message was sent right after the switch.
+                            // Resolve the full model from the registry (TS
+                            // `findExactModelMatch`); a hand-built Model with an empty
+                            // `api` would panic in pi-ai on the next send.
                             let model = sess.get_model_registry().find(&provider, &model_id);
                             let Some(model) = model else {
                                 let _ = result_tx.send(pi_tui::Msg::NewMessage(
@@ -2238,12 +2207,9 @@ fn spawn_agent_command_task(
                             }
                         }
                         AgentCmd::ExtensionCommand(cmd_name, args) => {
-                            // Run a slash command registered by an extension.
-                            // The handler runs on a blocking thread with its
-                            // own current-thread runtime: extensions may block
-                            // synchronously (e.g. `ui.confirm` waits for the
-                            // user), and a block must never occupy a worker of
-                            // the main runtime that drives the TUI event loop.
+                            // Run an extension slash command on a blocking thread with
+                            // its own runtime: extensions may block (e.g. `ui.confirm`),
+                            // and must not occupy a main-runtime worker driving the TUI.
                             let (cmd, ctx_opt) = {
                                 if let Some(registry) = sess.get_extension_registry() {
                                     let cmd = registry
@@ -2366,11 +2332,9 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                     v
                 }
                 BE::UserMessage(text) => vec![pi_tui::Msg::NewMessage("user".into(), text)],
-                // Run-active lifecycle is driven by the session events
-                // (AgentStart → AgentSettled = TS `isStreaming = _isAgentRunActive`),
-                // not the per-`agent.prompt()` core AgentStart/AgentEnd, which
-                // fires for each prompt/continue and would blink the spinner
-                // off between post-run continuations.
+                // Run-active lifecycle comes from session events (AgentStart →
+                // AgentSettled = TS `isStreaming = _isAgentRunActive`), not the
+                // per-prompt core AgentStart/AgentEnd (which would blink the spinner).
                 BE::AgentRunStart | BE::AgentRunEnd => vec![],
                 BE::ToolStart(call_id, name, args) => vec![pi_tui::Msg::ToolStart(call_id, name, args)],
                 BE::ToolEnd(call_id, name, e) => vec![pi_tui::Msg::ToolEnd(call_id, name, e)],
@@ -2394,13 +2358,9 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
 /// Run the interactive TUI mode.
 /// Mirrors the original InteractiveMode.run().
 pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
-    // ── Theme auto-detection（对齐 TS `InteractiveThemeController`）──────
-    // TS：`detectTerminalBackgroundFromEnv()`（COLORFGBG）→ `applyFromSettings`
-    // 里无显式设置时 `detectTerminalBackgroundTheme`（OSC 11 查询 → env →
-    // dark fallback），high confidence 时持久化到 settings。
-    // OSC 11 查询需要 raw mode（canonical 模式 stdin 等到换行才返回，OSC
-    // 响应以 BEL 结尾）且必须在 crossterm EventStream 启动前完成（它读
-    // stdin 时会吞掉无法解析的 OSC 响应）。
+    // Theme auto-detection (TS `InteractiveThemeController`): COLORFGBG → OSC 11
+    // → env → dark fallback. OSC 11 needs raw mode and must run before the
+    // crossterm EventStream starts (it would swallow the OSC reply).
     let theme_detection = {
         let _ = crossterm::terminal::enable_raw_mode();
         let detection = pi_tui::detect::detect_terminal_background_theme(
@@ -2569,14 +2529,10 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             .await
             .subscribe_session_events(std::sync::Arc::new(move |event| {
                 let msg = match event {
-                    // Run-active lifecycle (TS `isStreaming = _isAgentRunActive`):
-                    // set on agent_start, cleared on agent_settled (which fires
-                    // after the post-run loop — retries, compaction, queued
-                    // continuations). This is the session-level flag, not the
-                    // per-`agent.prompt()` core AgentStart/AgentEnd, so the
-                    // "working" state stays accurate across continuations and
-                    // a message submitted during retry backoff is queued (like
-                    // TS) instead of starting a competing run.
+                    // Session-level run-active flag (TS `isStreaming = _isAgentRunActive`):
+                    // set on agent_start, cleared on agent_settled (after retries/
+                    // compaction/queued continuations), so "working" stays accurate
+                    // across continuations.
                     AgentSessionEvent::AgentStart => Some(pi_tui::Msg::AgentStart),
                     AgentSessionEvent::AgentSettled => Some(pi_tui::Msg::AgentEnd),
                     AgentSessionEvent::QueueUpdate { steering, follow_up } => {
@@ -2764,13 +2720,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             break;
         }
         if redraw {
-            // 行级差分渲染（对齐 TS TuiAltScreen.doRender / grok-build）：
-            // 整行比较、整行重写（`ESC[{row};1H` + `ESC[2K` + 整行），只在
-            // 首帧/尺寸变化时全量清屏重绘，更新批次用 synchronized output
-            // 包裹。整行重写不存在 cell 级局部更新，宽字符（CJK）不会被
-            // 半个覆盖——终端上不会留下"每帧固定在原位"的陈旧字符。
-            // `get_frame()` 不触发 autoresize（`draw()` 才会），尺寸变化
-            // 必须手动同步 buffer，否则渲染仍按旧尺寸输出。
+            // Line-level diff rendering (TS `TuiAltScreen.doRender`): compare and
+            // rewrite whole lines; full clear only on first frame/resize. `get_frame()`
+            // doesn't autoresize, so sync the buffer manually on size change.
             let _ = terminal.ratatui_terminal().autoresize();
             let mut frame = terminal.ratatui_terminal().get_frame();
             let area = frame.area();

@@ -568,12 +568,9 @@ pub async fn handle_command(
         }
 
         RpcCommand::GetCommands { id } => {
-            // Build the list of discoverable slash commands (the TS
-            // `getCommands()`), reusing the typed `SlashCommandInfo` so the
-            // wire format stays in sync with `slash-commands.ts`.
-            //
-            // Order matches TS: extension commands first, then prompt
-            // templates, then skills.
+            // Discoverable slash commands (TS `getCommands()`), reusing the typed
+            // `SlashCommandInfo` so the wire format stays in sync. Order: extension
+            // commands, then prompt templates, then skills.
             let mut commands: Vec<crate::core::slash_commands::SlashCommandInfo> = Vec::new();
 
             // Extension commands → source = "extension"

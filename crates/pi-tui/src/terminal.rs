@@ -1,14 +1,9 @@
-//! Terminal setup with ratatui and crossterm.
+//! Terminal setup with ratatui and crossterm (raw mode, bracketed paste, input
+//! event streaming).
 //!
-//! Handles raw mode, bracketed paste, and input event streaming.
-//!
-//! NOTE: the kitty keyboard protocol is NOT enabled here. Enabling it
-//! unconditionally breaks Ctrl+C/Ctrl+D on terminals that do not implement
-//! the protocol (crossterm 0.28's CSI-u parsing then fails to decode the
-//! key). Proper support requires probing the terminal first (grok-build's
-//! `terminal/probe.rs` + `kitty_keyboard.rs`); until then, standard
-//! crossterm key events keep every key working everywhere.
-
+//! NOTE: the kitty keyboard protocol is NOT enabled — enabling it unconditionally
+//! breaks Ctrl+C/Ctrl+D on terminals that don't implement it (crossterm 0.28's
+//! CSI-u parsing fails). Proper support needs terminal probing first.
 use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
@@ -98,11 +93,9 @@ impl Terminal {
                             Some(Ok(Event::FocusLost)) => {
                                 let _ = input_tx.send(InputEvent::FocusLost);
                             }
-                            // 终端 resize 必须转发：不转发的话应用不感知尺寸
-                            // 变化，ratatui 只 resize 自己的内部 buffer，真实
-                            // 终端上收缩再放大后，diff 对比不到物理屏上残留的
-                            // 旧行，正文/代码块会出现旧内容残留（Span 被裁剪
-                            // 后旧 Buffer 内容没有完全清除）。
+                            // Resize must be forwarded: otherwise the app never learns
+                            // of the new size, and stale rows remain on the physical
+                            // screen after shrink+grow (the diff can't see them).
                             Some(Ok(Event::Resize(cols, rows))) => {
                                 let _ = input_tx.send(InputEvent::Resize(cols, rows));
                             }

@@ -452,11 +452,9 @@ fn convert_responses_messages_inner(
                             thinking_signature,
                             redacted,
                         } => {
-                            // transformMessages thinking handling:
-                            // - redacted: only valid for the same model
-                            // - same model + signature: replay the reasoning item
-                            // - empty thinking: drop
-                            // - different model: convert to plain text
+                            // transformMessages thinking handling: redacted only for the
+                            // same model; same model + signature → replay the reasoning
+                            // item; empty → drop; different model → plain text.
                             if redacted.unwrap_or(false) {
                                 if is_same_model {
                                     if let Some(sig) = thinking_signature {

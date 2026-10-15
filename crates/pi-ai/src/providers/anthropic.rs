@@ -952,13 +952,10 @@ pub fn stream_anthropic(
         context.collapsed()
     };
     let owned_options = options.cloned();
-    // Auth resolution (match TS `anthropicApiKeyAuth().resolve` for the
-    // `anthropic` provider):
-    // 1. explicit/stored credential api_key → apiKey
-    // 2. ANTHROPIC_AUTH_TOKEN → Authorization: Bearer
-    // 3. ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY env → apiKey
-    // An OAuth token (`sk-ant-oat…`) still travels as `apiKey` here and is
-    // upgraded to Bearer by the request layer, matching TS `isOAuthToken`.
+    // Auth resolution (match TS `anthropicApiKeyAuth().resolve`):
+    // explicit/stored api_key → apiKey; ANTHROPIC_AUTH_TOKEN → Bearer;
+    // ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY → apiKey. OAuth tokens
+    // (`sk-ant-oat…`) travel as apiKey here and are upgraded to Bearer downstream.
     let explicit_api_key = owned_options.as_ref().and_then(|o| o.api_key.clone());
     let auth = resolve_anthropic_provider_auth(
         &model.provider,
@@ -1250,10 +1247,8 @@ async fn stream_anthropic_inner(
     let supports_strict_tools = compat.supports_strict_tools.unwrap_or(false);
     if native_tool_changes {
         // Initial tools stay active with the cache breakpoint on the last one;
-        // later declarations are deferred (only surfaced by their
-        // `tool_addition` block), and removed tools are withdrawn by
-        // `tool_removal`. The request-level list only grows, keeping the cached
-        // prefix intact (TS native tool changes).
+        // later declarations are deferred (`tool_addition`) and removals withdrawn
+        // by `tool_removal`, so the request-level list only grows (cached prefix intact).
         let mut all_tools = convert_tools(
             &native_initial_tools,
             tools_cache_control,

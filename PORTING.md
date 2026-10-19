@@ -150,6 +150,10 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 29 | **显示门控条件被省略** | TS 仅在 `getAvailableProviderCount() > 1` 时显示 `(provider)` 前缀，仅在 `cost \|\| usingSubscription` 时显示成本 + ` (sub)` | Rust 只看 `provider.is_some()` / `cost > 0`：单 provider 多显示前缀、订阅制 0 成本被省略、`(sub)` 标记丢失 | 逐条核对 TS 的显示门控条件与联合判断（`x > 0 \|\| flag`），把依赖的外部计数/标志经消息回填进 view model | footer line 2（PORTING_MISTAKES #22） |
 | 30 | **本地启发式取代原版启发式** | TS 的估算/打分有明确的公式（token 估算 = 按 role 原始 UTF-16 字符数 `ceil(chars/4)`，图片 4800 字符，bash = 命令+输出，summary = summary） | Rust 自行换成“更聪明”的 CJK 加权启发式（`cjk*1.5 + non_cjk/4`、图片 100），编译通过、单测自洽，但数值系统性偏移，驱动的阈值（上下文百分比、自动压缩）随之偏移 | 移植任何启发式/估算函数时逐行对照原版公式与常量，不要用“看起来更准”的替代实现；若要改必须登记 `DEVIATIONS.md` | 上下文 token 估算（PORTING_MISTAKES pi-coding-agent #133） |
 
+| 31 | **空内容事件被内容门控丢弃** | TS 的 `message_start`/`message_end` 是消息生命周期事件：即使 assistant 的 text/thinking 为空（连接失败、认证错误发生在首个 token 前），也创建组件并在 `message_end` 渲染 `Error: ...` | Rust 用 `if !text.is_empty() || !thinking.is_empty()` 过滤 `MessageEnd`；又只在首个 text delta 时建 TUI 行，导致空内容错误既没有行也没有终止事件 | 生命周期事件按类型转发，不以业务内容非空作为门控；在 `message_start` 建行，`message_end` 无条件终结；空内容错误必须有回归测试 | #152（pi-coding-agent assistant 错误在 TUI 消失） |
+
+| 32 | **终态事件覆盖已流式状态** | TS provider 的 catch 分支发出累计 `output`，`message_end` 用最终消息更新组件；已流式文本、tool call、usage 保留 | Rust 部分 provider 包装层在 transport error 时合成空 `content` 或只带部分 block；agent loop / TUI 若直接覆盖终态，已显示内容与 usage 被清空 | 以 partial 为基准按 block 合并（保留顺序、追加终态缺失块、过滤空 text）、终态 usage 为空时继承 partial；TUI 不用空白终态 payload 清空已有文本；补空内容、tool-call-only、同类别前缀、顺序/usage、partial+failed-tool 回归测试 | pi-agent-core `stream_assistant_response`（PORTING_MISTAKES）、pi-coding-agent #152 |
+
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。
 

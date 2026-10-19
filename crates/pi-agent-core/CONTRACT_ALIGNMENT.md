@@ -16,6 +16,7 @@
 | SessionStorage | 支持 session tree、compaction 边界和 cursor 查询 | Rust harness 提供等价 session 存储接口 | Rust 架构不同，需继续补字段级契约 |
 | stream function | 未配置时使用默认 stream function；无法使用时显式失败 | 提供默认 stream function 配置和显式错误 | 已对齐核心行为 |
 | 消息转换 | AgentMessage 转换为 pi-ai Message，保留工具、usage 和摘要信息 | `harness::messages` 提供转换 | 已对齐核心行为 |
+| 流式错误保留 partial | provider catch 发出累计输出；`MessageEnd` 携带 partial 内容 | Error 内容为空时合并最后一次 partial，再写 context / 发事件 | 已对齐 | 修复见 `PORTING_MISTAKES.md`（`stream_assistant_response` terminal Error） |
 | durable harness | TS 后续版本的 Durable/Pico/Chord 实验性架构 | 未实现 | 范围外，未来如纳入范围再单独审计 |
 
 ## 待补充

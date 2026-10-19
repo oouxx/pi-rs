@@ -2294,8 +2294,9 @@ fn spawn_agent_command_task(
     });
 }
 
-/// Bridge agent events → pi-tui messages (assistant message opened on first
-/// delta so deltas never stick to the user message).
+/// Bridge agent events → pi-tui messages. The assistant row is opened on
+/// `message_start` (TS `AssistantMessageComponent`), not on the first delta, so
+/// empty terminal errors still have a row that can display `Error: ...`.
 fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::modes::agent_bridge::AgentEvent>) -> tokio::sync::mpsc::UnboundedReceiver<pi_tui::Msg> {
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
     let atx = agent_tx.clone();
@@ -2304,6 +2305,14 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
         let mut assistant_stream_open = false;
         while let Some(ev) = bridge_rx.recv().await {
             let msgs: Vec<pi_tui::Msg> = match ev {
+                BE::AssistantMessageStart => {
+                    if assistant_stream_open {
+                        vec![]
+                    } else {
+                        assistant_stream_open = true;
+                        vec![pi_tui::Msg::NewMessage("assistant".into(), String::new())]
+                    }
+                }
                 BE::TextDelta(d) => {
                     let mut v = Vec::new();
                     if !assistant_stream_open {
@@ -2313,20 +2322,71 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                     v.push(pi_tui::Msg::StreamText(d));
                     v
                 }
-                BE::MessageEnd { text, thinking, stop_reason, error_message } => {
+                BE::MessageEnd {
+                    text,
+                    thinking,
+                    stop_reason,
+                    error_message,
+                    failed_tool_calls,
+                    retry_attempt,
+                } => {
                     let mut v = Vec::new();
-                    if !assistant_stream_open && !text.is_empty() {
-                        v.push(pi_tui::Msg::NewMessage("assistant".into(), text));
+                    if !assistant_stream_open {
+                        // Defensive fallback: every assistant message should be
+                        // preceded by `AssistantMessageStart`, but an empty row
+                        // is still better than attaching the terminal state to
+                        // the previous user message. `MessageEnd` applies the
+                        // final text below (provider Done/Error content).
+                        v.push(pi_tui::Msg::NewMessage("assistant".into(), String::new()));
                     }
-                    let stop = stop_reason.map(|r| match r {
-                        pi_agent_core::pi_ai_types::StopReason::Length => pi_tui::app::StopReason::Length,
-                        pi_agent_core::pi_ai_types::StopReason::Aborted => pi_tui::app::StopReason::Aborted,
-                        _ => pi_tui::app::StopReason::Error,
-                    });
+                    // TS synthesizes the abort notice from `session.retryAttempt`
+                    // and marks pending tool components failed instead of
+                    // showing an assistant-level error line for tool calls.
+                    let display_error_message = match stop_reason.as_ref() {
+                        Some(pi_agent_core::pi_ai_types::StopReason::Aborted) => {
+                            Some(if retry_attempt > 0 {
+                                format!(
+                                    "Aborted after {retry_attempt} retry attempt{}",
+                                    if retry_attempt > 1 { "s" } else { "" }
+                                )
+                            } else {
+                                "Operation aborted".to_string()
+                            })
+                        }
+                        _ => error_message.clone().filter(|message| !message.is_empty()),
+                    };
+                    let has_failed_tools = !failed_tool_calls.is_empty();
+                    if has_failed_tools {
+                        let output = display_error_message
+                            .clone()
+                            .unwrap_or_else(|| "Error".to_string());
+                        for (call_id, name, args) in failed_tool_calls {
+                            v.push(pi_tui::Msg::ToolStart(call_id.clone(), name.clone(), args));
+                            v.push(pi_tui::Msg::ToolEnd(call_id.clone(), name.clone(), true));
+                            v.push(pi_tui::Msg::SetToolOutput(call_id, name, output.clone()));
+                        }
+                    }
+                    let stop = if has_failed_tools {
+                        None
+                    } else {
+                        stop_reason.and_then(|r| match r {
+                            pi_agent_core::pi_ai_types::StopReason::Length => {
+                                Some(pi_tui::app::StopReason::Length)
+                            }
+                            pi_agent_core::pi_ai_types::StopReason::Aborted => {
+                                Some(pi_tui::app::StopReason::Aborted)
+                            }
+                            pi_agent_core::pi_ai_types::StopReason::Error => {
+                                Some(pi_tui::app::StopReason::Error)
+                            }
+                            _ => None,
+                        })
+                    };
                     v.push(pi_tui::Msg::MessageEnd {
+                        text,
                         thinking,
                         stop_reason: stop,
-                        error_message,
+                        error_message: display_error_message,
                     });
                     assistant_stream_open = false;
                     v
@@ -2955,21 +3015,37 @@ fn append_message_items(items: &mut Vec<app::TranscriptItem>, message: &AgentMes
         } => {
             let text = texts(content);
             let thinking = thinking_text(content);
-            if !text.is_empty() || !thinking.is_empty() {
-                items.push(app::TranscriptItem::Message {
-                    role: "assistant".to_string(),
-                    text,
-                    thinking,
-                    stop_reason: stop_reason.as_ref().and_then(tui_stop_reason),
-                    error_message: error_message.clone(),
-                });
-            }
             // TS: aborted/error assistant messages mark their tool components
             // as failed with the stop message, instead of waiting for results.
             let failed = matches!(
                 stop_reason,
                 Some(StopReason::Aborted) | Some(StopReason::Error)
             );
+            let has_tool_calls = content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolCall { .. }));
+            let terminal_notice = matches!(
+                stop_reason,
+                Some(StopReason::Error | StopReason::Aborted | StopReason::Length)
+            ) || error_message
+                .as_deref()
+                .is_some_and(|message| !message.is_empty());
+            let show_terminal_notice = terminal_notice && !(failed && has_tool_calls);
+            if !text.is_empty() || !thinking.is_empty() || show_terminal_notice {
+                items.push(app::TranscriptItem::Message {
+                    role: "assistant".to_string(),
+                    text,
+                    thinking,
+                    // With tool calls TS puts the failure on the pending tool
+                    // components and suppresses the assistant-level notice.
+                    stop_reason: if failed && has_tool_calls {
+                        None
+                    } else {
+                        stop_reason.as_ref().and_then(tui_stop_reason)
+                    },
+                    error_message: error_message.clone(),
+                });
+            }
             for block in content {
                 if let ContentBlock::ToolCall {
                     id,
@@ -2986,7 +3062,11 @@ fn append_message_items(items: &mut Vec<app::TranscriptItem>, message: &AgentMes
                     if failed {
                         let output = match stop_reason {
                             Some(StopReason::Aborted) => "Operation aborted".to_string(),
-                            _ => error_message.clone().unwrap_or_else(|| "Error".to_string()),
+                            _ => error_message
+                                .as_deref()
+                                .filter(|message| !message.is_empty())
+                                .unwrap_or("Error")
+                                .to_string(),
                         };
                         items.push(app::TranscriptItem::ToolResult {
                             call_id: id.clone(),
@@ -3180,6 +3260,255 @@ mod tests {
 
     fn state() -> AppState {
         AppState::new(120, 80, Vec::new(), Vec::new())
+    }
+
+    /// A connection/auth error can arrive with no text or thinking content.
+    /// TS creates the assistant component on `message_start` and renders
+    /// `Error: <message>` on `message_end`; the bridge must produce the same
+    /// row instead of leaving the error invisible.
+    #[tokio::test]
+    async fn empty_assistant_error_creates_visible_error_row() {
+        use crate::modes::agent_bridge::AgentEvent as BE;
+        use pi_agent_core::pi_ai_types::StopReason;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut bridge_rx = spawn_agent_bridge_task(rx);
+        tx.send(BE::AssistantMessageStart).unwrap();
+        tx.send(BE::MessageEnd {
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("connection refused".into()),
+            failed_tool_calls: vec![],
+            retry_attempt: 0,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut state = state();
+        while let Some(msg) = bridge_rx.recv().await {
+            let _ = update(&mut state, Action::Agent(msg));
+        }
+
+        let message = state.model.messages.last().expect("assistant row");
+        assert_eq!(message.role, "assistant");
+        assert!(message.text.is_empty());
+        assert_eq!(message.stop_reason, Some(pi_tui::app::StopReason::Error));
+        assert_eq!(message.error_message.as_deref(), Some("connection refused"));
+    }
+
+    /// The explicit start event and the first text delta must not create two
+    /// assistant rows (TS has one `AssistantMessageComponent` per message).
+    #[tokio::test]
+    async fn assistant_start_and_text_delta_share_one_row() {
+        use crate::modes::agent_bridge::AgentEvent as BE;
+        use pi_agent_core::pi_ai_types::StopReason;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut bridge_rx = spawn_agent_bridge_task(rx);
+        tx.send(BE::AssistantMessageStart).unwrap();
+        tx.send(BE::TextDelta("hello".into())).unwrap();
+        tx.send(BE::MessageEnd {
+            text: "hello".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Stop),
+            error_message: None,
+            failed_tool_calls: vec![],
+            retry_attempt: 0,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut state = state();
+        while let Some(msg) = bridge_rx.recv().await {
+            let _ = update(&mut state, Action::Agent(msg));
+        }
+
+        assert_eq!(state.model.messages.len(), 1);
+        assert_eq!(state.model.messages[0].role, "assistant");
+        assert_eq!(state.model.messages[0].text, "hello");
+        assert_eq!(state.model.messages[0].stop_reason, None);
+    }
+
+    /// A mid-stream transport error may arrive with an empty terminal payload.
+    /// TS keeps the already streamed output; the TUI must not erase it and
+    /// must still append the provider error notice.
+    #[tokio::test]
+    async fn empty_terminal_error_keeps_streamed_partial_text() {
+        use crate::modes::agent_bridge::AgentEvent as BE;
+        use pi_agent_core::pi_ai_types::StopReason;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut bridge_rx = spawn_agent_bridge_task(rx);
+        tx.send(BE::AssistantMessageStart).unwrap();
+        tx.send(BE::TextDelta("partial output".into())).unwrap();
+        tx.send(BE::MessageEnd {
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("connection reset".into()),
+            failed_tool_calls: vec![],
+            retry_attempt: 0,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut state = state();
+        while let Some(msg) = bridge_rx.recv().await {
+            let _ = update(&mut state, Action::Agent(msg));
+        }
+
+        let message = state.model.messages.last().expect("assistant row");
+        assert_eq!(message.text, "partial output");
+        assert_eq!(message.stop_reason, Some(pi_tui::app::StopReason::Error));
+        assert_eq!(message.error_message.as_deref(), Some("connection reset"));
+    }
+
+    /// TS marks pending tool components failed (and suppresses the
+    /// assistant-level error notice) when an errored assistant message
+    /// contains tool calls.
+    #[tokio::test]
+    async fn failed_tool_call_error_marks_tool_row_instead_of_assistant_notice() {
+        use crate::modes::agent_bridge::AgentEvent as BE;
+        use pi_agent_core::pi_ai_types::StopReason;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut bridge_rx = spawn_agent_bridge_task(rx);
+        tx.send(BE::AssistantMessageStart).unwrap();
+        tx.send(BE::TextDelta("partial text".into())).unwrap();
+        tx.send(BE::MessageEnd {
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("stream reset".into()),
+            failed_tool_calls: vec![(
+                "call-1".into(),
+                "bash".into(),
+                "{\"command\":\"echo hi\"}".into(),
+            )],
+            retry_attempt: 0,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut state = state();
+        while let Some(msg) = bridge_rx.recv().await {
+            let _ = update(&mut state, Action::Agent(msg));
+        }
+
+        let message = state.model.messages.last().expect("assistant row");
+        assert_eq!(message.text, "partial text");
+        assert_eq!(message.stop_reason, None, "assistant notice suppressed");
+        assert_eq!(state.model.active_tools.len(), 1);
+        let tool = &state.model.active_tools[0];
+        assert_eq!(tool.call_id, "call-1");
+        assert!(matches!(tool.state, pi_tui::app::ToolCallState::Failed));
+        assert_eq!(tool.output, "stream reset");
+    }
+
+    /// TS replaces aborted messages with `Operation aborted` or
+    /// `Aborted after N retry attempt(s)` based on `session.retryAttempt`.
+    #[tokio::test]
+    async fn abort_after_retry_uses_ts_wording() {
+        use crate::modes::agent_bridge::AgentEvent as BE;
+        use pi_agent_core::pi_ai_types::StopReason;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut bridge_rx = spawn_agent_bridge_task(rx);
+        tx.send(BE::AssistantMessageStart).unwrap();
+        tx.send(BE::MessageEnd {
+            text: "partial".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Aborted),
+            error_message: Some("Request aborted by user".into()),
+            failed_tool_calls: vec![],
+            retry_attempt: 2,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut state = state();
+        while let Some(msg) = bridge_rx.recv().await {
+            let _ = update(&mut state, Action::Agent(msg));
+        }
+
+        let message = state.model.messages.last().expect("assistant row");
+        assert_eq!(message.text, "partial");
+        assert_eq!(message.stop_reason, Some(pi_tui::app::StopReason::Aborted));
+        assert_eq!(
+            message.error_message.as_deref(),
+            Some("Aborted after 2 retry attempts")
+        );
+    }
+
+    /// Some providers only emit `Start` + `Done` (no text delta). TS applies
+    /// the final message content on `message_end`; the TUI must update the row
+    /// created at `message_start` instead of leaving it empty.
+    #[tokio::test]
+    async fn message_end_without_deltas_applies_final_text() {
+        use crate::modes::agent_bridge::AgentEvent as BE;
+        use pi_agent_core::pi_ai_types::StopReason;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut bridge_rx = spawn_agent_bridge_task(rx);
+        tx.send(BE::AssistantMessageStart).unwrap();
+        tx.send(BE::MessageEnd {
+            text: "Reply number 2".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Stop),
+            error_message: None,
+            failed_tool_calls: vec![],
+            retry_attempt: 0,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut state = state();
+        while let Some(msg) = bridge_rx.recv().await {
+            let _ = update(&mut state, Action::Agent(msg));
+        }
+
+        assert_eq!(state.model.messages.len(), 1);
+        assert_eq!(state.model.messages[0].role, "assistant");
+        assert_eq!(state.model.messages[0].text, "Reply number 2");
+        assert_eq!(state.model.messages[0].stop_reason, None);
+    }
+
+    /// Persisted assistant errors with no content must survive session
+    /// hydration; TS renders an `AssistantMessageComponent` for every
+    /// assistant message, including an empty errored one.
+    #[test]
+    fn hydration_keeps_empty_assistant_error() {
+        use pi_agent_core::pi_ai_types::{StopReason, Usage};
+
+        let message = AgentMessage::Assistant {
+            content: vec![],
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test".into(),
+            usage: Usage::default(),
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("401 unauthorized".into()),
+            timestamp: 0,
+        };
+        let mut items = Vec::new();
+        append_message_items(&mut items, &message);
+
+        match items.as_slice() {
+            [app::TranscriptItem::Message {
+                role,
+                text,
+                stop_reason,
+                error_message,
+                ..
+            }] => {
+                assert_eq!(role, "assistant");
+                assert!(text.is_empty());
+                assert_eq!(*stop_reason, Some(pi_tui::app::StopReason::Error));
+                assert_eq!(error_message.as_deref(), Some("401 unauthorized"));
+            }
+            other => panic!("expected one error message item, got {other:?}"),
+        }
     }
 
     // ── 退出 resume 提示（对齐 TS `formatResumeCommand`）──────────────

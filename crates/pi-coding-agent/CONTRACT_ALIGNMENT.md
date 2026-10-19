@@ -465,3 +465,16 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 模型/思考级别变更的作用域 | `setModel(model, {persist})` / `setThinkingLevel(level, {persist})`：默认**会话内**，仅显式 persist 才写全局默认（#8356） | 同左（两个 setter 都有 `persist: bool`；interactive/RPC/ACP 调用点传 `false`） | 是 | 修复见 PORTING_MISTAKES.md #149 |
 | per-model 思考级别 | `modelThinkingLevels["provider/modelId"]`：切换模型时 显式 → per-model → 全局默认 → 会话当前 | 同左（`Settings.model_thinking_levels` + `_get_thinking_level_for_model_switch`） | 是 | 修复见 PORTING_MISTAKES.md #151 |
 | 会话树导航前置检查 | 运行中 / 压缩中拒绝导航（#9179） | 同左（返回 `false`，不抛错） | 是 | 修复见 PORTING_MISTAKES.md #150 |
+
+## Interactive TUI assistant errors
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| assistant `message_start` | 立即创建 `AssistantMessageComponent` | bridge 转发 `AssistantMessageStart`，TUI 立即创建空 assistant 行 | 是 | 修复见 PORTING_MISTAKES.md #152 |
+| 首个 token 前的 provider 错误 | `message_end` 即使内容为空也渲染 `Error: <errorMessage>` | 空内容 `MessageEnd` 照常转发并渲染同一错误行 | 是 | 修复见 PORTING_MISTAKES.md #152 |
+| 部分输出后失败 | 保留已收到的内容并追加错误行 | agent loop 以 partial 为基准按 block 合并终态、保留顺序并回填 usage；TUI 也不会用空白 termination payload 清空已显示文本 | 是 | 修复见 PORTING_MISTAKES.md #152 |
+| 普通完成（stop/toolUse） | 不显示错误 notice | `Stop`/`ToolUse`/`Pending` 映射为无 notice，仅 Length/Aborted/Error 显示 | 是 | |
+| abort 文案 | 按 `session.retryAttempt` 显示 `Operation aborted` 或 `Aborted after N retry attempt(s)` | session listener 在 retry counter 清零前快照，bridge 携带该值，TUI 使用同一文案 | 是 | E2E：`tui_abort_during_retry_uses_retry_attempt_wording` |
+| 空 `errorMessage` | truthiness 回落到 `Error` / `Unknown error`；精确 `"Request was aborted"` 映射为 `Operation aborted` | bridge 归一化空串为 `None`，渲染器使用 TS 同款 fallback/精确串映射 | 是 | |
+| 错误消息含 tool call | 标记 pending tool 组件失败并抑制 assistant 级错误行 | bridge 转发未执行 tool calls；TUI 生成 failed tool 行并抑制 assistant notice | 是 | 修复见 PORTING_MISTAKES.md #152 |
+| 恢复空的错误消息 | 每个 assistant 消息都创建组件，空内容错误仍显示 | hydration 对 Error/Aborted/Length/error_message 保留空 assistant 行 | 是 | 修复见 PORTING_MISTAKES.md #152 |

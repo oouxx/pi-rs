@@ -730,6 +730,40 @@ fn extract_tool_calls(message: &AgentMessage) -> Vec<AgentToolCall> {
     }
 }
 
+/// Merge a terminal error payload with the last streamed partial.
+///
+/// TS providers normally emit their accumulated output on transport errors,
+/// but some Rust wrappers synthesize an empty payload or one that carries only
+/// a tool call. Prefer the partial when it is a strict extension of the
+/// terminal payload, otherwise append terminal blocks missing from the partial.
+/// This preserves block order and avoids dropping same-category content.
+fn merge_terminal_error_with_partial(
+    terminal: &[ContentBlock],
+    partial: &[ContentBlock],
+) -> Vec<ContentBlock> {
+    let terminal = terminal
+        .iter()
+        .filter(|block| !matches!(block, ContentBlock::Text { text, .. } if text.is_empty()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let partial = partial
+        .iter()
+        .filter(|block| !matches!(block, ContentBlock::Text { text, .. } if text.is_empty()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if partial.starts_with(&terminal) {
+        return partial;
+    }
+    let mut merged = partial;
+    for block in terminal {
+        if !merged.contains(&block) {
+            merged.push(block);
+        }
+    }
+    merged
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn stream_assistant_response(
     context: &mut AgentContext,
@@ -829,23 +863,50 @@ async fn stream_assistant_response(
             }
             AssistantMessageEvent::Done { message, .. }
             | AssistantMessageEvent::Error { error: message, .. } => {
+                let mut final_message = message.clone();
+                // TS providers emit their accumulated `output` on a transport
+                // failure. Some Rust provider wrappers synthesize an empty
+                // error message instead; retain the last streamed partial so
+                // the error does not erase already-visible content (and the
+                // persisted transcript matches TS).
+                if let AssistantMessageEvent::Error { error, .. } = &event {
+                    if let Some(partial) = partial_message.as_ref() {
+                        final_message.content =
+                            merge_terminal_error_with_partial(&error.content, &partial.content);
+                        if final_message.usage == Usage::default() {
+                            final_message.usage = partial.usage.clone();
+                        }
+                        if final_message.response_id.is_none() {
+                            final_message.response_id = partial.response_id.clone();
+                        }
+                        if final_message.response_model.is_none() {
+                            final_message.response_model = partial.response_model.clone();
+                        }
+                        if final_message.diagnostics.is_none() {
+                            final_message.diagnostics = partial.diagnostics.clone();
+                        }
+                        if final_message.timestamp == 0 {
+                            final_message.timestamp = partial.timestamp;
+                        }
+                    }
+                }
                 if added_partial {
                     let last_idx = context.messages.len() - 1;
-                    context.messages[last_idx] = agent_message_from_assistant(message);
+                    context.messages[last_idx] = agent_message_from_assistant(&final_message);
                 } else {
-                    context.messages.push(agent_message_from_assistant(message));
+                    context.messages.push(agent_message_from_assistant(&final_message));
                 }
                 if !added_partial {
                     emit(AgentEvent::MessageStart {
-                        message: agent_message_from_assistant(message),
+                        message: agent_message_from_assistant(&final_message),
                     })
                     .await;
                 }
                 emit(AgentEvent::MessageEnd {
-                    message: agent_message_from_assistant(message),
+                    message: agent_message_from_assistant(&final_message),
                 })
                 .await;
-                return Ok(message.clone());
+                return Ok(final_message);
             }
         }
     }
@@ -1666,6 +1727,181 @@ mod tests {
             }
             other => panic!("expected leading system message, got {other:?}"),
         }
+    }
+
+    /// A transport error can arrive after text deltas with an empty error
+    /// message (some Rust provider wrappers synthesize one). TS providers
+    /// emit their accumulated output, so the last partial content must be
+    /// retained in both the transcript and the emitted `MessageEnd`.
+    #[tokio::test]
+    async fn terminal_error_keeps_last_partial_content() {
+        let mut empty_partial = dummy_assistant_message_llm();
+        empty_partial.stop_reason = StopReason::Pending;
+        let mut text_partial = dummy_assistant_message_llm();
+        text_partial.content = vec![ContentBlock::text("partial output")];
+        text_partial.stop_reason = StopReason::Pending;
+        text_partial.usage.input = 42;
+        text_partial.usage.total_tokens = 42;
+        let mut error = dummy_assistant_message_llm();
+        error.content = vec![];
+        error.stop_reason = StopReason::Error;
+        error.error_message = Some("connection reset".into());
+
+        let events = vec![
+            crate::pi_ai_types::AssistantMessageEvent::Start {
+                partial: empty_partial,
+            },
+            crate::pi_ai_types::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "partial output".into(),
+                partial: text_partial,
+            },
+            crate::pi_ai_types::AssistantMessageEvent::Error {
+                reason: StopReason::Error,
+                error,
+            },
+        ];
+        let stream_fn: StreamFn = Arc::new(move |_model, _context, _thinking, _opts| {
+            let events = events.clone();
+            Box::pin(async move {
+                Ok(Box::new(futures::stream::iter(events))
+                    as crate::pi_ai_types::StreamResponse)
+            })
+        });
+
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<AgentEvent>::new()));
+        let sink = captured.clone();
+        let emit: AgentEventSink = Arc::new(move |event| {
+            sink.lock().unwrap().push(event);
+            Box::pin(async {})
+        });
+
+        let messages = run_agent_loop(
+            vec![user_prompt()],
+            test_context(),
+            &minimal_loop_config(),
+            &emit,
+            &None,
+            &stream_fn,
+        )
+        .await
+        .unwrap();
+
+        let (content, stop_reason, error_message) = messages
+            .iter()
+            .find_map(|message| match message {
+                AgentMessage::Assistant {
+                    content,
+                    stop_reason,
+                    error_message,
+                    ..
+                } => Some((content, stop_reason, error_message)),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(content, &vec![ContentBlock::text("partial output")]);
+        assert_eq!(stop_reason, &Some(StopReason::Error));
+        assert_eq!(error_message.as_deref(), Some("connection reset"));
+
+        let usage = messages
+            .iter()
+            .find_map(|message| match message {
+                AgentMessage::Assistant { usage, .. } => Some(usage),
+                _ => None,
+            })
+            .expect("assistant usage");
+        assert_eq!(usage.input, 42, "partial usage survives the synthetic error");
+
+        let events = captured.lock().unwrap();
+        let end_content = events.iter().find_map(|event| match event {
+            AgentEvent::MessageEnd {
+                message:
+                    AgentMessage::Assistant {
+                        content,
+                        ..
+                    },
+            } => Some(content),
+            _ => None,
+        });
+        assert_eq!(
+            end_content,
+            Some(&vec![ContentBlock::text("partial output")]),
+            "MessageEnd must carry the preserved partial content"
+        );
+    }
+
+    /// A terminal error may contain only a tool call (no text). The merge
+    /// must keep text streamed before the failure while retaining the tool
+    /// call so the TUI can render the failed tool row.
+    #[test]
+    fn terminal_error_merge_keeps_partial_text_with_tool_call_payload() {
+        let partial = vec![ContentBlock::text("partial output")];
+        let terminal = vec![ContentBlock::ToolCall {
+            id: "call-1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "echo hi"}),
+            thought_signature: None,
+            namespace: None,
+        }];
+
+        let merged = merge_terminal_error_with_partial(&terminal, &partial);
+
+        assert_eq!(merged.len(), 2);
+        assert!(matches!(
+            &merged[0],
+            ContentBlock::Text { text, .. } if text == "partial output"
+        ));
+        assert!(matches!(
+            &merged[1],
+            ContentBlock::ToolCall { id, .. } if id == "call-1"
+        ));
+    }
+
+    /// Terminal payloads are often a prefix of the streamed partial. The
+    /// longer partial must win without dropping later blocks.
+    #[test]
+    fn terminal_error_merge_prefers_longer_partial_prefix() {
+        let partial = vec![ContentBlock::text("A"), ContentBlock::text("B")];
+        let terminal = vec![ContentBlock::text("A")];
+        assert_eq!(
+            merge_terminal_error_with_partial(&terminal, &partial),
+            partial
+        );
+    }
+
+    /// Preserve the partial's content order and append only terminal blocks
+    /// that are not already present (e.g. a newly reported failed tool call).
+    #[test]
+    fn terminal_error_merge_preserves_partial_order() {
+        let partial = vec![
+            ContentBlock::Thinking {
+                thinking: "t".into(),
+                thinking_signature: None,
+                redacted: None,
+            },
+            ContentBlock::text("A"),
+            ContentBlock::ToolCall {
+                id: "call-a".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({}),
+                thought_signature: None,
+                namespace: None,
+            },
+        ];
+        let terminal = vec![ContentBlock::ToolCall {
+            id: "call-b".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+            thought_signature: None,
+            namespace: None,
+        }];
+
+        let merged = merge_terminal_error_with_partial(&terminal, &partial);
+        assert_eq!(merged.len(), 4);
+        assert!(matches!(&merged[0], ContentBlock::Thinking { .. }));
+        assert!(matches!(&merged[1], ContentBlock::Text { text, .. } if text == "A"));
+        assert!(matches!(&merged[2], ContentBlock::ToolCall { id, .. } if id == "call-a"));
+        assert!(matches!(&merged[3], ContentBlock::ToolCall { id, .. } if id == "call-b"));
     }
 
     fn dummy_tool_call(id: &str, name: &str, args: serde_json::Value) -> AgentToolCall {

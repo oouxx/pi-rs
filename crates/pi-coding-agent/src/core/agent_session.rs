@@ -3496,6 +3496,13 @@ impl AgentSession {
         *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Shared retry-attempt counter for live event bridges. Reading it when a
+    /// terminal assistant event arrives lets the TUI use TS's
+    /// `Aborted after N retry attempt(s)` wording.
+    pub(crate) fn retry_attempt_handle(&self) -> Arc<std::sync::Mutex<u32>> {
+        self.retry_attempt.clone()
+    }
+
     /// Get the names of currently active tools, matching TS `getActiveToolNames()`.
     pub async fn get_active_tool_names(&self) -> Vec<String> {
         self.agent

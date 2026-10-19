@@ -39,6 +39,10 @@ const QUEUE_ENV: &str = "PI_TUI_E2E_QUEUE_STREAM";
 /// Retry mock: first stream call fails with a retryable 503; later calls
 /// answer instantly (provider-retry display + Esc aborts the backoff).
 const RETRY_ENV: &str = "PI_TUI_E2E_RETRY_STREAM";
+/// Retry-abort mock: first call fails with 503; the retried call streams one
+/// chunk and waits for the abort signal so the TUI can exercise
+/// `Aborted after N retry attempt(s)`.
+const RETRY_ABORT_ENV: &str = "PI_TUI_E2E_RETRY_ABORT_STREAM";
 /// Restored-session mock: the child opens this session file so the TUI must
 /// render its persisted history on startup (TS `rebuildChatFromMessages`).
 const RESUME_ENV: &str = "PI_TUI_E2E_RESUME_FILE";
@@ -327,6 +331,71 @@ fn retry_mock_stream_fn() -> StreamFn {
     })
 }
 
+/// Retry-abort mock: first call fails with a retryable 503; the second call
+/// emits one text delta and then waits for the abort signal, allowing the TUI
+/// to show the retry-attempt-aware abort wording.
+fn retry_abort_mock_stream_fn() -> StreamFn {
+    let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Arc::new(move |_model, _context, _thinking, options: StreamFnOptions| {
+        let round = round.clone();
+        let signal = options.signal;
+        Box::pin(async move {
+            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n == 1 {
+                return Err("provider returned error: 503 service unavailable".into());
+            }
+            let stream = futures::stream::unfold(
+                (0u8, String::new(), signal),
+                |(step, mut text, signal)| {
+                    Box::pin(async move {
+                        if let Some(rx) = signal.as_ref() {
+                            if *rx.borrow() {
+                                let mut partial = partial_msg(&text);
+                                partial.stop_reason = StopReason::Aborted;
+                                partial.error_message = Some("Request was aborted".into());
+                                return Some((
+                                    AssistantMessageEvent::Error {
+                                        reason: StopReason::Aborted,
+                                        error: partial,
+                                    },
+                                    (3, text, signal),
+                                ));
+                            }
+                        }
+                        let event = match step {
+                            0 => AssistantMessageEvent::Start {
+                                partial: partial_msg(""),
+                            },
+                            1 => {
+                                text.push_str("retry-stream");
+                                AssistantMessageEvent::TextDelta {
+                                    content_index: 0,
+                                    delta: "retry-stream".into(),
+                                    partial: partial_msg(&text),
+                                }
+                            }
+                            _ => {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                return Some((
+                                    AssistantMessageEvent::ThinkingDelta {
+                                        content_index: 0,
+                                        delta: String::new(),
+                                        partial: partial_msg(&text),
+                                    },
+                                    (2, text, signal),
+                                ));
+                            }
+                        };
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Some((event, (step + 1, text, signal)))
+                    })
+                },
+            );
+            Ok(Box::new(stream) as StreamResponse)
+        })
+    })
+}
+
 /// Create an AgentSession wired to the mock LLM.
 async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSession {
     let mut opts = CreateAgentSessionOptions::default();
@@ -338,6 +407,8 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
         queue_mock_stream_fn()
     } else if std::env::var(RETRY_ENV).is_ok() {
         retry_mock_stream_fn()
+    } else if std::env::var(RETRY_ABORT_ENV).is_ok() {
+        retry_abort_mock_stream_fn()
     } else {
         mock_stream_fn(std::env::var(LONG_ENV).is_ok())
     });
@@ -622,6 +693,10 @@ impl Tui {
     /// Spawn with the retry mock (first call fails with a retryable 503).
     fn spawn_retry_stream() -> Self {
         Self::spawn_inner_env(false, None, &[(RETRY_ENV, "1")])
+    }
+
+    fn spawn_retry_abort_stream() -> Self {
+        Self::spawn_inner_env(false, None, &[(RETRY_ABORT_ENV, "1")])
     }
 
     /// Spawn with the big-stream mock (a large self-completing reply).
@@ -1128,6 +1203,36 @@ fn tui_retry_countdown_and_esc_abort() {
         tui.wait_for("Reply number 2", TIMEOUT),
         "next message runs after retry abort; got: {:?}",
         tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+
+    tui.quit();
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
+}
+
+/// Abort during a retried provider attempt: TS uses the live retry counter
+/// and shows `Aborted after 1 retry attempt`.
+#[test]
+fn tui_abort_during_retry_uses_retry_attempt_wording() {
+    let mut tui = Tui::spawn_retry_abort_stream();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    tui.write(b"first\r");
+    assert!(
+        tui.wait_for("retry-stream", TIMEOUT),
+        "retry attempt streamed; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+    // Ctrl+C aborts the in-flight retried request. Esc is reserved for
+    // aborting the retry backoff while the retry indicator is visible.
+    tui.write(b"\x03");
+    assert!(
+        tui.wait_for("Aborted after 1 retry attempt", TIMEOUT),
+        "retry-aware abort wording; got: {:?}",
+        tui.rendered().chars().rev().take(600).collect::<String>()
+    );
+    assert!(
+        tui.rendered().contains("retry-stream"),
+        "streamed partial text retained"
     );
 
     tui.quit();

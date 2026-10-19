@@ -1197,9 +1197,11 @@ pub enum Msg {
     /// TS `fullscreenCopyOnSelect` setting pushed in by the host.
     SetCopyOnSelect(bool),
     NewMessage(String, String), StreamText(String), StreamEnd,
-    /// Finalize the streaming assistant message: thinking content, terminal
-    /// stop reason and provider error message (TS `Done`/`Error` events).
+    /// Finalize the streaming assistant message with the provider's final
+    /// content, terminal stop reason and error message (TS `message_end` →
+    /// `updateContent(finalMessage)`).
     MessageEnd {
+        text: String,
         thinking: String,
         stop_reason: Option<StopReason>,
         error_message: Option<String>,
@@ -1325,9 +1327,19 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::NewMessage(role, text) => { model.push_message(role, text); vec![] }
         Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); m.md.append_text(&delta); } vec![] }
-        Msg::MessageEnd { thinking, stop_reason, error_message } => {
+        Msg::MessageEnd { text, thinking, stop_reason, error_message } => {
             if let Some(m) = model.messages.last_mut() {
-                if !thinking.is_empty() {
+                // Some provider wrappers synthesize an empty terminal error
+                // after streaming partial content. TS keeps the accumulated
+                // output; never erase visible partial text/thinking with an
+                // empty terminal payload.
+                let keep_streamed_text = text.trim().is_empty() && !m.text.is_empty();
+                if !keep_streamed_text {
+                    m.text = text;
+                    m.md = Markdown::with_theme(&m.text, model.width as usize, &model.theme);
+                }
+                let keep_streamed_thinking = thinking.trim().is_empty() && !m.thinking.is_empty();
+                if !keep_streamed_thinking {
                     m.thinking = thinking;
                     m.thinking_md = Markdown::with_theme(&m.thinking, model.width as usize, &model.theme);
                 }
@@ -3558,12 +3570,16 @@ fn render_assistant_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &
             StopReason::Length => "Response was truncated before completion.".to_string(),
             StopReason::Aborted => item
                 .error_message
-                .clone()
-                .filter(|m| m != "Request was aborted")
-                .unwrap_or_else(|| "Operation aborted".to_string()),
+                .as_deref()
+                .filter(|message| !message.is_empty() && *message != "Request was aborted")
+                .unwrap_or("Operation aborted")
+                .to_string(),
             StopReason::Error => format!(
                 "Error: {}",
-                item.error_message.clone().unwrap_or_else(|| "Unknown error".to_string())
+                item.error_message
+                    .as_deref()
+                    .filter(|message| !message.is_empty())
+                    .unwrap_or("Unknown error")
             ),
         };
         render_body_row(frame, area, ly, Paragraph::new(Line::raw("")));
@@ -6475,6 +6491,7 @@ mod tests {
         update(
             &mut model,
             Msg::MessageEnd {
+                text: "Answer text".into(),
                 thinking: "Let me think".into(),
                 stop_reason: Some(StopReason::Length),
                 error_message: None,
@@ -6497,6 +6514,105 @@ mod tests {
         let notice_row = text_row + 2;
         assert_eq!(buf[(0, notice_row)].symbol(), "R", "notice text");
         assert_eq!(buf[(0, notice_row)].fg, theme::ERROR, "notice error color");
+    }
+
+    /// Provider failures can arrive with an empty assistant body (connection
+    /// refused, DNS/auth failure before the first token). TS still renders
+    /// `Error: <message>` in the assistant component; the Rust transcript must
+    /// do the same instead of requiring non-empty text for the notice.
+    #[test]
+    fn assistant_error_without_content_renders_error_notice() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+        update(
+            &mut model,
+            Msg::MessageEnd {
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::Error),
+                error_message: Some("connection refused".into()),
+            },
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let row_text = |y: u16| {
+            (0..100)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let row = (0..30)
+            .find(|&y| row_text(y).contains("Error: connection refused"))
+            .expect("assistant error notice");
+        let x = (0..100)
+            .find(|&x| buf[(x, row)].symbol() == "E")
+            .expect("error notice start");
+        assert_eq!(buf[(x, row)].fg, theme::ERROR);
+    }
+
+    /// TS uses `errorMessage || "Unknown error"`; an empty provider string
+    /// must not render a blank `Error:` notice.
+    #[test]
+    fn assistant_empty_error_message_uses_unknown_error() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+        update(
+            &mut model,
+            Msg::MessageEnd {
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::Error),
+                error_message: Some(String::new()),
+            },
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let text = (0..30)
+            .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Error: Unknown error"), "{text:?}");
+    }
+
+    /// TS overwrites every aborted assistant message with the synthesized
+    /// `Operation aborted` text (unless a retry attempt count applies).
+    #[test]
+    fn assistant_abort_uses_operation_aborted() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 30);
+        model.context_usage_known = true;
+        update(&mut model, Msg::NewMessage("assistant".into(), "partial".into()));
+        update(
+            &mut model,
+            Msg::MessageEnd {
+                text: "partial".into(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::Aborted),
+                error_message: Some("Request was aborted".into()),
+            },
+        );
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let text = (0..30)
+            .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Operation aborted"), "{text:?}");
     }
 
     /// 内部 scrollback：内容超过视口时默认跟随底部（显示最新内容）；

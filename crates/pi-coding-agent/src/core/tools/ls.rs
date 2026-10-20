@@ -150,9 +150,11 @@ pub fn create_ls_tool(
         constrained_sampling: None,
         name: "ls".to_string(),
         description: format!(
-            "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. \
-             Output is truncated to {} entries or 256KB (whichever is hit first).",
-            DEFAULT_LIMIT
+            "List directory contents. Returns entries sorted alphabetically, with '/' suffix for \
+             directories. Includes dotfiles. Output is truncated to {} entries or {}KB (whichever is \
+             hit first).",
+            DEFAULT_LIMIT,
+            super::truncate::DEFAULT_MAX_BYTES / 1024
         ),
         label: "ls".to_string(),
         prompt_snippet: Some("List directory contents".to_string()),
@@ -278,7 +280,10 @@ pub fn create_ls_tool(
                         details.entry_limit_reached = Some(limit);
                     }
                     if truncation.truncated {
-                        notices.push("256KB limit reached".to_string());
+                        notices.push(format!(
+                            "{} limit reached",
+                            super::truncate::format_size(super::truncate::DEFAULT_MAX_BYTES)
+                        ));
                         details.truncation = Some(truncation.clone());
                     }
 

@@ -131,7 +131,8 @@ pub fn create_write_tool(
     AgentTool {
         constrained_sampling: super::preferred_json_schema_sampling(),
         name: "write".to_string(),
-        description: "Write content to a file. Creates the file and any parent directories if they don't exist."
+        description: "Write content to a file. Creates the file if it doesn't exist, overwrites if \
+                      it does. Automatically creates parent directories."
             .to_string(),
         label: "write".to_string(),
         prompt_snippet: Some("Create or overwrite files".to_string()),
@@ -155,7 +156,10 @@ pub fn create_write_tool(
                     let absolute_path = path_utils::resolve_to_cwd(file_path, &cwd);
                     let absolute_path_str = absolute_path.to_string_lossy().to_string();
 
-                    let result = with_file_mutation_queue(&absolute_path_str, || {
+                    // TS: `throwIfAborted()` after each await, never via an abort
+                    // listener (that would release the mutation queue early).
+                    let queue_path = absolute_path_str.clone();
+                    with_file_mutation_queue(&queue_path, move || {
                         let abs_path = absolute_path_str.clone();
                         let fp = file_path.to_string();
                         let ops = operations.clone();
@@ -176,26 +180,15 @@ pub fn create_write_tool(
 
                             throw_if_aborted()?;
 
-                            // Create parent directories if needed
+                            // Create parent directories (TS always calls `ops.mkdir`).
                             if let Some(parent) = std::path::Path::new(&abs_path).parent() {
                                 let parent_str = parent.to_string_lossy().to_string();
-                                if !parent.exists() {
-                                    ops.mkdir(&parent_str).await.map_err(|e| {
-                                        Box::new(std::io::Error::other(
-format!("Error creating directory: {}", e),
-    )) as Box<dyn std::error::Error + Send + Sync>
-                                    })?;
-                                }
+                                ops.mkdir(&parent_str).await?;
                             }
 
                             throw_if_aborted()?;
 
-                            // Write the file contents
-                            ops.write_file(&abs_path, &cnt).await.map_err(|e| {
-                                Box::new(std::io::Error::other(
-format!("Error writing file: {}", e),
-    )) as Box<dyn std::error::Error + Send + Sync>
-                            })?;
+                            ops.write_file(&abs_path, &cnt).await?;
                             throw_if_aborted()?;
 
                             Ok::<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>(
@@ -210,17 +203,8 @@ format!("Error writing file: {}", e),
                                 }
                             )
                         }
-                    }).await;
-
-                    match result {
-                        Ok(r) => Ok(r),
-                        Err(e) => Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!("Write error: {}", e))],
-                            details: serde_json::Value::Null,
-                            usage: None,
-                            terminate: None,
-                        }),
-                    }
+                    })
+                    .await
                 })
             },
         ),

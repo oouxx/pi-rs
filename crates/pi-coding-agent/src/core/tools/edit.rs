@@ -226,6 +226,14 @@ fn prepare_edit_arguments(params: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(args)
 }
 
+/// TS `validateEditInput` throws this exact message for missing/empty edits.
+fn invalid_edit_input_error() -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "Edit tool input is invalid. edits must contain at least one replacement.",
+    ))
+}
+
 // ============================================================================
 // create_edit_tool
 // ============================================================================
@@ -241,7 +249,12 @@ pub fn create_edit_tool(
     AgentTool {
         constrained_sampling: super::preferred_json_schema_sampling(),
         name: "edit".to_string(),
-        description: "Edit a file by performing targeted replacements. Each edit replaces exact text matches with fuzzy fallback.".to_string(),
+        description: "Edit a single file using exact text replacement. Every edits[].oldText must \
+                      match a unique, non-overlapping region of the original file. If two changes \
+                      affect the same block or nearby lines, merge them into one edit instead of \
+                      emitting overlapping edits. Do not include large unchanged regions just to \
+                      connect distant changes."
+            .to_string(),
         label: "edit".to_string(),
         prompt_snippet: Some(
             "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
@@ -279,18 +292,12 @@ pub fn create_edit_tool(
                             }
                         },
                         None => {
-                            return Err(Box::new(std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "No edits provided",
-                            )) as Box<dyn std::error::Error + Send + Sync>);
+                            return Err(invalid_edit_input_error());
                         }
                     };
 
                     if edits.is_empty() {
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "edits must contain at least one replacement",
-                        )) as Box<dyn std::error::Error + Send + Sync>);
+                        return Err(invalid_edit_input_error());
                     }
 
                     let absolute_path = path_utils::resolve_to_cwd(file_path, &cwd);

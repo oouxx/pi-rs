@@ -1,11 +1,28 @@
+//! Find tool — port of `packages/coding-agent/src/core/tools/find.ts`.
+//!
+//! Searches with the `fd` binary, resolved through
+//! [`crate::utils::tools_manager::ensure_tool`]: managed install in the pi bin
+//! directory first, then `fd`/`fdfind` on PATH, then a GitHub release download.
+//! This matches TS, which shells out to `fd` and reports an error when the
+//! binary is unavailable.
+//!
+//! Callers that pass their own [`FindOperations`] (for example to search over
+//! SSH) bypass `fd` entirely, exactly like TS `customOps?.glob`. The pure-Rust
+//! [`LocalFindOperations`] implementation is kept as an opt-in backend (it walks
+//! with ripgrep's `ignore` crate); the default tool path never uses it.
+
+use std::process::Stdio;
 use std::sync::Arc;
 
 use pi_agent_core::pi_ai_types::ContentBlock;
 use pi_agent_core::types::{AgentTool, AgentToolResult};
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use super::path_utils;
-use super::truncate::{self, TruncationResult};
+use super::truncate::{self, truncate_head_bytes_only, TruncationResult, DEFAULT_MAX_BYTES};
+use super::wait_for_abort;
+use crate::utils::tools_manager;
 
 const DEFAULT_LIMIT: usize = 1000;
 
@@ -32,6 +49,8 @@ pub struct FindToolDetails {
 
 /// Pluggable operations for the find tool.
 /// Override these to delegate file search to remote systems (for example SSH).
+///
+/// Matching TS `FindOperations`: providing operations replaces the `fd` search.
 pub trait FindOperations: Send + Sync {
     /// Check if path exists.
     fn exists(
@@ -50,7 +69,7 @@ pub trait FindOperations: Send + Sync {
 }
 
 // ============================================================================
-// LocalFindOperations
+// LocalFindOperations (opt-in, no external binary)
 // ============================================================================
 
 /// Check whether `cwd` is inside a git repository by walking up to the root,
@@ -144,22 +163,18 @@ impl FindOperations for LocalFindOperations {
 // FindToolOptions
 // ============================================================================
 
-#[derive(Clone)]
+/// `operations: None` = default local search through the `fd` binary
+/// (matching TS `customOps === undefined`).
+#[derive(Clone, Default)]
 pub struct FindToolOptions {
-    pub operations: Arc<dyn FindOperations>,
+    pub operations: Option<Arc<dyn FindOperations>>,
 }
 
 impl std::fmt::Debug for FindToolOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FindToolOptions").finish()
-    }
-}
-
-impl Default for FindToolOptions {
-    fn default() -> Self {
-        Self {
-            operations: Arc::new(LocalFindOperations),
-        }
+        f.debug_struct("FindToolOptions")
+            .field("operations", &self.operations.as_ref().map(|_| "custom"))
+            .finish()
     }
 }
 
@@ -171,12 +186,212 @@ fn find_parameters_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "pattern": { "type": "string", "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json'" },
+            "pattern": { "type": "string", "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'" },
             "path": { "type": "string", "description": "Directory to search in (default: current directory)" },
             "limit": { "type": "number", "description": "Maximum number of results (default: 1000)" }
         },
         "required": ["pattern"]
     })
+}
+
+// ============================================================================
+// Output formatting
+// ============================================================================
+
+/// Relativize a find result against the search root and normalize it to posix
+/// separators (TS `relativizeFindResultPath`).
+fn relativize_find_result_path(result_path: &str, search_path: &str) -> String {
+    let sep = std::path::MAIN_SEPARATOR;
+    let had_trailing_separator =
+        result_path.ends_with(sep) || (sep == '\\' && result_path.ends_with('/'));
+    let relative = if std::path::Path::new(result_path).is_absolute() {
+        match std::path::Path::new(result_path).strip_prefix(search_path) {
+            Ok(relative) => relative.to_string_lossy().to_string(),
+            Err(_) => result_path.to_string(),
+        }
+    } else {
+        result_path.to_string()
+    };
+    let posix_path = relative.replace(sep, "/");
+    if had_trailing_separator && !posix_path.ends_with('/') {
+        format!("{posix_path}/")
+    } else {
+        posix_path
+    }
+}
+
+/// Build the `fd` argument vector, matching TS `createFindToolDefinition`.
+fn build_fd_args(pattern: &str, search_path: &str, limit: usize, inside_git_repo: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "--glob".to_string(),
+        "--color=never".to_string(),
+        "--hidden".to_string(),
+    ];
+    // fd normally ignores .gitignore outside git repos, so keep --no-require-git
+    // there. Inside repos, use fd's default git-aware behavior so parent
+    // .gitignore rules stop at nested repo boundaries:
+    // https://github.com/earendil-works/pi/issues/5960
+    if !inside_git_repo {
+        args.push("--no-require-git".to_string());
+    }
+    args.push("--max-results".to_string());
+    args.push(limit.to_string());
+
+    // fd --glob matches against the basename unless --full-path is set; in
+    // --full-path mode it matches against the absolute candidate path, so a
+    // path-containing pattern like 'src/**/*.spec.ts' needs a leading '**/' to
+    // match anything.
+    let mut effective_pattern = pattern.to_string();
+    if pattern.contains('/') {
+        args.push("--full-path".to_string());
+        if !pattern.starts_with('/') && !pattern.starts_with("**/") && pattern != "**" {
+            effective_pattern = format!("**/{pattern}");
+        }
+        // fd matches full paths using native separators on Windows.
+        if cfg!(target_os = "windows") {
+            effective_pattern = effective_pattern.replace('/', "[\\/\\\\]");
+        }
+    }
+    args.push("--".to_string());
+    args.push(effective_pattern);
+    args.push(search_path.to_string());
+    args
+}
+
+/// Assemble the tool result from result lines (shared by both search paths).
+fn emit_results(
+    result_lines: &[String],
+    effective_limit: usize,
+    limit_notice: &str,
+) -> AgentToolResult<serde_json::Value> {
+    let result_limit_reached = result_lines.len() >= effective_limit;
+    let raw_output = result_lines.join("\n");
+    let truncation = truncate_head_bytes_only(&raw_output);
+    let mut details = FindToolDetails::default();
+    let mut notices: Vec<String> = Vec::new();
+
+    if result_limit_reached {
+        notices.push(limit_notice.to_string());
+        details.result_limit_reached = Some(effective_limit);
+    }
+    if truncation.truncated {
+        notices.push(format!(
+            "{} limit reached",
+            truncate::format_size(DEFAULT_MAX_BYTES)
+        ));
+        details.truncation = Some(truncation.clone());
+    }
+
+    let mut result_text = if truncation.truncated {
+        truncation.content.clone()
+    } else {
+        raw_output
+    };
+    if !notices.is_empty() {
+        result_text.push_str(&format!("\n\n[{}]", notices.join(". ")));
+    }
+
+    AgentToolResult {
+        content: vec![ContentBlock::text(result_text)],
+        details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
+        usage: None,
+        terminate: None,
+    }
+}
+
+fn text_result(text: &str) -> AgentToolResult<serde_json::Value> {
+    AgentToolResult {
+        content: vec![ContentBlock::text(text)],
+        details: serde_json::Value::Null,
+        usage: None,
+        terminate: None,
+    }
+}
+
+/// Run `fd` and collect its output lines.
+async fn run_fd(
+    search_path: &str,
+    pattern: &str,
+    effective_limit: usize,
+    signal: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let fd_path = match tools_manager::ensure_tool_async("fd").await {
+        Some(path) => path,
+        None => {
+            return Err("fd is not available and could not be downloaded"
+                .to_string()
+                .into());
+        }
+    };
+
+    let inside_git_repo = is_inside_git_repo(std::path::Path::new(search_path));
+    let args = build_fd_args(pattern, search_path, effective_limit, inside_git_repo);
+
+    let mut child = tokio::process::Command::new(&fd_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run fd: {}", e))?;
+
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => return Err("Failed to run fd: stdout unavailable".to_string().into()),
+    };
+    let stderr_pipe = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        let mut buffer = String::new();
+        if let Some(mut stderr) = stderr_pipe {
+            let _ = stderr.read_to_string(&mut buffer).await;
+        }
+        buffer
+    });
+
+    let mut lines_iter = tokio::io::BufReader::new(stdout).lines();
+    let mut lines: Vec<String> = Vec::new();
+    let mut aborted = false;
+    let mut signal_rx = signal.clone();
+
+    loop {
+        let next_line = match signal_rx.as_mut() {
+            Some(rx) => {
+                tokio::select! {
+                    line = lines_iter.next_line() => line,
+                    () = wait_for_abort(rx) => {
+                        aborted = true;
+                        let _ = child.kill().await;
+                        break;
+                    }
+                }
+            }
+            None => lines_iter.next_line().await,
+        };
+        match next_line {
+            Ok(Some(line)) => lines.push(line),
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    let status = child.wait().await.ok();
+    let stderr = stderr_task.await.unwrap_or_default();
+
+    if aborted {
+        return Err("Operation aborted".to_string().into());
+    }
+    if status.and_then(|s| s.code()) != Some(0) && lines.is_empty() {
+        let message = stderr.trim();
+        if message.is_empty() {
+            let code = status
+                .and_then(|s| s.code())
+                .map_or_else(|| "unknown".to_string(), |c| c.to_string());
+            return Err(format!("fd exited with code {}", code).into());
+        }
+        return Err(message.to_string().into());
+    }
+
+    Ok(lines)
 }
 
 // ============================================================================
@@ -195,9 +410,11 @@ pub fn create_find_tool(
         constrained_sampling: None,
         name: "find".to_string(),
         description: format!(
-            "Find files matching a glob pattern. Returns matching file paths relative to the search directory. \
-             Output is truncated to {} results or 256KB (whichever is hit first).",
-            DEFAULT_LIMIT
+            "Search for files by glob pattern. Returns matching file paths relative to the search \
+             directory. Respects .gitignore. Output is truncated to {} results or {}KB (whichever \
+             is hit first).",
+            DEFAULT_LIMIT,
+            DEFAULT_MAX_BYTES / 1024
         ),
         label: "find".to_string(),
         prompt_snippet: Some("Find files by glob pattern (respects .gitignore)".to_string()),
@@ -216,8 +433,8 @@ pub fn create_find_tool(
                 let operations = operations.clone();
                 Box::pin(async move {
                     let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                    let search_path = params.get("path").and_then(|v| v.as_str());
-                    let limit = params
+                    let search_dir = params.get("path").and_then(|v| v.as_str());
+                    let effective_limit = params
                         .get("limit")
                         .and_then(|v| v.as_u64())
                         .map(|v| v as usize)
@@ -226,114 +443,76 @@ pub fn create_find_tool(
                     // Check for abort
                     if let Some(ref rx) = signal {
                         if *rx.borrow() {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text("Operation aborted")],
-                                details: serde_json::Value::Null,
-                                usage: None,
-
-                                terminate: None,
-                            });
+                            return Err("Operation aborted".to_string().into());
                         }
                     }
 
-                    let search_cwd = match search_path {
-                        Some(p) => path_utils::resolve_to_cwd(p, &cwd)
-                            .to_string_lossy()
-                            .to_string(),
-                        None => cwd.clone(),
-                    };
-
-                    // Check if search path exists
-                    if !std::path::Path::new(&search_cwd).exists() {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!(
-                                "Path not found: {}",
-                                search_path.unwrap_or(".")
-                            ))],
-                            details: serde_json::Value::Null,
-                            usage: None,
-                            terminate: None,
-                        });
+                    let search_path = match search_dir {
+                        Some(p) => path_utils::resolve_to_cwd(p, &cwd),
+                        None => std::path::PathBuf::from(&cwd),
                     }
+                    .to_string_lossy()
+                    .to_string();
 
-                    let ignore_dirs = [
-                        "**/node_modules/**".to_string(),
-                        "**/.git/**".to_string(),
-                    ];
-
-                    let results = match operations.glob(pattern, &search_cwd, &ignore_dirs, limit).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text(format!(
-                                    "Error searching: {}",
-                                    e
-                                ))],
-                                details: serde_json::Value::Null,
-                                usage: None,
-                                terminate: None,
-                            });
+                    // Custom operations replace the `fd` search (TS
+                    // `if (customOps?.glob)`).
+                    if let Some(ops) = operations {
+                        if !ops.exists(&search_path).await? {
+                            return Err(format!("Path not found: {}", search_path).into());
                         }
-                    };
-
-                    if results.is_empty() {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text("No files found matching pattern")],
-                            details: serde_json::Value::Null,
-                            usage: None,
-
-                            terminate: None,
-                        });
+                        if let Some(ref rx) = signal {
+                            if *rx.borrow() {
+                                return Err("Operation aborted".to_string().into());
+                            }
+                        }
+                        let ignore_dirs = [
+                            "**/node_modules/**".to_string(),
+                            "**/.git/**".to_string(),
+                        ];
+                        let results = ops
+                            .glob(pattern, &search_path, &ignore_dirs, effective_limit)
+                            .await?;
+                        if let Some(ref rx) = signal {
+                            if *rx.borrow() {
+                                return Err("Operation aborted".to_string().into());
+                            }
+                        }
+                        if results.is_empty() {
+                            return Ok(text_result("No files found matching pattern"));
+                        }
+                        let relativized: Vec<String> = results
+                            .iter()
+                            .map(|p| relativize_find_result_path(p, &search_path))
+                            .collect();
+                        return Ok(emit_results(
+                            &relativized,
+                            effective_limit,
+                            &format!("{} results limit reached", effective_limit),
+                        ));
                     }
 
-                    // Relativize paths
-                    let cwd_path = std::path::Path::new(&search_cwd);
-                    let relativized: Vec<String> = results
+                    let lines = run_fd(&search_path, pattern, effective_limit, signal.clone())
+                        .await?;
+                    if lines.is_empty() {
+                        return Ok(text_result("No files found matching pattern"));
+                    }
+
+                    let relativized: Vec<String> = lines
                         .iter()
-                        .map(|r| {
-                            let path = std::path::Path::new(r);
-                            path.strip_prefix(cwd_path)
-                                .map(|p| format!("./{}", p.display()))
-                                .unwrap_or_else(|_| r.clone())
-                        })
+                        .map(|line| line.trim_end_matches('\r').trim())
+                        .filter(|line| !line.is_empty())
+                        .map(|line| relativize_find_result_path(line, &search_path))
                         .collect();
 
-                    let result_limit_reached = relativized.len() >= limit;
-                    let raw_output = relativized.join("\n");
-                    let truncation = truncate::truncate_head(&raw_output, None);
-                    let mut details = FindToolDetails::default();
-                    let mut notices: Vec<String> = Vec::new();
-
-                    if result_limit_reached {
-                        notices.push(format!(
+                    Ok(emit_results(
+                        &relativized,
+                        effective_limit,
+                        &format!(
                             "{} results limit reached. Use limit={} for more, or refine pattern",
-                            limit,
-                            limit * 2
-                        ));
-                        details.result_limit_reached = Some(limit);
-                    }
-                    if truncation.truncated {
-                        notices.push("256KB limit reached".to_string());
-                        details.truncation = Some(truncation.clone());
-                    }
-
-                    let mut result_text = if truncation.truncated {
-                        truncation.content
-                    } else {
-                        raw_output
-                    };
-
-                    if !notices.is_empty() {
-                        result_text.push_str(&format!("\n\n[{}]", notices.join(". ")));
-                    }
-
-                    Ok(AgentToolResult {
-                        content: vec![ContentBlock::text(result_text)],
-                        details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
-                        usage: None,
-
-                        terminate: None,
-                    })
+                            effective_limit,
+                            effective_limit * 2
+                        ),
+                    ))
                 })
             },
         ),
@@ -381,6 +560,54 @@ mod tests {
         assert_eq!(tool.name, "find");
         assert!(!tool.description.is_empty());
         assert!(tool.parameters_schema.is_object());
+    }
+
+    /// Arguments must match TS `createFindToolDefinition` exactly.
+    #[test]
+    fn test_build_fd_args() {
+        let args = build_fd_args("*.txt", "/tmp/dir", 1000, true);
+        assert_eq!(
+            args,
+            vec![
+                "--glob",
+                "--color=never",
+                "--hidden",
+                "--max-results",
+                "1000",
+                "--",
+                "*.txt",
+                "/tmp/dir",
+            ]
+        );
+
+        // Outside a git repo: --no-require-git (fd's gitignore handling is
+        // opt-in there).
+        let outside = build_fd_args("*.txt", "/tmp/dir", 10, false);
+        assert!(outside.iter().any(|a| a == "--no-require-git"));
+
+        // Path-containing pattern: --full-path + leading '**/'.
+        let nested = build_fd_args("src/**/*.spec.ts", "/tmp/dir", 10, true);
+        assert!(nested.iter().any(|a| a == "--full-path"));
+        assert!(nested.iter().any(|a| a == "**/src/**/*.spec.ts"));
+
+        // Already-globbed / absolute patterns are not rewritten.
+        let globbed = build_fd_args("**/*.ts", "/tmp/dir", 10, true);
+        assert!(globbed.iter().any(|a| a == "--full-path"));
+        assert!(globbed.iter().any(|a| a == "**/*.ts"));
+    }
+
+    #[test]
+    fn test_relativize_find_result_path() {
+        assert_eq!(
+            relativize_find_result_path("/tmp/dir/sub/a.txt", "/tmp/dir"),
+            "sub/a.txt"
+        );
+        assert_eq!(relativize_find_result_path("a.txt", "/tmp/dir"), "a.txt");
+        // Paths outside the search root are left as-is.
+        assert_eq!(
+            relativize_find_result_path("/tmp/other/a.txt", "/tmp/dir"),
+            "/tmp/other/a.txt"
+        );
     }
 
     fn glob_in(dir: &std::path::Path, pattern: &str) -> Vec<String> {

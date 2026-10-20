@@ -245,3 +245,49 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
   `SettingsManager::{get,set}_fullscreen_copy_on_select` +
   `AgentSession::{get,set}_fullscreen_copy_on_select` +
   interactive 启动时写入模型。
+
+## 9. 搜索类工具（grep / find）外部二进制映射
+
+原版 `packages/coding-agent/src/core/tools/{grep,find}.ts` 不自己实现搜索，而是
+spawn 外部二进制；`utils/tools-manager.ts` 负责解析/下载。Rust 侧一一对应：
+
+### 9.1 模块对照
+
+| TS | Rust | 说明 |
+| -- | ---- | ---- |
+| `createGrepToolDefinition` + `spawn(rg, args)` | `core/tools/grep.rs` | `rg --json` 事件流 → 匹配收集 → 退出后格式化（context 需读文件，故延后） |
+| `createFindToolDefinition` + `spawn(fd, args)` | `core/tools/find.rs` | `fd` 逐行输出 → 相对化 → 截断 |
+| `ensureTool("rg"\|"fd")` / `getToolPath` | `utils/tools_manager.rs` | 本地 bin 目录 → PATH → GitHub release 下载；`ensure_tool_async` 用 `spawn_blocking` 包住（内部是 curl/tar 子进程） |
+| `relativizeFindResultPath` | `find::relativize_find_result_path` | 绝对路径相对化 + posix 分隔符 + 保留尾斜杠 |
+| `formatPath`（grep 内部函数） | `grep::format_path` | 目录搜索时相对搜索根（`..` 开头则退回 basename），文件搜索取 basename |
+| `truncateHead(x, { maxLines: MAX_SAFE_INTEGER })` | `truncate::truncate_head_bytes_only` | 只按字节截断，行数不设限（行数已由命中上限控制） |
+| `formatSize(DEFAULT_MAX_BYTES)` | `truncate::format_size` | 注意 `DEFAULT_MAX_BYTES` 是 **50KB**，不是 256KB |
+
+### 9.2 参数对齐（改动时逐字核对）
+
+- grep：`--json --line-number --color=never --hidden` + 可选 `--ignore-case` /
+  `--fixed-strings` / `--glob <G>` + `-- <pattern> <path>`；`limit` 先 `max(1)`。
+- find：`--glob --color=never --hidden` +（不在 git repo 内时）`--no-require-git`
+  + `--max-results <N>` +（pattern 含 `/` 时）`--full-path` 且补 `**/` 前缀
+  + `-- <pattern> <path>`。
+
+### 9.3 高危陷阱
+
+| 模式 | 原版行为 | Rust 天真翻译的坑 | 正确做法 |
+| ---- | -------- | ----------------- | -------- |
+| `.gitignore` 生效条件 | rg 默认 `require_git`：**只有 git repo 内**才应用 `.gitignore`；fd 用 `--no-require-git` 在 repo 外也应用 | 以为"两者都尊重 gitignore"，在非 repo 目录写测试断言 grep 忽略文件 → 断言失效 | 测试里先建 `.git/` 目录再断言 grep 忽略；fd 侧不需要（`--no-require-git`） |
+| 路径格式 | 目录搜索输出相对搜索根的路径（`sub/a.txt:1:`），文件搜索输出 basename | 一律输出 basename，或输出绝对路径 | 走 `format_path` 三分支：相对 / `..` 越界退回 basename / 文件取 basename |
+| 上下文块 | context>0 时逐匹配输出 `path:line:` 与 `path-line-`，**无** `--` 分隔行 | 沿用 grep CLI 习惯插入 `--` 分隔 | 只输出标记行，不加分隔 |
+| 命中上限语义 | `matchCount >= effectiveLimit` 即 `matchLimitReached = true` 并 kill 子进程（正好等于上限也算） | 只有遇见第 N+1 个命中才置位 | 收满即置位并 kill |
+| 退出码 | rg：0 有命中 / 1 无命中 / 2 出错；fd：0 成功，非 0 且无输出才报错 | 把 1 当成错误，或把"有输出但退出码非 0"直接当成功 | 按上表分支；错误信息优先用 stderr |
+| 工具错误 | TS `reject(new Error(...))` | Rust 返回 `Ok(文本)` 会被当成正常输出 | 返回 `Err(...)`（agent loop 会转成 `is_error` 工具结果） |
+| 二进制解析顺序 | 先解析已有二进制，再判离线；`PI_OFFLINE` 接受 `1/true/yes` | 先判离线再解析 → 离线时明明装了 rg 也用不了 | 顺序：本地 bin 目录 → PATH → 离线拦截 → 下载 |
+
+### 9.4 工具错误语义（read / write / edit / bash）
+
+TS 的工具失败一律 throw/reject，由 agent loop 转成 `isError` 工具结果；Rust 侧
+对应 `Err(...)`（`agent_loop.rs` 的 `create_error_tool_result`）。两条约定：
+
+- **不要**把错误包成 `Ok(AgentToolResult { text: "Error …" })`——模型会当成成功输出。
+- `AgentToolResult` 目前没有 `isError` 字段，所以"带结果的错误"（TS bash 非零退出码）
+  只能用 `Err` 表达，代价是丢失 `details`。新增能力前先看 DEVIATIONS #32。

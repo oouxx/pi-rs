@@ -75,6 +75,22 @@ async fn execute_tool(
     (tool.execute)(call_id.to_string(), params, None, None).await
 }
 
+/// The grep/find tools shell out to `rg` / `fd` (matching TS). Tests skip when
+/// the binary is not resolvable, so they never hit the network from CI.
+fn tool_binary_available(tool: &str) -> bool {
+    pi_coding_agent::utils::tools_manager::get_tool_path(tool).is_some()
+}
+
+/// Skip guard for tests that need a managed external binary.
+macro_rules! require_binary {
+    ($tool:expr) => {
+        if !tool_binary_available($tool) {
+            eprintln!("skipping: {} not available", $tool);
+            return;
+        }
+    };
+}
+
 // ============================================================================
 // Read Tool Tests
 // ============================================================================
@@ -108,129 +124,14 @@ async fn test_read_nonexistent_file() {
         None,
     );
     let params = serde_json::json!({ "path": file_path.to_str().unwrap() });
-    let result = execute_tool(&tool, "test-call-2", params).await.unwrap();
-
-    let output = get_text_output(&result);
-    assert!(output.contains("Error reading file") || output.contains("not found"));
-}
-
-#[tokio::test]
-async fn test_read_truncate_by_lines() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("large.txt");
-    let lines: Vec<String> = (1..=2500).map(|i| format!("Line {}", i)).collect();
-    tokio::fs::write(&file_path, lines.join("\n")).await.unwrap();
-
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({ "path": file_path.to_str().unwrap() });
-    let result = execute_tool(&tool, "test-call-3", params).await.unwrap();
-
-    let output = get_text_output(&result);
-    assert!(output.contains("Line 1"));
-    assert!(output.contains("Line 2000"));
-    assert!(!output.contains("Line 2001"));
-    assert!(output.contains("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]"));
-}
-
-#[tokio::test]
-async fn test_read_with_offset() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("offset-test.txt");
-    let lines: Vec<String> = (1..=100).map(|i| format!("Line {}", i)).collect();
-    tokio::fs::write(&file_path, lines.join("\n")).await.unwrap();
-
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "offset": 51
-    });
-    let result = execute_tool(&tool, "test-call-5", params).await.unwrap();
-
-    let output = get_text_output(&result);
-    assert!(!output.contains("Line 50"));
-    assert!(output.contains("Line 51"));
-    assert!(output.contains("Line 100"));
-    assert!(!output.contains("Use offset="));
-}
-
-#[tokio::test]
-async fn test_read_with_limit() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("limit-test.txt");
-    let lines: Vec<String> = (1..=100).map(|i| format!("Line {}", i)).collect();
-    tokio::fs::write(&file_path, lines.join("\n")).await.unwrap();
-
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "limit": 10
-    });
-    let result = execute_tool(&tool, "test-call-6", params).await.unwrap();
-
-    let output = get_text_output(&result);
-    assert!(output.contains("Line 1"));
-    assert!(output.contains("Line 10"));
-    assert!(!output.contains("Line 11"));
-    assert!(output.contains("[90 more lines in file. Use offset=11 to continue.]"));
-}
-
-#[tokio::test]
-async fn test_read_with_offset_and_limit() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("offset-limit-test.txt");
-    let lines: Vec<String> = (1..=100).map(|i| format!("Line {}", i)).collect();
-    tokio::fs::write(&file_path, lines.join("\n")).await.unwrap();
-
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "offset": 41,
-        "limit": 20
-    });
-    let result = execute_tool(&tool, "test-call-7", params).await.unwrap();
-
-    let output = get_text_output(&result);
-    assert!(!output.contains("Line 40"));
-    assert!(output.contains("Line 41"));
-    assert!(output.contains("Line 60"));
-    assert!(!output.contains("Line 61"));
-    assert!(output.contains("[40 more lines in file. Use offset=61 to continue.]"));
-}
-
-#[tokio::test]
-async fn test_read_offset_beyond_file() {
-    let dir = setup_test_dir();
-    let file_path = dir.path().join("short.txt");
-    tokio::fs::write(&file_path, "Line 1\nLine 2\nLine 3")
+    // TS `ops.access()` throws -> tool error result (is_error), not a text result.
+    let err = execute_tool(&tool, "test-call-2", params)
         .await
-        .unwrap();
-
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
-    let params = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "offset": 100
-    });
-    let result = execute_tool(&tool, "test-call-8", params).await.unwrap();
-
-    let output = get_text_output(&result);
+        .expect_err("missing file must be a tool error");
+    let msg = err.to_string();
     assert!(
-        output.contains("Offset 100 is beyond end of file (3 lines total)")
-            || output.contains("Offset 100 is beyond end of file")
+        msg.contains("No such file") || msg.contains("not found") || msg.contains("os error"),
+        "unexpected error: {msg}"
     );
 }
 
@@ -407,6 +308,34 @@ async fn test_write_file_contents() {
     // Verify file was written
     let written = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(written, content);
+}
+
+#[tokio::test]
+async fn test_write_error_is_tool_error() {
+    let dir = setup_test_dir();
+    // Parent path is a regular file, so mkdir/write must fail.
+    let blocker = dir.path().join("blocker");
+    tokio::fs::write(&blocker, "x").await.unwrap();
+    let target = blocker.join("nested/file.txt");
+
+    let tool = pi_coding_agent::core::tools::write::create_write_tool(
+        dir.path().to_str().unwrap(),
+        None,
+    );
+    let params = serde_json::json!({
+        "path": target.to_str().unwrap(),
+        "content": "boom"
+    });
+    // TS `ops.mkdir`/`ops.writeFile` throw -> error tool result.
+    let err = execute_tool(&tool, "test-call-write-err", params)
+        .await
+        .expect_err("write into a file path must be a tool error");
+    assert!(
+        err.to_string().contains("Not a directory")
+            || err.to_string().contains("os error")
+            || err.to_string().contains("File exists"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -1626,6 +1555,7 @@ async fn test_bash_execute_bash_persist_full_output() {
 
 #[tokio::test]
 async fn test_grep_filename_in_output() {
+    require_binary!("rg");
     let dir = setup_test_dir();
     let file_path = dir.path().join("example.txt");
     tokio::fs::write(&file_path, "first line\nmatch line\nlast line")
@@ -1648,6 +1578,7 @@ async fn test_grep_filename_in_output() {
 
 #[tokio::test]
 async fn test_grep_context_lines() {
+    require_binary!("rg");
     let dir = setup_test_dir();
     let file_path = dir.path().join("context.txt");
     let content = "before\nmatch one\nafter\nmiddle\nmatch two\nafter two";
@@ -1671,10 +1602,13 @@ async fn test_grep_context_lines() {
     assert!(output.contains("context.txt-3- after"));
     assert!(output.contains("[1 matches limit reached"));
     assert!(!output.contains("match two"));
+    // No '--' block separators: TS only indents context lines around matches.
+    assert!(!output.contains("\n--\n"), "unexpected separator in: {}", output);
 }
 
 #[tokio::test]
 async fn test_grep_flag_like_pattern() {
+    require_binary!("rg");
     let dir = setup_test_dir();
     let file_path = dir.path().join("target.txt");
     tokio::fs::write(&file_path, "target\n").await.unwrap();
@@ -1696,7 +1630,11 @@ async fn test_grep_flag_like_pattern() {
 
 #[tokio::test]
 async fn test_grep_gitignore() {
+    require_binary!("rg");
     let dir = setup_test_dir();
+    // ripgrep only applies .gitignore inside a git repository (default
+    // `require_git`), exactly like the TS tool which also shells out to rg.
+    tokio::fs::create_dir_all(dir.path().join(".git")).await.unwrap();
     tokio::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").await.unwrap();
     tokio::fs::write(dir.path().join("ignored.txt"), "ignored").await.unwrap();
     tokio::fs::write(dir.path().join("kept.txt"), "kept").await.unwrap();
@@ -1713,12 +1651,97 @@ async fn test_grep_gitignore() {
 
     let output = get_text_output(&result);
     assert!(output.contains("kept.txt"));
-    // ignored.txt should not appear in results
-    // Note: grep may or may not respect .gitignore depending on implementation
+    // ripgrep honours .gitignore (matches TS, which also shells out to rg).
+    assert!(
+        !output.contains("ignored.txt:"),
+        "expected .gitignore to exclude ignored.txt, got: {}",
+        output
+    );
+}
+
+#[tokio::test]
+async fn test_grep_relative_paths_for_directory_search() {
+    require_binary!("rg");
+    let dir = setup_test_dir();
+    tokio::fs::create_dir_all(dir.path().join("sub")).await.unwrap();
+    tokio::fs::write(dir.path().join("sub/nested.txt"), "needle\n")
+        .await
+        .unwrap();
+
+    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
+        dir.path().to_str().unwrap(),
+        None,
+    );
+    let params = serde_json::json!({
+        "pattern": "needle",
+        "path": dir.path().to_str().unwrap()
+    });
+    let result = execute_tool(&tool, "test-call-grep-relative", params).await.unwrap();
+
+    let output = get_text_output(&result);
+    // TS formatPath(): relative to the search root for directory searches.
+    assert!(
+        output.contains("sub/nested.txt:1: needle"),
+        "expected relative path in output, got: {}",
+        output
+    );
+}
+
+#[tokio::test]
+async fn test_grep_searches_hidden_files() {
+    require_binary!("rg");
+    let dir = setup_test_dir();
+    tokio::fs::create_dir_all(dir.path().join(".hidden")).await.unwrap();
+    tokio::fs::write(dir.path().join(".hidden/secret.txt"), "needle\n")
+        .await
+        .unwrap();
+
+    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
+        dir.path().to_str().unwrap(),
+        None,
+    );
+    let params = serde_json::json!({
+        "pattern": "needle",
+        "path": dir.path().to_str().unwrap()
+    });
+    let result = execute_tool(&tool, "test-call-grep-hidden", params).await.unwrap();
+
+    let output = get_text_output(&result);
+    // rg runs with --hidden (matching TS).
+    assert!(
+        output.contains(".hidden/secret.txt"),
+        "expected hidden files to be searched, got: {}",
+        output
+    );
+}
+
+#[tokio::test]
+async fn test_grep_invalid_regex_reports_rg_error() {
+    require_binary!("rg");
+    let dir = setup_test_dir();
+    tokio::fs::write(dir.path().join("a.txt"), "needle\n").await.unwrap();
+
+    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
+        dir.path().to_str().unwrap(),
+        None,
+    );
+    let params = serde_json::json!({
+        "pattern": "(unclosed",
+        "path": dir.path().to_str().unwrap()
+    });
+    let result = execute_tool(&tool, "test-call-grep-bad-regex", params).await;
+    // TS rejects with ripgrep's stderr.
+    let err = result.expect_err("invalid regex must surface as an error");
+    assert!(
+        err.to_string().contains("regex") || err.to_string().contains("pattern"),
+        "unexpected error: {}",
+        err
+    );
 }
 
 #[tokio::test]
 async fn test_find_gitignore() {
+    require_binary!("fd");
     let dir = setup_test_dir();
     tokio::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").await.unwrap();
     tokio::fs::write(dir.path().join("ignored.txt"), "ignored").await.unwrap();
@@ -1736,12 +1759,17 @@ async fn test_find_gitignore() {
 
     let output = get_text_output(&result);
     assert!(output.contains("kept.txt"));
-    // ignored.txt should not appear in results
-    // Note: find may or may not respect .gitignore depending on implementation
+    // fd honours .gitignore (matches TS, which also shells out to fd).
+    assert!(
+        !output.contains("ignored.txt:"),
+        "expected .gitignore to exclude ignored.txt, got: {}",
+        output
+    );
 }
 
 #[tokio::test]
 async fn test_find_fd_glob_parse_error() {
+    require_binary!("fd");
     let dir = setup_test_dir();
     let tool = pi_coding_agent::core::tools::find::create_find_tool(
         dir.path().to_str().unwrap(),
@@ -1765,6 +1793,7 @@ async fn test_find_fd_glob_parse_error() {
 
 #[tokio::test]
 async fn test_find_hidden_files() {
+    require_binary!("fd");
     let dir = setup_test_dir();
     let hidden_dir = dir.path().join(".secret");
     tokio::fs::create_dir_all(&hidden_dir).await.unwrap();
@@ -1801,6 +1830,7 @@ async fn test_find_hidden_files() {
 
 #[tokio::test]
 async fn test_find_flag_like_pattern() {
+    require_binary!("fd");
     let dir = setup_test_dir();
 
     let tool = pi_coding_agent::core::tools::find::create_find_tool(

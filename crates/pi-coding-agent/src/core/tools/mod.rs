@@ -37,6 +37,20 @@ pub type AsyncOpResult<T> = std::pin::Pin<
     >,
 >;
 
+/// Resolve once the abort watch flips to `true` (cancel-safe for `tokio::select!`).
+/// Tools that spawn a child process use it to kill the child on abort, matching
+/// the TS `signal.addEventListener("abort", ...)` handlers.
+pub(crate) async fn wait_for_abort(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *rx.borrow() {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 pub use output_accumulator::{OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot};
 pub use truncate::{TruncationOptions, TruncationResult};
 

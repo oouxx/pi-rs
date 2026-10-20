@@ -63,6 +63,20 @@ pub fn format_size(bytes: usize) -> String {
     }
 }
 
+/// Truncate to the byte budget only, with no line limit.
+/// Matches TS `truncateHead(x, { maxLines: Number.MAX_SAFE_INTEGER })`, used by
+/// the grep/find tools where the row count is already capped by a match/result
+/// limit.
+pub fn truncate_head_bytes_only(content: &str) -> TruncationResult {
+    truncate_head(
+        content,
+        Some(TruncationOptions {
+            max_lines: Some(usize::MAX),
+            max_bytes: None,
+        }),
+    )
+}
+
 pub fn truncate_head(content: &str, options: Option<TruncationOptions>) -> TruncationResult {
     let opts = options.unwrap_or_default();
     let max_lines = opts.max_lines.unwrap_or(DEFAULT_MAX_LINES);

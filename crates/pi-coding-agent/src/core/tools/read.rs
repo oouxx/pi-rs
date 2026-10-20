@@ -130,6 +130,14 @@ fn read_parameters_schema() -> serde_json::Value {
     })
 }
 
+/// Polled abort check (TS reads `signal.aborted` at each step).
+fn aborted(signal: &Option<tokio::sync::watch::Receiver<bool>>) -> bool {
+    signal
+        .as_ref()
+        .map(|rx| *rx.borrow())
+        .unwrap_or(false)
+}
+
 // ============================================================================
 // create_read_tool
 // ============================================================================
@@ -184,48 +192,20 @@ pub fn create_read_tool(
                     let absolute_path = path_utils::resolve_read_path(file_path, &cwd);
                     let absolute_path_str = absolute_path.to_string_lossy().to_string();
 
-                    // Check if file exists and is readable
-                    if let Err(e) = operations.access(&absolute_path_str).await {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!(
-                                "Error reading file: {}",
-                                e
-                            ))],
-                            details: serde_json::to_value(ReadToolDetails::default())
-                                .unwrap_or(serde_json::Value::Null),
-                            usage: None,
-                            terminate: None,
-                        });
+                    // Check if file exists and is readable. TS rejects with the
+                    // raw fs error (`ops.access` throws), which the agent loop
+                    // turns into an error tool result.
+                    operations.access(&absolute_path_str).await?;
+
+                    if aborted(&signal) {
+                        return Err("Operation aborted".to_string().into());
                     }
 
-                    // Check for abort
-                    if let Some(ref rx) = signal {
-                        if *rx.borrow() {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text("Operation aborted")],
-                                details: serde_json::to_value(ReadToolDetails::default())
-                                    .unwrap_or(serde_json::Value::Null),
-                                usage: None,
-                                terminate: None,
-                            });
-                        }
-                    }
+                    let bytes = operations.read_file(&absolute_path_str).await?;
 
-                    let bytes = match operations.read_file(&absolute_path_str).await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text(format!(
-                                    "Error reading file: {}",
-                                    e
-                                ))],
-                                details: serde_json::to_value(ReadToolDetails::default())
-                                    .unwrap_or(serde_json::Value::Null),
-                                usage: None,
-                                terminate: None,
-                            });
-                        }
-                    };
+                    if aborted(&signal) {
+                        return Err("Operation aborted".to_string().into());
+                    }
 
                     // Images are returned as inline attachments (text note + optional
                     // resized image). Detected from magic bytes before the UTF-8
@@ -290,17 +270,13 @@ pub fn create_read_tool(
                     let start_line = offset.map(|o| if o > 0 { o - 1 } else { 0 }).unwrap_or(0);
 
                     if start_line >= all_lines.len() {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!(
-                                "Offset {} is beyond end of file ({} lines total)",
-                                offset.unwrap_or(0),
-                                total_file_lines
-                            ))],
-                            details: serde_json::to_value(ReadToolDetails::default())
-                                .unwrap_or(serde_json::Value::Null),
-                            usage: None,
-                            terminate: None,
-                        });
+                        // TS `reject`s here (error tool result).
+                        return Err(format!(
+                            "Offset {} is beyond end of file ({} lines total)",
+                            offset.unwrap_or(0),
+                            total_file_lines
+                        )
+                        .into());
                     }
 
                     let selected_content = if let Some(lim) = limit {
@@ -360,11 +336,14 @@ pub fn create_read_tool(
                         output_text = truncation.content;
                     }
 
+                    if aborted(&signal) {
+                        return Err("Operation aborted".to_string().into());
+                    }
+
                     Ok(AgentToolResult {
                         content: vec![ContentBlock::text(output_text)],
                         details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
                         usage: None,
-
                         terminate: None,
                     })
                 })

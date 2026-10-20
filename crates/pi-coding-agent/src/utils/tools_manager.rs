@@ -270,6 +270,18 @@ pub fn get_tool_path(tool: &str) -> Option<String> {
     None
 }
 
+/// Whether downloads are disabled (`PI_OFFLINE`), matching TS
+/// `isOfflineModeEnabled()`: `1`, `true` or `yes`, case-insensitive.
+fn is_offline_mode_enabled() -> bool {
+    match std::env::var("PI_OFFLINE") {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
 /// Ensure a tool is available, downloading it if necessary.
 ///
 /// First checks the local tools directory and system PATH. If the tool is not
@@ -279,14 +291,16 @@ pub fn get_tool_path(tool: &str) -> Option<String> {
 /// Returns `Some(path)` if the tool is now available, or `None` if it could
 /// not be found or downloaded.
 pub fn ensure_tool(tool: &str) -> Option<String> {
-    // Offline mode -- skip download.
-    if std::env::var("PI_OFFLINE").as_deref() == Ok("1") {
-        return None;
-    }
-
-    // Fast path -- already available.
+    // Fast path -- already available (PATH / managed install), matching TS
+    // `ensureTool()`, which resolves an existing tool *before* checking
+    // offline mode.
     if let Some(path) = get_tool_path(tool) {
         return Some(path);
+    }
+
+    // Offline mode -- skip download.
+    if is_offline_mode_enabled() {
+        return None;
     }
 
     let config = get_tool_config(tool)?;
@@ -302,6 +316,17 @@ pub fn ensure_tool(tool: &str) -> Option<String> {
             None
         }
     }
+}
+
+/// Async wrapper around [`ensure_tool`] for use inside tool execution.
+///
+/// `ensure_tool` shells out (`curl`, `tar`/`unzip`) so it must not run on the
+/// async runtime's worker thread.
+pub async fn ensure_tool_async(tool: &str) -> Option<String> {
+    let tool = tool.to_string();
+    tokio::task::spawn_blocking(move || ensure_tool(&tool))
+        .await
+        .unwrap_or(None)
 }
 
 /// Download a tool from GitHub releases and install it into the bin directory.
@@ -516,12 +541,47 @@ mod tests {
         assert_eq!(ensure_tool("made_up_tool"), None);
     }
 
+    /// `PI_OFFLINE` accepts 1/true/yes, case-insensitive (TS
+    /// `isOfflineModeEnabled()`).
     #[test]
-    fn test_ensure_tool_offline_mode() {
+    fn test_is_offline_mode_enabled_values() {
+        for value in ["1", "true", "TRUE", "yes", "Yes"] {
+            std::env::set_var("PI_OFFLINE", value);
+            assert!(is_offline_mode_enabled(), "expected offline for {value:?}");
+        }
+        for value in ["0", "false", "no", ""] {
+            std::env::set_var("PI_OFFLINE", value);
+            assert!(!is_offline_mode_enabled(), "expected online for {value:?}");
+        }
+        std::env::remove_var("PI_OFFLINE");
+        assert!(!is_offline_mode_enabled());
+    }
+
+    /// Offline mode only blocks downloads: an already resolvable binary is
+    /// still returned, matching TS `ensureTool()` ordering.
+    #[test]
+    fn test_ensure_tool_existing_binary_wins_over_offline() {
+        if get_tool_path("fd").is_none() {
+            // No fd on PATH / in the managed dir, so the ordering cannot be
+            // observed here.
+            return;
+        }
+        std::env::set_var("PI_OFFLINE", "1");
+        assert!(ensure_tool("fd").is_some());
+        std::env::remove_var("PI_OFFLINE");
+    }
+
+    /// With no resolvable binary, offline mode must not attempt a download.
+    #[test]
+    fn test_ensure_tool_offline_mode_skips_download() {
+        if get_tool_path("fd").is_some() {
+            // fd resolves locally, so offline mode is irrelevant.
+            return;
+        }
         std::env::set_var("PI_OFFLINE", "1");
         let result = ensure_tool("fd");
-        assert!(result.is_none());
         std::env::remove_var("PI_OFFLINE");
+        assert!(result.is_none());
     }
 
     // -----------------------------------------------------------------------

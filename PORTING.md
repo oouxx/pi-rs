@@ -257,7 +257,8 @@ spawn 外部二进制；`utils/tools-manager.ts` 负责解析/下载。Rust 侧�
 | -- | ---- | ---- |
 | `createGrepToolDefinition` + `spawn(rg, args)` | `core/tools/grep.rs` | `rg --json` 事件流 → 匹配收集 → 退出后格式化（context 需读文件，故延后） |
 | `createFindToolDefinition` + `spawn(fd, args)` | `core/tools/find.rs` | `fd` 逐行输出 → 相对化 → 截断 |
-| `ensureTool("rg"\|"fd")` / `getToolPath` | `utils/tools_manager.rs` | 本地 bin 目录 → PATH → GitHub release 下载；`ensure_tool_async` 用 `spawn_blocking` 包住（内部是 curl/tar 子进程） |
+| `ensureTool("rg"\|"fd")` / `getToolPath` + `ToolStatus` | `utils/tools_manager.rs` | 本地 bin 目录 → PATH → GitHub release 下载；`ensure_tool_async`/`ensure_tool_with_status_async` 用 `spawn_blocking` 包住（内部是 curl/tar 子进程） |
+| 交互模式启动预热（`interactive-mode.ts:1076`） | `modes/interactive.rs`（启动时两个后台任务） | 状态文案与 TS `showManagedToolStatus` 一致（info 原样、warning 加 `Warning: ` 前缀），以 system 消息进转录；Rust 不 await（不阻塞启动） |
 | `relativizeFindResultPath` | `find::relativize_find_result_path` | 绝对路径相对化 + posix 分隔符 + 保留尾斜杠 |
 | `formatPath`（grep 内部函数） | `grep::format_path` | 目录搜索时相对搜索根（`..` 开头则退回 basename），文件搜索取 basename |
 | `truncateHead(x, { maxLines: MAX_SAFE_INTEGER })` | `truncate::truncate_head_bytes_only` | 只按字节截断，行数不设限（行数已由命中上限控制） |

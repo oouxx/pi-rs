@@ -875,6 +875,37 @@ fn tui_probe_slow_stream_completes() {
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
 }
 
+/// Managed-tool prewarm (TS `ensureTool("fd")`/`ensureTool("rg")` at startup):
+/// missing binaries are reported in the transcript as system messages.
+/// `PI_OFFLINE=1` + a PATH without fd/rg + a throwaway agent dir make it
+/// deterministic and network-free.
+#[test]
+fn tui_prewarm_reports_missing_search_binaries() {
+    let agent_dir = tempfile::tempdir().expect("agent dir");
+    let agent_dir_str = agent_dir.path().to_str().expect("utf8").to_string();
+    let mut tui = Tui::spawn_inner_env(
+        false,
+        None,
+        &[
+            ("PI_OFFLINE", "1"),
+            ("PATH", "/usr/bin:/bin"),
+            ("PI_CODING_AGENT_DIR", &agent_dir_str),
+        ],
+    );
+
+    // Both prewarm tasks run concurrently, so wait for each status separately.
+    // TS `showManagedToolStatus` prefixes warnings with `Warning: `.
+    let fd_line = "Warning: fd not found. Offline mode enabled, skipping download.";
+    let rg_line = "Warning: ripgrep not found. Offline mode enabled, skipping download.";
+    if !tui.wait_for(fd_line, TIMEOUT) || !tui.wait_for(rg_line, TIMEOUT) {
+        let rendered = tui.rendered().replace('\u{1b}', "<esc>");
+        panic!("prewarm statuses missing: {rendered}");
+    }
+
+    tui.quit();
+    assert_eq!(tui.wait_exit(TIMEOUT), Some(0));
+}
+
 /// The "working" status must track the session run lifecycle (TS
 /// `isStreaming = _isAgentRunActive`): the spinner appears while the agent
 /// streams and is cleared once the run settles. Regression guard: the spinner

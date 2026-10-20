@@ -282,6 +282,34 @@ fn is_offline_mode_enabled() -> bool {
     }
 }
 
+/// Status update emitted while resolving a managed tool (TS `ToolStatus`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolStatus {
+    /// `true` = rendered as `Warning: <message>` (TS `status.type === "warning"`).
+    pub warning: bool,
+    pub message: String,
+}
+
+impl ToolStatus {
+    fn info(message: impl Into<String>) -> Self {
+        Self {
+            warning: false,
+            message: message.into(),
+        }
+    }
+
+    fn warning(message: impl Into<String>) -> Self {
+        Self {
+            warning: true,
+            message: message.into(),
+        }
+    }
+}
+
+/// Termux install hints (TS `TERMUX_PACKAGES`): Android binaries from GitHub
+/// releases are unusable (Bionic libc), so only print the `pkg install` hint.
+const TERMUX_PACKAGES: &[(&str, &str)] = &[("fd", "fd"), ("rg", "ripgrep")];
+
 /// Ensure a tool is available, downloading it if necessary.
 ///
 /// First checks the local tools directory and system PATH. If the tool is not
@@ -291,6 +319,18 @@ fn is_offline_mode_enabled() -> bool {
 /// Returns `Some(path)` if the tool is now available, or `None` if it could
 /// not be found or downloaded.
 pub fn ensure_tool(tool: &str) -> Option<String> {
+    ensure_tool_with_status(tool, &|_| {})
+}
+
+/// [`ensure_tool`] with TS `ensureTool(tool, onStatus)` status reporting.
+///
+/// Statuses are only emitted when work is required: an already resolvable tool
+/// returns `Some` silently (matching TS), so the interactive prewarm prints
+/// nothing on machines that already have the binary.
+pub fn ensure_tool_with_status(
+    tool: &str,
+    on_status: &(dyn Fn(ToolStatus) + Send + Sync),
+) -> Option<String> {
     // Fast path -- already available (PATH / managed install), matching TS
     // `ensureTool()`, which resolves an existing tool *before* checking
     // offline mode.
@@ -298,21 +338,49 @@ pub fn ensure_tool(tool: &str) -> Option<String> {
         return Some(path);
     }
 
+    let config = get_tool_config(tool)?;
+
     // Offline mode -- skip download.
     if is_offline_mode_enabled() {
+        on_status(ToolStatus::warning(format!(
+            "{} not found. Offline mode enabled, skipping download.",
+            config.name
+        )));
         return None;
     }
 
-    let config = get_tool_config(tool)?;
+    // Android/Termux: release binaries do not run (Bionic libc incompatibility).
+    if std::env::consts::OS == "android" {
+        let package = TERMUX_PACKAGES
+            .iter()
+            .find(|(name, _)| *name == tool)
+            .map(|(_, package)| *package)
+            .unwrap_or(config.binary_name);
+        on_status(ToolStatus::warning(format!(
+            "{} not found. Install with: pkg install {}",
+            config.name, package
+        )));
+        return None;
+    }
 
-    // Attempt download.
+    on_status(ToolStatus::info(format!(
+        "{} not found. Downloading...",
+        config.name
+    )));
+
     match download_tool(config) {
-        Ok(path) => Some(path),
-        Err(_) => {
-            eprintln!(
-                "Warning: {} not found. Install it manually or set PI_OFFLINE=1 to suppress.",
-                tool
-            );
+        Ok(path) => {
+            on_status(ToolStatus::info(format!(
+                "{} installed to {}",
+                config.name, path
+            )));
+            Some(path)
+        }
+        Err(e) => {
+            on_status(ToolStatus::warning(format!(
+                "Failed to download {}: {}",
+                config.name, e
+            )));
             None
         }
     }
@@ -325,6 +393,18 @@ pub fn ensure_tool(tool: &str) -> Option<String> {
 pub async fn ensure_tool_async(tool: &str) -> Option<String> {
     let tool = tool.to_string();
     tokio::task::spawn_blocking(move || ensure_tool(&tool))
+        .await
+        .unwrap_or(None)
+}
+
+/// Async [`ensure_tool_with_status`] (status callback runs on the blocking
+/// worker thread).
+pub async fn ensure_tool_with_status_async<F>(tool: &str, on_status: F) -> Option<String>
+where
+    F: Fn(ToolStatus) + Send + Sync + 'static,
+{
+    let tool = tool.to_string();
+    tokio::task::spawn_blocking(move || ensure_tool_with_status(&tool, &on_status))
         .await
         .unwrap_or(None)
 }
@@ -539,6 +619,54 @@ mod tests {
     #[test]
     fn test_ensure_tool_for_unknown_returns_none() {
         assert_eq!(ensure_tool("made_up_tool"), None);
+    }
+
+    /// Unknown tools are not managed at all: no status, `None`.
+    #[test]
+    fn test_ensure_tool_with_status_unknown_tool_is_silent() {
+        let statuses = std::sync::Mutex::new(Vec::new());
+        let result = ensure_tool_with_status("made_up_tool", &|status| {
+            statuses.lock().unwrap().push(status);
+        });
+        assert_eq!(result, None);
+        assert!(statuses.lock().unwrap().is_empty());
+    }
+
+    /// An already resolvable tool returns its path without any status (TS
+    /// `ensureTool` early-returns before reporting).
+    #[test]
+    fn test_ensure_tool_with_status_available_is_silent() {
+        if get_tool_path("fd").is_none() {
+            return;
+        }
+        let statuses = std::sync::Mutex::new(Vec::new());
+        let result = ensure_tool_with_status("fd", &|status| {
+            statuses.lock().unwrap().push(status);
+        });
+        assert!(result.is_some());
+        assert!(statuses.lock().unwrap().is_empty());
+    }
+
+    /// Offline mode reports a warning instead of attempting a download.
+    #[test]
+    fn test_ensure_tool_with_status_offline_warning() {
+        if get_tool_path("fd").is_some() {
+            return;
+        }
+        std::env::set_var("PI_OFFLINE", "1");
+        let statuses = std::sync::Mutex::new(Vec::new());
+        let result = ensure_tool_with_status("fd", &|status| {
+            statuses.lock().unwrap().push(status);
+        });
+        std::env::remove_var("PI_OFFLINE");
+        assert_eq!(result, None);
+        let statuses = statuses.lock().unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].warning);
+        assert_eq!(
+            statuses[0].message,
+            "fd not found. Offline mode enabled, skipping download."
+        );
     }
 
     /// `PI_OFFLINE` accepts 1/true/yes, case-insensitive (TS

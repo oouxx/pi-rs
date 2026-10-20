@@ -1935,6 +1935,16 @@ async fn flush_compaction_queue(
     }
 }
 
+/// TS `showManagedToolStatus`: warnings get a `Warning: ` prefix, info lines
+/// print as-is (both land in the transcript as system messages).
+fn managed_tool_status_text(status: &crate::utils::tools_manager::ToolStatus) -> String {
+    if status.warning {
+        format!("Warning: {}", status.message)
+    } else {
+        status.message.clone()
+    }
+}
+
 fn spawn_agent_command_task(
     session: Arc<Mutex<AgentSession>>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<AgentCmd>,
@@ -2674,6 +2684,26 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         completion_sources.clone(),
     );
 
+    // ── Managed tool prewarm (TS `ensureTool("fd")`/`ensureTool("rg")`,
+    //    interactive-mode.ts:1076) ─────────────────────────────────────────
+    // Resolve (and, if missing, download) the search binaries in the
+    // background so the first grep/find call never stalls on a download.
+    // Statuses land in the transcript like TS `showManagedToolStatus`; a
+    // machine that already has both binaries prints nothing. TS awaits the
+    // pair before wiring the submit handler — Rust keeps startup instant
+    // (DEVIATIONS #31).
+    for tool in ["fd", "rg"] {
+        let status_tx = result_tx.clone();
+        tokio::spawn(async move {
+            let on_status = move |status: crate::utils::tools_manager::ToolStatus| {
+                let text = managed_tool_status_text(&status);
+                let _ = status_tx.send(pi_tui::Msg::NewMessage("system".to_string(), text));
+            };
+            let _ = crate::utils::tools_manager::ensure_tool_with_status_async(tool, on_status)
+                .await;
+        });
+    }
+
     // ── Subscribe agent events (lock-and-release) ───────────────────────
     // Keep an `Arc<Agent>` handle for abort: `abort()` is `&self` and must
     // NOT be routed through the session mutex — `prompt()` holds the
@@ -3260,6 +3290,29 @@ mod tests {
 
     fn state() -> AppState {
         AppState::new(120, 80, Vec::new(), Vec::new())
+    }
+
+    /// Managed-tool prewarm statuses match TS `showManagedToolStatus`: info text
+    /// verbatim, warnings prefixed with `Warning: `.
+    #[test]
+    fn managed_tool_status_text_prefixes_warnings() {
+        let info = crate::utils::tools_manager::ToolStatus {
+            warning: false,
+            message: "ripgrep not found. Downloading...".to_string(),
+        };
+        assert_eq!(
+            managed_tool_status_text(&info),
+            "ripgrep not found. Downloading..."
+        );
+
+        let warning = crate::utils::tools_manager::ToolStatus {
+            warning: true,
+            message: "fd not found. Offline mode enabled, skipping download.".to_string(),
+        };
+        assert_eq!(
+            managed_tool_status_text(&warning),
+            "Warning: fd not found. Offline mode enabled, skipping download."
+        );
     }
 
     /// A connection/auth error can arrive with no text or thinking content.

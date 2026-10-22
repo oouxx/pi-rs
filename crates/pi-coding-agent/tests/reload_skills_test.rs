@@ -91,6 +91,7 @@ async fn create_session(cwd: &str, agent_dir: &str) -> AgentSession {
         stream_fn: None,
         convert_to_llm: None,
         initial_active_tool_names: None,
+        uses_default_tools: false,
         allowed_tool_names: None,
         excluded_tool_names: None,
         extension_registry: Some(Arc::new(ExtensionRegistry::new())),

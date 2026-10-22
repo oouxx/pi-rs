@@ -318,6 +318,24 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 嵌套 git 仓库边界 | git 仓库内父 `.gitignore` 规则在嵌套仓库边界停止（#5960） | `require_git(inside_git)` 实现同语义 | 是 | 修复见 PORTING_MISTAKES.md #15 |
 | 仓库外搜索 | fd `--no-require-git`（仍尊重 `.gitignore`） | `require_git(false)` 同语义 | 是 | 修复见 PORTING_MISTAKES.md #15 |
 | 默认忽略 | `**/node_modules/**`、`**/.git/**` | 同左（ignore 列表保留） | 是 | — |
+
+## 内置工具注册与激活（`core/tools`、`core/agent_session.rs`、`core/settings_manager.rs`、`core/sdk.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
+| -------- | ----------- | ------------- | -------- |
+| 内置工具注册 | `createAllToolDefinitions()` 注册 read/bash/powershell/edit/write/grep/find/ls；默认只激活 `DEFAULT_TOOL_NAMES`（read/bash/edit/write） | `tools::create_all_tools()` 注册 read/bash/edit/write/grep/find/ls（powershell 未移植）；默认激活同左 | 是 |
+| `--tools` 白名单 | `allowedToolNames`：只保留名单内工具，且“点名即激活”（即使默认未激活） | `allowed_tool_names`：先过滤 registry，激活逻辑 `allowed_names.contains` 命中即激活 | 是 |
+| `--exclude-tools` | `_isAllowedTool` 同时过滤 registry，被排除的工具无法再激活 | 同左（先过滤再快照 registry；`getAllTools()` 也看不到） | 是 |
+| `--no-tools` | `allowedToolNames = []`，registry 为空 | `NoToolsMode::All` → `allowed_tool_names = Some([])` | 是 |
+| `--no-builtin-tools` | 初始激活为空，registry/扩展工具保留 | `NoToolsMode::Builtin` → `initial_active = []`，registry 保留 | 是 |
+| `defaultTools` 设置 | `getDefaultTools() ?? DEFAULT_TOOL_NAMES`；`+name`/`-name` 增量（`resolveDefaultTools`），项目层 modifier-only 列表叠加用户层（`mergeDefaultTools`） | `SettingsManager::get_default_tools()` 同款解析；`deep_merge_settings` 对 `defaultTools` 调用 `merge_default_tools` | 是 |
+| `/reload` 新增 `defaultTools` | `usesDefaultTools` 时激活新增项；移除项保持激活，会话中手动关掉的保持关闭 | `uses_default_tools` + `reload()` 同左 | 是 |
+| 同名工具覆盖 | registry 按名索引，custom/extension 覆盖同名内置（保留首次插入位置） | `tool_list` 按名去重（保留首次位置，后者覆盖） | 是 |
+| `setActiveToolsByName()` | 从完整 registry 解析，未知名忽略，重建 system prompt | `set_active_tools_by_name()` 同左 | 是 |
+| `getAllTools()` 来源 | 内置 + 扩展 + SDK 定义，来源标注 `<builtin:name>` / `<sdk:name>` | `tool_definitions` 先插入内置定义（`create_builtin_source_info`），custom 覆盖、extension 不覆盖 custom | 是 |
+| system prompt 工具段 | 只声明当前激活工具（`_rebuildSystemPrompt(activeNames)`），snippet 表覆盖整个 registry | 先激活、再以激活名单构建 prompt；snippet/guidelines 来自过滤后的 registry | 是 |
+| 隐藏暴露（`hidden`/`model-only`）、`prepareLoadout`、pending tool | TS 有 | 未实现 | 否（未移植） |
+
 ## ACP Mode（新增功能，无 TS 对应物）
 
 > ACP mode 是 pi-rs 新增功能（TS 原版无原生 ACP，Zed 里靠第三方 `pi-acp` 适配器）。

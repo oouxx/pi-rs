@@ -86,13 +86,18 @@ pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 | `-P, --provider` | 指定提供商 |
 | `-k, --api-key` | 直接指定 API Key |
 | `--thinking` | 思考强度：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
-| `--tools` / `--exclude-tools` | 允许 / 排除特定工具（逗号分隔，如 `read,bash,edit`；短标志 `-t` / `-xt`） |
+| `--tools` / `--exclude-tools` | 允许 / 排除特定工具（逗号分隔；短标志 `-t` / `-xt`）。内置工具：`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`（默认只激活前四个）；`--tools read,grep,find,ls` 即只读模式 |
+| `--no-tools` / `--no-builtin-tools` | 关闭全部工具 / 只关闭内置工具（扩展与 MCP 工具保留） |
 | `--extension <PATH>` | 加载扩展（可重复） |
 | `--no-session` | 不保存会话 |
 | `--session-dir <DIR>` | 自定义会话目录 |
 | `--no-extensions` / `--no-skills` | 禁用扩展 / skills 加载 |
 | `--list-models [PATTERN]` | 列出可用模型（可按关键字过滤） |
 | `-h, --help` | 查看完整帮助 |
+
+持久化初始工具集：在 `~/.pi-rs/agent/settings.json` 或项目 `.pi-rs/settings.json` 里设置
+`"defaultTools"`，普通名字整体替换默认集合（`read`/`bash`/`edit`/`write`），`+name` /
+`-name` 在继承的集合上增减，例如 `["+grep", "+find", "+ls"]`；`/reload` 会激活新加入的工具。
 
 ## 子命令
 

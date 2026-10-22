@@ -317,6 +317,67 @@ pub struct Settings {
 }
 
 // ============================================================================
+// defaultTools resolution (matching TS DEFAULT_TOOL_NAMES / resolveDefaultTools)
+// ============================================================================
+
+/// Tools enabled at startup when `defaultTools` does not change them
+/// (TS `DEFAULT_TOOL_NAMES`).
+pub const DEFAULT_TOOL_NAMES: [&str; 4] = ["read", "bash", "edit", "write"];
+
+/// `+name` / `-name` entries add to / remove from the inherited selection.
+fn is_tool_modifier(entry: &str) -> bool {
+    entry.starts_with('+') || entry.starts_with('-')
+}
+
+/// Merge `defaultTools` of two settings layers (TS `mergeDefaultTools`): a list
+/// containing only `+name`/`-name` entries is appended to the inherited
+/// selection, anything else replaces it.
+fn merge_default_tools(
+    base: Option<&Vec<String>>,
+    overrides: Option<&Vec<String>>,
+) -> Option<Vec<String>> {
+    let overrides = overrides?;
+    match base {
+        Some(base) if overrides.iter().all(|entry| is_tool_modifier(entry)) => {
+            Some(base.iter().chain(overrides.iter()).cloned().collect())
+        }
+        _ => Some(overrides.clone()),
+    }
+}
+
+/// Resolve a merged `defaultTools` list (TS `resolveDefaultTools`): plain names
+/// replace `DEFAULT_TOOL_NAMES`, then `+name` adds and `-name` removes a tool in
+/// list order. An empty list therefore disables every built-in tool.
+fn resolve_default_tools(entries: &[String]) -> Vec<String> {
+    let plain: Vec<String> = entries
+        .iter()
+        .filter(|entry| !is_tool_modifier(entry))
+        .cloned()
+        .collect();
+    let mut tools: Vec<String> = if !plain.is_empty() || entries.is_empty() {
+        plain
+    } else {
+        DEFAULT_TOOL_NAMES.iter().map(|name| (*name).to_string()).collect()
+    };
+    for entry in entries {
+        if !is_tool_modifier(entry) {
+            continue;
+        }
+        // The modifier is a single ASCII byte, so slicing is safe.
+        let name = &entry[1..];
+        let index = tools.iter().position(|tool| tool == name);
+        if entry.starts_with('+') {
+            if index.is_none() && !name.is_empty() {
+                tools.push(name.to_string());
+            }
+        } else if let Some(index) = index {
+            tools.remove(index);
+        }
+    }
+    tools
+}
+
+// ============================================================================
 // Deep merge (matching TS deepMergeSettings)
 // ============================================================================
 
@@ -356,8 +417,17 @@ fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
             // For primitives and arrays, override wins
             result.insert(key.clone(), value.clone());
         }
-        if let Ok(s) = serde_json::from_value(serde_json::Value::Object(result)) {
-            return s;
+        if let Ok(mut merged) = serde_json::from_value::<Settings>(serde_json::Value::Object(result)) {
+            // `defaultTools` merges specially (TS `mergeDefaultTools`): a
+            // modifier-only overlay appends to the inherited list instead of
+            // replacing it.
+            if overrides.default_tools.is_some() {
+                merged.default_tools = merge_default_tools(
+                    base.default_tools.as_ref(),
+                    overrides.default_tools.as_ref(),
+                );
+            }
+            return merged;
         }
     }
 
@@ -933,9 +1003,27 @@ impl SettingsManager {
 
     /// Initial built-in tool selection (TS `getDefaultTools`), used when the
     /// caller does not pass an explicit `tools` allowlist. `None` = keep the
-    /// default built-in set (read, bash, edit, write).
+    /// default built-in set (read, bash, edit, write). Plain names replace the
+    /// defaults; `+name` adds and `-name` removes one (TS
+    /// `resolveDefaultTools`).
     pub fn get_default_tools(&self) -> Option<Vec<String>> {
-        self.settings.default_tools.clone()
+        self.settings
+            .default_tools
+            .as_ref()
+            .map(|tools| resolve_default_tools(tools))
+    }
+
+    /// Resolved initial built-in tool selection (TS
+    /// `getDefaultTools() ?? DEFAULT_TOOL_NAMES`), used by the SDK when no
+    /// `--tools` allowlist was given and by `reload()` when checking for newly
+    /// added tools.
+    pub fn resolved_default_tools(&self) -> Vec<String> {
+        self.get_default_tools().unwrap_or_else(|| {
+            DEFAULT_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect()
+        })
     }
 
     pub fn set_default_tools(&mut self, tools: Option<Vec<String>>) {
@@ -1840,6 +1928,65 @@ mod tests {
         // Not configured → None (default built-in set stays active).
         mgr.set_default_tools(None);
         assert_eq!(mgr.get_default_tools(), None);
+    }
+
+    /// TS `resolveDefaultTools`: `+name`/`-name` modify the default selection
+    /// instead of replacing it, so `"defaultTools": ["+grep"]` enables grep on
+    /// top of read/bash/edit/write.
+    #[test]
+    fn test_default_tools_modifiers_resolve_on_top_of_defaults() {
+        let resolve = |entries: &[&str]| -> Vec<String> {
+            super::resolve_default_tools(
+                &entries.iter().map(|e| (*e).to_string()).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(resolve(&["+grep", "+find", "+ls"]), vec![
+            "read", "bash", "edit", "write", "grep", "find", "ls"
+        ]);
+        assert_eq!(resolve(&["-bash", "+powershell"]), vec![
+            "read", "edit", "write", "powershell"
+        ]);
+        // Plain names replace the defaults; modifiers then apply in order.
+        assert_eq!(resolve(&["read", "grep"]), vec!["read", "grep"]);
+        assert_eq!(resolve(&["read", "+bash", "-read"]), vec!["bash"]);
+        // Empty list disables every built-in tool.
+        assert!(resolve(&[]).is_empty());
+    }
+
+    /// A modifier-only project list layers on top of the global selection
+    /// (TS `mergeDefaultTools`); a plain project list replaces it.
+    #[test]
+    fn test_default_tools_project_modifiers_merge_into_global() {
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let mgr = SettingsManager::new(
+            storage,
+            Settings {
+                default_tools: Some(vec!["read".to_string(), "bash".to_string()]),
+                ..Default::default()
+            },
+            Settings {
+                default_tools: Some(vec!["+grep".to_string()]),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            mgr.get_default_tools(),
+            Some(vec!["read".to_string(), "bash".to_string(), "grep".to_string()])
+        );
+
+        let storage = Box::new(InMemorySettingsStorage::new());
+        let mgr = SettingsManager::new(
+            storage,
+            Settings {
+                default_tools: Some(vec!["read".to_string(), "bash".to_string()]),
+                ..Default::default()
+            },
+            Settings {
+                default_tools: Some(vec!["grep".to_string()]),
+                ..Default::default()
+            },
+        );
+        assert_eq!(mgr.get_default_tools(), Some(vec!["grep".to_string()]));
     }
 
     #[test]

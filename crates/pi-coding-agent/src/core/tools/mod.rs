@@ -105,6 +105,48 @@ pub struct ToolsOptions {
 
 pub type DynTool = AgentTool<serde_json::Value, serde_json::Value>;
 
+/// Names of every built-in tool, in `create_all_tools` order.
+///
+/// Sessions register **all** of them and only activate the ones named by
+/// `allowed_tool_names` / `initial_active_tool_names` (matching TS
+/// `createAllToolDefinitions` + `DEFAULT_TOOL_NAMES`; see
+/// `agent-session.ts` `_refreshToolRegistry`).
+pub const BUILTIN_TOOL_NAMES: [&str; 7] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+
+/// Whether `name` is a built-in tool (and therefore subject to active-list
+/// gating, unlike extension/custom tools which are always active).
+#[must_use]
+pub fn is_builtin_tool(name: &str) -> bool {
+    BUILTIN_TOOL_NAMES.contains(&name)
+}
+
+/// Create every built-in tool (read, bash, edit, write, grep, find, ls).
+///
+/// Matches TS `createAllToolDefinitions` / `createAllTools`: the whole built-in
+/// set is registered up front so `--tools read,grep,find,ls`, the
+/// `defaultTools` setting, or `set_active_tools_by_name()` can activate any of
+/// them later.
+pub fn create_all_tools(
+    cwd: &str,
+    options: Option<&ToolsOptions>,
+    bash_session_env_provider: Option<bash::BashSessionEnvProvider>,
+) -> Vec<DynTool> {
+    let opts = options.cloned().unwrap_or_default();
+    let mut bash_opts = opts.bash.unwrap_or_default();
+    if bash_session_env_provider.is_some() {
+        bash_opts.session_env_provider = bash_session_env_provider;
+    }
+    vec![
+        read::create_read_tool(cwd, opts.read),
+        bash::create_bash_tool(cwd, Some(bash_opts)),
+        edit::create_edit_tool(cwd, opts.edit),
+        write::create_write_tool(cwd, opts.write),
+        grep::create_grep_tool(cwd, opts.grep),
+        find::create_find_tool(cwd, opts.find),
+        ls::create_ls_tool(cwd, opts.ls),
+    ]
+}
+
 pub fn create_coding_tools(
     cwd: &str,
     options: Option<&ToolsOptions>,
@@ -142,6 +184,19 @@ mod sampling_tests {
     /// The built-in tools declare strict-prefer JSON-schema sampling by default
     /// — only the four the original declares it on. `grep`, `find` and `ls`
     /// must stay unconstrained (TS `read`/`bash`/`edit`/`write` only).
+    /// Every built-in tool is available from the registry, even though only
+    /// read/bash/edit/write are active by default.
+    #[test]
+    fn create_all_tools_matches_ts_tool_set() {
+        let tools = super::create_all_tools("/tmp", None, None);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, super::BUILTIN_TOOL_NAMES.to_vec());
+        for name in ["read", "bash", "edit", "write", "grep", "find", "ls"] {
+            assert!(super::is_builtin_tool(name), "{name} must be built-in");
+        }
+        assert!(!super::is_builtin_tool("subagent"));
+    }
+
     #[test]
     fn builtin_tool_sampling_matches_ts() {
         let expected = Some(ConstrainedSamplingConfig::JsonSchema {

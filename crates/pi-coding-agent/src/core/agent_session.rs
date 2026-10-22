@@ -291,6 +291,11 @@ pub struct AgentSessionConfig {
     pub stream_fn: Option<StreamFn>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
     pub initial_active_tool_names: Option<Vec<String>>,
+    /// Whether the initial tool set came from the `defaultTools` setting (no
+    /// explicit `--tools` allowlist and no `--no-tools`). When true, `reload()`
+    /// activates tools newly added to the setting (matching TS
+    /// `usesDefaultTools`).
+    pub uses_default_tools: bool,
     pub allowed_tool_names: Option<Vec<String>>,
     pub excluded_tool_names: Option<Vec<String>>,
     /// Extension registry (Rust native extensions).
@@ -660,6 +665,9 @@ pub struct AgentSession {
     cwd: String,
     scoped_models: Vec<(Model, Option<ThinkingLevel>)>,
     initial_active_tool_names: Vec<String>,
+    /// Whether the initial tool set came from the `defaultTools` setting; makes
+    /// `reload()` activate tools newly added to it (TS `_usesDefaultTools`).
+    uses_default_tools: bool,
     allowed_tool_names: Option<Vec<String>>,
     excluded_tool_names: Option<Vec<String>>,
     /// Extension registry (Rust native extensions).
@@ -954,10 +962,14 @@ impl AgentSession {
         let tools_options = options.tools_options.clone().unwrap_or_default();
         let mut tool_list: Vec<pi_agent_core::types::DynTool> = Vec::new();
 
-        // 1. Built-in tools (read, bash, edit, write)
-        // Bash tools receive current session metadata as PI_* env vars, resolved
-        // at each command start (match TS #6967). The agent reference is bound
-        // late (after Agent::new) so model/thinking-level changes are picked up.
+        // 1. Built-in tools (read, bash, edit, write, grep, find, ls).
+        //    The whole built-in set is registered up front, matching TS
+        //    `createAllToolDefinitions`; only read/bash/edit/write are active by
+        //    default, and `--tools` / the `defaultTools` setting can activate
+        //    grep/find/ls later. Bash tools receive current session metadata as
+        //    PI_* env vars, resolved at each command start (match TS #6967). The
+        //    agent reference is bound late (after Agent::new) so model/thinking-
+        //    level changes are picked up.
         let bash_agent_ref: Arc<std::sync::Mutex<Option<Arc<Agent>>>> =
             Arc::new(std::sync::Mutex::new(None));
         let bash_session_manager = Arc::new(std::sync::Mutex::new(session_manager));
@@ -1007,7 +1019,7 @@ impl AgentSession {
                 })
             })
         };
-        tool_list.extend(tools::create_coding_tools(
+        tool_list.extend(tools::create_all_tools(
             &options.cwd,
             Some(&tools_options),
             Some(bash_session_env_provider),
@@ -1151,23 +1163,40 @@ impl AgentSession {
                 });
             }
         }
-        // Save full tool list as registry (before filtering/activation).
-        let tool_registry: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
-            .iter()
-            .map(|t| Arc::new(t.clone()) as Arc<pi_agent_core::types::DynTool>)
-            .collect();
+        // Tools live in a name-keyed registry in TS, so a custom/extension tool
+        // overrides a built-in with the same name. Keep the last definition at
+        // the first occurrence's position (TS Map#set keeps insertion order).
+        let mut unique_tools: Vec<pi_agent_core::types::DynTool> =
+            Vec::with_capacity(tool_list.len());
+        for tool in std::mem::take(&mut tool_list) {
+            match unique_tools.iter_mut().find(|t| t.name == tool.name) {
+                Some(slot) => *slot = tool,
+                None => unique_tools.push(tool),
+            }
+        }
+        let mut tool_list = unique_tools;
 
-        // 4. Filter tool list by allowed/excluded names (matching TS isAllowedTool)
+        // Filter the registry by allowed/excluded names (TS `_isAllowedTool`).
+        // This runs before the registry snapshot, matching `_refreshToolRegistry`:
+        // a tool outside the allowlist is not registered at all, so it cannot be
+        // re-activated by `set_active_tools_by_name()` either.
         if let Some(ref allowed) = options.allowed_tool_names {
             tool_list.retain(|t| allowed.contains(&t.name));
         }
         if let Some(ref excluded) = options.excluded_tool_names {
             tool_list.retain(|t| !excluded.contains(&t.name));
         }
+        // Snapshot the full registry (TS `_toolRegistry`): every declarable
+        // tool, active or not.
+        let tool_registry: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
+            .iter()
+            .map(|t| Arc::new(t.clone()) as Arc<pi_agent_core::types::DynTool>)
+            .collect();
 
-        // 5. Build system prompt with tool metadata from ALL active tools.
-        //    Matches TS _rebuildSystemPrompt(validToolNames) which runs after
-        //    tool registry refresh and includes tool snippets/guidelines.
+        // 5. Collect tool prompt metadata from every registered tool.
+        //    Matches TS `_toolPromptSnippets` / `_toolPromptGuidelines`, which
+        //    are built from the whole definition registry; the prompt "tools"
+        //    section then lists only the active subset (step 7).
         //    Built-in tools carry their own prompt_snippet / prompt_guidelines
         //    on the AgentTool (matching TS ToolDefinition.promptSnippet).
         let tool_snippets: std::collections::HashMap<String, String> = {
@@ -1223,12 +1252,50 @@ impl AgentSession {
             guidelines
         };
 
-        let selected_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
+        // 6. Activate the initial tool set.
+        //
+        //    Built-in tools are gated by `initial_active_tool_names` (the SDK
+        //    fills it from `--tools` or the `defaultTools` setting). Naming a
+        //    tool in the allowlist activates it even when it is not active by
+        //    default — TS `_refreshToolRegistry`: "Naming a tool activates it
+        //    even when it is not active by default." Custom/extension tools are
+        //    always active (matching TS `includeAllExtensionTools: true`).
+        let initial_active = options
+            .initial_active_tool_names
+            .clone()
+            .unwrap_or_else(|| {
+                // TS: no explicit `tools` allowlist → `defaultTools` setting,
+                // falling back to `DEFAULT_TOOL_NAMES` (an explicit empty list
+                // means "no built-in tools").
+                settings_manager.resolved_default_tools()
+            });
+        let allowed_names: std::collections::HashSet<String> =
+            options.allowed_tool_names.clone().unwrap_or_default().into_iter().collect();
+        let custom_names: std::collections::HashSet<String> = options
+            .custom_tools
+            .as_ref()
+            .map(|ct| ct.iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default();
+        tool_list.retain(|t| {
+            custom_names.contains(&t.name)
+                || !tools::is_builtin_tool(&t.name)
+                || initial_active.contains(&t.name)
+                || allowed_names.contains(&t.name)
+        });
+        let active_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
+        let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
+            .into_iter()
+            .map(|t| Arc::new(t) as Arc<pi_agent_core::types::DynTool>)
+            .collect();
+
+        // 7. Build the system prompt from the ACTIVE tool set, matching TS
+        //    `_rebuildSystemPrompt(activeNames)` (the snippet map above still
+        //    covers every registered tool).
         let system_prompt_options = system_prompt::BuildSystemPromptOptions {
             cwd: options.cwd.clone(),
             custom_prompt: options.custom_prompt,
             append_system_prompt: options.append_system_prompt,
-            selected_tools: Some(selected_tool_names),
+            selected_tools: Some(active_tool_names),
             tool_snippets: Some(tool_snippets),
             prompt_guidelines: Some(prompt_guidelines),
             context_files: Some(options.context_files),
@@ -1237,41 +1304,6 @@ impl AgentSession {
         };
         let system_prompt_message = system_prompt::build_system_prompt_message(&system_prompt_options);
         let system_prompt = system_prompt::build_system_prompt(&system_prompt_options);
-
-        // 6. Apply initial_active_tool_names: only built-in tools are gated
-        //    by this; custom + extension tools are always active (matching
-        //    TS includeAllExtensionTools: true).
-        let initial_active = options
-            .initial_active_tool_names
-            .clone()
-            .unwrap_or_else(|| {
-                // TS 0.84.2: no explicit `tools` allowlist → fall back to the
-                // `defaultTools` setting (empty vec = no built-in tools);
-                // otherwise all built-ins stay active.
-                settings_manager.get_default_tools().unwrap_or_default()
-            });
-        let custom_names: std::collections::HashSet<String> = options
-            .custom_tools
-            .as_ref()
-            .map(|ct| ct.iter().map(|d| d.name.clone()).collect())
-            .unwrap_or_default();
-        // Built-in tool names (read/bash/edit/write) are the only ones subject
-        // to gating by initial_active_tool_names. Extension tools (e.g. goal)
-        // and custom tools are always active.
-        let builtin_names: std::collections::HashSet<String> =
-            tools::create_coding_tools(&options.cwd, None, None)
-                .iter()
-                .map(|t| t.name.clone())
-                .collect();
-        tool_list.retain(|t| {
-            custom_names.contains(&t.name)
-                || !builtin_names.contains(&t.name)
-                || initial_active.contains(&t.name)
-        });
-        let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
-            .into_iter()
-            .map(|t| Arc::new(t) as Arc<pi_agent_core::types::DynTool>)
-            .collect();
 
         let initial_state = AgentState {
             system_prompt: system_prompt.clone(),
@@ -1832,8 +1864,43 @@ impl AgentSession {
             String,
             crate::core::extensions::ToolDefinition,
         > = std::collections::HashMap::new();
+        // Base definitions: every registered built-in tool (TS
+        // `_baseToolDefinitions`), active or not, exposed through
+        // `getAllTools()` / `getToolDefinition()` with a `<builtin:name>`
+        // source.
+        for tool in &tool_registry {
+            if !tools::is_builtin_tool(&tool.name) {
+                continue;
+            }
+            let mut def =
+                crate::core::tools::tool_definition_wrapper::create_tool_definition_from_agent_tool(
+                    tool.as_ref(),
+                );
+            def.source_info = Some(crate::core::extensions::create_builtin_source_info(
+                &tool.name,
+            ));
+            tool_definitions.insert(def.name.clone(), def);
+        }
+        // TS `_isAllowedTool`: definitions outside the allowlist / inside the
+        // denylist are not part of the registry at all.
+        let is_allowed_tool = |name: &str| -> bool {
+            if let Some(ref allowed) = options.allowed_tool_names {
+                if !allowed.iter().any(|entry| entry == name) {
+                    return false;
+                }
+            }
+            if let Some(ref excluded) = options.excluded_tool_names {
+                if excluded.iter().any(|entry| entry == name) {
+                    return false;
+                }
+            }
+            true
+        };
         if let Some(ref custom_tools) = options.custom_tools {
             for def in custom_tools {
+                if !is_allowed_tool(&def.name) {
+                    continue;
+                }
                 let mut def = def.clone();
                 // SDK tools carry a synthetic source (matching TS
                 // createSyntheticSourceInfo(`<sdk:${name}>`, { source: "sdk" })).
@@ -1849,6 +1916,9 @@ impl AgentSession {
         }
         if let Some(ref registry) = options.extension_registry {
             for rt in registry.tools().to_vec() {
+                if !is_allowed_tool(&rt.definition.name) {
+                    continue;
+                }
                 let mut def = rt.definition;
                 def.source_info = Some(rt.source_info);
                 tool_definitions
@@ -1886,6 +1956,7 @@ impl AgentSession {
             cwd: session_cwd.clone(),
             scoped_models: Vec::new(),
             initial_active_tool_names,
+            uses_default_tools: options.uses_default_tools,
             allowed_tool_names: options.allowed_tool_names,
             excluded_tool_names: options.excluded_tool_names,
             extension_registry: options.extension_registry,
@@ -3539,25 +3610,27 @@ impl AgentSession {
 
     /// Set active tools by name, matching TS `setActiveToolsByName()`.
     ///
-    /// Looks up each name in the full tool registry. Unknown names are
+    /// Looks up each name in the full tool registry (which holds every
+    /// registered built-in tool, not just the default-active four), so
+    /// `set_active_tools_by_name(&["read", "grep", "find", "ls"])` works the
+    /// same way as `--tools read,grep,find,ls`. Names that are unknown, were
+    /// filtered out by the allowlist/denylist, or are inactive by default are
+    /// resolved against the registry; names that are not registered are
     /// silently ignored. The active tools are immediately reflected on
-    /// `agent.state.tools`.
-    ///
-    /// Note: System prompt rebuild on tool change (as in TS) is not yet
-    /// implemented; the tools are available to the LLM but the system
-    /// prompt "Available tools" section is not updated dynamically.
+    /// `agent.state.tools` and in the system prompt.
     pub async fn set_active_tools_by_name(&self, tool_names: &[String]) {
         let selected: Vec<Arc<pi_agent_core::types::DynTool>> = tool_names
             .iter()
             .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
             .collect();
         // Write through the shared state — `state()` returns a clone.
-        self.agent.update_state(|s| s.tools = selected).await;
+        self.agent.update_state(|s| s.tools = selected.clone()).await;
 
         // Rebuild the base system prompt with the new tool set (matching TS
-        // setActiveToolsByName which calls _rebuildSystemPrompt).
+        // setActiveToolsByName which calls _rebuildSystemPrompt). Only names
+        // that resolved to a registered tool are declared.
         if let Some(mut opts) = self.system_prompt_options.clone() {
-            opts.selected_tools = Some(tool_names.to_vec());
+            opts.selected_tools = Some(selected.iter().map(|t| t.name.clone()).collect());
             let rebuilt = system_prompt::build_system_prompt(&opts);
             *self
                 .base_system_prompt
@@ -6643,10 +6716,47 @@ impl AgentSession {
 
     /// Reload session state and discover resources from disk, matching TS reload().
     pub async fn reload(&self) {
+        // TS `reload()` remembers the previous `defaultTools` selection before
+        // reloading settings so tools newly added to it can be activated below.
+        let previous_default_tools: std::collections::HashSet<String> = if self.uses_default_tools {
+            self.settings_manager
+                .lock()
+                .map(|sm| sm.resolved_default_tools())
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         if let Ok(mut sm) = self.settings_manager.lock() {
             sm.reload();
         }
         self._sync_queue_modes_from_settings().await;
+
+        // Activate tools newly added to `defaultTools` (TS
+        // `addedDefaultTools`). Tools removed from it stay active, and tools
+        // switched off during the session stay off unless newly added.
+        if self.uses_default_tools {
+            let added: Vec<String> = self
+                .settings_manager
+                .lock()
+                .map(|sm| sm.resolved_default_tools())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|name| !previous_default_tools.contains(name))
+                .collect();
+            if !added.is_empty() {
+                let mut names = self.get_active_tool_names().await;
+                for name in added {
+                    if self.tool_registry.iter().any(|tool| tool.name == name)
+                        && !names.contains(&name)
+                    {
+                        names.push(name);
+                    }
+                }
+                self.set_active_tools_by_name(&names).await;
+            }
+        }
 
         // TS `reload()` awaits `this._resourceLoader.reload()`. Extension
         // resource paths contributed during the session are applied first,
@@ -7317,6 +7427,7 @@ mod tests {
                 stream_fn: None,
                 convert_to_llm: None,
                 initial_active_tool_names: None,
+                uses_default_tools: false,
                 allowed_tool_names: None,
                 excluded_tool_names: None,
                 extension_registry: registry,

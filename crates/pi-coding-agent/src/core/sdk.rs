@@ -366,8 +366,9 @@ pub mod prelude {
     pub use crate::core::tools::tool_definition_wrapper::wrap_tool_definitions;
     pub use crate::core::tools::write::create_write_tool;
     pub use crate::core::tools::{
-        create_coding_tools, create_read_only_tools, OutputAccumulator, OutputAccumulatorOptions,
-        OutputSnapshot, ToolName, TruncationOptions, TruncationResult,
+        create_all_tools, create_coding_tools, create_read_only_tools, is_builtin_tool,
+        OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot, ToolName, TruncationOptions,
+        TruncationResult, BUILTIN_TOOL_NAMES,
     };
 
     // ── Model registry & resolution ─────────────────────────────────────────
@@ -779,20 +780,40 @@ pub async fn create_agent_session(
         })
         .collect();
 
+    // TS `getDefaultTools() ?? DEFAULT_TOOL_NAMES`: an empty `defaultTools`
+    // array disables the built-in tools but keeps extension/custom tools.
     let default_active_tool_names: Vec<String> = match options.no_tools {
-        Some(NoToolsMode::All) => Vec::new(),
-        Some(NoToolsMode::Builtin) => Vec::new(),
-        None => vec![
-            "read".to_string(),
-            "bash".to_string(),
-            "edit".to_string(),
-            "write".to_string(),
-        ],
+        Some(NoToolsMode::All) | Some(NoToolsMode::Builtin) => Vec::new(),
+        None => settings_manager.resolved_default_tools(),
     };
 
-    let initial_active_tool_names = options.tools.clone().unwrap_or(default_active_tool_names);
-    let allowed_tool_names = options.tools.clone();
+    // TS applies the denylist to the initial selection as well
+    // (`.filter(name => !excludedToolNameSet?.has(name))`).
+    let initial_active_tool_names: Vec<String> = options
+        .tools
+        .clone()
+        .unwrap_or(default_active_tool_names)
+        .into_iter()
+        .filter(|name| {
+            !options
+                .exclude_tools
+                .as_ref()
+                .is_some_and(|excluded| excluded.contains(name))
+        })
+        .collect();
+    // TS `allowedToolNames = options.tools ?? (noTools === "all" ? [] : undefined)`:
+    // `--no-tools` starts from an empty allowlist, so nothing is registered at
+    // all, while `--no-builtin-tools` keeps the registry and only clears the
+    // active set.
+    let allowed_tool_names = match options.tools.clone() {
+        Some(tools) => Some(tools),
+        None if options.no_tools == Some(NoToolsMode::All) => Some(Vec::new()),
+        None => None,
+    };
     let excluded_tool_names = options.exclude_tools.clone();
+    // TS `usesDefaultTools`: only when neither `--tools` nor `--no-tools` was
+    // given does `reload()` activate tools newly added to `defaultTools`.
+    let uses_default_tools = options.tools.is_none() && options.no_tools.is_none();
 
     // Extension action bus: JS extension read-actions read the shared state
     // snapshot; write-actions are queued and drained by the session at turn
@@ -848,6 +869,7 @@ pub async fn create_agent_session(
             .or_else(|| Some(create_default_stream_fn(has_telemetry))),
         convert_to_llm: options.convert_to_llm,
         initial_active_tool_names: Some(initial_active_tool_names),
+        uses_default_tools,
         allowed_tool_names,
         excluded_tool_names,
         extension_registry: Some(std::sync::Arc::clone(&extension_registry_arc)),

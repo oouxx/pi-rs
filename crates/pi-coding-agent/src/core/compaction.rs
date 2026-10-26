@@ -7,7 +7,7 @@ use pi_agent_core::types::{AgentMessage, CustomContent};
 use serde::Serialize;
 
 use crate::core::messages;
-use crate::core::session_manager::SessionEntry;
+use crate::core::session_manager::{FileEntry, SessionEntry};
 
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a summarization assistant. Your job is to create concise summaries of coding agent conversations.
 
@@ -177,12 +177,23 @@ pub fn session_entry_to_context_messages(entry: &SessionEntry) -> Vec<AgentMessa
             summary,
             tokens_before,
             timestamp,
+            system_message,
             ..
-        } => vec![AgentMessage::CompactionSummary {
-            summary: summary.clone(),
-            tokens_before: *tokens_before,
-            timestamp: entry_timestamp_ms(timestamp),
-        }],
+        } => {
+            let mut messages = Vec::new();
+            if let Some(system_message) = system_message {
+                if let Ok(message) = serde_json::from_value::<AgentMessage>(system_message.clone())
+                {
+                    messages.push(message);
+                }
+            }
+            messages.push(AgentMessage::CompactionSummary {
+                summary: summary.clone(),
+                tokens_before: *tokens_before,
+                timestamp: entry_timestamp_ms(timestamp),
+            });
+            messages
+        }
         SessionEntry::BranchSummary {
             summary,
             from_id,
@@ -319,13 +330,13 @@ pub fn project_entry_context_messages(
 
 /// Build the finalized, edit-aware typed model context from session entries
 /// (compaction-aware; only the newest compaction contributes a summary).
-pub fn build_projected_context_messages(
-    entries: &[SessionEntry],
-    by_id: &std::collections::HashMap<String, SessionEntry>,
+pub(crate) fn build_projected_context_messages(
+    file_entries: &[FileEntry],
+    by_id: &std::collections::HashMap<String, usize>,
     leaf_id: Option<&str>,
 ) -> Vec<AgentMessage> {
     let context_entries =
-        crate::core::session_manager::build_context_entries(entries, by_id, leaf_id);
+        crate::core::session_manager::build_context_entries_from_file(file_entries, by_id, leaf_id);
     let mut edits: std::collections::HashMap<String, &SessionEntry> =
         std::collections::HashMap::new();
     for entry in &context_entries {
@@ -1587,6 +1598,7 @@ fn test_prepare_compaction_with_previous_summary() {
             details: None,
             usage: None,
             from_hook: None,
+            system_message: None,
         },
         SessionEntry::Message {
             id: "entry-2".into(),
@@ -1675,6 +1687,7 @@ fn test_prepare_compaction_returns_none_when_leaf_is_compaction() {
         details: None,
         usage: None,
         from_hook: None,
+        system_message: None,
     });
 
     let settings = CompactionSettings::default();

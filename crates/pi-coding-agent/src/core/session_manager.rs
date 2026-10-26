@@ -34,10 +34,15 @@ pub struct NewSessionOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
+// `rename_all` only renames enum variants; session fields are camelCase in
+// the TS format (`parentId`, `firstKeptEntryId`, ...). The snake_case aliases
+// keep sessions written by older Rust builds readable.
+#[serde(rename_all_fields = "camelCase")]
 pub enum SessionEntry {
     #[serde(rename = "message")]
     Message {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         message: serde_json::Value,
@@ -48,6 +53,7 @@ pub enum SessionEntry {
     #[serde(rename = "usage")]
     Usage {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         /// Usage category, e.g. `cache_warm`.
@@ -62,52 +68,71 @@ pub enum SessionEntry {
     #[serde(rename = "thinking_level_change")]
     ThinkingLevelChange {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "thinking_level")]
         thinking_level: String,
     },
     #[serde(rename = "model_change")]
     ModelChange {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         provider: String,
+        #[serde(alias = "model_id")]
         model_id: String,
     },
     #[serde(rename = "compaction")]
     Compaction {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         summary: String,
+        #[serde(alias = "first_kept_entry_id")]
         first_kept_entry_id: String,
+        #[serde(alias = "tokens_before")]
         tokens_before: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(alias = "from_hook", skip_serializing_if = "Option::is_none")]
         from_hook: Option<bool>,
+        /// Complete prompt and tool state at this compaction boundary
+        /// (TS `CompactionEntry.systemMessage`).
+        #[serde(
+            alias = "system_message",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        system_message: Option<serde_json::Value>,
     },
     #[serde(rename = "branch_summary")]
     BranchSummary {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "from_id")]
         from_id: String,
         summary: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(alias = "from_hook", skip_serializing_if = "Option::is_none")]
         from_hook: Option<bool>,
     },
     #[serde(rename = "custom")]
     Custom {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "custom_type")]
         custom_type: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<serde_json::Value>,
@@ -115,8 +140,10 @@ pub enum SessionEntry {
     #[serde(rename = "custom_message")]
     CustomMessage {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "custom_type")]
         custom_type: String,
         content: serde_json::Value,
         display: bool,
@@ -129,8 +156,10 @@ pub enum SessionEntry {
     #[serde(rename = "context_edit")]
     ContextEdit {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "target_id")]
         target_id: String,
         #[serde(default)]
         replacement: serde_json::Value,
@@ -138,14 +167,17 @@ pub enum SessionEntry {
     #[serde(rename = "label")]
     Label {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
+        #[serde(alias = "target_id")]
         target_id: String,
         label: Option<String>,
     },
     #[serde(rename = "session_info")]
     SessionInfo {
         id: String,
+        #[serde(alias = "parent_id")]
         parent_id: Option<String>,
         timestamp: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,7 +295,7 @@ fn create_session_id() -> String {
     Uuid::now_v7().to_string()
 }
 
-fn generate_id(existing: &HashMap<String, SessionEntry>) -> String {
+fn generate_id(existing: &HashMap<String, usize>) -> String {
     let mut id = create_session_id();
     while existing.contains_key(&id) {
         id = create_session_id();
@@ -285,12 +317,36 @@ fn assert_valid_session_id(id: &str) {
 }
 
 #[derive(Debug, Clone)]
+// Entries live in one contiguous vector and are never duplicated. Boxing the
+// large variant would trade that locality for an allocation per history item.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum FileEntry {
     Header(SessionHeader),
     Entry(SessionEntry),
     /// Raw JSON that couldn't be parsed as a SessionEntry (e.g. v1 format).
     /// Stored for migration purposes.
     RawJson(serde_json::Value),
+}
+
+impl FileEntry {
+    fn as_entry(&self) -> Option<&SessionEntry> {
+        match self {
+            FileEntry::Entry(entry) => Some(entry),
+            FileEntry::Header(_) | FileEntry::RawJson(_) => None,
+        }
+    }
+}
+
+/// Resolve an entry id through the id -> file-entry index.
+fn lookup_entry<'a>(
+    file_entries: &'a [FileEntry],
+    by_id: &HashMap<String, usize>,
+    id: &str,
+) -> Option<&'a SessionEntry> {
+    by_id
+        .get(id)
+        .and_then(|index| file_entries.get(*index))
+        .and_then(FileEntry::as_entry)
 }
 
 #[allow(private_interfaces)]
@@ -714,6 +770,7 @@ fn add_ids_to_entry(entry: SessionEntry, id: &str, parent_id: Option<String>) ->
             details,
             usage,
             from_hook,
+            system_message,
             ..
         } => SessionEntry::Compaction {
             id: id.to_string(),
@@ -725,6 +782,7 @@ fn add_ids_to_entry(entry: SessionEntry, id: &str, parent_id: Option<String>) ->
             details,
             usage,
             from_hook,
+            system_message,
         },
         SessionEntry::BranchSummary {
             from_id,
@@ -863,6 +921,7 @@ fn set_timestamp_on_entry(entry: SessionEntry, timestamp: &str) -> SessionEntry 
             details,
             usage,
             from_hook,
+            system_message,
             ..
         } => SessionEntry::Compaction {
             id,
@@ -874,6 +933,7 @@ fn set_timestamp_on_entry(entry: SessionEntry, timestamp: &str) -> SessionEntry 
             details,
             usage,
             from_hook,
+            system_message,
         },
         SessionEntry::BranchSummary {
             id,
@@ -964,19 +1024,19 @@ fn set_timestamp_on_entry(entry: SessionEntry, timestamp: &str) -> SessionEntry 
     }
 }
 
-/// Build a path from leaf to root using the by_id map.
+/// Build a path from leaf to root using the id -> file-entry index.
 fn build_session_path<'a>(
-    entries: &'a [SessionEntry],
+    file_entries: &'a [FileEntry],
+    by_id: &HashMap<String, usize>,
     leaf_id: Option<&str>,
-    by_id: &'a HashMap<String, SessionEntry>,
 ) -> Vec<&'a SessionEntry> {
     // Match TS buildSessionPath behavior:
     // - None (TS undefined) → use last entry
     // - Some(id) → use that entry
     // - If entry not found → return empty vec
     let leaf = match leaf_id {
-        Some(lid) => by_id.get(lid),
-        None => entries.last(),
+        Some(lid) => lookup_entry(file_entries, by_id, lid),
+        None => file_entries.iter().rev().find_map(FileEntry::as_entry),
     };
 
     let leaf = match leaf {
@@ -988,22 +1048,32 @@ fn build_session_path<'a>(
     let mut current = Some(leaf);
     while let Some(entry) = current {
         path.push(entry);
-        current = entry.parent_id().and_then(|pid| by_id.get(pid));
+        current = entry
+            .parent_id()
+            .and_then(|pid| lookup_entry(file_entries, by_id, pid));
     }
     path.reverse();
     path
+}
+
+fn is_system_message_entry(entry: &SessionEntry) -> bool {
+    matches!(
+        entry,
+        SessionEntry::Message { message, .. }
+            if message.get("role").and_then(|role| role.as_str()) == Some("system")
+    )
 }
 
 /// Build the compaction-aware entry list for context/rendering.
 /// Uses tree traversal from current leaf.
 /// Handles compaction: entries before the first_kept_entry_id are replaced
 /// by the compaction summary entry.
-pub fn build_context_entries(
-    entries: &[SessionEntry],
-    by_id: &HashMap<String, SessionEntry>,
+pub(crate) fn build_context_entries_from_file(
+    file_entries: &[FileEntry],
+    by_id: &HashMap<String, usize>,
     leaf_id: Option<&str>,
 ) -> Vec<SessionEntry> {
-    let path: Vec<&SessionEntry> = build_session_path(entries, leaf_id, by_id);
+    let path: Vec<&SessionEntry> = build_session_path(file_entries, by_id, leaf_id);
 
     // Find the latest compaction entry
     let compaction = path
@@ -1040,7 +1110,7 @@ pub fn build_context_entries(
         if entry.id() == first_kept {
             found_first_kept = true;
         }
-        if found_first_kept {
+        if found_first_kept && !is_system_message_entry(entry) {
             context_entries.push((*entry).clone());
         }
     }
@@ -1060,14 +1130,22 @@ fn session_entry_to_value_messages(entry: &SessionEntry) -> Vec<serde_json::Valu
         SessionEntry::Compaction {
             summary,
             tokens_before,
+            system_message,
             ..
-        } => vec![serde_json::json!({
-            "role": "user",
-            "content": format!(
-                "[Compaction Summary ({} tokens before)]\n{}",
-                tokens_before, summary
-            ),
-        })],
+        } => {
+            let mut messages = Vec::new();
+            if let Some(system_message) = system_message {
+                messages.push(system_message.clone());
+            }
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "[Compaction Summary ({} tokens before)]\n{}",
+                    tokens_before, summary
+                ),
+            }));
+            messages
+        }
         SessionEntry::BranchSummary { summary, .. } => vec![serde_json::json!({
             "role": "user",
             "content": format!("[Branch Summary]\n{}", summary),
@@ -1153,12 +1231,12 @@ fn session_context_settings(path: &[&SessionEntry]) -> (String, Option<ModelInfo
 
 /// Build provenance-preserving, compaction-aware model context
 /// (TS `buildSessionProjection`).
-pub fn build_session_projection(
-    entries: &[SessionEntry],
-    by_id: &HashMap<String, SessionEntry>,
+pub(crate) fn build_session_projection_from_file(
+    file_entries: &[FileEntry],
+    by_id: &HashMap<String, usize>,
     leaf_id: Option<&str>,
 ) -> SessionProjection {
-    if entries.is_empty() {
+    if !file_entries.iter().any(|entry| entry.as_entry().is_some()) {
         return SessionProjection {
             entries: Vec::new(),
             messages: Vec::new(),
@@ -1167,10 +1245,10 @@ pub fn build_session_projection(
         };
     }
 
-    let path = build_session_path(entries, leaf_id, by_id);
+    let path = build_session_path(file_entries, by_id, leaf_id);
     let (thinking_level, model) = session_context_settings(&path);
 
-    let context_entries = build_context_entries(entries, by_id, leaf_id);
+    let context_entries = build_context_entries_from_file(file_entries, by_id, leaf_id);
 
     // The latest edit targeting an entry wins (append-only).
     let mut edits: HashMap<String, &SessionEntry> = HashMap::new();
@@ -1211,17 +1289,69 @@ pub fn build_session_projection(
     }
 }
 
-pub fn build_session_context(
-    entries: &[SessionEntry],
-    by_id: &HashMap<String, SessionEntry>,
+pub(crate) fn build_session_context_from_file(
+    file_entries: &[FileEntry],
+    by_id: &HashMap<String, usize>,
     leaf_id: Option<&str>,
 ) -> SessionContext {
-    let projection = build_session_projection(entries, by_id, leaf_id);
+    let projection = build_session_projection_from_file(file_entries, by_id, leaf_id);
     SessionContext {
         messages: projection.messages,
         thinking_level: projection.thinking_level,
         model: projection.model,
     }
+}
+
+/// Adapt the public owned-entry API to the internal file-order index.
+fn public_entries_to_file_index(
+    entries: &[SessionEntry],
+    by_id: &HashMap<String, SessionEntry>,
+) -> (Vec<FileEntry>, HashMap<String, usize>) {
+    let mut file_entries = Vec::with_capacity(entries.len());
+    let mut index = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        let position = file_entries.len();
+        if by_id.contains_key(entry.id()) {
+            index.insert(entry.id().to_string(), position);
+        }
+        file_entries.push(FileEntry::Entry(entry.clone()));
+    }
+    (file_entries, index)
+}
+
+/// Build the active, compaction-aware session entry list from owned entries.
+///
+/// This is the public entry-point kept for callers that already have a
+/// `SessionEntry` slice. `SessionManager` itself uses the index-based variant
+/// so it never duplicates its history.
+pub fn build_context_entries(
+    entries: &[SessionEntry],
+    by_id: &HashMap<String, SessionEntry>,
+    leaf_id: Option<&str>,
+) -> Vec<SessionEntry> {
+    let (file_entries, index) = public_entries_to_file_index(entries, by_id);
+    build_context_entries_from_file(&file_entries, &index, leaf_id)
+}
+
+/// Build a provenance-preserving model projection from owned entries.
+pub fn build_session_projection(
+    entries: &[SessionEntry],
+    by_id: &HashMap<String, SessionEntry>,
+    leaf_id: Option<&str>,
+) -> SessionProjection {
+    let (file_entries, index) = public_entries_to_file_index(entries, by_id);
+    build_session_projection_from_file(&file_entries, &index, leaf_id)
+}
+
+/// Build the finalized model context from owned entries (TS
+/// `buildSessionContext`).
+pub fn build_session_context(
+    entries: &[SessionEntry],
+    by_id: &HashMap<String, SessionEntry>,
+    leaf_id: Option<&str>,
+) -> SessionContext {
+    let (file_entries, index) = public_entries_to_file_index(entries, by_id);
+    build_session_context_from_file(&file_entries, &index, leaf_id)
 }
 
 /// Read-only interface for session data access.
@@ -1246,7 +1376,6 @@ pub trait ReadonlySessionManager {
     fn build_context_entries(&self) -> Vec<SessionEntry>;
     fn is_persisted(&self) -> bool;
     fn uses_default_session_dir(&self) -> bool;
-    fn get_by_id(&self) -> &HashMap<String, SessionEntry>;
 }
 
 pub struct SessionManager {
@@ -1257,7 +1386,10 @@ pub struct SessionManager {
     persist: bool,
     flushed: bool,
     file_entries: Vec<FileEntry>,
-    by_id: HashMap<String, SessionEntry>,
+    /// Entry id -> index in `file_entries`. Entries stay owned by
+    /// `file_entries`; this map only stores indices so the session history is
+    /// never duplicated in memory.
+    by_id: HashMap<String, usize>,
     labels_by_id: HashMap<String, String>,
     label_timestamps_by_id: HashMap<String, String>,
     leaf_id: Option<String>,
@@ -1407,8 +1539,7 @@ impl SessionManager {
             if self.persist {
                 if let Ok(mut f) = fs::File::create(resolved) {
                     if let Some(FileEntry::Header(h)) = self.file_entries.first() {
-                        let _ =
-                            writeln!(f, "{}", serde_json::to_string(&h).unwrap_or_default());
+                        let _ = writeln!(f, "{}", serde_json::to_string(&h).unwrap_or_default());
                     }
                 }
             }
@@ -1443,7 +1574,6 @@ impl SessionManager {
         }
 
         self.rebuild_index();
-        self.leaf_id = self.find_last_leaf_id();
         self.flushed = true;
     }
 
@@ -1488,14 +1618,22 @@ impl SessionManager {
         }
     }
 
+    /// Rebuild the id index and label cache from the persisted entry order.
+    ///
+    /// Matches TS `_buildIndex`: the leaf is the last session entry in file
+    /// order. Do not infer it from the tree (e.g. "last entry without
+    /// children"), because a branched session can have multiple leaves and
+    /// HashMap iteration order would pick an arbitrary one.
     fn rebuild_index(&mut self) {
         self.by_id.clear();
         self.labels_by_id.clear();
         self.label_timestamps_by_id.clear();
+        self.leaf_id = None;
 
-        for entry in &self.file_entries {
+        for (index, entry) in self.file_entries.iter().enumerate() {
             if let FileEntry::Entry(e) = entry {
-                self.by_id.insert(e.id().to_string(), e.clone());
+                self.by_id.insert(e.id().to_string(), index);
+                self.leaf_id = Some(e.id().to_string());
 
                 if let SessionEntry::Label {
                     target_id,
@@ -1515,19 +1653,6 @@ impl SessionManager {
                 }
             }
         }
-    }
-
-    fn find_last_leaf_id(&self) -> Option<String> {
-        let child_ids: std::collections::HashSet<&str> =
-            self.by_id.values().filter_map(|e| e.parent_id()).collect();
-
-        let mut last = None;
-        for e in self.by_id.values() {
-            if !child_ids.contains(e.id()) {
-                last = Some(e.id().to_string());
-            }
-        }
-        last
     }
 
     fn has_assistant(&self) -> bool {
@@ -1593,8 +1718,9 @@ impl SessionManager {
     fn append_entry(&mut self, entry: SessionEntry) {
         let json = serde_json::to_string(&entry).unwrap_or_default();
         let id = entry.id().to_string();
-        self.by_id.insert(id.clone(), entry.clone());
+        let index = self.file_entries.len();
         self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
     }
@@ -1609,8 +1735,9 @@ impl SessionManager {
             message,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1642,8 +1769,9 @@ impl SessionManager {
             note: note.map(std::string::ToString::to_string),
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
+        let index = self.file_entries.len();
         self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry.clone());
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id);
         self.persist_entry_str(&json);
         entry
@@ -1659,8 +1787,9 @@ impl SessionManager {
             thinking_level: thinking_level.to_string(),
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1677,8 +1806,9 @@ impl SessionManager {
             model_id: model_id.to_string(),
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1695,6 +1825,20 @@ impl SessionManager {
     ) -> String {
         let id = generate_id(&self.by_id);
         let timestamp = Utc::now().to_rfc3339();
+        // Preserve the complete prompt/tool state at the compaction boundary
+        // (TS `getCurrentSystemMessage(buildSessionProjection().messages)`).
+        let system_message = pi_ai::utils::transcript::get_current_system_message(
+            &self.build_session_projection().messages,
+        )
+        .map(|mut message| {
+            let timestamp_ms = DateTime::parse_from_rfc3339(&timestamp)
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or_else(|_| Utc::now().timestamp_millis());
+            if let Some(object) = message.as_object_mut() {
+                object.insert("timestamp".to_string(), serde_json::json!(timestamp_ms));
+            }
+            message
+        });
         // `null` creates a self-retaining compaction that keeps no preceding
         // entries (TS `firstKeptEntryId ?? id`).
         let first_kept = first_kept_entry_id
@@ -1710,10 +1854,12 @@ impl SessionManager {
             details,
             usage,
             from_hook,
+            system_message,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1734,7 +1880,7 @@ impl SessionManager {
                 "Context edit replacement must be null or contain string/array content".into(),
             );
         }
-        let Some(target) = self.by_id.get(target_id) else {
+        let Some(target) = self.get_entry(target_id) else {
             return Err(format!("Entry {target_id} not found"));
         };
         if !self.get_branch(None).iter().any(|e| e.id() == target_id) {
@@ -1786,8 +1932,9 @@ impl SessionManager {
             replacement: normalized,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         Ok(id)
@@ -1814,8 +1961,9 @@ impl SessionManager {
             from_hook,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1836,8 +1984,9 @@ impl SessionManager {
             data,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1864,8 +2013,9 @@ impl SessionManager {
             name,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1890,8 +2040,9 @@ impl SessionManager {
             details,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(id.clone(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -1902,20 +2053,18 @@ impl SessionManager {
     }
 
     pub fn get_leaf_entry(&self) -> Option<&SessionEntry> {
-        self.leaf_id.as_ref().and_then(|id| self.by_id.get(id))
+        self.leaf_id.as_deref().and_then(|id| self.get_entry(id))
     }
 
     pub fn get_entry(&self, id: &str) -> Option<&SessionEntry> {
-        self.by_id.get(id)
-    }
-
-    pub fn get_by_id(&self) -> &HashMap<String, SessionEntry> {
-        &self.by_id
+        lookup_entry(&self.file_entries, &self.by_id, id)
     }
 
     pub fn get_children(&self, parent_id: &str) -> Vec<&SessionEntry> {
         self.by_id
             .values()
+            .filter_map(|index| self.file_entries.get(*index))
+            .filter_map(FileEntry::as_entry)
             .filter(|e| e.parent_id() == Some(parent_id))
             .collect()
     }
@@ -1926,7 +2075,7 @@ impl SessionManager {
 
     pub fn get_branch(&self, from_id: Option<&str>) -> Vec<SessionEntry> {
         let start_id = from_id.or(self.leaf_id.as_deref());
-        let start = match start_id.and_then(|id| self.by_id.get(id)) {
+        let start = match start_id.and_then(|id| self.get_entry(id)) {
             Some(e) => e,
             None => return Vec::new(),
         };
@@ -1935,7 +2084,7 @@ impl SessionManager {
         let mut current = Some(start);
         while let Some(entry) = current {
             path.push(entry.clone());
-            current = entry.parent_id().and_then(|pid| self.by_id.get(pid));
+            current = entry.parent_id().and_then(|pid| self.get_entry(pid));
         }
         path.reverse();
         path
@@ -2017,9 +2166,6 @@ impl ReadonlySessionManager for SessionManager {
     fn uses_default_session_dir(&self) -> bool {
         self.uses_default_session_dir()
     }
-    fn get_by_id(&self) -> &HashMap<String, SessionEntry> {
-        self.get_by_id()
-    }
 }
 
 impl SessionManager {
@@ -2053,8 +2199,7 @@ impl SessionManager {
     /// Build the active, compaction-aware entry list for context/rendering.
     /// Uses tree traversal from current leaf.
     pub fn build_context_entries(&self) -> Vec<SessionEntry> {
-        let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
-        build_context_entries(&entries, &self.by_id, self.leaf_id.as_deref())
+        build_context_entries_from_file(&self.file_entries, &self.by_id, self.leaf_id.as_deref())
     }
 
     pub fn get_session_name(&self) -> Option<String> {
@@ -2074,20 +2219,17 @@ impl SessionManager {
     }
 
     pub fn build_context(&self) -> SessionContext {
-        let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
-        build_session_context(&entries, &self.by_id, self.leaf_id.as_deref())
+        build_session_context_from_file(&self.file_entries, &self.by_id, self.leaf_id.as_deref())
     }
 
     pub fn build_session_projection(&self) -> SessionProjection {
-        let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
-        build_session_projection(&entries, &self.by_id, self.leaf_id.as_deref())
+        build_session_projection_from_file(&self.file_entries, &self.by_id, self.leaf_id.as_deref())
     }
 
     /// Finalized, edit-aware typed model context (TS projection `.messages`).
     pub fn build_projected_context_messages(&self) -> Vec<pi_agent_core::types::AgentMessage> {
-        let entries: Vec<SessionEntry> = self.get_entries().into_iter().cloned().collect();
         crate::core::compaction::build_projected_context_messages(
-            &entries,
+            &self.file_entries,
             &self.by_id,
             self.leaf_id.as_deref(),
         )
@@ -2104,7 +2246,7 @@ impl SessionManager {
 
     pub fn navigate_to_parent(&mut self) -> bool {
         if let Some(leaf_id) = &self.leaf_id {
-            if let Some(entry) = self.by_id.get(leaf_id) {
+            if let Some(entry) = self.get_entry(leaf_id) {
                 if let Some(parent_id) = entry.parent_id() {
                     self.leaf_id = Some(parent_id.to_string());
                     return true;
@@ -2132,37 +2274,36 @@ impl SessionManager {
         Some(target_id)
     }
 
-    /// Reset the leaf to a specific entry, discarding any entries after it.
-    /// Returns true if the entry was found and the leaf was reset.
-    pub fn reset_leaf(&mut self, entry_id: &str) -> bool {
-        if !self.by_id.contains_key(entry_id) {
-            return false;
-        }
-        self.leaf_id = Some(entry_id.to_string());
-        true
+    /// Reset the leaf pointer to null (before any entries), matching TS
+    /// `resetLeaf()`. The next append creates a new root entry.
+    pub fn reset_leaf(&mut self) {
+        self.leaf_id = None;
     }
 
-    /// Create a branch with a summary. Appends a BranchSummary entry at the
-    /// current leaf, then resets the leaf to the specified from_id.
-    /// Returns the ID of the BranchSummary entry, or None if from_id is invalid.
+    /// Start a new branch with a summary of the abandoned path (TS
+    /// `branchWithSummary`).
+    ///
+    /// `branch_from_id == None` resets to the root. The summary entry's
+    /// `parentId` is the destination branch point and `fromId` is the leaf
+    /// that was active before the branch. Returns the summary entry id.
     pub fn branch_with_summary(
         &mut self,
-        from_id: &str,
+        branch_from_id: Option<&str>,
         summary: &str,
         details: Option<serde_json::Value>,
+        from_hook: Option<bool>,
         usage: Option<serde_json::Value>,
-    ) -> Option<String> {
-        if !self.by_id.contains_key(from_id) {
-            return None;
+    ) -> Result<String, String> {
+        if let Some(branch_from_id) = branch_from_id {
+            if !self.by_id.contains_key(branch_from_id) {
+                return Err(format!("Entry {branch_from_id} not found"));
+            }
         }
 
-        // Append a BranchSummary entry at the current leaf
-        let summary_id = self.append_branch_summary(from_id, summary, details, None, usage);
-
-        // Reset leaf to the from_id, creating the branch
-        self.leaf_id = Some(from_id.to_string());
-
-        Some(summary_id)
+        let from_id = self.leaf_id.clone().unwrap_or_else(|| "root".to_string());
+        self.leaf_id = branch_from_id.map(str::to_string);
+        let summary_id = self.append_branch_summary(&from_id, summary, details, from_hook, usage);
+        Ok(summary_id)
     }
 
     /// Create a new branched session file from the current session.
@@ -2189,10 +2330,10 @@ impl SessionManager {
 
         // Build the path from root to the specified entry
         let mut path: Vec<&SessionEntry> = Vec::new();
-        let mut current = self.by_id.get(entry_id);
+        let mut current = self.get_entry(entry_id);
         while let Some(entry) = current {
             path.push(entry);
-            current = entry.parent_id().and_then(|pid| self.by_id.get(pid));
+            current = entry.parent_id().and_then(|pid| self.get_entry(pid));
         }
         path.reverse();
 
@@ -2456,8 +2597,9 @@ impl SessionManager {
         }
 
         let json = serde_json::to_string(&entry).unwrap_or_default();
-        self.file_entries.push(FileEntry::Entry(entry.clone()));
-        self.by_id.insert(entry.id().to_string(), entry);
+        let index = self.file_entries.len();
+        self.file_entries.push(FileEntry::Entry(entry));
+        self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         self.persist_entry_str(&json);
         id
@@ -2625,33 +2767,6 @@ impl SessionManager {
     pub fn take_run_prompt(&mut self) -> Option<String> {
         self.last_run_prompt.take()
     }
-
-    /// Refresh session configuration by re-reading the session file from disk.
-    ///
-    /// Called before starting a new agent interaction turn to pick up any
-    /// external changes to the session file (e.g. entries appended by another
-    /// process or after a compaction/rewrite). Infallible: a missing/unreadable
-    /// file simply leaves the in-memory entries untouched (TS `e547bb9` refresh
-    /// is in-memory and has no error path).
-    pub fn refresh_config(&mut self) {
-        if self.flushed {
-            // The file was rewritten from the in-memory tree, so disk is
-            // already in sync — no need to re-read.
-            self.flushed = false;
-            return;
-        }
-
-        if let Some(ref session_file) = self.session_file.clone() {
-            if session_file.exists() {
-                let new_entries = load_entries_from_file(session_file);
-                if !new_entries.is_empty() {
-                    self.file_entries = new_entries;
-                    self.rebuild_index();
-                    self.leaf_id = self.find_last_leaf_id();
-                }
-            }
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -2752,7 +2867,6 @@ pub async fn list_sessions_concurrent(
     sessions
 }
 
-
 /// Extract text content from a message's `content` field.
 ///
 /// Matches the TS `extractTextContent()` behavior:
@@ -2771,9 +2885,18 @@ fn extract_text_content(message: &serde_json::Value) -> Option<String> {
         let texts: Vec<String> = arr
             .iter()
             .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
-            .filter_map(|block| block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
-        return if texts.is_empty() { None } else { Some(texts.join(" ")) };
+        return if texts.is_empty() {
+            None
+        } else {
+            Some(texts.join(" "))
+        };
     }
     None
 }
@@ -2955,8 +3078,13 @@ mod tests {
     #[test]
     fn test_append_usage_stays_out_of_context() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr =
-            crate::core::session_manager::SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+        let mut mgr = crate::core::session_manager::SessionManager::new(
+            "/tmp/test",
+            dir.path().to_str().unwrap(),
+            None,
+            false,
+            None,
+        );
         let user_id = mgr.append_message(serde_json::json!({
             "role": "user",
             "content": [{"type": "text", "text": "hi"}],
@@ -3076,6 +3204,46 @@ mod tests {
     }
 
     #[test]
+    fn test_session_entries_use_ts_camel_case_wire_format() {
+        let value = serde_json::json!({
+            "type": "compaction",
+            "id": "c1",
+            "parentId": "p1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "summary": "summary",
+            "firstKeptEntryId": "k1",
+            "tokensBefore": 42,
+            "fromHook": true,
+            "systemMessage": {"role": "system", "content": "prompt", "timestamp": 1}
+        });
+        let entry: SessionEntry = serde_json::from_value(value).unwrap();
+        match &entry {
+            SessionEntry::Compaction {
+                parent_id,
+                first_kept_entry_id,
+                tokens_before,
+                from_hook,
+                system_message,
+                ..
+            } => {
+                assert_eq!(parent_id.as_deref(), Some("p1"));
+                assert_eq!(first_kept_entry_id, "k1");
+                assert_eq!(*tokens_before, 42);
+                assert_eq!(*from_hook, Some(true));
+                assert_eq!(system_message.as_ref().unwrap()["content"], "prompt");
+            }
+            other => panic!("expected compaction, got {other:?}"),
+        }
+
+        let serialized = serde_json::to_value(&entry).unwrap();
+        assert_eq!(serialized["parentId"], "p1");
+        assert_eq!(serialized["firstKeptEntryId"], "k1");
+        assert_eq!(serialized["tokensBefore"], 42);
+        assert!(serialized.get("parent_id").is_none());
+        assert!(serialized.get("systemMessage").is_some());
+    }
+
+    #[test]
     fn test_load_from_file() {
         let dir = tempfile::tempdir().unwrap();
         let session_dir = dir.path().to_str().unwrap();
@@ -3137,7 +3305,8 @@ mod tests {
         }));
         assert_eq!(mgr.build_context().messages.len(), 1);
 
-        mgr.append_context_edit(&msg_id, serde_json::Value::Null).unwrap();
+        mgr.append_context_edit(&msg_id, serde_json::Value::Null)
+            .unwrap();
         let ctx = mgr.build_context();
         assert!(
             ctx.messages.is_empty(),
@@ -3158,12 +3327,18 @@ mod tests {
             "stopReason": "stop",
             "timestamp": 0
         }));
-        mgr.append_context_edit(&msg_id, serde_json::json!({ "content": "replacement text" }))
-            .unwrap();
+        mgr.append_context_edit(
+            &msg_id,
+            serde_json::json!({ "content": "replacement text" }),
+        )
+        .unwrap();
         let ctx = mgr.build_context();
         assert_eq!(ctx.messages.len(), 1);
         let content = ctx.messages[0].get("content").unwrap();
-        assert!(content.is_array(), "assistant content stays an array: {content:?}");
+        assert!(
+            content.is_array(),
+            "assistant content stays an array: {content:?}"
+        );
         assert_eq!(content[0]["text"], "replacement text");
     }
 
@@ -3185,7 +3360,8 @@ mod tests {
         // No edit yet: both messages are present.
         assert_eq!(mgr.build_projected_context_messages().len(), 2);
 
-        mgr.append_context_edit(&user_id, serde_json::Value::Null).unwrap();
+        mgr.append_context_edit(&user_id, serde_json::Value::Null)
+            .unwrap();
         let messages = mgr.build_projected_context_messages();
         assert_eq!(messages.len(), 1);
         match &messages[0] {
@@ -3236,12 +3412,131 @@ mod tests {
         }));
         mgr.append_compaction("summary text", None, 10, None, None, None);
         let ctx = mgr.build_context();
-        assert_eq!(ctx.messages.len(), 1, "keeps no preceding entries: {:?}", ctx.messages);
+        assert_eq!(
+            ctx.messages.len(),
+            1,
+            "keeps no preceding entries: {:?}",
+            ctx.messages
+        );
         assert!(ctx.messages[0]
             .get("content")
             .and_then(|c| c.as_str())
             .unwrap()
             .contains("summary text"));
+    }
+
+    #[test]
+    fn test_append_compaction_captures_system_message() {
+        use pi_agent_core::types::AgentMessage;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        mgr.append_message(serde_json::json!({
+            "role": "system",
+            "content": [{"type": "text", "text": "system prompt"}],
+            "timestamp": 123
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "hello"
+        }));
+        let compaction_id = mgr.append_compaction("summary", None, 10, None, None, None);
+
+        let entry = mgr.get_entry(&compaction_id).unwrap();
+        let SessionEntry::Compaction { system_message, .. } = entry else {
+            panic!("expected compaction entry");
+        };
+        let system_message = system_message
+            .as_ref()
+            .expect("compaction must preserve the current system message");
+        assert_eq!(system_message["role"], "system");
+        assert_eq!(system_message["content"], "system prompt");
+        assert!(system_message["timestamp"].is_i64());
+
+        let serialized = serde_json::to_value(entry).unwrap();
+        assert!(
+            serialized.get("systemMessage").is_some(),
+            "must serialize as camelCase systemMessage: {serialized}"
+        );
+
+        // The boundary system message is replayed before the summary.
+        let context = mgr.build_context();
+        assert_eq!(context.messages[0]["role"], "system");
+        assert_eq!(context.messages[0]["content"], "system prompt");
+        assert_eq!(context.messages[1]["role"], "user");
+
+        let typed = mgr.build_projected_context_messages();
+        assert!(
+            matches!(typed.first(), Some(AgentMessage::System { .. })),
+            "typed projection must start with the boundary system message: {typed:?}"
+        );
+        assert!(matches!(
+            typed.get(1),
+            Some(AgentMessage::CompactionSummary { .. })
+        ));
+    }
+
+    #[test]
+    fn test_compaction_drops_system_messages_from_retained_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = new_test_manager(&dir);
+        let sys_id = mgr.append_message(serde_json::json!({
+            "role": "system",
+            "content": "old system",
+            "timestamp": 1
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "user",
+            "content": "kept user",
+            "timestamp": 2
+        }));
+        mgr.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": "kept assistant",
+            "timestamp": 3
+        }));
+        mgr.append_compaction("summary", Some(&sys_id), 10, None, None, None);
+        mgr.append_message(serde_json::json!({
+            "role": "system",
+            "content": "after compaction",
+            "timestamp": 4
+        }));
+
+        let context_entries = mgr.build_context_entries();
+        let roles: Vec<Option<&str>> = context_entries
+            .iter()
+            .map(|entry| match entry {
+                SessionEntry::Message { message, .. } => {
+                    message.get("role").and_then(|role| role.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            roles,
+            vec![None, Some("user"), Some("assistant"), Some("system")],
+            "retained system messages are dropped, later ones stay: {context_entries:?}"
+        );
+    }
+
+    #[test]
+    fn test_open_restores_leaf_to_last_file_entry_on_branched_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, true, None);
+        let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "root"}));
+        mgr.append_message(serde_json::json!({"role": "assistant", "content": "reply"}));
+        mgr.branch(Some(&id1));
+        let branch_id =
+            mgr.append_message(serde_json::json!({"role": "user", "content": "branch"}));
+        let file = mgr.get_session_file().unwrap().to_path_buf();
+
+        let reopened = SessionManager::open(file.to_str().unwrap(), None, None);
+        assert_eq!(reopened.get_leaf_id(), Some(branch_id.as_str()));
+        assert_eq!(
+            reopened.get_leaf_entry().map(SessionEntry::id),
+            Some(branch_id.as_str())
+        );
     }
 
     #[test]
@@ -3500,49 +3795,68 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_leaf_to_valid_entry() {
+    fn test_reset_leaf_clears_leaf_and_next_append_is_root() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "first"}));
+        let _id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "first"}));
         let _id2 =
             mgr.append_message(serde_json::json!({"role": "assistant", "content": "second"}));
 
-        assert!(mgr.reset_leaf(&id1));
-        assert_eq!(mgr.get_leaf_id(), Some(id1.as_str()));
+        mgr.reset_leaf();
+        assert_eq!(mgr.get_leaf_id(), None);
+
+        let id3 = mgr.append_message(serde_json::json!({"role": "user", "content": "root again"}));
+        assert_eq!(mgr.get_entry(&id3).and_then(SessionEntry::parent_id), None);
     }
 
     #[test]
-    fn test_reset_leaf_to_invalid_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut mgr =
-            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        assert!(!mgr.reset_leaf("nonexistent"));
-    }
-
-    #[test]
-    fn test_branch_with_summary_creates_summary_and_resets_leaf() {
+    fn test_branch_with_summary_uses_destination_parent_and_source_from_id() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
         let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
-        let _id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "world"}));
+        let id2 = mgr.append_message(serde_json::json!({"role": "assistant", "content": "world"}));
 
-        // Branch with summary from id1
-        let summary_id = mgr.branch_with_summary(&id1, "Test summary", None, None);
-        assert!(summary_id.is_some());
+        let summary_id = mgr
+            .branch_with_summary(Some(&id1), "Test summary", None, None, None)
+            .unwrap();
 
-        // Leaf should be reset to id1
-        assert_eq!(mgr.get_leaf_id(), Some(id1.as_str()));
+        // _appendEntry advances the leaf to the new summary entry.
+        assert_eq!(mgr.get_leaf_id(), Some(summary_id.as_str()));
 
-        // The summary entry should exist
-        let summary_entry = mgr.get_entry(&summary_id.unwrap());
-        assert!(summary_entry.is_some());
-        if let Some(SessionEntry::BranchSummary {
-            summary, from_id, ..
-        }) = summary_entry
+        let summary_entry = mgr.get_entry(&summary_id).unwrap();
+        if let SessionEntry::BranchSummary {
+            parent_id,
+            from_id,
+            summary,
+            ..
+        } = summary_entry
         {
+            assert_eq!(parent_id.as_deref(), Some(id1.as_str()));
+            assert_eq!(from_id, &id2);
             assert_eq!(summary, "Test summary");
+        } else {
+            panic!("Expected BranchSummary entry");
+        }
+    }
+
+    #[test]
+    fn test_branch_with_summary_null_destination_starts_new_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
+        let id1 = mgr.append_message(serde_json::json!({"role": "user", "content": "hello"}));
+
+        let summary_id = mgr
+            .branch_with_summary(None, "Summary", None, None, None)
+            .unwrap();
+        let summary_entry = mgr.get_entry(&summary_id).unwrap();
+        if let SessionEntry::BranchSummary {
+            parent_id, from_id, ..
+        } = summary_entry
+        {
+            assert_eq!(parent_id, &None);
             assert_eq!(from_id, &id1);
         } else {
             panic!("Expected BranchSummary entry");
@@ -3550,12 +3864,12 @@ mod tests {
     }
 
     #[test]
-    fn test_branch_with_summary_invalid_from_id() {
+    fn test_branch_with_summary_invalid_destination_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr =
             SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
-        let result = mgr.branch_with_summary("nonexistent", "summary", None, None);
-        assert!(result.is_none());
+        let result = mgr.branch_with_summary(Some("nonexistent"), "summary", None, None, None);
+        assert!(result.is_err());
     }
 
     #[test]

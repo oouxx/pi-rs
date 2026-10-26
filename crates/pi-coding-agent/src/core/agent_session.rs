@@ -3882,11 +3882,6 @@ impl AgentSession {
                 });
             return Ok(());
         }
-        // Refresh session state before starting the next turn.
-        self.session_manager
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .refresh_config();
         // Apply queued JS extension actions before the turn starts.
         self.drain_extension_actions().await;
 
@@ -8125,6 +8120,7 @@ mod tests {
                 details: None,
                 usage: Some(usage(200, 100, 1.0)),
                 from_hook: None,
+                system_message: None,
             },
         ];
         let (_, _, _, _, _, tokens, cost) = compute_session_stats(entries.iter().collect());

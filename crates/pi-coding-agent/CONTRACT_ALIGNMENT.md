@@ -436,6 +436,17 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 自动压缩阈值触发 token 来源 | `_checkCompaction` Case 3：优先最后一条 assistant 的 usage（`calculateContextTokens`），error 或零 usage 才回落 `estimateContextTokens(messages)`（含 stale-pre-compaction 校验） | `compaction::compaction_trigger_tokens` 同款：最后一条 assistant 非 error 且 usage>0 → usage，否则 `estimate_context_tokens`；`check_auto_compact` 用它 | 是 | 见 PORTING_MISTAKES.md #134。context-edit 投影估算分支（TS `estimateProjectedContextTokens`）未单独实现，但 pi-rs `refresh_context` 已把投影写回 agent state，故触发时读到的即投影后消息 |
 | 上下文百分比 | `estimate.tokens / contextWindow * 100`（不做 clamp） | `usage_percentage()` 同款（footer 也不 clamp） | 是 | |
 
+## Session 持久化格式与分支 API（`core/session_manager.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 会话文件字段命名 | 全部 camelCase：`parentId`、`firstKeptEntryId`、`tokensBefore`、`thinkingLevel`、`modelId`、`fromId`、`fromHook`、`customType`、`targetId`、`systemMessage` | `#[serde(rename_all_fields = "camelCase")]`，并保留 snake_case `alias` 读取旧 Rust 文件 | 是 | 修复见 PORTING_MISTAKES.md #153 |
+| `CompactionEntry.systemMessage` | `appendCompaction` 用 `getCurrentSystemMessage(buildSessionProjection().messages)` 存压缩点的 prompt/tool 状态（附毫秒 `timestamp`）；投影时排在 summary 前，保留区间剔除旧 system 消息 | 同左（`append_compaction` 抓取、两条投影路径重放、`build_context_entries` 跳过保留区间内的 system 消息） | 是 | 修复见 PORTING_MISTAKES.md #154 |
+| 打开会话后的 leaf | `_buildIndex`：`leafId = null` 后按文件顺序遍历，最后一条 entry 即 leaf | `rebuild_index` 同左 | 是 | 修复见 PORTING_MISTAKES.md #155 |
+| `resetLeaf()` | `leafId = null`（下一次 append 成为新 root） | `reset_leaf()` 同左（无参） | 是 | 修复见 PORTING_MISTAKES.md #155 |
+| `branchWithSummary(branchFromId \| null, summary, details, fromHook, usage)` | `fromId = leafId ?? "root"` → `leafId = branchFromId` → 追加 `parentId = branchFromId` 的 summary（append 后 leaf 指向 summary）；非法 id 抛错 | 同左；非法 id 返回 `Err`（Rust 无异常） | 是 | 修复见 PORTING_MISTAKES.md #155 |
+| 每轮 turn 前重读会话文件 | 无此行为（内存即权威） | 已删除 `refresh_config()` 与 turn 前调用 | 是 | 修复见 PORTING_MISTAKES.md #155 |
+
 ## Session context 投影与 context edit（`core/session_manager.rs`）
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |

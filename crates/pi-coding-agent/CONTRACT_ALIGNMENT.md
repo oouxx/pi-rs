@@ -507,3 +507,12 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 空 `errorMessage` | truthiness 回落到 `Error` / `Unknown error`；精确 `"Request was aborted"` 映射为 `Operation aborted` | bridge 归一化空串为 `None`，渲染器使用 TS 同款 fallback/精确串映射 | 是 | |
 | 错误消息含 tool call | 标记 pending tool 组件失败并抑制 assistant 级错误行 | bridge 转发未执行 tool calls；TUI 生成 failed tool 行并抑制 assistant notice | 是 | 修复见 PORTING_MISTAKES.md #152 |
 | 恢复空的错误消息 | 每个 assistant 消息都创建组件，空内容错误仍显示 | hydration 对 Error/Aborted/Length/error_message 保留空 assistant 行 | 是 | 修复见 PORTING_MISTAKES.md #152 |
+
+## 内置扩展配置（`core/extensions/mod.rs`、`core/sdk.rs`、`core/settings_manager.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 内置扩展开关 | 按 `extensions` 资源列表 + 路径模式启停 | `extensionsEnabled: {"<id>": bool}`，缺失=关闭（opt-in） | 否（有界子集） | DEVIATIONS.md #24 |
+| `webSearch` 配置 | 无（TS 只调本地 Ollama） | `Settings.web_search`（camelCase `webSearch`：`provider` / `deepseek.{baseUrl,apiKey}` / `ollama.host`），全局/项目按外层键浅合并；`SettingsManager::get_web_search_config()` | 否（新增） | pi-extensions/DEVIATIONS.md「web_search 扩展」 |
+| `webSearch.deepseek.apiKey` 解析 | — | 显式值（支持 `${ENV}` / `!cmd`，经 `resolve_config_value`）优先，其次 `ModelRegistry::get_api_key_for_provider("deepseek")`（auth.json → models.json/注册 provider → 环境变量），再交给扩展合并环境变量 | 否（新增） | 同上；`/login deepseek` 存的凭据可直接用于搜索 |
+| `--no-extensions` | 只关自动发现 | 总开关，`None` registry | 是 | DEVIATIONS.md #24 |

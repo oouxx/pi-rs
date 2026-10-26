@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use pi_extensions::web_search::WebSearchConfig;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -274,6 +275,11 @@ pub struct Settings {
     /// Global/project objects merge per key so a project can override a single
     /// extension without dropping the rest.
     pub extensions_enabled: Option<HashMap<String, bool>>,
+    /// `web_search` 扩展的后端配置（pi-rs 扩展；TS 原版只有本地 Ollama）。
+    /// 全局/项目两层按外层键浅合并，因此项目层可以只覆盖 `provider`，
+    /// 或整段覆盖 `deepseek` / `ollama`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<WebSearchConfig>,
     pub skills: Option<Vec<String>>,
     pub prompts: Option<Vec<String>>,
     pub themes: Option<Vec<String>>,
@@ -1452,6 +1458,14 @@ impl SettingsManager {
         self.settings.extensions_enabled.clone().unwrap_or_default()
     }
 
+    /// `web_search` backend configuration (`webSearch`), with the
+    /// global/project scopes merged. Absent sections fall back to the
+    /// extension's environment variables / built-in defaults.
+    #[must_use]
+    pub fn get_web_search_config(&self) -> WebSearchConfig {
+        self.settings.web_search.clone().unwrap_or_default()
+    }
+
     pub fn set_extensions(&mut self, extensions: Vec<String>) {
         self.global_settings.extensions = Some(extensions);
         self.mark_modified("extensions", None);
@@ -1863,6 +1877,48 @@ mod tests {
             Settings::default(),
         );
         assert_eq!(mgr.get_extensions_enabled().get("goal"), Some(&false));
+    }
+
+    /// `webSearch` 由 settings.json 的 camelCase 段解析，且全局/项目两层按外层
+    /// 键浅合并：项目层只写 `provider` 时，全局的 `deepseek`/`ollama` 段保留。
+    #[test]
+    fn test_web_search_config_parses_and_merges() {
+        let base: Settings = serde_json::from_value(serde_json::json!({
+            "webSearch": {
+                "provider": "auto",
+                "deepseek": {
+                    "baseUrl": "https://api.deepseek.com",
+                    "apiKey": "${DEEPSEEK_API_KEY}"
+                },
+                "ollama": { "host": "http://localhost:11434" }
+            }
+        }))
+        .expect("global settings parse");
+        let overlay: Settings =
+            serde_json::from_value(serde_json::json!({"webSearch": {"provider": "deepseek"}}))
+                .expect("project settings parse");
+
+        let merged = deep_merge_settings(&base, &overlay);
+        let config = merged.web_search.expect("webSearch");
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+        let deepseek = config.deepseek.expect("deepseek section kept");
+        assert_eq!(deepseek.base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert_eq!(deepseek.api_key.as_deref(), Some("${DEEPSEEK_API_KEY}"));
+        assert_eq!(
+            config.ollama.expect("ollama section kept").host.as_deref(),
+            Some("http://localhost:11434")
+        );
+    }
+
+    /// 未配置 `webSearch` 时 getter 返回默认值（全部走环境变量/内置默认）。
+    #[test]
+    fn test_get_web_search_config_defaults_to_empty() {
+        let manager = SettingsManager::new(
+            Box::new(InMemorySettingsStorage::new()),
+            Settings::default(),
+            Settings::default(),
+        );
+        assert_eq!(manager.get_web_search_config(), WebSearchConfig::default());
     }
 
     #[test]

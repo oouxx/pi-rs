@@ -82,11 +82,16 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 3] = ["goal", "subagent", "web_search"];
 /// - `true` → 注册
 /// - `false` → 不注册（与缺失相同，但可显式覆盖上层 scope）
 ///
+/// `web_search` 是 settings 的 `webSearch` 段（调用方已把 `ModelRuntime`
+/// 解析到的 DeepSeek 凭据填进 `deepseek.apiKey`），决定 `web_search` 扩展用
+/// 哪个后端。
+///
 /// 全关时返回 `Some(空 registry)` 而非 `None`：discovery 仍然开着，只是没有
 /// 任何内置扩展。
 pub fn builtin_extension_registry(
     enable: bool,
     enabled: &std::collections::HashMap<String, bool>,
+    web_search: &pi_extensions::web_search::WebSearchConfig,
 ) -> Option<ExtensionRegistry> {
     if !enable {
         return None;
@@ -107,7 +112,7 @@ pub fn builtin_extension_registry(
     }
     if is_enabled("web_search") {
         reg.register(
-            Box::new(pi_extensions::web_search::WebSearchExtension::new()),
+            Box::new(pi_extensions::web_search::WebSearchExtension::from_config(web_search)),
             create_builtin_source_info("web_search"),
         );
     }
@@ -127,7 +132,7 @@ mod tests {
             .iter()
             .map(|id| ((*id).to_string(), true))
             .collect();
-        let reg = builtin_extension_registry(true, &enabled).expect("registry");
+        let reg = builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
         let tools: Vec<&str> =
             reg.tools().iter().map(|t| t.name.as_str()).collect();
         for name in [
@@ -155,7 +160,7 @@ mod tests {
     /// 内置扩展默认关闭：空的 `extensionsEnabled` 不注册任何扩展（opt-in）。
     #[test]
     fn test_builtin_extension_registry_defaults_to_disabled() {
-        let reg = builtin_extension_registry(true, &std::collections::HashMap::new())
+        let reg = builtin_extension_registry(true, &std::collections::HashMap::new(), &Default::default())
             .expect("registry");
         assert!(reg.tools().is_empty(), "built-ins must be opt-in");
         assert_eq!(reg.handler_count(), 0);
@@ -166,7 +171,7 @@ mod tests {
     fn test_builtin_extension_registry_respects_enabled_map() {
         let mut enabled = std::collections::HashMap::new();
         enabled.insert("goal".to_string(), true);
-        let reg = builtin_extension_registry(true, &enabled).expect("registry");
+        let reg = builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
         let tools: Vec<&str> = reg.tools().iter().map(|t| t.name.as_str()).collect();
         assert!(tools.iter().any(|t| t.starts_with("goal_")), "goal on: {tools:?}");
         assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
@@ -175,7 +180,7 @@ mod tests {
         // 显式 false 与缺失等价，但可覆盖上层 scope 的 true。
         let mut disabled = std::collections::HashMap::new();
         disabled.insert("goal".to_string(), false);
-        let reg = builtin_extension_registry(true, &disabled).expect("registry");
+        let reg = builtin_extension_registry(true, &disabled, &Default::default()).expect("registry");
         assert!(reg.tools().is_empty());
     }
 

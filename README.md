@@ -99,6 +99,25 @@ pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 `"defaultTools"`，普通名字整体替换默认集合（`read`/`bash`/`edit`/`write`），`+name` /
 `-name` 在继承的集合上增减，例如 `["+grep", "+find", "+ls"]`；`/reload` 会激活新加入的工具。
 
+内置扩展默认关闭，用 `"extensionsEnabled"` 逐项开启（`goal` / `subagent` / `web_search`）。
+`web_search` 的搜索/抓取后端在同一个 settings.json 里配置：
+
+```json
+{
+  "extensionsEnabled": { "web_search": true },
+  "webSearch": {
+    "provider": "auto",
+    "deepseek": { "baseUrl": "https://api.deepseek.com", "apiKey": "${DEEPSEEK_API_KEY}" },
+    "ollama": { "host": "http://localhost:11434" }
+  }
+}
+```
+
+`provider` 取 `auto`（默认：有 DeepSeek 凭据就用 DeepSeek，否则用本地 Ollama）/ `deepseek` /
+`ollama`。每一档都是「settings → 环境变量（`PI_WEB_SEARCH_PROVIDER`、`DEEPSEEK_API_KEY`、
+`DEEPSEEK_BASE_URL`、`OLLAMA_HOST`/`OLLAMA_BASE_URL`）→ 内置默认」；`apiKey` 支持 `${ENV}`
+模板，`/login deepseek` 存的凭据也会被自动使用。
+
 ## 子命令
 
 ```bash

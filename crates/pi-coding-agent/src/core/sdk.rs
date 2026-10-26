@@ -679,11 +679,32 @@ pub async fn create_agent_session(
     // `extensionsEnabled` (missing id = enabled).
     let extension_registry = match options.extension_registry.take() {
         Some(registry) => registry,
-        None => crate::core::extensions::builtin_extension_registry(
-            options.enable_extensions,
-            &settings_manager.get_extensions_enabled(),
-        )
-        .unwrap_or_default(),
+        None => {
+            // `web_search` backend comes from settings `webSearch`. An explicit
+            // `webSearch.deepseek.apiKey` wins; otherwise fall back to the
+            // runtime's resolution (stored auth.json key → models.json /
+            // registered provider → env) so `/login deepseek` works without a
+            // second credential lookup path.
+            let mut web_search = settings_manager.get_web_search_config();
+            let configured_key = web_search
+                .deepseek
+                .as_ref()
+                .and_then(|deepseek| deepseek.api_key.as_deref())
+                // `${ENV}` / `!command` templates are resolved at use time.
+                .and_then(crate::core::resolve_config_value::resolve_config_value);
+            let api_key =
+                configured_key.or_else(|| model_registry.get_api_key_for_provider("deepseek"));
+            web_search
+                .deepseek
+                .get_or_insert_with(Default::default)
+                .api_key = api_key;
+            crate::core::extensions::builtin_extension_registry(
+                options.enable_extensions,
+                &settings_manager.get_extensions_enabled(),
+                &web_search,
+            )
+            .unwrap_or_default()
+        }
     };
 
     // Collect prompt_guidelines BEFORE wrapping in Arc

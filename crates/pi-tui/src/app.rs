@@ -9,6 +9,8 @@
 //! context usage left and the model right-aligned. Colors come from the
 //! TS built-in dark theme (see [`crate::theme`]).
 
+use std::sync::Arc;
+
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -364,6 +366,86 @@ pub struct ToolCall {
     /// Wall-clock end (TS bash renderer sets `endedAt` when the result is
     /// no longer partial).
     pub ended_at: Option<std::time::Instant>,
+    /// 工具结果的 `details`（结构化，如 subagent 的 `mode`/`results`）。
+    /// 自定义渲染（[`CustomToolRenderFn`]）拿它来画折叠/展开视图。
+    pub details: Option<serde_json::Value>,
+}
+
+/// 扩展工具自定义渲染的输入（对齐 TS
+/// `renderCall(args, theme, ctx)` / `renderResult(result, {expanded}, theme, ctx)`）。
+///
+/// pi-tui 不依赖 `pi-extension-api`：宿主（`pi-coding-agent`）把扩展的
+/// `ToolRenderFn` 适配成这个回调，用 [`Model::set_custom_tool_render`] 注册。
+pub struct CustomToolRenderInput<'a> {
+    pub name: &'a str,
+    /// 会话 cwd（TS `ctx.cwd`）。
+    pub cwd: &'a str,
+    /// 是否展开视图（Ctrl+O，TS `{ expanded }`）。
+    pub expanded: bool,
+    /// 工具参数（TS `args`，JSON 文本）。
+    pub args: &'a str,
+    /// 工具结果文本（TS `result.content` 的文本部分）。
+    pub output: &'a str,
+    /// 工具结果 `details`（TS `result.details`）。
+    pub details: Option<&'a serde_json::Value>,
+    pub is_error: bool,
+}
+
+/// 自定义渲染回调。返回 `None` = 该工具不用自定义渲染（走 fallback）。
+pub type CustomToolRenderFn =
+    Arc<dyn Fn(&CustomToolRenderInput<'_>) -> Option<ToolCustomRender> + Send + Sync>;
+
+/// 文本的语义样式（与 `pi_extension_api::ToolTextStyle` 一一对应）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CustomTextStyle {
+    #[default]
+    Default,
+    Muted,
+    Dim,
+    Accent,
+    Warning,
+    Error,
+    Success,
+    Bold,
+}
+
+/// 一段带语义样式的文本。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomSpan {
+    pub style: CustomTextStyle,
+    pub text: String,
+}
+
+/// 自定义渲染的内容块（与 `pi_extension_api::ToolRenderBlock` 一一对应）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CustomBlock {
+    /// 一行文本（可分段着色）。
+    Line(Vec<CustomSpan>),
+    /// 空行（TS `Spacer(1)`）。
+    Spacer,
+    /// Markdown 块（TS `Markdown` 组件）。
+    Markdown(String),
+}
+
+/// 自定义渲染输出：标题行 + 有序内容块（对齐 TS 的组件序列）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolCustomRender {
+    pub title: Vec<CustomSpan>,
+    pub blocks: Vec<CustomBlock>,
+}
+
+/// 已按当前宽度解析成终端行的自定义工具视图（每帧重建）。
+#[derive(Clone, Debug)]
+struct CustomToolLines {
+    title: Vec<Line<'static>>,
+    /// 有序内容块；`Line` 已换行展开、`Spacer` 是空行、`Markdown` 已渲染。
+    blocks: Vec<CustomRenderedBlock>,
+}
+
+#[derive(Clone, Debug)]
+enum CustomRenderedBlock {
+    Lines(Vec<Line<'static>>),
+    Spacer,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +478,8 @@ pub enum TranscriptItem {
         is_error: bool,
         output: String,
         truncation: Option<ToolTruncation>,
+        /// 结果 `details`（自定义渲染用；TS `result.details`）。
+        details: Option<serde_json::Value>,
     },
 }
 
@@ -727,6 +811,8 @@ pub struct Model {
     pub content_height: usize,
     /// 上次渲染的整屏纯文本行（`SelSpace::Screen` 选择的源文本）。
     pub screen_lines: Vec<String>,
+    /// 扩展工具自定义渲染（宿主注册；`None` = 全部走内置 renderer）。
+    custom_tool_render: Option<CustomToolRenderFn>,
 }
 
 /// 重试倒计时状态（TS RetryStatusIndicator）：`esc_aborts` 仅在 agent 自动
@@ -779,6 +865,7 @@ impl Model {
             body_max_scroll: 0,
             content_height: 0,
             screen_lines: Vec::new(),
+            custom_tool_render: None,
         }
     }
 
@@ -810,7 +897,20 @@ impl Model {
             truncation: None,
             started_at: Some(std::time::Instant::now()),
             ended_at: None,
+            details: None,
         });
+    }
+
+    /// 记录工具结果的 `details`（自定义渲染用）。
+    pub fn set_tool_details(&mut self, call_id: &str, details: Option<serde_json::Value>) {
+        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
+            tool.details = details;
+        }
+    }
+
+    /// 注册扩展工具的自定义渲染回调（宿主启动/切会话时调用）。
+    pub fn set_custom_tool_render(&mut self, render: Option<CustomToolRenderFn>) {
+        self.custom_tool_render = render;
     }
 
     pub fn update_tool_call(&mut self, call_id: &str, state: ToolCallState) {
@@ -869,6 +969,7 @@ impl Model {
                     is_error,
                     output,
                     truncation,
+                    details,
                 } => {
                     if let Some(tool) = self
                         .active_tools
@@ -883,6 +984,7 @@ impl Model {
                         };
                         tool.output = sanitize_output_text(output);
                         tool.truncation = truncation.clone();
+                        tool.details = details.clone();
                     }
                 }
             }
@@ -1221,6 +1323,8 @@ pub enum Msg {
     SetCompletionCommands(Vec<crate::components::CompletionCommand>),
     SetEditorText(String), ExitSelect,
     SetToolOutput(String, String, String),
+    /// `(tool_call_id, details)` — 工具结果的 `details`（自定义渲染用）。
+    SetToolDetails(String, Option<serde_json::Value>),
     SetToolTruncation(String, Option<ToolTruncation>),
     ClearScreen, InputNewline, Cancel,
     /// Agent run 生命周期（TS `isStreaming = _isAgentRunActive`）：run 开始
@@ -1446,6 +1550,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SetEditorText(text) => { model.input.set_value(&text); vec![] }
         Msg::ExitSelect => { model.mode = AppMode::Chat; vec![] }
         Msg::SetToolOutput(call_id, _name, text) => { model.set_tool_output(&call_id, &text); vec![] }
+        Msg::SetToolDetails(call_id, details) => { model.set_tool_details(&call_id, details); vec![] }
         Msg::SetToolTruncation(call_id, truncation) => {
             if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
                 t.truncation = truncation;
@@ -2052,6 +2157,9 @@ struct BlockView {
     /// notices: truncated/aborted/error).
     stop_reason: Option<StopReason>,
     error_message: Option<String>,
+    /// 扩展自定义渲染（已按当前宽度/展开态渲染好；`Some` 时走
+    /// [`ToolRenderer::Custom`]）。
+    custom: Option<CustomToolLines>,
 }
 
 /// Startup header lines (TS `builtInHeader` ExpandableText): the logo
@@ -2118,6 +2226,64 @@ fn header_lines(expanded: bool, t: &Theme) -> Vec<Line<'static>> {
     ]
 }
 
+/// 把扩展的自定义渲染输出解析成终端行（标题粗体、次要行/脚注 dim、
+/// 正文按需走 Markdown）。
+fn custom_tool_lines(rendered: ToolCustomRender, wrap_w: usize, t: &Theme) -> CustomToolLines {
+    // 标题行：所有段拼成一行，统一加粗（TS `theme.bold(...)`）。
+    let title: Vec<Line<'static>> = if rendered.title.is_empty() {
+        Vec::new()
+    } else {
+        vec![Line::from(
+            rendered
+                .title
+                .iter()
+                .map(|span| custom_span(span, t, true))
+                .collect::<Vec<_>>(),
+        )]
+    };
+
+    let mut blocks: Vec<CustomRenderedBlock> = Vec::new();
+    for block in rendered.blocks {
+        match block {
+            CustomBlock::Spacer => blocks.push(CustomRenderedBlock::Spacer),
+            CustomBlock::Line(spans) => {
+                blocks.push(CustomRenderedBlock::Lines(vec![Line::from(
+                    spans
+                        .iter()
+                        .map(|span| custom_span(span, t, false))
+                        .collect::<Vec<_>>(),
+                )]));
+            }
+            CustomBlock::Markdown(text) => {
+                if text.is_empty() {
+                    continue;
+                }
+                let mut md = Markdown::with_theme(&text, wrap_w, t);
+                blocks.push(CustomRenderedBlock::Lines(md.render(wrap_w).to_vec()));
+            }
+        }
+    }
+    CustomToolLines { title, blocks }
+}
+
+/// 一个语义 span → ratatui `Span`（颜色按当前主题解析）。
+fn custom_span(span: &CustomSpan, t: &Theme, bold: bool) -> Span<'static> {
+    let mut style = match span.style {
+        CustomTextStyle::Default => Style::new().fg(t.tool_output),
+        CustomTextStyle::Muted => Style::new().fg(t.muted),
+        CustomTextStyle::Dim => Style::new().fg(t.dim),
+        CustomTextStyle::Accent => Style::new().fg(t.accent),
+        CustomTextStyle::Warning => Style::new().fg(t.warning),
+        CustomTextStyle::Error => Style::new().fg(t.error),
+        CustomTextStyle::Success => Style::new().fg(t.success),
+        CustomTextStyle::Bold => Style::new().fg(t.tool_title),
+    };
+    if bold || matches!(span.style, CustomTextStyle::Bold) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    Span::styled(span.text.clone(), style)
+}
+
 /// Build the transcript blocks in TS chatContainer order: header first,
 /// then messages and tool calls interleaved by their shared block-id
 /// sequence (a tool call sits right after the assistant message that
@@ -2142,12 +2308,28 @@ fn build_blocks(model: &mut Model, wrap_w: usize, t: &Theme) -> Vec<BlockView> {
             thinking_lines: Vec::new(),
             stop_reason: None,
             error_message: None,
+            custom: None,
         });
     }
     // Tools and messages share one block-id sequence (allocated in event
     // order), so sorting by id reproduces the TS chatContainer ordering.
     let mut pending: Vec<(u64, BlockView)> = Vec::new();
+    let expanded = model.tool_output_expanded;
     for tool in &model.active_tools {
+        // 扩展自定义渲染（TS renderCall/renderResult）：每帧按当前宽度和
+        // 展开态重建，和 TS 组件树在 layout 时求值等价。
+        let custom = model.custom_tool_render.as_ref().and_then(|render| {
+            let input = CustomToolRenderInput {
+                name: &tool.name,
+                cwd: &model.cwd,
+                expanded,
+                args: &tool.args,
+                output: &tool.output,
+                details: tool.details.as_ref(),
+                is_error: matches!(tool.state, ToolCallState::Failed),
+            };
+            render(&input).map(|rendered| custom_tool_lines(rendered, wrap_w, t))
+        });
         pending.push((
             tool.id,
             BlockView {
@@ -2165,6 +2347,7 @@ fn build_blocks(model: &mut Model, wrap_w: usize, t: &Theme) -> Vec<BlockView> {
                 thinking_lines: Vec::new(),
                 stop_reason: None,
                 error_message: None,
+                custom,
             },
         ));
     }
@@ -2197,6 +2380,7 @@ fn build_blocks(model: &mut Model, wrap_w: usize, t: &Theme) -> Vec<BlockView> {
                 thinking_lines,
                 stop_reason: msg.stop_reason,
                 error_message: msg.error_message.clone(),
+                custom: None,
             },
         ));
     }
@@ -2401,10 +2585,17 @@ enum ToolRenderer {
     Grep,
     Edit,
     Write,
+    /// 扩展提供的自定义渲染（TS `renderCall`/`renderResult`）。
+    Custom,
     Fallback,
 }
 
 fn tool_renderer(b: &BlockView) -> ToolRenderer {
+    // 扩展自定义渲染优先于内置 renderer（TS 里工具自带的 renderCall/
+    // renderResult 覆盖 fallback 组件）。
+    if b.custom.is_some() {
+        return ToolRenderer::Custom;
+    }
     match b.tool_name.as_str() {
         "bash" => ToolRenderer::Bash,
         "read" => ToolRenderer::Read,
@@ -2768,6 +2959,27 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize, t: &Theme) -> u16 
                         + write_content_height(b, expanded, wrap_w)
                         + BOX_PAD_Y
                 }
+                ToolRenderer::Custom => {
+                    // 自定义渲染：标题 + 有序块（换行后的行数之和，Spacer 占一行）。
+                    let mut rows = 0u16;
+                    if let Some(custom) = b.custom.as_ref() {
+                        rows += custom
+                            .title
+                            .iter()
+                            .map(|line| title_rows(line, wrap_w))
+                            .sum::<u16>();
+                        for block in &custom.blocks {
+                            rows += match block {
+                                CustomRenderedBlock::Spacer => 1,
+                                CustomRenderedBlock::Lines(lines) => lines
+                                    .iter()
+                                    .map(|line| title_rows(line, wrap_w))
+                                    .sum::<u16>(),
+                            };
+                        }
+                    }
+                    BOX_PAD_Y + rows + BOX_PAD_Y
+                }
                 ToolRenderer::Fallback => {
                     // fallback renderer: title + (blank + wrapped args) +
                     // (blank + wrapped output preview + hint).
@@ -2871,6 +3083,7 @@ fn render_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded:
         ToolRenderer::Grep => ly = render_grep_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Edit => ly = render_edit_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
         ToolRenderer::Write => ly = render_write_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
+        ToolRenderer::Custom => ly = render_custom_tool_block(frame, area, item, t, ly, wrap_w, bg),
         ToolRenderer::Fallback => ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
     }
     // Bottom padding.
@@ -3054,6 +3267,39 @@ fn fallback_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
 /// Fallback renderer rows (no registered tool renderer — TS
 /// `formatToolExecution`): bold tool-name title, blank + args JSON, first
 /// 10 output lines + trailing `... (N more lines, ctrl+o to expand)`.
+/// 扩展自定义渲染块：标题（粗体，word-wrap）+ 次要行（dim）+ 正文 +
+/// 脚注（dim），空行分隔各段（和 TS `Container` 的 `Spacer(1)` 语义一致）。
+fn render_custom_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    _t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
+    let Some(custom) = item.custom.as_ref() else {
+        return ly;
+    };
+    for line in &custom.title {
+        ly += render_wrapped_title(frame, area, ly, bg, line, wrap_w);
+    }
+    for block in &custom.blocks {
+        match block {
+            CustomRenderedBlock::Spacer => {
+                render_boxed_row(frame, area, ly, bg, vec![]);
+                ly += 1;
+            }
+            CustomRenderedBlock::Lines(lines) => {
+                for line in lines {
+                    ly += render_wrapped_title(frame, area, ly, bg, line, wrap_w);
+                }
+            }
+        }
+    }
+    ly
+}
+
 fn render_fallback_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
     // Title row (word-wrapped like TS `Text`).
     let title = fallback_title_line(item, t);
@@ -4431,6 +4677,7 @@ mod tests {
                     total_lines: 5,
                     ..ToolTruncation::default()
                 }),
+                details: None,
             },
         ]);
 
@@ -6739,6 +6986,7 @@ mod tests {
             thinking_lines: Vec::new(),
             stop_reason: None,
             error_message: None,
+            custom: None,
         }
     }
 
@@ -7072,5 +7320,110 @@ mod tests {
             [Cmd::CopySelection(text)] => assert_eq!(text, "hello world"),
             other => panic!("expected CopySelection, got {other:?}"),
         }
+    }
+
+    /// 扩展自定义渲染（TS `renderCall`/`renderResult`）：标题/内容块都画出来，
+    /// 且 `details` 与 `expanded` 透传给扩展。
+    #[test]
+    fn custom_tool_render_draws_all_sections() {
+        let mut model = Model::new(80, 24);
+        model.set_custom_tool_render(Some(Arc::new(
+            |input: &CustomToolRenderInput<'_>| {
+                let span = |style, text: String| CustomSpan { style, text };
+                Some(ToolCustomRender {
+                    title: vec![
+                        span(
+                            CustomTextStyle::Success,
+                            if input.expanded { "TITLE-x".into() } else { "TITLE-c".into() },
+                        ),
+                        span(CustomTextStyle::Accent, format!(" {}", input.name)),
+                    ],
+                    blocks: vec![
+                        CustomBlock::Line(vec![
+                            span(CustomTextStyle::Muted, "SUB details=".into()),
+                            span(CustomTextStyle::Dim, input.details.is_some().to_string()),
+                        ]),
+                        CustomBlock::Spacer,
+                        CustomBlock::Markdown(format!("**BODY** {}", input.output.trim())),
+                        CustomBlock::Spacer,
+                        CustomBlock::Line(vec![span(CustomTextStyle::Dim, "FOOT usage".into())]),
+                    ],
+                })
+            },
+        )));
+        update(&mut model, Msg::ToolStart("tc-1".into(), "subagent".into(), "{}".into()));
+        update(
+            &mut model,
+            Msg::SetToolDetails("tc-1".into(), Some(serde_json::json!({ "mode": "single" }))),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-1".into(), "subagent".into(), "final answer\n".into()),
+        );
+        update(&mut model, Msg::ToolEnd("tc-1".into(), "subagent".into(), false));
+
+        let buf = render_to_buffer(&mut model);
+        let screen: String = (0..model.height)
+            .map(|y| buffer_row_text(&buf, 0, y, model.width))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(screen.contains("TITLE-c subagent"), "custom title: {screen}");
+        assert!(screen.contains("SUB details=true"), "line block: {screen}");
+        assert!(screen.contains("BODY final answer"), "markdown block: {screen}");
+        assert!(screen.contains("FOOT usage"), "footer block: {screen}");
+        // 自定义 renderer 取代 fallback：不会再把 args JSON 打出来。
+        assert!(!screen.contains("{}"), "fallback args must not render: {screen}");
+
+        // Ctrl+O（展开）会把 expanded 传给扩展，标题随之变化。
+        update(&mut model, Msg::ToggleToolExpansion);
+        let buf = render_to_buffer(&mut model);
+        let screen: String = (0..model.height)
+            .map(|y| buffer_row_text(&buf, 0, y, model.width))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("TITLE-x subagent"), "expanded flag: {screen}");
+    }
+
+    /// 自定义 renderer 返回 `None`（或未注册）时退回内置 fallback 渲染。
+    #[test]
+    fn custom_tool_render_none_falls_back() {
+        let mut model = Model::new(80, 24);
+        model.set_custom_tool_render(Some(Arc::new(
+            |_input: &CustomToolRenderInput<'_>| None,
+        )));
+        update(&mut model, Msg::ToolStart("tc-1".into(), "weird".into(), "{\"a\":1}".into()));
+        let buf = render_to_buffer(&mut model);
+        let screen: String = (0..model.height)
+            .map(|y| buffer_row_text(&buf, 0, y, model.width))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("weird"), "fallback title: {screen}");
+        assert!(screen.contains("\"a\""), "fallback args: {screen}");
+    }
+
+    /// 恢复历史时 `details` 也要还原，否则 resumed session 的自定义渲染没有数据。
+    #[test]
+    fn hydrate_transcript_restores_tool_details() {
+        let mut model = Model::new(80, 24);
+        model.hydrate_transcript(&[
+            TranscriptItem::ToolStart {
+                call_id: "tc-1".into(),
+                name: "subagent".into(),
+                args: "{}".into(),
+            },
+            TranscriptItem::ToolResult {
+                call_id: "tc-1".into(),
+                is_error: false,
+                output: "done".into(),
+                truncation: None,
+                details: Some(serde_json::json!({ "mode": "single" })),
+            },
+        ]);
+        let tool = model.active_tools.iter().find(|t| t.call_id == "tc-1").unwrap();
+        assert_eq!(
+            tool.details.as_ref().and_then(|d| d.get("mode")).and_then(|m| m.as_str()),
+            Some("single")
+        );
     }
 }

@@ -135,6 +135,7 @@ pub fn create_tool_definition_from_agent_tool(
             pi_agent_core::pi_ai_types::ToolExecutionMode::Parallel => "parallel".into(),
         }),
         execute: None,
+        render: None,
         source_info: None,
     }
 }
@@ -162,6 +163,7 @@ mod tests {
             render_shell: None,
             execution_mode: None,
             execute: None,
+            render: None,
             source_info: None,
         };
 
@@ -185,6 +187,7 @@ mod tests {
                 render_shell: None,
                 execution_mode: None,
                 execute: None,
+                render: None,
             source_info: None,
             },
             ToolDefinition {
@@ -198,6 +201,7 @@ mod tests {
                 render_shell: None,
                 execution_mode: None,
                 execute: None,
+                render: None,
             source_info: None,
             },
         ];
@@ -246,6 +250,7 @@ mod tests {
             render_shell: None,
             execution_mode: None,
             execute: None,
+            render: None,
             source_info: None,
         };
 

@@ -234,6 +234,7 @@ impl McpConnection {
                     render_shell: None,
                     execution_mode: Some("sequential".to_string()),
                     execute: Some(execute),
+                    render: None,
                     source_info: None,
                 }
             })

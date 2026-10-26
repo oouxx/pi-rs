@@ -772,6 +772,45 @@ pub struct AgentSession {
     bash_abort: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
 }
 
+/// 安装扩展 `RuntimeHandle` 的 `get_model` / `get_thinking_level` getter。
+///
+/// 两者都是同步闭包（`Fn() -> String`），而 `Agent::state()` 是 async，所以
+/// 走 `Agent::try_state()` 读快照；拿不到快照（恰好写锁被持有）时回退到会话
+/// 构造时的初始值。这样扩展（如 subagent 的模型/thinking 继承）在 `/model`、
+/// `/thinking` 切换后读到的是**当前**值，对齐 TS 的 `ctx.model` /
+/// `ctx.thinkingLevel`（此前是构造期一次性快照，切模型后仍把旧模型传给
+/// 子 agent）。
+fn install_ext_agent_state_getters(
+    handle: &mut crate::core::extensions::RuntimeHandle,
+    agent_ref: &Arc<std::sync::Mutex<Option<Arc<Agent>>>>,
+    initial_model: &Model,
+    initial_thinking_level: &str,
+) {
+    let fallback_model = format!("{}/{}", initial_model.provider, initial_model.id);
+    let model_slot = Arc::clone(agent_ref);
+    handle.get_model = std::sync::Arc::new(move || {
+        model_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|agent| agent.try_state())
+            .map(|state| format!("{}/{}", state.model.provider, state.model.id))
+            .unwrap_or_else(|| fallback_model.clone())
+    });
+
+    let fallback_level = initial_thinking_level.to_string();
+    let level_slot = Arc::clone(agent_ref);
+    handle.get_thinking_level = std::sync::Arc::new(move || {
+        level_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|agent| agent.try_state())
+            .map(|state| state.thinking_level.clone())
+            .unwrap_or_else(|| fallback_level.clone())
+    });
+}
+
 /// 无 UI 客户端（print/json 等）时的默认扩展 UI：notify 落 stderr，
 /// dialog（confirm/select/input）返回默认值。
 fn default_extension_ui() -> crate::core::extensions::ExtensionUIContext {
@@ -929,6 +968,44 @@ impl AgentSession {
         let cache_warmer_slot: Arc<std::sync::Mutex<Option<CacheWarmerSlot>>> =
             Arc::new(std::sync::Mutex::new(None));
         // ── Extension context (needed early for extension tool dispatch) ──
+        // 扩展可见的项目信任状态（对齐 TS `ctx.isProjectTrusted()`）：项目资源
+        // 门控本身仍未实现（见 DEVIATIONS），这里只按 TS 的解析顺序算出"是否
+        // 算已信任"——显式 override → 项目无需信任的资源 → 已存决策 →
+        // `defaultTrust` 策略；需要询问且当下无 UI 时保守取 false（TUI 里扩展
+        // 会据此多问一次，正好是原版"未受信任项目"的分支）。
+        // 注意：不传 extension_registry（其 project_trust 派发走 block_in_place，
+        // 在 current_thread 运行时里会 panic）；扩展间的信任协作另有其道。
+        let ext_agent_dir_for_trust = crate::config::get_agent_dir().to_string_lossy().to_string();
+        let ext_trust_store =
+            crate::core::trust_manager::ProjectTrustStore::new(&ext_agent_dir_for_trust);
+        let ext_project_trusted = crate::core::project_trust::resolve_project_trusted(
+            crate::core::project_trust::ResolveProjectTrustedOptions {
+                cwd: &options.cwd,
+                trust_store: &ext_trust_store,
+                trust_override: None,
+                default_project_trust: match settings_manager.get_default_project_trust() {
+                    crate::core::settings_manager::DefaultProjectTrust::Always => {
+                        crate::core::project_trust::DefaultProjectTrust::Always
+                    }
+                    crate::core::settings_manager::DefaultProjectTrust::Never => {
+                        crate::core::project_trust::DefaultProjectTrust::Never
+                    }
+                    crate::core::settings_manager::DefaultProjectTrust::Ask => {
+                        crate::core::project_trust::DefaultProjectTrust::Ask
+                    }
+                },
+                project_trust_context: crate::core::project_trust::ProjectTrustContext::new(
+                    &options.cwd,
+                    false,
+                ),
+                extension_registry: None,
+            },
+        );
+        // 构造期快照（Agent 尚未创建时作为 getter 的回退值）。
+        let ext_initial_model = options.model.clone();
+        let ext_initial_thinking_level = options.thinking_level.clone();
+        let ext_agent_ref: Arc<std::sync::Mutex<Option<Arc<Agent>>>> =
+            Arc::new(std::sync::Mutex::new(None));
         // RuntimeHandle 提供真实 cwd/agent_dir（noop() 返回空串，扩展 spawn
         // 子进程或写状态文件时会失败/落错位置）。
         let mut ext_runtime_handle = crate::core::extensions::RuntimeHandle::noop();
@@ -936,9 +1013,12 @@ impl AgentSession {
         ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
         let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
         ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
-        // 当前模型（provider/model），供扩展（如 subagent）继承给子进程。
-        let ext_model = format!("{}/{}", options.model.provider, options.model.id);
-        ext_runtime_handle.get_model = std::sync::Arc::new(move || ext_model.clone());
+        install_ext_agent_state_getters(
+            &mut ext_runtime_handle,
+            &ext_agent_ref,
+            &ext_initial_model,
+            &ext_initial_thinking_level,
+        );
         // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
         crate::core::extensions::install_register_provider_hook(
             &mut ext_runtime_handle,
@@ -950,12 +1030,13 @@ impl AgentSession {
         let extension_ui_binding = Arc::new(std::sync::RwLock::new(
             options.ui_context.clone().unwrap_or_else(default_extension_ui),
         ));
-        let ext_ctx = ExtensionContext::new(
+        let mut ext_ctx = ExtensionContext::new(
             options.cwd.clone(),
             false,
             delegating_ui(Arc::clone(&extension_ui_binding)),
             ext_runtime_handle,
         );
+        ext_ctx.set_project_trusted(ext_project_trusted);
         let shared_ext_ctx = Arc::new(ext_ctx);
 
         // ── Build tool list ──
@@ -1114,13 +1195,35 @@ impl AgentSession {
                 let ext_tool_name = def.name.clone();
                 let ext_reg = Arc::clone(registry);
                 let ext_ctx_clone = Arc::clone(&shared_ext_ctx);
-                let execute: ToolExecuteFn = Arc::new(move |_id, params, _signal, _on_update| {
+                let execute: ToolExecuteFn =
+                    Arc::new(move |id, params, signal, on_update| {
                     let reg = Arc::clone(&ext_reg);
                     let ctx = Arc::clone(&ext_ctx_clone);
                     let name = ext_tool_name.clone();
+                    // 把 agent 侧的 signal / onUpdate 透传给扩展（对齐 TS
+                    // `execute(toolCallId, params, signal, onUpdate, ctx)`）：
+                    // 此前这里用 `_signal, _on_update` 丢弃，导致扩展工具既
+                    // 不能上报中间进度，也无法响应 Ctrl+C。
+                    let on_update: pi_extension_api::ToolUpdateFn = match on_update {
+                        Some(callback) => Arc::new(move |output: pi_extension_api::ToolCallOutput| {
+                            let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
+                                .content
+                                .into_iter()
+                                .filter_map(|v| serde_json::from_value(v).ok())
+                                .collect();
+                            callback(AgentToolResult {
+                                content,
+                                details: output.details.unwrap_or(serde_json::Value::Null),
+                                usage: None,
+                                terminate: output.terminate,
+                            });
+                        }),
+                        None => pi_extension_api::noop_tool_update(),
+                    };
+                    let invocation = pi_extension_api::ToolInvocation::new(id, signal, on_update);
                     Box::pin(async move {
                         match crate::core::extensions::dispatcher::dispatch_handle_tool_call(
-                            &reg, &name, params, &ctx,
+                            &reg, &name, params, &ctx, &invocation,
                         )
                         .await
                         {
@@ -1848,6 +1951,10 @@ impl AgentSession {
         *bash_agent_ref
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(agent.clone());
+        // 扩展 RuntimeHandle 的模型 / thinking level getter 也读这个 agent。
+        *ext_agent_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(agent.clone());
         let session_manager = bash_session_manager;
 
         let initial_active_tool_names = options.initial_active_tool_names.unwrap_or_else(|| {
@@ -1968,17 +2075,27 @@ impl AgentSession {
                 ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
                 let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
                 ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
+                install_ext_agent_state_getters(
+                    &mut ext_runtime_handle,
+                    &ext_agent_ref,
+                    &ext_initial_model,
+                    &ext_initial_thinking_level,
+                );
                 // Extensions can register providers (match TS `registerProvider`, #019e4ad68).
                 crate::core::extensions::install_register_provider_hook(
                     &mut ext_runtime_handle,
                     model_registry_for_ext.clone(),
                 );
-                ExtensionContext::new(
-                    session_cwd_for_ext.clone(),
-                    false,
-                    delegating_ui(Arc::clone(&extension_ui_binding)),
-                    ext_runtime_handle,
-                )
+                {
+                    let mut ctx = ExtensionContext::new(
+                        session_cwd_for_ext.clone(),
+                        false,
+                        delegating_ui(Arc::clone(&extension_ui_binding)),
+                        ext_runtime_handle,
+                    );
+                    ctx.set_project_trusted(ext_project_trusted);
+                    ctx
+                }
             },
             // 实时 UI 绑定（工具/钩子闭包共享的上下文也通过它读取）。
             extension_ui_binding,
@@ -2999,6 +3116,9 @@ impl AgentSession {
             .extension_ui_binding
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ui;
+        // 绑定了真实 UI → `ctx.hasUI = true`（对齐 TS
+        // `hasUI() = uiContext !== noOpUIContext`）。
+        self.ext_ctx.set_has_ui(true);
     }
 
     /// 设置扩展运行模式（`"tui"` / `"cli"` / `"headless"`，对齐 TS
@@ -3591,6 +3711,17 @@ impl AgentSession {
         name: &str,
     ) -> Option<&crate::core::extensions::ToolDefinition> {
         self.tool_definitions.get(name)
+    }
+
+    /// 扩展工具的自定义渲染回调（TS `renderCall` / `renderResult`），按工具名
+    /// 索引。TUI 启动/切换会话时用它注册渲染器。
+    pub fn tool_render_fns(
+        &self,
+    ) -> std::collections::HashMap<String, pi_extension_api::ToolRenderFn> {
+        self.tool_definitions
+            .iter()
+            .filter_map(|(name, def)| def.render.clone().map(|render| (name.clone(), render)))
+            .collect()
     }
 
     /// Get all configured tools with name, description, parameter schema,

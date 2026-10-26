@@ -53,6 +53,7 @@ impl HookHandler for TestToolExtension {
         tool_name: &str,
         params: serde_json::Value,
         ctx: &ExtensionContext,
+        _invocation: &pi_extension_api::ToolInvocation,
     ) -> Option<ToolCallOutput> {
         if tool_name != TEST_TOOL {
             return None;

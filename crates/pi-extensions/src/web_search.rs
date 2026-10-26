@@ -669,6 +669,7 @@ impl HookHandler for WebSearchExtension {
         tool_name: &str,
         params: Value,
         _ctx: &ExtensionContext,
+        _invocation: &pi_extension_api::ToolInvocation,
     ) -> Option<ToolCallOutput> {
         match tool_name {
             "web_search" => {

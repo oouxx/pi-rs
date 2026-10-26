@@ -666,15 +666,19 @@ pub async fn dispatch_after_provider_response(
 /// Each extension's `handle_tool_call()` is tried in registration order;
 /// the first one that returns `Some(ToolCallOutput)` wins.
 /// Returns `None` when no extension handles the tool.
+///
+/// `invocation` carries the tool call id, the abort signal and the
+/// `onUpdate` channel (TS `execute(toolCallId, params, signal, onUpdate, ctx)`).
 pub async fn dispatch_handle_tool_call(
     registry: &ExtensionRegistry,
     tool_name: &str,
     params: serde_json::Value,
     ext_ctx: &ExtensionContext,
+    invocation: &pi_extension_api::ToolInvocation,
 ) -> Option<ToolCallOutput> {
     registry
         .hook_runner()
-        .dispatch_tool_call(tool_name, params, ext_ctx)
+        .dispatch_tool_call(tool_name, params, ext_ctx, invocation)
         .await
 }
 

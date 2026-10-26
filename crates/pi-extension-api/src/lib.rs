@@ -23,6 +23,224 @@ pub use source_info::{
     SourceInfo, SourceOrigin, SourceScope,
 };
 
+/// Tool 运行中的部分结果回调（对齐 TS `onUpdate(partial)`）。
+///
+/// 扩展可以在子任务/子进程还在跑的时候推一条中间结果，宿主会把它当作
+/// `tool_execution_update` 事件转发给 UI（TUI 会刷新该工具块的输出）。
+pub type ToolUpdateFn = Arc<dyn Fn(ToolCallOutput) + Send + Sync>;
+
+/// 什么都不做的 `ToolUpdateFn`（headless 模式、单测、未接 UI 的调用）。
+#[must_use]
+pub fn noop_tool_update() -> ToolUpdateFn {
+    Arc::new(|_| {})
+}
+
+/// 等中止信号：已中止 → 立即返回；未中止 → 等下一次变更；没有信号或信号
+/// 通道已断开（本轮 run 结束）→ 永不返回。
+///
+/// 通道断开不能算中止，否则会话收尾时会把还在跑的工具误判成 Ctrl+C。
+pub async fn wait_aborted(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(rx) = rx.as_mut() else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *rx.borrow() {
+        return;
+    }
+    loop {
+        match rx.changed().await {
+            Ok(()) => {
+                if *rx.borrow() {
+                    return;
+                }
+            }
+            Err(_) => {
+                std::future::pending::<()>().await;
+                return;
+            }
+        }
+    }
+}
+
+/// 一次工具调用的运行上下文（对齐 TS
+/// `execute(toolCallId, params, signal, onUpdate, ctx)`）。
+///
+/// `handle_tool_call` 的 `tool_name` / `params` / `ctx` 仍作为独立参数传入
+/// （保持既有签名习惯），额外能力（中止信号 + 中间结果上报）走这里。
+#[derive(Clone)]
+pub struct ToolInvocation {
+    /// Agent 侧的工具调用 id（对齐 TS `toolCallId`）。
+    pub tool_call_id: String,
+    /// 中止信号（`watch` 通道，`true` = 已中止）。对齐 TS `signal: AbortSignal`。
+    pub abort: Option<tokio::sync::watch::Receiver<bool>>,
+    /// 运行中推送部分结果（对齐 TS `onUpdate`）。
+    pub on_update: ToolUpdateFn,
+}
+
+impl ToolInvocation {
+    #[must_use]
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        abort: Option<tokio::sync::watch::Receiver<bool>>,
+        on_update: ToolUpdateFn,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            abort,
+            on_update,
+        }
+    }
+
+    /// 无 id / 无信号 / 不上报中间结果的调用（测试与 headless 场景）。
+    #[must_use]
+    pub fn noop() -> Self {
+        Self {
+            tool_call_id: String::new(),
+            abort: None,
+            on_update: noop_tool_update(),
+        }
+    }
+
+    /// 是否已中止（对齐 TS `signal.aborted`）。
+    #[must_use]
+    pub fn is_aborted(&self) -> bool {
+        self.abort.as_ref().is_some_and(|rx| *rx.borrow())
+    }
+
+    /// 等中止信号（没有信号时永不返回）。供 `tokio::select!` 使用。
+    pub async fn aborted(&mut self) {
+        wait_aborted(&mut self.abort).await;
+    }
+
+    /// 推送一条中间结果（未接 UI 时是空操作）。
+    pub fn update(&self, output: &ToolCallOutput) {
+        (self.on_update)(output.clone());
+    }
+}
+
+impl std::fmt::Debug for ToolInvocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolInvocation")
+            .field("tool_call_id", &self.tool_call_id)
+            .field("abort", &self.abort.is_some())
+            .field("on_update", &"<fn>")
+            .finish()
+    }
+}
+
+/// 扩展工具的自定义渲染输入（对齐 TS `renderCall(args, theme, ctx)` +
+/// `renderResult(result, { expanded }, theme, ctx)`）。
+#[derive(Clone, Debug, Default)]
+pub struct ToolRenderContext {
+    /// 工具名。
+    pub tool_name: String,
+    /// 当前会话 cwd（对齐 TS `ctx.cwd`）。
+    pub cwd: String,
+    /// 是否展开视图（TS `{ expanded }`；TUI 的 Ctrl+O）。
+    pub expanded: bool,
+    /// 工具参数（TS `renderCall` 的 `args`）。
+    pub args: serde_json::Value,
+    /// 结果文本（工具返回的 content 拼成的纯文本；未完成时为空）。
+    pub output: String,
+    /// 结构化 `details`（未完成时为 `None`）。
+    pub details: Option<serde_json::Value>,
+    /// 结果是不是错误结果（未完成时为 `false`）。
+    pub is_error: bool,
+}
+
+/// 文本的语义样式。扩展只说"这段是什么语义"，具体颜色由 TUI 按当前主题解析
+/// （对齐 TS 的 `theme.fg("<token>", text)`，但不把颜色值泄漏给扩展）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolTextStyle {
+    /// 普通输出文本（TS `toolOutput`）。
+    #[default]
+    Default,
+    /// 次要说明（TS `muted`）。
+    Muted,
+    /// 最弱提示（TS `dim`）。
+    Dim,
+    /// 强调（TS `accent`）。
+    Accent,
+    /// 警告（TS `warning`）。
+    Warning,
+    /// 错误（TS `error`）。
+    Error,
+    /// 成功（TS `success`）。
+    Success,
+    /// 粗体标题（TS `toolTitle` + `bold`）。
+    Bold,
+}
+
+/// 一段带语义样式的文本（行内可混排不同样式，对齐 TS 的 `Text` 多 span）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolRenderSpan {
+    pub style: ToolTextStyle,
+    pub text: String,
+}
+
+impl ToolRenderSpan {
+    #[must_use]
+    pub fn new(style: ToolTextStyle, text: impl Into<String>) -> Self {
+        Self {
+            style,
+            text: text.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self::new(ToolTextStyle::Default, text)
+    }
+}
+
+/// 渲染块：按顺序排布（对齐 TS `Container.addChild` 的组件序列）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolRenderBlock {
+    /// 一行文本（可分段着色）。
+    Line(Vec<ToolRenderSpan>),
+    /// 空行（TS `Spacer(1)`）。
+    Spacer,
+    /// Markdown 块（TS `Markdown` 组件；终稿用它）。
+    Markdown(String),
+}
+
+impl ToolRenderBlock {
+    /// 单段文本的一行。
+    #[must_use]
+    pub fn line(text: impl Into<String>) -> Self {
+        Self::Line(vec![ToolRenderSpan::plain(text)])
+    }
+
+    /// 指定语义样式的单段文本行。
+    #[must_use]
+    pub fn styled(style: ToolTextStyle, text: impl Into<String>) -> Self {
+        Self::Line(vec![ToolRenderSpan::new(style, text)])
+    }
+
+    /// 多段文本的一行。
+    #[must_use]
+    pub fn spans(spans: Vec<ToolRenderSpan>) -> Self {
+        Self::Line(spans)
+    }
+}
+
+/// 扩展工具的自定义渲染输出。
+///
+/// 模型刻意保持"标题行 + 有序块列表"（而不是 TS 的任意组件树）：换行、
+/// 宽度、截断、Markdown 渲染都由 pi-tui 统一负责，扩展只决定文字内容与语义
+/// 样式，既能表达原版布局（分节标题、空行、每步一组），又不会把 TUI 布局
+/// 能力泄漏进扩展。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolRenderOutput {
+    /// 标题行（TS `theme.fg("toolTitle", theme.bold(...))` 那条）。
+    pub title: Vec<ToolRenderSpan>,
+    /// 标题之下的有序内容块。
+    pub blocks: Vec<ToolRenderBlock>,
+}
+
+/// 扩展工具的自定义渲染回调。返回 `None` = 用内置 fallback 渲染。
+pub type ToolRenderFn = Arc<dyn Fn(&ToolRenderContext) -> Option<ToolRenderOutput> + Send + Sync>;
+
 // ============================================================================
 // Tool Definition
 // ============================================================================
@@ -65,12 +283,15 @@ pub struct ToolDefinition {
     pub execution_mode: Option<String>,
     #[serde(skip)]
     pub execute: Option<ToolExecuteFn>,
+    /// 自定义渲染（对齐 TS `renderCall` / `renderResult`）：TUI 渲染该工具的
+    /// 块时调用。`None` = 用内置 fallback 渲染。
+    #[serde(skip)]
+    pub render: Option<ToolRenderFn>,
     /// Provenance of the tool definition (builtin / extension / sdk),
     /// matching TS `ToolDefinitionEntry.sourceInfo`.
     #[serde(skip)]
     pub source_info: Option<SourceInfo>,
 }
-
 
 impl std::fmt::Debug for ToolDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,6 +305,7 @@ impl std::fmt::Debug for ToolDefinition {
             .field("render_shell", &self.render_shell)
             .field("execution_mode", &self.execution_mode)
             .field("execute", &self.execute.as_ref().map(|_| "Some(fn)"))
+            .field("render", &self.render.as_ref().map(|_| "Some(fn)"))
             .finish()
     }
 }
@@ -131,6 +353,17 @@ pub struct ExtensionContext {
     /// 默认 `"cli"`，interactive 模式启动时
     /// 通过 [`Self::set_mode`] 置为 `"tui"`。
     pub mode: String,
+    /// 是否绑定了真实 UI（对齐 TS `ctx.hasUI` = `uiContext !== noOpUIContext`）。
+    ///
+    /// 宿主在换绑真实 UI（interactive TUI、带 UI 的客户端）时置为 `true`；
+    /// headless/print 保持 `false`，扩展据此决定要不要弹确认框。
+    pub has_ui: bool,
+    /// 当前项目是否受信任（对齐 TS `ctx.isProjectTrusted()`）。
+    ///
+    /// 由宿主按 `resolve_project_trusted`（显式 override → 无需信任的项目
+    /// 资源 → 已存决策 → `defaultTrust` 策略）算出；需要询问而当时没有 UI
+    /// 时保守取 `false`。
+    pub is_project_trusted: bool,
     pub ui: ExtensionUIContext,
     pub runtime: RuntimeHandle,
 }
@@ -147,6 +380,8 @@ impl ExtensionContext {
             session_id,
             is_connected,
             mode: String::new(),
+            has_ui: false,
+            is_project_trusted: false,
             ui,
             runtime,
         }
@@ -155,6 +390,16 @@ impl ExtensionContext {
     /// 设置运行模式（`"tui"` / `"cli"` / `"headless"`）。
     pub fn set_mode(&mut self, mode: impl Into<String>) {
         self.mode = mode.into();
+    }
+
+    /// 标记是否绑定了真实 UI（对齐 TS `ctx.hasUI`）。
+    pub fn set_has_ui(&mut self, has_ui: bool) {
+        self.has_ui = has_ui;
+    }
+
+    /// 设置项目信任状态（对齐 TS `ctx.isProjectTrusted()`）。
+    pub fn set_project_trusted(&mut self, trusted: bool) {
+        self.is_project_trusted = trusted;
     }
 }
 
@@ -880,6 +1125,7 @@ impl Default for ExtensionRegistry {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use async_trait::async_trait;
     use super::*;
 
@@ -1015,5 +1261,82 @@ mod tests {
 
         let empty = completions(String::new()).await;
         assert!(empty.is_none());
+    }
+
+    /// `ToolInvocation`：中止信号语义（对齐 TS `AbortSignal`）——已中止立即返回，
+    /// 未中止时等信号；信号通道断开（run 结束）不算中止。
+    #[tokio::test]
+    async fn tool_invocation_abort_semantics() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut invocation = ToolInvocation::new("call-1", Some(rx), noop_tool_update());
+
+        assert!(!invocation.is_aborted());
+        // 未中止：future 挂起，不会自己返回。
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), invocation.aborted())
+                .await
+                .is_err()
+        );
+
+        tx.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), invocation.aborted())
+            .await
+            .expect("abort wakes the waiter");
+        assert!(invocation.is_aborted());
+
+        // 已中止的接收端立刻返回。
+        tokio::time::timeout(std::time::Duration::from_millis(50), invocation.aborted())
+            .await
+            .expect("already aborted returns immediately");
+    }
+
+    /// 信号通道被 drop（本轮 run 结束）不能误报成"已中止"，否则长跑工具会
+    /// 在会话收尾时被莫名打断。
+    #[tokio::test]
+    async fn dropped_abort_sender_is_not_abort() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut invocation = ToolInvocation::new("call-1", Some(rx), noop_tool_update());
+        drop(tx);
+        assert!(!invocation.is_aborted());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), invocation.aborted())
+                .await
+                .is_err(),
+            "sender dropped must not resolve as aborted"
+        );
+    }
+
+    /// 未接 UI 时 `update` 是空操作；接上时收到同一份输出。
+    #[test]
+    fn tool_invocation_update_forwards_output() {
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let invocation = ToolInvocation::new(
+            "call-1",
+            None,
+            Arc::new(move |output: ToolCallOutput| {
+                sink.lock().unwrap().push(
+                    output.content[0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }),
+        );
+        let output = ToolCallOutput {
+            content: vec![serde_json::json!({ "type": "text", "text": "partial" })],
+            details: None,
+            is_error: false,
+            terminate: None,
+        };
+        invocation.update(&output);
+        invocation.update(&output);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["partial".to_string(), "partial".to_string()]
+        );
+
+        // noop：调用不 panic
+        ToolInvocation::noop().update(&output);
     }
 }

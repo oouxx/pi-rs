@@ -7,6 +7,33 @@
 >
 > "否"的差异必须引用 `DEVIATIONS.md`。
 
+## subagent 工具契约（`src/subagent.rs` + `src/subagent/agents.rs`）
+
+> 对齐基准：pi-subagents / pi 上游
+> `examples/extensions/subagent/{index.ts,agents.ts}`。
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 工具注册 | 名 `subagent`，`label: "Subagent"`，description 拼上用户 agent 目录并提示 `agentScope` | 同名同 label，description 结构一致（目录提示为 `<agent_dir>/agents`，项目目录 `.pi-rs/agents`） | 是 | 目录名差异见 DEVIATIONS.md |
+| 参数 schema | `agent?`、`task?`、`tasks?[{agent,task,cwd?}]`、`chain?[{agent,task,cwd?}]`、`agentScope?(user\|project\|both)`、`confirmProjectAgents?`、`cwd?` | 同左（JSON Schema 逐个字段对齐，无 `required`，模式运行时校验） | 是 | |
+| 模式校验 | 恰好一种模式，否则返回 `Invalid parameters. Provide exactly one mode.\nAvailable agents: a (user), b (project)` | 同左（空串 agent/task 视作未提供，对齐 JS 真值语义） | 是 | |
+| agent 定义发现 | `~/.pi/agent/agents/*.md` + 最近 `.pi/agents/*.md`；frontmatter `name`/`description`/`tools`/`model`，正文为 system prompt；单文件坏掉只跳过该文件 | 同左（YAML frontmatter 解析规则：去 BOM、CRLF→LF、`---` 包裹；`tools` 接受字符串与数组；缺 `name`/`description` 跳过；符号链接文件也读） | 是 | 目录名为 `.pi-rs` |
+| agent 作用域 | 默认 `user`；`project`/`both`；`both` 下同名的项目 agent 覆盖用户 agent | 同左（`AgentScope` 枚举 + `discover_agents`） | 是 | |
+| 未知 agent | 返回错误并列出所有可用 agent名 | `Unknown agent: "x". Available agents: "a", "b".` | 是 | |
+| 三种模式 | single `{agent,task}`；parallel `{tasks}`（≤ 8 任务，4 路并发，`mapWithConcurrencyLimit`）；chain `{chain}`（顺序，`{previous}` 代入上一步输出，失败即停） | 同左（`MAX_PARALLEL_TASKS=8`、`MAX_CONCURRENCY=4`、`JoinSet` 并发池） | 是 | |
+| 子进程命令 | `pi --mode json -p --no-session [--model m] [--thinking lvl] [--tools a,b] --append-system-prompt <tmpprompt> "Task: <task>"` | `pi --mode json -p --no-session [--model m] [--thinking lvl] [--tools a,b] [--append-prompt <正文>] "Task: <task>"` | 是 | persona 传递方式见 DEVIATIONS.md |
+| 模型 / thinking 继承 | agent 无 `model` 时继承 `ctx.model`（`provider/id`）与 `ctx.thinkingLevel`；agent 有 `model` 时**不**继承 thinking | 同左（`get_model` / `get_thinking_level` 为**实时**读取，`/model`、`/thinking` 切换后立即生效） | 是 | |
+| 事件解析 | 读 stdout JSONL：`message_end` 收消息与 usage，`tool_result_end` 收工具结果 | 读 stdout JSONL 的 `message_end`（pi-rs 的工具结果同样以消息形式出现在 `message_end`，无独立 `tool_result_end` 事件） | 是 | 事件名差异源于 pi-rs 的事件枚举 |
+| 失败判定 | `exitCode != 0 \|\| stopReason ∈ {error, aborted}` | 同左 | 是 | |
+| 失败文案 | single：`Agent {stopReason} failed: {errorMessage \|\| stderr \|\| 终稿 \|\| (no output)}`；chain：`Chain stopped at step N (agent): ...` | 同左 | 是 | |
+| 并行汇总 | `Parallel: N/M succeeded` + 每任务 `### [agent] completed/failed [(stopReason)]`，每任务输出 50KB 字节上限 + `[Output truncated: N bytes omitted. Full output preserved in tool details.]` | 同左 | 是 | |
+| usage 统计 | 每个 assistant 消息累计 turns / input / output / cacheRead / cacheWrite / `cost.total` / `contextTokens`（= `totalTokens`）；聚合后仅在 TUI 渲染展示 | 同左，结构化放在 `details.results[].usage`（模型可见文本里不含 usage，与原版一致） | 是 | 展示层缺失见 DEVIATIONS.md |
+| details 结构 | `{mode, agentScope, projectAgentsDir, results[{agent, agentSource, task, exitCode, messages, stderr, usage, model, stopReason, errorMessage, step?}]}` | 同左（字段名逐一对齐） | 是 | |
+| 项目 agent 确认 | `scope ∈ {project,both} && confirmProjectAgents && ctx.hasUI && !ctx.isProjectTrusted()` 时 `ctx.ui.confirm("Run project-local agents?", ...)`，拒绝返回 `Canceled: project-local agents not approved.` | 同左（逐字一致，含 `has_ui` / `is_project_trusted` 语义） | 是 | 单测：`project_agents_require_confirmation` / `trusted_project_skips_confirmation` |
+| 自定义渲染 | `renderCall(args, theme, ctx)` + `renderResult(result, {expanded}, theme, ctx)` 返回组件树，逐段 `theme.fg(...)` 着色 | `ToolDefinition.render` → `ToolRenderOutput{title: Vec<ToolRenderSpan>, blocks: Vec<ToolRenderBlock>}`（`Line(spans)` / `Spacer` / `Markdown(text)`，span 用语义色 token）；TUI 每帧按 `expanded` 求值，`None` 回落 fallback。subagent 布局逐项对齐：折叠 10 条 / 每步 5 条、`─── Task/Output/Step N ───` 分节、每步 `Task:` + 工具调用 + Markdown 终稿 + 该步 usage、`Total:` + `(Ctrl+O to expand)` | 是（有意偏差：语义块而非任意组件树，见 DEVIATIONS.md） | |
+| 流式进度（`onUpdate`） | 每收到子进程消息 `emitUpdate(partial)`，父界面实时刷新 | `ToolInvocation::update(&ToolCallOutput)` → core `tool_execution_update` → TUI 即时刷新该工具块（含 partial `details`） | 是 | 事件源只有 `message_end`（DEVIATIONS.md）；E2E：`tui_custom_tool_render_uses_extension_layout` |
+| 中止传播 | `AbortSignal` → SIGTERM → 5s → SIGKILL；single/chain 抛错，parallel 由 `Promise.all` 拒绝 → 整次调用报 "Subagent was aborted" | `ToolInvocation::abort`（watch 信号）：`tokio::select!` 于读取循环，中止即 `start_kill()` 并把结果标成 `stopReason=aborted`；single/chain/parallel 均整次报错（parallel 检测到任一 aborted 即报） | 是（有意偏差：直接 SIGKILL，见 DEVIATIONS.md） | 单测 `abort_kills_child_and_marks_aborted` / `parallel_abort_fails_whole_call`；E2E `tui_extension_tool_abort_signal_reaches_tool` |
+
 ## web_search / web_fetch 工具契约（`src/web_search.rs`）
 
 > 工具名、参数名、输出文本与 `details` 结构以 `@ollama/pi-web-search` 为准

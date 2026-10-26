@@ -49,6 +49,10 @@ const RESUME_ENV: &str = "PI_TUI_E2E_RESUME_FILE";
 /// Persist the mock session so the quit-path resume hint has a file to point
 /// at (TS `formatResumeCommand` returns `None` without a written session file).
 const PERSIST_ENV: &str = "PI_TUI_E2E_PERSIST_SESSION";
+/// 扩展自定义渲染 E2E：注册一个带 `render` 的工具，mock 模型调用它。
+const CUSTOM_TOOL_ENV: &str = "PI_TUI_E2E_CUSTOM_TOOL";
+/// 扩展工具中止 E2E：工具阻塞到 `invocation.abort` 触发。
+const SLOW_TOOL_ENV: &str = "PI_TUI_E2E_SLOW_TOOL";
 const REAL_ENV: &str = "PI_E2E_REAL_OLLAMA";
 const OLLAMA_MODEL: &str = "deepseek-v4-flash:0731";
 const MOCK_REPLY: &str = "Hello from the mock LLM!";
@@ -401,7 +405,11 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
     let mut opts = CreateAgentSessionOptions::default();
     opts.cwd = std::env::temp_dir().display().to_string();
     opts.agent_dir = Some(std::env::temp_dir().display().to_string());
-    opts.stream_fn = Some(if std::env::var(BIG_ENV).is_ok() {
+    opts.stream_fn = Some(if std::env::var(SLOW_TOOL_ENV).is_ok() {
+        slow_tool_stream_fn()
+    } else if std::env::var(CUSTOM_TOOL_ENV).is_ok() {
+        custom_tool_stream_fn()
+    } else if std::env::var(BIG_ENV).is_ok() {
         mock_big_stream_fn()
     } else if std::env::var(QUEUE_ENV).is_ok() {
         queue_mock_stream_fn()
@@ -431,6 +439,12 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
         Box::new(TestCmdHandler),
         pi_extension_api::create_builtin_source_info("test-ext"),
     );
+    if std::env::var(CUSTOM_TOOL_ENV).is_ok() || std::env::var(SLOW_TOOL_ENV).is_ok() {
+        registry.register(
+            Box::new(CustomRenderToolExt),
+            pi_extension_api::create_builtin_source_info("custom-render-ext"),
+        );
+    }
     // 扩展命令起 run 的 E2E（/runprompt）由 TestCmdHandler 提供。
     opts.extension_registry = Some(registry);
     let (session, _result) = create_agent_session(opts).await.expect("mock session");
@@ -648,6 +662,209 @@ async fn create_real_session() -> pi_coding_agent::core::agent_session::AgentSes
 // Child process runner (spawned by the parent test with the PTY attached)
 // ────────────────────────────────────────────────────────────────────────────
 
+/// 带自定义渲染的扩展工具（E2E：验证 `renderCall`/`renderResult` +
+/// `onUpdate` + `details` 的全链路）。
+struct CustomRenderToolExt;
+
+#[async_trait::async_trait]
+impl HookHandler for CustomRenderToolExt {
+    fn name(&self) -> &str {
+        "custom-render-ext"
+    }
+
+    fn register_tools(&self, tools: &mut pi_extension_api::ToolRegistry) {
+        tools.register(
+            "custom_demo",
+            pi_extension_api::ToolDefinition {
+                name: "custom_demo".into(),
+                label: Some("Custom Demo".into()),
+                description: "demo tool with custom rendering".into(),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "query": { "type": "string" } },
+                })),
+                render: Some(std::sync::Arc::new(
+                    |ctx: &pi_extension_api::ToolRenderContext| {
+                        use pi_extension_api::{
+                            ToolRenderBlock as Block, ToolRenderOutput, ToolRenderSpan as Span,
+                            ToolTextStyle as Style,
+                        };
+                        // 展开态与折叠态给不同标题，父侧测试据此断言 expanded 透传。
+                        let state = if ctx.expanded { "EXPANDED" } else { "COLLAPSED" };
+                        Some(ToolRenderOutput {
+                            title: vec![
+                                Span::new(Style::Success, "✓"),
+                                Span::new(Style::Bold, " subagent "),
+                                Span::new(Style::Accent, state.to_string()),
+                            ],
+                            blocks: vec![
+                                Block::styled(Style::Muted, "CUSTOM-SUB"),
+                                Block::styled(
+                                    Style::Default,
+                                    format!("CUSTOM-BODY {}", ctx.output.trim()),
+                                ),
+                                Block::styled(Style::Dim, "CUSTOM-FOOTER"),
+                            ],
+                        })
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        tools.register(
+            "custom_slow",
+            pi_extension_api::ToolDefinition {
+                name: "custom_slow".into(),
+                label: Some("Custom Slow".into()),
+                description: "blocks until aborted".into(),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                })),
+                ..Default::default()
+            },
+        );
+    }
+
+    async fn handle_tool_call(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        _ctx: &pi_extension_api::ExtensionContext,
+        invocation: &pi_extension_api::ToolInvocation,
+    ) -> Option<pi_extension_api::ToolCallOutput> {
+        if tool_name == "custom_slow" {
+            // 阻塞到中止信号（E2E：验证 signal 透传到扩展工具）。
+            let mut invocation = invocation.clone();
+            pi_extension_api::wait_aborted(&mut invocation.abort).await;
+            return Some(pi_extension_api::ToolCallOutput {
+                content: vec![serde_json::json!({
+                    "type": "text",
+                    "text": "SLOW-ABORTED",
+                })],
+                details: None,
+                is_error: true,
+                terminate: None,
+            });
+        }
+        if tool_name != "custom_demo" {
+            return None;
+        }
+        // 先报一条中间结果（TS `onUpdate`），再返回终稿 + details。
+        invocation.update(&pi_extension_api::ToolCallOutput {
+            content: vec![serde_json::json!({ "type": "text", "text": "PARTIAL" })],
+            details: Some(serde_json::json!({ "phase": "running" })),
+            is_error: false,
+            terminate: None,
+        });
+        let query = params
+            .get("query")
+            .and_then(|q| q.as_str())
+            .unwrap_or_default();
+        Some(pi_extension_api::ToolCallOutput {
+            content: vec![serde_json::json!({
+                "type": "text",
+                "text": format!("FINAL {query}"),
+            })],
+            details: Some(serde_json::json!({ "phase": "done" })),
+            is_error: false,
+            terminate: None,
+        })
+    }
+}
+
+/// Mock LLM：第一轮请求 `custom_slow`（阻塞到中止），之后收尾。
+fn slow_tool_stream_fn() -> StreamFn {
+    Arc::new(move |_model, context, _thinking, _opts: StreamFnOptions| {
+        let tool_results = context
+            .messages
+            .iter()
+            .filter(|m| matches!(m, pi_agent_core::pi_ai_types::Message::ToolResult { .. }))
+            .count();
+        Box::pin(async move {
+            let (content, reason) = if tool_results == 0 {
+                (
+                    vec![ContentBlock::ToolCall {
+                        id: "slow-1".into(),
+                        name: "custom_slow".into(),
+                        arguments: serde_json::json!({}),
+                        thought_signature: None,
+                        namespace: None,
+                    }],
+                    StopReason::ToolUse,
+                )
+            } else {
+                (
+                    vec![ContentBlock::Text {
+                        text: "after abort".into(),
+                        text_signature: None,
+                    }],
+                    StopReason::Stop,
+                )
+            };
+            let mut message = partial_msg("");
+            message.content = content;
+            message.stop_reason = reason.clone();
+            let events = vec![
+                AssistantMessageEvent::Start {
+                    partial: partial_msg(""),
+                },
+                AssistantMessageEvent::Done {
+                    reason,
+                    message,
+                },
+            ];
+            Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+        })
+    })
+}
+
+/// Mock LLM：第一轮请求 `custom_demo`，第二轮用普通文本收尾。
+fn custom_tool_stream_fn() -> StreamFn {
+    Arc::new(move |_model, context, _thinking, _opts: StreamFnOptions| {
+        let tool_results = context
+            .messages
+            .iter()
+            .filter(|m| matches!(m, pi_agent_core::pi_ai_types::Message::ToolResult { .. }))
+            .count();
+        Box::pin(async move {
+            let (content, reason) = if tool_results == 0 {
+                (
+                    vec![ContentBlock::ToolCall {
+                        id: "custom-1".into(),
+                        name: "custom_demo".into(),
+                        arguments: serde_json::json!({ "query": "hello" }),
+                        thought_signature: None,
+                        namespace: None,
+                    }],
+                    StopReason::ToolUse,
+                )
+            } else {
+                (
+                    vec![ContentBlock::Text {
+                        text: "custom tool done".into(),
+                        text_signature: None,
+                    }],
+                    StopReason::Stop,
+                )
+            };
+            let mut message = partial_msg("");
+            message.content = content;
+            message.stop_reason = reason.clone();
+            let events = vec![
+                AssistantMessageEvent::Start {
+                    partial: partial_msg(""),
+                },
+                AssistantMessageEvent::Done {
+                    reason,
+                    message,
+                },
+            ];
+            Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+        })
+    })
+}
+
 #[test]
 fn child_process_runner() {
     if std::env::var(CHILD_ENV).is_err() {
@@ -697,6 +914,16 @@ impl Tui {
     /// (tool-output streaming + per-call state isolation).
     fn spawn_two_bash_tools() -> Self {
         Self::spawn_inner_env(false, None, &[(TOOLS2_ENV, "1")])
+    }
+
+    /// Spawn with the custom-render extension tool mock.
+    fn spawn_custom_tool() -> Self {
+        Self::spawn_inner_env(false, None, &[(CUSTOM_TOOL_ENV, "1")])
+    }
+
+    /// Spawn with the blocking extension tool mock (abort path).
+    fn spawn_slow_tool() -> Self {
+        Self::spawn_inner_env(false, None, &[(SLOW_TOOL_ENV, "1")])
     }
 
     /// Spawn with the queue-stream mock (slow first round for queueing).
@@ -1484,6 +1711,85 @@ fn tui_extension_slash_command_executes() {
     assert!(
         tui.wait_for("no-such-command", TIMEOUT),
         "unknown command sent as message; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.quit();
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
+}
+
+/// 扩展工具的中止信号全链路：工具阻塞在 `invocation.abort`，Ctrl+C 之后
+/// 立刻返回到工具结果（而不是挂住），本轮 run 正常结束。
+#[test]
+fn tui_extension_tool_abort_signal_reaches_tool() {
+    let mut tui = Tui::spawn_slow_tool();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    tui.write(b"run the slow tool\r");
+    assert!(
+        tui.wait_for("custom_slow", TIMEOUT),
+        "tool row rendered while running; got: {:?}",
+        tui.rendered()
+    );
+    // 等一小会儿确认工具确实处于阻塞态，再中断。
+    std::thread::sleep(Duration::from_millis(300));
+    tui.write(&[0x03]); // Ctrl+C → abort
+
+    assert!(
+        tui.wait_for("SLOW-ABORTED", TIMEOUT),
+        "tool observed the abort signal; got: {:?}",
+        tui.rendered()
+    );
+
+    tui.quit();
+    let code = tui.wait_exit(TIMEOUT);
+    assert_eq!(code, Some(0), "clean exit code 0");
+}
+
+/// 扩展工具自定义渲染全链路：注册 `render` 回调 → 工具调用 → TUI 按
+/// `renderCall`/`renderResult` 布局绘制（标题/次要行/正文/脚注），且
+/// Ctrl+O 把展开态透传给扩展。
+#[test]
+fn tui_custom_tool_render_uses_extension_layout() {
+    let mut tui = Tui::spawn_custom_tool();
+    assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
+
+    tui.write(b"use the custom tool\r");
+
+    // 自定义标题（折叠态）+ 次要行：说明 TUI 走了扩展 renderer，
+    // 而不是 fallback 的「工具名 + JSON args」。
+    assert!(
+        tui.wait_for("COLLAPSED", TIMEOUT),
+        "custom title rendered; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("CUSTOM-SUB", TIMEOUT),
+        "custom subtitle rendered; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("CUSTOM-BODY FINAL hello", TIMEOUT),
+        "custom body uses tool output; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        tui.wait_for("CUSTOM-FOOTER", TIMEOUT),
+        "custom footer rendered; got: {:?}",
+        tui.rendered()
+    );
+    assert!(
+        !tui.rendered().contains("\"query\": \"hello\""),
+        "fallback args must not render; got: {:?}",
+        tui.rendered()
+    );
+
+    // Ctrl+O：展开态重新求值，扩展收到 expanded = true。
+    tui.write(&[0x0f]); // Ctrl+O
+    assert!(
+        tui.wait_for("EXPANDED", TIMEOUT),
+        "expanded render re-evaluated; got: {:?}",
         tui.rendered()
     );
 

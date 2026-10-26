@@ -224,9 +224,15 @@ fn create_tui_ui_context() -> (
         let tx = tx.clone();
         Arc::new(move |title: &str, message: &serde_json::Value| {
             let (reply, rx) = std::sync::mpsc::channel::<bool>();
+            // 对齐 TS `ctx.ui.confirm(title, message: string)`：字符串值直接
+            // 展开成纯文本，不做 JSON 序列化（否则弹窗里会带引号和 \n 转义）。
+            let message = match message {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
             let _ = tx.send(UiAction::Confirm {
                 title: title.to_string(),
-                message: message.to_string(),
+                message,
                 reply,
             });
             // Blocking wait (plain Fn, no async): the TUI event loop runs on
@@ -1945,6 +1951,76 @@ fn managed_tool_status_text(status: &crate::utils::tools_manager::ToolStatus) ->
     }
 }
 
+/// 语义样式：扩展侧的 token → TUI 侧的 token（两套枚举各自独立，避免
+/// pi-tui 反向依赖扩展 API）。
+fn convert_style(style: pi_extension_api::ToolTextStyle) -> pi_tui::CustomTextStyle {
+    use pi_extension_api::ToolTextStyle as From;
+    use pi_tui::CustomTextStyle as To;
+    match style {
+        From::Default => To::Default,
+        From::Muted => To::Muted,
+        From::Dim => To::Dim,
+        From::Accent => To::Accent,
+        From::Warning => To::Warning,
+        From::Error => To::Error,
+        From::Success => To::Success,
+        From::Bold => To::Bold,
+    }
+}
+
+fn convert_span(span: &pi_extension_api::ToolRenderSpan) -> pi_tui::CustomSpan {
+    pi_tui::CustomSpan {
+        style: convert_style(span.style),
+        text: span.text.clone(),
+    }
+}
+
+fn convert_block(block: &pi_extension_api::ToolRenderBlock) -> pi_tui::CustomBlock {
+    use pi_extension_api::ToolRenderBlock as From;
+    match block {
+        From::Line(spans) => {
+            pi_tui::CustomBlock::Line(spans.iter().map(convert_span).collect())
+        }
+        From::Spacer => pi_tui::CustomBlock::Spacer,
+        From::Markdown(text) => pi_tui::CustomBlock::Markdown(text.clone()),
+    }
+}
+
+/// 把扩展工具的自定义渲染接进 TUI。
+///
+/// TUI 只认 [`pi_tui::CustomToolRenderFn`]（纯文本槽位），这里把扩展侧的
+/// [`pi_extension_api::ToolRenderFn`] 适配过去：补上 cwd / 展开态 / args /
+/// output / details，并把返回的 `ToolRenderOutput` 转成
+/// `pi_tui::ToolCustomRender`。
+fn install_custom_tool_render(
+    model: &mut pi_tui::Model,
+    renders: Arc<std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>>,
+) {
+    if renders.read().map(|r| r.is_empty()).unwrap_or(true) {
+        model.set_custom_tool_render(None);
+        return;
+    }
+    model.set_custom_tool_render(Some(Arc::new(
+        move |input: &pi_tui::CustomToolRenderInput<'_>| {
+            let render = renders.read().ok()?.get(input.name)?.clone();
+            let ctx = pi_extension_api::ToolRenderContext {
+                tool_name: input.name.to_string(),
+                cwd: input.cwd.to_string(),
+                expanded: input.expanded,
+                args: serde_json::from_str(input.args).unwrap_or(serde_json::Value::Null),
+                output: input.output.to_string(),
+                details: input.details.cloned(),
+                is_error: input.is_error,
+            };
+            let rendered = render(&ctx)?;
+            Some(pi_tui::ToolCustomRender {
+                title: rendered.title.iter().map(convert_span).collect(),
+                blocks: rendered.blocks.iter().map(convert_block).collect(),
+            })
+        },
+    )));
+}
+
 fn spawn_agent_command_task(
     session: Arc<Mutex<AgentSession>>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<AgentCmd>,
@@ -1952,6 +2028,7 @@ fn spawn_agent_command_task(
     result_tx: tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
     model_snapshot: CompletionModelSnapshot,
     completion_sources: Arc<CompletionSources>,
+    tool_renders: Arc<std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>>,
 ) {
     tokio::spawn(async move {
         while !exit_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2280,6 +2357,10 @@ fn spawn_agent_command_task(
                             // project/user skills and prompt templates. Native Rust
                             // extensions remain registered for the session lifetime.
                             sess.reload().await;
+                            // 扩展工具可能重新注册：刷新自定义渲染表。
+                            if let Ok(mut renders) = tool_renders.write() {
+                                *renders = sess.tool_render_fns();
+                            }
                             // Refresh the model completion snapshot and the slash-command
                             // completion list so newly discovered `/skill:<name>` calls
                             // appear without restarting the session.
@@ -2410,6 +2491,7 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                 BE::ToolEnd(call_id, name, e) => vec![pi_tui::Msg::ToolEnd(call_id, name, e)],
                 BE::ToolOutput(call_id, name, o) => vec![pi_tui::Msg::SetToolOutput(call_id, name, o)],
                 BE::ToolTruncation(call_id, t) => vec![pi_tui::Msg::SetToolTruncation(call_id, t)],
+                BE::ToolDetails(call_id, d) => vec![pi_tui::Msg::SetToolDetails(call_id, d)],
             };
             for m in msgs {
                 if atx.send(m).is_err() {
@@ -2530,6 +2612,12 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     state.model.model_name = initial_model_name;
     // TS `fullscreenCopyOnSelect`（默认 true）：松手即复制选区。
     state.model.set_copy_on_select(session.get_fullscreen_copy_on_select());
+    // ── 扩展工具自定义渲染（TS `renderCall` / `renderResult`）──
+    // 共享表：启动时装一次，`/reload` 后原地刷新（扩展工具重新注册）。
+    let tool_renders: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>,
+    > = Arc::new(std::sync::RwLock::new(session.tool_render_fns()));
+    install_custom_tool_render(&mut state.model, Arc::clone(&tool_renders));
     state.model.cwd = cwd.clone();
     state.model.git_branch = current_git_branch(&cwd);
     // ── TS footer data: session name + model identity (provider, reasoning,
@@ -2682,6 +2770,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         result_tx.clone(),
         model_snapshot.clone(),
         completion_sources.clone(),
+        Arc::clone(&tool_renders),
     );
 
     // ── Managed tool prewarm (TS `ensureTool("fd")`/`ensureTool("rg")`,
@@ -3103,6 +3192,7 @@ fn append_message_items(items: &mut Vec<app::TranscriptItem>, message: &AgentMes
                             is_error: true,
                             output,
                             truncation: None,
+                            details: None,
                         });
                     }
                 }
@@ -3121,6 +3211,7 @@ fn append_message_items(items: &mut Vec<app::TranscriptItem>, message: &AgentMes
                 is_error: *is_error,
                 output: crate::modes::agent_bridge::tool_result_text(&value),
                 truncation: crate::modes::agent_bridge::tool_truncation(&value),
+                details: crate::modes::agent_bridge::tool_details(&value),
             });
         }
         AgentMessage::BashExecution {

@@ -55,6 +55,15 @@ pub enum AgentEvent {
     /// `(tool_call_id, truncation)` — truncation metadata from the tool
     /// result details (bash `details.truncation` + `fullOutputPath`).
     ToolTruncation(String, Option<pi_tui::app::ToolTruncation>),
+    /// `(tool_call_id, details)` — 工具结果的结构化 `details`
+    /// （扩展自定义渲染 `renderResult` 用；对齐 TS `result.details`）。
+    ToolDetails(String, Option<serde_json::Value>),
+}
+
+/// 从工具结果值里取 `details`（对齐 TS `result.details`）。
+pub(crate) fn tool_details(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let details = value.get("details")?;
+    (!details.is_null()).then(|| details.clone())
 }
 
 /// Extract the displayable text from a tool result/partial-result value
@@ -363,6 +372,12 @@ pub async fn subscribe_agent(
                                 truncation,
                             ));
                         }
+                        if let Some(details) = tool_details(result) {
+                            let _ = tx.send(AgentEvent::ToolDetails(
+                                tool_call_id.clone(),
+                                Some(details),
+                            ));
+                        }
                     }
                     CoreAgentEvent::ToolExecutionUpdate {
                         tool_call_id,
@@ -376,6 +391,14 @@ pub async fn subscribe_agent(
                                 tool_call_id.clone(),
                                 tool_name.clone(),
                                 text,
+                            ));
+                        }
+                        // 中间结果的 details 也要更新：扩展的 `onUpdate` 会带
+                        // 新的 details（如 subagent 的并行进度快照）。
+                        if let Some(details) = tool_details(partial_result) {
+                            let _ = tx.send(AgentEvent::ToolDetails(
+                                tool_call_id.clone(),
+                                Some(details),
                             ));
                         }
                     }

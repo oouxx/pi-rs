@@ -100,6 +100,28 @@ pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 `-name` 在继承的集合上增减，例如 `["+grep", "+find", "+ls"]`；`/reload` 会激活新加入的工具。
 
 内置扩展默认关闭，用 `"extensionsEnabled"` 逐项开启（`subagent` / `web_search`）。
+
+`subagent` 基于 agent 定义文件工作（默认只加载用户级 `~/.pi-rs/agent/agents/*.md`）：
+
+```markdown
+---
+name: reviewer
+description: Code review
+tools: read, grep, find, bash
+model: claude-sonnet-4-6   # 省略则继承当前会话的模型与 thinking level
+---
+
+You are a meticulous code reviewer...
+```
+
+每个子 agent 跑在独立的 `pi` 进程里（隔离上下文），支持三种模式：single
+（`{agent, task}`）、parallel（`{tasks: [...]}`，最多 8 个任务、4 路并发）、chain
+（`{chain: [...]}`，顺序执行，`{previous}` 代入上一步输出）。项目级 agent 放
+`.pi-rs/agents/*.md`，需显式传 `agentScope: "both"`（或 `"project"`），TUI 下还会先弹确认。
+TUI 里工具块按 agent/模式渲染（agent 名 + 任务、tool call 列表、终稿 Markdown、
+usage 统计），`Ctrl+O` 展开；运行中会跟着子 agent 的每条消息实时刷新，`Ctrl+C`
+会立刻杀掉子进程。
+
 `web_search` 的搜索/抓取后端在同一个 settings.json 里配置：
 
 ```json

@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use super::*;
 use pi_extension_api::{
     create_builtin_source_info, ExtensionContext, ExtensionUIContext, RuntimeHandle,
+    ToolInvocation,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -232,7 +233,7 @@ async fn mock_ext(mock: &MockOllama) -> WebSearchExtension {
 
 /// 调用 handle_tool_call 并取回输出。
 async fn call(ext: &WebSearchExtension, tool: &str, params: Value) -> ToolCallOutput {
-    ext.handle_tool_call(tool, params, &test_ctx())
+    ext.handle_tool_call(tool, params, &test_ctx(), &ToolInvocation::noop())
         .await
         .expect("tool handled")
 }
@@ -523,7 +524,12 @@ async fn test_request_timeout() {
 async fn test_unhandled_tool_returns_none() {
     let ext = WebSearchExtension::new();
     let result = ext
-        .handle_tool_call("read", json!({"path": "/x"}), &test_ctx())
+        .handle_tool_call(
+            "read",
+            json!({"path": "/x"}),
+            &test_ctx(),
+            &ToolInvocation::noop(),
+        )
         .await;
     assert!(result.is_none());
 }

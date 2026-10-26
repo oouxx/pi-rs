@@ -289,11 +289,17 @@ pub trait HookHandler: Send + Sync {
 
     /// 处理工具调用。返回 `Some(ToolCallOutput)` 表示此扩展处理了该工具。
     /// 按注册顺序尝试，第一个返回 Some 的胜出。
+    ///
+    /// `invocation` 提供 agent 侧的工具调用 id、中止信号（`AbortSignal`）和
+    /// 中间结果上报通道（对齐 TS `execute(toolCallId, params, signal,
+    /// onUpdate, ctx)`）。扩展可选：长跑工具应该 `tokio::select!`
+    /// `invocation.aborted()` 以便 Ctrl+C 能立刻停下子进程/子任务。
     async fn handle_tool_call(
         &self,
         _tool_name: &str,
         _params: Value,
         _ctx: &ExtensionContext,
+        _invocation: &crate::ToolInvocation,
     ) -> Option<ToolCallOutput> {
         None
     }
@@ -1518,9 +1524,13 @@ impl HookRunner {
         tool_name: &str,
         params: Value,
         ctx: &ExtensionContext,
+        invocation: &crate::ToolInvocation,
     ) -> Option<ToolCallOutput> {
         for handler in &self.handlers {
-            if let Some(result) = handler.handle_tool_call(tool_name, params.clone(), ctx).await {
+            if let Some(result) = handler
+                .handle_tool_call(tool_name, params.clone(), ctx, invocation)
+                .await
+            {
                 return Some(result);
             }
         }

@@ -144,7 +144,7 @@ pub struct SessionRegistry {
     base_dir: PathBuf,
     map_path: PathBuf,
     persisted: HashMap<acp::SessionId, PersistedSession>,
-    /// 是否注册内置 Rust 扩展（goal/subagent/web_search），对应 CLI
+    /// 是否注册内置 Rust 扩展（subagent/web_search），对应 CLI
     /// `--no-extensions` 语义。默认 false（测试与无扩展场景）。
     enable_extensions: bool,
 }
@@ -2553,14 +2553,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let reg = SessionRegistry::with_base_dir(tmp.path().to_path_buf());
 
-        // Opt-in：settings 显式打开三个内置扩展。
+        // Opt-in：settings 显式打开内置扩展。
         let mut settings = crate::core::settings_manager::SettingsManager::create(
             "/tmp",
             Some(tmp.path().to_str().expect("utf8 path")),
         );
         settings.set_global(
             "extensionsEnabled",
-            serde_json::json!({ "goal": true, "subagent": true, "web_search": true }),
+            serde_json::json!({ "subagent": true, "web_search": true }),
         );
 
         // 启用：工具列表含全部内置扩展工具。
@@ -2580,7 +2580,7 @@ mod tests {
             .expect("build with extensions");
         let state = session.get_agent().state().await;
         let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
-        for tool in ["web_search", "web_fetch", "subagent", "goal_complete", "goal_blocked", "goal_wait"] {
+        for tool in ["web_search", "web_fetch", "subagent"] {
             assert!(names.contains(&tool.to_string()), "missing {tool}: {names:?}");
         }
 
@@ -2591,7 +2591,7 @@ mod tests {
             .expect("build without extensions");
         let state = session.get_agent().state().await;
         let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
-        for tool in ["web_search", "web_fetch", "subagent", "goal_complete"] {
+        for tool in ["web_search", "web_fetch", "subagent"] {
             assert!(!names.contains(&tool.to_string()), "unexpected {tool}: {names:?}");
         }
         // 内置基础工具不受影响。

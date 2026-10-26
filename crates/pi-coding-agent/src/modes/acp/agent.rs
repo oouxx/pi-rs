@@ -25,7 +25,7 @@ pub struct PiAcpAgent {
     /// (matching pi-acp's `lastSessionCwd` — Zed sends `{}` and expects the
     /// project-scoped list).
     last_session_cwd: std::sync::Mutex<Option<String>>,
-    /// 是否注册内置 Rust 扩展（goal/subagent/web_search），对应 CLI
+    /// 是否注册内置 Rust 扩展（subagent/web_search），对应 CLI
     /// `--no-extensions` 语义。默认 false（测试与无扩展场景）。
     enable_extensions: bool,
     /// CLI 指定的 provider/model（`-P`/`-m`），传给会话创建。

@@ -127,8 +127,8 @@ pub struct ExtensionContext {
     pub session_id: String,
     pub is_connected: bool,
     /// 运行模式（对齐 TS `ctx.mode`）：`"tui"`（interactive TUI）、
-    /// `"cli"`、`"headless"`。扩展据此决定是否展示 TUI 菜单（如
-    /// pi-goal 的 /goal 菜单）。默认 `"cli"`，interactive 模式启动时
+    /// `"cli"`、`"headless"`。扩展据此决定是否展示 TUI 交互菜单。
+    /// 默认 `"cli"`，interactive 模式启动时
     /// 通过 [`Self::set_mode`] 置为 `"tui"`。
     pub mode: String,
     pub ui: ExtensionUIContext,
@@ -232,13 +232,13 @@ pub struct RuntimeHandle {
     pub send_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
     pub send_user_message: Arc<dyn Fn(String, Option<Value>) + Send + Sync>,
     /// 同步入队一条 follow-up 消息（agent 空闲/已 settled 时也会被消费，
-    /// 用于扩展的自动延续，如 /goal 的 continuation）。`trigger_turn` 语义
+    /// 用于扩展的自动延续）。`trigger_turn` 语义
     /// 与 `send_message` 的 `deliverAs: "followUp"` 一致，但入队是同步的，
     /// 不依赖异步 task 的调度时序。
     pub queue_follow_up: Arc<dyn Fn(String) + Send + Sync>,
     /// 追加一条 custom entry 到会话历史（对齐原版扩展的
-    /// `sessionManager.appendCustomEntry`，如 pi-goal 的 `goal-state`
-    /// 持久化——跨 compaction 保留、重启可恢复）。
+    /// `sessionManager.appendCustomEntry`；扩展自己的状态靠它跨
+    /// compaction 保留、重启可恢复）。
     pub append_custom_entry: CustomEntryFn,
     /// 读取会话中全部 custom entries（`{customType, data}` 列表，同步）。
     pub get_custom_entries: Arc<dyn Fn() -> Vec<Value> + Send + Sync>,

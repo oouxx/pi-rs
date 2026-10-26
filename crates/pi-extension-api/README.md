@@ -9,6 +9,6 @@
 
 ## 谁在用
 
-- `pi-extensions`：内置扩展（`goal`、`web_search`、`subagent`）实现 `HookHandler`；
+- `pi-extensions`：内置扩展（`subagent`、`web_search`）实现 `HookHandler`；
 - `pi-coding-agent`：持有 `Arc<ExtensionRegistry>`，把 hook 接到会话/工具/边界事件上；
 - `pi-tui`：经 `ExtensionUIContext` 提供交互（notify/confirm/select/input/widget/title）。

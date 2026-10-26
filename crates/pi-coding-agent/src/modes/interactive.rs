@@ -1962,7 +1962,7 @@ fn spawn_agent_command_task(
                         AgentCmd::SendMessage(text) => {
                             // Route through session.prompt() like ACP/print/RPC: it runs
                             // extension commands, template/skill expansion, streaming
-                            // queueing, compaction, post-run retries, /goal continuation,
+                            // queueing, compaction, post-run retries, extension continuation,
                             // and maintains `is_agent_run_active`.
                             let result = sess
                                 .prompt(
@@ -2234,7 +2234,7 @@ fn spawn_agent_command_task(
                             };
                             drop(sess); // release the lock before blocking
                             if let Some(cmd) = cmd {
-                                // 命令执行可能同步入队 follow-up（如 /goal 的
+                                // 命令执行可能同步入队 follow-up（扩展自动延续
                                 // owned prompt）。等命令结束后在 session 上下文
                                 // 里消费 settled 队列启动 run（对齐
                                 // prompt() 的 _tryExecuteExtensionCommand 尾部）。
@@ -2492,7 +2492,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
             err.extension_path, err.error
         )));
     })));
-    // TUI 模式标记：扩展（如 pi-goal）据此展示 TUI 菜单（对齐 TS
+    // TUI 模式标记：扩展据此展示 TUI 交互菜单（对齐 TS
     // `ctx.mode === "tui"`）。
     session.set_extension_mode("tui");
 
@@ -4467,12 +4467,12 @@ mod tests {
     fn enter_during_compaction_runs_extension_command_immediately() {
         let mut s = state();
         s.model.is_compacting = true;
-        s.ext_commands = vec!["goal".into()];
-        s.model.input.set_value("/goal run");
+        s.ext_commands = vec!["myext".into()];
+        s.model.input.set_value("/myext run");
         let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::NONE));
         assert_eq!(
             effects,
-            vec![Effect::AgentCommand(AgentCmd::ExtensionCommand("goal".into(), "run".into()))]
+            vec![Effect::AgentCommand(AgentCmd::ExtensionCommand("myext".into(), "run".into()))]
         );
     }
 

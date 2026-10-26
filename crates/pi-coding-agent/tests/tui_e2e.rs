@@ -431,11 +431,7 @@ async fn create_mock_session() -> pi_coding_agent::core::agent_session::AgentSes
         Box::new(TestCmdHandler),
         pi_extension_api::create_builtin_source_info("test-ext"),
     );
-    // 内置 goal 扩展：/goal 菜单 E2E 需要它（TUI 模式门控）。
-    registry.register(
-        Box::new(pi_extensions::goal::GoalExtension::new()),
-        pi_extension_api::create_builtin_source_info("goal"),
-    );
+    // 扩展命令起 run 的 E2E（/runprompt）由 TestCmdHandler 提供。
     opts.extension_registry = Some(registry);
     let (session, _result) = create_agent_session(opts).await.expect("mock session");
     session
@@ -549,6 +545,24 @@ impl HookHandler for TestCmdHandler {
                     Box::pin(async move {
                         std::fs::write("/tmp/tui_ext_cmd.log", format!("ran: {args}"))
                             .expect("write ext log");
+                    })
+                }),
+                get_argument_completions: None,
+            },
+        );
+        // 命令执行同步入队 follow-up（扩展自动延续通道）：命令跑完必须由
+        // settled 队列消费并起一轮 run。
+        reg.register(
+            "runprompt",
+            CommandRegistration {
+                description: "queue a follow-up prompt from an extension command".into(),
+                execute: std::sync::Arc::new(|args, ctx| {
+                    let ctx = ctx.cloned();
+                    Box::pin(async move {
+                        if let Some(ctx) = ctx.as_ref() {
+                            let prompt = format!("extension prompt: {args}");
+                            (ctx.runtime.queue_follow_up)(prompt);
+                        }
                     })
                 }),
                 get_argument_completions: None,
@@ -1389,36 +1403,18 @@ fn tui_slash_command_menu_and_feedback() {
     assert_eq!(code, Some(0), "clean exit code 0");
 }
 
-/// The goal extension (simplified, no TUI menu): bare `/goal` in TUI mode
-/// shows the text status; `/goal <objective>` starts a goal and the status
-/// bar reflects it.
+/// 扩展命令同步入队 follow-up 后，TUI 必须消费 settled 队列起一轮 run：
+/// `/runprompt <text>` 只入队，模型回复出现才证明 prompt 真的交给了 agent
+/// （回归：命令只 notify 不入队启动，模型永远收不到提示词）。
 #[test]
-fn tui_goal_text_status_and_start() {
+fn tui_extension_command_starts_run() {
     let mut tui = Tui::spawn(false);
     assert!(tui.wait_for("mock-model", TIMEOUT), "footer rendered");
 
-    // /goal（无参数）→ 文本状态（无菜单弹窗）。
-    tui.write(b"/goal\r");
-    assert!(
-        tui.wait_for("No goal is currently set", TIMEOUT),
-        "text status rendered; got: {:?}",
-        tui.rendered()
-    );
-
-    // /goal <objective> → goal 启动（diff 画家会拆分长文本，断言连续片段）。
-    tui.write(b"/goal fix the e2e goal bug\r");
-    assert!(
-        tui.wait_for("fix the e2e goal bug", TIMEOUT),
-        "goal started; got: {:?}",
-        tui.rendered()
-    );
-
-    // 扩展命令执行后必须消费 settled 队列启动 run：mock 模型的回复出现
-    // 才算 /goal 真的把 owned prompt 交给了 agent（回归：命令只 notify
-    // 不入队启动，模型永远不会收到 goal）。渲染器按词输出，断言 token。
+    tui.write(b"/runprompt hello from extension\r");
     assert!(
         tui.wait_for("LLM!", TIMEOUT),
-        "goal prompt run started; got: {:?}",
+        "extension-queued prompt run started; got: {:?}",
         tui.rendered()
     );
 

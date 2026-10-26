@@ -2209,8 +2209,8 @@ impl AgentSession {
                 });
             });
             // 自动延续通道：同步把一条 follow-up 入队（agent 空闲/已 settled
-            // 时由 prompt() 尾部的 settled 循环消费并启动新一轮，供 /goal
-            // 等扩展在 agent_settled 边界自动延续）。
+            // 时由 prompt() 尾部的 settled 循环消费并启动新一轮，供扩展在
+            // agent_settled 边界自动延续）。
             let agent_for_queue = session.agent.clone();
             // 镜像队列文本（对齐 TS `_queueFollowUp` 推入 `_followUpMessages`）：
             // Esc 中断时 TUI 靠它把排队消息还原回编辑器，且 message_start
@@ -2235,7 +2235,7 @@ impl AgentSession {
             );
             // 会话 custom entry 通道（对齐原版 sessionManager 的
             // appendCustomEntry / getEntries，供扩展持久化自定义状态，
-            // 如 pi-goal 的 `goal-state`——跨 compaction 保留、重启可恢复）。
+            // 如扩展自己的状态条目——跨 compaction 保留、重启可恢复）。
             let sm_for_append = session.session_manager.clone();
             session.ext_ctx.runtime.append_custom_entry = std::sync::Arc::new(
                 move |custom_type: &str, data: Option<serde_json::Value>| {
@@ -3895,7 +3895,7 @@ impl AgentSession {
             if let Some(cb) = &opts.preflight_result {
                 cb(true);
             }
-            // 扩展命令（如 /goal 激活）会同步入队 follow-up（自动延续）；
+            // 扩展命令可能同步入队 follow-up（自动延续）；
             // 与原版 idle 循环一致，这里消费队列启动 run 而不是直接返回。
             self.run_settled_continuations().await;
             return Ok(());
@@ -4055,7 +4055,7 @@ impl AgentSession {
         // streaming (matching TS _runAgentPrompt's finally block).
         self._flush_pending_bash_messages().await;
         self._flush_pending_custom_messages().await;
-        // 自动延续：扩展（如 /goal）在 agent_settled 边界可能同步排入
+        // 自动延续：扩展在 agent_settled 边界可能同步排入
         // follow-up。循环消费直到扩展不再入队（matching TS 交互模式 idle
         // 循环消费 followUp 队列）。
         self.run_settled_continuations().await;
@@ -4067,8 +4067,8 @@ impl AgentSession {
     /// 则把队列消息作为新 turn 启动；post-run 处理后再 settled，直到队列空。
     ///
     /// 公开给 TUI 交互路径：`prompt()` 尾部与扩展命令执行后调用
-    ///（对齐 TS 交互模式 idle 循环消费 followUp 队列），否则 /goal 等
-    /// 扩展在 agent_settled 入队的 owned prompt 永远不会启动。
+    ///（对齐 TS 交互模式 idle 循环消费 followUp 队列），否则扩展在
+    /// agent_settled 入队的 owned prompt 永远不会启动。
     pub async fn run_settled_continuations(&self) {
         loop {
             // `agent_before_settle` boundary (TS `_runBeforeSettleBoundary`):
@@ -6024,7 +6024,7 @@ References are relative to {}.
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         // Fire agent_settled to extensions（携带 ctx，扩展可在空闲边界发送
-        // 自动延续消息，如 /goal 的 continuation）。
+        // 自动延续消息）。
         if let Some(ref registry) = self.extension_registry {
             registry.hook_runner().fire_agent_settled(Some(&self.ext_ctx)).await;
         }

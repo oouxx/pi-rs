@@ -69,9 +69,9 @@ pub async fn load_extension_now(
 
 /// Stable ids of the built-in Rust extensions, used as keys in
 /// `extensionsEnabled` (settings.json).
-pub const BUILTIN_EXTENSION_IDS: [&str; 3] = ["goal", "subagent", "web_search"];
+pub const BUILTIN_EXTENSION_IDS: [&str; 2] = ["subagent", "web_search"];
 
-/// 构造内置 Rust 扩展 registry（goal + subagent + web_search）。
+/// 构造内置 Rust 扩展 registry（subagent + web_search）。
 ///
 /// `enable` 是 discovery 总开关（`--no-extensions`）：为 `false` 时返回
 /// `None`，一个内置扩展都不注册。
@@ -98,12 +98,6 @@ pub fn builtin_extension_registry(
     }
     let is_enabled = |id: &str| enabled.get(id).copied().unwrap_or(false);
     let mut reg = ExtensionRegistry::new();
-    if is_enabled("goal") {
-        reg.register(
-            Box::new(pi_extensions::goal::GoalExtension::new()),
-            create_builtin_source_info("goal"),
-        );
-    }
     if is_enabled("subagent") {
         reg.register(
             Box::new(pi_extensions::subagent::SubagentExtension::new()),
@@ -124,7 +118,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// 默认注册全部三个内置 Rust 扩展（goal / subagent / web_search）——
+    /// 默认注册全部内置 Rust 扩展（subagent / web_search）——
     /// 需显式通过 `extensionsEnabled` 打开。
     #[test]
     fn test_builtin_extension_registry_enabled() {
@@ -135,20 +129,12 @@ mod tests {
         let reg = builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
         let tools: Vec<&str> =
             reg.tools().iter().map(|t| t.name.as_str()).collect();
-        for name in [
-            "goal_complete",
-            "goal_blocked",
-            "goal_wait",
-            "subagent",
-            "web_search",
-            "web_fetch",
-        ] {
+        for name in ["subagent", "web_search", "web_fetch"] {
             assert!(tools.contains(&name), "missing tool {name}: {tools:?}");
         }
         // 来源标注正确（create_builtin_source_info -> `<builtin:{name}>`）
         for t in reg.tools() {
             let expected = match t.name.as_str() {
-                "goal_complete" | "goal_blocked" | "goal_wait" => "<builtin:goal>",
                 "subagent" => "<builtin:subagent>",
                 "web_search" | "web_fetch" => "<builtin:web_search>",
                 other => panic!("unexpected tool {other}"),
@@ -170,16 +156,15 @@ mod tests {
     #[test]
     fn test_builtin_extension_registry_respects_enabled_map() {
         let mut enabled = std::collections::HashMap::new();
-        enabled.insert("goal".to_string(), true);
+        enabled.insert("subagent".to_string(), true);
         let reg = builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
         let tools: Vec<&str> = reg.tools().iter().map(|t| t.name.as_str()).collect();
-        assert!(tools.iter().any(|t| t.starts_with("goal_")), "goal on: {tools:?}");
-        assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
+        assert!(tools.contains(&"subagent"), "subagent on: {tools:?}");
         assert!(!tools.contains(&"web_search"), "web_search off: {tools:?}");
 
         // 显式 false 与缺失等价，但可覆盖上层 scope 的 true。
         let mut disabled = std::collections::HashMap::new();
-        disabled.insert("goal".to_string(), false);
+        disabled.insert("subagent".to_string(), false);
         let reg = builtin_extension_registry(true, &disabled, &Default::default()).expect("registry");
         assert!(reg.tools().is_empty());
     }

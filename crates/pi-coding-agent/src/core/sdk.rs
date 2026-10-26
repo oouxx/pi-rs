@@ -1279,7 +1279,6 @@ mod tests {
 
         let ext_registry = session.get_extension_registry().expect("registry");
         let tools: Vec<&str> = ext_registry.tools().iter().map(|t| t.name.as_str()).collect();
-        assert!(!tools.iter().any(|t| t.starts_with("goal_")), "goal off: {tools:?}");
         assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
         assert!(tools.contains(&"web_search"), "web_search on: {tools:?}");
     }

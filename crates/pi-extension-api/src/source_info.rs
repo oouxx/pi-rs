@@ -109,8 +109,8 @@ mod tests {
 
     #[test]
     fn test_create_builtin_source_info() {
-        let info = create_builtin_source_info("goal");
-        assert_eq!(info.path, "<builtin:goal>");
+        let info = create_builtin_source_info("web_search");
+        assert_eq!(info.path, "<builtin:web_search>");
         assert_eq!(info.source, "builtin");
         assert_eq!(info.scope, SourceScope::Temporary);
         assert_eq!(info.origin, SourceOrigin::TopLevel);

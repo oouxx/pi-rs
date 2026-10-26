@@ -159,7 +159,7 @@ async fn create_test_runtime() -> (AgentSessionRuntime, tempfile::TempDir) {
 // Tests
 // ============================================================================
 
-/// runtime.queue_follow_up（扩展自动延续通道，/goal 续跑用它）会把文本
+/// runtime.queue_follow_up（扩展自动延续通道）会把文本
 /// 推入 follow-up 镜像：Esc 中断时 TUI 通过 clear_all_queues 拿到它并还原
 /// 回编辑器（对齐 TS `_queueFollowUp` 推入 `_followUpMessages`）。
 #[tokio::test]

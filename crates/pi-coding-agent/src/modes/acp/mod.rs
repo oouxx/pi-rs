@@ -28,7 +28,7 @@ use self::agent::PiAcpAgent;
 /// client disconnects.
 ///
 /// `enable_extensions` 对应 CLI `--no-extensions`：为 true 时新会话注册内置
-/// Rust 扩展（goal/subagent/web_search）。
+/// Rust 扩展（subagent/web_search）。
 pub async fn run_acp_mode(
     enable_extensions: bool,
     cli_provider: Option<String>,

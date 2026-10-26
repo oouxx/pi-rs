@@ -3,7 +3,7 @@ name = "pi-extensions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Rust native extensions for pi-rs (pi-goal, pi-hypa, pi-web-access)"
+description = "Rust native extensions for pi-rs (subagent, web-search)"
 
 [dependencies]
 pi-extension-api = { workspace = true }
@@ -11,9 +11,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 async-trait = { workspace = true }
-regex = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]

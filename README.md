@@ -99,7 +99,7 @@ pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 `"defaultTools"`，普通名字整体替换默认集合（`read`/`bash`/`edit`/`write`），`+name` /
 `-name` 在继承的集合上增减，例如 `["+grep", "+find", "+ls"]`；`/reload` 会激活新加入的工具。
 
-内置扩展默认关闭，用 `"extensionsEnabled"` 逐项开启（`goal` / `subagent` / `web_search`）。
+内置扩展默认关闭，用 `"extensionsEnabled"` 逐项开启（`subagent` / `web_search`）。
 `web_search` 的搜索/抓取后端在同一个 settings.json 里配置：
 
 ```json

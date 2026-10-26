@@ -2586,15 +2586,12 @@ name = "pi-extensions"
 version = "1.87.5"
 dependencies = [
  "async-trait",
- "chrono",
  "pi-extension-api",
- "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "uuid",
 ]
 
 [[package]]

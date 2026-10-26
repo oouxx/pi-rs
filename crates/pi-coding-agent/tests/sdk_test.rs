@@ -13,15 +13,72 @@ use pi_agent_core::types::{AgentMessage, StreamFn};
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use pi_coding_agent::core::model_registry::{ModelRegistry, ProviderConfig};
 
-use pi_extension_api::{create_builtin_source_info, ExtensionRegistry, ExtensionUIContext};
+use pi_extension_api::{
+    create_builtin_source_info, ExtensionContext, ExtensionRegistry, ExtensionUIContext,
+    HookHandler, ToolCallOutput, ToolDefinition, ToolRegistry,
+};
 
-/// Create an `ExtensionRegistry` with the goal + web_search extensions
-/// (exercises the extension-tool path alongside the built-in tools).
+/// 测试用扩展：注册一个无副作用的工具，经 `handle_tool_call` 通过
+/// `ctx.ui.notify` 回显参数（用来覆盖"扩展工具经 agent 工具链执行"和
+/// "工具调用的 notify 打到替换后的 UI 上下文"两条路径）。
+struct TestToolExtension;
+
+const TEST_TOOL: &str = "test_echo";
+
+#[async_trait::async_trait]
+impl HookHandler for TestToolExtension {
+    fn name(&self) -> &str {
+        "test-ext"
+    }
+
+    fn register_tools(&self, tools: &mut ToolRegistry) {
+        tools.register(
+            TEST_TOOL,
+            ToolDefinition {
+                name: TEST_TOOL.into(),
+                label: Some("Test Echo".into()),
+                description: "Echo the `text` parameter back (test-only).".into(),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "text": { "type": "string" } },
+                    "required": ["text"],
+                })),
+                ..Default::default()
+            },
+        );
+    }
+
+    async fn handle_tool_call(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        ctx: &ExtensionContext,
+    ) -> Option<ToolCallOutput> {
+        if tool_name != TEST_TOOL {
+            return None;
+        }
+        let text = params
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        (ctx.ui.notify)(&format!("test_echo ran: {text}"), &serde_json::json!({"level": "info"}));
+        Some(ToolCallOutput {
+            content: vec![serde_json::json!({ "type": "text", "text": format!("echo: {text}") })],
+            details: None,
+            is_error: false,
+            terminate: None,
+        })
+    }
+}
+
+/// Create an `ExtensionRegistry` with a test tool extension + the web_search
+/// extension (exercises the extension-tool path alongside the built-in tools).
 pub fn create_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
     registry.register(
-        Box::new(pi_extensions::goal::GoalExtension::new()),
-        create_builtin_source_info("goal"),
+        Box::new(TestToolExtension),
+        create_builtin_source_info("test-ext"),
     );
     registry.register(
         Box::new(pi_extensions::web_search::WebSearchExtension::new()),
@@ -449,40 +506,42 @@ async fn test_create_agent_session_with_extension() {
         all_tools.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
-    // Find and invoke the `goal_wait` extension tool through the active tool list.
-    // (新 goal 扩展的 goal_wait 无 active goal 时按原版验证链拒绝——这正好
-    // 证明 extension 工具经由 agent 工具链执行并返回结构化输出。)
+    // Find and invoke the extension tool through the active tool list — proves
+    // extension tools run on the same agent tool chain and return structured
+    // output.
     let agent_state = session.get_agent().state().await;
-    let goal_wait = agent_state
+    let echo = agent_state
         .tools
         .iter()
-        .find(|t| t.name == "goal_wait")
-        .expect("goal_wait tool should be active");
-    let params = serde_json::json!({ "goal_id": "x", "reason": "exercise extension tool path" });
-    let result = (goal_wait.execute)("call-goal-wait-1".to_string(), params, None, None)
+        .find(|t| t.name == "test_echo")
+        .expect("test_echo tool should be active");
+    let params = serde_json::json!({ "text": "extension tool path" });
+    let result = (echo.execute)("call-test-echo-1".to_string(), params, None, None)
         .await
-        .expect("goal_wait execute failed");
-    let goal_text = result
+        .expect("test_echo execute failed");
+    let echo_text = text_of(&result);
+    assert!(
+        echo_text.contains("echo: extension tool path"),
+        "unexpected test_echo result: {echo_text}"
+    );
+    println!("[dbg] test_echo result: {}", echo_text);
+}
+
+/// Join the text blocks of a tool result.
+fn text_of(result: &pi_agent_core::types::AgentToolResult<serde_json::Value>) -> String {
+    result
         .content
         .iter()
-        .filter_map(|c| {
-            if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = c {
-                Some(text.clone())
-            } else {
-                None
-            }
+        .filter_map(|c| match c {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => Some(text.clone()),
+            _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        goal_text.contains("goal_wait rejected: no active goal."),
-        "unexpected goal_wait result: {goal_text}"
-    );
-    println!("[dbg] goal_wait result: {}", goal_text);
+        .join("\n")
 }
 
 /// Regression: interactive 模式在会话创建**之后**通过
-/// `set_extension_ui_context` 替换扩展 UI。扩展工具调用（如 goal_*）走的
+/// `set_extension_ui_context` 替换扩展 UI。扩展工具调用走的
 /// 是构造期捕获的共享 ExtensionContext，若只替换 `get_extension_context()`
 /// 的 ui，notify 会落回默认 `eprintln!("[pi] ...")`，在 TUI raw mode 下
 /// 直接打进备用屏幕/输入框。本测试断言工具调用路径的 notify 到达替换后
@@ -543,32 +602,21 @@ async fn test_extension_tool_notify_uses_swapped_ui_context() {
     };
     session.set_extension_ui_context(ui_ctx);
 
-    // 通过 agent 工具链执行扩展工具（与 TUI 中 LLM 调用 goal_complete 同路径）。
+    // 通过 agent 工具链执行扩展工具（与 TUI 中 LLM 调用扩展工具同路径）。
     let agent_state = session.get_agent().state().await;
-    let goal_wait = agent_state
+    let echo = agent_state
         .tools
         .iter()
-        .find(|t| t.name == "goal_wait")
-        .expect("goal_wait tool should be active");
-    let params = serde_json::json!({ "goal_id": "x", "reason": "exercise extension tool path" });
-    let result = (goal_wait.execute)("call-goal-wait-1".to_string(), params, None, None)
+        .find(|t| t.name == "test_echo")
+        .expect("test_echo tool should be active");
+    let params = serde_json::json!({ "text": "swapped ui" });
+    let result = (echo.execute)("call-test-echo-2".to_string(), params, None, None)
         .await
-        .expect("goal_wait execute failed");
-    let text = result
-        .content
-        .iter()
-        .filter_map(|c| {
-            if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = c {
-                Some(text.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .expect("test_echo execute failed");
+    let text = text_of(&result);
     assert!(
-        text.contains("goal_wait rejected: no active goal."),
-        "unexpected goal_wait result: {text}"
+        text.contains("echo: swapped ui"),
+        "unexpected test_echo result: {text}"
     );
 
     let msgs = notified
@@ -576,8 +624,7 @@ async fn test_extension_tool_notify_uses_swapped_ui_context() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert!(
-        msgs.iter()
-            .any(|m| m.contains("goal_wait rejected: no active goal.")),
+        msgs.iter().any(|m| m.contains("test_echo ran: swapped ui")),
         "extension tool notify did not reach the swapped UI context; got: {msgs:?}"
     );
 }

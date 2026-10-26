@@ -270,7 +270,7 @@ pub struct Settings {
     pub packages: Option<Vec<PackageSource>>,
     pub extensions: Option<Vec<String>>,
     /// Per-extension enable flags for the built-in extensions, keyed by stable
-    /// id (`goal`, `subagent`, `web_search`). **Opt-in**: missing ids are
+    /// id (`subagent`, `web_search`). **Opt-in**: missing ids are
     /// disabled, so a built-in must be explicitly set to `true` to load.
     /// Global/project objects merge per key so a project can override a single
     /// extension without dropping the rest.
@@ -1842,26 +1842,26 @@ mod tests {
     fn test_extensions_enabled_merges_per_key() {
         let base = Settings {
             extensions_enabled: Some(HashMap::from([
-                ("goal".to_string(), true),
                 ("subagent".to_string(), true),
+                ("web_search".to_string(), true),
             ])),
             ..Default::default()
         };
         let overlay = Settings {
-            extensions_enabled: Some(HashMap::from([("goal".to_string(), false)])),
+            extensions_enabled: Some(HashMap::from([("subagent".to_string(), false)])),
             ..Default::default()
         };
 
         let merged = deep_merge_settings(&base, &overlay);
         let enabled = merged.extensions_enabled.expect("map");
-        assert_eq!(enabled.get("goal"), Some(&false));
+        assert_eq!(enabled.get("subagent"), Some(&false));
         assert_eq!(
-            enabled.get("subagent"),
+            enabled.get("web_search"),
             Some(&true),
             "project override must not drop other global keys"
         );
         // Missing id stays absent; callers treat it as disabled (opt-in).
-        assert_eq!(enabled.get("web_search"), None);
+        assert_eq!(enabled.get("nonexistent"), None);
     }
 
     /// The getter returns the merged map (empty when unset).
@@ -1871,12 +1871,12 @@ mod tests {
         let mgr = SettingsManager::new(
             storage,
             Settings {
-                extensions_enabled: Some(HashMap::from([("goal".to_string(), false)])),
+                extensions_enabled: Some(HashMap::from([("web_search".to_string(), false)])),
                 ..Default::default()
             },
             Settings::default(),
         );
-        assert_eq!(mgr.get_extensions_enabled().get("goal"), Some(&false));
+        assert_eq!(mgr.get_extensions_enabled().get("web_search"), Some(&false));
     }
 
     /// `webSearch` 由 settings.json 的 camelCase 段解析，且全局/项目两层按外层

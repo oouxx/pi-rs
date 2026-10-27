@@ -267,6 +267,36 @@ async fn agent_model_disables_thinking_inheritance() {
     assert!(!args.contains(&"--thinking".to_string()));
 }
 
+/// 空 model 是 TS falsy：继承派发模型/thinking，且不能生成 `--model ""`。
+#[tokio::test]
+async fn empty_agent_model_inherits_dispatch_config() {
+    let env = TestEnv::new(SUCCESS_PAYLOAD);
+    env.write_user_agent(
+        "worker",
+        "---\nname: worker\ndescription: d\nmodel: \"\"\n---\nbody",
+    );
+
+    env.extension()
+        .handle_tool_call(
+            "subagent",
+            json!({ "agent": "worker", "task": "t" }),
+            &env.ctx("cli"),
+            &ToolInvocation::noop(),
+        )
+        .await
+        .unwrap();
+
+    let args = env.calls().remove(0);
+    let model_at = args.iter().position(|a| a == "--model").expect("--model");
+    assert_eq!(args[model_at + 1], "anthropic/claude-parent");
+    let thinking_at = args
+        .iter()
+        .position(|a| a == "--thinking")
+        .expect("--thinking");
+    assert_eq!(args[thinking_at + 1], "high");
+    assert!(!args.iter().any(String::is_empty));
+}
+
 /// agent 的 tools 白名单透传为 `--tools a,b`。
 #[tokio::test]
 async fn agent_tools_become_tools_flag() {
@@ -346,6 +376,69 @@ async fn invalid_mode_count_is_rejected() {
     assert!(text_of(&both).contains("Provide exactly one mode."));
     assert!(text_of(&both).contains("worker (user)"));
     assert!(env.calls().is_empty());
+}
+
+/// parallel/chain 的每个 TaskStep 都必须先整体校验；任一非法项都拒绝整次
+/// 调用、列出可用 agent，且不能先启动前面的合法步骤。
+#[tokio::test]
+async fn invalid_task_steps_are_rejected_without_spawning() {
+    let env = TestEnv::new(SUCCESS_PAYLOAD);
+    env.write_user_agent("worker", worker_agent());
+    let ext = env.extension();
+    let ctx = env.ctx("cli");
+    let cases = [
+        (
+            json!({ "chain": [
+                { "agent": "worker", "task": "first" },
+                { "task": "missing agent" },
+            ] }),
+            "Invalid chain step 2",
+            "agent",
+        ),
+        (
+            json!({ "chain": [
+                { "agent": "worker", "task": "first" },
+                { "agent": "worker", "task": "" },
+            ] }),
+            "Invalid chain step 2",
+            "task",
+        ),
+        (
+            json!({ "tasks": [
+                { "agent": "worker", "task": "first" },
+                { "agent": "worker" },
+            ] }),
+            "Invalid parallel step 2",
+            "task",
+        ),
+        (
+            json!({ "tasks": [
+                { "agent": "worker", "task": "first" },
+                { "agent": "", "task": "empty agent" },
+            ] }),
+            "Invalid parallel step 2",
+            "agent",
+        ),
+    ];
+
+    for (params, expected_error, expected_field) in cases {
+        let out = ext
+            .handle_tool_call("subagent", params, &ctx, &ToolInvocation::noop())
+            .await
+            .unwrap();
+        assert!(out.is_error, "invalid step must fail: {out:?}");
+        let text = text_of(&out);
+        assert!(text.contains(expected_error), "got: {text}");
+        assert!(
+            text.contains(&format!("missing or empty field(s): {expected_field}")),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("Available agents: worker (user)"),
+            "got: {text}"
+        );
+    }
+    assert!(env.calls().is_empty(), "no subprocess may start");
 }
 
 /// chain：顺序执行，`{previous}` 代入上一步输出。
@@ -490,6 +583,70 @@ async fn non_zero_exit_code_is_failure() {
     assert!(out.is_error);
     assert_eq!(out.details.as_ref().unwrap()["results"][0]["exitCode"], 1);
     assert!(text_of(&out).contains("partial"));
+}
+
+/// 非法 cwd 在 spawn 前直接失败，不能伪装成 binary 不存在。
+#[tokio::test]
+async fn invalid_cwd_is_rejected_before_spawn() {
+    let env = TestEnv::new(SUCCESS_PAYLOAD);
+    env.write_user_agent("worker", worker_agent());
+    let invalid_cwd = env.cwd.path().join("missing-directory");
+    let invalid_cwd = invalid_cwd.to_string_lossy().into_owned();
+
+    let out = env
+        .extension()
+        .handle_tool_call(
+            "subagent",
+            json!({ "agent": "worker", "task": "t", "cwd": invalid_cwd }),
+            &env.ctx("cli"),
+            &ToolInvocation::noop(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.is_error);
+    let text = text_of(&out);
+    assert!(
+        text.contains("Invalid cwd (not a directory)"),
+        "got: {text}"
+    );
+    assert!(text.contains(&invalid_cwd), "got: {text}");
+    assert!(text.contains(&env.pi_binary), "got: {text}");
+    assert!(env.calls().is_empty(), "cwd validation must precede spawn");
+}
+
+/// spawn 失败诊断同时带上 binary 和 cwd，便于区分路径问题。
+#[tokio::test]
+async fn spawn_error_reports_binary_and_cwd() {
+    let env = TestEnv::new(SUCCESS_PAYLOAD);
+    env.write_user_agent("worker", worker_agent());
+    let missing_binary = env
+        .home
+        .path()
+        .join("missing-pi")
+        .to_string_lossy()
+        .into_owned();
+
+    let out = SubagentExtension::new()
+        .with_pi_binary(&missing_binary)
+        .handle_tool_call(
+            "subagent",
+            json!({ "agent": "worker", "task": "t" }),
+            &env.ctx("cli"),
+            &ToolInvocation::noop(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.is_error);
+    let text = text_of(&out);
+    assert!(text.contains("Failed to spawn pi"), "got: {text}");
+    assert!(text.contains(&missing_binary), "got: {text}");
+    assert!(text.contains("cwd:"), "got: {text}");
+    assert!(
+        text.contains(&env.cwd.path().to_string_lossy().into_owned()),
+        "got: {text}"
+    );
 }
 
 /// stopReason = error → 失败，错误信息来自 errorMessage。
@@ -709,6 +866,51 @@ sleep 30
     assert!(out.is_error, "aborted call must be an error: {out:?}");
     let text = text_of(&out);
     assert!(text.contains("aborted"), "got: {text}");
+    assert_eq!(
+        out.details.as_ref().unwrap()["results"][0]["stopReason"],
+        "aborted"
+    );
+}
+
+/// stdout 已 EOF 但进程仍存活时，abort 仍必须立刻杀掉并结束等待。
+#[tokio::test]
+async fn abort_after_stdout_eof_kills_child() {
+    let env = TestEnv::new(
+        r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"started"}],"usage":{},"stop_reason":"toolUse"}}'
+exec 1>&-
+sleep 30
+"#,
+    );
+    env.write_user_agent("worker", worker_agent());
+
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let invocation = ToolInvocation::new("call-1", Some(rx), pi_extension_api::noop_tool_update());
+
+    let handle = tokio::spawn({
+        let pi_binary = env.pi_binary.clone();
+        let ctx = env.ctx("cli");
+        async move {
+            SubagentExtension::new()
+                .with_pi_binary(&pi_binary)
+                .handle_tool_call(
+                    "subagent",
+                    json!({ "agent": "worker", "task": "t" }),
+                    &ctx,
+                    &invocation,
+                )
+                .await
+                .unwrap()
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tx.send(true).unwrap();
+
+    let out = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("abort must interrupt the post-EOF child wait")
+        .unwrap();
+    assert!(out.is_error, "aborted call must be an error: {out:?}");
     assert_eq!(
         out.details.as_ref().unwrap()["results"][0]["stopReason"],
         "aborted"
@@ -1053,6 +1255,45 @@ fn tool_definition_exposes_render_fn() {
         def.definition.render.is_some(),
         "render callback registered"
     );
+}
+
+/// 子 agent 自己返回 aborted 不等同于父级取消：应保留其他任务结果并作为
+/// 普通失败项汇总。原版只有 AbortSignal 回调设置 wasAborted 才整次抛错。
+#[tokio::test]
+async fn child_aborted_result_does_not_abort_parallel_batch() {
+    let env = TestEnv::new(
+        r#"case "$*" in
+  *aborted-task*)
+    printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"child aborted"}],"usage":{},"stop_reason":"aborted"}}'
+    ;;
+  *)
+    printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{},"stop_reason":"stop"}}'
+    ;;
+esac
+"#,
+    );
+    env.write_user_agent("worker", worker_agent());
+
+    let out = env
+        .extension()
+        .handle_tool_call(
+            "subagent",
+            json!({ "tasks": [
+                { "agent": "worker", "task": "aborted-task" },
+                { "agent": "worker", "task": "normal-task" },
+            ] }),
+            &env.ctx("cli"),
+            &ToolInvocation::noop(),
+        )
+        .await
+        .unwrap();
+
+    assert!(!out.is_error, "parallel summarizes child failures");
+    let text = text_of(&out);
+    assert!(text.contains("Parallel: 1/2 succeeded"), "got: {text}");
+    assert!(text.contains("failed (aborted)"), "got: {text}");
+    assert!(text.contains("child aborted"), "got: {text}");
+    assert!(text.contains("done"), "got: {text}");
 }
 
 /// parallel 中止：整次调用报错（对齐原版 `Promise.all` 拒绝 + 抛

@@ -165,6 +165,8 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 33 | **`Promise.all` 被译成顺序 `await`** | `Promise.all(thunks.map(t => t()))`：所有 thunk 同 tick 启动、并发执行，完成序回传 | Rust 里 `Vec<Pin<Box<Future>>>` 逐个 `fut.await`：future 只在 `.await` 时才开始轮询，于是 **N 个操作串行**（延迟线性叠加），事件也按调用序而非完成序发出 | 收集完 future 后 `futures::future::join_all(...)`（保序回传），把"完成即发事件"的逻辑放进每个 future 内部；并发模块必须有时间断言用例（如两个 120ms 工具总耗时 < 230ms） | pi-agent-core `execute_tool_calls_parallel`（此前"并行"实为串行，2026-10-26 修复） |
 | 34 | **`try { ... } catch { 降级 }` 被译成 `?` 传播** | TS 常写成"先试严格模式，不支持就降级"（`try { makeStrictJsonSchema(); return true } catch { if (strict !== "require") return undefined }`） | Rust 用 `?` 把内部转换错误直接冒泡到调用方 → 本该"静默降级"的场景变成**整个请求失败** | 逐条对照 try/catch：区分"可降级的 Unsupported 类错误"与"应传播的错误"，降级分支显式写出（`Err(_) if strict == Prefer => Ok(None)`） | pi-ai `resolve_json_schema_strict_sampling`（2026-10-26 修复） |
 | 35 | **条件子句只搬了一部分** | TS 的开关常是多条件合取：`model.reasoning && thinkingEnabled && (interleavedThinking ?? true) && forceAdaptiveThinking !== true` | 直译时只搬最后一个 `!==` 子句（或只搬第一个），编译通过、单测自洽，但**非推理模型也会带该 beta/参数**，服务端行为不同 | 翻译开关时把 TS 表达式整体抄下来逐项对应，缺字段的形态（`x ?? true`）显式写默认 | pi-ai anthropic interleaved-thinking beta（2026-10-26 修复） |
+| 36 | **可恢复工具失败被聚合为进程退出失败** | TS print mode 的退出码只由最终 assistant 回合决定：text 仅在最终 `stopReason` 为 `error`/`aborted` 时返回 1，json 成功跑完即返回 0；中间工具 `isError` 是可回灌给模型的结果 | Rust 监听任意 `ToolExecutionEnd.is_error` 并累积失败标志，导致一次可恢复工具失败把整个进程标成 exit 1（依赖退出码的 subagent 随之误判） | 不要把工具级 `isError` 聚合为进程级失败；text 结束看最终 assistant `stopReason`，json 仅在 prompt/执行本身失败时返回 1，工具失败继续作为事件和工具结果传递 | pi-coding-agent `print_mode`（PORTING_MISTAKES #166） |
+| 37 | **数组 `filter_map` 解析必填项会静默丢任务** | TS 对 `tasks`/`chain` 数组按元素校验，必填字段非法时整次参数校验失败 | Rust `items.iter().filter_map(TaskStep::parse).collect()` 把解析失败的元素直接过滤，`tasks` 少跑、`chain` 少走，且调用仍可能被当作成功 | 解析必填数组时用逐项 `Result` 后 `collect::<Result<Vec<_>, _>>()`；任一元素失败即拒绝整个请求并报告索引，禁止用 `filter_map` 跳过必填项 | pi-extensions subagent 的 `tasks`/`chain`（2026-10-27） |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。
@@ -302,5 +304,7 @@ TS 的工具失败一律 throw/reject，由 agent loop 转成 `isError` 工具�
 对应 `Err(...)`（`agent_loop.rs` 的 `create_error_tool_result`）。两条约定：
 
 - **不要**把错误包成 `Ok(AgentToolResult { text: "Error …" })`——模型会当成成功输出。
-- `AgentToolResult` 目前没有 `isError` 字段，所以"带结果的错误"（TS bash 非零退出码）
-  只能用 `Err` 表达，代价是丢失 `details`。新增能力前先看 DEVIATIONS #32。
+- "带结果的错误"（例如扩展 `ToolCallOutput.is_error`）返回
+  `Err(ToolExecutionError::new(result, message))`；agent loop 会原样保留
+  `result` 的 `content`/`details`/`usage`/`terminate`，并把工具结果标为
+  `is_error=true`。普通 `Err` 仍会生成不带结构化结果的通用错误。

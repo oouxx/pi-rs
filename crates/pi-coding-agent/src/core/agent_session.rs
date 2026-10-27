@@ -1194,7 +1194,6 @@ impl AgentSession {
         // 2. Custom tools from SDK callers (via custom_tools / ToolDefinition + execute)
         if let Some(ref custom_tools) = options.custom_tools {
             use pi_agent_core::pi_ai_types::ToolExecutionMode;
-            use pi_agent_core::types::AgentToolResult;
             for def in custom_tools {
                 let tool_name = def.name.clone();
                 let execute: ToolExecuteFn = if let Some(ref tool_exec) = def.execute {
@@ -1203,17 +1202,9 @@ impl AgentSession {
                         let exec = exec.clone();
                         Box::pin(async move {
                             let output = exec(id.clone(), params, signal).await?;
-                            let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
-                                .content
-                                .into_iter()
-                                .filter_map(|v| serde_json::from_value(v).ok())
-                                .collect();
-                            Ok(AgentToolResult {
-                                content,
-                                details: output.details.unwrap_or(serde_json::Value::Null),
-                                usage: None,
-                                terminate: output.terminate,
-                            })
+                            crate::core::tools::tool_definition_wrapper::tool_call_output_to_agent_result(
+                                output,
+                            )
                         })
                     })
                 } else {
@@ -1313,17 +1304,9 @@ impl AgentSession {
                         .await
                         {
                             Some(output) => {
-                                let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
-                                    .content
-                                    .into_iter()
-                                    .filter_map(|v| serde_json::from_value(v).ok())
-                                    .collect();
-                                Ok(AgentToolResult {
-                                    content,
-                                    details: output.details.unwrap_or(serde_json::Value::Null),
-                                    usage: None,
-                                    terminate: output.terminate,
-                                })
+                                crate::core::tools::tool_definition_wrapper::tool_call_output_to_agent_result(
+                                    output,
+                                )
                             }
                             None => {
                                 Err(format!("Tool '{name}' not handled by any extension").into())

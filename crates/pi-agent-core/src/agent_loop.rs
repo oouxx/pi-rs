@@ -14,7 +14,7 @@ use crate::types::{
     AgentRequestUpdate, AgentToolCall, AgentToolResult, AgentTurnContext, AgentTurnDecision,
     BeforeToolCallContext, BeforeToolCallFn, ConvertToLlmFn, FinishTurnFn, GetFollowUpMessagesFn,
     GetSteeringMessagesFn, PrepareNextTurnFn, PrepareRequestContext, PrepareRequestFn, StreamFn,
-    StreamFnOptions, TransformContextFn,
+    StreamFnOptions, ToolExecutionError, TransformContextFn,
 };
 
 /// Check whether the signal watch has received an abort (true) value.
@@ -319,9 +319,15 @@ async fn execute_prepared_tool_call(
             result,
             is_error: false,
         },
-        Err(e) => ExecutedToolCallOutcome {
-            result: create_error_tool_result(&e.to_string()),
-            is_error: true,
+        Err(error) => match error.downcast::<ToolExecutionError>() {
+            Ok(failure) => ExecutedToolCallOutcome {
+                result: failure.result,
+                is_error: true,
+            },
+            Err(error) => ExecutedToolCallOutcome {
+                result: create_error_tool_result(&error.to_string()),
+                is_error: true,
+            },
         },
     };
 
@@ -2702,6 +2708,44 @@ mod tests {
         match &outcome.result.content[0] {
             ContentBlock::Text { text, .. } => assert_eq!(text, "execution failed"),
             _ => panic!("expected error text"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_prepared_preserves_structured_error_result() {
+        let structured = AgentToolResult {
+            content: vec![ContentBlock::Text {
+                text: "subagent failed with details".to_string(),
+                text_signature: None,
+            }],
+            details: serde_json::json!({"mode": "single", "exitCode": 1}),
+            usage: None,
+            terminate: Some(true),
+        };
+        let execute_result: Result<
+            AgentToolResult<serde_json::Value>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > = Err(Box::new(ToolExecutionError::new(structured, "subagent failed")));
+        let tool = dummy_agent_tool("t1", serde_json::json!({}), None, execute_result);
+        let call = dummy_tool_call("1", "t1", serde_json::json!({}));
+
+        let outcome = execute_prepared_tool_call(
+            &tool,
+            &call,
+            &serde_json::json!({}),
+            &None,
+            &dummy_event_sink(),
+        )
+        .await;
+
+        assert!(outcome.is_error);
+        assert_eq!(outcome.result.details, serde_json::json!({"mode": "single", "exitCode": 1}));
+        assert_eq!(outcome.result.terminate, Some(true));
+        match &outcome.result.content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "subagent failed with details");
+            }
+            _ => panic!("expected structured error text"),
         }
     }
 

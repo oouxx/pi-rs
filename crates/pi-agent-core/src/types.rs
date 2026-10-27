@@ -183,6 +183,40 @@ pub struct AgentToolResult<T: Clone + Send + Sync + 'static> {
     pub terminate: Option<bool>,
 }
 
+/// Error wrapper for a tool that failed but still has a structured result to
+/// expose to the model (for example an extension tool returning
+/// `ToolCallOutput { is_error: true, .. }`).
+///
+/// The agent loop unwraps this type and preserves `result` while marking the
+/// final tool call as an error. Ordinary errors still use the generic error
+/// result path.
+#[derive(Debug, Clone)]
+pub struct ToolExecutionError {
+    /// Content and details produced by the failed tool.
+    pub result: AgentToolResult<serde_json::Value>,
+    /// Human-readable summary used if a caller cannot consume `result`.
+    pub message: String,
+}
+
+impl ToolExecutionError {
+    /// Create a structured tool failure.
+    #[must_use]
+    pub fn new(result: AgentToolResult<serde_json::Value>, message: impl Into<String>) -> Self {
+        Self {
+            result,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ToolExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ToolExecutionError {}
+
 #[derive(Debug, Clone)]
 pub struct AgentToolCall {
     pub id: String,

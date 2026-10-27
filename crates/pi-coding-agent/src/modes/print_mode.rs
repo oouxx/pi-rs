@@ -6,11 +6,10 @@
 //!
 //! Mirrors packages/coding-agent/src/modes/print-mode.ts
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
-use pi_agent_core::pi_ai_types::{AssistantMessageEvent, ContentBlock};
+use pi_agent_core::pi_ai_types::{AssistantMessageEvent, ContentBlock, StopReason};
 use pi_agent_core::types::{AgentEvent, AgentMessage};
 
 /// Options for print mode, matching the original PrintModeOptions interface.
@@ -113,11 +112,7 @@ async fn run_text_mode(
     images: &[ContentBlock],
     verbose: bool,
 ) -> i32 {
-    let has_error = Arc::new(AtomicBool::new(false));
-    let err_flag = has_error.clone();
-
     let listener: PrintModeListener = Arc::new(move |event: AgentEvent, _signal| {
-        let err_flag = err_flag.clone();
         Box::pin(async move {
             match event {
                 AgentEvent::MessageUpdate {
@@ -149,17 +144,14 @@ async fn run_text_mode(
                     }
                 }
                 AgentEvent::ToolExecutionEnd {
-                    tool_name, is_error, ..
-                } => {
+                    tool_name,
+                    is_error,
+                    ..
+                } if verbose => {
                     if is_error {
-                        err_flag.store(true, Ordering::SeqCst);
-                    }
-                    if verbose {
-                        if is_error {
-                            eprintln!("  \u{2717} {tool_name} failed");
-                        } else {
-                            eprintln!("  \u{2713} {tool_name} done");
-                        }
+                        eprintln!("  \u{2717} {tool_name} failed");
+                    } else {
+                        eprintln!("  \u{2713} {tool_name} done");
                     }
                 }
                 _ => {}
@@ -196,7 +188,20 @@ async fn run_text_mode(
     // Give a brief moment for final events to flush
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    if has_error.load(Ordering::SeqCst) {
+    text_exit_code(&session.get_messages().await)
+}
+
+/// Text mode fails only when the final assistant message stopped with an error
+/// or abort. Tool failures are model-visible results and may be recovered by a
+/// later assistant turn, so they do not determine the process exit code.
+fn text_exit_code(messages: &[AgentMessage]) -> i32 {
+    if matches!(
+        messages.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: Some(StopReason::Error | StopReason::Aborted),
+            ..
+        })
+    ) {
         1
     } else {
         0
@@ -216,24 +221,13 @@ async fn run_json_mode(
     messages: &[String],
     images: &[ContentBlock],
 ) -> i32 {
-    let has_error = Arc::new(AtomicBool::new(false));
-    let err_flag = has_error.clone();
-
     println!(
         "{}",
         serde_json::json!({"type": "start", "message": message})
     );
 
     let listener: crate::core::agent_session::AgentSessionEventListener =
-        Arc::new(move |event: crate::core::agent_session::AgentSessionEvent| {
-            if let crate::core::agent_session::AgentSessionEvent::ToolExecutionEnd {
-                is_error, ..
-            } = &event
-            {
-                if *is_error {
-                    err_flag.store(true, Ordering::SeqCst);
-                }
-            }
+        Arc::new(|event: crate::core::agent_session::AgentSessionEvent| {
             let json = super::json_event::to_json_event(&event);
             println!("{}", serde_json::to_string(&json).unwrap_or_default());
         });
@@ -267,11 +261,7 @@ async fn run_json_mode(
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     println!("{}", serde_json::json!({"type": "end"}));
 
-    if has_error.load(Ordering::SeqCst) {
-        1
-    } else {
-        0
-    }
+    0
 }
 
 /// Run in quiet text mode: only print the final response text.
@@ -320,9 +310,56 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    
+
+    use super::text_exit_code;
+    use pi_agent_core::pi_ai_types::StopReason;
+    use pi_agent_core::types::AgentMessage;
+
+    fn assistant_message(stop_reason: StopReason) -> AgentMessage {
+        AgentMessage::Assistant {
+            content: Vec::new(),
+            api: "test".to_string(),
+            provider: "test".to_string(),
+            model: "test".to_string(),
+            usage: Default::default(),
+            stop_reason: Some(stop_reason),
+            error_message: None,
+            timestamp: 0,
+        }
+    }
+
+    fn failed_tool_result() -> AgentMessage {
+        AgentMessage::ToolResult {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            content: Vec::new(),
+            details: serde_json::json!({}),
+            is_error: true,
+            usage: None,
+            timestamp: 0,
+        }
+    }
+
+    /// A failed tool is a recoverable model-visible result. If the following
+    /// assistant turn stops normally, print mode must still exit successfully.
     #[test]
-    fn test_options_default_mode() {
-        assert_eq!("text", "text");
+    fn recoverable_tool_error_does_not_fail_text_mode() {
+        let messages = vec![
+            assistant_message(StopReason::ToolUse),
+            failed_tool_result(),
+            assistant_message(StopReason::Stop),
+        ];
+
+        assert_eq!(text_exit_code(&messages), 0);
+    }
+
+    /// Only terminal assistant errors and aborts indicate a failed text-mode
+    /// process; other stop reasons complete normally.
+    #[test]
+    fn only_terminal_assistant_error_or_abort_fails_text_mode() {
+        assert_eq!(text_exit_code(&[assistant_message(StopReason::Error)]), 1);
+        assert_eq!(text_exit_code(&[assistant_message(StopReason::Aborted)]), 1);
+        assert_eq!(text_exit_code(&[assistant_message(StopReason::Stop)]), 0);
+        assert_eq!(text_exit_code(&[assistant_message(StopReason::Length)]), 0);
     }
 }

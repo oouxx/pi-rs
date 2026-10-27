@@ -509,6 +509,15 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 错误消息含 tool call | 标记 pending tool 组件失败并抑制 assistant 级错误行 | bridge 转发未执行 tool calls；TUI 生成 failed tool 行并抑制 assistant notice | 是 | 修复见 PORTING_MISTAKES.md #152 |
 | 恢复空的错误消息 | 每个 assistant 消息都创建组件，空内容错误仍显示 | hydration 对 Error/Aborted/Length/error_message 保留空 assistant 行 | 是 | 修复见 PORTING_MISTAKES.md #152 |
 
+## Print mode 退出码（`modes/print_mode.rs`，2026-10-27）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| text：可恢复工具失败 | 中间工具结果即使为 `isError`，只要最终 assistant 正常结束，进程仍返回 0 | 退出码只取最终 assistant 消息；中间 `ToolExecutionEnd.is_error` 不参与聚合 | 是 | 修复见 PORTING_MISTAKES.md #166 |
+| text：最终 assistant 失败 | 最终消息 `stopReason` 为 `error` 或 `aborted` 时返回 1 | 同左；其他 stop reason 返回 0 | 是 | 修复见 PORTING_MISTAKES.md #166 |
+| json：工具失败事件 | 工具失败作为 `tool_execution_end.isError` 事件写出，不单独改变进程退出码；成功跑完返回 0 | 同左；json 成功完成返回 0 | 是 | 修复见 PORTING_MISTAKES.md #166 |
+| json/text：prompt 执行失败 | prompt 抛出异常时捕获并返回 1 | `session.prompt` 返回 `Err` 时打印错误并返回 1 | 是 | 修复见 PORTING_MISTAKES.md #166 |
+
 ## 扩展工具调用契约（`pi-extension-api` + `core/agent_session.rs` 适配器 + `pi-tui` 渲染）
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
@@ -516,6 +525,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 工具执行入参 | `execute(toolCallId, params, signal, onUpdate, ctx)` | `handle_tool_call(tool_name, params, ctx, invocation)`，`invocation` = `{tool_call_id, abort: watch::Receiver<bool>, on_update: ToolUpdateFn}`（`ToolInvocation`），语义同 TS 四个入参 | 是 | |
 | 中止信号 | `signal: AbortSignal`，`execute` 里 `await`/`select` 响应 Ctrl+C | 适配器把 agent 的 `signal` 透传为 `ToolInvocation::abort`；扩展用 `invocation.is_aborted()` / `invocation.aborted()`（`tokio::select!`）或 `pi_extension_api::wait_aborted` 等待。通道断开（run 结束）不算中止 | 是 | |
 | 中间进度 | `onUpdate(partial)`（每个 `message_end`/`tool_result_end` 触发） | `invocation.update(&ToolCallOutput)` → 适配器转 `AgentToolResult` → core `tool_execution_update` → bridge `ToolDetails`/`SetToolOutput` → TUI 即时刷新；`details` 变化也会同步（`BE::ToolDetails`） | 是 | 事件源只有 `message_end`（pi-rs 无独立 `tool_result_end`） |
+| 扩展 `is_error` 透传 | 扩展返回值可带 `isError: true`；但 v0.87.1 的 `AgentToolResult` 类型和 core 执行链路没有消费该字段，实际会按成功记录 | `tool_call_output_to_agent_result` 把 `is_error=true` 包装为 `Err(ToolExecutionError)`；core 保留 `content`/`details`/`terminate` 并产出 `is_error=true` 的工具结果，普通错误仍走通用错误结果 | 否（有意偏差，见 DEVIATIONS.md #33） | 修复上游 dead field 导致失败被当成成功；修复见 PORTING_MISTAKES.md #167 |
 | 自定义渲染 | `renderCall(args, theme, ctx)` / `renderResult(result, {expanded}, theme, ctx)` 返回组件树 | `ToolDefinition.render: Option<ToolRenderFn>`：入参 `ToolRenderContext{tool_name,cwd,expanded,args,output,details,is_error}`，返回 `ToolRenderOutput{title: Vec<ToolRenderSpan>, blocks: Vec<ToolRenderBlock>}`（`Line`/`Spacer`/`Markdown`，语义色 token 由 pi-tui 按主题解析）；TUI 每帧按当前宽度与展开态求值，返回 `None` 回落内置 renderer | 是（有意偏差：语义块而非任意组件树） | pi-extensions/DEVIATIONS.md |
 | 扩展上下文的 UI/信任状态 | `ctx.hasUI` + `ctx.isProjectTrusted()` | `ExtensionContext.has_ui`（宿主换绑真实 UI 时置位）+ `is_project_trusted`（会话创建时按 `resolve_project_trusted` 算出：override → 无需信任的资源 → 已存决策 → `defaultTrust`） | 是 | 项目资源门控本身未实现，见 DEVIATIONS.md「配置目录与项目信任」 |
 | 渲染数据来源 | 组件持有 `result.details` | `ToolCall.details` / `TranscriptItem::ToolResult.details`（bridge 从结果值 `details` 提取；`onUpdate` 的 partial details 同样刷新），rehydrate 后仍可渲染 | 是 | |

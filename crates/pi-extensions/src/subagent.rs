@@ -291,12 +291,32 @@ struct TaskStep {
 }
 
 impl TaskStep {
-    fn parse(value: &Value) -> Option<Self> {
-        let agent = value.get("agent").and_then(Value::as_str)?.to_string();
-        let task = value.get("task").and_then(Value::as_str)?.to_string();
-        Some(Self {
-            agent,
-            task,
+    fn parse(value: &Value) -> Result<Self, String> {
+        let agent = value
+            .get("agent")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
+        let task = value
+            .get("task")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
+        let (agent, task) = match (agent, task) {
+            (Some(agent), Some(task)) => (agent, task),
+            (agent, task) => {
+                let mut invalid = Vec::new();
+                if agent.is_none() {
+                    invalid.push("agent");
+                }
+                if task.is_none() {
+                    invalid.push("task");
+                }
+                return Err(format!("missing or empty field(s): {}", invalid.join(", ")));
+            }
+        };
+
+        Ok(Self {
+            agent: agent.to_string(),
+            task: task.to_string(),
             cwd: value
                 .get("cwd")
                 .and_then(Value::as_str)
@@ -306,11 +326,18 @@ impl TaskStep {
     }
 }
 
-fn parse_steps(value: Option<&Value>) -> Vec<TaskStep> {
-    value
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(TaskStep::parse).collect())
-        .unwrap_or_default()
+fn parse_steps(value: Option<&Value>, mode: &str) -> Result<Vec<TaskStep>, String> {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            TaskStep::parse(value)
+                .map_err(|reason| format!("Invalid {mode} step {}: {reason}.", index + 1))
+        })
+        .collect()
 }
 
 /// 子 agent 可执行文件：默认复用当前能执行 pi 的入口
@@ -495,22 +522,6 @@ impl SubagentExtension {
         let discovery = discover_agents(&user_agents_dir, &cwd, scope);
         let agents = discovery.agents.clone();
 
-        // ── 模式判定：三种模式必须恰好出现一种 ──
-        let chain = parse_steps(params.get("chain"));
-        let tasks = parse_steps(params.get("tasks"));
-        let single_agent = params
-            .get("agent")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        let single_task = params
-            .get("task")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        let has_chain = !chain.is_empty();
-        let has_tasks = !tasks.is_empty();
-        let has_single = single_agent.is_some() && single_task.is_some();
-        let mode_count = u8::from(has_chain) + u8::from(has_tasks) + u8::from(has_single);
-
         let available = || {
             let list = agents
                 .iter()
@@ -523,6 +534,40 @@ impl SubagentExtension {
                 list
             }
         };
+
+        // ── 模式判定：三种模式必须恰好出现一种 ──
+        let chain = match parse_steps(params.get("chain"), "chain") {
+            Ok(steps) => steps,
+            Err(error) => {
+                return text_output(
+                    format!("{error}\nAvailable agents: {}", available()),
+                    details("chain", scope, &discovery.project_agents_dir, &[]),
+                    true,
+                );
+            }
+        };
+        let tasks = match parse_steps(params.get("tasks"), "parallel") {
+            Ok(steps) => steps,
+            Err(error) => {
+                return text_output(
+                    format!("{error}\nAvailable agents: {}", available()),
+                    details("parallel", scope, &discovery.project_agents_dir, &[]),
+                    true,
+                );
+            }
+        };
+        let single_agent = params
+            .get("agent")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let single_task = params
+            .get("task")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let has_chain = !chain.is_empty();
+        let has_tasks = !tasks.is_empty();
+        let has_single = single_agent.is_some() && single_task.is_some();
+        let mode_count = u8::from(has_chain) + u8::from(has_tasks) + u8::from(has_single);
 
         if mode_count != 1 {
             return text_output(
@@ -679,13 +724,10 @@ impl SubagentExtension {
                 )
                 .await;
 
-            // 中止不是"某个任务失败"而是整次调用被取消：原版 `runSingleAgent`
-            // 抛错让 `Promise.all` 拒绝，工具调用整体报 `Subagent was aborted`。
-            // 保持同样语义（否则父模型会把"被取消"当成"任务失败"继续干）。
-            if results
-                .iter()
-                .any(|r| r.stop_reason.as_deref() == Some("aborted"))
-            {
+            // 父级 abort 才是整次调用被取消：原版 `runSingleAgent` 只在
+            // AbortSignal 触发时抛错。子 agent 自己返回 `stopReason=aborted`
+            // 时仍应作为普通失败项参与汇总，不能吞掉其他已完成结果。
+            if invocation.is_aborted() {
                 return text_output(
                     "Subagent was aborted".to_string(),
                     details("parallel", scope, &discovery.project_agents_dir, &results),
@@ -927,9 +969,10 @@ impl SubagentExtension {
             return result;
         };
 
-        // agent 未定义 model 时继承派发会话的模型与 thinking level。
-        let inherits_dispatch_config = agent.model.is_none();
-        let model = agent.model.clone().or_else(|| defaults.model.clone());
+        // TS 用 truthiness 判断 model：空字符串视为未指定，继承派发配置。
+        let model = agent.model.clone().filter(|model| !model.is_empty());
+        let inherits_dispatch_config = model.is_none();
+        let model = model.or_else(|| defaults.model.clone());
         let mut result =
             SingleResult::new(agent_name, agent.source.as_str(), task, model.clone(), step);
 
@@ -961,9 +1004,19 @@ impl SubagentExtension {
         }
         args.push(format!("Task: {task}"));
 
+        let effective_cwd = cwd.unwrap_or(default_cwd);
+        if !std::path::Path::new(effective_cwd).is_dir() {
+            result.exit_code = 1;
+            result.stderr = format!(
+                "Invalid cwd (not a directory): {effective_cwd} (binary: {})",
+                self.pi_binary
+            );
+            return result;
+        }
+
         let mut command = Command::new(&self.pi_binary);
         command.args(&args);
-        command.current_dir(cwd.unwrap_or(default_cwd));
+        command.current_dir(effective_cwd);
         command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
@@ -975,7 +1028,10 @@ impl SubagentExtension {
             Ok(child) => child,
             Err(e) => {
                 result.exit_code = 1;
-                result.stderr = format!("Failed to spawn pi: {e} (binary: {})", self.pi_binary);
+                result.stderr = format!(
+                    "Failed to spawn pi: {e} (binary: {}, cwd: {effective_cwd})",
+                    self.pi_binary
+                );
                 return result;
             }
         };
@@ -1058,19 +1114,37 @@ impl SubagentExtension {
             }
         }
 
-        if aborted || invocation.is_aborted() {
+        // stdout 可能先于进程退出到达 EOF。等待退出时仍要监听 abort，
+        // 否则子进程关闭 stdout 后会留下无法中止的等待窗口。
+        let status = if aborted || invocation.is_aborted() {
             // 原版：`proc.kill("SIGTERM")`，5s 后 `SIGKILL`，然后抛
             // "Subagent was aborted"。这里直接 SIGKILL（子进程没有需要优雅
             // 收尾的状态），结果标记 aborted 让上层按失败处理。
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
             aborted = true;
-        }
-
-        let status = child.wait().await;
+            let _ = child.start_kill();
+            tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                .await
+                .ok()
+                .and_then(Result::ok)
+        } else {
+            tokio::select! {
+                biased;
+                () = pi_extension_api::wait_aborted(&mut abort_rx) => {
+                    aborted = true;
+                    let _ = child.start_kill();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        child.wait(),
+                    )
+                    .await;
+                    None
+                }
+                status = child.wait() => status.ok(),
+            }
+        };
         // TS: `proc.on("close", code => resolve(code ?? 0))` —— 被信号杀死
         // （code 为 null）时按 0 处理，失败判定交给 stopReason。
-        result.exit_code = status.ok().and_then(|status| status.code()).unwrap_or(0);
+        result.exit_code = status.and_then(|status| status.code()).unwrap_or(0);
         // 子进程已退出：等 stderr 读到 EOF（正常情况立刻返回），最多 2s，
         // 之后放弃——孙进程可能仍持有写端（原版只在 `close` 事件上 resolve，
         // 也不等流结束）。

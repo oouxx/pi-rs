@@ -24,6 +24,7 @@ use pi_extension_api::{
 struct TestToolExtension;
 
 const TEST_TOOL: &str = "test_echo";
+const TEST_FAIL_TOOL: &str = "test_fail";
 
 #[async_trait::async_trait]
 impl HookHandler for TestToolExtension {
@@ -46,6 +47,20 @@ impl HookHandler for TestToolExtension {
                 ..Default::default()
             },
         );
+        tools.register(
+            TEST_FAIL_TOOL,
+            ToolDefinition {
+                name: TEST_FAIL_TOOL.into(),
+                label: Some("Test Failure".into()),
+                description: "Return a structured failed tool result (test-only).".into(),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                })),
+                ..Default::default()
+            },
+        );
     }
 
     async fn handle_tool_call(
@@ -55,6 +70,17 @@ impl HookHandler for TestToolExtension {
         ctx: &ExtensionContext,
         _invocation: &pi_extension_api::ToolInvocation,
     ) -> Option<ToolCallOutput> {
+        if tool_name == TEST_FAIL_TOOL {
+            return Some(ToolCallOutput {
+                content: vec![serde_json::json!({
+                    "type": "text",
+                    "text": "structured tool failure",
+                })],
+                details: Some(serde_json::json!({"kind": "test_failure"})),
+                is_error: true,
+                terminate: Some(true),
+            });
+        }
         if tool_name != TEST_TOOL {
             return None;
         }
@@ -532,6 +558,31 @@ async fn test_create_agent_session_with_extension() {
         "unexpected test_echo result: {echo_text}"
     );
     println!("[dbg] test_echo result: {}", echo_text);
+
+    // Failed extension outputs must preserve their structured result while
+    // surfacing `is_error` to the agent loop.
+    let fail = agent_state
+        .tools
+        .iter()
+        .find(|t| t.name == TEST_FAIL_TOOL)
+        .expect("test_fail tool should be active");
+    let error = (fail.execute)(
+        "call-test-fail-1".to_string(),
+        serde_json::json!({}),
+        None,
+        None,
+    )
+    .await
+    .expect_err("failed extension output must not be returned as success");
+    let structured = error
+        .downcast::<pi_agent_core::types::ToolExecutionError>()
+        .expect("structured extension failure");
+    assert_eq!(
+        structured.result.details,
+        serde_json::json!({"kind": "test_failure"})
+    );
+    assert_eq!(structured.result.terminate, Some(true));
+    assert_eq!(text_of(&structured.result), "structured tool failure");
 }
 
 /// Join the text blocks of a tool result.

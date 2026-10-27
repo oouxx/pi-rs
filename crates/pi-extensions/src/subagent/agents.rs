@@ -134,6 +134,15 @@ pub fn discover_agents(user_agents_dir: &Path, cwd: &str, scope: AgentScope) -> 
     }
 }
 
+/// 对齐 TS `Map.set`：同名后者覆盖前者，并保留首次插入位置。
+fn upsert_agent(agents: &mut Vec<AgentConfig>, agent: AgentConfig) {
+    if let Some(existing) = agents.iter_mut().find(|item| item.name == agent.name) {
+        *existing = agent;
+    } else {
+        agents.push(agent);
+    }
+}
+
 /// 按名字查 agent 定义。
 #[must_use]
 pub fn find_agent<'a>(agents: &'a [AgentConfig], name: &str) -> Option<&'a AgentConfig> {
@@ -166,8 +175,12 @@ fn load_agents_from_dir(dir: &Path, source: AgentSource) -> Vec<AgentConfig> {
         return Vec::new();
     };
 
+    // 固定目录项顺序，确保同名定义总是由确定的后一个文件覆盖。
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
     let mut agents = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
@@ -192,15 +205,20 @@ fn load_agents_from_dir(dir: &Path, source: AgentSource) -> Vec<AgentConfig> {
             continue;
         };
 
-        agents.push(AgentConfig {
-            name: name.to_string(),
-            description: description.to_string(),
-            tools: parse_tool_list(frontmatter.get("tools")),
-            model: yaml_str(&frontmatter, "model").map(str::to_string),
-            system_prompt: body,
-            source,
-            file_path: path.to_string_lossy().into_owned(),
-        });
+        upsert_agent(
+            &mut agents,
+            AgentConfig {
+                name: name.to_string(),
+                description: description.to_string(),
+                tools: parse_tool_list(frontmatter.get("tools")),
+                model: yaml_str(&frontmatter, "model")
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string),
+                system_prompt: body,
+                source,
+                file_path: path.to_string_lossy().into_owned(),
+            },
+        );
     }
 
     // TS 依赖 `readdirSync` 顺序（文件系统相关）；这里排序以获得确定性

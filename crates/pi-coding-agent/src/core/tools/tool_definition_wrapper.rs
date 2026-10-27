@@ -1,8 +1,54 @@
 use std::sync::Arc;
 
-use pi_agent_core::types::AgentTool;
+use pi_agent_core::types::{AgentTool, AgentToolResult, ToolExecutionError};
+use pi_extension_api::ToolCallOutput;
 
 use crate::core::extensions::ToolDefinition;
+
+/// Convert an extension tool output into the core result shape. Failed outputs
+/// are returned as [`ToolExecutionError`] so the agent loop can preserve the
+/// structured content/details while still marking the tool result as an error.
+pub(crate) fn tool_call_output_to_agent_result(
+    output: ToolCallOutput,
+) -> Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
+    let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
+        .content
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    let message = content
+        .iter()
+        .filter_map(|block| match block {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. }
+                if !text.trim().is_empty() =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let result = AgentToolResult {
+        content,
+        details: output.details.unwrap_or(serde_json::Value::Null),
+        usage: None,
+        terminate: output.terminate,
+    };
+    if output.is_error {
+        let error: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(ToolExecutionError::new(
+                result,
+                if message.is_empty() {
+                    "Tool execution failed".to_string()
+                } else {
+                    message
+                },
+            ));
+        Err(error)
+    } else {
+        Ok(result)
+    }
+}
 
 /// Execute closure for a wrapped tool definition.
 type ToolExecuteFn<TDetails> = Arc<
@@ -36,7 +82,7 @@ pub fn wrap_tool_definition<TDetails>(
     definition: ToolDefinition,
 ) -> AgentTool<serde_json::Value, TDetails>
 where
-    TDetails: Clone + Send + Sync + 'static + serde::de::DeserializeOwned,
+    TDetails: Clone + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
 {
     let params = definition
         .parameters
@@ -73,13 +119,29 @@ where
                             panic!("failed to deserialize null tool details: {e}")
                         })
                     });
-                Ok(pi_agent_core::types::AgentToolResult {
+                let result = pi_agent_core::types::AgentToolResult {
                     content,
                     details,
                     usage: None,
-
                     terminate: None,
-                })
+                };
+                if output.is_error {
+                    let failure_result = pi_agent_core::types::AgentToolResult {
+                        content: result.content,
+                        details: serde_json::to_value(&result.details)
+                            .unwrap_or(serde_json::Value::Null),
+                        usage: result.usage,
+                        terminate: result.terminate,
+                    };
+                    let error: Box<dyn std::error::Error + Send + Sync> =
+                        Box::new(ToolExecutionError::new(
+                            failure_result,
+                            "Tool execution failed",
+                        ));
+                    Err(error)
+                } else {
+                    Ok(result)
+                }
             })
         })
     } else {
@@ -144,6 +206,33 @@ pub fn create_tool_definition_from_agent_tool(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn failed_extension_output_preserves_structured_result() {
+        let error = tool_call_output_to_agent_result(ToolCallOutput {
+            content: vec![serde_json::json!({"type": "text", "text": "subagent failed"})],
+            details: Some(serde_json::json!({"mode": "single"})),
+            is_error: true,
+            terminate: Some(true),
+        })
+        .expect_err("error output must not become a successful result");
+        let failure = error
+            .downcast::<ToolExecutionError>()
+            .expect("structured tool error");
+        assert_eq!(
+            failure.result.content[0],
+            pi_agent_core::pi_ai_types::ContentBlock::Text {
+                text: "subagent failed".to_string(),
+                text_signature: None,
+            }
+        );
+        assert_eq!(
+            failure.result.details,
+            serde_json::json!({"mode": "single"})
+        );
+        assert_eq!(failure.result.terminate, Some(true));
+        assert_eq!(failure.message, "subagent failed");
+    }
 
     #[test]
     fn test_wrap_tool_definition() {

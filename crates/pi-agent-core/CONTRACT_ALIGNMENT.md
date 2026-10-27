@@ -20,6 +20,7 @@
 | AgentMessage 线上格式 | `role` 判别联合 + camelCase 字段（`stopReason`/`toolCallId`/`isError`/`exitCode`/`customType`/`fromId`/`tokensBefore`），`User.content` 允许 `string` 或内容块数组 | 同款：`#[serde(tag = "role", rename_all_fields = "camelCase")]`，逐字段 `alias` 兼容旧 pi-rs 文件，`User.content` 接受字符串简写 | 已对齐（2026-10-26） |
 | ContentBlock 线上格式 | `type` 判别联合 + `textSignature`/`thinkingSignature`/`thoughtSignature`/`mimeType` | 同款（camelCase + snake_case alias） | 已对齐（2026-10-26） |
 | 工具批次并发 | `Promise.all(finalizedCalls.map(entry => entry()))`：所有已预检的调用并发启动，`tool_execution_end` 按完成序发，结果消息按调用序产出 | `futures::future::join_all` 并发启动，`end` 在各自 future 内发出，`slots` 保序回填结果 | 已对齐（2026-10-26，见 `PORTING_MISTAKES.md`） |
+| 结构化工具执行错误（Rust 公共类型） | 无同名 TS 类型；工具结果与执行层的 `isError` 状态共同承载失败语义 | 新增 `ToolExecutionError { result: AgentToolResult<serde_json::Value>, message: String }`（实现 `Error` + `Display`）。工具执行返回 `Err` 时可用它携带结构化结果；agent loop downcast 后原样保留 `content`/`details`/`usage`/`terminate`，并把最终工具调用标为 `is_error=true`；普通错误仍生成通用错误结果 | 新增 Rust API；行为对齐 TS 工具结果语义 | 供扩展 `ToolCallOutput.is_error` 透传，见 pi-coding-agent `PORTING_MISTAKES.md` #167 |
 | durable harness | TS 后续版本的 Durable/Pico/Chord 实验性架构 | 未实现 | 范围外，未来如纳入范围再单独审计 |
 
 ## 待补充

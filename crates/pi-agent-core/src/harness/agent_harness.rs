@@ -38,6 +38,11 @@ type HarnessHookHandler = Arc<
 // AgentHarnessEvent — re-exported from here
 // ============================================================
 
+// The `Agent` variant carries the full `AgentEvent` (assistant messages with
+// usage/usage-cost inline), so it is structurally larger than `Own`; boxing it
+// would ripple through every consumer for no runtime benefit (the harness is an
+// unused-in-production module, see DEVIATIONS #7).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum AgentHarnessEvent<S: Clone = Skill, P: Clone = PromptTemplate> {
     Agent(AgentEvent),
@@ -1662,6 +1667,7 @@ mod tests {
     #[test]
     fn test_create_failure_message_error() {
         let model = Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),

@@ -75,9 +75,18 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
   `#[serde(rename_all = "camelCase")]`（struct 字段、enum 变体）。
 - TS 用 `{ type: "xxx", ... }` 的 tagged union → Rust 用
   `#[serde(tag = "type", rename_all = "camelCase")]`（注意：`rename_all` 在 enum
-  上**只影响变体名/`type` 标签的值**，不影响变体内部字段名；变体内部字段仍需在
-  struct 上单独加 `rename_all`，否则会以 snake_case 序列化——这是真实踩过的坑，
-  见 PORTING_MISTAKES "Serde field naming mismatch" 系列）。
+  上**只影响变体名/`type` 标签的值**，不影响变体内部字段名）。
+- **enum 变体内部字段**要用 `#[serde(rename_all_fields = "camelCase")]`
+  （serde ≥ 1.0.181）：tagged union 的字段名走的是这个属性，`rename_all` 管不到。
+  真实踩过的坑：`SessionEntry`（PORTING_MISTAKES pi-coding-agent #153）、
+  `AgentMessage` / `ContentBlock`（pi-agent-core PORTING_MISTAKES，"线上是
+  snake_case，`--mode json` / RPC / TS 会话文件全不兼容"）。
+- 给字段改名时**同时**加 `alias = "<旧 snake_case>"`，保证已写出的旧会话/配置
+  仍能读（本项目会话文件是用户资产，不能因改名失效）。
+- TS 的 `content: string | ContentBlock[]` 这类**对象或字符串简写**要用自定义
+  `deserialize_with`（或 untagged 中转 enum）同时接受两种形态，否则 TS 写出的
+  简写形态会反序列化失败——而会话加载路径若用 `.ok()` 忽略错误，就会**静默丢
+  消息**（`AgentMessage::User`，2026-10-26 修复）。
 - TS 用 `"user" | "project" | "temporary"` 这类小写字符串联合 → Rust enum 加
   `#[serde(rename_all = "lowercase")]`。
 - optional 字段加 `#[serde(skip_serializing_if = "Option::is_none")]`，匹配 TS
@@ -153,6 +162,9 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 31 | **空内容事件被内容门控丢弃** | TS 的 `message_start`/`message_end` 是消息生命周期事件：即使 assistant 的 text/thinking 为空（连接失败、认证错误发生在首个 token 前），也创建组件并在 `message_end` 渲染 `Error: ...` | Rust 用 `if !text.is_empty() || !thinking.is_empty()` 过滤 `MessageEnd`；又只在首个 text delta 时建 TUI 行，导致空内容错误既没有行也没有终止事件 | 生命周期事件按类型转发，不以业务内容非空作为门控；在 `message_start` 建行，`message_end` 无条件终结；空内容错误必须有回归测试 | #152（pi-coding-agent assistant 错误在 TUI 消失） |
 
 | 32 | **终态事件覆盖已流式状态** | TS provider 的 catch 分支发出累计 `output`，`message_end` 用最终消息更新组件；已流式文本、tool call、usage 保留 | Rust 部分 provider 包装层在 transport error 时合成空 `content` 或只带部分 block；agent loop / TUI 若直接覆盖终态，已显示内容与 usage 被清空 | 以 partial 为基准按 block 合并（保留顺序、追加终态缺失块、过滤空 text）、终态 usage 为空时继承 partial；TUI 不用空白终态 payload 清空已有文本；补空内容、tool-call-only、同类别前缀、顺序/usage、partial+failed-tool 回归测试 | pi-agent-core `stream_assistant_response`（PORTING_MISTAKES）、pi-coding-agent #152 |
+| 33 | **`Promise.all` 被译成顺序 `await`** | `Promise.all(thunks.map(t => t()))`：所有 thunk 同 tick 启动、并发执行，完成序回传 | Rust 里 `Vec<Pin<Box<Future>>>` 逐个 `fut.await`：future 只在 `.await` 时才开始轮询，于是 **N 个操作串行**（延迟线性叠加），事件也按调用序而非完成序发出 | 收集完 future 后 `futures::future::join_all(...)`（保序回传），把"完成即发事件"的逻辑放进每个 future 内部；并发模块必须有时间断言用例（如两个 120ms 工具总耗时 < 230ms） | pi-agent-core `execute_tool_calls_parallel`（此前"并行"实为串行，2026-10-26 修复） |
+| 34 | **`try { ... } catch { 降级 }` 被译成 `?` 传播** | TS 常写成"先试严格模式，不支持就降级"（`try { makeStrictJsonSchema(); return true } catch { if (strict !== "require") return undefined }`） | Rust 用 `?` 把内部转换错误直接冒泡到调用方 → 本该"静默降级"的场景变成**整个请求失败** | 逐条对照 try/catch：区分"可降级的 Unsupported 类错误"与"应传播的错误"，降级分支显式写出（`Err(_) if strict == Prefer => Ok(None)`） | pi-ai `resolve_json_schema_strict_sampling`（2026-10-26 修复） |
+| 35 | **条件子句只搬了一部分** | TS 的开关常是多条件合取：`model.reasoning && thinkingEnabled && (interleavedThinking ?? true) && forceAdaptiveThinking !== true` | 直译时只搬最后一个 `!==` 子句（或只搬第一个），编译通过、单测自洽，但**非推理模型也会带该 beta/参数**，服务端行为不同 | 翻译开关时把 TS 表达式整体抄下来逐项对应，缺字段的形态（`x ?? true`）显式写默认 | pi-ai anthropic interleaved-thinking beta（2026-10-26 修复） |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。

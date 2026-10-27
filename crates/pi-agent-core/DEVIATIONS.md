@@ -12,8 +12,27 @@
 | 5 | `harness/telemetry.rs`（TS `harness/telemetry.ts` 615 行） | AI span 级遥测（`AI_TELEMETRY_SCHEMA`：span 名/属性/事件 schema） | 未移植；pi-coding-agent 有简化 install-telemetry（开关 + 基础事件） | span 级遥测 schema 是 TS 内部可观测性协议，pi-rs 暂无对端消费者；需要时按 schema 移植 | 已确认保留 |
 | 6 | `AgentHarness`（`agent_harness.rs`） | TS `AgentHarness implements AgentLane`：多 lane 创建/移动/挂起操作（createLane/move_lane/suspended）、lane 级错误（LaneBusy/NoActiveRun 等） | pi-rs 为单 lane AgentHarness：完整 API 面（model/thinking/tools/steer/follow_up/next_turn/prompt/subscribe/on）但无 lane 参数 | 与 #2 同源：多 lane 是 harness-v2 前瞻；pi-rs 面向单 lane 会话 | 已确认保留 |
 
-> 备注：审查确认 agent_loop 核心（run_agent_loop/continue、事件序列 agent_start→agent_end、
-> steering/follow-up/should_stop_after_turn/prepare_next_turn、length→fail truncated、
-> 工具批量执行顺序/并行）、messages、compaction、session 单 lane 生命周期、proxy 均与
-> TS 原版对齐。差异集中在多 lane 架构（#2/#6）及其下游（#3/#4），单 lane 行为一致。
 | 7 | `harness/` 内置工具（TS `harness/tools/read.ts`/`write.ts`/`edit.ts`/`bash.ts`，v0.82.0 #e32c1491b） | TS harness 内置 context-aware 工具对象：`createReadTool`/`createWriteTool`/`createEditTool`/`createBashTool`，通过 `ExecutionToolContext`（`{env: ExecutionEnv}`）执行，应用可注入自定义 toolContext；`ShellExecOptions.inheritEnv`、`~`/`file://` 路径处理、shell 输出捕获（子进程退出后 drain）、跨平台进程清理 | pi-rs harness 工具为**事件转发模式**：工具是名字列表（`tools: Vec<String>`），执行通过 `before_tool_call`/`after_tool_call` hooks 转发给外部事件处理器，无内置工具对象；`ExecutionEnv` trait 已有（文件系统 + shell 抽象），`env/nodejs.rs` 实现缺 `~`/`file://` 路径处理与 `inheritEnv` | pi-rs harness 无外部使用者（孤儿模块，pi-cli/pi-coding-agent/pi-tui 均不引用），工具由使用方注入；补内置工具对象等于改变 harness 架构而非补缺失功能。`ExecutionEnv` 行为对齐（`~`/`file://`/`inheritEnv`）属可选小增强，待 harness 有实际使用者时再补 | 已确认保留（架构差异） |
+
+> 备注（2026-10-26 校正）：agent_loop 核心（run_agent_loop/continue、事件序列
+> agent_start→agent_end、steering/follow-up/finish_turn/prepare_request、
+> length→fail truncated、工具批量执行**顺序与并发**）、messages、compaction、
+> session 单 lane 生命周期、proxy 与 TS 对齐。差异集中在多 lane 架构（#2/#6）
+> 及其下游（#3/#4），单 lane 行为一致。
+>
+> 上一版备注里"should_stop_after_turn"与"工具批量执行顺序/并行（已对齐）"两句
+> 都不准确：`should_stop_after_turn` 在 v0.87.1 已被 `finishTurn`/`prepareRequest`
+> 取代（pi-rs 已迁移，见 `PORTING_MISTAKES.md`），而"并行"此前其实是**串行**——
+> `execute_tool_calls_parallel` 逐个 `.await` 未启动的 future，与 TS
+> `Promise.all(thunks)` 不等价（多工具调用延迟叠加、`tool_execution_end` 按调用序
+> 而非完成序）。2026-10-26 改为 `join_all` 并发启动、完成即发 `end`，并补
+> `test_parallel_executes_concurrently`（两个 120ms 工具必须在 ~120ms 内跑完且几乎
+> 同时开始）。
+>
+> 另外两条同一轮修复的偏差（此前未登记）：
+> - `AgentMessage` / `ContentBlock` 曾按 Rust 字段名序列化成 snake_case
+>   （`stop_reason`/`tool_call_id`/`is_error`/`thought_signature`），而 TS 线上格式
+>   是 camelCase。`--mode json`、RPC、pi-acp 与 TS 写的会话文件都要求 camelCase，
+>   现已加 `rename_all_fields = "camelCase"`（保留 snake_case `alias` 以读旧文件）。
+> - `User` 消息的 `content` 只接受内容块数组，TS 允许 `string` 简写（TS 写的会话
+>   文件里会有），会导致该条消息反序列化失败被静默丢弃；现已接受两种形态。

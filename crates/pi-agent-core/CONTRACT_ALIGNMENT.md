@@ -17,6 +17,9 @@
 | stream function | 未配置时使用默认 stream function；无法使用时显式失败 | 提供默认 stream function 配置和显式错误 | 已对齐核心行为 |
 | 消息转换 | AgentMessage 转换为 pi-ai Message，保留工具、usage 和摘要信息 | `harness::messages` 提供转换 | 已对齐核心行为 |
 | 流式错误保留 partial | provider catch 发出累计输出；`MessageEnd` 携带 partial 内容 | Error 内容为空时合并最后一次 partial，再写 context / 发事件 | 已对齐 | 修复见 `PORTING_MISTAKES.md`（`stream_assistant_response` terminal Error） |
+| AgentMessage 线上格式 | `role` 判别联合 + camelCase 字段（`stopReason`/`toolCallId`/`isError`/`exitCode`/`customType`/`fromId`/`tokensBefore`），`User.content` 允许 `string` 或内容块数组 | 同款：`#[serde(tag = "role", rename_all_fields = "camelCase")]`，逐字段 `alias` 兼容旧 pi-rs 文件，`User.content` 接受字符串简写 | 已对齐（2026-10-26） |
+| ContentBlock 线上格式 | `type` 判别联合 + `textSignature`/`thinkingSignature`/`thoughtSignature`/`mimeType` | 同款（camelCase + snake_case alias） | 已对齐（2026-10-26） |
+| 工具批次并发 | `Promise.all(finalizedCalls.map(entry => entry()))`：所有已预检的调用并发启动，`tool_execution_end` 按完成序发，结果消息按调用序产出 | `futures::future::join_all` 并发启动，`end` 在各自 future 内发出，`slots` 保序回填结果 | 已对齐（2026-10-26，见 `PORTING_MISTAKES.md`） |
 | durable harness | TS 后续版本的 Durable/Pico/Chord 实验性架构 | 未实现 | 范围外，未来如纳入范围再单独审计 |
 
 ## 待补充

@@ -154,6 +154,14 @@ enum UiAction {
         reply: tokio::sync::oneshot::Sender<Option<String>>,
     },
     SetEditorText(String),
+    /// `ui.setWidget(key, lines?, {placement})`; `None` lines remove it.
+    SetWidget {
+        key: String,
+        lines: Option<Vec<String>>,
+        below_editor: bool,
+    },
+    SetWorkingMessage(Option<String>),
+    SetWorkingVisible(bool),
 }
 
 /// An extension dialog the TUI is waiting for the user to answer.
@@ -184,6 +192,17 @@ type WidgetFn = std::sync::Arc<
     dyn Fn(&str, Option<&[String]>, Option<&serde_json::Value>) + Send + Sync,
 >;
 
+/// `ui.editor` handler shape: title, prefill → user text.
+type EditorFn = std::sync::Arc<
+    dyn Fn(
+            &str,
+            Option<&str>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>,
+        > + Send
+        + Sync,
+>;
+
 /// `ui.input` handler shape: title, initial text, payload → user text.
 type InputFn = std::sync::Arc<
     dyn Fn(
@@ -203,10 +222,15 @@ fn create_tui_ui_context() -> (
     ExtensionUIContext,
     tokio::sync::mpsc::UnboundedSender<UiAction>,
     tokio::sync::mpsc::UnboundedReceiver<UiAction>,
+    Arc<std::sync::Mutex<String>>,
 ) {
     use std::sync::Arc;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<UiAction>();
+    // Live editor text for `ui.getEditorText` (TS returns the host editor's
+    // current contents; the TUI loop refreshes this handle every frame).
+    let editor_text: Arc<std::sync::Mutex<String>> =
+        Arc::new(std::sync::Mutex::new(String::new()));
 
     let notify = {
         let tx = tx.clone();
@@ -293,8 +317,73 @@ fn create_tui_ui_context() -> (
         );
         input
     };
-    // Inline widgets are not rendered by the minimal TUI (deviation).
-    let set_widget: WidgetFn = std::sync::Arc::new(|_, _, _| {});
+    // `ui.editor(title, prefill?)`（TS `showExtensionEditor` →
+    // `ExtensionEditorComponent`）：同一个多行编辑器 dock，默认文本为
+    // prefill，Enter 提交 / Esc 取消。
+    let editor = {
+        let tx = tx.clone();
+        let editor: EditorFn = std::sync::Arc::new(
+            move |title: &str, prefill: Option<&str>| {
+                let tx = tx.clone();
+                let title = title.to_string();
+                let initial = prefill.unwrap_or("").to_string();
+                Box::pin(async move {
+                    let (reply, rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(UiAction::Input {
+                        title,
+                        initial,
+                        reply,
+                    });
+                    tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                })
+            },
+        );
+        editor
+    };
+    // `ui.setWidget(key, lines?, {placement})`: the TUI renders the lines above
+    // or below the editor (TS `setWidget` with a string array).
+    let set_widget: WidgetFn = {
+        let tx = tx.clone();
+        std::sync::Arc::new(
+            move |key: &str, lines: Option<&[String]>, opts: Option<&serde_json::Value>| {
+                let below_editor = opts
+                    .and_then(|o| o.get("placement"))
+                    .and_then(|p| p.as_str())
+                    .map(|placement| placement == "belowEditor")
+                    .unwrap_or(false);
+                let _ = tx.send(UiAction::SetWidget {
+                    key: key.to_string(),
+                    lines: lines.map(<[String]>::to_vec),
+                    below_editor,
+                });
+            },
+        )
+    };
+    let set_working_message = {
+        let tx = tx.clone();
+        std::sync::Arc::new(move |message: Option<&str>| {
+            let _ = tx.send(UiAction::SetWorkingMessage(message.map(str::to_string)));
+        })
+    };
+    let set_working_visible = {
+        let tx = tx.clone();
+        std::sync::Arc::new(move |visible: bool| {
+            let _ = tx.send(UiAction::SetWorkingVisible(visible));
+        })
+    };
+    let get_editor_text = {
+        let editor_text = Arc::clone(&editor_text);
+        std::sync::Arc::new(move || {
+            editor_text
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+    };
     let set_title = Arc::new(|title: &str| {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title));
     });
@@ -307,17 +396,22 @@ fn create_tui_ui_context() -> (
 
     (
         ExtensionUIContext {
+            get_editor_text,
+            set_working_visible,
+            set_working_message,
             notify,
             set_status,
             confirm,
             select,
             input,
+            editor,
             set_widget,
             set_title,
             set_editor_text,
         },
         tx,
         rx,
+        editor_text,
     )
 }
 
@@ -558,6 +652,26 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
         UiAction::SetEditorText(text) => {
             app::update(&mut state.model, pi_tui::Msg::SetEditorText(text));
         }
+        UiAction::SetWidget {
+            key,
+            lines,
+            below_editor,
+        } => {
+            app::update(
+                &mut state.model,
+                pi_tui::Msg::SetWidget {
+                    key,
+                    lines,
+                    below_editor,
+                },
+            );
+        }
+        UiAction::SetWorkingMessage(message) => {
+            app::update(&mut state.model, pi_tui::Msg::SetWorkingMessage(message));
+        }
+        UiAction::SetWorkingVisible(visible) => {
+            app::update(&mut state.model, pi_tui::Msg::SetWorkingVisible(visible));
+        }
         UiAction::Confirm { title, message, reply } => {
             if state.pending_ui.is_some() {
                 let _ = reply.send(false);
@@ -620,7 +734,10 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
     }
 
     match key.code {
-        // Ctrl+C: abort if streaming, double Ctrl+C within the window quits
+        // Ctrl+C: double press within the window quits; single press clears the
+        // editor (TS `handleCtrlC` → `clearEditor()`). pi-rs additionally aborts
+        // an in-flight run on the single press (TS aborts only via Esc; keeping
+        // the abort is a documented superset, see DEVIATIONS.md).
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             let now = Instant::now();
             let elapsed = now.duration_since(state.last_ctrl_c).as_millis() as u64;
@@ -629,6 +746,8 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 state.quit = true;
                 return vec![];
             }
+            state.model.input.clear();
+            state.model.completer.deactivate();
             if state.model.is_streaming || !state.model.active_tools.is_empty() {
                 // Immediate UI feedback; the agent event stream then closes
                 // via Done → MessageEnd → StreamEnd.
@@ -994,19 +1113,43 @@ fn handle_select_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> V
 /// Ctrl+S submits, Esc cancels, everything else edits.
 fn handle_editor_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
+    // 提交/取消抽成局部闭包，避免在两个分支里重复读编辑器文本。
+    fn submit(state: &mut AppState) {
+        let text = if let pi_tui::AppMode::Editor { editor, .. } = &state.model.mode {
+            editor.text()
+        } else {
+            String::new()
+        };
+        app::update(&mut state.model, pi_tui::Msg::EditorDone(String::new()));
+        resolve_pending_ui_text(state, Some(text));
+    }
+    fn cancel(state: &mut AppState) {
+        app::update(&mut state.model, pi_tui::Msg::EditorDone(String::new()));
+        resolve_pending_ui_text(state, None);
+    }
     match key.code {
+        // TS `ExtensionEditorComponent` / input dialog: Enter submits,
+        // Shift+Enter inserts a newline, Esc or Ctrl+C cancels. Ctrl+S stays
+        // as an extra submit key (already documented in the editor footer).
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+            submit(state);
+            return vec![];
+        }
+        KeyCode::Enter => {
+            let plain = crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            if let pi_tui::AppMode::Editor { editor, .. } = &mut state.model.mode {
+                editor.handle_key(&plain);
+            }
+            return vec![];
+        }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
-            let text = if let pi_tui::AppMode::Editor { editor, .. } = &state.model.mode {
-                editor.text()
-            } else {
-                String::new()
-            };
-            app::update(&mut state.model, pi_tui::Msg::EditorDone(String::new()));
-            resolve_pending_ui_text(state, Some(text));
+            submit(state);
         }
         KeyCode::Esc => {
-            app::update(&mut state.model, pi_tui::Msg::EditorDone(String::new()));
-            resolve_pending_ui_text(state, None);
+            cancel(state);
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            cancel(state);
         }
         _ => {
             if let pi_tui::AppMode::Editor { editor, .. } = &mut state.model.mode {
@@ -1097,16 +1240,17 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
 
     match command {
         "/new" => {
-            // `/new`: swap to a fresh session, then clear the transcript and pending/
-            // compaction queues to match it (TS `/new`, renderCurrentSessionState).
+            // `/new`: drop the pending/compaction queues now; the transcript is
+            // cleared by the command path **after** the swap succeeds, so an
+            // extension vetoing `session_before_switch` leaves the current
+            // transcript intact (TS `handleClearCommand` returns early on
+            // `result.cancelled` and never touches the chat container).
             state.model.pending_steering.clear();
             state.model.pending_follow_up.clear();
             state.model.compaction_queue.clear();
             state.model.is_compacting = false;
-            app::update(&mut state.model, pi_tui::Msg::ClearScreen);
             state.model.is_streaming = false;
             let parent = if args.is_empty() { None } else { Some(args.to_string()) };
-            system(state, "New session created".into());
             vec![Effect::AgentCommand(AgentCmd::NewSession(parent))]
         }
         "/name" => {
@@ -2142,7 +2286,23 @@ fn spawn_agent_command_task(
                             }
                         }
                         AgentCmd::NewSession(parent) => {
-                            sess.session_mgr_new(parent.as_deref()).await;
+                            // TS `newSession()`: session_before_switch can veto;
+                            // the outgoing session gets session_shutdown.
+                            if sess.session_mgr_new(parent.as_deref()).await {
+                                sess.emit_session_start("new").await;
+                                // Only clear the transcript once the swap really
+                                // happened (TS renders the new session state).
+                                let _ = result_tx.send(pi_tui::Msg::ClearScreen);
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    "New session created".into(),
+                                ));
+                            } else {
+                                let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                    "system".into(),
+                                    "New session cancelled by extension".into(),
+                                ));
+                            }
                         }
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
@@ -2564,7 +2724,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     // ── Extension UI bridge: wire dialogs/notifications to the TUI ───────
     // (must happen before the session is shared with the background task)
-    let (ui_ctx, ui_tx, mut ui_rx) = create_tui_ui_context();
+    let (ui_ctx, ui_tx, mut ui_rx, editor_text_handle) = create_tui_ui_context();
     session.set_extension_ui_context(ui_ctx);
     // 扩展错误 → 系统消息（对齐 TS interactive-mode `showExtensionError`：
     // 错误以文本形式进入聊天区，而不是写 stderr 污染备用屏幕）。
@@ -2878,6 +3038,11 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
         let is_tick = matches!(&action, Action::Tick);
         let outcome = update(&mut state, action);
+        // Keep `ui.getEditorText` in sync with the live editor (the extension
+        // API is synchronous, so it reads this handle instead of the state).
+        if let Ok(mut text) = editor_text_handle.lock() {
+            *text = state.model.input.value().to_string();
+        }
         let mut redraw = outcome.redraw;
         if is_tick {
             redraw |= refresh_status(&mut state, &ui_session).await;
@@ -2921,6 +3086,17 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // Kill any background processes left running by bash commands (matching
     // TS interactive-mode shutdown which calls `killTrackedDetachedChildren()`).
     crate::utils::shell::kill_tracked_detached_children();
+    // 对齐 TS `InteractiveMode.shutdown`：TUI 停掉之后、进程退出之前向扩展
+    // 发 `session_shutdown(reason="quit")`（扩展据此清理 socket/子进程等）。
+    // 后台 run 仍持锁时最多等 2s，之后放弃（不能因为清理卡住退出）。
+    if let Ok(guard) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        session.lock(),
+    )
+    .await
+    {
+        guard.dispatch_shutdown("quit", None).await;
+    }
     restore_terminal();
     // TS `InteractiveMode.shutdown`: after the TUI has left the alternate
     // screen, print the resume hint to the parent terminal so it survives
@@ -4323,6 +4499,7 @@ mod tests {
     async fn model_argument_completions_fuzzy_filter_models() {
         let models = vec![
             pi_agent_core::pi_ai_types::Model {
+                input_limits: None,
                 prompt_cache: None,
                 id: "gpt-4o".into(),
                 name: "GPT-4o".into(),
@@ -4340,6 +4517,7 @@ mod tests {
                 compat: None,
             },
             pi_agent_core::pi_ai_types::Model {
+                input_limits: None,
                 prompt_cache: None,
                 id: "gpt-4o-mini".into(),
                 name: "GPT-4o mini".into(),
@@ -4372,6 +4550,7 @@ mod tests {
         let f = model_argument_completions(snapshot.clone());
         assert!(f(String::new()).await.is_none(), "空快照 → 无补全");
         *snapshot.write().expect("snapshot write") = vec![pi_agent_core::pi_ai_types::Model {
+            input_limits: None,
             prompt_cache: None,
             id: "kimi-k2".into(),
             name: "Kimi K2".into(),

@@ -261,6 +261,9 @@ const FALLBACK_PREVIEW_LINES: usize = 10;
 /// Tool-output tail preview for the bash renderer (TS
 /// `BASH_PREVIEW_LINES` = 5 in `core/tools/bash.ts`).
 const BASH_PREVIEW_LINES: usize = 5;
+/// Read renderer preview lines when not expanded (TS
+/// `formatReadResult`: literal `10`, full result when expanded).
+const READ_PREVIEW_LINES: usize = 10;
 /// Horizontal padding inside user/tool boxes (TS `outputPad` = 1).
 const BOX_PAD_X: u16 = 1;
 /// Vertical padding inside user/tool boxes (TS `Box(padX, 1, bg)`).
@@ -645,11 +648,22 @@ fn sanitize_output_text(text: &str) -> String {
     sanitize_binary_output(&strip_ansi(text)).replace('\r', "")
 }
 
-/// Format a duration like TS `formatDuration` (`(ms / 1000).toFixed(1) +
-/// "s"`): one decimal plus the unit, rounding half away from zero (JS
-/// `toFixed`).
+/// Format a duration like TS `formatDuration` (`core/tools/renderers/bash.ts`):
+/// `< 60s` → one decimal plus `s`; otherwise `Nm Ns`, and `Hh Mm Ns` past an
+/// hour.
 fn format_duration(ms: u128) -> String {
-    format!("{:.1}s", (ms as f64 / 1000.0 * 10.0).round() / 10.0)
+    let seconds = ms as f64 / 1000.0;
+    if seconds < 60.0 {
+        // JS `toFixed(1)` rounds half away from zero.
+        return format!("{:.1}s", (seconds * 10.0).round() / 10.0);
+    }
+    let total_seconds = seconds.floor() as u128;
+    let minutes = total_seconds / 60;
+    let remainder = total_seconds % 60;
+    if minutes < 60 {
+        return format!("{minutes}m {remainder}s");
+    }
+    format!("{}h {}m {remainder}s", minutes / 60, minutes % 60)
 }
 
 
@@ -726,6 +740,15 @@ pub enum DialogAction { Confirm, ConfirmAlways, Cancel, Custom(&'static str) }
 // Model
 // ============================================================================
 
+/// An extension-contributed inline widget (TS `ui.setWidget(key, lines, {placement})`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WidgetBlock {
+    pub key: String,
+    pub lines: Vec<String>,
+    /// `true` = rendered below the editor, `false` = above it.
+    pub below_editor: bool,
+}
+
 pub struct Model {
     pub theme: Theme, pub width: u16, pub height: u16, pub mode: AppMode,
     pub messages: Vec<Message>, pub is_streaming: bool,
@@ -765,6 +788,14 @@ pub struct Model {
     /// `PI_EXPERIMENTAL=1` — appends the `• xp` badge (TS
     /// `areExperimentalFeaturesEnabled()`).
     pub experimental: bool,
+    /// Inline widgets contributed by extensions (TS `ui.setWidget`): one entry
+    /// per key, rendered above or below the editor.
+    pub widgets: Vec<WidgetBlock>,
+    /// Custom spinner text (TS `ui.setWorkingMessage`). `None` = default
+    /// "Working...".
+    pub working_message: Option<String>,
+    /// Whether the spinner line is shown while busy (TS `ui.setWorkingVisible`).
+    pub working_visible: bool,
     // ── Startup header (TS builtInHeader ExpandableText) ────────────────
     /// Whether the startup header is visible (TS shows it unless quiet
     /// startup is configured).
@@ -847,6 +878,9 @@ impl Model {
             available_provider_count: 0,
             using_subscription: false,
             experimental: false,
+            widgets: Vec::new(),
+            working_message: None,
+            working_visible: true,
             show_header: true,
             tool_output_expanded: false,
             last_ctrl_c: None,
@@ -1342,6 +1376,17 @@ pub enum Msg {
     /// Ctrl+O (app.tools.expand): toggle the startup header and tool
     /// output expansion.
     ToggleToolExpansion,
+    /// `ui.setWidget(key, lines?, {placement})` — `lines: None` removes the
+    /// widget (TS `setWidget(key, undefined)`).
+    SetWidget {
+        key: String,
+        lines: Option<Vec<String>>,
+        below_editor: bool,
+    },
+    /// `ui.setWorkingMessage(text)` — `None` restores the default.
+    SetWorkingMessage(Option<String>),
+    /// `ui.setWorkingVisible(bool)`.
+    SetWorkingVisible(bool),
     /// Switch the active palette (the `/theme` command). Replaces the
     /// `Theme` wholesale so every surface re-reads its colors next frame.
     SetTheme(Theme),
@@ -1535,6 +1580,29 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::ToggleToolExpansion => {
             model.tool_output_expanded = !model.tool_output_expanded;
+            vec![]
+        }
+        Msg::SetWidget {
+            key,
+            lines,
+            below_editor,
+        } => {
+            model.widgets.retain(|w| w.key != key);
+            if let Some(lines) = lines.filter(|l| !l.is_empty()) {
+                model.widgets.push(WidgetBlock {
+                    key,
+                    lines,
+                    below_editor,
+                });
+            }
+            vec![]
+        }
+        Msg::SetWorkingMessage(message) => {
+            model.working_message = message;
+            vec![]
+        }
+        Msg::SetWorkingVisible(visible) => {
+            model.working_visible = visible;
             vec![]
         }
         Msg::SetTheme(theme) => {
@@ -1907,16 +1975,32 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     let secret = matches!(&model.mode, AppMode::Secret { .. });
     let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
     let editor_h = if secret { 7u16.min(area.height.max(1)) } else { editor_h };
-    let chunks = Layout::new(Direction::Vertical, [Constraint::Min(1), Constraint::Length(pending_h), Constraint::Length(status_h), Constraint::Length(editor_h), Constraint::Length(footer_h)]).split(area);
+    let above_h = widget_rows(model, false);
+    let below_h = widget_rows(model, true);
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Min(1),
+            Constraint::Length(above_h),
+            Constraint::Length(pending_h),
+            Constraint::Length(status_h),
+            Constraint::Length(editor_h),
+            Constraint::Length(below_h),
+            Constraint::Length(footer_h),
+        ],
+    )
+    .split(area);
     render_body(model, frame.buffer_mut(), chunks[0], &t);
-    render_pending_messages(model, frame, chunks[1], &t);
-    render_status(model, frame, chunks[2], &t);
+    render_widgets(model, frame, chunks[1], &t, false);
+    render_pending_messages(model, frame, chunks[2], &t);
+    render_status(model, frame, chunks[3], &t);
     if secret {
-        render_secret_input(model, frame, chunks[3], &t);
+        render_secret_input(model, frame, chunks[4], &t);
     } else {
-        render_input(model, frame, chunks[3], &t);
+        render_input(model, frame, chunks[4], &t);
     }
-    render_footer(model, frame, chunks[4], &t);
+    render_widgets(model, frame, chunks[5], &t, true);
+    render_footer(model, frame, chunks[6], &t);
     if model.dialog.is_some() {
         render_dialog(model, frame, area, &t);
     } else if let AppMode::Select { list, .. } = &model.mode {
@@ -1996,6 +2080,7 @@ fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16, u16) {
     let pending_h = pending_rows(model);
     let status_h = 2u16;
     let footer_h = 2u16;
+
     let content = input_layout_rows(&model.input, editor_layout_width(area.width)).0.len() as u16;
     // The editor grows to `max(5, 30% of terminal rows)` — the TS editor
     // measures the screen (in alt-screen mode the frame is the screen).
@@ -2004,9 +2089,45 @@ fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16, u16) {
     let visible = content.clamp(1, max_visible);
     let completion = completer_rows(&model.completer);
     let editor_h = 1 + visible + completion + 1;
-    let available = area.height.saturating_sub(1).saturating_sub(status_h + footer_h + pending_h);
+    let available = area.height
+        .saturating_sub(1)
+        .saturating_sub(
+            status_h + footer_h + pending_h + widget_rows(model, true) + widget_rows(model, false),
+        );
     let editor_h = editor_h.min(available.max(3));
     (pending_h, status_h, editor_h.max(3), footer_h)
+}
+
+/// Rows the extension widgets occupy on one side of the editor.
+fn widget_rows(model: &Model, below: bool) -> u16 {
+    model
+        .widgets
+        .iter()
+        .filter(|w| w.below_editor == below)
+        .map(|w| w.lines.len() as u16)
+        .sum()
+}
+
+/// `ui.setWidget` lines: muted text, one row per line (TS renders them as
+/// plain `Text` blocks in the editor container).
+fn render_widgets(model: &Model, frame: &mut Frame, area: Rect, t: &Theme, below: bool) {
+    if area.height == 0 {
+        return;
+    }
+    let style = Style::new().fg(t.muted);
+    let mut y = area.y;
+    for widget in model.widgets.iter().filter(|w| w.below_editor == below) {
+        for line in &widget.lines {
+            if y >= area.y + area.height {
+                return;
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(line.clone(), style))),
+                Rect::new(area.x, y, area.width, 1),
+            );
+            y += 1;
+        }
+    }
 }
 
 /// Rows for the queued-messages area (TS `pendingMessagesContainer`: the
@@ -2114,11 +2235,15 @@ fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
                 Span::styled(format!("{ch} "), Style::new().fg(t.accent)),
                 Span::styled(label, Style::new().fg(t.muted)),
             ])
-        } else if busy {
+        } else if busy && model.working_visible {
             let ch = SPINNER[(model.tick / 3) as usize % SPINNER.len()];
+            let label = model
+                .working_message
+                .clone()
+                .unwrap_or_else(|| "Working...".to_string());
             Line::from(vec![
                 Span::styled(format!("{ch} "), Style::new().fg(t.accent)),
-                Span::styled("Working...", Style::new().fg(t.muted)),
+                Span::styled(label, Style::new().fg(t.muted)),
             ])
         } else {
             Line::raw("")
@@ -2918,11 +3043,12 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize, t: &Theme) -> u16 
                 ToolRenderer::Read => {
                     // read renderer: title only when collapsed and not an
                     // error (TS `formatReadResult` returns ""); when
-                    // visible: blank + up to 10 wrapped raw lines + more
-                    // hint + truncation warnings.
+                    // visible: blank + up to 10 wrapped raw lines (all of
+                    // them when expanded) + more hint + truncation warnings.
                     let content = if read_content_visible(b, expanded) {
+                        let limit = if expanded { usize::MAX } else { READ_PREVIEW_LINES };
                         let (rows, remaining) =
-                            preview_wrapped(b.tool_output.trim_end(), wrap_w, 10);
+                            preview_wrapped(b.tool_output.trim_end(), wrap_w, limit);
                         let more = if remaining > 0 { 1 } else { 0 };
                         let warns = if read_warning_text(b).is_some() { 2 } else { 0 };
                         1 + rows.len() as u16 + more + warns
@@ -3396,7 +3522,10 @@ fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
     if read_content_visible(item, expanded) {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
-        let (rows, remaining) = preview_wrapped(item.tool_output.trim_end(), wrap_w, 10);
+        // TS `formatReadResult`: `maxLines = options.expanded ? lines.length : 10`
+        // — expanded shows the whole result (ctrl+o actually expands).
+        let limit = if expanded { usize::MAX } else { READ_PREVIEW_LINES };
+        let (rows, remaining) = preview_wrapped(item.tool_output.trim_end(), wrap_w, limit);
         for row in rows {
             render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
             ly += 1;
@@ -5718,6 +5847,59 @@ mod tests {
         assert_eq!(buf[(1, title_row + 2)].symbol(), "l", "content visible when expanded");
     }
 
+    /// Expanded read output shows the **whole** result (TS `formatReadResult`:
+    /// `maxLines = options.expanded ? lines.length : 10`) — Ctrl+O must expand
+    /// past the 10-line preview instead of keeping the "ctrl+o to expand" hint.
+    #[test]
+    fn read_tool_expanded_shows_all_lines() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(100, 40);
+        model.context_usage_known = true;
+        model.cwd = "/work".into();
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-r2".into(),
+                "read".into(),
+                "{\"file_path\": \"/work/src/main.rs\"}".into(),
+            ),
+        );
+        let output: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        update(&mut model, Msg::SetToolOutput("tc-r2".into(), "read".into(), output));
+
+        let mut terminal = RatTerminal::new(TestBackend::new(100, 40)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let collapsed = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+
+        update(&mut model, Msg::ToggleToolExpansion);
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let expanded = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+
+        // Collapsed: no content at all (title only).
+        assert!(!collapsed.contains("line0"), "collapsed read shows no content");
+        // Expanded: the last of the 30 lines is rendered, and the preview hint
+        // is gone.
+        assert!(expanded.contains("line29"), "expanded read shows the tail of the result");
+        assert!(
+            !expanded.contains("more lines"),
+            "expanded read must not keep the ctrl+o hint"
+        );
+    }
+
     /// A long title for the non-bash renderers (read/grep) must word-wrap
     /// across multiple rows instead of being clipped at the box edge — same
     /// TS `Text` semantics as the bash title.
@@ -6701,6 +6883,66 @@ mod tests {
         assert!(!cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)), "ctrl+x in dialog mode is not app.message.copy");
     }
 
+    /// `ui.setWidget(key, lines, {placement})` renders the lines above/below
+    /// the editor, and re-setting the same key replaces them.
+    #[test]
+    fn set_widget_renders_above_and_below_editor() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatTerminal;
+
+        let mut model = Model::new(60, 20);
+        model.context_usage_known = true;
+        model.cwd = "/work".into();
+        update(
+            &mut model,
+            Msg::SetWidget {
+                key: "above".into(),
+                lines: Some(vec!["above-widget-line".into()]),
+                below_editor: false,
+            },
+        );
+        update(
+            &mut model,
+            Msg::SetWidget {
+                key: "below".into(),
+                lines: Some(vec!["below-widget-line".into()]),
+                below_editor: true,
+            },
+        );
+        let mut terminal = RatTerminal::new(TestBackend::new(60, 20)).expect("backend");
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        let above = screen.find("above-widget-line").expect("above widget rendered");
+        let below = screen.find("below-widget-line").expect("below widget rendered");
+        assert!(above < below, "aboveEditor renders first");
+
+        // Removing a widget (lines: None) drops it.
+        update(
+            &mut model,
+            Msg::SetWidget {
+                key: "above".into(),
+                lines: None,
+                below_editor: false,
+            },
+        );
+        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!screen.contains("above-widget-line"), "widget removed");
+        assert!(screen.contains("below-widget-line"), "other widget kept");
+    }
+
     /// `formatDuration` matches TS `(ms/1000).toFixed(1)`: one decimal,
     /// rounding half away from zero (1250ms → 1.25 → "1.3s", while Rust's
     /// default `{:.1}` rounds half to even and would give "1.2s").
@@ -6710,6 +6952,13 @@ mod tests {
         assert_eq!(format_duration(1250), "1.3s");
         assert_eq!(format_duration(1249), "1.2s");
         assert_eq!(format_duration(999), "1.0s");
+        // `>= 60s` switches to `Nm Ns`, and `Hh Mm Ns` past an hour
+        // (TS `formatDuration`).
+        assert_eq!(format_duration(59_400), "59.4s");
+        assert_eq!(format_duration(60_000), "1m 0s");
+        assert_eq!(format_duration(90_900), "1m 30s");
+        assert_eq!(format_duration(3_600_000), "1h 0m 0s");
+        assert_eq!(format_duration(3_930_000), "1h 5m 30s");
     }
 
     /// `format_tokens` one-decimal branches round half away from zero like JS

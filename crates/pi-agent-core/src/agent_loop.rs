@@ -495,9 +495,13 @@ async fn execute_tool_calls_parallel(
     signal: &Option<tokio::sync::watch::Receiver<bool>>,
     emit: &AgentEventSink,
 ) -> ExecutedToolCallBatch {
+    /// A prepared call that has not started yet (TS `finalizedCalls` thunk).
+    type PreparedFuture =
+        std::pin::Pin<Box<dyn std::future::Future<Output = FinalizedToolCallOutcome> + Send>>;
+
     enum FinalizedEntry {
         Done(Box<FinalizedToolCallOutcome>),
-        Lazy(std::pin::Pin<Box<dyn std::future::Future<Output = FinalizedToolCallOutcome> + Send>>),
+        Lazy(PreparedFuture),
     }
 
     let mut entries: Vec<FinalizedEntry> = Vec::new();
@@ -559,8 +563,19 @@ async fn execute_tool_calls_parallel(
                     }
                     let executed =
                         execute_prepared_tool_call(&tool, &tc, &args, &sig, &emit_c).await;
-                    finalize_executed_tool_call(&ctx, &msg, &tc, &args, executed, &after_fn, &sig)
-                        .await
+                    let finalized =
+                        finalize_executed_tool_call(&ctx, &msg, &tc, &args, executed, &after_fn, &sig)
+                            .await;
+                    // TS emits `tool_execution_end` inside each thunk, so the
+                    // order follows completion, not the call order.
+                    emit_c(AgentEvent::ToolExecutionEnd {
+                        tool_call_id: finalized.tool_call.id.clone(),
+                        tool_name: finalized.tool_call.name.clone(),
+                        result: serde_json::to_value(&finalized.result).unwrap_or_default(),
+                        is_error: finalized.is_error,
+                    })
+                    .await;
+                    finalized
                 });
 
                 entries.push(FinalizedEntry::Lazy(fut));
@@ -572,26 +587,28 @@ async fn execute_tool_calls_parallel(
         }
     }
 
-    let mut ordered_finalized: Vec<FinalizedToolCallOutcome> = Vec::new();
-    for entry in entries {
+    // Run every prepared call concurrently (TS
+    // `await Promise.all(finalizedCalls.map((entry) => entry()))`): the futures
+    // above have not been polled yet, so joining them all starts them together.
+    let mut slots: Vec<Option<FinalizedToolCallOutcome>> = Vec::with_capacity(entries.len());
+    let mut pending: Vec<(usize, PreparedFuture)> = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        slots.push(None);
         match entry {
-            FinalizedEntry::Done(f) => {
-                let finalized = *f;
-                ordered_finalized.push(finalized);
-            }
-            FinalizedEntry::Lazy(fut) => {
-                let finalized = fut.await;
-                emit(AgentEvent::ToolExecutionEnd {
-                    tool_call_id: finalized.tool_call.id.clone(),
-                    tool_name: finalized.tool_call.name.clone(),
-                    result: serde_json::to_value(&finalized.result).unwrap_or_default(),
-                    is_error: finalized.is_error,
-                })
-                .await;
-                ordered_finalized.push(finalized);
-            }
+            FinalizedEntry::Done(f) => slots[index] = Some(*f),
+            FinalizedEntry::Lazy(fut) => pending.push((index, fut)),
         }
     }
+    if !pending.is_empty() {
+        let started: Vec<_> = pending
+            .into_iter()
+            .map(|(index, fut)| async move { (index, fut.await) })
+            .collect();
+        for (index, finalized) in futures::future::join_all(started).await {
+            slots[index] = Some(finalized);
+        }
+    }
+    let ordered_finalized: Vec<FinalizedToolCallOutcome> = slots.into_iter().flatten().collect();
 
     let mut messages: Vec<AgentMessage> = Vec::new();
     for finalized in &ordered_finalized {
@@ -912,6 +929,7 @@ async fn stream_assistant_response(
     }
 
     let final_msg = partial_message.unwrap_or_else(|| AssistantMessage {
+        provider_thinking_level: None,
         content: vec![],
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -1914,6 +1932,7 @@ mod tests {
 
     fn dummy_assistant_message_llm() -> crate::pi_ai_types::AssistantMessage {
         crate::pi_ai_types::AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "test-api".to_string(),
             provider: "test-provider".to_string(),
@@ -2079,6 +2098,7 @@ mod tests {
         let tool_execution = crate::pi_ai_types::ToolExecutionMode::Parallel;
         let config = AgentLoopConfig {
             model: Model {
+                input_limits: None,
                 prompt_cache: None,
                 id: "test".into(),
                 name: "test".into(),
@@ -3016,6 +3036,79 @@ mod tests {
         }
     }
 
+    /// Prepared calls must run **concurrently** (TS
+    /// `Promise.all(finalizedCalls.map((entry) => entry()))`): two 120ms tools
+    /// finish in roughly one tool's time, and both start before either ends.
+    #[tokio::test]
+    async fn test_parallel_executes_concurrently() {
+        let started = Arc::new(std::sync::Mutex::new(Vec::<std::time::Instant>::new()));
+        let make_tool = |name: &'static str| -> Arc<DynTool> {
+            let started = started.clone();
+            Arc::new(AgentTool {
+                constrained_sampling: None,
+                name: name.to_string(),
+                description: String::new(),
+                label: name.to_string(),
+                prompt_snippet: None,
+                prompt_guidelines: None,
+                parameters_schema: serde_json::json!({}),
+                execution_mode: None,
+                prepare_arguments: None,
+                execute: Arc::new(move |_id, _args, _signal, _on_update| {
+                    let started = started.clone();
+                    Box::pin(async move {
+                        started
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(std::time::Instant::now());
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        Ok(AgentToolResult {
+                            content: vec![],
+                            details: serde_json::json!({}),
+                            usage: None,
+                            terminate: None,
+                        })
+                    })
+                }),
+            })
+        };
+        let ctx = dummy_context(vec![make_tool("slow_a"), make_tool("slow_b")]);
+        let calls = vec![
+            dummy_tool_call("1", "slow_a", serde_json::json!({})),
+            dummy_tool_call("2", "slow_b", serde_json::json!({})),
+        ];
+        let msg = dummy_assistant_message();
+
+        let t0 = std::time::Instant::now();
+        let batch = execute_tool_calls_parallel(
+            &ctx,
+            &msg,
+            &calls,
+            &None,
+            &None,
+            &None,
+            &dummy_event_sink(),
+        )
+        .await;
+        let elapsed = t0.elapsed();
+
+        assert_eq!(batch.messages.len(), 2);
+        assert!(
+            elapsed < std::time::Duration::from_millis(230),
+            "two 120ms tools must overlap, took {elapsed:?}"
+        );
+        let starts = started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(starts.len(), 2, "both tools ran");
+        let gap = starts[1].duration_since(starts[0]);
+        assert!(
+            gap < std::time::Duration::from_millis(60),
+            "second tool must start while the first is still running (gap {gap:?})"
+        );
+    }
+
     /// A call prepared before the abort must not start afterwards: it
     /// finalizes as an "Operation aborted" error (TS `executeToolCallsParallel`).
     #[tokio::test]
@@ -3222,6 +3315,7 @@ mod tests {
     fn minimal_loop_config() -> AgentLoopConfig {
         AgentLoopConfig {
             model: Model {
+                input_limits: None,
                 prompt_cache: None,
                 id: "test".into(),
                 name: "test".into(),

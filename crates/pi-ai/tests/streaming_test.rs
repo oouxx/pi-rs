@@ -17,6 +17,7 @@ use futures::stream;
 
 fn partial_msg(text: &str) -> AssistantMessage {
     AssistantMessage {
+        provider_thinking_level: None,
         content: vec![ContentBlock::Text {
             text: text.to_string(),
             text_signature: None,
@@ -38,6 +39,7 @@ fn partial_msg(text: &str) -> AssistantMessage {
 
 fn final_msg(text: &str, stop: StopReason) -> AssistantMessage {
     AssistantMessage {
+        provider_thinking_level: None,
         content: vec![ContentBlock::Text {
             text: text.to_string(),
             text_signature: None,
@@ -412,6 +414,7 @@ async fn test_stream_tool_call() {
 #[tokio::test]
 async fn test_stream_error_returns_error_message() {
     let err_msg = AssistantMessage {
+        provider_thinking_level: None,
         content: vec![],
         api: "mock".into(),
         provider: "mock".into(),

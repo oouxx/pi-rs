@@ -105,6 +105,7 @@ mod tests {
 
     fn make_error_msg(msg: &str) -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "test".into(),
             provider: "test".into(),
@@ -123,6 +124,7 @@ mod tests {
 
     fn make_success_msg(input: u64, output: u64, stop_reason: StopReason) -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "test".into(),
             provider: "test".into(),

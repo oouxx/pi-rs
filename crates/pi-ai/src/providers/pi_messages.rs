@@ -157,6 +157,7 @@ impl PiMessagesConverter {
     fn new(model: &Model) -> Self {
         Self {
             partial: AssistantMessage {
+        provider_thinking_level: None,
                 content: vec![],
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -696,6 +697,7 @@ pub fn stream_pi_messages(
                 StopReason::Error
             };
             let mut error_message = AssistantMessage {
+        provider_thinking_level: None,
                 content: vec![],
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -942,6 +944,7 @@ mod tests {
 
     fn make_model() -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "radius-model".into(),
             name: "Radius Model".into(),
@@ -1313,6 +1316,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "pi-test".to_string(),
             name: "Pi Test".to_string(),

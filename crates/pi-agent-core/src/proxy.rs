@@ -104,6 +104,7 @@ pub fn stream_proxy(
 
     tokio::spawn(async move {
         let mut partial = AssistantMessage {
+            provider_thinking_level: None,
             content: Vec::new(),
             api: model.api.clone(),
             provider: model.provider.clone(),
@@ -498,6 +499,7 @@ mod tests {
 
     fn make_partial() -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: Vec::new(),
             api: "test".into(),
             provider: "test".into(),

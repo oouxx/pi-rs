@@ -367,6 +367,9 @@ impl SessionRegistry {
         };
         let noop = crate::core::extensions::ExtensionUIContext::noop();
         crate::core::extensions::ExtensionUIContext {
+            get_editor_text: std::sync::Arc::new(String::new),
+            set_working_visible: std::sync::Arc::new(|_| {}),
+            set_working_message: std::sync::Arc::new(|_| {}),
             notify: {
                 let send_ui = send_ui.clone();
                 std::sync::Arc::new(move |msg: &str, level: &serde_json::Value| {
@@ -427,10 +430,11 @@ impl SessionRegistry {
                 })
             },
             // dialog 类：ACP 无客户端回复通道 → 默认返回（confirm=false、
-            // select/input=None）。与原版 ACP（pi-acp 无扩展 UI）一致。
+            // select/input/editor=None）。与原版 ACP（pi-acp 无扩展 UI）一致。
             confirm: noop.confirm,
             select: noop.select,
             input: noop.input,
+            editor: noop.editor,
         }
     }
 
@@ -495,6 +499,7 @@ impl SessionRegistry {
                 settings_manager,
                 session_start_event: None,
         ui_context: ui,
+        trust_override: None,
                 custom_tools: custom_tools.clone(),
                 // ACP mode: inject a default bash timeout so a hung command
                 // (e.g. a stalled `git clone`) is killed and the turn
@@ -1897,6 +1902,7 @@ mod tests {
 
     fn fake_model() -> pi_agent_core::pi_ai_types::Model {
         pi_agent_core::pi_ai_types::Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),
@@ -1949,6 +1955,7 @@ mod tests {
         pi_agent_core::pi_ai_types::AssistantMessageEvent::Done {
             reason: pi_agent_core::pi_ai_types::StopReason::Stop,
             message: pi_agent_core::pi_ai_types::AssistantMessage {
+                provider_thinking_level: None,
                 content: vec![],
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -1975,6 +1982,7 @@ mod tests {
         pi_agent_core::pi_ai_types::AssistantMessageEvent::Error {
             reason: pi_agent_core::pi_ai_types::StopReason::Aborted,
             error: pi_agent_core::pi_ai_types::AssistantMessage {
+                provider_thinking_level: None,
                 content: vec![],
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -2032,6 +2040,7 @@ mod tests {
             settings_manager: None,
             session_start_event: None,
             ui_context: None,
+            trust_override: None,
         })
         .await
         .expect("create test agent session");

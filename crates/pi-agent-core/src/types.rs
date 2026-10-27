@@ -8,8 +8,13 @@ use crate::pi_ai_types::{
     ToolExecutionMode, Usage,
 };
 
+/// TS `AgentMessage` wire shape: `role`-tagged union with camelCase fields
+/// (`stopReason`, `toolCallId`, `isError`, `exitCode`, `customType`, …).
+/// The snake_case aliases keep session files written by older pi-rs builds
+/// readable, and the TS shape is what `--mode json` / RPC emit and what
+/// original-pi session files contain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "role")]
+#[serde(tag = "role", rename_all_fields = "camelCase")]
 pub enum AgentMessage {
     /// System instructions and tool declarations at one point in the transcript
     /// (TS `SystemMessage` in `AgentMessage`). Replayed into the provider
@@ -35,6 +40,10 @@ pub enum AgentMessage {
     },
     #[serde(rename = "user")]
     User {
+        /// TS `UserMessage.content` is `string | (Text|Image)[]`; accepting the
+        /// shorthand keeps original-pi session files and hand-written fixtures
+        /// loadable (they simply become a single text block).
+        #[serde(deserialize_with = "deserialize_user_content")]
         content: Vec<ContentBlock>,
         timestamp: i64,
     },
@@ -45,16 +54,21 @@ pub enum AgentMessage {
         provider: String,
         model: String,
         usage: Usage,
+        #[serde(alias = "stop_reason")]
         stop_reason: Option<StopReason>,
+        #[serde(alias = "error_message")]
         error_message: Option<String>,
         timestamp: i64,
     },
     #[serde(rename = "toolResult")]
     ToolResult {
+        #[serde(alias = "tool_call_id")]
         tool_call_id: String,
+        #[serde(alias = "tool_name")]
         tool_name: String,
         content: Vec<ContentBlock>,
         details: serde_json::Value,
+        #[serde(alias = "is_error")]
         is_error: bool,
         /// Usage from the tool execution itself, if available (match TS
         /// `ToolResultMessage.usage`; not used for main LLM context accounting).
@@ -66,15 +80,19 @@ pub enum AgentMessage {
     BashExecution {
         command: String,
         output: String,
+        #[serde(alias = "exit_code")]
         exit_code: Option<i32>,
         cancelled: bool,
         truncated: bool,
+        #[serde(alias = "full_output_path")]
         full_output_path: Option<String>,
         timestamp: i64,
+        #[serde(alias = "exclude_from_context")]
         exclude_from_context: Option<bool>,
     },
     #[serde(rename = "custom")]
     Custom {
+        #[serde(alias = "custom_type")]
         custom_type: String,
         content: CustomContent,
         display: bool,
@@ -84,15 +102,38 @@ pub enum AgentMessage {
     #[serde(rename = "branchSummary")]
     BranchSummary {
         summary: String,
+        #[serde(alias = "from_id")]
         from_id: String,
         timestamp: i64,
     },
     #[serde(rename = "compactionSummary")]
     CompactionSummary {
         summary: String,
+        #[serde(alias = "tokens_before")]
         tokens_before: u64,
         timestamp: i64,
     },
+}
+
+/// Accept TS's `content: string` shorthand for user messages in addition to
+/// the canonical content-block array.
+fn deserialize_user_content<'de, D>(deserializer: D) -> Result<Vec<ContentBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Text(String),
+        Blocks(Vec<ContentBlock>),
+    }
+    Ok(match Repr::deserialize(deserializer)? {
+        Repr::Text(text) => vec![ContentBlock::Text {
+            text,
+            text_signature: None,
+        }],
+        Repr::Blocks(blocks) => blocks,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -601,3 +642,73 @@ pub type AfterToolCallFn = Arc<
         > + Send
         + Sync,
 >;
+
+#[cfg(test)]
+mod wire_format_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// `AgentMessage` must serialize with the TS wire shape (camelCase), which
+    /// is what `--mode json`, RPC mode and original-pi session files use.
+    /// Consumers (pi-acp, subagent) read `stopReason` / `toolCallId` / `isError`.
+    #[test]
+    fn agent_message_serializes_camel_case() {
+        let assistant = AgentMessage::Assistant {
+            content: vec![ContentBlock::Text {
+                text: "hi".into(),
+                text_signature: Some("sig".into()),
+            }],
+            api: "openai-completions".into(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            usage: Usage::default(),
+            stop_reason: Some(StopReason::Stop),
+            error_message: None,
+            timestamp: 1,
+        };
+        let v = serde_json::to_value(&assistant).unwrap();
+        assert_eq!(v["role"], "assistant");
+        assert_eq!(v["stopReason"], "stop");
+        assert!(v.get("stop_reason").is_none(), "no snake_case on the wire");
+        assert_eq!(v["content"][0]["textSignature"], "sig");
+
+        let tool_result = AgentMessage::ToolResult {
+            tool_call_id: "tc1".into(),
+            tool_name: "bash".into(),
+            content: vec![],
+            details: serde_json::json!({}),
+            is_error: true,
+            usage: None,
+            timestamp: 2,
+        };
+        let v = serde_json::to_value(&tool_result).unwrap();
+        assert_eq!(v["role"], "toolResult");
+        assert_eq!(v["toolCallId"], "tc1");
+        assert_eq!(v["toolName"], "bash");
+        assert_eq!(v["isError"], true);
+    }
+
+    /// Session files written by older pi-rs builds used snake_case; they must
+    /// still load (serde aliases).
+    #[test]
+    fn agent_message_accepts_legacy_snake_case() {
+        let legacy = serde_json::json!({
+            "role": "toolResult",
+            "tool_call_id": "tc1",
+            "tool_name": "bash",
+            "content": [],
+            "details": {},
+            "is_error": false,
+            "timestamp": 1
+        });
+        let msg: AgentMessage = serde_json::from_value(legacy).unwrap();
+        match msg {
+            AgentMessage::ToolResult { tool_call_id, tool_name, is_error, .. } => {
+                assert_eq!(tool_call_id, "tc1");
+                assert_eq!(tool_name, "bash");
+                assert!(!is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+}

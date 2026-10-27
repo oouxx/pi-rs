@@ -92,6 +92,10 @@ pub struct ProviderModelConfig {
     pub max_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling_params: Option<serde_json::Map<String, serde_json::Value>>,
+    /// `inputLimits` (TS `ModelInputLimits`): provider input limits +
+    /// cache-safe image resize profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_limits: Option<pi_agent_core::pi_ai_types::ModelInputLimits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<pi_agent_core::pi_ai_types::ModelCompat>,
 }
@@ -820,6 +824,7 @@ impl ModelRegistry {
                         )
                     })?;
                 Ok(Model {
+                    input_limits: definition.input_limits.clone(),
                     prompt_cache: None,
                     id: definition.id.clone(),
                     name: definition.name.clone(),
@@ -978,6 +983,7 @@ impl ModelRegistry {
                                 });
 
                                 let new_model = Model {
+                                    input_limits: model_def.input_limits.clone(),
                                     prompt_cache: None,
                                     id: model_def.id.clone(),
                                     name,
@@ -1228,6 +1234,10 @@ struct ModelDefinition {
     #[serde(default)]
     headers: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
+    /// `inputLimits` (TS `ModelInputLimits`): provider input limits +
+    /// cache-safe image resize profile.
+    input_limits: Option<pi_agent_core::pi_ai_types::ModelInputLimits>,
+    #[serde(default)]
     compat: Option<pi_agent_core::pi_ai_types::ModelCompat>,
 }
 
@@ -1302,6 +1312,7 @@ fn get_pi_ai_models() -> Vec<Model> {
 
 pub fn builtin_models() -> Vec<Model> {
     vec![Model {
+        input_limits: None,
         prompt_cache: None,
         provider: "test-provider-xyz".into(),
         api: "openai-completions".into(),
@@ -1533,6 +1544,7 @@ mod tests {
         std::fs::write(&models_path, json_content).unwrap();
 
         let builtin = vec![Model {
+            input_limits: None,
             prompt_cache: None,
             provider: "openai".into(),
             api: "openai-completions".into(),
@@ -1576,6 +1588,7 @@ mod tests {
         let mut registry = ModelRegistry::new(vec![]);
         // No env key, no models.json entry → no auth by default.
         assert!(!registry.has_configured_auth(&Model {
+            input_limits: None,
             prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
@@ -1604,6 +1617,7 @@ mod tests {
             (provider == "test-provider-xyz").then(|| "sk-stored-123".to_string())
         }));
         assert!(registry.has_configured_auth(&Model {
+            input_limits: None,
             prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
@@ -1743,6 +1757,7 @@ mod tests {
 
     fn extension_test_model(id: &str) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: id.to_string(),
             name: id.to_string(),
@@ -1808,6 +1823,47 @@ mod tests {
         assert!(model.reasoning);
         assert_eq!(model.input, vec!["text".to_string(), "image".to_string()]);
         assert_eq!(model.context_window, 200_000);
+    }
+
+    /// `models.json` / `registerProvider` can carry `inputLimits` (#9631); it
+    /// must reach the `Model` so image handling can honour the profile.
+    #[test]
+    fn test_register_provider_keeps_input_limits() {
+        let registry = ModelRegistry::new_with_models_path(
+            vec![],
+            std::path::Path::new("/nonexistent/models.json"),
+        );
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "api": "openai-completions",
+            "baseUrl": "https://proxy.example.com",
+            "models": [{
+                "id": "img-1",
+                "name": "Img 1",
+                "reasoning": false,
+                "input": ["text", "image"],
+                "cost": { "input": 1.0, "output": 2.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+                "contextWindow": 200_000,
+                "maxTokens": 4096,
+                "inputLimits": {
+                    "maxRequestBytes": 1048576,
+                    "images": {
+                        "maxPerRequest": 12,
+                        "resize": { "maxWidth": 512, "maxHeight": 512, "maxBytes": 1024, "jpegQuality": 70 }
+                    }
+                }
+            }]
+        }))
+        .expect("models must deserialize");
+
+        registry.register_provider("lim", config).unwrap();
+        let model = registry.find("lim", "img-1").expect("model");
+        let limits = model.input_limits.expect("inputLimits survives registration");
+        assert_eq!(limits.max_request_bytes, Some(1_048_576));
+        let images = limits.images.expect("images limits");
+        assert_eq!(images.max_per_request, Some(12));
+        let resize = images.resize.expect("resize profile");
+        assert_eq!(resize.max_width, Some(512));
+        assert_eq!(resize.jpeg_quality, Some(70));
     }
 
     /// Structurally invalid model definitions are rejected instead of

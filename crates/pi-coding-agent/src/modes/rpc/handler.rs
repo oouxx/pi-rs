@@ -184,7 +184,16 @@ pub async fn handle_command(
         // ── Session ──────────────────────────────────────────────────────
 
         RpcCommand::NewSession { id, parent_session } => {
-            session.session_mgr_new(parent_session.as_deref()).await;
+            // TS `newSession()`: extensions may veto via session_before_switch,
+            // and the outgoing session gets `session_shutdown` (both fired by
+            // `session_mgr_new`).
+            if !session.session_mgr_new(parent_session.as_deref()).await {
+                return Some(rpc_success(
+                    id,
+                    "new_session",
+                    Some(serde_json::json!({"cancelled": true})),
+                ));
+            }
             // Rebind extensions (matching TS rebindSession() after
             // new_session: bindExtensions emits session_start with reason
             // "new"). The session reference remains valid — only the session
@@ -481,7 +490,15 @@ pub async fn handle_command(
 
         RpcCommand::SwitchSession { id, session_path } => {
             match session.session_mgr_switch(&session_path, None).await {
-                Ok(()) => {
+                Ok(switched) => {
+                    if !switched {
+                        // Extension vetoed the switch (TS returns `{cancelled:true}`).
+                        return Some(rpc_success(
+                            id,
+                            "switch_session",
+                            Some(serde_json::json!({"cancelled": true})),
+                        ));
+                    }
                     // Rebind extensions (matching TS rebindSession() after
                     // switch_session: bindExtensions emits session_start with
                     // reason "resume").
@@ -493,34 +510,29 @@ pub async fn handle_command(
         }
 
         RpcCommand::Fork { id, entry_id } => {
-            // Extract the selected user-message text (matching TS fork() which
-            // returns `selectedText` from the forked entry).
-            let selected_text = {
-                let mgr = session.get_session_manager();
-                mgr.get_entry(&entry_id).and_then(|e| match e {
-                    crate::core::session_manager::SessionEntry::Message { message, .. } => {
-                        let role = message
-                            .get("role")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if role == "user" {
-                            extract_user_message_text(message.get("content"))
-                        } else {
-                            None
-                        }
+            // TS `fork(entryId)` defaults to `position: "before"`: the branch
+            // ends at the selected user message's **parent**, and its text is
+            // handed back so the client can resubmit it. `session_mgr_fork`
+            // implements that (plus session_before_fork / session_shutdown).
+            match session.session_mgr_fork(&entry_id, None).await {
+                Ok(outcome) => {
+                    if outcome.cancelled {
+                        return Some(rpc_success(
+                            id,
+                            "fork",
+                            Some(serde_json::json!({"text": "", "cancelled": true})),
+                        ));
                     }
-                    _ => None,
-                })
-            };
-            match session.session_mgr_fork(&entry_id).await {
-                Ok(_path) => Some(rpc_success(
-                    id,
-                    "fork",
-                    Some(serde_json::json!({
-                        "text": selected_text.unwrap_or_default(),
-                        "cancelled": false,
-                    })),
-                )),
+                    session.emit_session_start("fork").await;
+                    Some(rpc_success(
+                        id,
+                        "fork",
+                        Some(serde_json::json!({
+                            "text": outcome.selected_text.unwrap_or_default(),
+                            "cancelled": false,
+                        })),
+                    ))
+                }
                 Err(e) => Some(rpc_error(id, "fork", e)),
             }
         }
@@ -531,12 +543,23 @@ pub async fn handle_command(
                 mgr.get_leaf_id().map(|s| s.to_string())
             };
             match leaf_id {
-                Some(eid) => match session.session_mgr_fork(&eid).await {
-                    Ok(_path) => Some(rpc_success(
-                        id,
-                        "clone",
-                        Some(serde_json::json!({"cancelled": false})),
-                    )),
+                // TS `/clone` forks *at* the leaf (`position: "at"`).
+                Some(eid) => match session.session_mgr_fork(&eid, Some("at")).await {
+                    Ok(outcome) => {
+                        if outcome.cancelled {
+                            return Some(rpc_success(
+                                id,
+                                "clone",
+                                Some(serde_json::json!({"cancelled": true})),
+                            ));
+                        }
+                        session.emit_session_start("fork").await;
+                        Some(rpc_success(
+                            id,
+                            "clone",
+                            Some(serde_json::json!({"cancelled": false})),
+                        ))
+                    }
                     Err(e) => Some(rpc_error(id, "clone", e)),
                 },
                 None => Some(rpc_error(id, "clone", "Cannot clone session: no current entry selected".to_string())),
@@ -640,33 +663,6 @@ pub async fn handle_command(
     }
 }
 
-/// Extract the plain text from a user message's content (string or
-/// `[{type:"text",text}]` array), matching TS `extractUserMessageText`.
-fn extract_user_message_text(content: Option<&serde_json::Value>) -> Option<String> {
-    match content {
-        Some(serde_json::Value::String(s)) => Some(s.clone()),
-        Some(serde_json::Value::Array(parts)) => {
-            let text: String = parts
-                .iter()
-                .filter_map(|p| {
-                    let obj = p.as_object()?;
-                    if obj.get("type")?.as_str() == Some("text") {
-                        obj.get("text")?.as_str().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        }
-        _ => None,
-    }
-}
-
 /// Serialize a SessionTreeNode to a JSON value.
 fn serialize_tree_node(node: &crate::core::session_manager::SessionTreeNode) -> serde_json::Value {
     let entry = serde_json::to_value(&node.entry).unwrap_or_default();
@@ -717,34 +713,3 @@ impl RpcHandlerState {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::*;
-
-    /// `extract_user_message_text` must handle both string content and
-    /// `[{type:"text",text}]` arrays, matching TS `extractUserMessageText`.
-    #[test]
-    fn extract_user_message_text_handles_string_and_array() {
-        assert_eq!(
-            extract_user_message_text(Some(&serde_json::json!("hello"))),
-            Some("hello".to_string())
-        );
-        assert_eq!(
-            extract_user_message_text(Some(&serde_json::json!([
-                {"type": "text", "text": "a"},
-                {"type": "image", "data": "x"},
-                {"type": "text", "text": "b"}
-            ]))),
-            Some("ab".to_string())
-        );
-        // No text blocks -> None
-        assert_eq!(
-            extract_user_message_text(Some(&serde_json::json!([{"type": "image", "data": "x"}]))),
-            None
-        );
-        // Non-string/non-array -> None
-        assert_eq!(extract_user_message_text(Some(&serde_json::json!(42))), None);
-        assert_eq!(extract_user_message_text(None), None);
-    }
-}

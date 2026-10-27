@@ -36,6 +36,8 @@ pi-rs --list-models
 
 首次使用前，配置你的模型和 API Key（环境变量，或 `~/.pi-rs/agent/auth.json`，或 `models.json` 里的 provider 配置），然后 `pi-rs --list-models` 确认模型可用。
 
+> `--list-models` 只列**后端已实现**的模型（anthropic-messages / openai-completions / openai-responses / pi-messages）。目录里属于 bedrock、vertex、mistral、azure-responses、codex 等尚未移植后端的模型会被隐藏，避免选中后必然请求失败。
+
 ## 使用方式
 
 ### 交互模式（默认）

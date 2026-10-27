@@ -109,6 +109,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 error_message,
                 timestamp,
             } => Some(Message::Assistant {
+                provider_thinking_level: None,
                 content: content.clone(),
                 api: api.clone(),
                 provider: provider.clone(),

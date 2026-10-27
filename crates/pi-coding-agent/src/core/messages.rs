@@ -144,6 +144,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                 error_message,
                 timestamp,
             } => Some(Message::Assistant {
+                provider_thinking_level: None,
                 content: content.clone(),
                 api: api.clone(),
                 provider: provider.clone(),
@@ -337,6 +338,7 @@ mod tests {
     #[test]
     fn test_normalize_assistant_message_unchanged() {
         let mut msg = Message::Assistant {
+            provider_thinking_level: None,
             content: vec![],
             api: "anthropic-messages".into(),
             provider: "anthropic".into(),

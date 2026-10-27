@@ -57,7 +57,8 @@ fn create_rpc_ui_context(
 
     // Dialog request: emit `extension_ui_request`, register a oneshot, and
     // await the client's `extension_ui_response` (matching TS
-    // `createDialogPromise`).
+    // `createDialogPromise`). `opts.timeout` (ms) short-circuits with the
+    // caller's default value, mirroring TS `setTimeout(() => resolve(default))`.
     let dialog = {
         let output_tx = output_tx.clone();
         let pending = pending.clone();
@@ -65,21 +66,90 @@ fn create_rpc_ui_context(
             let output_tx = output_tx.clone();
             let pending = pending.clone();
             Box::pin(async move {
+                let timeout_ms = request
+                    .get("timeout")
+                    .and_then(serde_json::Value::as_u64)
+                    .filter(|ms| *ms > 0);
                 let id = uuid::Uuid::new_v4().to_string();
                 request["id"] = serde_json::Value::String(id.clone());
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 pending
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .insert(id, tx);
+                    .insert(id.clone(), tx);
                 let line = serialize_json_line(&request);
                 let _ = output_tx.send(line);
-                match rx.await {
-                    Ok(resp) => resp,
-                    Err(_) => serde_json::Value::Null,
-                }
+                let resolved = match timeout_ms {
+                    Some(ms) => {
+                        let dur = std::time::Duration::from_millis(ms);
+                        match tokio::time::timeout(dur, rx).await {
+                            Ok(Ok(resp)) => resp,
+                            // Timed out (or sender dropped): drop the pending
+                            // entry so a late response is ignored.
+                            Ok(Err(_)) | Err(_) => {
+                                pending
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .remove(&id);
+                                serde_json::Value::Null
+                            }
+                        }
+                    }
+                    None => match rx.await {
+                        Ok(resp) => resp,
+                        Err(_) => serde_json::Value::Null,
+                    },
+                };
+                resolved
             })
         }
+    };
+
+    // `ui.confirm(title, message)` → `{method: "confirm"}`; `confirmed`
+    // defaults to false (TS `createDialogPromise(opts, false, …)`).
+    let confirm = {
+        let dialog = dialog.clone();
+        Arc::new(move |title: &str, message: &serde_json::Value| {
+            let dialog = dialog.clone();
+            let title = title.to_string();
+            // 对齐 TS `ctx.ui.confirm(title, message: string)`：字符串值直接
+            // 展开成纯文本，其他值转成字符串。
+            let message = match message {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            let request = serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "confirm",
+                "title": title,
+                "message": message,
+            });
+            // `confirm` is a plain sync `Fn` in the Rust extension API: block
+            // the calling worker on the dialog future (the TUI bridge blocks its
+            // thread the same way). `block_in_place` is only legal on a
+            // multi-threaded runtime; on a current-thread runtime we cannot
+            // block without deadlocking the only worker, so deny (TS default).
+            let handle = tokio::runtime::Handle::try_current();
+            let Ok(handle) = handle else {
+                return false;
+            };
+            if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+                return false;
+            }
+            let fut = dialog(request);
+            tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    let resp = fut.await;
+                    if resp.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true) {
+                        false
+                    } else {
+                        resp.get("confirmed")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                    }
+                })
+            })
+        })
     };
 
     let select = {
@@ -135,6 +205,37 @@ fn create_rpc_ui_context(
                     if let Some(timeout) = opts.get("timeout") {
                         req["timeout"] = timeout.clone();
                     }
+                }
+                let resp = dialog(req).await;
+                if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
+                    None
+                } else {
+                    resp.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                }
+            }) as std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<String>> + Send>,
+            >
+        })
+    };
+
+    // `ui.editor(title, prefill?)` → `{method: "editor"}` (TS `editor()`
+    // dialog: resolves `undefined` when cancelled).
+    let editor = {
+        let dialog = dialog.clone();
+        Arc::new(move |title: &str, prefill: Option<&str>| {
+            let dialog = dialog.clone();
+            let title = title.to_string();
+            let prefill = prefill.map(str::to_string);
+            Box::pin(async move {
+                let mut req = serde_json::json!({
+                    "type": "extension_ui_request",
+                    "method": "editor",
+                    "title": title,
+                });
+                if let Some(p) = prefill {
+                    req["prefill"] = serde_json::Value::String(p);
                 }
                 let resp = dialog(req).await;
                 if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
@@ -219,11 +320,15 @@ fn create_rpc_ui_context(
     };
 
     ExtensionUIContext {
+        get_editor_text: std::sync::Arc::new(String::new),
+        set_working_visible: std::sync::Arc::new(|_| {}),
+        set_working_message: std::sync::Arc::new(|_| {}),
         notify,
         set_status,
-        confirm: Arc::new(|_title, _msg| false),
+        confirm,
         select,
         input,
+        editor,
         set_widget,
         set_title,
         set_editor_text,
@@ -283,6 +388,7 @@ pub async fn run_rpc_mode(
 
     let ui_context = create_rpc_ui_context(output_tx.clone(), pending_extension_requests.clone());
 
+
     let sdk_options = CreateAgentSessionOptions {
         cwd: cwd.clone(),
         agent_dir: Some(agent_dir.to_string_lossy().to_string()),
@@ -316,6 +422,7 @@ pub async fn run_rpc_mode(
         settings_manager: None,
         session_start_event: None,
         ui_context: Some(ui_context),
+        trust_override: None,
         custom_tools: None,
         tools_options: None,
     };
@@ -543,6 +650,9 @@ pub async fn run_rpc_mode(
     // Kill any background processes left running by bash commands (matching
     // TS interactive-mode shutdown which calls `killTrackedDetachedChildren()`).
     crate::utils::shell::kill_tracked_detached_children();
+    // 对齐 TS `runtimeHost.dispose()`：退出前给扩展发
+    // `session_shutdown(reason="quit")`。
+    session.dispatch_shutdown("quit", None).await;
     session.dispose_inner().await;
     0
 }
@@ -556,6 +666,7 @@ mod tests {
 
     fn sample_assistant_message() -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-completions".into(),
             provider: "openai".into(),

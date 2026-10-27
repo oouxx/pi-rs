@@ -15,7 +15,7 @@
 | ---- | ---------- | ------------- | -------- | -------- |
 | HookHandler::before_tool_call | 带 ctx（可 abort） | 已带 ctx（A3/A4 修复） | 已对齐 | — |
 | HookHandler::handle_tool_call | `execute(toolCallId, params, signal, onUpdate, ctx)` | `handle_tool_call(tool_name, params, ctx, &ToolInvocation)`；`ToolInvocation` 携带 `tool_call_id` / `abort`（watch 信号）/ `on_update`，语义一一对应 | 已对齐（2026-10-26） | — |
-| ExtensionContext::hasUI / isProjectTrusted | `ctx.hasUI`（是否有真实 UI）+ `ctx.isProjectTrusted()`（项目信任） | 同名字段 `has_ui` / `is_project_trusted`：`has_ui` 在宿主换绑真实 UI（`set_extension_ui_context`）时置位；`is_project_trusted` 在会话创建时按 `resolve_project_trusted` 算出 | 已对齐（2026-10-26） | 项目资源门控本身仍未实现（见 `pi-coding-agent/DEVIATIONS.md`） |
+| ExtensionContext::hasUI / isProjectTrusted | `ctx.hasUI`（是否有真实 UI）+ `ctx.isProjectTrusted()`（项目信任） | 同名字段 `has_ui` / `is_project_trusted`：`has_ui` 在**宿主传入真实 UI context**（interactive TUI / RPC / ACP，`ui_context.is_some()`）或之后 `set_extension_ui_context` 换绑时置位（2026-10-26 修正：此前只有 interactive 换绑路径置位，RPC/ACP 下恒 false）；`is_project_trusted` 按 TS `resolve_project_trusted` 解析（含 `--trust`/`--no-trust` override，2026-10-26 接线） | 已对齐（2026-10-26） | 项目资源门控本身仍未实现（见 `pi-coding-agent/DEVIATIONS.md`） |
 | HookHandler::on_turn_end | 带 ctx | 已带 ctx；当前内置扩展未使用，API 保留供其他扩展 | 已对齐 | — |
 | RuntimeHandle.abort | 接线到 agent.abort | 已接线（spawn 任务调 agent.abort，不 wait_for_idle） | 同步 Fn 不能 await | 已确认保留 |
 | 事件 ctx（通知 + transform） | TS `ExtensionHandler<E, R> = (event: E, ctx: ExtensionContext)`：**所有**事件 handler 都收到 `ExtensionContext` | **已对齐（2026-10-13）**：`HookHandler` 全部方法均携带 ctx——`handle_tool_call`、`before_tool_call` 为必填 `&ExtensionContext`；通知类 void hook（session_start/shutdown/info_changed、agent_start、turn_start、message_start/update/end、tool_execution_start/update/end、model_select、thinking_level_select、compact、tree、resources_discover、project_trust、context、user_bash）及 `agent_end`/`agent_settled`/`turn_end` 为 `Option<&ExtensionContext>`（无绑定会话的测试/直接 Agent 场景为 `None`）；transform/modifying hook（`on_message_end_mut`、`on_context_mut`、`on_tool_result_mut`、`after_tool_call`、`before_agent_start`、`on_input`、`before_provider_request`、`before_provider_headers`、`after_provider_response`、`before_session_switch/fork/compact/tree`）为必填 `&ExtensionContext`。无需扩展侧兜底 | 通知类事件签名对齐 TS `(event, ctx)`；required/option 的区分对应“是否绑定真实会话” | 已对齐 |
@@ -33,7 +33,6 @@
 | 位置 | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
 | ---- | ---------- | ------------- | -------- | -------- |
 | 自定义渲染的形态（`renderCall` / `renderResult`） | 返回任意组件树（`Container`/`Markdown`/`Text`，可直接读 theme 着色、自由嵌套） | `ToolDefinition.render` 返回**语义块序列** `ToolRenderOutput{title: Vec<ToolRenderSpan>, blocks: Vec<ToolRenderBlock>}`：`Line(spans)` / `Spacer` / `Markdown(text)`，span 用语义 token（`Default`/`Muted`/`Dim`/`Accent`/`Warning`/`Error`/`Success`/`Bold`）而不是颜色值。subagent 已按原版布局拼装：`✓`/`✗` 图标分色、`subagent <desc> [scope]` 三段标题、`─── Task ───`/`─── Output ───`/`─── Step N: agent ✓`、每步 `Task:` + 工具调用 + Markdown 终稿 + 该步 usage、`Total:`、折叠提示 | 让扩展不依赖 ratatui/主题内部类型（pi-tui 不反向依赖扩展 API）；任意组件树/嵌套容器/自定义 widget 需要把整个 TUI 布局能力暴露给扩展，收益不抵复杂度 | 已确认保留（仅剩"无任意组件树/无 theme 直读"） |
-| 进度事件源 | `message_end` + `tool_result_end` 两种事件都触发 `emitUpdate()` | 只有 `message_end` 触发；pi-rs 的工具结果本身也是以 `message_end` 发出的（`agent_loop.rs` 对 tool result 同时发 `MessageStart`/`MessageEnd`），因此**净触发点与上游等价** | 事件枚举不同，效果一致 | 已对齐 |
 | 中止的传播范围 | single/chain 抛错；parallel 由 `Promise.all` 拒绝 → 整次工具调用报 `Subagent was aborted` | 同左：single 返回 `Agent aborted: Subagent was aborted`、chain 返回 `Chain stopped at step N`、parallel 检测到任一 `stopReason=aborted` 即整次调用报错 | — | 已对齐 |
 | 中止的杀进程方式 | `SIGTERM`，5s 未退再 `SIGKILL` | 直接 `start_kill()`（SIGKILL），随后结果标记 `stopReason: "aborted"` + `errorMessage: "Subagent was aborted"`（文案对齐原版抛出的错误）。另保留 `kill_on_drop(true)` 作为父 future 被 drop 时的兜底 | pi 的 print 模式子进程没有需要优雅收尾的持久状态（`--no-session`），先 SIGTERM 只是礼貌；SIGKILL 更快且不留半死进程 | 已确认保留 |
 | persona 注入方式 | agent 正文写 `mkdtemp()` 临时文件（`mode: 0o600`）后传 `--append-system-prompt <path>`，调用结束删文件 | 直接 `--append-prompt <正文>`（pi-rs 该 flag 收字面文本，不接受路径）。语义相同（追加到 system prompt）；差异是正文出现在子进程 argv 里，且受 `ARG_MAX` 限制（agent 定义通常几 KB，安全） | pi-rs 的 `-A/--append-prompt` 不接受路径；写临时文件还要额外清理逻辑，收益只有 argv 保密性 | 已确认保留 |
@@ -42,7 +41,7 @@
 | agent 列表顺序 | 依赖 `readdirSync` 顺序（文件系统相关） | 按 `name` 排序 | 确定性输出，便于测试与展示；只影响列表顺序，不影响按 `name` 查找 | 已确认保留 |
 | spawn 失败诊断 | `proc.on("error", () => resolve(1))`，错误对象丢弃，最终只能看到 `(no output)` | `exitCode = 1`，并把 `Failed to spawn pi: {e} (binary: {path})` 写进 `result.stderr`（走原版的失败输出通道返回） | 原实现完全丢失 spawn 失败原因；改动只影响失败诊断文本 | 已确认保留 |
 | 被信号杀死时的退出码 | `proc.on("close", code => resolve(code ?? 0))`，`code` 为 null 时按 0 | 同左（`status.code().unwrap_or(0)`），失败判定交给 `stopReason` | 对齐原版 | 已对齐 |
-| 子进程 stderr 保留量 | 无上限字符串拼接 | 持续读到 EOF，但只保留前 256KB（超出部分丢弃并附 `[stderr truncated]`） | 子进程刷日志时原版会无限吃内存；上限不影响正常诊断（失败原因在开头） | 已确认保留 |
+| 子进程 stderr 保留量 | 无上限字符串拼接，读到流结束 | 持续读到 **EOF**（正常情况子进程退出即返回），只保留前 256KB（超出丢弃并附 `[stderr truncated]`）；只有在孙进程仍持有写端的病态情况下最多等 2s 后放弃（原版只在 `close` 事件上 resolve，同样不等流结束） | 子进程刷日志时原版会无限吃内存；上限不影响正常诊断（失败原因在开头） | 已确认保留 |
 | 超时 | 无（只有 abort） | 无（此前 pi-rs 自造的 300s 硬超时 + `timeoutSeconds` 参数已删除） | 完全对齐原版 | 已对齐 |
 
 ### 2026-10-26 删除的自造功能
@@ -57,11 +56,14 @@
 - `task`-only + 临时 `model`/`tools` 参数（改为 agent 定义携带 `model`/`tools`，
   模型与 thinking level 从派发会话继承）
 
-## web_search 扩展（`src/web_search.rs`）
+## web_search 扩展（`src/web_search.rs`）— 新增功能，非移植偏差
 
 > 原版对照：npm 包 `@ollama/pi-web-search`（只调用本地 Ollama 实验性 API）。
 > DeepSeek 后端是**用户明确要求的新增功能**，行为基准是
-> <https://api-docs.deepseek.com/zh-cn/api/search> 与 `/api/fetch`。
+> <https://api-docs.deepseek.com/zh-cn/api/search> 与 `/api/fetch`；
+> 它没有 TS 对照物，所以下面这张表描述的是**新功能的行为约定**，
+> 不是"与原版不同"。对齐检查时不要拿它当偏差处理，也不要用它当
+> 借口跳过其他条目的检查。
 
 | 位置 | 原 TS 行为 | Rust 实际行为 | 修改原因 | 确认状态 |
 | ---- | ---------- | ------------- | -------- | -------- |

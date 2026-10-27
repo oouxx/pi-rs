@@ -5,19 +5,26 @@ use std::sync::Arc;
 // Content block types
 // ============================================================================
 
+/// TS `ContentBlock` wire shape: `type`-tagged union with camelCase fields
+/// (`textSignature`, `thinkingSignature`, `thoughtSignature`, `mimeType`).
+/// The snake_case aliases keep session files written by older pi-rs builds
+/// readable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text {
         text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(alias = "text_signature", skip_serializing_if = "Option::is_none")]
         text_signature: Option<String>,
     },
     #[serde(rename = "thinking")]
     Thinking {
         thinking: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            alias = "thinking_signature",
+            skip_serializing_if = "Option::is_none"
+        )]
         thinking_signature: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         redacted: Option<bool>,
@@ -27,7 +34,10 @@ pub enum ContentBlock {
         id: String,
         name: String,
         arguments: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            alias = "thought_signature",
+            skip_serializing_if = "Option::is_none"
+        )]
         thought_signature: Option<String>,
         /// OpenAI Responses namespace for calls to dynamically loaded or
         /// namespaced tools (TS `ToolCall.namespace`).
@@ -37,7 +47,7 @@ pub enum ContentBlock {
     #[serde(rename = "image")]
     Image {
         data: String,
-        #[serde(rename = "mimeType")]
+        #[serde(alias = "mime_type", rename = "mimeType")]
         mime_type: String,
     },
 }
@@ -213,6 +223,10 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(rename = "errorMessage")]
         error_message: Option<String>,
+        /// TS `providerThinkingLevel` — see `AssistantMessage`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "providerThinkingLevel")]
+        provider_thinking_level: Option<String>,
         timestamp: i64,
     },
     #[serde(rename = "toolResult")]
@@ -268,6 +282,14 @@ pub struct AssistantMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "endTurn")]
     pub end_turn: Option<bool>,
+    /// Effort level the provider actually used for this turn (TS
+    /// `providerThinkingLevel`). Only set for providers with per-turn managed
+    /// effort (Anthropic `supportsMidConvoEffort` models); replayed as the
+    /// per-turn `output_config` system message so signed thinking blocks keep
+    /// validating.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "providerThinkingLevel")]
+    pub provider_thinking_level: Option<String>,
     pub timestamp: i64,
 }
 
@@ -602,6 +624,51 @@ pub struct AnthropicMessagesCompat {
 }
 
 // ============================================================================
+// Model input limits (TS `ModelInputLimits`, #9631)
+// ============================================================================
+
+/// TS `ModelImageResizeOptions`: cache-safe resize profile.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelImageResizeOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u32>,
+    /// Maximum base64-encoded payload size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_quality: Option<u8>,
+}
+
+/// TS `ModelImageInputLimits`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelImageInputLimits {
+    /// Resize profile applied before a new image enters conversation history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resize: Option<ModelImageResizeOptions>,
+    /// Maximum images accepted in one provider message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_per_message: Option<u32>,
+    /// Maximum images accepted across one provider request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_per_request: Option<u32>,
+}
+
+/// TS `ModelInputLimits`: provider input limits + cache-safe preprocessing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInputLimits {
+    /// Maximum serialized provider request size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_request_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<ModelImageInputLimits>,
+}
+
+// ============================================================================
 // Routing types
 // ============================================================================
 
@@ -705,6 +772,11 @@ pub struct Model {
     #[serde(rename = "thinkingLevelMap")]
     pub thinking_level_map: Option<ThinkingLevelMap>,
     pub input: Vec<String>,
+    /// Provider input limits + cache-safe image resize profile (TS
+    /// `Model.inputLimits`, #9631).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "inputLimits")]
+    pub input_limits: Option<ModelInputLimits>,
     pub cost: ModelCost,
     /// Prompt cache lifetimes per retention tier (TS `Model.promptCache`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -740,6 +812,8 @@ struct ModelRepr {
     #[serde(default)]
     thinking_level_map: Option<ThinkingLevelMap>,
     input: Vec<String>,
+    #[serde(default)]
+    input_limits: Option<ModelInputLimits>,
     cost: ModelCost,
     #[serde(default)]
     prompt_cache: Option<ModelPromptCache>,
@@ -792,6 +866,7 @@ impl<'de> Deserialize<'de> for Model {
             reasoning: repr.reasoning,
             thinking_level_map: repr.thinking_level_map,
             input: repr.input,
+            input_limits: repr.input_limits,
             cost: repr.cost,
             prompt_cache: repr.prompt_cache,
             context_window: repr.context_window,
@@ -1410,6 +1485,7 @@ mod tests {
     #[test]
     fn test_message_serialization_assistant() {
         let msg = Message::Assistant {
+            provider_thinking_level: None,
             content: vec![ContentBlock::text("hello")],
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -1447,6 +1523,7 @@ mod tests {
         let event = AssistantMessageEvent::Done {
             reason: StopReason::Stop,
             message: AssistantMessage {
+                provider_thinking_level: None,
                 content: vec![],
                 api: "openai-completions".into(),
                 provider: "openai".into(),
@@ -1481,6 +1558,7 @@ mod tests {
     #[test]
     fn test_model_serialization() {
         let model = Model {
+            input_limits: None,
             prompt_cache: None,
             id: "claude-sonnet-4-6".into(),
             name: "Claude Sonnet 4.6".into(),
@@ -1552,6 +1630,7 @@ mod tests {
     #[test]
     fn test_assistant_message_event_start_roundtrip() {
         let msg = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![ContentBlock::text("hi")],
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -1581,6 +1660,7 @@ mod tests {
     #[test]
     fn test_assistant_message_event_error_roundtrip() {
         let msg = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "anthropic-messages".into(),
             provider: "anthropic".into(),
@@ -1648,6 +1728,7 @@ mod tests {
     #[test]
     fn test_model_with_compat_openai() {
         let model = Model {
+            input_limits: None,
             prompt_cache: None,
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),

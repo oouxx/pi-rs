@@ -258,6 +258,7 @@ mod tests {
 
     fn error_msg(text: &str) -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -276,6 +277,7 @@ mod tests {
 
     fn ok_msg() -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-completions".into(),
             provider: "openai".into(),

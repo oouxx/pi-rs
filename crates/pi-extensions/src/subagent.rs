@@ -991,13 +991,19 @@ impl SubagentExtension {
         let stderr_buf: Arc<std::sync::Mutex<String>> =
             Arc::new(std::sync::Mutex::new(String::new()));
         let stderr_sink = Arc::clone(&stderr_buf);
-        let mut stderr_task = tokio::spawn(async move {
+        // 读到 EOF 时通知主任务（`Ok(0)`），这样正常结束就立刻返回 stderr，
+        // 只有孙进程还攥着写端的病态情况才靠超时兜底。
+        let (stderr_eof_tx, stderr_eof_rx) = tokio::sync::oneshot::channel::<()>();
+        let stderr_task = tokio::spawn(async move {
             let mut collected: Vec<u8> = Vec::new();
             if let Some(mut stderr) = stderr {
                 let mut chunk = [0u8; 8192];
                 loop {
                     match stderr.read(&mut chunk).await {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) | Err(_) => {
+                            let _ = stderr_eof_tx.send(());
+                            break;
+                        }
                         Ok(n) => {
                             let room = MAX_STDERR_BYTES.saturating_sub(collected.len());
                             collected.extend_from_slice(&chunk[..room.min(n)]);
@@ -1065,8 +1071,10 @@ impl SubagentExtension {
         // TS: `proc.on("close", code => resolve(code ?? 0))` —— 被信号杀死
         // （code 为 null）时按 0 处理，失败判定交给 stopReason。
         result.exit_code = status.ok().and_then(|status| status.code()).unwrap_or(0);
-        // 子进程已退出，给 stderr 读取一点点收尾时间，然后放弃（不等 EOF）。
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(200), &mut stderr_task).await;
+        // 子进程已退出：等 stderr 读到 EOF（正常情况立刻返回），最多 2s，
+        // 之后放弃——孙进程可能仍持有写端（原版只在 `close` 事件上 resolve，
+        // 也不等流结束）。
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stderr_eof_rx).await;
         stderr_task.abort();
         result.stderr = stderr_buf
             .lock()
@@ -1111,10 +1119,21 @@ fn absorb_message(result: &mut SingleResult, message: &Value) {
             }
         }
     }
-    if let Some(stop_reason) = message.get("stop_reason").and_then(Value::as_str) {
+    // TS `AgentMessage` wire shape is camelCase (`stopReason`, `errorMessage`);
+    // accept the legacy snake_case spellings too so children that predate the
+    // rename (or a mixed-version setup) still report their stop reason.
+    if let Some(stop_reason) = message
+        .get("stopReason")
+        .or_else(|| message.get("stop_reason"))
+        .and_then(Value::as_str)
+    {
         result.stop_reason = Some(stop_reason.to_string());
     }
-    if let Some(error_message) = message.get("error_message").and_then(Value::as_str) {
+    if let Some(error_message) = message
+        .get("errorMessage")
+        .or_else(|| message.get("error_message"))
+        .and_then(Value::as_str)
+    {
         result.error_message = Some(error_message.to_string());
     }
 }

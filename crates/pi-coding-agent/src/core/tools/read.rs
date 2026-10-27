@@ -80,18 +80,36 @@ impl ReadOperations for LocalReadOperations {
 // ReadToolOptions
 // ============================================================================
 
+/// Async provider for the model currently bound to the session, so the image
+/// branch can consult `model.input` (non-vision note) and
+/// `model.inputLimits.images.resize` at execution time (TS `ctx?.model`).
+pub type ReadModelProvider = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub struct ReadToolOptions {
     pub operations: Arc<dyn ReadOperations>,
     /// Auto-resize images to inline provider limits (TS `autoResizeImages`,
     /// default true).
     pub auto_resize_images: bool,
+    /// Live model lookup (TS `ctx?.model`). `None` = no model metadata, which
+    /// means the built-in resize defaults and no non-vision note.
+    pub model_provider: Option<ReadModelProvider>,
+    /// Fallback resize profile when the execution context has no model
+    /// metadata (TS `options.resizeOptions`).
+    pub resize_options: Option<pi_ai::types::ModelImageResizeOptions>,
 }
 
 impl fmt::Debug for ReadToolOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReadToolOptions")
             .field("auto_resize_images", &self.auto_resize_images)
+            .field("has_model_provider", &self.model_provider.is_some())
+            .field("resize_options", &self.resize_options)
             .finish()
     }
 }
@@ -101,6 +119,8 @@ impl Default for ReadToolOptions {
         Self {
             operations: Arc::new(LocalReadOperations),
             auto_resize_images: true,
+            model_provider: None,
+            resize_options: None,
         }
     }
 }
@@ -150,6 +170,8 @@ pub fn create_read_tool(
     let cwd = cwd.to_string();
     let operations = opts.operations.clone();
     let auto_resize_images = opts.auto_resize_images;
+    let model_provider = opts.model_provider.clone();
+    let fallback_resize_options = opts.resize_options.clone();
 
     AgentTool {
         constrained_sampling: super::preferred_json_schema_sampling(),
@@ -178,6 +200,8 @@ pub fn create_read_tool(
                 let cwd = cwd.clone();
                 let operations = operations.clone();
                 let auto_resize_images = auto_resize_images;
+                let model_provider = model_provider.clone();
+                let fallback_resize_options = fallback_resize_options.clone();
                 Box::pin(async move {
                     let file_path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                     let offset = params
@@ -212,16 +236,42 @@ pub fn create_read_tool(
                     // decode that would report "Binary file".
                     if let Some(mime) = crate::utils::mime::detect_supported_image_mime_type(&bytes) {
                         let mime = mime.to_string();
+                        // TS `ctx?.model`: the live model decides the resize
+                        // profile and whether images are supported at all.
+                        let model = match &model_provider {
+                            Some(provider) => provider().await,
+                            None => None,
+                        };
+                        let non_vision_note = model.as_ref().and_then(|m| {
+                            if m.input.iter().any(|i| i == "image") {
+                                None
+                            } else {
+                                Some(
+                                    "[Current model does not support images. The image will be omitted from this request.]",
+                                )
+                            }
+                        });
+                        let resize = model
+                            .as_ref()
+                            .and_then(|m| m.input_limits.as_ref())
+                            .and_then(|limits| limits.images.as_ref())
+                            .and_then(|images| images.resize.clone())
+                            .or(fallback_resize_options);
                         let content = match crate::utils::image_process::process_image(
                             &bytes,
                             &mime,
                             auto_resize_images,
+                            resize.as_ref(),
                         ) {
                             Ok(processed) => {
                                 let mut note = format!("Read image file [{}]", processed.mime_type);
                                 for hint in &processed.hints {
                                     note.push('\n');
                                     note.push_str(hint);
+                                }
+                                if let Some(note_extra) = non_vision_note {
+                                    note.push('\n');
+                                    note.push_str(note_extra);
                                 }
                                 vec![
                                     ContentBlock::text(note),
@@ -232,7 +282,12 @@ pub fn create_read_tool(
                                 ]
                             }
                             Err(message) => {
-                                vec![ContentBlock::text(format!("Read image file [{mime}]\n{message}"))]
+                                let mut note = format!("Read image file [{mime}]\n{message}");
+                                if let Some(note_extra) = non_vision_note {
+                                    note.push('\n');
+                                    note.push_str(note_extra);
+                                }
+                                vec![ContentBlock::text(note)]
                             }
                         };
                         return Ok(AgentToolResult {
@@ -244,26 +299,11 @@ pub fn create_read_tool(
                         });
                     }
 
-                    let text_content = match String::from_utf8(bytes) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            let file_size = absolute_path
-                                .metadata()
-                                .map(|m| m.len() as usize)
-                                .unwrap_or(0);
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text(format!(
-                                    "Binary file: {} ({})",
-                                    file_path,
-                                    format_size(file_size)
-                                ))],
-                                details: serde_json::to_value(ReadToolDetails::default())
-                                    .unwrap_or(serde_json::Value::Null),
-                                usage: None,
-                                terminate: None,
-                            });
-                        }
-                    };
+                    // TS reads text via `buffer.toString("utf-8")`, i.e. invalid
+                    // sequences become U+FFFD instead of a "Binary file" note —
+                    // binary files are decoded lossily and then truncated like
+                    // any other text.
+                    let text_content = String::from_utf8_lossy(&bytes).into_owned();
 
                     let all_lines: Vec<&str> = text_content.split('\n').collect();
                     let total_file_lines = all_lines.len();
@@ -434,5 +474,32 @@ mod tests {
             }
             other => panic!("expected image block, got {other:?}"),
         }
+    }
+
+    /// Non-UTF-8 files are decoded lossily like TS `buffer.toString("utf-8")`
+    /// (U+FFFD for invalid bytes) and then go through normal text truncation,
+    /// instead of the old "Binary file" note.
+    #[tokio::test]
+    async fn read_tool_decodes_binary_lossily() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("blob.bin");
+        std::fs::write(&file, [0xff, 0xfe, b'h', b'i', 0x00, b'\n']).unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let tool = create_read_tool(&cwd, None);
+        let result = (tool.execute)(
+            "tool-1".to_string(),
+            serde_json::json!({ "path": "blob.bin" }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = match &result.content[0] {
+            ContentBlock::Text { text, .. } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(!text.contains("Binary file"), "got: {text}");
+        assert!(text.contains('\u{FFFD}'), "invalid bytes become U+FFFD: {text:?}");
+        assert!(text.contains("hi"), "valid bytes are preserved: {text:?}");
     }
 }

@@ -160,6 +160,7 @@ mod tests {
 
     fn make_model(cost: ModelCost) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),

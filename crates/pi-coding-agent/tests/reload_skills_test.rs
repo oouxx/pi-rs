@@ -22,6 +22,7 @@ use pi_coding_agent::core::session_manager::SessionManager;
 
 fn test_model() -> pi_agent_core::pi_ai_types::Model {
     pi_agent_core::pi_ai_types::Model {
+        input_limits: None,
         prompt_cache: None,
         id: "test-model".to_string(),
         name: "Test Model".to_string(),
@@ -96,6 +97,8 @@ async fn create_session(cwd: &str, agent_dir: &str) -> AgentSession {
         excluded_tool_names: None,
         extension_registry: Some(Arc::new(ExtensionRegistry::new())),
         ui_context: None,
+        session_start_reason: "startup".to_string(),
+        trust_override: None,
         custom_tools: None,
         tools_options: None,
         resource_loader: Some(Box::new(loader)),

@@ -17,6 +17,7 @@ use crate::utils::event_stream::AssistantMessageEventStream;
 fn missing_api_provider_stream(model: &Model) -> AssistantMessageEventStream {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let error = AssistantMessage {
+        provider_thinking_level: None,
         content: vec![],
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -105,6 +106,7 @@ mod tests {
 
     fn model(api: &str) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".into(),
             name: "Test Model".into(),

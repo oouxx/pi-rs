@@ -68,6 +68,7 @@ const REAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn mock_model() -> pi_agent_core::pi_ai_types::Model {
     pi_agent_core::pi_ai_types::Model {
+        input_limits: None,
         prompt_cache: None,
         id: "mock-model".into(),
         name: "Mock Model".into(),
@@ -94,6 +95,7 @@ fn mock_model() -> pi_agent_core::pi_ai_types::Model {
 
 fn partial_msg(text: &str) -> AssistantMessage {
     AssistantMessage {
+        provider_thinking_level: None,
         content: vec![ContentBlock::Text {
             text: text.to_string(),
             text_signature: None,
@@ -467,6 +469,7 @@ fn mock_two_bash_tools_stream_fn() -> StreamFn {
             let (msg, reason) = match tool_results {
                 0 => (
                     AssistantMessage {
+                        provider_thinking_level: None,
                         content: vec![ContentBlock::ToolCall {
                             id: "bash-1".into(),
                             name: "bash".into(),
@@ -491,6 +494,7 @@ fn mock_two_bash_tools_stream_fn() -> StreamFn {
                 ),
                 1 => (
                     AssistantMessage {
+                        provider_thinking_level: None,
                         content: vec![ContentBlock::ToolCall {
                             id: "bash-2".into(),
                             name: "bash".into(),
@@ -619,6 +623,7 @@ impl HookHandler for TestCmdHandler {
 /// `OLLAMA_API_KEY` by the parent test — pi-ai has no `ollama` provider key).
 fn ollama_model() -> pi_agent_core::pi_ai_types::Model {
     pi_agent_core::pi_ai_types::Model {
+        input_limits: None,
         prompt_cache: None,
         id: OLLAMA_MODEL.into(),
         name: "Ollama Cloud (deepseek-v4-flash)".into(),

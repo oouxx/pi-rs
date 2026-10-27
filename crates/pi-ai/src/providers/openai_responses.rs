@@ -786,14 +786,28 @@ pub(crate) fn resolve_json_schema_strict_sampling(
         return Ok(None);
     };
     if supports_strict_mode {
-        return Ok(Some(true));
-    }
-    match strict {
-        crate::types::JsonSchemaStrict::Require => Err(format!(
-            "Tool \"{}\" requires JSON-schema constrained sampling, but strict tools are unsupported.",
-            tool.name
-        )),
-        crate::types::JsonSchemaStrict::Prefer => Ok(None),
+        // TS `resolveJsonSchemaStrictSampling`: strict-capable providers get
+        // `true` only if the parameters can actually be converted to the strict
+        // subset. An inconvertible schema downgrades to plain sampling for
+        // `strict: "prefer"` and only errors for `strict: "require"`.
+        match crate::utils::strict_schema::make_strict_json_schema(&tool.parameters) {
+            Ok(_) => Ok(Some(true)),
+            Err(e) => match strict {
+                crate::types::JsonSchemaStrict::Require => Err(format!(
+                    "Tool \"{}\" requires JSON-schema constrained sampling, but {e}.",
+                    tool.name
+                )),
+                crate::types::JsonSchemaStrict::Prefer => Ok(None),
+            },
+        }
+    } else {
+        match strict {
+            crate::types::JsonSchemaStrict::Require => Err(format!(
+                "Tool \"{}\" requires JSON-schema constrained sampling, but strict tools are unsupported.",
+                tool.name
+            )),
+            crate::types::JsonSchemaStrict::Prefer => Ok(None),
+        }
     }
 }
 
@@ -2026,6 +2040,7 @@ pub fn stream_openai_responses(
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
                 error: AssistantMessage {
+        provider_thinking_level: None,
                     content: vec![],
                     api: model.api.clone(),
                     provider: model.provider.clone(),
@@ -2175,6 +2190,7 @@ async fn stream_openai_responses_inner(
     });
 
     let mut output = AssistantMessage {
+        provider_thinking_level: None,
         content: vec![],
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -2246,6 +2262,7 @@ mod tests {
 
     fn make_model() -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "gpt-5".into(),
             name: "GPT-5".into(),
@@ -2465,6 +2482,7 @@ mod tests {
             ..make_model()
         };
         let mut output = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-responses".into(),
             provider: "openai-codex".into(),
@@ -2543,6 +2561,7 @@ mod tests {
             system_prompt: None,
             messages: vec![
                 Message::Assistant {
+                    provider_thinking_level: None,
                     content: vec![ContentBlock::ToolCall {
                         id: "call_1|ctc_1".into(),
                         name: "sample_tool".into(),
@@ -2626,6 +2645,7 @@ mod tests {
     async fn test_process_stream_text() {
         let model = make_model();
         let mut output = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-responses".into(),
             provider: "openai".into(),
@@ -2692,6 +2712,7 @@ mod tests {
         // block's arguments under the grammar property.
         let model = make_model();
         let mut output = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-responses".into(),
             provider: "openai".into(),
@@ -2833,6 +2854,7 @@ mod tests {
     fn test_finalize_response_raw_stop_reason() {
         let model = make_model();
         let mut output = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-responses".into(),
             provider: "openai".into(),
@@ -2913,6 +2935,7 @@ mod tests {
     async fn test_process_stream_tool_call() {
         let model = make_model();
         let mut output = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-responses".into(),
             provider: "openai".into(),
@@ -3110,6 +3133,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "gpt-test".to_string(),
             name: "GPT Test".to_string(),

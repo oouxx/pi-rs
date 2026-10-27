@@ -97,6 +97,8 @@ pub struct CreateAgentSessionFromServicesOptions {
     /// Extension UI context. When set, used instead of the default no-op
     /// context (headless modes wire dialogs/notifications to their client).
     pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
+    /// Explicit project-trust decision, propagated to session creation.
+    pub trust_override: Option<bool>,
 }
 
 // ============================================================================
@@ -252,6 +254,7 @@ pub async fn create_agent_session_from_services(
         settings_manager: None,
         session_start_event: options.session_start_event,
         ui_context: options.ui_context,
+        trust_override: options.trust_override,
         custom_tools: options.custom_tools,
         tools_options: options.tools_options,
         extension_flags: None,

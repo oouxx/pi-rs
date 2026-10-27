@@ -282,6 +282,191 @@ async fn test_read_bmp_as_png() {
     // The Rust read tool may not have image detection yet, so just verify it handles the file
     assert!(!output.is_empty(), "Expected non-empty output for BMP file");
 }
+/// A real 1x1 PNG (detected by magic bytes, so the read tool takes the image
+/// branch).
+fn create_tiny_png_bytes() -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("encode png");
+    out.into_inner()
+}
+
+/// TS `getNonVisionImageNote`: a model without image support still gets the
+/// image bytes converted to a text note, plus the "does not support images"
+/// hint (the model never sees the attachment).
+#[tokio::test]
+async fn test_read_image_notes_non_vision_model() {
+    let dir = setup_test_dir();
+    let test_file = dir.path().join("image.png");
+    tokio::fs::write(&test_file, &create_tiny_png_bytes()).await.unwrap();
+
+    let text_only_model = || {
+        Box::pin(async {
+            Some(pi_ai::types::Model {
+                prompt_cache: None,
+                id: "text-only".into(),
+                name: "text-only".into(),
+                api: "anthropic-messages".into(),
+                provider: "anthropic".into(),
+                base_url: "https://api.anthropic.com".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec!["text".into()],
+                input_limits: None,
+                cost: pi_ai::types::ModelCost::default(),
+                context_window: 200_000,
+                max_tokens: 4096,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            })
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>>
+    };
+    let vision_model = || {
+        Box::pin(async {
+            Some(pi_ai::types::Model {
+                prompt_cache: None,
+                id: "vision".into(),
+                name: "vision".into(),
+                api: "anthropic-messages".into(),
+                provider: "anthropic".into(),
+                base_url: "https://api.anthropic.com".into(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: vec!["text".into(), "image".into()],
+                input_limits: None,
+                cost: pi_ai::types::ModelCost::default(),
+                context_window: 200_000,
+                max_tokens: 4096,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            })
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>>
+    };
+
+    let make_tool = |provider: pi_coding_agent::core::tools::read::ReadModelProvider| {
+        pi_coding_agent::core::tools::read::create_read_tool(
+            dir.path().to_str().unwrap(),
+            Some(pi_coding_agent::core::tools::read::ReadToolOptions {
+                model_provider: Some(provider),
+                ..Default::default()
+            }),
+        )
+    };
+
+    let params = serde_json::json!({ "path": test_file.to_str().unwrap() });
+
+    let non_vision = make_tool(std::sync::Arc::new(text_only_model));
+    let result = execute_tool(&non_vision, "test-call-nonvision", params.clone())
+        .await
+        .unwrap();
+    let note = get_text_output(&result);
+    assert!(
+        note.contains("Current model does not support images"),
+        "expected non-vision note, got: {note}"
+    );
+
+    let vision = make_tool(std::sync::Arc::new(vision_model));
+    let result = execute_tool(&vision, "test-call-vision", params).await.unwrap();
+    let note = get_text_output(&result);
+    assert!(
+        !note.contains("Current model does not support images"),
+        "vision model must not get the note: {note}"
+    );
+    assert!(
+        result
+            .content
+            .iter()
+            .any(|b| matches!(b, pi_ai::types::ContentBlock::Image { .. })),
+        "vision model still receives the image attachment: {:?}",
+        result.content
+    );
+}
+
+/// A model `inputLimits.images.resize` profile narrows the resize applied on
+/// `read` (#9631).
+#[tokio::test]
+async fn test_read_image_uses_model_resize_limits() {
+    let dir = setup_test_dir();
+    let test_file = dir.path().join("big.png");
+    // 300x150 solid PNG — under the 2000px default, over the 100px profile.
+    let img = image::RgbImage::from_pixel(300, 150, image::Rgb([1, 2, 3]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    tokio::fs::write(&test_file, out.into_inner()).await.unwrap();
+
+    let provider: pi_coding_agent::core::tools::read::ReadModelProvider =
+        std::sync::Arc::new(|| {
+            Box::pin(async {
+                Some(pi_ai::types::Model {
+                    prompt_cache: None,
+                    id: "narrow".into(),
+                    name: "narrow".into(),
+                    api: "anthropic-messages".into(),
+                    provider: "anthropic".into(),
+                    base_url: "https://api.anthropic.com".into(),
+                    reasoning: false,
+                    thinking_level_map: None,
+                    input: vec!["text".into(), "image".into()],
+                    input_limits: Some(pi_ai::types::ModelInputLimits {
+                        max_request_bytes: None,
+                        images: Some(pi_ai::types::ModelImageInputLimits {
+                            resize: Some(pi_ai::types::ModelImageResizeOptions {
+                                max_width: Some(100),
+                                max_height: Some(100),
+                                max_bytes: None,
+                                jpeg_quality: None,
+                            }),
+                            max_per_message: None,
+                            max_per_request: None,
+                        }),
+                    }),
+                    cost: pi_ai::types::ModelCost::default(),
+                    context_window: 200_000,
+                    max_tokens: 4096,
+                    sampling_params: None,
+                    headers: None,
+                    compat: None,
+                })
+            })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>,
+                >
+        });
+    let tool = pi_coding_agent::core::tools::read::create_read_tool(
+        dir.path().to_str().unwrap(),
+        Some(pi_coding_agent::core::tools::read::ReadToolOptions {
+            model_provider: Some(provider),
+            ..Default::default()
+        }),
+    );
+    let params = serde_json::json!({ "path": test_file.to_str().unwrap() });
+    let result = execute_tool(&tool, "test-call-limits", params).await.unwrap();
+    let image = result
+        .content
+        .iter()
+        .find_map(|b| match b {
+            pi_ai::types::ContentBlock::Image { data, .. } => Some(data.clone()),
+            _ => None,
+        })
+        .expect("image block");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&image)
+        .expect("b64");
+    let decoded = image::load_from_memory(&bytes).expect("decode");
+    assert_eq!(
+        (decoded.width(), decoded.height()),
+        (100, 50),
+        "model profile narrowed the width"
+    );
+}
+
 // Write Tool Tests
 // ============================================================================
 

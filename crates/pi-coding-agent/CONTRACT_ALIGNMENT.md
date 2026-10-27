@@ -35,8 +35,8 @@ This file documents the alignment between the TypeScript original
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| 创建新会话 | `session.newSession()` + `rebindSession()` | `session.new_session()` | 是（有意偏差，见 DEVIATIONS.md #2） |
-| 响应 | `success(id, "new_session", { cancelled: false })` | `rpc_success(id, "new_session", { cancelled: false })` | 是 |
+| 创建新会话 | `runtimeHost.newSession()`：先 `session_before_switch("new")`（可取消）→ `session_shutdown("new", target)` → 换 runtime → `rebindSession()` + `session_start("new")` | `session_mgr_new(parent)` 内派发 `session_before_switch`/`session_shutdown`，成功后 `emit_session_start("new")`；**不重建** session 对象（同 switch 的边界） | 部分一致（事件对齐） |
+| 响应 | `{ cancelled: false }` / 扩展取消时 `{ cancelled: true }` | 同左（2026-10-26：此前取消不可表达） | 是 |
 
 ### GetState
 
@@ -132,22 +132,22 @@ This file documents the alignment between the TypeScript original
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| Fork 会话 | `session.forkSession(entryId)` | `session.fork_session(entry_id)` | 是 |
-| 响应 | `{ text: string, cancelled: boolean }` | `{ text: "", cancelled: false }` | 是（有意偏差，见 DEVIATIONS.md #3） |
+| Fork 会话 | `runtimeHost.fork(entryId)`，默认 `position: "before"`：分支结束于被选中用户消息的**父节点**（该消息不进新会话），返回 `{ text, cancelled }`；`session_before_fork` 可取消 | `session.session_mgr_fork(entry_id, None)`（before 语义；parent 为空时建空会话并记 `parentSession`）→ 取 `ForkOutcome.selected_text`，随后 `emit_session_start("fork")` | 是（2026-10-26 修正，此前分支含被选中消息导致重发重复） |
+| 响应 | `{ text: selectedText, cancelled: boolean }` | `{ text: outcome.selected_text, cancelled: false }`；扩展取消时 `{ text: "", cancelled: true }` | 是 |
 
 ### SwitchSession
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| 切换会话 | `session.switchSession(path)` + `rebindSession()` | `session.switch_session(path)` | 是（有意偏差，见 DEVIATIONS.md #4） |
-| 响应 | `success(id, "switch_session")` | `rpc_success(id, "switch_session", None)` | 是 |
+| 切换会话 | `runtimeHost.switchSession(path)`：先 `session_before_switch`（可取消）→ `session_shutdown("resume", target)` → 换 runtime → `rebindSession()` + `session_start("resume")` | `session_mgr_switch(path)` 内派发 `session_before_switch`/`session_shutdown`，成功后 `emit_session_start("resume")`；**不做** runtime 重建（不重解析模型/thinking/cwd，见 DEVIATIONS #10/#22 的运行时边界） | 部分一致（事件对齐，session 对象不重建） |
+| 响应 | `{ cancelled: boolean }` | `{ cancelled: false }`；扩展取消时 `{ cancelled: true }` | 是（2026-10-26 修正：此前取消不可表达） |
 
 ### Clone
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 |---------|-----------|--------------|--------|
-| 克隆会话 | `session.cloneSession()` | `session.clone_session()` | 是 |
-| 响应 | `{ cancelled: boolean }` | `{ cancelled: false }` | 是 |
+| 克隆会话 | `fork(leafId, { position: "at" })`（保留叶条目） | `session_mgr_fork(leaf, Some("at"))` | 是（2026-10-26 修正） |
+| 响应 | `{ cancelled: boolean }` | `{ cancelled: false }` / 扩展取消时 `{ cancelled: true }` | 是 |
 
 ### Abort
 
@@ -407,6 +407,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 项目资源识别 | `.pi/{settings.json,extensions,skills,prompts,themes,SYSTEM.md,APPEND_SYSTEM.md}` | `.pi-rs/` 下同名资源（含 `/reload` 重发现） | 是 | 目录名不同，见上 |
 | 项目信任门控 | interactive 弹 "Trust project folder?"；未受信任时项目资源全部忽略（`ResourceLoader`/`SettingsManager`/`SYSTEM.md`/扩展） | 不实现门控，全部视为可信任，项目资源无条件加载 | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
 | print/json 未受信任项目 | `resolveProjectTrusted`（无 UI + ask）返回 false，继续运行但不加载项目资源 | 不再阻断运行；项目资源照常加载（原先的 "Project not trusted" 退出已移除） | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
+| `ctx.isProjectTrusted()` | `resolveProjectTrusted`：显式 override → 项目是否含需信任资源 → 已存决策（`trust.json`）→ `defaultTrust`；需要询问且无 UI 时 false | 同左（`resolve_project_trusted`）；`trust_override` 由 `--trust`/`--no-trust` 传入（2026-10-26 接线，此前解析后未使用）；`hasUI` 取 `ui_context.is_some()`（interactive/RPC/ACP 均为 true） | 是（2026-10-26） | 门控本身不做，但扩展看到的信任状态与 TS 一致 |
 
 ## MCP（原生客户端，新增功能）
 
@@ -527,3 +528,17 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | `webSearch` 配置 | 无（TS 只调本地 Ollama） | `Settings.web_search`（camelCase `webSearch`：`provider` / `deepseek.{baseUrl,apiKey}` / `ollama.host`），全局/项目按外层键浅合并；`SettingsManager::get_web_search_config()` | 否（新增） | pi-extensions/DEVIATIONS.md「web_search 扩展」 |
 | `webSearch.deepseek.apiKey` 解析 | — | 显式值（支持 `${ENV}` / `!cmd`，经 `resolve_config_value`）优先，其次 `ModelRegistry::get_api_key_for_provider("deepseek")`（auth.json → models.json/注册 provider → 环境变量），再交给扩展合并环境变量 | 否（新增） | 同上；`/login deepseek` 存的凭据可直接用于搜索 |
 | `--no-extensions` | 只关自动发现 | 总开关，`None` registry | 是 | DEVIATIONS.md #24 |
+
+## 会话生命周期事件（`core/agent_session.rs`、`core/extensions/dispatcher.rs`，2026-10-26）
+
+TS `AgentSessionRuntime` 在换会话/重建 runtime 时按固定顺序向扩展派发事件；pi-rs 的
+CLI/RPC/interactive 都直接用 `AgentSession`（不走 runtime），因此这些派发下沉到
+`session_mgr_new` / `session_mgr_switch` / `session_mgr_fork` 与两条退出路径里。
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| `new_session` | `session_before_switch(reason:"new")`（可取消）→ `session_shutdown("new", target)` → `session_start("new")` | 同左（`session_mgr_new` 返回 `bool`，`false` = 被扩展取消 → RPC 回 `{cancelled:true}`，TUI 提示 "New session cancelled by extension"） | 是（2026-10-26） | 此前三个 dispatcher 是死代码（见 PORTING_MISTAKES #157） |
+| `switch_session` | `session_before_switch("resume", path)` → `session_shutdown("resume", target)` → `session_start("resume")` | 同左（`session_mgr_switch` 返回 `Result<bool>`） | 是（2026-10-26） | 同上 |
+| `fork` / `clone` | `session_before_fork(entryId, position)` → `session_shutdown("fork", target)` → `session_start("fork")` | 同左（`session_mgr_fork(entry, position)` 返回 `ForkOutcome{cancelled,path,selected_text}`） | 是（2026-10-26） | 同上 |
+| 进程退出 | `session_shutdown("quit")`（interactive `shutdown()` / `runtimeHost.dispose()`） | interactive 退出与 RPC shutdown 各派发一次 `session_shutdown("quit")` | 是（2026-10-26） | |
+| 扩展 UI dialog（RPC） | `extension_ui_request` + `extension_ui_response`，`opts.timeout` 生效 | 同左（confirm/select/input/editor 四类；超时回默认值并清理 pending 表） | 是（2026-10-26） | `opts.signal` 无入口，见 `pi-extension-api/CONTRACT_ALIGNMENT.md` |

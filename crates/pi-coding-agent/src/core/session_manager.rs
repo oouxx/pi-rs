@@ -31,6 +31,19 @@ pub struct NewSessionOptions {
     pub parent_session: Option<String>,
 }
 
+/// Outcome of a fork (TS `AgentSessionRuntime.fork()` returns
+/// `{ cancelled, selectedText? }`).
+#[derive(Debug, Clone, Default)]
+pub struct ForkOutcome {
+    /// True when an extension's `session_before_fork` handler cancelled it.
+    pub cancelled: bool,
+    /// Path of the branch session file (absent when cancelled).
+    pub path: Option<String>,
+    /// Text of the user message that was forked *before* (TS `selectedText`),
+    /// so the caller can put it back into the editor.
+    pub selected_text: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]

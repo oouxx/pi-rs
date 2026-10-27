@@ -132,6 +132,7 @@ pub fn transform_messages(
                 usage,
                 stop_reason,
                 error_message,
+                provider_thinking_level,
                 timestamp,
             } => {
                 let is_same_model = provider == &model.provider
@@ -213,6 +214,7 @@ pub fn transform_messages(
                     usage: usage.clone(),
                     stop_reason: stop_reason.clone(),
                     error_message: error_message.clone(),
+                    provider_thinking_level: provider_thinking_level.clone(),
                     timestamp: *timestamp,
                 }
             }
@@ -308,6 +310,7 @@ mod tests {
 
     fn model_with_input(input: Vec<&str>) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".into(),
             name: "Test".into(),
@@ -335,6 +338,7 @@ mod tests {
 
     fn assistant_msg(content: Vec<ContentBlock>, stop: StopReason) -> Message {
         Message::Assistant {
+            provider_thinking_level: None,
             content,
             api: "openai-completions".into(),
             provider: "test".into(),
@@ -478,6 +482,7 @@ mod tests {
         let model = model_with_input(vec!["text"]);
         // 跨模型：assistant 消息来自不同的 provider/model。
         let foreign = Message::Assistant {
+            provider_thinking_level: None,
             content: vec![ContentBlock::ToolCall {
                 id: "call_1|item_2".into(),
                 name: "bash".into(),

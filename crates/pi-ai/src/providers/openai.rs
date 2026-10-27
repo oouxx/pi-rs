@@ -483,6 +483,33 @@ fn convert_messages(
                     .iter()
                     .filter(|b| matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty()))
                     .collect();
+                // Replay metadata (TS `signedReasoningDetails ?? legacyReasoningDetails`):
+                // a thinking block signature holding the serialized `reasoning_details`
+                // array wins; older builds stored one encrypted detail on the tool
+                // call's `thought_signature`. Computed before the content branches
+                // because it applies whether or not thinking text is present.
+                let signed_details = thinking_blocks.iter().find_map(|b| match b {
+                    ContentBlock::Thinking {
+                        thinking_signature, ..
+                    } => parse_openai_reasoning_details(thinking_signature.as_deref()),
+                    _ => None,
+                });
+                let legacy_details: Vec<Value> = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolCall {
+                            thought_signature, ..
+                        } => parse_legacy_encrypted_reasoning_detail(thought_signature.as_deref()),
+                        _ => None,
+                    })
+                    .collect();
+                let preserved_reasoning_details: Option<Vec<Value>> = signed_details.or_else(|| {
+                    if legacy_details.is_empty() {
+                        None
+                    } else {
+                        Some(legacy_details)
+                    }
+                });
 
                 let mut msg_obj = serde_json::Map::new();
                 msg_obj.insert("role".into(), json!("assistant"));
@@ -514,28 +541,30 @@ fn convert_messages(
                         if !assistant_text.is_empty() {
                             msg_obj.insert("content".into(), json!(assistant_text));
                         }
-                        // Use the signature from the first thinking block if available
-                        // (llama.cpp server + gpt-oss).
-                        let mut signature = match thinking_blocks[0] {
-                            ContentBlock::Thinking {
-                                thinking_signature, ..
-                            } => thinking_signature.clone(),
-                            _ => None,
-                        };
-                        if model.provider == "opencode-go" && signature.as_deref() == Some("reasoning") {
-                            signature = Some("reasoning_content".to_string());
-                        }
-                        if let Some(sig) = signature {
-                            if !sig.is_empty() {
-                                let joined: String = thinking_blocks
-                                    .iter()
-                                    .filter_map(|b| match b {
-                                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                                        _ => None,
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                msg_obj.insert(sig, json!(joined));
+                        if preserved_reasoning_details.is_none() {
+                            // Use the signature from the first thinking block if
+                            // available (llama.cpp server + gpt-oss).
+                            let mut signature = match thinking_blocks[0] {
+                                ContentBlock::Thinking {
+                                    thinking_signature, ..
+                                } => thinking_signature.clone(),
+                                _ => None,
+                            };
+                            if model.provider == "opencode-go" && signature.as_deref() == Some("reasoning") {
+                                signature = Some("reasoning_content".to_string());
+                            }
+                            if let Some(sig) = signature {
+                                if !sig.is_empty() {
+                                    let joined: String = thinking_blocks
+                                        .iter()
+                                        .filter_map(|b| match b {
+                                            ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                                            _ => None,
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    msg_obj.insert(sig, json!(joined));
+                                }
                             }
                         }
                     }
@@ -585,19 +614,10 @@ fn convert_messages(
                 }
                 if !tool_calls.is_empty() {
                     msg_obj.insert("tool_calls".into(), json!(tool_calls));
-                    let reasoning_details: Vec<Value> = content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolCall {
-                                thought_signature: Some(sig),
-                                ..
-                            } => serde_json::from_str::<Value>(sig).ok(),
-                            _ => None,
-                        })
-                        .collect();
-                    if !reasoning_details.is_empty() {
-                        msg_obj.insert("reasoning_details".into(), json!(reasoning_details));
-                    }
+                }
+                // Replay metadata last (TS sets it after content/tool_calls).
+                if let Some(details) = preserved_reasoning_details.clone() {
+                    msg_obj.insert("reasoning_details".into(), json!(details));
                 }
 
                 if compat.requires_reasoning_content_on_assistant_messages
@@ -922,6 +942,7 @@ pub fn stream_openai(
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
                 error: AssistantMessage {
+        provider_thinking_level: None,
                     content: vec![],
                     api: model.api.clone(),
                     provider: model.provider.clone(),
@@ -1665,6 +1686,7 @@ async fn stream_openai_inner(
 
     // Initialize output
     let mut output = AssistantMessage {
+        provider_thinking_level: None,
         content: vec![],
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -1684,6 +1706,10 @@ async fn stream_openai_inner(
         partial: output.clone(),
     });
 
+    // `reasoning_details` are replay metadata, not user-visible deltas: keep
+    // them in memory and serialize once into the thinking block's signature
+    // (TS `streamedReasoningDetails` + `applyStreamedReasoningDetails`).
+    let mut streamed_reasoning_details: Vec<Value> = Vec::new();
     let mut has_finish_reason = false;
 
     // Track current streaming blocks
@@ -1902,6 +1928,34 @@ async fn stream_openai_inner(
             }
         }
 
+        // Structured reasoning deltas (OpenRouter / Gemini 类网关): merge them
+        // into the replay buffer and make sure a thinking block exists so the
+        // signature has somewhere to live (TS `ensureThinkingBlock("")`).
+        if let Some(details) = delta.get("reasoning_details").and_then(|v| v.as_array()) {
+            for detail in details {
+                if !is_openai_reasoning_detail(detail) {
+                    continue;
+                }
+                let thinking_idx = output
+                    .content
+                    .iter()
+                    .position(|b| matches!(b, ContentBlock::Thinking { .. }));
+                if thinking_idx.is_none() {
+                    let ci = output.content.len();
+                    output.content.push(ContentBlock::Thinking {
+                        thinking: String::new(),
+                        thinking_signature: None,
+                        redacted: None,
+                    });
+                    let _ = tx.send(AssistantMessageEvent::ThinkingStart {
+                        content_index: ci,
+                        partial: output.clone(),
+                    });
+                }
+                append_openai_reasoning_detail(&mut streamed_reasoning_details, detail.clone());
+            }
+        }
+
         // Tool calls — using dual-map lookup (by index, by id) aligned with TS pi
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tool_calls {
@@ -2072,6 +2126,7 @@ async fn stream_openai_inner(
         if *rx.borrow() {
             output.stop_reason = StopReason::Aborted;
             output.error_message = Some("Request was aborted".to_string());
+            apply_streamed_reasoning_details(&mut output, &streamed_reasoning_details);
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Aborted,
                 error: output.clone(),
@@ -2082,6 +2137,7 @@ async fn stream_openai_inner(
     if !has_finish_reason {
         output.stop_reason = StopReason::Error;
         output.error_message = Some("Stream ended without finish_reason".to_string());
+        apply_streamed_reasoning_details(&mut output, &streamed_reasoning_details);
         let _ = tx.send(AssistantMessageEvent::Error {
             reason: StopReason::Error,
             error: output.clone(),
@@ -2096,6 +2152,23 @@ async fn stream_openai_inner(
             content: text,
             partial: output.clone(),
         });
+    }
+    // TS `finishBlock`: the thinking block closes with the replay signature
+    // attached (thinking_end carries the block content).
+    if let Some(ti) = output
+        .content
+        .iter()
+        .position(|b| matches!(b, ContentBlock::Thinking { .. }))
+    {
+        apply_streamed_reasoning_details(&mut output, &streamed_reasoning_details);
+        if let Some(ContentBlock::Thinking { thinking, .. }) = output.content.get(ti) {
+            let thinking = thinking.clone();
+            let _ = tx.send(AssistantMessageEvent::ThinkingEnd {
+                content_index: ti,
+                content: thinking,
+                partial: output.clone(),
+            });
+        }
     }
     for block in &tool_call_blocks {
         if let Some(ContentBlock::ToolCall {
@@ -2124,6 +2197,385 @@ async fn stream_openai_inner(
     });
 
     Ok(())
+}
+
+
+/// TS `applyStreamedReasoningDetails`: serialize the accumulated
+/// `reasoning_details` into the thinking block's signature (once, at finalize
+/// time) so a later replay can send them back instead of a raw reasoning field.
+fn apply_streamed_reasoning_details(
+    output: &mut crate::types::AssistantMessage,
+    details: &[Value],
+) {
+    if details.is_empty() {
+        return;
+    }
+    let serialized = match serde_json::to_string(&Value::Array(details.to_vec())) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if let Some(ContentBlock::Thinking {
+        thinking_signature, ..
+    }) = output
+        .content
+        .iter_mut()
+        .find(|b| matches!(b, ContentBlock::Thinking { .. }))
+    {
+        *thinking_signature = Some(serialized);
+    }
+}
+
+#[cfg(test)]
+mod reasoning_details_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    fn detail_summary(text: &str) -> Value {
+        serde_json::json!({ "type": "reasoning.summary", "summary": text, "id": "r1" })
+    }
+
+    /// Consecutive summary/text deltas merge into one logical entry; encrypted
+    /// entries stay discrete (TS `appendOpenAIReasoningDetail`).
+    #[test]
+    fn append_merges_delta_entries() {
+        let mut details = Vec::new();
+        append_openai_reasoning_detail(&mut details, detail_summary("ab"));
+        append_openai_reasoning_detail(&mut details, detail_summary("cd"));
+        append_openai_reasoning_detail(
+            &mut details,
+            serde_json::json!({ "type": "reasoning.encrypted", "data": "opaque", "id": "r2" }),
+        );
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0]["summary"], "abcd");
+        assert_eq!(details[1]["type"], "reasoning.encrypted");
+        // Text deltas merge too, and keep the first signature seen.
+        let mut texts = Vec::new();
+        append_openai_reasoning_detail(
+            &mut texts,
+            serde_json::json!({ "type": "reasoning.text", "text": "a", "signature": "sig" }),
+        );
+        append_openai_reasoning_detail(
+            &mut texts,
+            serde_json::json!({ "type": "reasoning.text", "text": "b" }),
+        );
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0]["text"], "ab");
+        assert_eq!(texts[0]["signature"], "sig");
+    }
+
+    /// Only well-formed details are accepted (bad type / missing payload /
+    /// wrong field types are dropped).
+    #[test]
+    fn validation_rejects_malformed_details() {
+        assert!(is_openai_reasoning_detail(&detail_summary("x")));
+        assert!(!is_openai_reasoning_detail(
+            &serde_json::json!({ "type": "reasoning.summary" })
+        ));
+        assert!(!is_openai_reasoning_detail(
+            &serde_json::json!({ "type": "reasoning.text", "text": 1 })
+        ));
+        assert!(!is_openai_reasoning_detail(
+            &serde_json::json!({ "type": "reasoning.encrypted", "data": "d", "index": "x" })
+        ));
+        assert!(!is_openai_reasoning_detail(
+            &serde_json::json!({ "type": "unknown", "data": "d" })
+        ));
+    }
+
+    #[test]
+    fn parse_roundtrips_serialized_details() {
+        let details = vec![detail_summary("hello")];
+        let serialized = serde_json::to_string(&Value::Array(details.clone())).unwrap();
+        assert_eq!(
+            parse_openai_reasoning_details(Some(&serialized)),
+            Some(details)
+        );
+        // Non-array signatures (llama.cpp / gpt-oss field names) are not details.
+        assert_eq!(parse_openai_reasoning_details(Some("reasoning_content")), None);
+        assert_eq!(parse_openai_reasoning_details(None), None);
+    }
+
+    /// A thinking block signature holding the details array is replayed as
+    /// `reasoning_details` instead of a raw reasoning field.
+    #[test]
+    fn replay_prefers_thinking_signature_details() {
+        let model = test_model();
+        let details = vec![detail_summary("sum")];
+        let signature = serde_json::to_string(&Value::Array(details.clone())).unwrap();
+        let messages = vec![crate::types::Message::Assistant {
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "hidden".into(),
+                    thinking_signature: Some(signature),
+                    redacted: None,
+                },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                    text_signature: None,
+                },
+            ],
+            api: "openai-completions".into(),
+            provider: "openrouter".into(),
+            model: "m".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            provider_thinking_level: None,
+            timestamp: 1,
+        }];
+        let out = convert_messages_for_test(&messages, &model);
+        let assistant = out
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant message");
+        assert_eq!(assistant["reasoning_details"], json!(details));
+        assert!(
+            assistant.get("reasoning_content").is_none()
+                && assistant.get("reasoning").is_none()
+                && assistant.get("reasoning_text").is_none(),
+            "raw reasoning field must be suppressed when details are present: {assistant}"
+        );
+    }
+
+    /// Legacy shape: an encrypted detail stored on the tool call's
+    /// `thought_signature` still replays.
+    #[test]
+    fn replay_falls_back_to_legacy_tool_call_signature() {
+        let model = test_model();
+        let legacy = serde_json::json!({
+            "type": "reasoning.encrypted", "id": "r9", "data": "opaque"
+        });
+        let messages = vec![crate::types::Message::Assistant {
+            content: vec![ContentBlock::ToolCall {
+                id: "tc1".into(),
+                name: "bash".into(),
+                arguments: json!({}),
+                thought_signature: Some(legacy.to_string()),
+                namespace: None,
+            }],
+            api: "openai-completions".into(),
+            provider: "openrouter".into(),
+            model: "m".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::ToolUse,
+            error_message: None,
+            provider_thinking_level: None,
+            timestamp: 1,
+        }];
+        let out = convert_messages_for_test(&messages, &model);
+        let assistant = out
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant message");
+        assert_eq!(assistant["reasoning_details"], json!([legacy]));
+    }
+
+    fn test_model() -> crate::types::Model {
+        crate::types::Model {
+            input_limits: None,
+            prompt_cache: None,
+            id: "m".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            provider: "openrouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![],
+            cost: crate::types::ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    fn convert_messages_for_test(
+        messages: &[crate::types::Message],
+        model: &crate::types::Model,
+    ) -> Vec<Value> {
+        let compat = get_compat(model);
+        let context = crate::types::Context {
+            system_prompt: None,
+            messages: messages.to_vec(),
+            tools: None,
+        };
+        super::convert_messages(
+            model,
+            &context,
+            &compat,
+            &std::collections::HashMap::new(),
+            false,
+        )
+        .expect("convert_messages")
+    }
+}
+
+// ============================================================================
+// `reasoning_details` replay metadata (TS openai-completions helpers)
+// ============================================================================
+
+fn is_reasoning_detail_object(value: &Value) -> bool {
+    value.is_object()
+}
+
+fn has_valid_common_reasoning_detail_fields(candidate: &serde_json::Map<String, Value>) -> bool {
+    let id_ok = matches!(
+        candidate.get("id"),
+        None | Some(Value::Null) | Some(Value::String(_))
+    );
+    let format_ok = matches!(candidate.get("format"), None | Some(Value::String(_)));
+    let index_ok = matches!(candidate.get("index"), None | Some(Value::Number(_)));
+    id_ok && format_ok && index_ok
+}
+
+/// TS `isOpenAIReasoningDetail` — only well-formed `reasoning.summary` /
+/// `reasoning.encrypted` / `reasoning.text` entries are replayed.
+fn is_openai_reasoning_detail(detail: &Value) -> bool {
+    if !is_reasoning_detail_object(detail) {
+        return false;
+    }
+    let Some(obj) = detail.as_object() else {
+        return false;
+    };
+    if !has_valid_common_reasoning_detail_fields(obj) {
+        return false;
+    }
+    match obj.get("type").and_then(Value::as_str) {
+        Some("reasoning.summary") => obj.get("summary").map(Value::is_string).unwrap_or(false),
+        Some("reasoning.encrypted") => obj.get("data").map(Value::is_string).unwrap_or(false),
+        Some("reasoning.text") => {
+            let text_ok = obj.get("text").map(Value::is_string).unwrap_or(false);
+            let sig_ok = matches!(
+                obj.get("signature"),
+                None | Some(Value::Null) | Some(Value::String(_))
+            );
+            text_ok && sig_ok
+        }
+        _ => false,
+    }
+}
+
+/// TS `parseOpenAIReasoningDetails`: a thinking block signature is the
+/// serialized replay array.
+fn parse_openai_reasoning_details(signature: Option<&str>) -> Option<Vec<Value>> {
+    let signature = signature.filter(|s| !s.is_empty())?;
+    let parsed: Value = serde_json::from_str(signature).ok()?;
+    let array = parsed.as_array()?;
+    if array.is_empty() || !array.iter().all(is_openai_reasoning_detail) {
+        return None;
+    }
+    Some(array.clone())
+}
+
+/// TS `parseLegacyEncryptedReasoningDetail`: older builds stored a single
+/// encrypted detail on the tool call's `thought_signature`.
+fn parse_legacy_encrypted_reasoning_detail(signature: Option<&str>) -> Option<Value> {
+    let signature = signature.filter(|s| !s.is_empty())?;
+    let parsed: Value = serde_json::from_str(signature).ok()?;
+    if !is_openai_reasoning_detail(&parsed) {
+        return None;
+    }
+    let obj = parsed.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("reasoning.encrypted") {
+        return None;
+    }
+    let id_ok = obj
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|id| !id.is_empty())
+        .unwrap_or(false);
+    let data_ok = obj
+        .get("data")
+        .and_then(Value::as_str)
+        .map(|data| !data.is_empty())
+        .unwrap_or(false);
+    if id_ok && data_ok {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
+/// TS `appendOpenAIReasoningDetail`: consecutive `text`/`summary` deltas merge
+/// into one logical entry; encrypted entries stay discrete.
+fn append_openai_reasoning_detail(details: &mut Vec<Value>, detail: Value) {
+    let detail_type = detail.get("type").and_then(Value::as_str).unwrap_or("");
+    if let Some(last) = details.last_mut() {
+        let last_type = last
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if detail_type == "reasoning.text" && last_type == "reasoning.text" {
+            if let Some(last_obj) = last.as_object_mut() {
+                let extra_text = detail.get("text").and_then(Value::as_str).unwrap_or("");
+                let merged = format!(
+                    "{}{}",
+                    last_obj.get("text").and_then(Value::as_str).unwrap_or(""),
+                    extra_text
+                );
+                last_obj.insert("text".to_string(), Value::String(merged));
+                if last_obj
+                    .get("signature")
+                    .map(Value::is_null)
+                    .unwrap_or(true)
+                {
+                    if let Some(sig) = detail.get("signature") {
+                        if !sig.is_null() {
+                            last_obj.insert("signature".to_string(), sig.clone());
+                        }
+                    }
+                }
+                fill_missing_common_reasoning_detail_fields(last_obj, detail.as_object());
+                return;
+            }
+        }
+        if detail_type == "reasoning.summary" && last_type == "reasoning.summary" {
+            if let Some(last_obj) = last.as_object_mut() {
+                let extra = detail.get("summary").and_then(Value::as_str).unwrap_or("");
+                let merged = format!(
+                    "{}{}",
+                    last_obj.get("summary").and_then(Value::as_str).unwrap_or(""),
+                    extra
+                );
+                last_obj.insert("summary".to_string(), Value::String(merged));
+                fill_missing_common_reasoning_detail_fields(last_obj, detail.as_object());
+                return;
+            }
+        }
+    }
+    details.push(detail);
+}
+
+fn fill_missing_common_reasoning_detail_fields(
+    target: &mut serde_json::Map<String, Value>,
+    source: Option<&serde_json::Map<String, Value>>,
+) {
+    let Some(source) = source else {
+        return;
+    };
+    for key in ["id", "format", "index"] {
+        let missing = match target.get(key) {
+            None | Some(Value::Null) => true,
+            Some(Value::String(s)) => key != "id" && s.is_empty(),
+            _ => false,
+        };
+        if missing {
+            if let Some(value) = source.get(key) {
+                if !value.is_null() {
+                    target.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -2158,6 +2610,7 @@ mod tests {
 
     fn test_model(provider: &str) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
@@ -2260,6 +2713,7 @@ mod tests {
 
     fn make_test_model() -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),
@@ -2330,6 +2784,7 @@ mod tests {
         let context = Context {
             system_prompt: None,
             messages: vec![Message::Assistant {
+                provider_thinking_level: None,
                 content: vec![ContentBlock::ToolCall {
                     id: "call_1".into(),
                     name: "get_weather".into(),
@@ -2369,6 +2824,7 @@ mod tests {
         let context = Context {
             system_prompt: None,
             messages: vec![Message::Assistant {
+                provider_thinking_level: None,
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "reasoning text".into(),
@@ -2511,6 +2967,7 @@ mod tests {
         let context = Context {
             system_prompt: None,
             messages: vec![Message::Assistant {
+                provider_thinking_level: None,
                 content: vec![ContentBlock::ToolCall {
                     id: "call_1".into(),
                     name: "grammar_tool".into(),
@@ -2731,6 +3188,7 @@ mod abort_tests {
 
     fn abort_test_model(addr: &str) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),
@@ -2917,6 +3375,7 @@ mod abort_tests {
         });
 
         let model = Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".to_string(),
             name: "Test Model".to_string(),

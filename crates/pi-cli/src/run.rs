@@ -203,8 +203,9 @@ pub async fn run(args: &CliArgs) -> i32 {
     // ── Project trust ────────────────────────────────────────────────────
     // pi-rs intentionally does not gate project resources on trust (see
     // DEVIATIONS.md "配置目录与项目信任"): every project is treated as trusted,
-    // so `.pi-rs/` resources are always loaded. The `--trust`/`--no-trust`
-    // flags are still parsed for CLI compatibility but do not block the run.
+    // so `.pi-rs/` resources are always loaded. `--trust` / `--no-trust` still
+    // feed `ctx.isProjectTrusted()` (extensions such as `subagent` consult it
+    // before asking about project agents).
 
     let message = initial_message.unwrap_or_default();
     if message.trim().is_empty() {
@@ -310,6 +311,9 @@ pub async fn run(args: &CliArgs) -> i32 {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        // `--trust` / `--no-trust`: 显式信任决策，喂给扩展 ctx.isProjectTrusted()
+        // （项目资源本身不做门控，见 DEVIATIONS.md）。
+        trust_override: args.project_trust_override,
         custom_tools: None,
         tools_options: None,
     };
@@ -403,6 +407,9 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        // `--trust` / `--no-trust`: 显式信任决策，喂给扩展 ctx.isProjectTrusted()
+        // （项目资源本身不做门控，见 DEVIATIONS.md）。
+        trust_override: args.project_trust_override,
     };
 
     let (session, _result) = match create_agent_session(sdk_options).await {

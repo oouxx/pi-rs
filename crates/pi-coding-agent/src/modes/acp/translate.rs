@@ -922,6 +922,7 @@ mod tests {
 
     fn sample_assistant_message() -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![],
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -1396,6 +1397,7 @@ mod tests {
     #[test]
     fn toolcall_start_surfaces_tool_call_while_streaming() {
         let partial = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
                 id: "tc1".into(),
                 name: "read".into(),
@@ -1663,6 +1665,7 @@ mod tests {
 
         // 1. ToolCallStart: args are still `{}` → title falls back to "bash".
         let partial = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
                 id: "b1".into(),
                 name: "bash".into(),
@@ -1706,6 +1709,7 @@ mod tests {
 
         // 2. ToolCallDelta: the command has streamed in → title must update.
         let partial = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
                 id: "b1".into(),
                 name: "bash".into(),
@@ -1790,6 +1794,7 @@ mod tests {
 
         // 1) Model streams the tool call args → tool_call (pending).
         let partial = AssistantMessage {
+            provider_thinking_level: None,
             content: vec![pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
                 id: "tc1".into(),
                 name: "read".into(),

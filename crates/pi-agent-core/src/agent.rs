@@ -257,6 +257,7 @@ impl Default for AgentState {
         Self {
             system_prompt: String::new(),
             model: Model {
+                input_limits: None,
                 prompt_cache: None,
                 provider: String::new(),
                 api: String::new(),
@@ -289,6 +290,7 @@ impl Agent {
         let state = options.initial_state.unwrap_or_else(|| AgentState {
             system_prompt: String::new(),
             model: Model {
+                input_limits: None,
                 prompt_cache: None,
                 provider: String::new(),
                 api: String::new(),
@@ -1172,6 +1174,7 @@ mod tests {
 
     fn make_model() -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test-model".into(),
             name: "test".into(),
@@ -1198,6 +1201,7 @@ mod tests {
 
     fn make_assistant_message(text: &str) -> AssistantMessage {
         AssistantMessage {
+            provider_thinking_level: None,
             content: vec![ContentBlock::text(text)],
             api: "test-api".into(),
             provider: "test-provider".into(),
@@ -1240,6 +1244,7 @@ mod tests {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let _ = tx.send(AssistantMessageEvent::Error {
                     error: AssistantMessage {
+                        provider_thinking_level: None,
                         content: vec![ContentBlock::text(&err_msg)],
                         api: "test-api".into(),
                         provider: "test-provider".into(),
@@ -1740,6 +1745,7 @@ mod tests {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
                 // Send start event immediately so streaming begins
                 let start_msg = AssistantMessage {
+                    provider_thinking_level: None,
                     content: vec![ContentBlock::text("")],
                     api: "test".into(),
                     provider: "test".into(),
@@ -1762,6 +1768,7 @@ mod tests {
                         if *sig.borrow() {
                             let _ = tx.send(AssistantMessageEvent::Error {
                                 error: AssistantMessage {
+                                    provider_thinking_level: None,
                                     content: vec![ContentBlock::text("Aborted")],
                                     api: "test".into(),
                                     provider: "test".into(),
@@ -2056,6 +2063,7 @@ mod tests {
                         }
                     }
                     let mut out = AssistantMessage {
+                        provider_thinking_level: None,
                         content: vec![],
                         api: "openai-completions".into(),
                         provider: "openai".into(),
@@ -2199,6 +2207,7 @@ mod tests {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
                 // Send start event immediately so streaming begins
                 let start_msg = AssistantMessage {
+                    provider_thinking_level: None,
                     content: vec![ContentBlock::text("")],
                     api: "test".into(),
                     provider: "test".into(),
@@ -2221,6 +2230,7 @@ mod tests {
                         if *sig.borrow() {
                             let _ = tx.send(AssistantMessageEvent::Error {
                                 error: AssistantMessage {
+                                    provider_thinking_level: None,
                                     content: vec![ContentBlock::text("Aborted")],
                                     api: "test".into(),
                                     provider: "test".into(),
@@ -2293,6 +2303,7 @@ mod tests {
                 if count == 1 {
                     // First call: return a tool use message
                     let msg = AssistantMessage {
+                        provider_thinking_level: None,
                         content: vec![ContentBlock::ToolCall {
                             id: "tool-1".into(),
                             name: "noop".into(),
@@ -2320,6 +2331,7 @@ mod tests {
                 } else {
                     // Second call: return a stop message
                     let msg = AssistantMessage {
+                        provider_thinking_level: None,
                         content: vec![ContentBlock::text("done")],
                         api: "test".into(),
                         provider: "test".into(),
@@ -2439,6 +2451,7 @@ mod tests {
             Box::pin(async move {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let msg = AssistantMessage {
+                    provider_thinking_level: None,
                     content: vec![ContentBlock::ToolCall {
                         id: "call-1".into(),
                         name: "delayed_tool".into(),
@@ -2589,6 +2602,7 @@ mod tests {
             Box::pin(async move {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let msg = AssistantMessage {
+                    provider_thinking_level: None,
                     content: vec![
                         ContentBlock::ToolCall {
                             id: "call-1".into(),

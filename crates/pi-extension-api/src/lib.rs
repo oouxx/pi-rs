@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 pub use hook::{
     ArgumentCompletionsFn, AutocompleteItem, CommandRegistry, CommandRegistration,
     FlagRegistry, HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag,
-    RegisteredShortcut, RegisteredTool, ShortcutRegistry, ToolRegistry,
+    RegisteredShortcut, RegisteredTool, SessionBeforeCompactEvent, SessionBeforeCompactResult,
+    ShortcutRegistry, ToolRegistry,
 };
 pub use source_info::{
     create_builtin_source_info, create_source_info, create_synthetic_source_info,
@@ -438,8 +439,26 @@ pub struct ExtensionUIContext {
             + Send
             + Sync,
     >,
+    /// Show a multi-line editor dialog (matching TS `ui.editor(title, prefill?)`).
+    pub editor: Arc<
+        dyn Fn(
+                &str,
+                Option<&str>,
+            ) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>
+            + Send
+            + Sync,
+    >,
     /// Set a widget above/below the editor (matching TS `ui.setWidget`).
+    /// `opts` may carry `{"placement": "aboveEditor"|"belowEditor"}`.
     pub set_widget: Arc<dyn Fn(&str, Option<&[String]>, Option<&Value>) + Send + Sync>,
+    /// Replace the spinner/working text (matching TS `ui.setWorkingMessage`).
+    /// `None` restores the default.
+    pub set_working_message: Arc<dyn Fn(Option<&str>) + Send + Sync>,
+    /// Show/hide the spinner line while busy (TS `ui.setWorkingVisible`).
+    pub set_working_visible: Arc<dyn Fn(bool) + Send + Sync>,
+    /// Current editor text (TS `ui.getEditorText`). Headless/RPC modes return
+    /// an empty string — TS does the same because the host owns the editor.
+    pub get_editor_text: Arc<dyn Fn() -> String + Send + Sync>,
     /// Set the terminal window/tab title (matching TS `ui.setTitle`).
     pub set_title: Arc<dyn Fn(&str) + Send + Sync>,
     /// Set the text in the input editor (matching TS `ui.setEditorText`).
@@ -457,7 +476,11 @@ impl ExtensionUIContext {
             confirm: Arc::new(|_, _| false),
             select: Arc::new(|_, _, _| Box::pin(async { None })),
             input: Arc::new(|_, _, _| Box::pin(async { None })),
+            editor: Arc::new(|_, _| Box::pin(async { None })),
             set_widget: Arc::new(|_, _, _| {}),
+            set_working_message: Arc::new(|_| {}),
+            set_working_visible: Arc::new(|_| {}),
+            get_editor_text: Arc::new(String::new),
             set_title: Arc::new(|_| {}),
             set_editor_text: Arc::new(|_| {}),
         }

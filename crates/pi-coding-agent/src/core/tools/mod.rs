@@ -131,13 +131,29 @@ pub fn create_all_tools(
     options: Option<&ToolsOptions>,
     bash_session_env_provider: Option<bash::BashSessionEnvProvider>,
 ) -> Vec<DynTool> {
+    create_all_tools_with_model_provider(cwd, options, bash_session_env_provider, None)
+}
+
+/// Same as [`create_all_tools`], but binds a live model lookup into the `read`
+/// tool so image reads honour `model.inputLimits.images.resize` and the
+/// non-vision note (TS `ctx?.model`).
+pub fn create_all_tools_with_model_provider(
+    cwd: &str,
+    options: Option<&ToolsOptions>,
+    bash_session_env_provider: Option<bash::BashSessionEnvProvider>,
+    model_provider: Option<read::ReadModelProvider>,
+) -> Vec<DynTool> {
     let opts = options.cloned().unwrap_or_default();
     let mut bash_opts = opts.bash.unwrap_or_default();
     if bash_session_env_provider.is_some() {
         bash_opts.session_env_provider = bash_session_env_provider;
     }
+    let mut read_opts = opts.read.unwrap_or_default();
+    if let Some(provider) = model_provider {
+        read_opts.model_provider = Some(provider);
+    }
     vec![
-        read::create_read_tool(cwd, opts.read),
+        read::create_read_tool(cwd, Some(read_opts)),
         bash::create_bash_tool(cwd, Some(bash_opts)),
         edit::create_edit_tool(cwd, opts.edit),
         write::create_write_tool(cwd, opts.write),

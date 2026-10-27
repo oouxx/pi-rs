@@ -300,6 +300,12 @@ pub struct AgentSessionConfig {
     pub excluded_tool_names: Option<Vec<String>>,
     /// Extension registry (Rust native extensions).
     pub extension_registry: Option<std::sync::Arc<ExtensionRegistry>>,
+    /// Explicit project-trust decision (`--trust` / `--no-trust`).
+    pub trust_override: Option<bool>,
+    /// Why this session was created (`startup` / `reload` / `new` / `resume` /
+    /// `fork`). Used for the `resources_discover` payload, matching TS
+    /// `_sessionStartEvent.reason === "reload" ? "reload" : "startup"`.
+    pub session_start_reason: String,
     /// 扩展 UI 上下文（RPC/ACP/未来 GUI 通过 `extension_ui_request` 协议
     /// 消费；None = 无 UI 客户端，notify 落 stderr、dialog 返回默认）。
     pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
@@ -706,6 +712,9 @@ pub struct AgentSession {
     /// These are collected at session start and can be applied to the resource loader
     /// on session reload via `extend_resources()`.
     extension_resource_paths: Option<crate::core::resource_loader::ResourceExtensionPaths>,
+    /// Why this session was created (`startup` / `reload` / `new` / `resume` /
+    /// `fork`); drives the `resources_discover` reason.
+    session_start_reason: String,
     /// Pending bash execution results queued while agent is streaming,
     /// matching TS `_pendingBashMessages`.
     pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
@@ -906,6 +915,24 @@ fn delegating_ui(
             },
         )
     };
+    let editor = {
+        let binding = Arc::clone(&binding);
+        Arc::new(
+            move |title: &str,
+                  prefill: Option<&str>|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<String>> + Send>,
+            > {
+                let ui = binding
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let inner = ui.editor.clone();
+                let title = title.to_string();
+                let prefill = prefill.map(str::to_owned);
+                Box::pin(async move { inner(&title, prefill.as_deref()).await })
+            },
+        )
+    };
     let set_widget = {
         let binding = Arc::clone(&binding);
         Arc::new(
@@ -935,13 +962,44 @@ fn delegating_ui(
             (ui.set_editor_text)(text);
         })
     };
+    let set_working_message = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |message: Option<&str>| {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.set_working_message)(message);
+        })
+    };
+    let set_working_visible = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move |visible: bool| {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.set_working_visible)(visible);
+        })
+    };
+    let get_editor_text = {
+        let binding = Arc::clone(&binding);
+        Arc::new(move || {
+            let ui = binding
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (ui.get_editor_text)()
+        })
+    };
 
     ExtensionUIContext {
+        get_editor_text,
+        set_working_visible,
+        set_working_message,
         notify,
         set_status,
         confirm,
         select,
         input,
+        editor,
         set_widget,
         set_title,
         set_editor_text,
@@ -982,7 +1040,7 @@ impl AgentSession {
             crate::core::project_trust::ResolveProjectTrustedOptions {
                 cwd: &options.cwd,
                 trust_store: &ext_trust_store,
-                trust_override: None,
+                trust_override: options.trust_override,
                 default_project_trust: match settings_manager.get_default_project_trust() {
                     crate::core::settings_manager::DefaultProjectTrust::Always => {
                         crate::core::project_trust::DefaultProjectTrust::Always
@@ -996,7 +1054,7 @@ impl AgentSession {
                 },
                 project_trust_context: crate::core::project_trust::ProjectTrustContext::new(
                     &options.cwd,
-                    false,
+                    options.ui_context.is_some(),
                 ),
                 extension_registry: None,
             },
@@ -1037,6 +1095,14 @@ impl AgentSession {
             ext_runtime_handle,
         );
         ext_ctx.set_project_trusted(ext_project_trusted);
+        // 对齐 TS `hasUI = uiContext !== noOpUIContext`：宿主传入真实 UI
+        // context（interactive TUI、RPC/ACP 客户端）时就是 `true`。
+        // 之前只在 `set_extension_ui_context`（interactive 换绑）里置位，
+        // 导致 RPC/ACP 下扩展误以为没有 UI，subagent 的项目 agent 确认门
+        // 被静默跳过。
+        if options.ui_context.is_some() {
+            ext_ctx.set_has_ui(true);
+        }
         let shared_ext_ctx = Arc::new(ext_ctx);
 
         // ── Build tool list ──
@@ -1100,10 +1166,29 @@ impl AgentSession {
                 })
             })
         };
-        tool_list.extend(tools::create_all_tools(
+        // `read` needs the live model for image handling (TS `ctx?.model`):
+        // `inputLimits.images.resize` and the non-vision note.
+        let read_model_provider: tools::read::ReadModelProvider = {
+            let agent_ref = bash_agent_ref.clone();
+            Arc::new(move || {
+                let agent_ref = agent_ref.clone();
+                Box::pin(async move {
+                    let agent = agent_ref
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match agent {
+                        Some(agent) => Some(agent.state().await.model),
+                        None => None,
+                    }
+                })
+            })
+        };
+        tool_list.extend(tools::create_all_tools_with_model_provider(
             &options.cwd,
             Some(&tools_options),
             Some(bash_session_env_provider),
+            Some(read_model_provider),
         ));
 
         // 2. Custom tools from SDK callers (via custom_tools / ToolDefinition + execute)
@@ -1537,35 +1622,91 @@ impl AgentSession {
         // is dispatched to extension handlers that may block it (before) or
         // transform its result (after).
 
-        let (before_tool_call, after_tool_call) = match &options.extension_registry {
-            Some(registry) => {
-                let before_reg = Arc::clone(registry);
-                let after_reg = Arc::clone(registry);
-                let before_ctx = Arc::clone(&shared_ext_ctx);
-                let after_ctx = Arc::clone(&shared_ext_ctx);
-                let before: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
-                    let reg = Arc::clone(&before_reg);
-                    let ctx_ref = Arc::clone(&before_ctx);
-                    Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_tool_call(
-                            &reg, &ctx, &ctx_ref,
-                        )
+        let before_tool_call: Option<BeforeToolCallFn> = options.extension_registry.as_ref().map(|registry| {
+            let before_reg = Arc::clone(registry);
+            let before_ctx = Arc::clone(&shared_ext_ctx);
+            let before: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
+                let reg = Arc::clone(&before_reg);
+                let ctx_ref = Arc::clone(&before_ctx);
+                Box::pin(async move {
+                    crate::core::extensions::dispatcher::dispatch_tool_call(&reg, &ctx, &ctx_ref)
                         .await
+                })
+            });
+            before
+        });
+
+        // `after_tool_call` is always installed: besides extension `tool_result`
+        // hooks it normalizes image blocks a tool returned with the **current**
+        // model's resize profile (TS `agent.afterToolCall` →
+        // `normalizeToolResultImages`, which runs after the hook so images an
+        // extension injected are normalized too).
+        let after_tool_call: Option<AfterToolCallFn> = {
+            let registry = options.extension_registry.clone();
+            let after_ctx = Arc::clone(&shared_ext_ctx);
+            let images_agent_ref = Arc::clone(&bash_agent_ref);
+            // `imageAutoResize` has no runtime setter in this port (the settings
+            // UI is not ported), so a snapshot is equivalent; TS reads it live.
+            let image_auto_resize = settings_manager.get_image_auto_resize();
+            let after: AfterToolCallFn = Arc::new(move |ctx, _signal| {
+                let reg = registry.clone();
+                let ctx_ref = Arc::clone(&after_ctx);
+                let agent_ref = Arc::clone(&images_agent_ref);
+                Box::pin(async move {
+                    // 1. Extension `tool_result` hook (may replace content).
+                    let hook_result = match &reg {
+                        Some(reg) => {
+                            crate::core::extensions::dispatcher::dispatch_tool_result(
+                                reg, &ctx, &ctx_ref,
+                            )
+                            .await
+                        }
+                        None => None,
+                    };
+                    let content = hook_result
+                        .as_ref()
+                        .and_then(|r| r.content.clone())
+                        .unwrap_or_else(|| ctx.result.content.clone());
+                    let is_error = hook_result
+                        .as_ref()
+                        .and_then(|r| r.is_error)
+                        .unwrap_or(ctx.is_error);
+
+                    // 2. Image normalization against the live model.
+                    let auto_resize = image_auto_resize;
+                    let model = {
+                        let agent = agent_ref
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        match agent {
+                            Some(agent) => Some(agent.state().await.model),
+                            None => None,
+                        }
+                    };
+                    let resize = model
+                        .as_ref()
+                        .and_then(|m| m.input_limits.as_ref())
+                        .and_then(|limits| limits.images.as_ref())
+                        .and_then(|images| images.resize.clone());
+                    let normalized = crate::utils::tool_result_images::normalize_tool_result_images(
+                        content.clone(),
+                        auto_resize,
+                        resize.as_ref(),
+                    );
+
+                    if hook_result.is_none() && normalized.is_none() {
+                        return None;
+                    }
+                    Some(pi_agent_core::types::AfterToolCallResult {
+                        content: Some(normalized.unwrap_or(content)),
+                        details: hook_result.as_ref().and_then(|r| r.details.clone()),
+                        is_error: Some(is_error),
+                        terminate: hook_result.as_ref().and_then(|r| r.terminate),
                     })
-                });
-                let after: AfterToolCallFn = Arc::new(move |ctx, _signal| {
-                    let reg = Arc::clone(&after_reg);
-                    let ctx_ref = Arc::clone(&after_ctx);
-                    Box::pin(async move {
-                        crate::core::extensions::dispatcher::dispatch_tool_result(
-                            &reg, &ctx, &ctx_ref,
-                        )
-                        .await
-                    })
-                });
-                (Some(before), Some(after))
-            }
-            None => (None, None),
+                })
+            });
+            Some(after)
         };
 
         // Wire the context event hook: extensions can modify messages before
@@ -2112,6 +2253,7 @@ impl AgentSession {
             }),
             base_system_prompt: Arc::new(std::sync::Mutex::new(system_prompt.clone())),
             extension_resource_paths: None,
+            session_start_reason: options.session_start_reason.clone(),
             pending_bash_messages: std::sync::Mutex::new(Vec::new()),
             extension_state_view: options.extension_state_view,
             extension_action_rx: options
@@ -2393,7 +2535,13 @@ impl AgentSession {
             let ext_paths = crate::core::extensions::dispatcher::dispatch_resources_discover(
                 registry,
                 &cwd,
-                "session_start",
+                // TS `extendResourcesFromExtensions(this._sessionStartEvent.reason
+                // === "reload" ? "reload" : "startup")`.
+                if session.session_start_reason == "reload" {
+                    "reload"
+                } else {
+                    "startup"
+                },
                 &ext_ctx,
             )
             .await;
@@ -2455,12 +2603,12 @@ impl AgentSession {
                         .collect(),
                 };
                 session.extension_resource_paths = Some(ext_resource_paths);
-                eprintln!(
-                    "[pi] Extension-contributed paths: {} skills, {} prompts, {} themes",
-                    ext_paths.skill_paths.len(),
-                    ext_paths.prompt_paths.len(),
-                    ext_paths.theme_paths.len(),
-                );
+                // TS `extendResourcesFromExtensions(\"startup\")`: apply the
+                // contributed paths **now** and reload, so skills/prompt
+                // templates/themes an extension just registered are usable in
+                // this session (before, they only appeared after a manual
+                // reload).
+                session.reload().await;
             }
         }
 
@@ -4640,6 +4788,7 @@ References are relative to {}.
                             timestamp,
                         } => {
                             let msg = pi_agent_core::pi_ai_types::AssistantMessage {
+                                provider_thinking_level: None,
                                 content: content.clone(),
                                 api: api.clone(),
                                 provider: provider.clone(),
@@ -4730,7 +4879,10 @@ References are relative to {}.
         // wait-for-idle): `is_agent_run_active` is still set here, so `abort()`
         // would wait for idle forever and the ACP `session/prompt` reply would
         // never be sent. Matches TS `_runAutoCompaction` (calls `compact()` directly).
-        match self._compact_inner(None, compaction_reason).await {
+        match self
+            ._compact_inner(None, compaction_reason, will_retry, Some(&rx))
+            .await
+        {
             Ok(_summary) => {
                 // Check if aborted
                 if *rx.borrow() {
@@ -5277,7 +5429,7 @@ References are relative to {}.
             reason: CompactionReason::Manual,
         });
         let result = self
-            ._compact_inner(custom_instructions, CompactionReason::Manual)
+            ._compact_inner(custom_instructions, CompactionReason::Manual, false, Some(&rx))
             .await;
         let aborted = *rx.borrow();
         // Clear before emitting compaction_end so listeners see
@@ -5315,25 +5467,10 @@ References are relative to {}.
         &self,
         custom_instructions: Option<&str>,
         reason: CompactionReason,
+        will_retry: bool,
+        abort: Option<&tokio::sync::watch::Receiver<bool>>,
     ) -> Result<crate::core::compaction::CompactionResult, String> {
         use crate::core::compaction;
-
-        // Dispatch session_before_compact to extensions. The reason is the
-        // real trigger ("manual"/"threshold"/"overflow"), matching the TS
-        // `session_before_compact` event payload (`_compact_inner` is shared by
-        // the manual and automatic paths).
-        if let Some(ref registry) = self.extension_registry {
-            let cancelled = crate::core::extensions::dispatcher::dispatch_session_before_compact(
-                registry,
-                &reason.to_string(),
-                false,
-                &self.ext_ctx,
-            )
-            .await;
-            if cancelled {
-                return Err("Compaction cancelled by extension".to_string());
-            }
-        }
 
         let path_entries = self
             .session_manager
@@ -5377,6 +5514,46 @@ References are relative to {}.
         };
         let total_tokens = prepared.tokens_before;
 
+        // TS dispatches `session_before_compact` **after** `prepareCompaction`
+        // and passes the whole preparation, the branch entries, the custom
+        // instructions and the abort signal; a handler may cancel or supply the
+        // compaction content itself.
+        let mut extension_compaction: Option<crate::core::compaction::CompactionResult> = None;
+        let mut from_extension = false;
+        if let Some(ref registry) = self.extension_registry {
+            let event = pi_extension_api::SessionBeforeCompactEvent {
+                reason: reason.to_string(),
+                will_retry,
+                preparation: serde_json::to_value(&prepared).unwrap_or(serde_json::Value::Null),
+                branch_entries: path_entries
+                    .iter()
+                    .map(|entry| serde_json::to_value(entry).unwrap_or(serde_json::Value::Null))
+                    .collect(),
+                custom_instructions: custom_instructions.map(str::to_string),
+                abort: abort.cloned(),
+            };
+            match crate::core::extensions::dispatcher::dispatch_session_before_compact(
+                registry,
+                &event,
+                &self.ext_ctx,
+            )
+            .await
+            {
+                Ok(Some(result)) => {
+                    if let Some(value) = result.compaction {
+                        let parsed: crate::core::compaction::CompactionResult =
+                            serde_json::from_value(value).map_err(|e| {
+                                format!("extension returned an invalid compaction result: {e}")
+                            })?;
+                        extension_compaction = Some(parsed);
+                        from_extension = true;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
         // Emit compaction_start once the run is actually going to happen.
         // Manual `compact()` emits it at the top before preparation; the auto
         // paths emit it here, after preparation succeeds (matching TS
@@ -5391,8 +5568,11 @@ References are relative to {}.
 
         // Generate the summary (matching TS `compact()`): a single history
         // summary, or - for split turns - a history summary plus a separate
-        // turn-prefix summary that are merged.
-        let history_text = if prepared.messages_to_summarize.is_empty() {
+        // turn-prefix summary that are merged. An extension-supplied compaction
+        // short-circuits the summarizer (TS `if (extensionCompaction)`).
+        let history_text = if extension_compaction.is_some() {
+            String::new()
+        } else if prepared.messages_to_summarize.is_empty() {
             "No prior history.".to_string()
         } else {
             let prompt = compaction::build_summarization_prompt(
@@ -5408,7 +5588,9 @@ References are relative to {}.
             .await
         };
 
-        let summary = if prepared.is_split_turn && !prepared.turn_prefix_messages.is_empty() {
+        let summary = if let Some(compaction) = &extension_compaction {
+            compaction.summary.clone()
+        } else if prepared.is_split_turn && !prepared.turn_prefix_messages.is_empty() {
             let prefix_prompt =
                 compaction::build_turn_prefix_summarization_prompt(&prepared.turn_prefix_messages);
             let prefix_text = self
@@ -5426,7 +5608,13 @@ References are relative to {}.
             history_text
         };
 
-        let first_kept_entry_id = prepared.first_kept_entry_id.clone().unwrap_or_default();
+        let first_kept_entry_id = match &extension_compaction {
+            Some(compaction) => compaction.first_kept_entry_id.clone(),
+            None => prepared.first_kept_entry_id.clone().unwrap_or_default(),
+        };
+        let extension_usage = extension_compaction
+            .as_ref()
+            .and_then(|compaction| compaction.usage.clone());
 
         // Record compaction in session manager with the real first-kept entry
         // UUID (matching TS `sessionManager.appendCompaction`).
@@ -5440,8 +5628,8 @@ References are relative to {}.
                 Some(&first_kept_entry_id),
                 total_tokens,
                 None,
-                None,
-                None,
+                Some(from_extension).filter(|from| *from),
+                extension_usage.clone(),
             );
         }
 
@@ -5482,6 +5670,7 @@ References are relative to {}.
             first_kept_entry_id,
             tokens_before: total_tokens,
             estimated_tokens_after: Some(estimated_tokens_after),
+            usage: extension_usage,
             details: Some(crate::core::compaction::CompactionDetails::default()),
         })
     }
@@ -6510,6 +6699,7 @@ async fn consume_stream_to_message(
     fn_options: pi_agent_core::types::StreamFnOptions,
 ) -> pi_agent_core::pi_ai_types::AssistantMessage {
     let error_message = |e: String| pi_agent_core::pi_ai_types::AssistantMessage {
+        provider_thinking_level: None,
         content: vec![],
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -7027,8 +7217,18 @@ impl AgentSession {
     /// Create a new session (session manager level), matching the original
     /// simplified new_session(). For full lifecycle management with extension
     /// events and factory-based creation, use AgentSessionRuntime::new_session().
-    pub async fn session_mgr_new(&mut self, parent_session: Option<&str>) {
+    ///
+    /// Fires the TS lifecycle events in order:
+    /// `session_before_switch(reason="new")` (can cancel) → `session_shutdown`
+    /// → new manager. Returns `false` when an extension cancelled the switch.
+    pub async fn session_mgr_new(&self, parent_session: Option<&str>) -> bool {
         use crate::core::session_manager::SessionManager as SM;
+
+        // TS `emitBeforeSwitch("new")` — extensions can veto the replacement.
+        if self.dispatch_before_switch("new", None).await {
+            return false;
+        }
+
         let session_dir = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_session_dir().to_string_lossy().to_string();
         let new_session_opts = parent_session.map(|p| {
@@ -7038,13 +7238,21 @@ impl AgentSession {
             }
         });
         let new_mgr = SM::new(&self.cwd, &session_dir, None, true, new_session_opts);
+        let target_file = new_mgr.get_session_file().map(|p| p.to_string_lossy().into_owned());
+        // TS `teardownCurrent("new", target)`.
+        self.dispatch_shutdown("new", target_file.as_deref()).await;
         *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+        true
     }
 
     /// Switch to a different session file (session manager level), matching
     /// the original simplified switch_session(). For full lifecycle management
     /// with extension events and factory-based creation, use AgentSessionRuntime::switch_session().
-    pub async fn session_mgr_switch(&self, session_path: &str, cwd_override: Option<&str>) -> Result<(), String> {
+    ///
+    /// Fires `session_before_switch(reason="resume", target)` (can cancel) then
+    /// `session_shutdown(reason="resume", target)`. `Ok(false)` means an
+    /// extension cancelled the switch.
+    pub async fn session_mgr_switch(&self, session_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
         use crate::core::session_manager::SessionManager as SM;
         let path = std::path::Path::new(session_path);
         if !path.exists() {
@@ -7053,10 +7261,16 @@ impl AgentSession {
         if !crate::core::session_manager::is_valid_session_file(path) {
             return Err(format!("Invalid session file: {}", session_path));
         }
+        // TS `emitBeforeSwitch("resume", sessionPath)`.
+        if self.dispatch_before_switch("resume", Some(session_path)).await {
+            return Ok(false);
+        }
         let session_dir = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_session_dir().to_string_lossy().to_string();
         let effective_cwd = cwd_override.unwrap_or(&self.cwd);
         let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
+        // TS `teardownCurrent("resume", target)`.
+        self.dispatch_shutdown("resume", Some(session_path)).await;
         *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
         self.load_messages_from_session().await;
         // The session changed: invalidate the JS extension runtime so stale
@@ -7064,17 +7278,215 @@ impl AgentSession {
         if let Some(ref invalidate) = self.js_invalidator {
             invalidate();
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Fork the session at a specific entry (session manager level), matching
     /// the original simplified fork_session(). For full lifecycle management
     /// with extension events and factory-based creation, use AgentSessionRuntime::fork().
-    pub async fn session_mgr_fork(&self, entry_id: &str) -> Result<String, String> {
-        let branch_path = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_branched_session(entry_id, None)?;
-        self.session_mgr_switch(&branch_path, None).await?;
-        Ok(branch_path)
+    ///
+    /// `position` is TS `fork()`'s `"before" | "at"` (default `"before"`):
+    /// - `before` — branch ends at the selected user message's parent, so the
+    ///   message itself is **not** part of the new session (the caller puts its
+    ///   text back into the editor);
+    /// - `at` · branch ends at the selected entry.
+    ///
+    /// Fires `session_before_fork(entry_id, position)` (can cancel) then
+    /// `session_shutdown(reason="fork", target)`.
+    pub async fn session_mgr_fork(
+        &self,
+        entry_id: &str,
+        position: Option<&str>,
+    ) -> Result<crate::core::session_manager::ForkOutcome, String> {
+        let position = position.unwrap_or("before");
+        let entry = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_entry(entry_id)
+            .cloned()
+            .ok_or_else(|| format!("Invalid entry ID for forking: {entry_id}"))?;
+
+        let (target_leaf_id, selected_text): (Option<String>, Option<String>) = if position == "at" {
+            (Some(entry.id().to_string()), None)
+        } else {
+            // TS: "before" requires a user message entry.
+            let crate::core::session_manager::SessionEntry::Message { message, .. } = &entry else {
+                return Err("Invalid entry ID for forking".to_string());
+            };
+            if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+                return Err("Invalid entry ID for forking".to_string());
+            }
+            (
+                entry.parent_id().map(str::to_string),
+                extract_user_message_text(message),
+            )
+        };
+
+        // TS `emitBeforeFork(entryId, { position })`.
+        if self.dispatch_before_fork(entry_id, position).await {
+            return Ok(crate::core::session_manager::ForkOutcome {
+                cancelled: true,
+                path: None,
+                selected_text,
+            });
+        }
+
+        let previous_file = self
+            .get_session_file()
+            .map(|p| p.to_string_lossy().into_owned());
+        match target_leaf_id {
+            Some(leaf) => {
+                let path = self
+                    .session_manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .create_branched_session(leaf.as_str(), None)?;
+                // TS `teardownCurrent("fork", target)`, then switch to the branch.
+                self.dispatch_shutdown("fork", Some(&path)).await;
+                self.session_mgr_switch_inner(&path, None).await?;
+                Ok(crate::core::session_manager::ForkOutcome {
+                    cancelled: false,
+                    path: Some(path),
+                    selected_text,
+                })
+            }
+            None => {
+                // Forking before the first entry: TS creates an empty session
+                // that records the parent session file. The file is written
+                // lazily by `persist_entry_str` once content is appended, so
+                // install the manager directly instead of round-tripping
+                // through `session_mgr_switch` (which validates the file).
+                let session_dir = self
+                    .session_manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_session_dir()
+                    .to_string_lossy()
+                    .to_string();
+                let opts = crate::core::session_manager::NewSessionOptions {
+                    id: None,
+                    parent_session: previous_file.clone(),
+                };
+                let new_mgr = crate::core::session_manager::SessionManager::new(
+                    &self.cwd,
+                    &session_dir,
+                    None,
+                    true,
+                    Some(opts),
+                );
+                let path = new_mgr
+                    .get_session_file()
+                    .map(|p| p.to_string_lossy().into_owned());
+                self.dispatch_shutdown("fork", path.as_deref()).await;
+                *self
+                    .session_manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+                self.load_messages_from_session().await;
+                if let Some(ref invalidate) = self.js_invalidator {
+                    invalidate();
+                }
+                Ok(crate::core::session_manager::ForkOutcome {
+                    cancelled: false,
+                    path,
+                    selected_text,
+                })
+            }
+        }
+    }
+
+    /// Switch without dispatching `session_before_switch`/`session_shutdown`
+    /// (used internally by [`Self::session_mgr_fork`] which already emitted
+    /// them with the correct `fork` reason).
+    async fn session_mgr_switch_inner(&self, session_path: &str, cwd_override: Option<&str>) -> Result<(), String> {
+        use crate::core::session_manager::SessionManager as SM;
+        let session_dir = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_session_dir().to_string_lossy().to_string();
+        let effective_cwd = cwd_override.unwrap_or(&self.cwd);
+        let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
+        *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+        self.load_messages_from_session().await;
+        if let Some(ref invalidate) = self.js_invalidator {
+            invalidate();
+        }
+        Ok(())
+    }
+
+    /// Dispatch `session_before_switch` (returns `true` when an extension
+    /// cancelled the replacement).
+    pub async fn dispatch_before_switch(
+        &self,
+        reason: &str,
+        target_session_file: Option<&str>,
+    ) -> bool {
+        let Some(registry) = self.get_extension_registry() else {
+            return false;
+        };
+        crate::core::extensions::dispatcher::dispatch_session_before_switch(
+            &registry,
+            reason,
+            target_session_file,
+            &self.ext_ctx,
+        )
+        .await
+    }
+
+    /// Dispatch `session_before_fork` (returns `true` when cancelled).
+    pub async fn dispatch_before_fork(&self, entry_id: &str, position: &str) -> bool {
+        let Some(registry) = self.get_extension_registry() else {
+            return false;
+        };
+        crate::core::extensions::dispatcher::dispatch_session_before_fork(
+            &registry,
+            entry_id,
+            position,
+            &self.ext_ctx,
+        )
+        .await
+    }
+
+    /// Dispatch `session_shutdown` (fire-and-forget) before a session is
+    /// replaced or the process quits (TS `teardownCurrent` / `dispose`).
+    pub async fn dispatch_shutdown(&self, reason: &str, target_session_file: Option<&str>) {
+        let Some(registry) = self.get_extension_registry() else {
+            return;
+        };
+        crate::core::extensions::dispatcher::dispatch_session_shutdown(
+            &registry,
+            reason,
+            target_session_file,
+            &self.ext_ctx,
+        )
+        .await;
+    }
+}
+
+/// Extract the text of a user message (TS `extractUserMessageText`): string
+/// content or the concatenated text blocks of an array.
+fn extract_user_message_text(message: &serde_json::Value) -> Option<String> {
+    if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return None;
+    }
+    let content = message.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let blocks = content.as_array()?;
+    let texts: Vec<String> = blocks
+        .iter()
+        .filter_map(|block| {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                block.get("text").and_then(|t| t.as_str()).map(str::to_string)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join(""))
     }
 }
 
@@ -7231,6 +7643,7 @@ fn is_retryable_error(message: &AgentMessage, context_window: u64) -> bool {
                 None
             };
             let msg = pi_agent_core::pi_ai_types::AssistantMessage {
+                provider_thinking_level: None,
                 content: content.clone(),
                 api: api.clone(),
                 provider: provider.clone(),
@@ -7495,6 +7908,183 @@ mod tests {
     /// Minimal session for the settle-path tests. No provider is reachable, so
     /// a run that actually starts fails; the tests only observe dispatch order
     /// and deferral.
+    /// Session whose manager is persisted into a temp dir (fork needs real
+    /// session files).
+    async fn build_persisted_test_session(
+        dir: &tempfile::TempDir,
+    ) -> (AgentSession, ()) {
+        let cwd = dir.path().to_str().unwrap().to_string();
+        let session_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let mut session_manager = crate::core::session_manager::SessionManager::new(
+            &cwd,
+            session_dir.to_str().unwrap(),
+            None,
+            true,
+            None,
+        );
+        let _first = session_manager
+            .append_message(serde_json::json!({"role":"user","content":"first","timestamp":1}));
+        let _reply = session_manager.append_message(serde_json::json!({
+            "role":"assistant",
+            "content":[{"type":"text","text":"ok"}],
+            "api":"anthropic-messages","provider":"anthropic","model":"test-model",
+            "usage":{},"stopReason":"stop","timestamp":2
+        }));
+        let _second = session_manager
+            .append_message(serde_json::json!({"role":"user","content":"second","timestamp":3}));
+        let session = build_test_session_with_manager(dir, session_manager).await;
+        (session, ())
+    }
+
+    async fn build_test_session_with_manager(
+        dir: &tempfile::TempDir,
+        session_manager: crate::core::session_manager::SessionManager,
+    ) -> AgentSession {
+        let cwd = dir.path().to_str().unwrap().to_string();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let settings_manager = crate::core::settings_manager::SettingsManager::create(
+            &cwd,
+            Some(agent_dir.to_str().unwrap()),
+        );
+        let model_registry = crate::core::model_registry::ModelRegistry::new(
+            crate::core::model_registry::ModelRegistry::builtin_models_list(),
+        );
+        let model = model_registry
+            .get_available()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| pi_agent_core::pi_ai_types::Model {
+                input_limits: None,
+                prompt_cache: None,
+                id: "test-model".to_string(),
+                name: "Test Model".to_string(),
+                api: "anthropic-messages".to_string(),
+                provider: "anthropic".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                reasoning: false,
+                thinking_level_map: None,
+                input: Vec::new(),
+                cost: pi_agent_core::pi_ai_types::ModelCost::default(),
+                context_window: 128_000,
+                max_tokens: 4096,
+                sampling_params: None,
+                headers: None,
+                compat: None,
+            });
+        AgentSession::new(
+            session_manager,
+            settings_manager,
+            model_registry,
+            AgentSessionConfig {
+                cwd,
+                model,
+                thinking_level: "medium".to_string(),
+                custom_prompt: None,
+                append_system_prompt: None,
+                selected_tools: None,
+                tool_snippets: None,
+                prompt_guidelines: None,
+                context_files: Vec::new(),
+                skills: Vec::new(),
+                session_name: None,
+                stream_fn: None,
+                convert_to_llm: None,
+                initial_active_tool_names: None,
+                uses_default_tools: false,
+                allowed_tool_names: None,
+                excluded_tool_names: None,
+                extension_registry: None,
+                session_start_reason: "startup".to_string(),
+                trust_override: None,
+                ui_context: None,
+                custom_tools: None,
+                tools_options: None,
+                resource_loader: None,
+                extension_state_view: None,
+                extension_action_rx: None,
+            },
+        )
+        .await
+    }
+
+    /// TS `fork(entryId)` defaults to `position: "before"`: the branch ends at
+    /// the selected user message's **parent**, so re-submitting the returned
+    /// text does not duplicate it.
+    #[tokio::test]
+    async fn fork_before_excludes_selected_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, ()) = build_persisted_test_session(&dir).await;
+
+        let user_entries: Vec<String> = session
+            .get_session_manager()
+            .get_entries()
+            .iter()
+            .filter(|e| match e {
+                SessionEntry::Message { message, .. } => {
+                    message.get("role").and_then(|r| r.as_str()) == Some("user")
+                }
+                _ => false,
+            })
+            .map(|e| e.id().to_string())
+            .collect();
+        let second_user = user_entries.last().cloned().unwrap();
+
+        let outcome = session.session_mgr_fork(&second_user, None).await.unwrap();
+        assert!(!outcome.cancelled);
+        assert_eq!(
+            outcome.selected_text.as_deref(),
+            Some("second"),
+            "selected text is handed back to the caller"
+        );
+
+        let messages = session.get_messages().await;
+        let texts: Vec<String> = messages
+            .iter()
+            .filter_map(|m| match m {
+                AgentMessage::User { content, .. } => Some(
+                    content
+                        .iter()
+                        .filter_map(|b| match b {
+                            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+                                Some(text.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "first"), "kept earlier turns: {texts:?}");
+        assert!(
+            !texts.iter().any(|t| t == "second"),
+            "the forked-before message must not be in the new session: {texts:?}"
+        );
+    }
+
+    /// `position: "at"` (TS `/clone`) keeps the selected entry.
+    #[tokio::test]
+    async fn fork_at_keeps_selected_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, ()) = build_persisted_test_session(&dir).await;
+        let leaf = session
+            .get_session_manager()
+            .get_leaf_id()
+            .map(str::to_string)
+            .unwrap();
+
+        let outcome = session
+            .session_mgr_fork(&leaf, Some("at"))
+            .await
+            .unwrap();
+        assert!(!outcome.cancelled);
+        assert!(outcome.selected_text.is_none(), "at-fork has no selected text");
+        let messages = session.get_messages().await;
+        assert_eq!(messages.len(), 3, "all three entries kept: {messages:?}");
+    }
+
     async fn build_settle_test_session(
         registry: Option<Arc<crate::core::extensions::ExtensionRegistry>>,
     ) -> AgentSession {
@@ -7518,6 +8108,7 @@ mod tests {
             .into_iter()
             .next()
             .unwrap_or_else(|| pi_agent_core::pi_ai_types::Model {
+                input_limits: None,
                 prompt_cache: None,
                 id: "test-model".to_string(),
                 name: "Test Model".to_string(),
@@ -7557,6 +8148,8 @@ mod tests {
                 allowed_tool_names: None,
                 excluded_tool_names: None,
                 extension_registry: registry,
+                session_start_reason: "startup".to_string(),
+                trust_override: None,
                 ui_context: None,
                 custom_tools: None,
                 tools_options: None,
@@ -7895,6 +8488,7 @@ mod tests {
         }
         let warmable_model = || {
             let mut model = pi_agent_core::pi_ai_types::Model {
+                input_limits: None,
                 id: "claude-sonnet-5".into(),
                 name: "Claude Sonnet 5".into(),
                 api: "anthropic-messages".into(),
@@ -8278,5 +8872,40 @@ mod tests {
         assert!(is_retryable_error_message("Service Unavailable"));
         assert!(is_retryable_error_message("rate_limit_exceeded"));
         assert!(is_retryable_error_message("Request timed out: no data received for 300s"));
+    }
+
+    /// `extract_user_message_text` must handle both string content and
+    /// `[{type:"text",text}]` arrays, matching TS `extractUserMessageText`.
+    #[test]
+    fn extract_user_message_text_handles_string_and_array() {
+        assert_eq!(
+            extract_user_message_text(&serde_json::json!({"role": "user", "content": "hello"})),
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            extract_user_message_text(&serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "image", "data": "x"},
+                    {"type": "text", "text": "b"}
+                ]
+            })),
+            Some("ab".to_string())
+        );
+        // Non-user roles are not fork candidates.
+        assert_eq!(
+            extract_user_message_text(&serde_json::json!({"role": "assistant", "content": "x"})),
+            None
+        );
+        // No text blocks -> None
+        assert_eq!(
+            extract_user_message_text(&serde_json::json!({
+                "role": "user",
+                "content": [{"type": "image", "data": "x"}]
+            })),
+            None
+        );
+        assert_eq!(extract_user_message_text(&serde_json::json!({"role": "user"})), None);
     }
 }

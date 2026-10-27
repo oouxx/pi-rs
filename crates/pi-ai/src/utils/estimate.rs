@@ -229,6 +229,7 @@ mod tests {
 
     fn assistant(usage: Usage, stop_reason: StopReason, timestamp: i64) -> Message {
         Message::Assistant {
+            provider_thinking_level: None,
             content: vec![],
             api: "anthropic-messages".into(),
             provider: "anthropic".into(),

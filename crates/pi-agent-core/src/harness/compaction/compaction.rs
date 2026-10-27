@@ -380,6 +380,7 @@ pub async fn complete_summarization(
             match pi_complete(&model, &context, Some(options)).await {
                 Ok(msg) => msg,
                 Err(e) => crate::pi_ai_types::AssistantMessage {
+                    provider_thinking_level: None,
                     content: vec![],
                     api: model.api.clone(),
                     provider: model.provider.clone(),

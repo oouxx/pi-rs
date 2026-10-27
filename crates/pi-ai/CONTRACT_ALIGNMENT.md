@@ -86,3 +86,11 @@
 | anthropic `isOAuthToken` | `sk-ant-oat…` → Bearer + `user-agent: claude-cli/2.1.251` + `x-app: cli` + OAuth beta | `anthropic_auth_headers` + `is_oauth_token` 同左 | 是（工具名归一化未做，见 DEVIATIONS.md #10） | |
 | `stream()` env 注入 | env 回退在 provider `resolve` 内，入口不注入 | 已移除 `with_env_api_key`，同左 | 是 | 修复见 PORTING_MISTAKES.md |
 | anthropic-messages 各 provider 的 env 归属 | `ANTHROPIC_AUTH_TOKEN`/`_OAUTH_TOKEN`/`_API_KEY` 只属于 `anthropic` provider；minimax/fireworks/copilot 用各自 provider 的 env | `resolve_anthropic_provider_auth` 按 provider 区分 | 是 | 修复见 PORTING_MISTAKES.md |
+
+## 模型输入限制与 reasoning 回放（2026-10-26）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| `Model.inputLimits` | `inputLimits?: {maxRequestBytes?, images?: {resize?: {maxWidth,maxHeight,maxBytes,jpegQuality}, maxPerMessage?, maxPerRequest?}}`，生成器为图像模型产出并发给消费端 | 同名字段 `input_limits`（wire `inputLimits`，camelCase，缺省不序列化）；消费端见 `pi-coding-agent` 的 `ResizeProfile` / `tool_result_images` | 是（数据待生成器补） | 目录快照暂无该元数据，模型级配置（`models.json`）已生效 |
+| `AssistantMessage.providerThinkingLevel` | managed-effort 模型记录本轮实际 effort（`options.effort ?? "high"`），回放时映射回逐轮 `output_config` 系统消息 | 同名 `provider_thinking_level`（wire `providerThinkingLevel`）；Anthropic 请求侧按 `assistant_levels` 逐轮插入标记 | 是（2026-10-26） | 见 `PORTING_MISTAKES.md` |
+| OpenAI `reasoning_details` | 流式增量合并进 thinking signature（序列化一次），回放优先用它而不是原始 reasoning 字段 | 同左（`append_openai_reasoning_detail` + `parse_openai_reasoning_details` + legacy toolCall fallback） | 是（2026-10-26） | 同上 |

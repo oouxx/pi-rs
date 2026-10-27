@@ -238,6 +238,10 @@ pub struct CreateAgentSessionOptions {
     /// Extension UI context. When set, used instead of the default no-op
     /// context (headless modes wire dialogs/notifications to their client).
     pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
+    /// Explicit project-trust decision (`--trust` / `--no-trust`). Overrides
+    /// the stored decision and the `defaultTrust` policy when resolving
+    /// `ctx.isProjectTrusted()` (TS `projectTrustOverride`).
+    pub trust_override: Option<bool>,
 }
 
 impl Default for CreateAgentSessionOptions {
@@ -276,7 +280,8 @@ impl Default for CreateAgentSessionOptions {
             session_manager: None,
             settings_manager: None,
             session_start_event: None,
-        ui_context: None,
+            ui_context: None,
+            trust_override: None,
         }
     }
 }
@@ -653,6 +658,7 @@ pub async fn create_agent_session(
         }
         None => {
             let empty_model = Model {
+                input_limits: None,
                 prompt_cache: None,
                 id: String::new(),
                 name: String::new(),
@@ -894,6 +900,8 @@ pub async fn create_agent_session(
         allowed_tool_names,
         excluded_tool_names,
         extension_registry: Some(std::sync::Arc::clone(&extension_registry_arc)),
+        session_start_reason: session_start_reason.clone(),
+        trust_override: options.trust_override,
         ui_context: options.ui_context.clone(),
         resource_loader: Some(Box::new(resource_loader_instance)),
         custom_tools,
@@ -954,6 +962,7 @@ mod tests {
     /// Minimal model definition for the session-restore tests.
     fn test_model(provider: &str, id: &str, reasoning: bool) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: id.to_string(),
             name: id.to_string(),

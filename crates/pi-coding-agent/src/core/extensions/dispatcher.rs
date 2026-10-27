@@ -309,11 +309,12 @@ pub async fn dispatch_session_start(
 pub async fn dispatch_session_shutdown(
     registry: &ExtensionRegistry,
     reason: &str,
+    target_session_file: Option<&str>,
     ext_ctx: &ExtensionContext,
 ) {
     registry
         .hook_runner()
-        .fire_session_shutdown(reason, None, Some(ext_ctx))
+        .fire_session_shutdown(reason, target_session_file, Some(ext_ctx))
         .await;
 }
 
@@ -322,18 +323,31 @@ pub async fn dispatch_session_shutdown(
 // ============================================================================
 
 /// Dispatch `session_before_compact` event to extensions via HookRunner.
-/// Returns `true` if the operation was cancelled by an extension.
+///
+/// Returns `Err(reason)` when a handler cancelled the compaction, and
+/// `Ok(Some(result))` when a handler supplied the compaction content
+/// (TS `SessionBeforeCompactResult.compaction`, `fromExtension: true`).
 pub async fn dispatch_session_before_compact(
     registry: &ExtensionRegistry,
-    reason: &str,
-    will_retry: bool,
+    event: &pi_extension_api::SessionBeforeCompactEvent,
     ext_ctx: &ExtensionContext,
-) -> bool {
-    let result = registry
+) -> Result<Option<pi_extension_api::SessionBeforeCompactResult>, String> {
+    match registry
         .hook_runner()
-        .run_before_session_compact(reason.to_string(), will_retry, ext_ctx)
-        .await;
-    result.is_cancel()
+        .run_before_session_compact(event, ext_ctx)
+        .await
+    {
+        pi_extension_api::HookResult::Continue(result) => {
+            if result.cancel {
+                Err("Compaction cancelled by extension".to_string())
+            } else if result.compaction.is_some() {
+                Ok(Some(result))
+            } else {
+                Ok(None)
+            }
+        }
+        pi_extension_api::HookResult::Cancel(reason) => Err(reason),
+    }
 }
 
 // ============================================================================
@@ -358,18 +372,15 @@ pub async fn dispatch_session_compact(
 /// Returns `true` if the operation was cancelled by an extension.
 pub async fn dispatch_session_before_switch(
     registry: &ExtensionRegistry,
-    target_session_file: &str,
+    reason: &str,
+    target_session_file: Option<&str>,
     ext_ctx: &ExtensionContext,
 ) -> bool {
     let result = registry
         .hook_runner()
         .run_before_session_switch(
-            "resume".to_string(),
-            if target_session_file.is_empty() {
-                None
-            } else {
-                Some(target_session_file.to_string())
-            },
+            reason.to_string(),
+            target_session_file.map(str::to_string),
             ext_ctx,
         )
         .await;
@@ -385,11 +396,12 @@ pub async fn dispatch_session_before_switch(
 pub async fn dispatch_session_before_fork(
     registry: &ExtensionRegistry,
     entry_id: &str,
+    position: &str,
     ext_ctx: &ExtensionContext,
 ) -> bool {
     let result = registry
         .hook_runner()
-        .run_before_session_fork(entry_id.to_string(), "current".to_string(), ext_ctx)
+        .run_before_session_fork(entry_id.to_string(), position.to_string(), ext_ctx)
         .await;
     result.is_cancel()
 }

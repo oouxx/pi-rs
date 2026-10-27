@@ -103,6 +103,7 @@ fn test_model_id() -> String {
 fn make_model() -> Model {
     let id = test_model_id();
     Model {
+        input_limits: None,
         prompt_cache: None,
         id: id.clone(),
         name: format!("Test: {id}"),
@@ -143,6 +144,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
             let key = key.clone();
             Box::pin(async move {
                 let pi_model = pi_agent_core::pi_ai::types::Model {
+                    input_limits: None,
                     prompt_cache: None,
                     id: model.id,
                     name: model.name,
@@ -199,6 +201,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 timestamp,
                                 ..
                             } => pi_agent_core::pi_ai::types::Message::Assistant {
+                                provider_thinking_level: None,
                                 content: content.clone(),
                                 api: api.clone(),
                                 provider: provider.clone(),
@@ -369,6 +372,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                             _ => AssistantMessageEvent::Error {
                                 reason: StopReason::Error,
                                 error: convert_msg(pi_agent_core::pi_ai::types::AssistantMessage {
+                                    provider_thinking_level: None,
                                     content: vec![],
                                     api: String::new(),
                                     provider: String::new(),
@@ -397,6 +401,7 @@ fn convert_msg(
     msg: pi_agent_core::pi_ai::types::AssistantMessage,
 ) -> pi_agent_core::pi_ai_types::AssistantMessage {
     pi_agent_core::pi_ai_types::AssistantMessage {
+        provider_thinking_level: None,
         content: msg
             .content
             .iter()
@@ -495,6 +500,7 @@ async fn test_create_agent_session_with_extension() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -585,6 +591,7 @@ async fn test_extension_tool_notify_uses_swapped_ui_context() {
         session_start_event: None,
         // 模拟 interactive 模式：会话创建时不带 UI，之后才 swap。
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -668,6 +675,7 @@ async fn test_session_builtin_bash_tool_exec() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -748,6 +756,7 @@ async fn test_llm_detect_builtin_tools() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -832,6 +841,7 @@ async fn test_invoke_agent() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1101,6 +1111,7 @@ async fn test_multi_turn_tool_communication() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1559,6 +1570,7 @@ async fn test_state_mutations_persist_to_agent() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1691,6 +1703,7 @@ async fn test_prompt_returns_error_when_no_api_key() {
         settings_manager: None,
         session_start_event: None,
         ui_context: None,
+        trust_override: None,
     })
     .await
     .expect("session creation must succeed");

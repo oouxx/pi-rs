@@ -19,6 +19,7 @@ use pi_coding_agent::core::settings_manager::{
 
 fn make_model() -> Model {
     Model {
+        input_limits: None,
         prompt_cache: None,
         id: "tool-activation-test-model".to_string(),
         name: "Tool activation test model".to_string(),

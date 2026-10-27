@@ -665,14 +665,14 @@ pub trait HookHandler: Send + Sync {
         HookResult::Continue(())
     }
 
-    /// Session 压缩前触发。可取消压缩。
+    /// Session 压缩前触发。可取消压缩，也可直接提供 compaction 结果
+    /// （对齐 TS `SessionBeforeCompactResult`）。
     async fn before_session_compact(
         &self,
-        _reason: String,
-        _will_retry: bool,
+        _event: &SessionBeforeCompactEvent,
         _ctx: &crate::ExtensionContext,
-    ) -> HookResult<()> {
-        HookResult::Continue(())
+    ) -> HookResult<SessionBeforeCompactResult> {
+        HookResult::Continue(SessionBeforeCompactResult::default())
     }
 
     /// Session 树导航前触发。可取消导航。
@@ -683,6 +683,47 @@ pub trait HookHandler: Send + Sync {
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
+}
+
+/// TS `SessionBeforeCompactEvent`: everything a `session_before_compact` handler
+/// gets to inspect. The coding-agent owns `CompactionPreparation` /
+/// `SessionEntry` / `CompactionResult`, so they travel as serialized JSON
+/// (same pattern as other cross-crate hook payloads).
+#[derive(Clone, Debug)]
+pub struct SessionBeforeCompactEvent {
+    /// What triggered the compaction: `manual` / `threshold` / `overflow`.
+    pub reason: String,
+    /// True when the aborted turn is retried after this compaction.
+    pub will_retry: bool,
+    /// TS `preparation` (serialized `CompactionPreparation`).
+    pub preparation: serde_json::Value,
+    /// TS `branchEntries` (serialized `SessionEntry[]`) for the branch being
+    /// compacted.
+    pub branch_entries: Vec<serde_json::Value>,
+    /// User instructions for the summary (`/compact <instructions>`).
+    pub custom_instructions: Option<String>,
+    /// Abort signal for the compaction.
+    pub abort: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl SessionBeforeCompactEvent {
+    /// Whether the compaction was already aborted by the user.
+    #[must_use]
+    pub fn is_aborted(&self) -> bool {
+        self.abort
+            .as_ref()
+            .map(|rx| *rx.borrow())
+            .unwrap_or(false)
+    }
+}
+
+/// TS `SessionBeforeCompactResult`: a handler can cancel the compaction or
+/// supply the compaction content itself (`fromExtension: true`).
+#[derive(Clone, Debug, Default)]
+pub struct SessionBeforeCompactResult {
+    pub cancel: bool,
+    /// Serialized `CompactionResult` used instead of running the summarizer.
+    pub compaction: Option<serde_json::Value>,
 }
 
 /// Whether a serialized transcript message is a system message.
@@ -1479,22 +1520,25 @@ impl HookRunner {
     }
 
     /// Run `before_session_compact` handlers in priority order.
+    ///
+    /// Like TS `emit()`, the first handler that cancels or supplies a custom
+    /// compaction wins (handlers run in order, each seeing the same event).
     pub async fn run_before_session_compact(
         &self,
-        reason: String,
-        will_retry: bool,
+        event: &SessionBeforeCompactEvent,
         ctx: &crate::ExtensionContext,
-    ) -> HookResult<()> {
+    ) -> HookResult<SessionBeforeCompactResult> {
         for handler in &self.handlers {
-            match handler
-                .before_session_compact(reason.clone(), will_retry, ctx)
-                .await
-            {
-                HookResult::Continue(()) => {}
+            match handler.before_session_compact(event, ctx).await {
+                HookResult::Continue(result) => {
+                    if result.cancel || result.compaction.is_some() {
+                        return HookResult::Continue(result);
+                    }
+                }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
         }
-        HookResult::Continue(())
+        HookResult::Continue(SessionBeforeCompactResult::default())
     }
 
     /// Run `before_session_tree` handlers in priority order.
@@ -1548,6 +1592,133 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    struct CompactHandler {
+        name: String,
+        cancel: bool,
+        compaction: bool,
+    }
+
+    #[async_trait]
+    impl HookHandler for CompactHandler {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        async fn before_session_compact(
+            &self,
+            event: &SessionBeforeCompactEvent,
+            _ctx: &crate::ExtensionContext,
+        ) -> HookResult<SessionBeforeCompactResult> {
+            assert_eq!(event.reason, "manual");
+            assert_eq!(event.preparation["tokensBefore"], 1234);
+            assert_eq!(event.branch_entries.len(), 1);
+            assert_eq!(event.custom_instructions.as_deref(), Some("keep the API bits"));
+            HookResult::Continue(SessionBeforeCompactResult {
+                cancel: self.cancel,
+                compaction: self
+                    .compaction
+                    .then(|| serde_json::json!({ "summary": "from extension" })),
+            })
+        }
+    }
+
+    fn compact_event() -> SessionBeforeCompactEvent {
+        SessionBeforeCompactEvent {
+            reason: "manual".to_string(),
+            will_retry: false,
+            preparation: serde_json::json!({ "tokensBefore": 1234 }),
+            branch_entries: vec![serde_json::json!({ "id": "e1" })],
+            custom_instructions: Some("keep the API bits".to_string()),
+            abort: None,
+        }
+    }
+
+    fn compact_runner(handlers: Vec<Box<dyn HookHandler>>) -> HookRunner {
+        let mut runner = HookRunner::new();
+        for handler in handlers {
+            runner.register(handler);
+        }
+        runner
+    }
+
+    fn no_ctx() -> crate::ExtensionContext {
+        crate::ExtensionContext::new(
+            "session".to_string(),
+            true,
+            crate::ExtensionUIContext::noop(),
+            crate::RuntimeHandle::noop(),
+        )
+    }
+
+    /// The handler sees the whole preparation/branch/instructions payload, and a
+    /// plain `Continue` lets the default summarizer run.
+    #[tokio::test]
+    async fn before_session_compact_passes_full_payload() {
+        let runner = compact_runner(vec![Box::new(CompactHandler {
+            name: "h".to_string(),
+            cancel: false,
+            compaction: false,
+        })]);
+        let result = runner
+            .run_before_session_compact(&compact_event(), &no_ctx())
+            .await;
+        match result {
+            HookResult::Continue(r) => {
+                assert!(!r.cancel);
+                assert!(r.compaction.is_none());
+            }
+            HookResult::Cancel(_) => panic!("must not cancel"),
+        }
+    }
+
+    /// A handler can veto the compaction.
+    #[tokio::test]
+    async fn before_session_compact_can_cancel() {
+        let runner = compact_runner(vec![Box::new(CompactHandler {
+            name: "h".to_string(),
+            cancel: true,
+            compaction: false,
+        })]);
+        match runner
+            .run_before_session_compact(&compact_event(), &no_ctx())
+            .await
+        {
+            HookResult::Continue(r) => assert!(r.cancel, "cancel flag is surfaced"),
+            HookResult::Cancel(_) => panic!("cancel is a result flag, not a hook cancel"),
+        }
+    }
+
+    /// A handler-supplied compaction short-circuits later handlers and is
+    /// returned to the caller (`fromExtension: true`).
+    #[tokio::test]
+    async fn before_session_compact_returns_extension_compaction() {
+        let runner = compact_runner(vec![
+            Box::new(CompactHandler {
+                name: "first".to_string(),
+                cancel: false,
+                compaction: true,
+            }),
+            Box::new(CompactHandler {
+                name: "second".to_string(),
+                cancel: true,
+                compaction: false,
+            }),
+        ]);
+        match runner
+            .run_before_session_compact(&compact_event(), &no_ctx())
+            .await
+        {
+            HookResult::Continue(r) => {
+                assert!(!r.cancel, "first handler wins");
+                assert_eq!(
+                    r.compaction.unwrap()["summary"],
+                    "from extension",
+                    "extension compaction is passed back"
+                );
+            }
+            HookResult::Cancel(_) => panic!("must not cancel"),
+        }
+    }
 
     #[tokio::test]
     async fn boundary_dispatch_accumulates_entries_and_continue() {

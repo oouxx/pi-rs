@@ -203,6 +203,7 @@ mod tests {
 
     fn test_model(context_window: u64, max_tokens: u64) -> Model {
         Model {
+            input_limits: None,
             prompt_cache: None,
             id: "m".into(),
             name: "m".into(),
@@ -338,6 +339,7 @@ mod tests {
     #[test]
     fn test_build_base_options_merges_sampling_params() {
         let model = crate::types::Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test".into(),
             name: "test".into(),
@@ -385,6 +387,7 @@ mod tests {
     #[test]
     fn test_build_base_options_http_client_injection() {
         let model = crate::types::Model {
+            input_limits: None,
             prompt_cache: None,
             id: "test".into(),
             name: "test".into(),

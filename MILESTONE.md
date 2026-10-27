@@ -86,6 +86,46 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 **结论：以 `.version` 为基准的核心行为已对齐；剩余差距以 `DEVIATIONS.md` 的登记清单为准，
 不再用“已收口”这类笼统表述。**
 
+## 2026-10-26 偏差文档复核（一轮 bug 修复）
+
+对根 + 4 个 crate 的 `DEVIATIONS.md` 逐条复核（TS 基准 `f07218c4d` / v0.87.1），
+结论：约一半条目是"实现方式不同"的真偏差，另有 13 条实质是把 bug/缺失登记成了
+"有意保留"，已按下面顺序修完并更新文档：
+
+1. `read` 工具的 Ctrl+O 展开（此前恒截 10 行）、Ctrl+C 空闲清编辑器（此前为空操作，
+   但 header 写着 `ctrl+c clear`）、RPC `confirm`/`editor`/`timeout`、RPC `fork`
+   的 `position:"before"` 语义（此前分支包含被选中的消息，客户端重发会重复）；
+2. 扩展会话生命周期事件（`session_before_switch`/`session_before_fork`/
+   `session_shutdown` 三个 dispatcher 此前是死代码，扩展无法取消切换、退出也不清理）；
+3. 工具批次真并发（"并行"此前逐个 `await`，实为串行）、`ctx.hasUI` 在 RPC/ACP 下
+   为 false；
+4. 目录里 279 个没有后端适配器的模型不再出现在 `/model`/初始模型解析里（此前会选中
+   并必然报 `No API provider registered`），并加目录一致性测试；
+5. `AgentMessage`/`ContentBlock` 线上格式改为 TS 的 camelCase（此前 `--mode json`、
+   RPC、pi-acp、TS 会话文件全不兼容），`User.content` 接受 `string` 简写；
+6. 文档：删掉不存在的 V8 shim 整节与 10 条已回退条目，改正 20+ 条不实/过期描述，
+   把当时仍未实现的能力（anthropic managed-effort、openai `reasoning_details`、
+   `inputLimits`、`session_before_compact` 完整 payload）从"待确认"如实标成
+   "待排期（未实现）"——这些在第二轮已全部补上。
+
+细节见各 crate 的 `PORTING_MISTAKES.md`（pi-coding-agent #156–#165、pi-tui #25/#26、
+pi-agent-core 三条、pi-ai 五条）与 `PORTING.md` 高危陷阱 #33–#35。
+
+**第二轮（同日）把"待排期"的缺口也补了**：
+
+7. anthropic managed per-turn effort（`providerThinkingLevel` + 逐轮 `output_config` 标记
+   + `block_binding` + 两个 beta）——opus-5 / fable-5-1 的多轮 400 不再出现；
+8. openai `reasoning_details` 流式合并与回放（含补发的 `thinking_end`），OpenRouter 类
+   网关多轮签名保留；
+9. `Model.inputLimits` 三层打通（类型 + `ResizeProfile` 合并 + `read` 与工具结果图片按当前
+   模型缩放 + 非 vision 提示）、read 非 UTF-8 文件改 lossy 解码（对齐 TS）；
+10. `session_before_compact` 完整 payload/result（preparation/branchEntries/
+    customInstructions/signal + 扩展直接提供 compaction），派发时机改到 prepare 之后；
+11. 扩展 UI 补齐 `set_widget`（TUI 编辑器上/下内联行）、`set_working_message`/
+    `set_working_visible`、`get_editor_text`；仍缺的只剩需要组件树的
+    `custom`/`set_footer`/`set_header`/`on_terminal_input`/补全 provider/编辑器组件/主题
+    查询（已在根 DEVIATIONS「扩展 UI」逐项列明）。
+
 ## 权威文档
 
 - 历史对齐差距：[`docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md`](docs/archive/ALIGNMENT_GAPS_V0.79_TO_V0.82.1.md)

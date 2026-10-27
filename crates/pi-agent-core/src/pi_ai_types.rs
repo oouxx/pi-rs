@@ -11,7 +11,8 @@ pub use pi_ai::utils::uuid::uuid_v7;
 pub use pi_ai::types::{
     AnthropicMessagesCompat, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent,
     CacheRetention, ConstrainedSamplingConfig, ContentBlock, Context, ImagesModel, Message, Model,
-    ModelCompat, ModelCost, OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting,
+    ModelCompat, ModelCost, ModelImageInputLimits, ModelImageResizeOptions, ModelInputLimits,
+    OpenAICompletionsCompat, OpenAIResponsesCompat, OpenRouterRouting,
     ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, SystemContent,
     ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolChoice, ToolChoiceMode,
     ToolReference, Transport, Usage, UsageCost, VercelGatewayRouting,
@@ -109,6 +110,7 @@ pub fn assistant_message(
     timestamp: i64,
 ) -> AssistantMessage {
     AssistantMessage {
+        provider_thinking_level: None,
         content,
         api,
         provider,
@@ -138,6 +140,7 @@ pub fn assistant_message_error(
     timestamp: i64,
 ) -> AssistantMessage {
     AssistantMessage {
+        provider_thinking_level: None,
         content,
         api,
         provider,
@@ -170,6 +173,7 @@ pub fn assistant_msg(
     timestamp: i64,
 ) -> Message {
     Message::Assistant {
+        provider_thinking_level: None,
         content,
         api,
         provider,

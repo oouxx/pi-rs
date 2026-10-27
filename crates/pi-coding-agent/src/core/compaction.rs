@@ -60,7 +60,8 @@ pub struct CompactionModelOverride {
     pub keep_recent_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionSettings {
     // Tokens reserved for the LLM's response. Compaction triggers once the
     // context grows within this margin of the window (matches TS default 16384).
@@ -108,7 +109,8 @@ impl Default for CompactionSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionPreparation {
     pub first_kept_entry_id: Option<String>,
     pub messages_to_summarize: Vec<AgentMessage>,
@@ -126,7 +128,7 @@ pub struct FileOperations {
     pub modified_files: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionResult {
     pub summary: String,
@@ -134,11 +136,16 @@ pub struct CompactionResult {
     pub tokens_before: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_tokens_after: Option<u64>,
+    /// Usage reported by the summarization call (TS `CompactionResult.usage`);
+    /// also carried through when an extension supplies the compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<CompactionDetails>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct CompactionDetails {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
@@ -1338,6 +1345,7 @@ mod tests {
             first_kept_entry_id: "entry-5".into(),
             tokens_before: 10000,
             estimated_tokens_after: None,
+            usage: None,
             details: Some(CompactionDetails {
                 read_files: vec!["/a.rs".into()],
                 modified_files: vec!["/b.rs".into()],
@@ -1355,6 +1363,7 @@ mod tests {
             first_kept_entry_id: "entry-1".into(),
             tokens_before: 5000,
             estimated_tokens_after: None,
+            usage: None,
             details: Some(CompactionDetails::default()),
         };
         let path = "/tmp/test_compaction_summary.jsonl";

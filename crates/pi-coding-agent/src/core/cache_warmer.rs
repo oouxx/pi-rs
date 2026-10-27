@@ -915,6 +915,7 @@ mod tests {
 
     fn anthropic_model() -> Model {
         Model {
+            input_limits: None,
             id: "claude-sonnet-5".into(),
             name: "Claude Sonnet 5".into(),
             api: "anthropic-messages".into(),
@@ -1269,6 +1270,7 @@ mod tests {
                         ..Default::default()
                     };
                     Ok(AssistantMessage {
+                        provider_thinking_level: None,
                         content: Vec::new(),
                         api: model.api,
                         provider: model.provider,

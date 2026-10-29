@@ -242,6 +242,9 @@ pub struct CreateAgentSessionOptions {
     /// the stored decision and the `defaultTrust` policy when resolving
     /// `ctx.isProjectTrusted()` (TS `projectTrustOverride`).
     pub trust_override: Option<bool>,
+    /// `--default-trust <ask|always|never>`: per-session override of the
+    /// `defaultProjectTrust` setting. `None` = use the settings value.
+    pub default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
 }
 
 impl Default for CreateAgentSessionOptions {
@@ -282,6 +285,7 @@ impl Default for CreateAgentSessionOptions {
             session_start_event: None,
             ui_context: None,
             trust_override: None,
+            default_project_trust: None,
         }
     }
 }
@@ -881,6 +885,7 @@ pub async fn create_agent_session(
 
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
+        agent_dir: agent_dir.clone(),
         model,
         thinking_level,
         custom_prompt: options.custom_prompt,
@@ -902,6 +907,7 @@ pub async fn create_agent_session(
         extension_registry: Some(std::sync::Arc::clone(&extension_registry_arc)),
         session_start_reason: session_start_reason.clone(),
         trust_override: options.trust_override,
+        default_project_trust: options.default_project_trust,
         ui_context: options.ui_context.clone(),
         resource_loader: Some(Box::new(resource_loader_instance)),
         custom_tools,

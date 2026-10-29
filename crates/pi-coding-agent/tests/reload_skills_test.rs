@@ -79,6 +79,7 @@ async fn create_session(cwd: &str, agent_dir: &str) -> AgentSession {
 
     let options = AgentSessionConfig {
         cwd: cwd.to_string(),
+        agent_dir: agent_dir.to_string(),
         model: test_model(),
         thinking_level: "medium".to_string(),
         custom_prompt: None,
@@ -99,6 +100,7 @@ async fn create_session(cwd: &str, agent_dir: &str) -> AgentSession {
         ui_context: None,
         session_start_reason: "startup".to_string(),
         trust_override: None,
+        default_project_trust: None,
         custom_tools: None,
         tools_options: None,
         resource_loader: Some(Box::new(loader)),

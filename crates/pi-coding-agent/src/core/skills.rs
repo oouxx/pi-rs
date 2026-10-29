@@ -1,11 +1,12 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::core::diagnostics::ResourceDiagnostic;
 use crate::core::source_info::{create_source_info, SourceInfo, SourceOrigin, SourceScope};
+use crate::utils::paths::{normalize_path, PathOptions};
 
 // ============================================================================
 // Constants
@@ -45,6 +46,10 @@ pub struct LoadSkillsOptions {
     pub agent_dir: Option<String>,
     pub skill_paths: Vec<String>,
     pub include_defaults: bool,
+    /// Override for `$HOME` (used to locate the user-level `.agents/skills`).
+    /// `None` = `dirs::home_dir()`. Tests set this to keep the host's
+    /// `~/.agents/skills` out of the fixture.
+    pub home_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -354,6 +359,16 @@ fn load_ignore_rules(dir: &Path) -> IgnoreMatcher {
     matcher
 }
 
+#[derive(Clone, Copy)]
+enum SkillDiscoveryMode {
+    /// `.pi-rs`/user directories: root Markdown files are skills, nested
+    /// Markdown files are only discovered when they are `SKILL.md`.
+    Pi,
+    /// `.agents/skills`: root Markdown files are ignored, nested Markdown
+    /// files are skills.
+    Agents,
+}
+
 /// Load skills from a directory, with recursive discovery.
 ///
 /// Discovery rules:
@@ -364,7 +379,16 @@ fn load_ignore_rules(dir: &Path) -> IgnoreMatcher {
 fn load_skills_from_dir(
     dir: &Path,
     source: &str,
-    include_root_files: bool,
+    mode: SkillDiscoveryMode,
+) -> (Vec<Skill>, Vec<ResourceDiagnostic>) {
+    load_skills_from_dir_internal(dir, source, mode, true)
+}
+
+fn load_skills_from_dir_internal(
+    dir: &Path,
+    source: &str,
+    mode: SkillDiscoveryMode,
+    is_root: bool,
 ) -> (Vec<Skill>, Vec<ResourceDiagnostic>) {
     let mut skills: Vec<Skill> = Vec::new();
     let mut diagnostics: Vec<ResourceDiagnostic> = Vec::new();
@@ -431,10 +455,16 @@ fn load_skills_from_dir(
             if ignore_matcher.ignores(&format!("{}/", rel_str)) {
                 continue;
             }
-            let (sub_skills, sub_diags) = load_skills_from_dir(&full_path, source, false);
+            let (sub_skills, sub_diags) =
+                load_skills_from_dir_internal(&full_path, source, mode, false);
             skills.extend(sub_skills);
             diagnostics.extend(sub_diags);
-        } else if include_root_files && (full_path.is_file() || full_path.is_symlink()) {
+        } else if (full_path.is_file() || full_path.is_symlink())
+            && match mode {
+                SkillDiscoveryMode::Pi => is_root,
+                SkillDiscoveryMode::Agents => !is_root,
+            }
+        {
             if ignore_matcher.ignores(&rel_str) {
                 continue;
             }
@@ -456,7 +486,155 @@ fn load_skills_from_dir(
 // Public API
 // ============================================================================
 
+/// The user-level `.agents/skills` directory (`$HOME/.agents/skills`).
+///
+/// `home_dir` overrides `$HOME` (tests); `None` falls back to `dirs::home_dir()`.
+pub fn home_agents_skills_dir(home_dir: Option<&str>) -> Option<String> {
+    let home = home_dir
+        .map(|h| h.to_string())
+        .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))?;
+    let home = resolve_absolute_path(&home, None, false, Some(&home), false);
+    Some(
+        Path::new(&home)
+            .join(".agents")
+            .join("skills")
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
+/// `.agents/skills` directories from `cwd` upward through the git repository
+/// root (inclusive). Mirrors TS `collectAncestorAgentsSkillDirs`: the walk stops
+/// *after* the directory that contains `.git`, or at the filesystem root when
+/// `cwd` is not inside a repository.
+pub fn collect_ancestor_agents_skill_dirs(cwd: &str) -> Vec<String> {
+    // Node's `path.resolve` is lexical: it must not follow symlinks while
+    // deciding where the repository boundary is.
+    let start = PathBuf::from(resolve_absolute_path(cwd, None, false, None, false));
+    let git_root = find_git_repo_root(&start);
+    let mut dirs: Vec<String> = Vec::new();
+    let mut current = start;
+
+    loop {
+        dirs.push(
+            Path::new(&current)
+                .join(".agents")
+                .join("skills")
+                .to_string_lossy()
+                .to_string(),
+        );
+        if git_root.as_deref() == Some(current.as_path()) {
+            break;
+        }
+        let parent = match Path::new(&current).parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
+            _ => break,
+        };
+        if parent == current {
+            break;
+        }
+        current = PathBuf::from(parent);
+    }
+
+    dirs
+}
+
+/// Nearest ancestor of `start` (inclusive) that contains a `.git` entry.
+fn find_git_repo_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Resolve like Node's `path.resolve`: expand `~`, make the path absolute,
+/// normalize `.`/`..` lexically, and never follow symlinks.
+fn resolve_absolute_path(
+    input: &str,
+    base_dir: Option<&str>,
+    trim: bool,
+    home_dir: Option<&str>,
+    expand_tilde: bool,
+) -> String {
+    let options = PathOptions {
+        trim,
+        expand_tilde,
+        home_dir: home_dir.map(str::to_string),
+        ..PathOptions::default()
+    };
+    let normalized = normalize_path(input, &options);
+    let path = Path::new(&normalized);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let base = base_dir
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join(path)
+    };
+    normalize_lexical_components(&absolute)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn normalize_lexical_components(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.has_root() && normalized.parent().is_none() {
+                    continue;
+                }
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn paths_equal_lexically(left: &str, right: &str) -> bool {
+    resolve_absolute_path(left, None, false, None, false)
+        == resolve_absolute_path(right, None, false, None, false)
+}
+
+fn rebase_skill_source_info(
+    mut result: (Vec<Skill>, Vec<ResourceDiagnostic>),
+    base_dir: &Path,
+    source: &str,
+) -> (Vec<Skill>, Vec<ResourceDiagnostic>) {
+    for skill in &mut result.0 {
+        skill.source_info = create_skill_source_info(
+            &skill.file_path,
+            &base_dir.to_string_lossy(),
+            source,
+        );
+    }
+    result
+}
+
 /// Load skills from all configured locations.
+///
+/// Discovery order matches TS `PackageManager.addAutoDiscoveredResources` +
+/// `loadSkills` (first load wins on a name collision, and the resulting order
+/// is the system-prompt order):
+///
+/// 1. project `{cwd}/.pi-rs/skills`
+/// 2. project `.agents/skills` from `{cwd}` up to the git repo root
+/// 3. user `{agent_dir}/skills`
+/// 4. user `~/.agents/skills`
+/// 5. explicit `skill_paths` (extension / `--skills`)
 pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let resolved_agent_dir = options
         .agent_dir
@@ -464,12 +642,16 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
         .map(|d| d.to_string())
         .unwrap_or_else(|| config::get_agent_dir().to_string_lossy().to_string());
 
-    let mut skill_map: HashMap<String, Skill> = HashMap::new();
+    // Insertion-ordered: `HashMap` iteration order would make both the
+    // collision winner and the `<available_skills>` listing nondeterministic.
+    let mut ordered: Vec<Skill> = Vec::new();
+    let mut name_index: HashMap<String, usize> = HashMap::new();
     let mut real_path_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut all_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
-    fn add_skills_to_map(
-        skill_map: &mut HashMap<String, Skill>,
+    fn add_skills(
+        ordered: &mut Vec<Skill>,
+        name_index: &mut HashMap<String, usize>,
         real_path_set: &mut std::collections::HashSet<String>,
         diagnostics: &mut Vec<ResourceDiagnostic>,
         result: (Vec<Skill>, Vec<ResourceDiagnostic>),
@@ -487,77 +669,149 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
                 continue;
             }
 
-            if let Some(existing) = skill_map.get(&skill.name) {
+            if let Some(&idx) = name_index.get(&skill.name) {
+                let winner_path = ordered[idx].file_path.clone();
                 diagnostics.push(ResourceDiagnostic::Collision {
                     message: format!("name \"{}\" collision", skill.name),
                     path: skill.file_path.clone(),
                     collision: crate::core::diagnostics::ResourceCollision {
                         resource_type: "skill".to_string(),
                         name: skill.name.clone(),
-                        winner_path: existing.file_path.clone(),
+                        winner_path,
                         loser_path: skill.file_path.clone(),
                     },
                 });
             } else {
-                skill_map.insert(skill.name.clone(), skill);
+                name_index.insert(skill.name.clone(), ordered.len());
+                ordered.push(skill);
                 real_path_set.insert(real_path);
             }
         }
     }
 
     if options.include_defaults {
-        let user_skills_dir = Path::new(&resolved_agent_dir).join("skills");
-        add_skills_to_map(
-            &mut skill_map,
-            &mut real_path_set,
-            &mut all_diagnostics,
-            load_skills_from_dir(&user_skills_dir, "user", true),
-        );
-
+        // Project resources first: TS adds them before user resources, so a
+        // project skill wins a name collision against a user skill.
         let project_skills_dir = Path::new(&options.cwd)
             .join(config::CONFIG_DIR_NAME)
             .join("skills");
-        add_skills_to_map(
-            &mut skill_map,
+        add_skills(
+            &mut ordered,
+            &mut name_index,
             &mut real_path_set,
             &mut all_diagnostics,
-            load_skills_from_dir(&project_skills_dir, "project", true),
+            rebase_skill_source_info(
+                load_skills_from_dir(&project_skills_dir, "project", SkillDiscoveryMode::Pi),
+                project_skills_dir
+                    .parent()
+                    .unwrap_or(Path::new(&options.cwd)),
+                "project",
+            ),
         );
+
+        // `.agents/skills` in every ancestor up to the git repo root, skipping
+        // the user-level one (it is loaded below as a user resource).
+        let home_agents_dir = home_agents_skills_dir(options.home_dir.as_deref());
+        for dir in collect_ancestor_agents_skill_dirs(&options.cwd) {
+            if let Some(ref global) = home_agents_dir {
+                if paths_equal_lexically(&dir, global) {
+                    continue;
+                }
+            }
+            let agents_dir = Path::new(&dir);
+            let source_base_dir = agents_dir.parent().unwrap_or(agents_dir);
+            add_skills(
+                &mut ordered,
+                &mut name_index,
+                &mut real_path_set,
+                &mut all_diagnostics,
+                rebase_skill_source_info(
+                    // `.agents` discovery excludes root-level Markdown files;
+                    // nested Markdown files and `SKILL.md` entries qualify.
+                    load_skills_from_dir(agents_dir, "project", SkillDiscoveryMode::Agents),
+                    source_base_dir,
+                    "project",
+                ),
+            );
+        }
+
+        let user_skills_dir = Path::new(&resolved_agent_dir).join("skills");
+        add_skills(
+            &mut ordered,
+            &mut name_index,
+            &mut real_path_set,
+            &mut all_diagnostics,
+            rebase_skill_source_info(
+                load_skills_from_dir(&user_skills_dir, "user", SkillDiscoveryMode::Pi),
+                Path::new(&resolved_agent_dir),
+                "user",
+            ),
+        );
+
+        if let Some(dir) = home_agents_dir {
+            let user_agents_dir = Path::new(&dir);
+            let source_base_dir = user_agents_dir.parent().unwrap_or(user_agents_dir);
+            add_skills(
+                &mut ordered,
+                &mut name_index,
+                &mut real_path_set,
+                &mut all_diagnostics,
+                rebase_skill_source_info(
+                    load_skills_from_dir(user_agents_dir, "user", SkillDiscoveryMode::Agents),
+                    source_base_dir,
+                    "user",
+                ),
+            );
+        }
     }
 
     for raw_path in &options.skill_paths {
-        let path = PathBuf::from(raw_path);
+        let resolved_path = resolve_absolute_path(
+            raw_path,
+            Some(&options.cwd),
+            true,
+            options.home_dir.as_deref(),
+            true,
+        );
+        let path = PathBuf::from(&resolved_path);
         if !path.exists() {
             all_diagnostics.push(ResourceDiagnostic::Warning {
                 message: "skill path does not exist".to_string(),
-                path: raw_path.clone(),
+                path: resolved_path,
             });
             continue;
         }
 
         if path.is_dir() {
-            add_skills_to_map(
-                &mut skill_map,
+            add_skills(
+                &mut ordered,
+                &mut name_index,
                 &mut real_path_set,
                 &mut all_diagnostics,
-                load_skills_from_dir(&path, "path", true),
+                load_skills_from_dir(&path, "path", SkillDiscoveryMode::Pi),
             );
-        } else if path.is_file() && raw_path.ends_with(".md") {
-            let (skill, diags) = load_skill_from_file(raw_path, "path");
+        } else if path.is_file() && resolved_path.ends_with(".md") {
+            let (skill, diags) = load_skill_from_file(&resolved_path, "path");
             all_diagnostics.extend(diags);
             if let Some(s) = skill {
-                add_skills_to_map(
-                    &mut skill_map,
+                add_skills(
+                    &mut ordered,
+                    &mut name_index,
                     &mut real_path_set,
                     &mut all_diagnostics,
                     (vec![s], vec![]),
                 );
             }
+        } else if path.is_file() {
+            all_diagnostics.push(ResourceDiagnostic::Warning {
+                message: "skill path is not a markdown file".to_string(),
+                path: resolved_path,
+            });
         }
     }
 
     LoadSkillsResult {
-        skills: skill_map.into_values().collect(),
+        skills: ordered,
         diagnostics: all_diagnostics,
     }
 }
@@ -786,6 +1040,8 @@ mod tests {
             cwd: dir.path().to_string_lossy().to_string(),
             agent_dir: Some(dir.path().join("agent").to_string_lossy().to_string()),
             include_defaults: true,
+            // Keep the host's `~/.agents/skills` out of this fixture.
+            home_dir: Some(dir.path().join("home").to_string_lossy().to_string()),
             ..Default::default()
         });
         let names: Vec<_> = result.skills.iter().map(|s| s.name.as_str()).collect();
@@ -795,4 +1051,328 @@ mod tests {
             result.diagnostics
         );
     }
-}
+
+    fn write_skill(dir: &Path, name: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} skill\n---\n\n# {name}\n"),
+        )
+        .unwrap();
+    }
+
+    /// `.agents/skills` must be discovered at both scopes (TS commit 39cbf47e4
+    /// "discover skills in .agents paths by default"), with project resources
+    /// ordered before user resources.
+    #[test]
+    fn test_load_skills_agents_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("repo");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        write_skill(
+            &project.join(config::CONFIG_DIR_NAME).join("skills"),
+            "from-pi-rs",
+        );
+        write_skill(
+            &project.join(".agents").join("skills"),
+            "from-project-agents",
+        );
+        write_skill(&home.join("agent").join("skills"), "from-agent-dir");
+        write_skill(&home.join(".agents").join("skills"), "from-home-agents");
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: project.to_string_lossy().to_string(),
+            agent_dir: Some(home.join("agent").to_string_lossy().to_string()),
+            include_defaults: true,
+            home_dir: Some(home.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+
+        let names: Vec<&str> = result.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "from-pi-rs",
+                "from-project-agents",
+                "from-agent-dir",
+                "from-home-agents"
+            ],
+            "unexpected order/diagnostics: {:?}",
+            result.diagnostics
+        );
+
+        let scope = |name: &str| {
+            result
+                .skills
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.source_info.scope.clone())
+                .unwrap()
+        };
+        assert_eq!(scope("from-project-agents"), SourceScope::Project);
+        assert_eq!(scope("from-home-agents"), SourceScope::User);
+        let source_base_dir = |name: &str| {
+            result
+                .skills
+                .iter()
+                .find(|s| s.name == name)
+                .and_then(|s| s.source_info.base_dir.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            PathBuf::from(source_base_dir("from-project-agents")),
+            project.join(".agents")
+        );
+        assert_eq!(
+            PathBuf::from(source_base_dir("from-home-agents")),
+            home.join(".agents")
+        );
+    }
+
+    /// TS `agents` discovery mode only accepts nested `SKILL.md` entries; a
+    /// root-level Markdown file is not a skill and must not win a collision.
+    #[test]
+    fn test_agents_discovery_excludes_root_markdown_files() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("repo");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let agents_skills = project.join(".agents").join("skills");
+        std::fs::create_dir_all(&agents_skills).unwrap();
+        std::fs::write(
+            agents_skills.join("root-file.md"),
+            "---\nname: root-file\ndescription: must not load\n---\n",
+        )
+        .unwrap();
+        write_skill(&agents_skills, "nested-skill");
+        let child_dir = agents_skills.join("third-party");
+        std::fs::create_dir_all(&child_dir).unwrap();
+        std::fs::write(
+            child_dir.join("child-skill.md"),
+            "---\nname: child-skill\ndescription: nested markdown\n---\n",
+        )
+        .unwrap();
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: project.to_string_lossy().to_string(),
+            agent_dir: Some(home.join("agent").to_string_lossy().to_string()),
+            include_defaults: true,
+            home_dir: Some(home.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+
+        assert!(result.skills.iter().any(|s| s.name == "nested-skill"));
+        assert!(result.skills.iter().any(|s| s.name == "child-skill"));
+        assert!(!result.skills.iter().any(|s| s.name == "root-file"));
+    }
+
+    /// Explicit paths use the session cwd as their base and support `~`, just
+    /// like TS `resolvePath(rawPath, resolvedCwd, { trim: true })`.
+    #[test]
+    fn test_explicit_skill_paths_resolve_from_cwd_and_home() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        write_skill(&project.join("local-skill"), "local-skill");
+        write_skill(&home.join("custom-skills"), "home-skill");
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: project.to_string_lossy().to_string(),
+            agent_dir: Some(home.join("agent").to_string_lossy().to_string()),
+            skill_paths: vec![
+                "local-skill".to_string(),
+                "~/custom-skills".to_string(),
+                "  ~/custom-skills  ".to_string(),
+            ],
+            include_defaults: false,
+            home_dir: Some(home.to_string_lossy().to_string()),
+        });
+
+        assert!(result.skills.iter().any(|s| s.name == "local-skill"));
+        assert_eq!(
+            result
+                .skills
+                .iter()
+                .filter(|s| s.name == "home-skill")
+                .count(),
+            1,
+            "the same explicit path must not load twice"
+        );
+    }
+
+    #[test]
+    fn test_non_markdown_explicit_skill_path_warns() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let note = project.join("notes.txt");
+        std::fs::write(&note, "not a skill").unwrap();
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: project.to_string_lossy().to_string(),
+            skill_paths: vec!["notes.txt".to_string()],
+            include_defaults: false,
+            ..Default::default()
+        });
+
+        assert!(result.diagnostics.iter().any(|d| matches!(
+            d,
+            ResourceDiagnostic::Warning { message, path }
+                if message == "skill path is not a markdown file" && path == &note.to_string_lossy()
+        )));
+    }
+
+    /// Node's `path.resolve` does not follow symlinks while walking ancestors.
+    /// Canonicalizing first could escape the repository and miss its `.agents`.
+    #[cfg(unix)]
+    #[test]
+    fn test_ancestor_walk_keeps_symlinked_cwd_lexical() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join("link")).unwrap();
+
+        let cwd = repo.join("link").join("sub");
+        let dirs = collect_ancestor_agents_skill_dirs(&cwd.to_string_lossy());
+        assert!(
+            dirs.iter().any(|dir| Path::new(dir) == repo.join(".agents").join("skills")),
+            "git root must remain in the lexical walk: {dirs:?}"
+        );
+    }
+
+    /// If `~/.agents/skills` is a symlink into the project, lexical filtering
+    /// must not discard the project copy; canonical dedupe keeps project first.
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_home_agents_keeps_project_winner() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let home = root.path().join("home");
+        let project_agents = repo.join(".agents");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(home.join("agent")).unwrap();
+        write_skill(&project_agents.join("skills"), "shared");
+        std::os::unix::fs::symlink(&project_agents, home.join(".agents")).unwrap();
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: repo.join("sub").to_string_lossy().to_string(),
+            agent_dir: Some(home.join("agent").to_string_lossy().to_string()),
+            include_defaults: true,
+            home_dir: Some(home.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+
+        let shared: Vec<_> = result
+            .skills
+            .iter()
+            .filter(|s| s.name == "shared")
+            .collect();
+        assert_eq!(shared.len(), 1, "diagnostics: {:?}", result.diagnostics);
+        assert_eq!(shared[0].source_info.scope, SourceScope::Project);
+    }
+
+    /// Project resources are added first by TS, so a project skill must win a
+    /// name collision against a user skill (previously `HashMap` order decided).
+    #[test]
+    fn test_project_skill_wins_collision_against_user() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("repo");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        write_skill(&project.join(config::CONFIG_DIR_NAME).join("skills"), "dup");
+        write_skill(&home.join("agent").join("skills"), "dup");
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: project.to_string_lossy().to_string(),
+            agent_dir: Some(home.join("agent").to_string_lossy().to_string()),
+            include_defaults: true,
+            home_dir: Some(home.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+
+        let dups: Vec<&Skill> = result.skills.iter().filter(|s| s.name == "dup").collect();
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].source_info.scope, SourceScope::Project);
+        assert!(result.diagnostics.iter().any(|d| matches!(
+            d,
+            ResourceDiagnostic::Collision { collision, .. }
+                if collision.winner_path.contains("repo")
+        )));
+    }
+
+    /// The ancestor walk stops at (and includes) the git repository root.
+    #[test]
+    fn test_ancestor_agents_dirs_stop_at_git_root() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let nested = repo.join("pkg").join("crate");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let dirs = collect_ancestor_agents_skill_dirs(&nested.to_string_lossy());
+        assert_eq!(dirs.len(), 3, "dirs: {dirs:?}");
+
+        let basename_of_grandparent = |dir: &str| {
+            Path::new(dir)
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap()
+        };
+        assert_eq!(basename_of_grandparent(&dirs[0]), "crate");
+        assert_eq!(basename_of_grandparent(&dirs[1]), "pkg");
+        assert_eq!(basename_of_grandparent(&dirs[2]), "repo");
+    }
+
+    #[test]
+    fn test_lexical_resolution_normalizes_parent_components() {
+        assert_eq!(
+            resolve_absolute_path("/tmp/project/a/../b", None, false, None, false),
+            "/tmp/project/b"
+        );
+        let cwd_relative_tilde = resolve_absolute_path("~/repo", None, false, None, false);
+        assert_eq!(
+            PathBuf::from(cwd_relative_tilde),
+            std::env::current_dir().unwrap().join("~/repo")
+        );
+    }
+
+    /// When `cwd` is not in a git repo the walk runs to the filesystem root, but
+    /// the user-level `~/.agents/skills` must be loaded once, as a user resource.
+    #[test]
+    fn test_home_agents_dir_not_loaded_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let project = home.join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        write_skill(&home.join(".agents").join("skills"), "shared");
+
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: project.to_string_lossy().to_string(),
+            agent_dir: Some(home.join("agent").to_string_lossy().to_string()),
+            include_defaults: true,
+            home_dir: Some(home.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+
+        let shared: Vec<&Skill> = result
+            .skills
+            .iter()
+            .filter(|s| s.name == "shared")
+            .collect();
+        assert_eq!(shared.len(), 1, "diagnostics: {:?}", result.diagnostics);
+        assert_eq!(shared[0].source_info.scope, SourceScope::User);
+    }}

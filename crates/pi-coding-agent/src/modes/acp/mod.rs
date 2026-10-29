@@ -33,6 +33,8 @@ pub async fn run_acp_mode(
     enable_extensions: bool,
     cli_provider: Option<String>,
     cli_model: Option<String>,
+    trust_override: Option<bool>,
+    default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
 ) -> i32 {
     let outgoing = tokio::io::stdout().compat_write();
     let incoming = tokio::io::stdin().compat();
@@ -51,7 +53,8 @@ pub async fn run_acp_mode(
 
             let agent = PiAcpAgent::new(notif_tx, spawn_for_agent)
                 .with_extensions(enable_extensions)
-                .with_model(cli_provider, cli_model);
+                .with_model(cli_provider, cli_model)
+                .with_trust(trust_override, default_project_trust);
             let (conn, handle_io) = acp::AgentSideConnection::new(
                 agent,
                 outgoing,

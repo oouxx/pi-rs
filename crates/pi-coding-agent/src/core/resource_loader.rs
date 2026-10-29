@@ -9,7 +9,8 @@ use crate::config;
 use crate::core::diagnostics::{ResourceCollision, ResourceDiagnostic};
 use crate::core::prompt_templates::{self, LoadPromptTemplatesOptions, PromptTemplate};
 use crate::core::skills::{self, LoadSkillsOptions, Skill};
-use crate::core::source_info::{create_source_info, SourceInfo, SourceOrigin, SourceScope};
+use crate::core::source_info::SourceInfo;
+use crate::utils::paths::{resolve_path as resolve_user_path, PathOptions};
 
 // ============================================================================
 // Types
@@ -146,15 +147,14 @@ impl DefaultResourceLoader {
 
     /// Resolve a path relative to cwd.
     fn resolve_path(&self, p: &str) -> String {
-        let path = Path::new(p);
-        if path.is_absolute() {
-            p.to_string()
-        } else {
-            Path::new(&self.options.cwd)
-                .join(p)
-                .to_string_lossy()
-                .to_string()
-        }
+        resolve_user_path(
+            p,
+            &self.options.cwd,
+            &PathOptions {
+                trim: true,
+                ..PathOptions::default()
+            },
+        )
     }
 
     /// Merge two path lists, deduplicating by canonical path.
@@ -182,7 +182,8 @@ impl DefaultResourceLoader {
             cwd: self.options.cwd.clone(),
             agent_dir: self.options.agent_dir.clone(),
             skill_paths: paths.to_vec(),
-            include_defaults: self.options.include_defaults,
+            include_defaults: self.options.include_defaults && !self.options.no_skills,
+            home_dir: None,
         });
 
         // Attach source info to each skill
@@ -190,7 +191,12 @@ impl DefaultResourceLoader {
             .skills
             .into_iter()
             .map(|skill| {
-                let source_info = self.find_source_info(&skill.file_path, &self.extension_source_infos);
+                // Discovery already assigned user/project scope and the proper
+                // source base directory (including ancestor `.agents`). Only
+                // extension-contributed paths need to replace that metadata.
+                let source_info = self
+                    .find_extension_source_info(&skill.file_path, &self.extension_source_infos)
+                    .unwrap_or_else(|| skill.source_info.clone());
                 Skill {
                     source_info,
                     ..skill
@@ -220,51 +226,22 @@ impl DefaultResourceLoader {
         (prompts, diagnostics)
     }
 
-    /// Find source info for a path, checking extension-contributed infos first.
-    fn find_source_info(&self, path: &str, extension_infos: &[(String, SourceInfo)]) -> SourceInfo {
+    fn find_extension_source_info(
+        &self,
+        path: &str,
+        extension_infos: &[(String, SourceInfo)],
+    ) -> Option<SourceInfo> {
         let normalized = Path::new(path);
-        let normalized_str = normalized.to_string_lossy();
 
         // Check extension-contributed source infos
         for (ext_path, info) in extension_infos {
             let ext_normalized = Path::new(ext_path);
-            if normalized_str.starts_with(ext_normalized.to_string_lossy().as_ref()) {
-                return info.clone();
+            if normalized.starts_with(ext_normalized) {
+                return Some(info.clone());
             }
         }
 
-        // Default: derive from path location
-        if let Some(agent_dir) = &self.options.agent_dir {
-            let agent_path = Path::new(agent_dir);
-            if normalized_str.starts_with(agent_path.to_string_lossy().as_ref()) {
-                return create_source_info(
-                    path.to_string(),
-                    "local".to_string(),
-                    SourceScope::User,
-                    SourceOrigin::TopLevel,
-                    Some(agent_dir.to_string()),
-                );
-            }
-        }
-
-        let cwd_path = Path::new(&self.options.cwd);
-        if normalized_str.starts_with(cwd_path.to_string_lossy().as_ref()) {
-            return create_source_info(
-                path.to_string(),
-                "local".to_string(),
-                SourceScope::Project,
-                SourceOrigin::TopLevel,
-                Some(self.options.cwd.clone()),
-            );
-        }
-
-        create_source_info(
-            path.to_string(),
-            "local".to_string(),
-            SourceScope::Temporary,
-            SourceOrigin::TopLevel,
-            None,
-        )
+        None
     }
 
     /// Discover SYSTEM.md from agent dir or project dir.
@@ -675,7 +652,9 @@ pub fn load_all_resources(options: &ResourceLoaderOptions) -> LoadedResources {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::core::source_info::create_synthetic_source_info;
+    use crate::core::source_info::{
+        create_source_info, create_synthetic_source_info, SourceOrigin, SourceScope,
+    };
     use std::fs;
 
     // -----------------------------------------------------------------------
@@ -882,6 +861,47 @@ mod tests {
         assert!(resources.skills.iter().any(|s| s.name == "test-skill"));
     }
 
+    /// `.agents/skills` under `cwd` must reach the session through the default
+    /// loader, not only through the `skills::load_skills` unit path.
+    #[test]
+    fn test_loader_loads_project_agents_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        // `.git` keeps the ancestor walk inside the fixture.
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let skill_dir = dir.path().join(".agents").join("skills").join("agents-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: agents-skill\ndescription: From .agents\n---\n# Agents",
+        )
+        .unwrap();
+
+        let opts = ResourceLoaderOptions {
+            cwd: dir.path().to_string_lossy().to_string(),
+            include_defaults: true,
+            ..Default::default()
+        };
+        let mut loader = DefaultResourceLoader::new(opts);
+        let resources = loader.reload();
+
+        let skill = resources
+            .skills
+            .iter()
+            .find(|s| s.name == "agents-skill")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected .agents/skills skill, got {:?}",
+                    resources.skills.iter().map(|s| &s.name).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(Path::new(&skill.file_path), skill_dir.join("SKILL.md"));
+        assert_eq!(skill.source_info.scope, SourceScope::Project);
+        assert_eq!(
+            skill.source_info.base_dir.as_deref(),
+            Some(dir.path().join(".agents").to_string_lossy().as_ref())
+        );
+    }
+
     #[test]
     fn test_loader_reload_with_prompt_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -907,23 +927,60 @@ mod tests {
     }
 
     #[test]
-    fn test_loader_no_skills_flag() {
+    fn test_loader_no_skills_flag_without_explicit_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let skills_dir = dir.path().join("skills");
-        fs::create_dir_all(&skills_dir).unwrap();
-        fs::write(skills_dir.join("test.skill.md"), "---\nname: test\n---\n# Test").unwrap();
+        let skills_dir = dir.path().join(".pi-rs").join("skills");
+        fs::create_dir_all(skills_dir.join("default-skill")).unwrap();
+        fs::write(
+            skills_dir.join("default-skill").join("SKILL.md"),
+            "---\nname: default-skill\ndescription: default\n---\n# Default",
+        )
+        .unwrap();
 
         let opts = ResourceLoaderOptions {
             cwd: dir.path().to_string_lossy().to_string(),
-            include_defaults: false,
+            include_defaults: true,
             no_skills: true,
-            skill_paths: vec![skills_dir.to_string_lossy().to_string()],
             ..Default::default()
         };
         let mut loader = DefaultResourceLoader::new(opts);
         let resources = loader.reload();
 
         assert!(resources.skills.is_empty(), "no_skills should prevent skill loading");
+    }
+
+    /// `--no-skills` disables default discovery but still permits an explicit
+    /// `--skill` path, matching TS `updateSkillsFromPaths`.
+    #[test]
+    fn test_loader_no_skills_flag_loads_only_explicit_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let default_dir = dir.path().join(".pi-rs").join("skills");
+        fs::create_dir_all(default_dir.join("default-skill")).unwrap();
+        fs::write(
+            default_dir.join("default-skill").join("SKILL.md"),
+            "---\nname: default-skill\ndescription: default\n---\n# Default",
+        )
+        .unwrap();
+        let explicit_dir = dir.path().join("explicit");
+        fs::create_dir_all(explicit_dir.join("explicit-skill")).unwrap();
+        fs::write(
+            explicit_dir.join("explicit-skill").join("SKILL.md"),
+            "---\nname: explicit-skill\ndescription: explicit\n---\n# Explicit",
+        )
+        .unwrap();
+
+        let opts = ResourceLoaderOptions {
+            cwd: dir.path().to_string_lossy().to_string(),
+            include_defaults: true,
+            no_skills: true,
+            skill_paths: vec![explicit_dir.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+        let mut loader = DefaultResourceLoader::new(opts);
+        let resources = loader.reload();
+        let names: Vec<_> = resources.skills.iter().map(|s| s.name.as_str()).collect();
+
+        assert_eq!(names, vec!["explicit-skill"]);
     }
 
     #[test]
@@ -1150,6 +1207,21 @@ mod tests {
         assert!(merged.contains(&"/tmp/c.md".to_string()));
     }
 
+    #[test]
+    fn test_resource_path_resolution_trims_and_expands_home() {
+        let opts = ResourceLoaderOptions {
+            cwd: "/tmp/project".to_string(),
+            ..Default::default()
+        };
+        let loader = DefaultResourceLoader::new(opts);
+
+        assert_eq!(loader.resolve_path("  local  "), "/tmp/project/local");
+        let home_path = loader.resolve_path("~/skills");
+        assert!(Path::new(&home_path).is_absolute());
+        assert!(home_path.ends_with("/skills"));
+        assert!(!home_path.starts_with("/tmp/project/~"));
+    }
+
     // -----------------------------------------------------------------------
     // load_all_resources backward compat tests
     // -----------------------------------------------------------------------
@@ -1185,7 +1257,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // find_source_info tests
+    // extension source-info tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1205,29 +1277,12 @@ mod tests {
             Some("/ext".to_string()),
         );
 
-        let found = loader.find_source_info("/ext/skills/test.md", &[("/ext/skills".to_string(), ext_info.clone())]);
+        let found = loader
+            .find_extension_source_info(
+                "/ext/skills/test.md",
+                &[("/ext/skills".to_string(), ext_info.clone())],
+            )
+            .expect("extension source info");
         assert_eq!(found.source, "my-extension");
-    }
-
-    #[test]
-    fn test_find_source_info_falls_back_to_scope() {
-        let opts = ResourceLoaderOptions {
-            cwd: "/tmp".to_string(),
-            agent_dir: Some("/home/user/.pi".to_string()),
-            ..Default::default()
-        };
-        let loader = DefaultResourceLoader::new(opts);
-
-        // Path under agent dir → User scope
-        let info = loader.find_source_info("/home/user/.pi/skills/test.md", &[]);
-        assert_eq!(info.scope, SourceScope::User);
-
-        // Path under cwd → Project scope
-        let info = loader.find_source_info("/tmp/skills/test.md", &[]);
-        assert_eq!(info.scope, SourceScope::Project);
-
-        // Other path → Temporary scope
-        let info = loader.find_source_info("/other/path/test.md", &[]);
-        assert_eq!(info.scope, SourceScope::Temporary);
     }
 }

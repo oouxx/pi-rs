@@ -94,6 +94,9 @@ pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 | `--no-session` | 不保存会话 |
 | `--session-dir <DIR>` | 自定义会话目录 |
 | `--no-extensions` / `--no-skills` | 禁用扩展 / skills 加载 |
+| `--skills <PATH>` | 追加 skill 目录或 `.md` 文件（可重复） |
+| `--trust` / `--no-trust` | 本会话信任 / 不信任项目（覆盖已存决策与默认策略） |
+| `--default-trust <ask\|always\|never>` | 覆盖本会话的 `defaultProjectTrust` 策略 |
 | `--list-models [PATTERN]` | 列出可用模型（可按关键字过滤） |
 | `-h, --help` | 查看完整帮助 |
 
@@ -173,6 +176,21 @@ pi-rs mcp enable|disable|remove <name>
 
 扩展注册的命令和 skills 也会以斜杠命令的形式出现（如 `/skill:xxx`）。
 
+### Skills 目录
+
+默认按以下顺序发现 skill（同名先到者胜，顺序即系统提示中的顺序）：
+
+1. 项目 `.pi-rs/skills/`
+2. 项目各级 `.agents/skills/`（从当前目录向上直到 git 仓库根）
+3. 用户 `~/.pi-rs/agent/skills/`
+4. 用户 `~/.agents/skills/`
+
+`.pi-rs/skills` 与用户 skill 目录既可放 `<name>/SKILL.md`，也可直接放根级 `<name>.md`；
+`.agents/skills` 不把根级 Markdown 当 skill，但会发现任意嵌套层级的 `SKILL.md` 或 `.md`。
+frontmatter 中的 `name` / `description` 会被解析（`disable-model-invocation: true`
+表示只允许 `/skill:<name>` 显式调用）。`--skills <PATH>` 使用当前项目目录作为相对路径基准，
+并支持 `~` 展开；`--no-skills` 只关闭默认发现，不影响显式路径。
+
 > 与 TS 原版的差异：`/login` 当前支持 API-key 登录，不支持 OAuth；`/export` 支持基础 HTML 导出，但未复刻主题和自定义工具 renderer；部分 settings、selector 和 TUI 组件仍未完整移植。
 
 ## 数据与配置
@@ -194,6 +212,11 @@ pi-rs mcp enable|disable|remove <name>
   ```
 
   支持 stdio、streamable-HTTP 和 legacy SSE 三种传输；服务器工具会像内置工具一样注入所有模式。`enabled: false` 可临时禁用某条目。
+
+项目信任默认策略为 `always`：未在 `settings.json` 配置 `defaultProjectTrust` 时，
+项目一律视为受信任。需要收紧时在 settings 中设置 `"defaultProjectTrust": "ask"`
+或 `"never"`，也可用 `--default-trust` 仅覆盖当前会话。项目资源加载门控本身仍按
+已确认偏差不启用（见 `DEVIATIONS.md`）。
 
 ## 致谢
 

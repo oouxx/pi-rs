@@ -78,6 +78,9 @@ async fn create_test_session(
         pi_coding_agent::core::settings_manager::SettingsManager::create(cwd, None);
     let session_options = AgentSessionConfig {
         cwd: cwd.to_string(),
+        agent_dir: pi_coding_agent::config::get_agent_dir()
+            .to_string_lossy()
+            .to_string(),
         model,
         thinking_level: "medium".to_string(),
         custom_prompt: None,
@@ -98,6 +101,7 @@ async fn create_test_session(
         ui_context: None,
         session_start_reason: "startup".to_string(),
         trust_override: None,
+        default_project_trust: None,
         custom_tools: None,
         tools_options: None,
         resource_loader: None,
@@ -516,6 +520,9 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
     let extension_registry = Arc::new(ExtensionRegistry::new());
     let options = AgentSessionConfig {
         cwd: cwd.clone(),
+        agent_dir: pi_coding_agent::config::get_agent_dir()
+            .to_string_lossy()
+            .to_string(),
         model,
         thinking_level: "medium".to_string(),
         custom_prompt: None,
@@ -536,6 +543,7 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
         ui_context: None,
         session_start_reason: "startup".to_string(),
         trust_override: None,
+        default_project_trust: None,
         custom_tools: None,
         tools_options: None,
         resource_loader: None,
@@ -648,6 +656,9 @@ async fn test_session_switch_invalidates_js_runtime() {
     };
     let options = AgentSessionConfig {
         cwd: cwd.clone(),
+        agent_dir: pi_coding_agent::config::get_agent_dir()
+            .to_string_lossy()
+            .to_string(),
         model,
         thinking_level: "medium".to_string(),
         custom_prompt: None,
@@ -668,6 +679,7 @@ async fn test_session_switch_invalidates_js_runtime() {
         ui_context: None,
         session_start_reason: "startup".to_string(),
         trust_override: None,
+        default_project_trust: None,
         custom_tools: None,
         tools_options: None,
         resource_loader: None,

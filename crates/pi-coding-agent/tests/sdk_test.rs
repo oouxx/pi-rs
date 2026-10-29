@@ -527,6 +527,7 @@ async fn test_create_agent_session_with_extension() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -643,6 +644,7 @@ async fn test_extension_tool_notify_uses_swapped_ui_context() {
         // 模拟 interactive 模式：会话创建时不带 UI，之后才 swap。
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -727,6 +729,7 @@ async fn test_session_builtin_bash_tool_exec() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -808,6 +811,7 @@ async fn test_llm_detect_builtin_tools() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -893,6 +897,7 @@ async fn test_invoke_agent() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1163,6 +1168,7 @@ async fn test_multi_turn_tool_communication() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1622,6 +1628,7 @@ async fn test_state_mutations_persist_to_agent() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");
@@ -1755,6 +1762,7 @@ async fn test_prompt_returns_error_when_no_api_key() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("session creation must succeed");
@@ -1766,5 +1774,195 @@ async fn test_prompt_returns_error_when_no_api_key() {
     assert!(
         err.contains("No API key found for zzz-no-api-key-provider"),
         "error must name the provider, got: {err}"
+    );
+}
+
+/// `--default-trust` (CLI) must reach the trust resolution used for
+/// `ctx.isProjectTrusted()`: `Some(Always)` trusts a project that would
+/// otherwise be "ask + no UI → false", `None` falls back to the settings value.
+#[tokio::test]
+async fn test_default_project_trust_override_reaches_extension_context() {
+    use pi_coding_agent::core::project_trust::DefaultProjectTrust;
+
+    let project = tempfile::tempdir().expect("tempdir");
+    // A trust-requiring project resource makes the "ask" policy matter.
+    std::fs::create_dir_all(project.path().join(".pi-rs").join("skills")).expect("skills dir");
+    let agent_dir = tempfile::tempdir().expect("tempdir");
+
+    let build = |cwd: String, agent_dir: String, policy: Option<DefaultProjectTrust>| {
+        CreateAgentSessionOptions {
+            cwd,
+            agent_dir: Some(agent_dir),
+            model: Some(make_model()),
+            thinking_level: None,
+            scoped_models: None,
+            no_tools: Some(pi_coding_agent::core::sdk::NoToolsMode::All),
+            tools: None,
+            exclude_tools: None,
+            custom_prompt: None,
+            append_system_prompt: None,
+            session_name: None,
+            stream_fn: None,
+            convert_to_llm: None,
+            custom_tools: None,
+            tools_options: None,
+            extension_flags: None,
+            extension_paths: Vec::new(),
+            enable_extensions: false,
+            extension_registry: None,
+            cli_provider: None,
+            cli_model: None,
+            persist_session: false,
+            session_file: None,
+            fork_from: None,
+            session_dir: None,
+            auth_storage: None,
+            model_registry: None,
+            resource_loader: None,
+            session_manager: None,
+            settings_manager: None,
+            session_start_event: None,
+            ui_context: None,
+            trust_override: None,
+            default_project_trust: policy,
+        }
+    };
+
+    let (session, _result) = create_agent_session(build(
+        project.path().to_string_lossy().to_string(),
+        agent_dir.path().to_string_lossy().to_string(),
+        Some(DefaultProjectTrust::Always),
+    ))
+    .await
+    .expect("create_agent_session failed");
+    assert!(
+        session.get_extension_context().is_project_trusted,
+        "--default-trust always should trust the project"
+    );
+
+    // With no flag and no `defaultProjectTrust` in settings, pi-rs defaults to
+    // always trusting the project.
+    let (session, _result) = create_agent_session(build(
+        project.path().to_string_lossy().to_string(),
+        agent_dir.path().to_string_lossy().to_string(),
+        None,
+    ))
+    .await
+    .expect("create_agent_session failed");
+    assert!(
+        session.get_extension_context().is_project_trusted,
+        "the pi-rs default trust policy is always"
+    );
+
+    // An explicit ask setting is honored and, without UI, stays untrusted.
+    std::fs::write(
+        agent_dir.path().join("settings.json"),
+        r#"{"defaultProjectTrust":"ask"}"#,
+    )
+    .expect("write settings");
+    let (session, _result) = create_agent_session(build(
+        project.path().to_string_lossy().to_string(),
+        agent_dir.path().to_string_lossy().to_string(),
+        None,
+    ))
+    .await
+    .expect("create_agent_session failed");
+    assert!(
+        !session.get_extension_context().is_project_trusted,
+        "settings.json ask + no UI should stay untrusted"
+    );
+
+    // The store must follow the same custom agent_dir as settings. A stored
+    // false decision outranks the `always` policy.
+    let trust_store = pi_coding_agent::core::trust_manager::ProjectTrustStore::new(
+        agent_dir.path().to_str().expect("agent dir"),
+    );
+    trust_store.set(
+        project.path().to_str().expect("project dir"),
+        Some(false),
+    );
+    let (session, _result) = create_agent_session(build(
+        project.path().to_string_lossy().to_string(),
+        agent_dir.path().to_string_lossy().to_string(),
+        Some(DefaultProjectTrust::Always),
+    ))
+    .await
+    .expect("create_agent_session failed");
+    assert!(
+        !session.get_extension_context().is_project_trusted,
+        "stored decision must be read from the caller-supplied agent_dir"
+    );
+}
+
+/// `create_agent_session_from_services` must keep the settings manager it was
+/// given; otherwise `default_project_trust: None` silently falls back to a
+/// fresh on-disk manager instead of the services' settings.
+#[tokio::test]
+async fn test_services_settings_manager_drives_trust_fallback() {
+    use pi_coding_agent::core::agent_session_services::{
+        create_agent_session_from_services, create_agent_session_services,
+        CreateAgentSessionFromServicesOptions, CreateAgentSessionServicesOptions,
+    };
+    use pi_coding_agent::core::sdk::NoToolsMode;
+    use pi_coding_agent::core::session_manager::SessionManager;
+    use pi_coding_agent::core::settings_manager::{
+        DefaultProjectTrust as SettingsTrust, InMemorySettingsStorage, Settings, SettingsManager,
+    };
+
+    let project = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(project.path().join(".pi-rs").join("skills")).expect("skills dir");
+    let agent_dir = tempfile::tempdir().expect("tempdir");
+
+    let settings_manager = SettingsManager::new(
+        Box::new(InMemorySettingsStorage::new()),
+        Settings {
+            default_project_trust: Some(SettingsTrust::Always),
+            ..Settings::default()
+        },
+        Settings::default(),
+    );
+    let services = create_agent_session_services(CreateAgentSessionServicesOptions {
+        cwd: project.path().to_string_lossy().to_string(),
+        agent_dir: Some(agent_dir.path().to_string_lossy().to_string()),
+        auth_storage: None,
+        settings_manager: Some(settings_manager),
+        model_registry: Some(ModelRegistry::new(vec![make_model()])),
+        resource_loader_options: None,
+    })
+    .await;
+    let session_manager = SessionManager::new(
+        &project.path().to_string_lossy(),
+        &agent_dir.path().to_string_lossy(),
+        None,
+        false,
+        None,
+    );
+
+    let (session, _services, _result) = create_agent_session_from_services(
+        CreateAgentSessionFromServicesOptions {
+            services,
+            session_manager,
+            model: Some(make_model()),
+            thinking_level: None,
+            scoped_models: None,
+            tools: None,
+            no_tools: Some(NoToolsMode::All),
+            exclude_tools: None,
+            custom_tools: None,
+            tools_options: None,
+            extension_registry: None,
+            fallback_message: None,
+            session_start_event: None,
+            ui_context: None,
+            trust_override: None,
+            default_project_trust: None,
+        },
+    )
+    .await
+    .expect("create_agent_session_from_services failed");
+
+    assert!(
+        session.get_extension_context().is_project_trusted,
+        "the services' `always` setting must be used when no CLI override is present"
     );
 }

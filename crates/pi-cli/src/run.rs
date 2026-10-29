@@ -50,6 +50,23 @@ fn resolve_app_mode(args: &CliArgs, stdin_is_tty: bool, stdout_is_tty: bool) -> 
 
 /// Main entry point.
 pub async fn run(args: &CliArgs) -> i32 {
+    // Trust overrides are security-sensitive: reject malformed values before
+    // help/version or any resource-loading side effect can short-circuit them.
+    if let Some(value) = &args.invalid_default_trust {
+        if value.is_empty() {
+            eprintln!(
+                "{} --default-trust requires a value (ask|always|never)",
+                "Error:".red().bold()
+            );
+        } else {
+            eprintln!(
+                "{} invalid --default-trust value: {value} (expected ask|always|never)",
+                "Error:".red().bold()
+            );
+        }
+        return EXIT_FAILURE;
+    }
+
     if args.help {
         print_help();
         return EXIT_SUCCESS;
@@ -175,6 +192,8 @@ pub async fn run(args: &CliArgs) -> i32 {
             !args.no_extensions,
             args.provider.clone(),
             args.model.clone(),
+            args.project_trust_override,
+            args.default_project_trust,
         )
         .await;
     }
@@ -185,6 +204,8 @@ pub async fn run(args: &CliArgs) -> i32 {
             !args.no_extensions,
             args.provider.clone(),
             args.model.clone(),
+            args.project_trust_override,
+            args.default_project_trust,
         )
         .await;
     }
@@ -314,6 +335,7 @@ pub async fn run(args: &CliArgs) -> i32 {
         // `--trust` / `--no-trust`: 显式信任决策，喂给扩展 ctx.isProjectTrusted()
         // （项目资源本身不做门控，见 DEVIATIONS.md）。
         trust_override: args.project_trust_override,
+        default_project_trust: args.default_project_trust,
         custom_tools: None,
         tools_options: None,
     };
@@ -410,6 +432,7 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         // `--trust` / `--no-trust`: 显式信任决策，喂给扩展 ctx.isProjectTrusted()
         // （项目资源本身不做门控，见 DEVIATIONS.md）。
         trust_override: args.project_trust_override,
+        default_project_trust: args.default_project_trust,
     };
 
     let (session, _result) = match create_agent_session(sdk_options).await {
@@ -924,5 +947,22 @@ mod tests {
         assert!(is_session_path_arg("a/b"));
         assert!(is_session_path_arg("a\\b"));
         assert!(!is_session_path_arg("sess_123"));
+    }
+
+    /// A malformed trust policy must fail before any session/resource loading
+    /// rather than falling back to a permissive settings value.
+    #[tokio::test]
+    async fn invalid_default_trust_is_a_hard_error() {
+        let args = CliArgs {
+            invalid_default_trust: Some("sometimes".to_string()),
+            ..CliArgs::default()
+        };
+        assert_eq!(run(&args).await, EXIT_FAILURE);
+
+        let parsed = crate::args::parse_args(&[
+            "--default-trust".to_string(),
+            "--version".to_string(),
+        ]);
+        assert_eq!(run(&parsed).await, EXIT_FAILURE);
     }
 }

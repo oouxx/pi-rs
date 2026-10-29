@@ -348,6 +348,8 @@ pub async fn run_rpc_mode(
     enable_extensions: bool,
     cli_provider: Option<String>,
     cli_model: Option<String>,
+    trust_override: Option<bool>,
+    default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
 ) -> i32 {
     // Generic agent attribution markers (TS rpc-entry.ts, 0.84.0).
     if std::env::var("PI_CODING_AGENT").is_err() {
@@ -422,7 +424,8 @@ pub async fn run_rpc_mode(
         settings_manager: None,
         session_start_event: None,
         ui_context: Some(ui_context),
-        trust_override: None,
+        trust_override,
+        default_project_trust,
         custom_tools: None,
         tools_options: None,
     };

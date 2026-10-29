@@ -10,8 +10,8 @@ use crate::core::trust_manager::{
 /// Default trust policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DefaultProjectTrust {
-    #[default]
     Ask,
+    #[default]
     Always,
     Never,
 }
@@ -30,6 +30,18 @@ impl DefaultProjectTrust {
             "always" => DefaultProjectTrust::Always,
             "never" => DefaultProjectTrust::Never,
             _ => DefaultProjectTrust::Ask,
+        }
+    }
+}
+
+impl From<crate::core::settings_manager::DefaultProjectTrust> for DefaultProjectTrust {
+    fn from(value: crate::core::settings_manager::DefaultProjectTrust) -> Self {
+        use crate::core::settings_manager::DefaultProjectTrust as SettingsTrust;
+
+        match value {
+            SettingsTrust::Always => DefaultProjectTrust::Always,
+            SettingsTrust::Never => DefaultProjectTrust::Never,
+            SettingsTrust::Ask => DefaultProjectTrust::Ask,
         }
     }
 }
@@ -68,12 +80,24 @@ pub struct ResolveProjectTrustedOptions<'a> {
 /// Resolution order:
 /// 1. `trust_override` (explicit caller override)
 /// 2. Check if project has trust-requiring resources; if not, return `true`
-/// 3. Check stored trust decisions (walking up directory tree)
-/// 4. Apply `default_project_trust` policy
-/// 5. If policy is "ask" and UI is available, prompt the user
-/// 6. If no UI, return `false` (conservative default)
+/// 3. Ask extensions for a `project_trust` decision
+/// 4. Check stored trust decisions (walking up directory tree)
+/// 5. Apply `default_project_trust` policy
+/// 6. If policy is "ask" and UI is available, prompt the user
+/// 7. If no UI, return `false` (conservative default)
 pub fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) -> bool {
-    // Check extension trust decision first (synchronous block_on since this fn is sync)
+    // 1. Explicit override wins over extension decisions and stored/default
+    // policy (TS `resolveProjectTrusted` returns it first).
+    if let Some(override_val) = options.trust_override {
+        return override_val;
+    }
+
+    // 2. A project without trust-requiring resources is always trusted.
+    if !has_trust_requiring_project_resources(options.cwd) {
+        return true;
+    }
+
+    // 3. Ask extensions after the explicit override and no-resource fast path.
     if let Some(ref registry) = options.extension_registry {
         let cwd = options.cwd.to_string();
         let ext_ctx = crate::core::extensions::ExtensionContext::new(
@@ -101,31 +125,21 @@ pub fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) -> boo
         }
     }
 
-    // 1. Explicit override
-    if let Some(override_val) = options.trust_override {
-        return override_val;
-    }
-
-    // 2. Check if trust is even needed
-    if !has_trust_requiring_project_resources(options.cwd) {
-        return true;
-    }
-
-    // 3. Check stored decisions
+    // 4. Check stored decisions
     if let Some(entry) = options.trust_store.get_entry(options.cwd) {
         if let Some(decision) = entry.decision {
             return decision;
         }
     }
 
-    // 4. Apply global default
+    // 5. Apply global default
     match options.default_project_trust {
         DefaultProjectTrust::Always => return true,
         DefaultProjectTrust::Never => return false,
         DefaultProjectTrust::Ask => {}
     }
 
-    // 5. Prompt user if UI available
+    // 6. Prompt user if UI available
     if !options.project_trust_context.has_ui {
         return false;
     }
@@ -243,8 +257,28 @@ mod tests {
         assert!(!trusted);
     }
 
+    /// TS returns true before consulting `defaultProjectTrust` when the project
+    /// has no trust-requiring resources.
+    #[test]
+    fn test_resolve_trust_no_requiring_resources_is_always_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
+        let ctx = ProjectTrustContext::new(dir.path().to_str().unwrap(), false);
+
+        let trusted = resolve_project_trusted(ResolveProjectTrustedOptions {
+            cwd: dir.path().to_str().unwrap(),
+            trust_store: &store,
+            trust_override: None,
+            default_project_trust: DefaultProjectTrust::Never,
+            project_trust_context: ctx,
+            extension_registry: None,
+        });
+        assert!(trusted);
+    }
+
     #[test]
     fn test_default_project_trust_conversion() {
+        assert_eq!(DefaultProjectTrust::default(), DefaultProjectTrust::Always);
         assert_eq!(DefaultProjectTrust::from_str_name("always"), DefaultProjectTrust::Always);
         assert_eq!(DefaultProjectTrust::from_str_name("never"), DefaultProjectTrust::Never);
         assert_eq!(DefaultProjectTrust::from_str_name("ask"), DefaultProjectTrust::Ask);

@@ -99,6 +99,8 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub ui_context: Option<crate::core::extensions::ExtensionUIContext>,
     /// Explicit project-trust decision, propagated to session creation.
     pub trust_override: Option<bool>,
+    /// `--default-trust` policy override, propagated to session creation.
+    pub default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
 }
 
 // ============================================================================
@@ -201,6 +203,7 @@ pub async fn create_agent_session_from_services(
     let services = options.services;
     let cwd = services.cwd.clone();
     let agent_dir = services.agent_dir.clone();
+    let settings_manager = services.settings_manager.clone();
     let session_manager = options.session_manager;
 
     // Resolve model: use provided model, or fall back to the first available
@@ -251,10 +254,11 @@ pub async fn create_agent_session_from_services(
         model_registry: None,
         resource_loader: None,
         session_manager: Some(session_manager),
-        settings_manager: None,
+        settings_manager: Some(settings_manager),
         session_start_event: options.session_start_event,
         ui_context: options.ui_context,
         trust_override: options.trust_override,
+        default_project_trust: options.default_project_trust,
         custom_tools: options.custom_tools,
         tools_options: options.tools_options,
         extension_flags: None,

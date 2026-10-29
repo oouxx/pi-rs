@@ -389,7 +389,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 |
 | -------- | ----------- | ------------- | -------- |
 | `/reload` 重读 settings | `settingsManager.reload()` | `settings_manager.reload()` | 是 |
-| `/reload` 重发现 skills | `resourceLoader.reload()` → `updateSkillsFromPaths()` 重新扫描 `{agentDir}/skills`、`{cwd}/{CONFIG_DIR_NAME}/skills`、CLI/扩展路径 | `AgentSession` 持有 `Box<dyn ResourceLoader>`（对齐 TS `resourceLoader`），`reload()` 调 `loader.reload()` 重新扫描同一批路径 | 是 |
+| `/reload` 重发现 skills | `resourceLoader.reload()` → package manager + `updateSkillsFromPaths()`：项目 `.pi/skills` → 从 cwd 到 git 根的各级 `.agents/skills` → 用户 `{agentDir}/skills` → `~/.agents/skills` → 显式路径；同名先到者胜 | `AgentSession` 持有 `Box<dyn ResourceLoader>`，`reload()` 重新扫描同一来源顺序；`.agents` 根级 Markdown 排除，`--no-skills` 仅保留显式路径 | 是 |
 | `/reload` 重发现 prompt templates / context 文件 | 同 `resourceLoader.reload()` | 同上（`LoadedResources` 整体替换） | 是 |
 | `/reload` 刷新 system prompt | 重建含 skills 段的 system prompt | 用新 skills/context 重建 base system prompt | 是 |
 | `/reload` 刷新 slash 补全（`/skill:<name>`） | 补全提供者每次从 `resourceLoader` 读取 | 重建补全命令并推送 `Msg::SetCompletionCommands` | 是 |
@@ -407,7 +407,7 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | 项目资源识别 | `.pi/{settings.json,extensions,skills,prompts,themes,SYSTEM.md,APPEND_SYSTEM.md}` | `.pi-rs/` 下同名资源（含 `/reload` 重发现） | 是 | 目录名不同，见上 |
 | 项目信任门控 | interactive 弹 "Trust project folder?"；未受信任时项目资源全部忽略（`ResourceLoader`/`SettingsManager`/`SYSTEM.md`/扩展） | 不实现门控，全部视为可信任，项目资源无条件加载 | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
 | print/json 未受信任项目 | `resolveProjectTrusted`（无 UI + ask）返回 false，继续运行但不加载项目资源 | 不再阻断运行；项目资源照常加载（原先的 "Project not trusted" 退出已移除） | 是（有意偏差） | 见 DEVIATIONS.md「配置目录与项目信任」 |
-| `ctx.isProjectTrusted()` | `resolveProjectTrusted`：显式 override → 项目是否含需信任资源 → 已存决策（`trust.json`）→ `defaultTrust`；需要询问且无 UI 时 false | 同左（`resolve_project_trusted`）；`trust_override` 由 `--trust`/`--no-trust` 传入（2026-10-26 接线，此前解析后未使用）；`hasUI` 取 `ui_context.is_some()`（interactive/RPC/ACP 均为 true） | 是（2026-10-26） | 门控本身不做，但扩展看到的信任状态与 TS 一致 |
+| `ctx.isProjectTrusted()` | `resolveProjectTrusted`：显式 override → 项目是否含需信任资源 → 扩展决策 → 已存决策（`trust.json`）→ `defaultTrust`；未配置时默认 `ask`，需要询问且无 UI 时 false | 同左（`resolve_project_trusted`），但 pi-rs 未配置时默认 `always`；settings 可设 `ask`/`never`，`--trust`/`--no-trust` 与 `--default-trust` 在 print/json/interactive/RPC/ACP 全部透传，非法/缺值在启动前硬失败；stored decision 读取与 settings 相同的 `agent_dir`；`hasUI` 取 `ui_context.is_some()` | 是（有意偏差，见 DEVIATIONS.md「项目信任门控」） | 资源门控本身仍不做；默认 `always` 是用户确认的 pi-rs 行为 |
 
 ## MCP（原生客户端，新增功能）
 

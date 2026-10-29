@@ -31,6 +31,8 @@ pub struct PiAcpAgent {
     /// CLI 指定的 provider/model（`-P`/`-m`），传给会话创建。
     cli_provider: Option<String>,
     cli_model: Option<String>,
+    trust_override: Option<bool>,
+    default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
 }
 
 impl PiAcpAgent {
@@ -58,6 +60,8 @@ impl PiAcpAgent {
             enable_extensions: false,
             cli_provider: None,
             cli_model: None,
+            trust_override: None,
+            default_project_trust: None,
         }
     }
 
@@ -73,6 +77,18 @@ impl PiAcpAgent {
     #[must_use]
     pub fn with_extensions(mut self, enable: bool) -> Self {
         self.enable_extensions = enable;
+        self
+    }
+
+    /// Forward CLI trust overrides to every ACP session.
+    #[must_use]
+    pub fn with_trust(
+        mut self,
+        trust_override: Option<bool>,
+        default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
+    ) -> Self {
+        self.trust_override = trust_override;
+        self.default_project_trust = default_project_trust;
         self
     }
 
@@ -151,6 +167,7 @@ impl acp::Agent for PiAcpAgent {
             Some(cwd.clone());
         let session_id = {
             let mut reg = self.registry.lock().await;
+            reg.set_trust_policy(self.trust_override, self.default_project_trust);
             reg.create(
                 &cwd,
                 &args.mcp_servers,
@@ -204,6 +221,7 @@ impl acp::Agent for PiAcpAgent {
         // session map under `{sessions_dir}/acp/`.
         {
             let mut reg = self.registry.lock().await;
+            reg.set_trust_policy(self.trust_override, self.default_project_trust);
             reg.load(
                 &args.session_id,
                 &args.mcp_servers,

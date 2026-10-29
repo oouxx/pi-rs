@@ -278,6 +278,9 @@ pub type ToolExecuteFn = Arc<
 /// Matches the original TypeScript AgentSessionConfig interface.
 pub struct AgentSessionConfig {
     pub cwd: String,
+    /// Agent configuration directory used for trust/auth/runtime extension
+    /// state. Must be the same directory used to build `settings_manager`.
+    pub agent_dir: String,
     pub model: Model,
     pub thinking_level: ThinkingLevel,
     pub custom_prompt: Option<String>,
@@ -302,6 +305,10 @@ pub struct AgentSessionConfig {
     pub extension_registry: Option<std::sync::Arc<ExtensionRegistry>>,
     /// Explicit project-trust decision (`--trust` / `--no-trust`).
     pub trust_override: Option<bool>,
+    /// `--default-trust` policy override (pi-rs CLI extension; TS has no such
+    /// flag). When set it replaces the `defaultProjectTrust` settings value for
+    /// this session; `None` = fall back to settings.
+    pub default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
     /// Why this session was created (`startup` / `reload` / `new` / `resume` /
     /// `fork`). Used for the `resources_discover` payload, matching TS
     /// `_sessionStartEvent.reason === "reload" ? "reload" : "startup"`.
@@ -1028,12 +1035,13 @@ impl AgentSession {
         // ── Extension context (needed early for extension tool dispatch) ──
         // 扩展可见的项目信任状态（对齐 TS `ctx.isProjectTrusted()`）：项目资源
         // 门控本身仍未实现（见 DEVIATIONS），这里只按 TS 的解析顺序算出"是否
-        // 算已信任"——显式 override → 项目无需信任的资源 → 已存决策 →
-        // `defaultTrust` 策略；需要询问且当下无 UI 时保守取 false（TUI 里扩展
+        // 算已信任"——显式 override → 项目无需信任的资源 → 扩展决策 → 已存
+        // 决策 → `defaultTrust` 策略；需要询问且当下无 UI 时保守取 false（TUI 里扩展
         // 会据此多问一次，正好是原版"未受信任项目"的分支）。
         // 注意：不传 extension_registry（其 project_trust 派发走 block_in_place，
         // 在 current_thread 运行时里会 panic）；扩展间的信任协作另有其道。
-        let ext_agent_dir_for_trust = crate::config::get_agent_dir().to_string_lossy().to_string();
+        let session_agent_dir = options.agent_dir.clone();
+        let ext_agent_dir_for_trust = session_agent_dir.clone();
         let ext_trust_store =
             crate::core::trust_manager::ProjectTrustStore::new(&ext_agent_dir_for_trust);
         let ext_project_trusted = crate::core::project_trust::resolve_project_trusted(
@@ -1041,17 +1049,9 @@ impl AgentSession {
                 cwd: &options.cwd,
                 trust_store: &ext_trust_store,
                 trust_override: options.trust_override,
-                default_project_trust: match settings_manager.get_default_project_trust() {
-                    crate::core::settings_manager::DefaultProjectTrust::Always => {
-                        crate::core::project_trust::DefaultProjectTrust::Always
-                    }
-                    crate::core::settings_manager::DefaultProjectTrust::Never => {
-                        crate::core::project_trust::DefaultProjectTrust::Never
-                    }
-                    crate::core::settings_manager::DefaultProjectTrust::Ask => {
-                        crate::core::project_trust::DefaultProjectTrust::Ask
-                    }
-                },
+                default_project_trust: options.default_project_trust.unwrap_or_else(|| {
+                    settings_manager.get_default_project_trust().into()
+                }),
                 project_trust_context: crate::core::project_trust::ProjectTrustContext::new(
                     &options.cwd,
                     options.ui_context.is_some(),
@@ -1069,7 +1069,7 @@ impl AgentSession {
         let mut ext_runtime_handle = crate::core::extensions::RuntimeHandle::noop();
         let ext_cwd = options.cwd.clone();
         ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
-        let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
+        let ext_agent_dir = session_agent_dir.clone();
         ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
         install_ext_agent_state_getters(
             &mut ext_runtime_handle,
@@ -2197,7 +2197,7 @@ impl AgentSession {
                 let mut ext_runtime_handle = crate::core::extensions::RuntimeHandle::noop();
                 let ext_cwd = session_cwd_for_ext.clone();
                 ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
-                let ext_agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
+                let ext_agent_dir = session_agent_dir.clone();
                 ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
                 install_ext_agent_state_getters(
                     &mut ext_runtime_handle,
@@ -7962,6 +7962,7 @@ mod tests {
             model_registry,
             AgentSessionConfig {
                 cwd,
+                agent_dir: agent_dir.to_string_lossy().to_string(),
                 model,
                 thinking_level: "medium".to_string(),
                 custom_prompt: None,
@@ -7981,6 +7982,7 @@ mod tests {
                 extension_registry: None,
                 session_start_reason: "startup".to_string(),
                 trust_override: None,
+            default_project_trust: None,
                 ui_context: None,
                 custom_tools: None,
                 tools_options: None,
@@ -8114,6 +8116,7 @@ mod tests {
             model_registry,
             AgentSessionConfig {
                 cwd,
+                agent_dir: agent_dir.to_string_lossy().to_string(),
                 model,
                 thinking_level: "medium".to_string(),
                 custom_prompt: None,
@@ -8133,6 +8136,7 @@ mod tests {
                 extension_registry: registry,
                 session_start_reason: "startup".to_string(),
                 trust_override: None,
+            default_project_trust: None,
                 ui_context: None,
                 custom_tools: None,
                 tools_options: None,

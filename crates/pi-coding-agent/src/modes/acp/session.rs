@@ -147,6 +147,8 @@ pub struct SessionRegistry {
     /// 是否注册内置 Rust 扩展（subagent/web_search），对应 CLI
     /// `--no-extensions` 语义。默认 false（测试与无扩展场景）。
     enable_extensions: bool,
+    trust_override: Option<bool>,
+    default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
 }
 
 impl Default for SessionRegistry {
@@ -173,7 +175,19 @@ impl SessionRegistry {
             map_path,
             persisted,
             enable_extensions: false,
+            trust_override: None,
+            default_project_trust: None,
         }
+    }
+
+    /// Apply CLI trust overrides before creating or loading a session.
+    pub fn set_trust_policy(
+        &mut self,
+        trust_override: Option<bool>,
+        default_project_trust: Option<crate::core::project_trust::DefaultProjectTrust>,
+    ) {
+        self.trust_override = trust_override;
+        self.default_project_trust = default_project_trust;
     }
 
     /// Create a new pi `AgentSession` for `cwd`, spawn its task, persist it to
@@ -498,8 +512,9 @@ impl SessionRegistry {
                 session_manager: None,
                 settings_manager,
                 session_start_event: None,
-        ui_context: ui,
-        trust_override: None,
+                ui_context: ui,
+                trust_override: self.trust_override,
+                default_project_trust: self.default_project_trust,
                 custom_tools: custom_tools.clone(),
                 // ACP mode: inject a default bash timeout so a hung command
                 // (e.g. a stalled `git clone`) is killed and the turn
@@ -2041,6 +2056,7 @@ mod tests {
             session_start_event: None,
             ui_context: None,
             trust_override: None,
+            default_project_trust: None,
         })
         .await
         .expect("create test agent session");

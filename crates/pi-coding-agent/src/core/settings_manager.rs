@@ -3,7 +3,7 @@ use pi_extensions::web_search::WebSearchConfig;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::config;
 
@@ -645,8 +645,9 @@ pub struct SettingsError {
 // ============================================================================
 
 #[allow(clippy::type_complexity)]
+#[derive(Clone)]
 pub struct SettingsManager {
-    storage: Box<dyn SettingsStorage>,
+    storage: Arc<dyn SettingsStorage>,
     global_settings: Settings,
     project_settings: Settings,
     settings: Settings,
@@ -670,7 +671,7 @@ impl SettingsManager {
     ) -> Self {
         let settings = deep_merge_settings(&initial_global, &initial_project);
         Self {
-            storage,
+            storage: Arc::from(storage),
             global_settings: initial_global,
             project_settings: initial_project,
             settings,
@@ -711,7 +712,7 @@ impl SettingsManager {
 
         let settings = deep_merge_settings(&global_settings, &project_settings);
         Self {
-            storage,
+            storage: Arc::from(storage),
             global_settings,
             project_settings,
             settings,
@@ -1335,7 +1336,10 @@ impl SettingsManager {
     // --- defaultProjectTrust ---
 
     pub fn get_default_project_trust(&self) -> DefaultProjectTrust {
-        self.global_settings.default_project_trust.clone().unwrap_or(DefaultProjectTrust::Ask)
+        self.global_settings
+            .default_project_trust
+            .clone()
+            .unwrap_or(DefaultProjectTrust::Always)
     }
 
     pub fn set_default_project_trust(&mut self, trust: DefaultProjectTrust) {
@@ -1938,6 +1942,19 @@ mod tests {
                 assert_eq!(current, Some(r#"{"defaultProvider":"anthropic"}"#));
                 None
             }),
+        );
+    }
+
+    #[test]
+    fn test_default_project_trust_is_always_without_setting() {
+        let manager = SettingsManager::new(
+            Box::new(InMemorySettingsStorage::new()),
+            Settings::default(),
+            Settings::default(),
+        );
+        assert_eq!(
+            manager.get_default_project_trust(),
+            DefaultProjectTrust::Always
         );
     }
 

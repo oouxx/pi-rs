@@ -75,7 +75,12 @@ pub struct CliArgs {
     /// Invalid `--mode` value (TS #9045: error and exit nonzero instead of
     /// silently ignoring it). `Some("")` means the value was missing.
     pub invalid_mode: Option<String>,
-    pub default_project_trust: DefaultProjectTrust,
+    /// `--default-trust <ask|always|never>`: overrides the `defaultProjectTrust`
+    /// setting for this session (`None` = use settings).
+    pub default_project_trust: Option<DefaultProjectTrust>,
+    /// Invalid/missing `--default-trust` value. Empty means the value was
+    /// missing; non-empty preserves the rejected input for diagnostics.
+    pub invalid_default_trust: Option<String>,
     /// Subcommand (e.g. "install", "remove", "list")
     pub subcommand: Option<String>,
     /// Arguments to the subcommand
@@ -136,7 +141,7 @@ pub fn print_help() {
     println!("    --offline              Offline mode (no network)");
     println!("    --trust               Trust the project directory");
     println!("    --no-trust            Do not trust the project directory");
-    println!("    --default-trust <V>   Default trust: always|never|ask (default: ask)");
+    println!("    --default-trust <V>   Override defaultProjectTrust: always|never|ask (default: always)");
     println!("    --list-models [PATTERN]  List available models (optionally filtered) and exit");
     println!("    --verbose             Verbose output");
     println!("    -h, --help            Show this help");
@@ -304,9 +309,19 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--no-trust" => result.project_trust_override = Some(false),
 
             "--default-trust" => {
-                i += 1;
-                if i < args.len() {
-                    result.default_project_trust = DefaultProjectTrust::from_str_name(&args[i]);
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    i += 1;
+                    match args[i].as_str() {
+                        "always" | "never" | "ask" => {
+                            result.default_project_trust =
+                                Some(DefaultProjectTrust::from_str_name(&args[i]));
+                        }
+                        other => {
+                            result.invalid_default_trust = Some(other.to_string());
+                        }
+                    }
+                } else {
+                    result.invalid_default_trust = Some(String::new());
                 }
             }
 
@@ -576,7 +591,20 @@ mod tests {
     #[test]
     fn test_parse_default_trust() {
         let args = parse_args(&["--default-trust".into(), "always".into()]);
-        assert_eq!(args.default_project_trust, DefaultProjectTrust::Always);
+        assert_eq!(args.default_project_trust, Some(DefaultProjectTrust::Always));
+
+        // Unset → None so the `defaultProjectTrust` setting stays in charge.
+        assert_eq!(parse_args(&[]).default_project_trust, None);
+
+        // Invalid values are reported instead of silently becoming "ask".
+        let invalid = parse_args(&["--default-trust".into(), "sometimes".into()]);
+        assert_eq!(invalid.default_project_trust, None);
+        assert_eq!(invalid.invalid_default_trust.as_deref(), Some("sometimes"));
+
+        // A following flag is not a value and must not be swallowed.
+        let missing = parse_args(&["--default-trust".into(), "--version".into()]);
+        assert_eq!(missing.invalid_default_trust.as_deref(), Some(""));
+        assert!(missing.version, "--version must remain available");
     }
 
     #[test]

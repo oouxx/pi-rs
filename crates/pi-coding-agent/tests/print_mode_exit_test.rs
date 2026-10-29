@@ -125,6 +125,7 @@ async fn json_mode_tool_failure_followed_by_stop_exits_zero() {
         session_start_event: None,
         ui_context: None,
         trust_override: None,
+        default_project_trust: None,
     })
     .await
     .expect("create_agent_session failed");

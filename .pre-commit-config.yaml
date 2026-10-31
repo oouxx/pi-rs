@@ -3,18 +3,17 @@
 # Enable once per clone:
 #   pre-commit install
 #
-# Runs `cargo fmt` (workspace-wide) before a commit that stages Rust files.
-# Note: the hook formats the whole workspace, so it may rewrite files outside
-# the current change. When that happens pre-commit reports "files were modified
-# by this hook" and aborts the commit; review the formatting diff, `git add -u`,
-# and commit again.
+# Runs `cargo fmt --all -- --check` before a commit that stages Rust files.
+# The check is workspace-wide and non-destructive: if any file is not rustfmt
+# clean the hook fails and lists the files; run `cargo fmt --all`, review the
+# diff, and commit again.
 
 repos:
   - repo: local
     hooks:
       - id: cargo-fmt
-        name: cargo fmt
-        entry: cargo fmt
+        name: cargo fmt --all -- --check
+        entry: cargo fmt --all -- --check
         language: system
         types: [rust]
         pass_filenames: false

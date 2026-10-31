@@ -3,9 +3,7 @@
 //!
 //! Mirrors packages/coding-agent/src/core/project-trust.ts
 
-use crate::core::trust_manager::{
-    has_trust_requiring_project_resources, ProjectTrustStore,
-};
+use crate::core::trust_manager::{has_trust_requiring_project_resources, ProjectTrustStore};
 
 /// Default trust policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -113,7 +111,7 @@ pub fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) -> boo
             tokio::runtime::Handle::current().block_on(
                 crate::core::extensions::dispatcher::dispatch_project_trust(
                     registry, &cwd, &ext_ctx,
-                )
+                ),
             )
         });
         if let Some(decision) = result {
@@ -195,7 +193,10 @@ mod tests {
         let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
 
         // Create a .pi-rs/extensions to make trust required
-        let pi_ext = dir.path().join(crate::config::CONFIG_DIR_NAME).join("extensions");
+        let pi_ext = dir
+            .path()
+            .join(crate::config::CONFIG_DIR_NAME)
+            .join("extensions");
         fs::create_dir_all(&pi_ext).unwrap();
 
         // Store a trust decision
@@ -241,7 +242,10 @@ mod tests {
         let store = ProjectTrustStore::new_from_path(dir.path().join("trust.json"));
 
         // Create .pi-rs/extensions to make trust required
-        let pi_dir = dir.path().join(crate::config::CONFIG_DIR_NAME).join("extensions");
+        let pi_dir = dir
+            .path()
+            .join(crate::config::CONFIG_DIR_NAME)
+            .join("extensions");
         fs::create_dir_all(&pi_dir).unwrap();
 
         let ctx = ProjectTrustContext::new(dir.path().to_str().unwrap(), false);
@@ -279,10 +283,22 @@ mod tests {
     #[test]
     fn test_default_project_trust_conversion() {
         assert_eq!(DefaultProjectTrust::default(), DefaultProjectTrust::Always);
-        assert_eq!(DefaultProjectTrust::from_str_name("always"), DefaultProjectTrust::Always);
-        assert_eq!(DefaultProjectTrust::from_str_name("never"), DefaultProjectTrust::Never);
-        assert_eq!(DefaultProjectTrust::from_str_name("ask"), DefaultProjectTrust::Ask);
-        assert_eq!(DefaultProjectTrust::from_str_name("unknown"), DefaultProjectTrust::Ask);
+        assert_eq!(
+            DefaultProjectTrust::from_str_name("always"),
+            DefaultProjectTrust::Always
+        );
+        assert_eq!(
+            DefaultProjectTrust::from_str_name("never"),
+            DefaultProjectTrust::Never
+        );
+        assert_eq!(
+            DefaultProjectTrust::from_str_name("ask"),
+            DefaultProjectTrust::Ask
+        );
+        assert_eq!(
+            DefaultProjectTrust::from_str_name("unknown"),
+            DefaultProjectTrust::Ask
+        );
         assert_eq!(DefaultProjectTrust::Always.as_str(), "always");
         assert_eq!(DefaultProjectTrust::Never.as_str(), "never");
         assert_eq!(DefaultProjectTrust::Ask.as_str(), "ask");

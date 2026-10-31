@@ -70,7 +70,9 @@ pub fn parse_catalog(provider_id: &str, value: &serde_json::Value) -> Result<Vec
             }
         }
         _ => {
-            return Err(format!("Invalid model catalog for provider \"{provider_id}\""));
+            return Err(format!(
+                "Invalid model catalog for provider \"{provider_id}\""
+            ));
         }
     };
     let mut models = Vec::new();
@@ -82,7 +84,10 @@ pub fn parse_catalog(provider_id: &str, value: &serde_json::Value) -> Result<Vec
         // (match TS `{...model, provider}`).
         let mut model_value = entry.clone();
         if let Some(obj) = model_value.as_object_mut() {
-            obj.insert("provider".to_string(), serde_json::Value::String(provider_id.to_string()));
+            obj.insert(
+                "provider".to_string(),
+                serde_json::Value::String(provider_id.to_string()),
+            );
         }
         let model: Model = match serde_json::from_value(model_value) {
             Ok(m) => m,
@@ -101,7 +106,10 @@ pub fn parse_catalog(provider_id: &str, value: &serde_json::Value) -> Result<Vec
 /// (match TS `REMOTE_CATALOG_REFRESH_INTERVAL_MS` check).
 pub fn is_fresh(entry: Option<&ModelsStoreEntry>, now_ms: i64) -> bool {
     match entry {
-        Some(e) => e.checked_at > 0 && now_ms.saturating_sub(e.checked_at) < REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64,
+        Some(e) => {
+            e.checked_at > 0
+                && now_ms.saturating_sub(e.checked_at) < REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64
+        }
         None => false,
     }
 }
@@ -232,7 +240,9 @@ pub async fn refresh_remote_catalog(
             Ok(v) => v,
             Err(e) => {
                 summary.providers_failed += 1;
-                summary.errors.push(format!("{provider_id}: failed to parse catalog body: {e}"));
+                summary
+                    .errors
+                    .push(format!("{provider_id}: failed to parse catalog body: {e}"));
                 continue;
             }
         };
@@ -260,7 +270,9 @@ pub async fn refresh_remote_catalog(
     }
 
     if let Err(e) = save_models_store(store_path, &store) {
-        summary.errors.push(format!("failed to persist models store: {e}"));
+        summary
+            .errors
+            .push(format!("failed to persist models store: {e}"));
     }
     summary
 }
@@ -431,11 +443,13 @@ mod tests {
         });
 
         // Use an empty models.json so the test is hermetic (no user config).
-        let config_dir = std::env::temp_dir().join(format!("pi-refresh-cfg-{}", std::process::id()));
+        let config_dir =
+            std::env::temp_dir().join(format!("pi-refresh-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&config_dir).unwrap();
         let empty_models_path = config_dir.join("models.json");
         std::fs::write(&empty_models_path, "{}").unwrap();
-        let registry = ModelRegistry::new_with_models_path(vec![make_model("static")], &empty_models_path);
+        let registry =
+            ModelRegistry::new_with_models_path(vec![make_model("static")], &empty_models_path);
         let dir = std::env::temp_dir().join(format!("pi-refresh-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let store_path = dir.join("models-store.json");
@@ -455,7 +469,10 @@ mod tests {
         assert!(store.contains_key("test-provider"));
         let summary2 = refresh_remote_catalog(&registry, &base, &store_path, false).await;
         assert_eq!(summary2.providers_checked, 1);
-        assert_eq!(summary2.providers_updated, 0, "fresh cache should skip network");
+        assert_eq!(
+            summary2.providers_updated, 0,
+            "fresh cache should skip network"
+        );
 
         std::fs::remove_file(&store_path).ok();
     }

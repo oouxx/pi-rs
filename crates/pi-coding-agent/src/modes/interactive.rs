@@ -55,18 +55,28 @@ enum AgentCmd {
     /// `session.compact()`）：压缩会发 CompactionStart/End 事件（错误也经
     /// 事件回显，TS 忽略返回值）。经 Effect 先 abort 在飞 run（TS
     /// compact() 同款）再由任务排队执行。
-    Compact { instructions: Option<String> },
+    Compact {
+        instructions: Option<String>,
+    },
     /// 压缩结束后按序投递压缩期间排队的消息（TS `flushCompactionQueue`）。
-    FlushCompactionQueue { messages: Vec<(String, bool)>, will_retry: bool },
+    FlushCompactionQueue {
+        messages: Vec<(String, bool)>,
+        will_retry: bool,
+    },
     /// Alt+Up（TS `app.message.dequeue`）取回队列文本后：同步清空会话层
     /// 队列镜像并发出 QueueUpdate（把 pending 显示归零）。
     SyncQueueMirrors,
     /// `/login <provider>` 提交密钥后：写入 auth.json（TS
     /// `showApiKeyLoginDialog` → `loginProvider` → `completeProviderAuthentication`）。
-    LoginApiKey { provider: String, key: String },
+    LoginApiKey {
+        provider: String,
+        key: String,
+    },
     /// `/logout [provider]`：删除 auth.json 存储的凭据（TS `/logout` →
     /// `showOAuthSelector("logout")`）。provider 为空时列出已存凭据。
-    LogoutProvider { provider: String },
+    LogoutProvider {
+        provider: String,
+    },
 }
 
 // ============================================================================
@@ -166,9 +176,15 @@ enum UiAction {
 
 /// An extension dialog the TUI is waiting for the user to answer.
 enum PendingUi {
-    Confirm { reply: std::sync::mpsc::Sender<bool> },
-    Select { reply: tokio::sync::oneshot::Sender<Option<String>> },
-    Input { reply: tokio::sync::oneshot::Sender<Option<String>> },
+    Confirm {
+        reply: std::sync::mpsc::Sender<bool>,
+    },
+    Select {
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    },
+    Input {
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    },
     /// `/login <provider>`: the masked secret editor is open; the value is
     /// read from `AppMode::Secret` when the user submits.
     LoginApiKey { provider: String },
@@ -180,26 +196,25 @@ type SelectFn = std::sync::Arc<
             &str,
             &[String],
             Option<&serde_json::Value>,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>>
+        + Send
         + Sync,
 >;
 
 /// `ui.set_widget` handler shape (inline widgets are not rendered by the
 /// minimal TUI — no-op bridge).
-type WidgetFn = std::sync::Arc<
-    dyn Fn(&str, Option<&[String]>, Option<&serde_json::Value>) + Send + Sync,
->;
+type WidgetFn =
+    std::sync::Arc<dyn Fn(&str, Option<&[String]>, Option<&serde_json::Value>) + Send + Sync>;
 
 /// `ui.editor` handler shape: title, prefill → user text.
 type EditorFn = std::sync::Arc<
     dyn Fn(
             &str,
             Option<&str>,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>>
+        + Send
         + Sync,
 >;
 
@@ -209,9 +224,9 @@ type InputFn = std::sync::Arc<
             &str,
             Option<&str>,
             Option<&serde_json::Value>,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'static>>
+        + Send
         + Sync,
 >;
 
@@ -229,8 +244,7 @@ fn create_tui_ui_context() -> (
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<UiAction>();
     // Live editor text for `ui.getEditorText` (TS returns the host editor's
     // current contents; the TUI loop refreshes this handle every frame).
-    let editor_text: Arc<std::sync::Mutex<String>> =
-        Arc::new(std::sync::Mutex::new(String::new()));
+    let editor_text: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new(String::new()));
 
     let notify = {
         let tx = tx.clone();
@@ -262,15 +276,14 @@ fn create_tui_ui_context() -> (
             // Blocking wait (plain Fn, no async): the TUI event loop runs on
             // another worker thread and resolves the dialog. Times out to
             // false so a stuck dialog cannot wedge the extension forever.
-            rx.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or(false)
+            rx.recv_timeout(std::time::Duration::from_secs(120))
+                .unwrap_or(false)
         })
     };
     let select = {
         let tx = tx.clone();
         let select: SelectFn = std::sync::Arc::new(
-            move |title: &str,
-                  options: &[String],
-                  _opts: Option<&serde_json::Value>| {
+            move |title: &str, options: &[String], _opts: Option<&serde_json::Value>| {
                 let tx = tx.clone();
                 let title = title.to_string();
                 let options = options.to_vec();
@@ -294,9 +307,7 @@ fn create_tui_ui_context() -> (
     let input = {
         let tx = tx.clone();
         let input: InputFn = std::sync::Arc::new(
-            move |title: &str,
-                  initial: Option<&str>,
-                  _opts: Option<&serde_json::Value>| {
+            move |title: &str, initial: Option<&str>, _opts: Option<&serde_json::Value>| {
                 let tx = tx.clone();
                 let title = title.to_string();
                 let initial = initial.unwrap_or("").to_string();
@@ -322,26 +333,24 @@ fn create_tui_ui_context() -> (
     // prefill，Enter 提交 / Esc 取消。
     let editor = {
         let tx = tx.clone();
-        let editor: EditorFn = std::sync::Arc::new(
-            move |title: &str, prefill: Option<&str>| {
-                let tx = tx.clone();
-                let title = title.to_string();
-                let initial = prefill.unwrap_or("").to_string();
-                Box::pin(async move {
-                    let (reply, rx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send(UiAction::Input {
-                        title,
-                        initial,
-                        reply,
-                    });
-                    tokio::time::timeout(std::time::Duration::from_secs(120), rx)
-                        .await
-                        .ok()
-                        .and_then(|r| r.ok())
-                        .flatten()
-                })
-            },
-        );
+        let editor: EditorFn = std::sync::Arc::new(move |title: &str, prefill: Option<&str>| {
+            let tx = tx.clone();
+            let title = title.to_string();
+            let initial = prefill.unwrap_or("").to_string();
+            Box::pin(async move {
+                let (reply, rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(UiAction::Input {
+                    title,
+                    initial,
+                    reply,
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .flatten()
+            })
+        });
         editor
     };
     // `ui.setWidget(key, lines?, {placement})`: the TUI renders the lines above
@@ -452,12 +461,19 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(width: u16, height: u16, ext_commands: Vec<String>, skill_commands: Vec<String>) -> Self {
+    fn new(
+        width: u16,
+        height: u16,
+        ext_commands: Vec<String>,
+        skill_commands: Vec<String>,
+    ) -> Self {
         let model = pi_tui::Model::new(width, height);
         Self {
             model,
-            last_ctrl_c: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
-            last_esc: Instant::now() - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
+            last_ctrl_c: Instant::now()
+                - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
+            last_esc: Instant::now()
+                - std::time::Duration::from_millis(DOUBLE_CTRL_C_WINDOW_MS + 100),
             pending_cmds: Vec::new(),
             quit: false,
             ext_commands,
@@ -491,11 +507,12 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             let active = state.model.is_streaming
                 || state.model.is_compacting
                 || state.model.retry_status.is_some()
-                || state
-                    .model
-                    .active_tools
-                    .iter()
-                    .any(|t| matches!(t.state, pi_tui::app::ToolCallState::Running | pi_tui::app::ToolCallState::Pending));
+                || state.model.active_tools.iter().any(|t| {
+                    matches!(
+                        t.state,
+                        pi_tui::app::ToolCallState::Running | pi_tui::app::ToolCallState::Pending
+                    )
+                });
             if active {
                 app::update(&mut state.model, pi_tui::Msg::Tick);
             }
@@ -506,7 +523,10 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             } else {
                 false
             };
-            UpdateOutcome { effects: vec![], redraw: active || scrolled }
+            UpdateOutcome {
+                effects: vec![],
+                redraw: active || scrolled,
+            }
         }
         Action::Agent(msg) => {
             // TS compaction_end → flushCompactionQueue / aborted 提示、
@@ -517,17 +537,32 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                 pi_tui::Msg::QueueCompactionMessage { text, follow_up } => {
                     app::update(
                         &mut state.model,
-                        pi_tui::Msg::QueueCompactionMessage { text: text.clone(), follow_up },
+                        pi_tui::Msg::QueueCompactionMessage {
+                            text: text.clone(),
+                            follow_up,
+                        },
                     );
                     // TS queueCompactionMessage：showStatus("Queued message
                     // for after compaction")（编辑器文本已由提交路径清空）。
-                    state.model.push_message("system", "Queued message for after compaction");
+                    state
+                        .model
+                        .push_message("system", "Queued message for after compaction");
                 }
-                pi_tui::Msg::CompactionEnd { will_retry, aborted, manual, error_message } => {
+                pi_tui::Msg::CompactionEnd {
+                    will_retry,
+                    aborted,
+                    manual,
+                    error_message,
+                } => {
                     let error_display = error_message.clone();
                     app::update(
                         &mut state.model,
-                        pi_tui::Msg::CompactionEnd { will_retry, aborted, manual, error_message },
+                        pi_tui::Msg::CompactionEnd {
+                            will_retry,
+                            aborted,
+                            manual,
+                            error_message,
+                        },
                     );
                     // TS compaction_end：aborted → "Compaction cancelled" /
                     // "Auto-compaction cancelled"；错误 → showError / 错误
@@ -536,7 +571,11 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                     if aborted {
                         state.model.push_message(
                             "system",
-                            if manual { "Compaction cancelled" } else { "Auto-compaction cancelled" },
+                            if manual {
+                                "Compaction cancelled"
+                            } else {
+                                "Auto-compaction cancelled"
+                            },
                         );
                     } else if let Some(err) = error_display {
                         state.model.push_message("system", err);
@@ -551,7 +590,13 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                         }));
                     }
                 }
-                pi_tui::Msg::RetryCountdown { attempt, max_attempts, delay_ms, error_message, esc_aborts } => {
+                pi_tui::Msg::RetryCountdown {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error_message,
+                    esc_aborts,
+                } => {
                     // TS summarization_retry_scheduled：先 showError 再显示
                     // 倒计时（auto_retry_start 无 error_message）。
                     if let Some(err) = &error_message {
@@ -559,14 +604,28 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                     }
                     app::update(
                         &mut state.model,
-                        pi_tui::Msg::RetryCountdown { attempt, max_attempts, delay_ms, error_message, esc_aborts },
+                        pi_tui::Msg::RetryCountdown {
+                            attempt,
+                            max_attempts,
+                            delay_ms,
+                            error_message,
+                            esc_aborts,
+                        },
                     );
                 }
-                pi_tui::Msg::RetryEnd { success, attempt, final_error } => {
+                pi_tui::Msg::RetryEnd {
+                    success,
+                    attempt,
+                    final_error,
+                } => {
                     let error_display = final_error.clone();
                     app::update(
                         &mut state.model,
-                        pi_tui::Msg::RetryEnd { success, attempt, final_error },
+                        pi_tui::Msg::RetryEnd {
+                            success,
+                            attempt,
+                            final_error,
+                        },
                     );
                     // TS auto_retry_end：仅最终失败时 showError（成功则正常
                     // 显示响应）。
@@ -601,7 +660,10 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
                     }));
                 }
             }
-            UpdateOutcome { effects, redraw: true }
+            UpdateOutcome {
+                effects,
+                redraw: true,
+            }
         }
         Action::Key(key) => {
             let mut effects = handle_key(state, key);
@@ -627,11 +689,17 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
             if quit {
                 state.quit = true;
             }
-            UpdateOutcome { effects, redraw: true }
+            UpdateOutcome {
+                effects,
+                redraw: true,
+            }
         }
         Action::Ui(action) => {
             handle_ui_action(state, action);
-            UpdateOutcome { effects: vec![], redraw: true }
+            UpdateOutcome {
+                effects: vec![],
+                redraw: true,
+            }
         }
     }
 }
@@ -641,7 +709,10 @@ fn update(state: &mut AppState, action: Action) -> UpdateOutcome {
 fn handle_ui_action(state: &mut AppState, action: UiAction) {
     match action {
         UiAction::Notify(text) => {
-            app::update(&mut state.model, pi_tui::Msg::NewMessage("system".into(), text));
+            app::update(
+                &mut state.model,
+                pi_tui::Msg::NewMessage("system".into(), text),
+            );
         }
         UiAction::SetStatus(status, message) => {
             app::update(
@@ -672,7 +743,11 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
         UiAction::SetWorkingVisible(visible) => {
             app::update(&mut state.model, pi_tui::Msg::SetWorkingVisible(visible));
         }
-        UiAction::Confirm { title, message, reply } => {
+        UiAction::Confirm {
+            title,
+            message,
+            reply,
+        } => {
             if state.pending_ui.is_some() {
                 let _ = reply.send(false);
                 return;
@@ -684,14 +759,24 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
                     title,
                     message,
                     buttons: vec![
-                        pi_tui::DialogButton { label: "Confirm", action: pi_tui::DialogAction::Confirm },
-                        pi_tui::DialogButton { label: "Cancel", action: pi_tui::DialogAction::Cancel },
+                        pi_tui::DialogButton {
+                            label: "Confirm",
+                            action: pi_tui::DialogAction::Confirm,
+                        },
+                        pi_tui::DialogButton {
+                            label: "Cancel",
+                            action: pi_tui::DialogAction::Cancel,
+                        },
                     ],
                     selected: 0,
                 }),
             );
         }
-        UiAction::Select { title, options, reply } => {
+        UiAction::Select {
+            title,
+            options,
+            reply,
+        } => {
             if state.pending_ui.is_some() {
                 let _ = reply.send(None);
                 return;
@@ -701,7 +786,11 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
                 list: pi_tui::SelectList::new(options).with_title(&title),
             };
         }
-        UiAction::Input { title, initial, reply } => {
+        UiAction::Input {
+            title,
+            initial,
+            reply,
+        } => {
             if state.pending_ui.is_some() {
                 let _ = reply.send(None);
                 return;
@@ -818,10 +907,12 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 // （TS `[queuedText, currentText].join("\n\n")`）。
                 let current = state.model.input.value().to_string();
                 vec![Effect::AbortAndClearQueues(current)]
-            } else if state.model.active_tools.iter().any(|t| {
-                t.name == "bash"
-                    && matches!(t.state, pi_tui::app::ToolCallState::Running)
-            }) {
+            } else if state
+                .model
+                .active_tools
+                .iter()
+                .any(|t| t.name == "bash" && matches!(t.state, pi_tui::app::ToolCallState::Running))
+            {
                 vec![Effect::AgentCommand(AgentCmd::AbortBash)]
             } else {
                 // 空编辑器双击 Esc（500ms 内）：TS 默认 "tree" 选择器；本
@@ -908,13 +999,17 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             state.model.compaction_queue.clear();
             if count == 0 {
                 // TS handleDequeue：showStatus("No queued messages to restore")。
-                state.model.push_message("system", "No queued messages to restore");
+                state
+                    .model
+                    .push_message("system", "No queued messages to restore");
                 return vec![];
             }
             // TS restoreQueuedMessagesToEditor：`[queuedText,
             // currentText].filter(trim).join("\n\n")`。
-            let mut parts: Vec<String> =
-                queued.into_iter().filter(|t| !t.trim().is_empty()).collect();
+            let mut parts: Vec<String> = queued
+                .into_iter()
+                .filter(|t| !t.trim().is_empty())
+                .collect();
             if !current.trim().is_empty() {
                 parts.push(current);
             }
@@ -958,7 +1053,9 @@ fn submit_message(state: &mut AppState, text: String, follow_up: bool) -> Vec<Ef
         // TS queueCompactionMessage：入 compaction 队列 + 状态提示
         // （压缩结束后 CompactionEnd → flushCompactionQueue 投递）。
         state.model.compaction_queue.push((text, follow_up));
-        state.model.push_message("system", "Queued message for after compaction");
+        state
+            .model
+            .push_message("system", "Queued message for after compaction");
         return vec![];
     }
     if state.model.is_streaming {
@@ -1068,7 +1165,12 @@ fn handle_dialog_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> V
                 .dialog
                 .as_ref()
                 .and_then(|d| d.buttons.get(d.selected))
-                .is_some_and(|b| matches!(b.action, pi_tui::DialogAction::Confirm | pi_tui::DialogAction::ConfirmAlways));
+                .is_some_and(|b| {
+                    matches!(
+                        b.action,
+                        pi_tui::DialogAction::Confirm | pi_tui::DialogAction::ConfirmAlways
+                    )
+                });
             app::update(&mut state.model, pi_tui::Msg::DialogConfirm);
             resolve_pending_ui_bool(state, confirmed);
         }
@@ -1085,8 +1187,14 @@ fn handle_dialog_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> V
 fn handle_select_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::KeyCode;
     match key.code {
-        KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
-        | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown => {
+        KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Char('j')
+        | KeyCode::Char('k')
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown => {
             if let pi_tui::AppMode::Select { list } = &mut state.model.mode {
                 list.handle_key(&key);
             }
@@ -1250,13 +1358,19 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             state.model.compaction_queue.clear();
             state.model.is_compacting = false;
             state.model.is_streaming = false;
-            let parent = if args.is_empty() { None } else { Some(args.to_string()) };
+            let parent = if args.is_empty() {
+                None
+            } else {
+                Some(args.to_string())
+            };
             vec![Effect::AgentCommand(AgentCmd::NewSession(parent))]
         }
         "/name" => {
             if !args.is_empty() {
                 system(state, format!("Session name set to: {args}"));
-                vec![Effect::AgentCommand(AgentCmd::SetSessionName(args.to_string()))]
+                vec![Effect::AgentCommand(AgentCmd::SetSessionName(
+                    args.to_string(),
+                ))]
             } else {
                 vec![]
             }
@@ -1297,11 +1411,17 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
                 // 而不是参数以主题名开头。"dark"/"light" 无公共前缀，
                 // 不会歧义；参数为 "" 已被上一分支截走。
                 a if "dark".starts_with(a) => {
-                    app::update(&mut state.model, pi_tui::Msg::SetTheme(pi_tui::Theme::default()));
+                    app::update(
+                        &mut state.model,
+                        pi_tui::Msg::SetTheme(pi_tui::Theme::default()),
+                    );
                     system(state, "Theme switched to dark".into());
                 }
                 a if "light".starts_with(a) => {
-                    app::update(&mut state.model, pi_tui::Msg::SetTheme(pi_tui::Theme::light()));
+                    app::update(
+                        &mut state.model,
+                        pi_tui::Msg::SetTheme(pi_tui::Theme::light()),
+                    );
                     system(state, "Theme switched to light".into());
                 }
                 _ => {
@@ -1341,7 +1461,10 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             vec![]
         }
         "/reload" => {
-            system(state, "Reloading settings, extensions, skills, prompts, and context files...".into());
+            system(
+                state,
+                "Reloading settings, extensions, skills, prompts, and context files...".into(),
+            );
             vec![Effect::AgentCommand(AgentCmd::ReloadExtensions)]
         }
         "/copy" => {
@@ -1363,7 +1486,10 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             let cmd_name = &command[1..];
             if state.ext_commands.iter().any(|c| c == cmd_name) {
                 system(state, format!("Running extension command: /{cmd_name}"));
-                vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(cmd_name.to_string(), args.to_string()))]
+                vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(
+                    cmd_name.to_string(),
+                    args.to_string(),
+                ))]
             } else {
                 // Unknown command → sent as a regular message (TS
                 // onSubmit tail). Queued per streaming/compaction state,
@@ -1409,7 +1535,11 @@ fn login_command(state: &mut AppState, args: &str) -> Vec<Effect> {
         return vec![];
     };
 
-    let display = if name.is_empty() { provider.clone() } else { name };
+    let display = if name.is_empty() {
+        provider.clone()
+    } else {
+        name
+    };
     let label = provider_api_key_label(&provider, &display);
     state.pending_ui = Some(PendingUi::LoginApiKey {
         provider: provider.clone(),
@@ -1541,8 +1671,7 @@ struct CompletionSources {
 /// Live `/model` completion snapshot (TS `modelRuntime.getAvailableSnapshot()`):
 /// shared with the agent task, which refreshes it after auth/model commands so
 /// `/login` immediately makes the provider's models completable.
-type CompletionModelSnapshot =
-    Arc<std::sync::RwLock<Vec<pi_agent_core::pi_ai_types::Model>>>;
+type CompletionModelSnapshot = Arc<std::sync::RwLock<Vec<pi_agent_core::pi_ai_types::Model>>>;
 
 /// Models offered by `/model` completion (match TS
 /// `modelCommand.getArgumentCompletions`: scoped models if any, else the
@@ -1560,15 +1689,27 @@ fn completion_models(session: &AgentSession) -> Vec<pi_agent_core::pi_ai_types::
 /// 里 modelCommand.getArgumentCompletions：fuzzy 过滤可用模型快照）。
 /// `/login` 参数补全：provider `id` / 显示名 fuzzy 过滤（对齐 TS
 /// `loginCommand.getArgumentCompletions`）。
-fn provider_argument_completions(providers: Vec<(String, String)>) -> pi_tui::ArgumentCompletionsFn {
+fn provider_argument_completions(
+    providers: Vec<(String, String)>,
+) -> pi_tui::ArgumentCompletionsFn {
     let search: Vec<String> = providers
         .iter()
-        .map(|(id, name)| if name.is_empty() { id.clone() } else { format!("{id} {name}") })
+        .map(|(id, name)| {
+            if name.is_empty() {
+                id.clone()
+            } else {
+                format!("{id} {name}")
+            }
+        })
         .collect();
     let items: Vec<pi_tui::CompletionItem> = providers
         .iter()
         .map(|(id, name)| {
-            let label = if name.is_empty() { id.clone() } else { name.clone() };
+            let label = if name.is_empty() {
+                id.clone()
+            } else {
+                name.clone()
+            };
             pi_tui::CompletionItem::new(id.clone(), label, String::new())
         })
         .collect();
@@ -1597,13 +1738,26 @@ fn model_argument_completions(snapshot: CompletionModelSnapshot) -> pi_tui::Argu
             let search: Vec<String> = models
                 .iter()
                 .map(|m| {
-                    let name = if m.name.is_empty() { String::new() } else { format!(" {}", m.name) };
-                    format!("{} {} {}/{} {} {}{name}", m.id, m.provider, m.provider, m.id, m.provider, m.id)
+                    let name = if m.name.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", m.name)
+                    };
+                    format!(
+                        "{} {} {}/{} {} {}{name}",
+                        m.id, m.provider, m.provider, m.id, m.provider, m.id
+                    )
                 })
                 .collect();
             let items: Vec<pi_tui::CompletionItem> = models
                 .iter()
-                .map(|m| pi_tui::CompletionItem::new(format!("{}/{}", m.provider, m.id), m.id.clone(), m.provider.clone()))
+                .map(|m| {
+                    pi_tui::CompletionItem::new(
+                        format!("{}/{}", m.provider, m.id),
+                        m.id.clone(),
+                        m.provider.clone(),
+                    )
+                })
                 .collect();
             // fuzzy_filter_indices 用 search 文本排序，再映射回 item。
             let idx = pi_tui::fuzzy::fuzzy_filter_indices(&search, &prefix, |t| t.clone());
@@ -1699,7 +1853,9 @@ fn build_completion_commands(
 
 /// Prompt template → 补全命令（对齐 TS `templateCommands`：label = name，
 /// `argument-hint` frontmatter 折叠进描述）。
-fn template_completion_commands(templates: &[crate::core::prompt_templates::PromptTemplate]) -> Vec<pi_tui::CompletionCommand> {
+fn template_completion_commands(
+    templates: &[crate::core::prompt_templates::PromptTemplate],
+) -> Vec<pi_tui::CompletionCommand> {
     templates
         .iter()
         .map(|t| {
@@ -1713,7 +1869,9 @@ fn template_completion_commands(templates: &[crate::core::prompt_templates::Prom
 }
 
 /// Skill → `skill:<name>` 补全命令（对齐 TS `skillCommandList`：label = name）。
-fn skill_completion_commands(skills: &[crate::core::skills::Skill]) -> Vec<pi_tui::CompletionCommand> {
+fn skill_completion_commands(
+    skills: &[crate::core::skills::Skill],
+) -> Vec<pi_tui::CompletionCommand> {
     skills
         .iter()
         .map(|s| {
@@ -1732,20 +1890,34 @@ async fn resolve_completion(
     match req.trigger {
         CompletionTrigger::Slash => {
             // TS：命令 fuzzy 过滤（name = 命令名），label = name、描述 = hint — desc。
-            let commands = sources.commands.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-            let idx = pi_tui::fuzzy::fuzzy_filter_indices(&commands, &req.query, |c| c.name.clone());
+            let commands = sources
+                .commands
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let idx =
+                pi_tui::fuzzy::fuzzy_filter_indices(&commands, &req.query, |c| c.name.clone());
             idx.into_iter()
                 .map(|(i, _)| {
                     let c = &commands[i];
-                    pi_tui::CompletionItem::new(c.name.clone(), c.display_label(), c.display_description())
+                    pi_tui::CompletionItem::new(
+                        c.name.clone(),
+                        c.display_label(),
+                        c.display_description(),
+                    )
                 })
                 .collect()
         }
         CompletionTrigger::Argument => {
-            let Some(name) = &req.command else { return Vec::new() };
+            let Some(name) = &req.command else {
+                return Vec::new();
+            };
             // Clone the Arc before awaiting: a `RwLockReadGuard` is not `Send`.
             let completions = {
-                let commands = sources.commands.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let commands = sources
+                    .commands
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 commands
                     .iter()
                     .find(|c| c.name == *name)
@@ -1846,7 +2018,10 @@ async fn execute_effect(
                     tokio::time::sleep(std::time::Duration::from_millis(req.debounce_ms)).await;
                 }
                 let items = resolve_completion(&sources, &req).await;
-                let _ = result_tx.send(pi_tui::Msg::CompletionResults { seq: req.seq, items });
+                let _ = result_tx.send(pi_tui::Msg::CompletionResults {
+                    seq: req.seq,
+                    items,
+                });
             });
         }
     }
@@ -1870,9 +2045,15 @@ async fn enqueue_queued(
     };
     {
         let mut mirror = if steer {
-            mirrors.steering.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            mirrors
+                .steering
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
         } else {
-            mirrors.follow_up.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            mirrors
+                .follow_up
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
         };
         mirror.push(text);
     }
@@ -1905,7 +2086,11 @@ fn is_extension_command(sess: &AgentSession, text: &str) -> bool {
 }
 
 /// 以默认选项执行一次提交（扩展命令立即执行路径；错误回显到 UI）。
-async fn run_prompt_default(sess: &AgentSession, result_tx: &tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>, text: &str) {
+async fn run_prompt_default(
+    sess: &AgentSession,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
+    text: &str,
+) {
     let result = sess
         .prompt(
             text,
@@ -1966,8 +2151,8 @@ async fn flush_compaction_queue(
     if will_retry && streaming {
         for (text, follow_up) in &messages {
             let outcome = if is_extension_command(sess, text) {
-                Some(sess
-                    .prompt(
+                Some(
+                    sess.prompt(
                         text,
                         Some(crate::core::agent_session::PromptOptions {
                             expand_prompt_templates: Some(true),
@@ -1975,7 +2160,8 @@ async fn flush_compaction_queue(
                             ..Default::default()
                         }),
                     )
-                    .await)
+                    .await,
+                )
             } else if *follow_up {
                 let _ = sess.follow_up(text, None).await;
                 None
@@ -2122,9 +2308,7 @@ fn convert_span(span: &pi_extension_api::ToolRenderSpan) -> pi_tui::CustomSpan {
 fn convert_block(block: &pi_extension_api::ToolRenderBlock) -> pi_tui::CustomBlock {
     use pi_extension_api::ToolRenderBlock as From;
     match block {
-        From::Line(spans) => {
-            pi_tui::CustomBlock::Line(spans.iter().map(convert_span).collect())
-        }
+        From::Line(spans) => pi_tui::CustomBlock::Line(spans.iter().map(convert_span).collect()),
         From::Spacer => pi_tui::CustomBlock::Spacer,
         From::Markdown(text) => pi_tui::CustomBlock::Markdown(text.clone()),
     }
@@ -2138,7 +2322,9 @@ fn convert_block(block: &pi_extension_api::ToolRenderBlock) -> pi_tui::CustomBlo
 /// `pi_tui::ToolCustomRender`。
 fn install_custom_tool_render(
     model: &mut pi_tui::Model,
-    renders: Arc<std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>>,
+    renders: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>,
+    >,
 ) {
     if renders.read().map(|r| r.is_empty()).unwrap_or(true) {
         model.set_custom_tool_render(None);
@@ -2172,7 +2358,9 @@ fn spawn_agent_command_task(
     result_tx: tokio::sync::mpsc::UnboundedSender<pi_tui::Msg>,
     model_snapshot: CompletionModelSnapshot,
     completion_sources: Arc<CompletionSources>,
-    tool_renders: Arc<std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>>,
+    tool_renders: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, pi_extension_api::ToolRenderFn>>,
+    >,
 ) {
     tokio::spawn(async move {
         while !exit_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2548,7 +2736,9 @@ fn spawn_agent_command_task(
 /// Bridge agent events → pi-tui messages. The assistant row is opened on
 /// `message_start` (TS `AssistantMessageComponent`), not on the first delta, so
 /// empty terminal errors still have a row that can display `Error: ...`.
-fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::modes::agent_bridge::AgentEvent>) -> tokio::sync::mpsc::UnboundedReceiver<pi_tui::Msg> {
+fn spawn_agent_bridge_task(
+    mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::modes::agent_bridge::AgentEvent>,
+) -> tokio::sync::mpsc::UnboundedReceiver<pi_tui::Msg> {
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel::<pi_tui::Msg>();
     let atx = agent_tx.clone();
     tokio::spawn(async move {
@@ -2647,9 +2837,13 @@ fn spawn_agent_bridge_task(mut bridge_rx: tokio::sync::mpsc::UnboundedReceiver<c
                 // AgentSettled = TS `isStreaming = _isAgentRunActive`), not the
                 // per-prompt core AgentStart/AgentEnd (which would blink the spinner).
                 BE::AgentRunStart | BE::AgentRunEnd => vec![],
-                BE::ToolStart(call_id, name, args) => vec![pi_tui::Msg::ToolStart(call_id, name, args)],
+                BE::ToolStart(call_id, name, args) => {
+                    vec![pi_tui::Msg::ToolStart(call_id, name, args)]
+                }
                 BE::ToolEnd(call_id, name, e) => vec![pi_tui::Msg::ToolEnd(call_id, name, e)],
-                BE::ToolOutput(call_id, name, o) => vec![pi_tui::Msg::SetToolOutput(call_id, name, o)],
+                BE::ToolOutput(call_id, name, o) => {
+                    vec![pi_tui::Msg::SetToolOutput(call_id, name, o)]
+                }
                 BE::ToolTruncation(call_id, t) => vec![pi_tui::Msg::SetToolTruncation(call_id, t)],
                 BE::ToolDetails(call_id, d) => vec![pi_tui::Msg::SetToolDetails(call_id, d)],
             };
@@ -2675,9 +2869,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // crossterm EventStream starts (it would swallow the OSC reply).
     let theme_detection = {
         let _ = crossterm::terminal::enable_raw_mode();
-        let detection = pi_tui::detect::detect_terminal_background_theme(
-            std::time::Duration::from_millis(100),
-        );
+        let detection =
+            pi_tui::detect::detect_terminal_background_theme(std::time::Duration::from_millis(100));
         let _ = crossterm::terminal::disable_raw_mode();
         detection
     };
@@ -2689,14 +2882,15 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         session.set_theme_setting(theme_detection.theme.name());
     }
 
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-    );
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen,);
 
     let mut terminal = match pi_tui::Terminal::new() {
         Ok(t) => t,
-        Err(e) => { restore_terminal(); eprintln!("Failed to initialize terminal: {e}"); return 1; }
+        Err(e) => {
+            restore_terminal();
+            eprintln!("Failed to initialize terminal: {e}");
+            return 1;
+        }
     };
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -2712,7 +2906,12 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
         let skills = if session.get_enable_skill_commands() {
             session
                 .resource_loader()
-                .map(|r| r.skills.iter().map(|s| format!("skill:{}", s.name)).collect())
+                .map(|r| {
+                    r.skills
+                        .iter()
+                        .map(|s| format!("skill:{}", s.name))
+                        .collect()
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -2771,7 +2970,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     }
     state.model.model_name = initial_model_name;
     // TS `fullscreenCopyOnSelect`（默认 true）：松手即复制选区。
-    state.model.set_copy_on_select(session.get_fullscreen_copy_on_select());
+    state
+        .model
+        .set_copy_on_select(session.get_fullscreen_copy_on_select());
     // ── 扩展工具自定义渲染（TS `renderCall` / `renderResult`）──
     // 共享表：启动时装一次，`/reload` 后原地刷新（扩展工具重新注册）。
     let tool_renders: Arc<
@@ -2814,7 +3015,11 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
 
     let (mut input_rx, shutdown_guard) = match terminal.start() {
         Ok(r) => r,
-        Err(e) => { restore_terminal(); eprintln!("Failed to start terminal input: {e}"); return 1; }
+        Err(e) => {
+            restore_terminal();
+            eprintln!("Failed to start terminal input: {e}");
+            return 1;
+        }
     };
 
     // ── Agent command channel + background task ───────────────────────────
@@ -2853,13 +3058,19 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                     // across continuations.
                     AgentSessionEvent::AgentStart => Some(pi_tui::Msg::AgentStart),
                     AgentSessionEvent::AgentSettled => Some(pi_tui::Msg::AgentEnd),
-                    AgentSessionEvent::QueueUpdate { steering, follow_up } => {
-                        Some(pi_tui::Msg::SetPendingQueues { steering, follow_up })
-                    }
-                    AgentSessionEvent::CompactionStart { reason } => Some(pi_tui::Msg::CompactionStart {
-                        manual: matches!(reason, CompactionReason::Manual),
-                        overflow: matches!(reason, CompactionReason::Overflow),
+                    AgentSessionEvent::QueueUpdate {
+                        steering,
+                        follow_up,
+                    } => Some(pi_tui::Msg::SetPendingQueues {
+                        steering,
+                        follow_up,
                     }),
+                    AgentSessionEvent::CompactionStart { reason } => {
+                        Some(pi_tui::Msg::CompactionStart {
+                            manual: matches!(reason, CompactionReason::Manual),
+                            overflow: matches!(reason, CompactionReason::Overflow),
+                        })
+                    }
                     AgentSessionEvent::CompactionEnd {
                         reason,
                         will_retry,
@@ -2948,8 +3159,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                 let text = managed_tool_status_text(&status);
                 let _ = status_tx.send(pi_tui::Msg::NewMessage("system".to_string(), text));
             };
-            let _ = crate::utils::tools_manager::ensure_tool_with_status_async(tool, on_status)
-                .await;
+            let _ =
+                crate::utils::tools_manager::ensure_tool_with_status_async(tool, on_status).await;
         });
     }
 
@@ -2958,7 +3169,8 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // NOT be routed through the session mutex — `prompt()` holds the
     // lock for the whole run, so a queued Abort command would only execute
     // after the run finishes (never, for a long run).
-    let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel::<crate::modes::agent_bridge::AgentEvent>();
+    let (bridge_tx, bridge_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::modes::agent_bridge::AgentEvent>();
     let agent_handle = {
         let mut sess = session.lock().await;
         crate::modes::agent_bridge::subscribe_agent(&mut sess, bridge_tx).await;
@@ -3089,11 +3301,7 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     // 对齐 TS `InteractiveMode.shutdown`：TUI 停掉之后、进程退出之前向扩展
     // 发 `session_shutdown(reason="quit")`（扩展据此清理 socket/子进程等）。
     // 后台 run 仍持锁时最多等 2s，之后放弃（不能因为清理卡住退出）。
-    if let Ok(guard) = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        session.lock(),
-    )
-    .await
+    if let Ok(guard) = tokio::time::timeout(std::time::Duration::from_secs(2), session.lock()).await
     {
         guard.dispatch_shutdown("quit", None).await;
     }
@@ -3134,7 +3342,9 @@ fn current_git_branch(cwd: &str) -> Option<String> {
 /// Cumulative token/cost totals from all session entries (TS
 /// `createUsageTotals` + `addUsageToTotals`): assistant messages, tool
 /// results, compaction and branch summaries.
-fn usage_totals_from_entries(entries: &[&crate::core::session_manager::SessionEntry]) -> pi_tui::app::UsageTotals {
+fn usage_totals_from_entries(
+    entries: &[&crate::core::session_manager::SessionEntry],
+) -> pi_tui::app::UsageTotals {
     let mut totals = pi_tui::app::UsageTotals::default();
     for entry in entries {
         let entry: &crate::core::session_manager::SessionEntry = entry;
@@ -3186,10 +3396,7 @@ fn usage_totals_from_entries(entries: &[&crate::core::session_manager::SessionEn
 /// Refresh status-bar data derived from the session (context usage, throttled
 /// to ~1/s) and the in-memory streaming elapsed timer. Returns true if the
 /// view changed and needs a redraw.
-async fn refresh_status(
-    state: &mut AppState,
-    session: &Arc<Mutex<AgentSession>>,
-) -> bool {
+async fn refresh_status(state: &mut AppState, session: &Arc<Mutex<AgentSession>>) -> bool {
     let mut changed = false;
 
     // Context usage + footer stats: only query between runs (the agent
@@ -4099,11 +4306,25 @@ mod tests {
         let mut s = state();
         s.model.input.set_value("abc");
         assert_eq!(s.model.input.cursor_pos(), 3);
-        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Char('b'), KM::CONTROL));
-        assert_eq!(s.model.input.cursor_pos(), 2, "ctrl+b moves the cursor left");
+        let effects = handle_key(
+            &mut s,
+            key(crossterm::event::KeyCode::Char('b'), KM::CONTROL),
+        );
+        assert_eq!(
+            s.model.input.cursor_pos(),
+            2,
+            "ctrl+b moves the cursor left"
+        );
         assert!(effects.is_empty(), "ctrl+b is not an app-level effect");
-        handle_key(&mut s, key(crossterm::event::KeyCode::Char('f'), KM::CONTROL));
-        assert_eq!(s.model.input.cursor_pos(), 3, "ctrl+f moves the cursor right");
+        handle_key(
+            &mut s,
+            key(crossterm::event::KeyCode::Char('f'), KM::CONTROL),
+        );
+        assert_eq!(
+            s.model.input.cursor_pos(),
+            3,
+            "ctrl+f moves the cursor right"
+        );
     }
 
     /// Ctrl+D 不再是 app 级退出键（拦截已移除，见 DEVIATIONS.md）：不再
@@ -4115,12 +4336,22 @@ mod tests {
         s.model.input.set_value("abcde");
         s.model.input.move_left();
         s.model.input.move_left(); // cursor 在 'c' 与 'd' 之间
-        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Char('d'), KM::CONTROL));
+        let effects = handle_key(
+            &mut s,
+            key(crossterm::event::KeyCode::Char('d'), KM::CONTROL),
+        );
         assert!(!s.quit, "ctrl+d must not quit");
         assert!(effects.is_empty(), "ctrl+d is not an app-level effect");
-        assert_eq!(s.model.input.value(), "abce", "ctrl+d deletes the char after the cursor");
+        assert_eq!(
+            s.model.input.value(),
+            "abce",
+            "ctrl+d deletes the char after the cursor"
+        );
         s.model.input.clear();
-        let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Char('d'), KM::CONTROL));
+        let effects = handle_key(
+            &mut s,
+            key(crossterm::event::KeyCode::Char('d'), KM::CONTROL),
+        );
         assert!(!s.quit, "ctrl+d on empty input must not quit");
         assert!(effects.is_empty());
     }
@@ -4130,18 +4361,25 @@ mod tests {
     /// Enter 应用 slash 补全后**继续提交**（TS：`/` 前缀应用后 fall
     /// through 到 submit，执行命令）。
     #[test]
-        fn enter_applies_slash_completion_then_submits() {
+    fn enter_applies_slash_completion_then_submits() {
         let mut s = state();
-        s.model.completer.set_commands(vec![
-            pi_tui::CompletionCommand::new("new", "Start a new session"),
-        ]);
+        s.model
+            .completer
+            .set_commands(vec![pi_tui::CompletionCommand::new(
+                "new",
+                "Start a new session",
+            )]);
         s.model.input.set_value("/n");
         s.model
             .completer
             .begin(pi_tui::components::CompletionTrigger::Slash, "/n", "n");
         s.model.completer.apply_results(
             1,
-            vec![pi_tui::CompletionItem::new("new", "new", "Start a new session")],
+            vec![pi_tui::CompletionItem::new(
+                "new",
+                "new",
+                "Start a new session",
+            )],
         );
         assert!(s.model.completer.visible);
         let key = crossterm::event::KeyEvent::new(
@@ -4172,7 +4410,11 @@ mod tests {
             .begin(pi_tui::components::CompletionTrigger::At, "@src", "src");
         s.model.completer.apply_results(
             1,
-            vec![pi_tui::CompletionItem::new("@src/main.rs", "main.rs", "src/main.rs")],
+            vec![pi_tui::CompletionItem::new(
+                "@src/main.rs",
+                "main.rs",
+                "src/main.rs",
+            )],
         );
         assert!(s.model.completer.visible);
 
@@ -4206,7 +4448,10 @@ mod tests {
             "提交内容必须含展开后的 20000 字符，实际: {:?}",
             &sent[..sent.len().min(80)]
         );
-        assert!(!sent.contains("[paste #"), "marker 不能进提交内容: {sent:?}");
+        assert!(
+            !sent.contains("[paste #"),
+            "marker 不能进提交内容: {sent:?}"
+        );
     }
 
     /// 复现：粘贴大段文本后按 Enter，提交的必须是展开后的原文（不能是 marker）。
@@ -4332,11 +4577,9 @@ mod tests {
     #[test]
     fn esc_closes_completer_popup_without_quitting() {
         let mut s = state();
-        s.model.completer.begin(
-            pi_tui::components::CompletionTrigger::Slash,
-            "",
-            "",
-        );
+        s.model
+            .completer
+            .begin(pi_tui::components::CompletionTrigger::Slash, "", "");
         assert!(s.model.completer.visible);
         let key = crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Esc,
@@ -4375,8 +4618,7 @@ mod tests {
         assert_eq!(items[0].value, "model");
         assert_eq!(items[0].label, "model", "label = name（不带 `/`）");
         assert_eq!(
-            items[0].description,
-            "<provider/model> — Select model (opens selector UI)",
+            items[0].description, "<provider/model> — Select model (opens selector UI)",
             "argumentHint 折叠进描述"
         );
     }
@@ -4392,7 +4634,11 @@ mod tests {
                 description: "Review the diff".into(),
                 file_path: "/tmp/review/SKILL.md".into(),
                 base_dir: "/tmp/review".into(),
-                source_info: create_skill_source_info("/tmp/review/SKILL.md", "/tmp/review", "user"),
+                source_info: create_skill_source_info(
+                    "/tmp/review/SKILL.md",
+                    "/tmp/review",
+                    "user",
+                ),
                 disable_model_invocation: false,
             },
             Skill {
@@ -4419,23 +4665,21 @@ mod tests {
     fn template_completion_commands_build_template_slash_commands() {
         use crate::core::prompt_templates::{PromptSource, PromptTemplate};
         use pi_extension_api::source_info::create_source_info;
-        let templates = vec![
-            PromptTemplate {
-                name: "fix".into(),
-                description: "Fix the issue".into(),
-                argument_hint: None,
-                file_path: "/tmp/fix.md".into(),
-                source: PromptSource::User,
-                append: false,
-                source_info: create_source_info(
-                    "/tmp/fix.md".into(),
-                    "local".into(),
-                    pi_extension_api::source_info::SourceScope::User,
-                    pi_extension_api::source_info::SourceOrigin::TopLevel,
-                    None,
-                ),
-            },
-        ];
+        let templates = vec![PromptTemplate {
+            name: "fix".into(),
+            description: "Fix the issue".into(),
+            argument_hint: None,
+            file_path: "/tmp/fix.md".into(),
+            source: PromptSource::User,
+            append: false,
+            source_info: create_source_info(
+                "/tmp/fix.md".into(),
+                "local".into(),
+                pi_extension_api::source_info::SourceScope::User,
+                pi_extension_api::source_info::SourceOrigin::TopLevel,
+                None,
+            ),
+        }];
         let cmds = template_completion_commands(&templates);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].name, "fix");
@@ -4456,9 +4700,12 @@ mod tests {
             })
         });
         let sources = CompletionSources {
-            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("model", "Select model (opens selector UI)")
-                .with_argument_hint("<provider/model>")
-                .with_argument_completions(f)]),
+            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new(
+                "model",
+                "Select model (opens selector UI)",
+            )
+            .with_argument_hint("<provider/model>")
+            .with_argument_completions(f)]),
             cwd: ".".into(),
         };
         let req = pi_tui::CompletionRequest {
@@ -4479,7 +4726,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_argument_completion_missing_callback_returns_empty() {
         let sources = CompletionSources {
-            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new("name", "Set session display name")]),
+            commands: std::sync::RwLock::new(vec![pi_tui::CompletionCommand::new(
+                "name",
+                "Set session display name",
+            )]),
             cwd: ".".into(),
         };
         let req = pi_tui::CompletionRequest {
@@ -4638,7 +4888,10 @@ mod tests {
     // queueCompactionMessage / flushCompactionQueue）
     // ============================================================
 
-    fn key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+    fn key(
+        code: crossterm::event::KeyCode,
+        mods: crossterm::event::KeyModifiers,
+    ) -> crossterm::event::KeyEvent {
         crossterm::event::KeyEvent::new(code, mods)
     }
 
@@ -4656,8 +4909,15 @@ mod tests {
         assert_eq!(effects, vec![Effect::QueueFollowUp("later".into())]);
         assert_eq!(s.model.input.value(), "", "编辑器清空");
         assert!(s.model.is_streaming, "仍处于 streaming");
-        assert_eq!(s.model.pending_follow_up, vec!["later"], "pending 区立即显示");
-        assert!(s.model.messages.is_empty(), "排队消息不进气泡（TS：被消费后才进转录）");
+        assert_eq!(
+            s.model.pending_follow_up,
+            vec!["later"],
+            "pending 区立即显示"
+        );
+        assert!(
+            s.model.messages.is_empty(),
+            "排队消息不进气泡（TS：被消费后才进转录）"
+        );
     }
 
     /// Alt+Enter 空闲：等同 Enter（完整提交路径）。
@@ -4666,7 +4926,10 @@ mod tests {
         let mut s = state();
         s.model.input.set_value("hello");
         let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::ALT));
-        assert_eq!(effects, vec![Effect::AgentCommand(AgentCmd::SendMessage("hello".into()))]);
+        assert_eq!(
+            effects,
+            vec![Effect::AgentCommand(AgentCmd::SendMessage("hello".into()))]
+        );
         assert!(s.model.is_streaming);
         assert_eq!(s.model.input.value(), "");
     }
@@ -4742,7 +5005,10 @@ mod tests {
         let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Enter, KM::NONE));
         assert_eq!(
             effects,
-            vec![Effect::AgentCommand(AgentCmd::ExtensionCommand("myext".into(), "run".into()))]
+            vec![Effect::AgentCommand(AgentCmd::ExtensionCommand(
+                "myext".into(),
+                "run".into()
+            ))]
         );
     }
 
@@ -4778,13 +5044,16 @@ mod tests {
         s.model.input.set_value("keep");
         let effects = handle_key(&mut s, key(crossterm::event::KeyCode::Up, KM::ALT));
         assert_eq!(effects, vec![]);
-        assert_eq!(s.model.input.value(), "keep", "无排队时编辑器不动（TS 提前 return）");
-        assert!(
-            s.model
-                .messages
-                .iter()
-                .any(|m| m.role == "system" && m.text == "No queued messages to restore")
+        assert_eq!(
+            s.model.input.value(),
+            "keep",
+            "无排队时编辑器不动（TS 提前 return）"
         );
+        assert!(s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.text == "No queued messages to restore"));
     }
 
     /// Shift+Enter 仍然是换行（TS tui.input.newLine）。
@@ -4876,7 +5145,10 @@ mod tests {
         let mut s = state();
         update(
             &mut s,
-            Action::Agent(pi_tui::Msg::CompactionStart { manual: false, overflow: true }),
+            Action::Agent(pi_tui::Msg::CompactionStart {
+                manual: false,
+                overflow: true,
+            }),
         );
         assert!(s.model.is_compacting);
         assert!(!s.model.compaction_manual);
@@ -5047,7 +5319,11 @@ mod tests {
         );
         update(
             &mut s,
-            Action::Agent(pi_tui::Msg::RetryEnd { success: true, attempt: 1, final_error: None }),
+            Action::Agent(pi_tui::Msg::RetryEnd {
+                success: true,
+                attempt: 1,
+                final_error: None,
+            }),
         );
         assert!(s.model.retry_status.is_none());
     }
@@ -5102,9 +5378,15 @@ mod tests {
 
     #[test]
     fn auto_theme_setting_requires_exactly_one_slash() {
-        assert_eq!(parse_auto_theme_setting("light/dark"), Some(("light", "dark")));
+        assert_eq!(
+            parse_auto_theme_setting("light/dark"),
+            Some(("light", "dark"))
+        );
         // Spaces around names are trimmed.
-        assert_eq!(parse_auto_theme_setting(" light / dark "), Some(("light", "dark")));
+        assert_eq!(
+            parse_auto_theme_setting(" light / dark "),
+            Some(("light", "dark"))
+        );
         // Empty side, two slashes, no slash → not an auto setting.
         assert_eq!(parse_auto_theme_setting("light/"), None);
         assert_eq!(parse_auto_theme_setting("/dark"), None);
@@ -5137,7 +5419,10 @@ mod tests {
         );
         // Slash values that fail parseAutoThemeSetting (two slashes) mean
         // "no theme" (TS resolveThemeSetting returns undefined).
-        assert_eq!(resolve_theme_setting(Some("a/b/c"), TerminalTheme::Dark), None);
+        assert_eq!(
+            resolve_theme_setting(Some("a/b/c"), TerminalTheme::Dark),
+            None
+        );
         // No setting → no resolution.
         assert_eq!(resolve_theme_setting(None, TerminalTheme::Dark), None);
     }
@@ -5209,10 +5494,12 @@ mod tests {
         let mut s = login_state();
         let effects = slash_command(&mut s, "/login anthropic");
         assert!(effects.is_empty());
-        assert!(matches!(&s.model.mode, pi_tui::AppMode::Secret { title, message, value }
+        assert!(
+            matches!(&s.model.mode, pi_tui::AppMode::Secret { title, message, value }
             if title == "Login to Anthropic"
                 && message == "Enter Anthropic API key"
-                && value.is_empty()));
+                && value.is_empty())
+        );
         assert!(matches!(s.pending_ui, Some(PendingUi::LoginApiKey { .. })));
     }
 
@@ -5221,7 +5508,9 @@ mod tests {
     fn slash_login_accepts_display_name() {
         let mut s = login_state();
         slash_command(&mut s, "/login OpenAI");
-        assert!(matches!(&s.pending_ui, Some(PendingUi::LoginApiKey { provider }) if provider == "openai"));
+        assert!(
+            matches!(&s.pending_ui, Some(PendingUi::LoginApiKey { provider }) if provider == "openai")
+        );
     }
 
     /// Unknown provider → error listing available providers, no prompt.
@@ -5269,7 +5558,11 @@ mod tests {
         assert!(matches!(s.model.mode, pi_tui::AppMode::Chat));
         assert!(s.pending_ui.is_none());
         // The secret never lands in the transcript.
-        assert!(!s.model.messages.iter().any(|m| m.text.contains("sk-secret")));
+        assert!(!s
+            .model
+            .messages
+            .iter()
+            .any(|m| m.text.contains("sk-secret")));
     }
 
     /// Esc cancels the login without emitting an effect.
@@ -5301,5 +5594,4 @@ mod tests {
             })]
         );
     }
-
 }

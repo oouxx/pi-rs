@@ -14,10 +14,16 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
     let query_lower = query.to_lowercase();
     let text_lower = text.to_lowercase();
     if query_lower.is_empty() {
-        return FuzzyMatch { matches: true, score: 0 };
+        return FuzzyMatch {
+            matches: true,
+            score: 0,
+        };
     }
     if query_lower.chars().count() > text_lower.chars().count() {
-        return FuzzyMatch { matches: false, score: 0 };
+        return FuzzyMatch {
+            matches: false,
+            score: 0,
+        };
     }
 
     let q: Vec<char> = query_lower.chars().collect();
@@ -32,8 +38,7 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
             break;
         }
         if c == q[query_index] {
-            let is_word_boundary =
-                i == 0 || matches!(t[i - 1], ' ' | '-' | '_' | '.' | '/' | ':');
+            let is_word_boundary = i == 0 || matches!(t[i - 1], ' ' | '-' | '_' | '.' | '/' | ':');
             // Reward consecutive matches.
             if i > 0 && last_match_index == Some(i - 1) {
                 consecutive_matches += 1;
@@ -57,12 +62,18 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
     }
 
     if query_index < q.len() {
-        return FuzzyMatch { matches: false, score: 0 };
+        return FuzzyMatch {
+            matches: false,
+            score: 0,
+        };
     }
     if query_lower == text_lower {
         score -= 100;
     }
-    FuzzyMatch { matches: true, score }
+    FuzzyMatch {
+        matches: true,
+        score,
+    }
 }
 
 /// Port of `fuzzyMatch` (including the alphanumeric-swap fallback for
@@ -83,18 +94,27 @@ pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
             None
         }
     };
-    let Some(swapped) = swapped else { return primary };
+    let Some(swapped) = swapped else {
+        return primary;
+    };
     let swapped_match = match_query(&swapped, text);
     if !swapped_match.matches {
         return primary;
     }
-    FuzzyMatch { matches: true, score: swapped_match.score + 5 }
+    FuzzyMatch {
+        matches: true,
+        score: swapped_match.score + 5,
+    }
 }
 
 /// Filter and sort items by fuzzy-match quality (best matches first).
 /// Supports whitespace- and slash-separated tokens: all tokens must match.
 /// Returns `(index, score)` pairs into `items`, best first.
-pub fn fuzzy_filter_indices<T, F: Fn(&T) -> String>(items: &[T], query: &str, get_text: F) -> Vec<(usize, i64)> {
+pub fn fuzzy_filter_indices<T, F: Fn(&T) -> String>(
+    items: &[T],
+    query: &str,
+    get_text: F,
+) -> Vec<(usize, i64)> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return (0..items.len()).map(|i| (i, 0)).collect();
@@ -153,7 +173,12 @@ mod tests {
         let exact = fuzzy_match("model", "model");
         let prefix = fuzzy_match("model", "model-x");
         assert!(exact.matches && prefix.matches);
-        assert!(exact.score < prefix.score, "exact ({}) < prefix ({})", exact.score, prefix.score);
+        assert!(
+            exact.score < prefix.score,
+            "exact ({}) < prefix ({})",
+            exact.score,
+            prefix.score
+        );
     }
 
     #[test]
@@ -164,7 +189,11 @@ mod tests {
 
     #[test]
     fn filter_sorts_best_first_and_supports_tokens() {
-        let items = ["openai/gpt-4o", "anthropic/claude-sonnet", "openai/gpt-4o-mini"];
+        let items = [
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet",
+            "openai/gpt-4o-mini",
+        ];
         let idx = fuzzy_filter_indices(&items, "openai 4o", |s| s.to_string());
         assert_eq!(idx.len(), 2, "openai/* 4o* both match");
         let (first, _) = idx[0];

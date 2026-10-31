@@ -10,7 +10,8 @@ fn try_macos_screenshot_path(file_path: &str) -> String {
     let re = regex::Regex::new(r"(?i) (AM|PM)\.").unwrap();
     re.replace_all(file_path, |caps: &regex::Captures| {
         format!("{}{}.", NARROW_NO_BREAK_SPACE, &caps[1])
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn try_nfd_variant(file_path: &str) -> String {
@@ -225,5 +226,4 @@ mod tests {
         let result = resolve_read_path(user_name, dir.path().to_str().unwrap());
         assert_eq!(result, macos_path);
     }
-
 }

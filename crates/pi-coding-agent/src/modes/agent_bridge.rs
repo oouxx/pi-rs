@@ -79,7 +79,10 @@ pub(crate) fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::
     let obj = value.as_object()?;
     let details = obj.get("details")?.as_object()?;
     let trunc = details.get("truncation")?.as_object()?;
-    let truncated = trunc.get("truncated").and_then(|t| t.as_bool()).unwrap_or(false);
+    let truncated = trunc
+        .get("truncated")
+        .and_then(|t| t.as_bool())
+        .unwrap_or(false);
     let full_output_path = details
         .get("fullOutputPath")
         .and_then(|v| v.as_str())
@@ -101,8 +104,14 @@ pub(crate) fn tool_truncation(value: &serde_json::Value) -> Option<pi_tui::app::
             .get("truncated_by")
             .and_then(|v| v.as_str())
             .map(str::to_string),
-        output_lines: trunc.get("output_lines").and_then(|v| v.as_u64()).unwrap_or(0),
-        total_lines: trunc.get("total_lines").and_then(|v| v.as_u64()).unwrap_or(0),
+        output_lines: trunc
+            .get("output_lines")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        total_lines: trunc
+            .get("total_lines")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         max_lines: trunc.get("max_lines").and_then(|v| v.as_u64()).unwrap_or(0),
         max_bytes: trunc.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
         full_output_path,
@@ -120,7 +129,9 @@ pub(crate) fn tool_result_text(value: &serde_json::Value) -> String {
         return String::new();
     }
     let obj = value.as_object();
-    let details = obj.and_then(|o| o.get("details")).and_then(|d| d.as_object());
+    let details = obj
+        .and_then(|o| o.get("details"))
+        .and_then(|d| d.as_object());
 
     // `details.diff` — pi's edit tool returns the unified diff there.
     if let Some(diff) = details.and_then(|d| d.get("diff")).and_then(|d| d.as_str()) {
@@ -130,7 +141,10 @@ pub(crate) fn tool_result_text(value: &serde_json::Value) -> String {
     }
 
     // `content: [{ type: "text", text: "..." }, ...]`
-    if let Some(content) = obj.and_then(|o| o.get("content")).and_then(|c| c.as_array()) {
+    if let Some(content) = obj
+        .and_then(|o| o.get("content"))
+        .and_then(|c| c.as_array())
+    {
         let texts: Vec<&str> = content
             .iter()
             .filter_map(|c| {
@@ -201,7 +215,13 @@ fn assistant_message_end_event(
         content
             .iter()
             .filter_map(|block| {
-                let ContentBlock::ToolCall { id, name, arguments, .. } = block else {
+                let ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } = block
+                else {
                     return None;
                 };
                 let args = if arguments.is_null() {
@@ -225,7 +245,9 @@ fn assistant_message_end_event(
         text,
         thinking,
         stop_reason,
-        error_message: error_message.filter(|message| !message.is_empty()).map(str::to_string),
+        error_message: error_message
+            .filter(|message| !message.is_empty())
+            .map(str::to_string),
         failed_tool_calls,
         retry_attempt,
     }
@@ -243,10 +265,7 @@ type CoreAgentEventListener = Arc<
         + Sync,
 >;
 
-pub async fn subscribe_agent(
-    session: &mut AgentSession,
-    tx: mpsc::UnboundedSender<AgentEvent>,
-) {
+pub async fn subscribe_agent(session: &mut AgentSession, tx: mpsc::UnboundedSender<AgentEvent>) {
     let tx_clone = tx.clone();
     // The session's internal agent listener resets `retry_attempt` after a
     // non-Error terminal message. Snapshot it from the session event, which is
@@ -265,151 +284,142 @@ pub async fn subscribe_agent(
             }
         }));
     }
-    let listener: CoreAgentEventListener =
-        Arc::new(move |event, _signal| {
-            let tx = tx_clone.clone();
-            let retry_snapshot = retry_snapshot.clone();
-            Box::pin(async move {
-                match &event {
-                    CoreAgentEvent::MessageStart {
-                        message: pi_agent_core::types::AgentMessage::User { content, .. },
-                        ..
-                    } => {
-                        let text: String = content
-                            .iter()
-                            .filter_map(|b| {
-                                if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = b {
-                                    Some(text.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        if !text.is_empty() {
-                            let _ = tx.send(AgentEvent::UserMessage(text));
-                        }
+    let listener: CoreAgentEventListener = Arc::new(move |event, _signal| {
+        let tx = tx_clone.clone();
+        let retry_snapshot = retry_snapshot.clone();
+        Box::pin(async move {
+            match &event {
+                CoreAgentEvent::MessageStart {
+                    message: pi_agent_core::types::AgentMessage::User { content, .. },
+                    ..
+                } => {
+                    let text: String = content
+                        .iter()
+                        .filter_map(|b| {
+                            if let pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } = b {
+                                Some(text.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !text.is_empty() {
+                        let _ = tx.send(AgentEvent::UserMessage(text));
                     }
-                    CoreAgentEvent::MessageStart {
-                        message: pi_agent_core::types::AgentMessage::Assistant { .. },
-                        ..
-                    } => {
-                        let _ = tx.send(AgentEvent::AssistantMessageStart);
-                    }
-                    CoreAgentEvent::AgentStart => {
-                        let _ = tx.send(AgentEvent::AgentRunStart);
-                    }
-                    CoreAgentEvent::AgentEnd { .. } => {
-                        let _ = tx.send(AgentEvent::AgentRunEnd);
-                    }
-                    CoreAgentEvent::MessageUpdate {
-                        assistant_message_event:
-                            AssistantMessageEvent::TextDelta { delta, .. },
-                        ..
-                    } => {
-                        let _ = tx.send(AgentEvent::TextDelta(delta.clone()));
-                    }
-                    CoreAgentEvent::MessageEnd {
-                        message:
-                            pi_agent_core::types::AgentMessage::Assistant {
-                                content,
-                                stop_reason,
-                                error_message,
-                                ..
-                            },
-                    } => {
-                        let attempt = retry_snapshot.load(Ordering::SeqCst);
-                        let _ = tx.send(assistant_message_end_event(
-                            content,
-                            stop_reason.as_ref(),
-                            error_message.as_deref(),
-                            attempt,
-                        ));
-                    }
-                    CoreAgentEvent::ToolExecutionStart {
-                        tool_call_id,
-                        tool_name,
-                        args,
-                        ..
-                    } => {
-                        let args_json = if args.is_null() {
-                            String::new()
-                        } else {
-                            serde_json::to_string_pretty(args).unwrap_or_default()
-                        };
-                        let _ = tx.send(AgentEvent::ToolStart(
-                            tool_call_id.clone(),
-                            tool_name.clone(),
-                            args_json,
-                        ));
-                    }
-                    CoreAgentEvent::ToolExecutionEnd {
-                        tool_call_id,
-                        tool_name,
-                        result,
-                        is_error,
-                        ..
-                    } => {
-                        let _ = tx.send(AgentEvent::ToolEnd(
-                            tool_call_id.clone(),
-                            tool_name.clone(),
-                            *is_error,
-                        ));
-                        // Final output snapshot: the tool's complete result
-                        // (replace semantics — the TUI overwrites the
-                        // streamed output with this text).
-                        let text = tool_result_text(result);
-                        let truncation = tool_truncation(result);
-                        if !text.is_empty() {
-                            let _ = tx.send(AgentEvent::ToolOutput(
-                                tool_call_id.clone(),
-                                tool_name.clone(),
-                                text,
-                            ));
-                        }
-                        if truncation.is_some() {
-                            let _ = tx.send(AgentEvent::ToolTruncation(
-                                tool_call_id.clone(),
-                                truncation,
-                            ));
-                        }
-                        if let Some(details) = tool_details(result) {
-                            let _ = tx.send(AgentEvent::ToolDetails(
-                                tool_call_id.clone(),
-                                Some(details),
-                            ));
-                        }
-                    }
-                    CoreAgentEvent::ToolExecutionUpdate {
-                        tool_call_id,
-                        tool_name,
-                        partial_result,
-                        ..
-                    } => {
-                        let text = tool_result_text(partial_result);
-                        if !text.is_empty() {
-                            let _ = tx.send(AgentEvent::ToolOutput(
-                                tool_call_id.clone(),
-                                tool_name.clone(),
-                                text,
-                            ));
-                        }
-                        // 中间结果的 details 也要更新：扩展的 `onUpdate` 会带
-                        // 新的 details（如 subagent 的并行进度快照）。
-                        if let Some(details) = tool_details(partial_result) {
-                            let _ = tx.send(AgentEvent::ToolDetails(
-                                tool_call_id.clone(),
-                                Some(details),
-                            ));
-                        }
-                    }
-                    _ => {}
                 }
-            })
-        });
+                CoreAgentEvent::MessageStart {
+                    message: pi_agent_core::types::AgentMessage::Assistant { .. },
+                    ..
+                } => {
+                    let _ = tx.send(AgentEvent::AssistantMessageStart);
+                }
+                CoreAgentEvent::AgentStart => {
+                    let _ = tx.send(AgentEvent::AgentRunStart);
+                }
+                CoreAgentEvent::AgentEnd { .. } => {
+                    let _ = tx.send(AgentEvent::AgentRunEnd);
+                }
+                CoreAgentEvent::MessageUpdate {
+                    assistant_message_event: AssistantMessageEvent::TextDelta { delta, .. },
+                    ..
+                } => {
+                    let _ = tx.send(AgentEvent::TextDelta(delta.clone()));
+                }
+                CoreAgentEvent::MessageEnd {
+                    message:
+                        pi_agent_core::types::AgentMessage::Assistant {
+                            content,
+                            stop_reason,
+                            error_message,
+                            ..
+                        },
+                } => {
+                    let attempt = retry_snapshot.load(Ordering::SeqCst);
+                    let _ = tx.send(assistant_message_end_event(
+                        content,
+                        stop_reason.as_ref(),
+                        error_message.as_deref(),
+                        attempt,
+                    ));
+                }
+                CoreAgentEvent::ToolExecutionStart {
+                    tool_call_id,
+                    tool_name,
+                    args,
+                    ..
+                } => {
+                    let args_json = if args.is_null() {
+                        String::new()
+                    } else {
+                        serde_json::to_string_pretty(args).unwrap_or_default()
+                    };
+                    let _ = tx.send(AgentEvent::ToolStart(
+                        tool_call_id.clone(),
+                        tool_name.clone(),
+                        args_json,
+                    ));
+                }
+                CoreAgentEvent::ToolExecutionEnd {
+                    tool_call_id,
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    let _ = tx.send(AgentEvent::ToolEnd(
+                        tool_call_id.clone(),
+                        tool_name.clone(),
+                        *is_error,
+                    ));
+                    // Final output snapshot: the tool's complete result
+                    // (replace semantics — the TUI overwrites the
+                    // streamed output with this text).
+                    let text = tool_result_text(result);
+                    let truncation = tool_truncation(result);
+                    if !text.is_empty() {
+                        let _ = tx.send(AgentEvent::ToolOutput(
+                            tool_call_id.clone(),
+                            tool_name.clone(),
+                            text,
+                        ));
+                    }
+                    if truncation.is_some() {
+                        let _ =
+                            tx.send(AgentEvent::ToolTruncation(tool_call_id.clone(), truncation));
+                    }
+                    if let Some(details) = tool_details(result) {
+                        let _ =
+                            tx.send(AgentEvent::ToolDetails(tool_call_id.clone(), Some(details)));
+                    }
+                }
+                CoreAgentEvent::ToolExecutionUpdate {
+                    tool_call_id,
+                    tool_name,
+                    partial_result,
+                    ..
+                } => {
+                    let text = tool_result_text(partial_result);
+                    if !text.is_empty() {
+                        let _ = tx.send(AgentEvent::ToolOutput(
+                            tool_call_id.clone(),
+                            tool_name.clone(),
+                            text,
+                        ));
+                    }
+                    // 中间结果的 details 也要更新：扩展的 `onUpdate` 会带
+                    // 新的 details（如 subagent 的并行进度快照）。
+                    if let Some(details) = tool_details(partial_result) {
+                        let _ =
+                            tx.send(AgentEvent::ToolDetails(tool_call_id.clone(), Some(details)));
+                    }
+                }
+                _ => {}
+            }
+        })
+    });
 
     session.get_agent().subscribe(listener).await;
 }
-
 
 #[cfg(test)]
 mod tests {

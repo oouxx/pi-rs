@@ -7,7 +7,9 @@ pub struct TextComponent {
 
 impl TextComponent {
     pub fn new(text: &str) -> Self {
-        Self { text: text.to_string() }
+        Self {
+            text: text.to_string(),
+        }
     }
 
     pub fn text(&self) -> &str {

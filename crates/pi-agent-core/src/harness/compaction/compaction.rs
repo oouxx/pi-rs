@@ -399,7 +399,8 @@ pub async fn complete_summarization(
         }
     };
     let signal = options.base.signal.clone();
-    let result = crate::pi_ai_types::retry_assistant_call(produce, retry, signal.as_ref(), callbacks).await;
+    let result =
+        crate::pi_ai_types::retry_assistant_call(produce, retry, signal.as_ref(), callbacks).await;
     if result.stop_reason == crate::pi_ai_types::StopReason::Error {
         return Err(result
             .error_message
@@ -497,8 +498,11 @@ pub async fn generate_summary(
     // Call pi_ai complete_simple wrapped in retryAssistantCall (match TS
     // `completeSummarization`): transient stream drops honor the configured
     // retry policy instead of failing the whole compaction on the first attempt.
-    let result = complete_summarization(model, &context, simple_options, retry, callbacks).await
-        .map_err(|e| CompactionError::SummarizationFailed(format!("LLM summarization failed: {e}")))?;
+    let result = complete_summarization(model, &context, simple_options, retry, callbacks)
+        .await
+        .map_err(|e| {
+            CompactionError::SummarizationFailed(format!("LLM summarization failed: {e}"))
+        })?;
 
     // Extract text from the response
     let summary = result
@@ -1064,5 +1068,4 @@ mod tests {
             assert!(prep.file_ops.written.contains(&"written.ts".to_string()));
         }
     }
-
 }

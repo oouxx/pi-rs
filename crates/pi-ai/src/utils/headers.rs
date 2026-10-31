@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 /// Convert a reqwest `HeaderMap` to a plain `HashMap` of string key-value pairs.
-#[must_use] 
+#[must_use]
 pub fn headers_to_record(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
     let mut result = HashMap::new();
     for (key, value) in headers {

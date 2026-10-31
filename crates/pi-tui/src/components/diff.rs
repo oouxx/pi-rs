@@ -59,7 +59,10 @@ impl DiffView {
             if y >= inner.y + inner.height {
                 break;
             }
-            frame.render_widget(Paragraph::new(line.clone()), Rect::new(inner.x, y, inner.width, 1));
+            frame.render_widget(
+                Paragraph::new(line.clone()),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
         }
     }
 

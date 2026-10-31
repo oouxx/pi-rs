@@ -55,53 +55,72 @@ impl Keymap {
     pub fn defaults() -> Self {
         let mut bindings: HashMap<Action, Vec<KeyBind>> = HashMap::new();
 
-        bindings.insert(Action::SubmitMessage, vec![
-            KeyBind::new(KeyCode::Enter, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::AbortStream, vec![
-            KeyBind::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        ]);
-        bindings.insert(Action::Quit, vec![
-            KeyBind::new(KeyCode::Esc, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::ScrollUp, vec![
-            KeyBind::new(KeyCode::PageUp, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::ScrollDown, vec![
-            KeyBind::new(KeyCode::PageDown, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::ScrollToTop, vec![
-            KeyBind::new(KeyCode::Home, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::ScrollToBottom, vec![
-            KeyBind::new(KeyCode::End, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::CompleteNext, vec![
-            KeyBind::new(KeyCode::Tab, KeyModifiers::NONE),
-            KeyBind::new(KeyCode::Down, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::CompletePrev, vec![
-            KeyBind::new(KeyCode::Up, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::CompleteConfirm, vec![
-            KeyBind::new(KeyCode::Enter, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::CompleteCancel, vec![
-            KeyBind::new(KeyCode::Esc, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::DialogConfirm, vec![
-            KeyBind::new(KeyCode::Enter, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::DialogNext, vec![
-            KeyBind::new(KeyCode::Tab, KeyModifiers::NONE),
-            KeyBind::new(KeyCode::Right, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::DialogPrev, vec![
-            KeyBind::new(KeyCode::Left, KeyModifiers::NONE),
-        ]);
-        bindings.insert(Action::DialogDismiss, vec![
-            KeyBind::new(KeyCode::Esc, KeyModifiers::NONE),
-        ]);
+        bindings.insert(
+            Action::SubmitMessage,
+            vec![KeyBind::new(KeyCode::Enter, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::AbortStream,
+            vec![KeyBind::new(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+        );
+        bindings.insert(
+            Action::Quit,
+            vec![KeyBind::new(KeyCode::Esc, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::ScrollUp,
+            vec![KeyBind::new(KeyCode::PageUp, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::ScrollDown,
+            vec![KeyBind::new(KeyCode::PageDown, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::ScrollToTop,
+            vec![KeyBind::new(KeyCode::Home, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::ScrollToBottom,
+            vec![KeyBind::new(KeyCode::End, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::CompleteNext,
+            vec![
+                KeyBind::new(KeyCode::Tab, KeyModifiers::NONE),
+                KeyBind::new(KeyCode::Down, KeyModifiers::NONE),
+            ],
+        );
+        bindings.insert(
+            Action::CompletePrev,
+            vec![KeyBind::new(KeyCode::Up, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::CompleteConfirm,
+            vec![KeyBind::new(KeyCode::Enter, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::CompleteCancel,
+            vec![KeyBind::new(KeyCode::Esc, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::DialogConfirm,
+            vec![KeyBind::new(KeyCode::Enter, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::DialogNext,
+            vec![
+                KeyBind::new(KeyCode::Tab, KeyModifiers::NONE),
+                KeyBind::new(KeyCode::Right, KeyModifiers::NONE),
+            ],
+        );
+        bindings.insert(
+            Action::DialogPrev,
+            vec![KeyBind::new(KeyCode::Left, KeyModifiers::NONE)],
+        );
+        bindings.insert(
+            Action::DialogDismiss,
+            vec![KeyBind::new(KeyCode::Esc, KeyModifiers::NONE)],
+        );
 
         Self { bindings }
     }
@@ -144,7 +163,10 @@ mod tests {
     #[test]
     fn test_custom_binding() {
         let mut km = Keymap::defaults();
-        km.bind(Action::Quit, KeyBind::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        km.bind(
+            Action::Quit,
+            KeyBind::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
         let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         assert!(km.triggers(&q, Action::Quit));
     }

@@ -232,7 +232,9 @@ impl NpmHelper {
             cmd.args(["install", package]);
         }
         cmd.current_dir(cwd);
-        let output = cmd.output().map_err(|e| format!("npm install failed: {e}"))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("npm install failed: {e}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("npm install error: {stderr}"));
@@ -249,7 +251,9 @@ impl NpmHelper {
             cmd.args(["uninstall", package]);
         }
         cmd.current_dir(cwd);
-        let output = cmd.output().map_err(|e| format!("npm uninstall failed: {e}"))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("npm uninstall failed: {e}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("npm uninstall error: {stderr}"));
@@ -290,11 +294,7 @@ impl DefaultPackageManager {
     }
 
     /// Create a new package manager with a settings manager for persistence.
-    pub fn new_with_settings(
-        cwd: &str,
-        agent_dir: &str,
-        sm: Arc<Mutex<SettingsManager>>,
-    ) -> Self {
+    pub fn new_with_settings(cwd: &str, agent_dir: &str, sm: Arc<Mutex<SettingsManager>>) -> Self {
         DefaultPackageManager {
             cwd: cwd.to_string(),
             agent_dir: agent_dir.to_string(),
@@ -316,7 +316,12 @@ impl DefaultPackageManager {
 
     /// Emit a progress event.
     fn emit_progress(&self, action: &str, source: &str, message: Option<&str>) {
-        if let Some(cb) = self.progress_callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+        if let Some(cb) = self
+            .progress_callback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             cb(ProgressEvent {
                 event_type: "progress".to_string(),
                 action: action.to_string(),
@@ -331,7 +336,10 @@ impl DefaultPackageManager {
     fn resolve_source(&self, source: &str, local: bool) -> Option<String> {
         // Check cache first
         {
-            let cache = self.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = self
+                .path_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(path) = cache.get(source) {
                 return Some(path.clone());
             }
@@ -347,7 +355,10 @@ impl DefaultPackageManager {
             let pkg_dir = root.join(source);
             if pkg_dir.join("package.json").exists() {
                 let path = pkg_dir.to_string_lossy().to_string();
-                self.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(source.to_string(), path.clone());
+                self.path_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(source.to_string(), path.clone());
                 return Some(path);
             }
         }
@@ -368,7 +379,11 @@ impl DefaultPackageManager {
     fn parse_source(&self, source: &str) -> ParsedSource {
         let trimmed = source.trim();
         if trimmed.starts_with("npm:") {
-            let spec = trimmed.strip_prefix("npm:").unwrap_or("").trim().to_string();
+            let spec = trimmed
+                .strip_prefix("npm:")
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let (name, _version) = Self::parse_npm_spec(&spec);
             return ParsedSource::Npm { spec, name };
         }
@@ -505,14 +520,23 @@ impl DefaultPackageManager {
                     .strip_prefix(Path::new(&base_dir))
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| resolved.clone());
-                if rel.is_empty() { ".".to_string() } else { rel }
+                if rel.is_empty() {
+                    ".".to_string()
+                } else {
+                    rel
+                }
             }
             _ => source.to_string(),
         }
     }
 
     /// Check if an existing package source matches the input source (mirrors TS `packageSourcesMatch`).
-    fn package_sources_match(&self, existing: &PackageSource, input_source: &str, local: bool) -> bool {
+    fn package_sources_match(
+        &self,
+        existing: &PackageSource,
+        input_source: &str,
+        local: bool,
+    ) -> bool {
         let existing_str = Self::get_package_source_string(existing);
         let left = self.get_source_match_key_for_settings(&existing_str, local);
         let right = self.get_source_match_key_for_input(input_source);
@@ -605,7 +629,10 @@ impl PackageManager for DefaultPackageManager {
         }
 
         // Clear cache entry
-        self.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(source);
+        self.path_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(source);
 
         self.emit_progress("remove", source, Some("Removed"));
         Ok(())
@@ -658,7 +685,10 @@ impl PackageManager for DefaultPackageManager {
     }
 
     fn set_progress_callback(&self, callback: Option<ProgressCallback>) {
-        *self.progress_callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
+        *self
+            .progress_callback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
     }
 
     fn add_source_to_settings(&self, source: &str, local: bool) -> bool {
@@ -689,7 +719,14 @@ impl PackageManager for DefaultPackageManager {
                 PackageSource::String(_) => {
                     next_packages[match_idx] = PackageSource::String(normalized);
                 }
-                PackageSource::Object { source: _, autoload, extensions, skills, prompts, themes } => {
+                PackageSource::Object {
+                    source: _,
+                    autoload,
+                    extensions,
+                    skills,
+                    prompts,
+                    themes,
+                } => {
                     next_packages[match_idx] = PackageSource::Object {
                         source: normalized,
                         autoload: *autoload,
@@ -797,25 +834,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nm = dir.path().join("node_modules").join("test-pkg");
         fs::create_dir_all(&nm).unwrap();
-        fs::write(nm.join("package.json"), r#"{"name":"test-pkg","version":"1.0.0"}"#).unwrap();
+        fs::write(
+            nm.join("package.json"),
+            r#"{"name":"test-pkg","version":"1.0.0"}"#,
+        )
+        .unwrap();
 
         let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
         let result = mgr.resolve(None).unwrap();
         assert!(!result.extensions.is_empty());
-        assert!(result.extensions.iter().any(|r| r.metadata.source == "test-pkg"));
+        assert!(result
+            .extensions
+            .iter()
+            .any(|r| r.metadata.source == "test-pkg"));
     }
 
     #[test]
     fn test_detect_scoped_package() {
         let dir = tempfile::tempdir().unwrap();
-        let nm = dir.path().join("node_modules").join("@scope").join("test-pkg");
+        let nm = dir
+            .path()
+            .join("node_modules")
+            .join("@scope")
+            .join("test-pkg");
         fs::create_dir_all(&nm).unwrap();
-        fs::write(nm.join("package.json"), r#"{"name":"@scope/test-pkg","version":"1.0.0"}"#).unwrap();
+        fs::write(
+            nm.join("package.json"),
+            r#"{"name":"@scope/test-pkg","version":"1.0.0"}"#,
+        )
+        .unwrap();
 
         let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
         let result = mgr.resolve(None).unwrap();
         assert!(!result.extensions.is_empty());
-        assert!(result.extensions.iter().any(|r| r.metadata.source == "@scope/test-pkg"));
+        assert!(result
+            .extensions
+            .iter()
+            .any(|r| r.metadata.source == "@scope/test-pkg"));
     }
 
     #[test]
@@ -842,16 +897,24 @@ mod tests {
         let events_clone = Arc::clone(&events);
 
         mgr.set_progress_callback(Some(Box::new(move |evt| {
-            events_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(evt);
+            events_clone
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(evt);
         })));
 
         // Trigger progress via install (will fail since npm may not be available,
         // but progress should still be emitted before the attempt).
         let _ = mgr.install("test-pkg", false);
 
-        let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let captured = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // At minimum, the "install" action should have been emitted.
-        assert!(!captured.is_empty(), "should have at least one progress event");
+        assert!(
+            !captured.is_empty(),
+            "should have at least one progress event"
+        );
         assert_eq!(captured[0].action, "install");
         assert_eq!(captured[0].source, "test-pkg");
     }
@@ -868,15 +931,14 @@ mod tests {
         fs::create_dir_all(&user_nm).unwrap();
         fs::write(user_nm.join("package.json"), r#"{"name":"user-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            agent_dir.to_str().unwrap(),
-        );
+        let mgr =
+            DefaultPackageManager::new(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         let result = mgr.resolve(None).unwrap();
 
-        assert!(result.extensions.iter().any(|r| {
-            r.metadata.source == "user-pkg" && r.metadata.scope == SourceScope::User
-        }));
+        assert!(result
+            .extensions
+            .iter()
+            .any(|r| { r.metadata.source == "user-pkg" && r.metadata.scope == SourceScope::User }));
     }
 
     #[test]
@@ -886,10 +948,7 @@ mod tests {
         fs::create_dir_all(&project_nm).unwrap();
         fs::write(project_nm.join("package.json"), r#"{"name":"proj-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            "/nonexistent",
-        );
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
         let result = mgr.resolve(None).unwrap();
 
         assert!(result.extensions.iter().any(|r| {
@@ -912,10 +971,8 @@ mod tests {
         fs::create_dir_all(&project_nm).unwrap();
         fs::write(project_nm.join("package.json"), r#"{"name":"proj-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            agent_dir.to_str().unwrap(),
-        );
+        let mgr =
+            DefaultPackageManager::new(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         let result = mgr.resolve(None).unwrap();
 
         assert_eq!(result.extensions.len(), 2);
@@ -932,10 +989,7 @@ mod tests {
         fs::create_dir_all(&pkg_dir).unwrap();
         fs::write(pkg_dir.join("package.json"), r#"{"name":"cached-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            "/nonexistent",
-        );
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
 
         // First call populates cache
         let r1 = mgr.resolve_source("cached-pkg", false);
@@ -946,7 +1000,10 @@ mod tests {
 
         // Second call should still return cached result
         let r2 = mgr.resolve_source("cached-pkg", false);
-        assert!(r2.is_some(), "should return cached result even after deletion");
+        assert!(
+            r2.is_some(),
+            "should return cached result even after deletion"
+        );
     }
 
     #[test]
@@ -966,10 +1023,8 @@ mod tests {
         fs::create_dir_all(&user_nm).unwrap();
         fs::write(user_nm.join("package.json"), r#"{"name":"my-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            agent_dir.to_str().unwrap(),
-        );
+        let mgr =
+            DefaultPackageManager::new(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
 
         // local=true means project scope only — should NOT find user package
         let result = mgr.resolve_source("my-pkg", true);
@@ -990,14 +1045,14 @@ mod tests {
     #[test]
     fn test_resolve_with_on_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            "/nonexistent",
-        );
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
 
         let called = std::sync::Mutex::new(Vec::new());
         let on_missing = |source: &str| {
-            called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(source.to_string());
+            called
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(source.to_string());
             MissingSourceAction::Skip
         };
 
@@ -1005,7 +1060,10 @@ mod tests {
         // (there are none configured, so it shouldn't be called)
         let result = mgr.resolve(Some(&on_missing)).unwrap();
         assert!(result.extensions.is_empty());
-        assert!(called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
+        assert!(called
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1063,7 +1121,10 @@ mod tests {
 
     #[test]
     fn test_npm_is_package_installed_not_found() {
-        assert!(!NpmHelper::is_package_installed("nonexistent", "/nonexistent"));
+        assert!(!NpmHelper::is_package_installed(
+            "nonexistent",
+            "/nonexistent"
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -1077,10 +1138,7 @@ mod tests {
         fs::create_dir_all(&nm).unwrap();
         fs::write(nm.join("package.json"), r#"{"name":"test-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            "/nonexistent",
-        );
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
         let packages = mgr.list_configured_packages();
         assert_eq!(packages.len(), 1);
         assert_eq!(packages[0].source, "test-pkg");
@@ -1102,10 +1160,8 @@ mod tests {
         fs::create_dir_all(&project_nm).unwrap();
         fs::write(project_nm.join("package.json"), r#"{"name":"proj-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            agent_dir.to_str().unwrap(),
-        );
+        let mgr =
+            DefaultPackageManager::new(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         let packages = mgr.list_configured_packages();
         assert_eq!(packages.len(), 2);
     }
@@ -1124,10 +1180,8 @@ mod tests {
         fs::create_dir_all(&project_nm).unwrap();
         fs::write(project_nm.join("package.json"), r#"{"name":"shared-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            agent_dir.to_str().unwrap(),
-        );
+        let mgr =
+            DefaultPackageManager::new(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         let packages = mgr.list_configured_packages();
         // Should only appear once (project scope wins)
         assert_eq!(packages.len(), 1);
@@ -1145,10 +1199,7 @@ mod tests {
         fs::create_dir_all(&pkg_dir).unwrap();
         fs::write(pkg_dir.join("package.json"), r#"{"name":"test-pkg"}"#).unwrap();
 
-        let mgr = DefaultPackageManager::new(
-            dir.path().to_str().unwrap(),
-            "/nonexistent",
-        );
+        let mgr = DefaultPackageManager::new(dir.path().to_str().unwrap(), "/nonexistent");
 
         // Populate cache
         let r = mgr.resolve_source("test-pkg", false);
@@ -1158,8 +1209,14 @@ mod tests {
         let _ = mgr.remove("test-pkg", false);
 
         // Cache should be cleared
-        let cache = mgr.path_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!cache.contains_key("test-pkg"), "cache should be cleared after remove");
+        let cache = mgr
+            .path_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !cache.contains_key("test-pkg"),
+            "cache should be cleared after remove"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1283,7 +1340,10 @@ mod tests {
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package", false);
         assert!(added);
-        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
+        let packages = sm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_packages();
         assert_eq!(packages.len(), 1);
         match &packages[0] {
             PackageSource::String(s) => assert_eq!(s, "npm:my-package"),
@@ -1295,13 +1355,18 @@ mod tests {
     fn test_add_source_to_settings_update_existing() {
         let sm = make_sm();
         // Pre-populate with an old version
-        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![PackageSource::String(
-            "npm:my-package@1.0".to_string(),
-        )]);
+        sm.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_packages(vec![PackageSource::String(
+                "npm:my-package@1.0".to_string(),
+            )]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package@2.0", false);
         assert!(added);
-        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
+        let packages = sm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_packages();
         assert_eq!(packages.len(), 1);
         match &packages[0] {
             PackageSource::String(s) => assert_eq!(s, "npm:my-package@2.0"),
@@ -1315,24 +1380,38 @@ mod tests {
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let added = mgr.add_source_to_settings("npm:my-package", true); // local=true → project
         assert!(added);
-        let project_packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_project_packages();
+        let project_packages = sm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_project_packages();
         assert_eq!(project_packages.len(), 1);
         // Global settings should have no packages (project scope was used)
-        let global_packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_global_settings().packages.clone().unwrap_or_default();
+        let global_packages = sm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_global_settings()
+            .packages
+            .clone()
+            .unwrap_or_default();
         assert!(global_packages.is_empty());
     }
 
     #[test]
     fn test_remove_source_from_settings() {
         let sm = make_sm();
-        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![
-            PackageSource::String("npm:pkg-a".to_string()),
-            PackageSource::String("npm:pkg-b".to_string()),
-        ]);
+        sm.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_packages(vec![
+                PackageSource::String("npm:pkg-a".to_string()),
+                PackageSource::String("npm:pkg-b".to_string()),
+            ]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let removed = mgr.remove_source_from_settings("npm:pkg-a", false);
         assert!(removed);
-        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
+        let packages = sm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_packages();
         assert_eq!(packages.len(), 1);
         match &packages[0] {
             PackageSource::String(s) => assert_eq!(s, "npm:pkg-b"),
@@ -1343,13 +1422,16 @@ mod tests {
     #[test]
     fn test_remove_source_from_settings_no_match() {
         let sm = make_sm();
-        sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_packages(vec![PackageSource::String(
-            "npm:pkg-a".to_string(),
-        )]);
+        sm.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_packages(vec![PackageSource::String("npm:pkg-a".to_string())]);
         let mgr = DefaultPackageManager::new_with_settings("/tmp/test", "/tmp/agent", sm.clone());
         let removed = mgr.remove_source_from_settings("npm:nonexistent", false);
         assert!(!removed);
-        let packages = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_packages();
+        let packages = sm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_packages();
         assert_eq!(packages.len(), 1);
     }
 

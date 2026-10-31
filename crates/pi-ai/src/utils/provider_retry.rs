@@ -75,7 +75,10 @@ pub fn is_retryable_provider_error(err: &ProviderHttpError) -> bool {
 
 /// Server-requested delay validation (match TS `validateServerRetryDelayMs`):
 /// delays above `maxRetryDelayMs` fail immediately (60s default; 0 disables).
-fn validate_server_retry_delay_ms(delay_ms: f64, max_retry_delay_ms: Option<u64>) -> Result<u64, String> {
+fn validate_server_retry_delay_ms(
+    delay_ms: f64,
+    max_retry_delay_ms: Option<u64>,
+) -> Result<u64, String> {
     let max_delay_ms = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
     if max_delay_ms > 0 && delay_ms as u64 > max_delay_ms {
         return Err(format!(
@@ -220,9 +223,9 @@ async fn execute_with_timeout(
                 ),
             )),
         },
-        None => fut.await.map_err(|e| {
-            ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string())
-        }),
+        None => fut
+            .await
+            .map_err(|e| ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string())),
     }
 }
 
@@ -312,15 +315,41 @@ mod tests {
 
     #[test]
     fn retryable_statuses() {
-        assert!(is_retryable_provider_error(&ProviderHttpError::new(Some(408), "x")));
-        assert!(is_retryable_provider_error(&ProviderHttpError::new(Some(409), "x")));
-        assert!(is_retryable_provider_error(&ProviderHttpError::new(Some(429), "x")));
-        assert!(is_retryable_provider_error(&ProviderHttpError::new(Some(500), "x")));
-        assert!(is_retryable_provider_error(&ProviderHttpError::new(Some(503), "x")));
-        assert!(is_retryable_provider_error(&ProviderHttpError::new(None, "network")));
-        assert!(!is_retryable_provider_error(&ProviderHttpError::new(Some(400), "x")));
-        assert!(!is_retryable_provider_error(&ProviderHttpError::new(Some(401), "x")));
-        assert!(!is_retryable_provider_error(&ProviderHttpError::new(Some(404), "x")));
+        assert!(is_retryable_provider_error(&ProviderHttpError::new(
+            Some(408),
+            "x"
+        )));
+        assert!(is_retryable_provider_error(&ProviderHttpError::new(
+            Some(409),
+            "x"
+        )));
+        assert!(is_retryable_provider_error(&ProviderHttpError::new(
+            Some(429),
+            "x"
+        )));
+        assert!(is_retryable_provider_error(&ProviderHttpError::new(
+            Some(500),
+            "x"
+        )));
+        assert!(is_retryable_provider_error(&ProviderHttpError::new(
+            Some(503),
+            "x"
+        )));
+        assert!(is_retryable_provider_error(&ProviderHttpError::new(
+            None, "network"
+        )));
+        assert!(!is_retryable_provider_error(&ProviderHttpError::new(
+            Some(400),
+            "x"
+        )));
+        assert!(!is_retryable_provider_error(&ProviderHttpError::new(
+            Some(401),
+            "x"
+        )));
+        assert!(!is_retryable_provider_error(&ProviderHttpError::new(
+            Some(404),
+            "x"
+        )));
     }
 
     #[test]
@@ -439,10 +468,7 @@ mod tests {
         });
 
         let client = reqwest::Client::new();
-        let request = client
-            .get(format!("http://{addr}/"))
-            .build()
-            .unwrap();
+        let request = client.get(format!("http://{addr}/")).build().unwrap();
         let err = execute_with_timeout(&client, request, Some(Duration::from_millis(150)))
             .await
             .unwrap_err();

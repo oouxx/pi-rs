@@ -18,4 +18,3 @@ pub fn open_browser(target: &str) {
     // it can communicate with the system browser/handler.
     let _ = Command::new(program).args(args).spawn();
 }
-

@@ -6,9 +6,8 @@ use std::path::Path;
 
 /// Unicode space characters to normalize.
 const UNICODE_SPACES: &[char] = &[
-    '\u{00A0}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}',
-    '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}', '\u{200A}',
-    '\u{202F}', '\u{205F}', '\u{3000}',
+    '\u{00A0}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}',
+    '\u{2007}', '\u{2008}', '\u{2009}', '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}',
 ];
 
 /// Options for path normalization.
@@ -50,15 +49,20 @@ pub fn normalize_path(input: &str, options: &PathOptions) -> String {
     }
 
     if options.expand_tilde {
-        let home = options.home_dir.clone().or_else(|| {
-            dirs::home_dir().map(|p| p.to_string_lossy().to_string())
-        }).unwrap_or_else(|| "/tmp".to_string());
+        let home = options
+            .home_dir
+            .clone()
+            .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "/tmp".to_string());
 
         if normalized == "~" {
             return home;
         }
         if let Some(stripped) = normalized.strip_prefix("~/") {
-            return Path::new(&home).join(stripped).to_string_lossy().to_string();
+            return Path::new(&home)
+                .join(stripped)
+                .to_string_lossy()
+                .to_string();
         }
     }
 

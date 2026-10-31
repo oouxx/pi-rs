@@ -79,15 +79,39 @@ pub enum AgentHarnessPhase {
 /// and flushed when the turn ends.
 #[derive(Debug, Clone)]
 pub enum PendingSessionWrite {
-    Message { message: AgentMessage },
-    ModelChange { provider: String, model_id: String },
-    ThinkingLevelChange { thinking_level: String },
-    ActiveToolsChange { active_tool_names: Vec<String> },
-    Custom { custom_type: String, data: Option<serde_json::Value> },
-    CustomMessage { custom_type: String, content: serde_json::Value, display: bool, details: Option<serde_json::Value> },
-    Label { target_id: String, label: Option<String> },
-    SessionInfo { name: String },
-    Leaf { target_id: Option<String> },
+    Message {
+        message: AgentMessage,
+    },
+    ModelChange {
+        provider: String,
+        model_id: String,
+    },
+    ThinkingLevelChange {
+        thinking_level: String,
+    },
+    ActiveToolsChange {
+        active_tool_names: Vec<String>,
+    },
+    Custom {
+        custom_type: String,
+        data: Option<serde_json::Value>,
+    },
+    CustomMessage {
+        custom_type: String,
+        content: serde_json::Value,
+        display: bool,
+        details: Option<serde_json::Value>,
+    },
+    Label {
+        target_id: String,
+        label: Option<String>,
+    },
+    SessionInfo {
+        name: String,
+    },
+    Leaf {
+        target_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -678,10 +702,7 @@ pub trait ExecutionEnv: Send + Sync {
         path: &str,
         options: Option<ReadTextFileOptions>,
     ) -> std::result::Result<String, FileError>;
-    async fn read_binary_file(
-        &self,
-        path: &str,
-    ) -> std::result::Result<Vec<u8>, FileError> {
+    async fn read_binary_file(&self, path: &str) -> std::result::Result<Vec<u8>, FileError> {
         // Default: read as text and convert. Override for proper binary reading.
         let content = self.read_text_file(path, None).await?;
         Ok(content.into_bytes())
@@ -809,7 +830,10 @@ pub trait SessionStorage<M: Clone + Send + Sync = SessionMetadata>: Send + Sync 
     ) -> std::result::Result<Vec<SessionTreeEntry>, SessionError>;
     /// Cursor-based entry reads (match TS `SessionStorage.getEntries` with
     /// `SessionEntryCursorOptions`).
-    async fn get_entries(&self, options: Option<&SessionEntryCursorOptions>) -> Vec<SessionTreeEntry>;
+    async fn get_entries(
+        &self,
+        options: Option<&SessionEntryCursorOptions>,
+    ) -> Vec<SessionTreeEntry>;
 }
 
 #[async_trait]
@@ -1374,7 +1398,11 @@ pub fn apply_stream_options_patch(
                         }
                     }
                 }
-                result.headers = if headers.is_empty() { None } else { Some(headers) };
+                result.headers = if headers.is_empty() {
+                    None
+                } else {
+                    Some(headers)
+                };
             }
         }
     }
@@ -1393,7 +1421,11 @@ pub fn apply_stream_options_patch(
                         }
                     }
                 }
-                result.metadata = if metadata.is_empty() { None } else { Some(metadata) };
+                result.metadata = if metadata.is_empty() {
+                    None
+                } else {
+                    Some(metadata)
+                };
             }
         }
     }
@@ -1449,7 +1481,12 @@ mod helper_tests {
             compat: None,
         };
         let msg = create_failure_message(&model, "cancelled", true);
-        if let AgentMessage::Assistant { error_message, stop_reason, .. } = &msg {
+        if let AgentMessage::Assistant {
+            error_message,
+            stop_reason,
+            ..
+        } = &msg
+        {
             assert_eq!(error_message.as_deref(), Some("cancelled"));
             assert_eq!(*stop_reason, Some(crate::pi_ai_types::StopReason::Aborted));
         } else {
@@ -1475,7 +1512,10 @@ mod helper_tests {
         assert_eq!(cloned.temperature, Some(0.7));
         assert_eq!(cloned.max_tokens, Some(4096));
         assert_eq!(cloned.transport, Some("websocket".into()));
-        assert_eq!(cloned.headers.as_ref().unwrap().get("X-Key"), Some(&"val".into()));
+        assert_eq!(
+            cloned.headers.as_ref().unwrap().get("X-Key"),
+            Some(&"val".into())
+        );
     }
 
     #[test]

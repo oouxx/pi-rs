@@ -176,10 +176,7 @@ fn cmd_add(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
                     .into_iter()
                     .map(|(k, v)| (k, serde_json::json!(v)))
                     .collect();
-                map.insert(
-                    "headers".to_string(),
-                    serde_json::Value::Object(headers),
-                );
+                map.insert("headers".to_string(), serde_json::Value::Object(headers));
             }
             serde_json::Value::Object(map)
         }
@@ -233,8 +230,7 @@ fn cmd_edit(args: &[String], cwd: &str, agent_dir: &str, edit: Edit) -> i32 {
         // Prefer the file that defines the server so edits land in the right
         // place; `--global` forces the agent-dir file.
         let (servers, _) = mcp_config::load_servers(cwd, agent_dir);
-        locate_source(&servers, name)
-            .unwrap_or_else(|| target_path(false, cwd, agent_dir))
+        locate_source(&servers, name).unwrap_or_else(|| target_path(false, cwd, agent_dir))
     };
 
     let result = match edit {

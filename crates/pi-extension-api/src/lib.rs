@@ -10,18 +10,18 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub use hook::{
-    ArgumentCompletionsFn, AutocompleteItem, CommandRegistry, CommandRegistration,
-    FlagRegistry, HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag,
-    RegisteredShortcut, RegisteredTool, SessionBeforeCompactEvent, SessionBeforeCompactResult,
-    ShortcutRegistry, ToolRegistry,
+    ArgumentCompletionsFn, AutocompleteItem, CommandRegistration, CommandRegistry, FlagRegistry,
+    HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag, RegisteredShortcut,
+    RegisteredTool, SessionBeforeCompactEvent, SessionBeforeCompactResult, ShortcutRegistry,
+    ToolRegistry,
 };
 pub use source_info::{
-    create_builtin_source_info, create_source_info, create_synthetic_source_info,
-    SourceInfo, SourceOrigin, SourceScope,
+    create_builtin_source_info, create_source_info, create_synthetic_source_info, SourceInfo,
+    SourceOrigin, SourceScope,
 };
 
 /// Tool 运行中的部分结果回调（对齐 TS `onUpdate(partial)`）。
@@ -254,10 +254,14 @@ pub type ToolExecuteFn = Arc<
             String,
             serde_json::Value,
             Option<tokio::sync::watch::Receiver<bool>>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<ToolCallOutput, Box<dyn std::error::Error + Send + Sync>>> + Send>>
-            + Send
-            + Sync,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<ToolCallOutput, Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
 >;
 
 /// Tool definition matching the original TypeScript `ToolDefinition` interface.
@@ -441,10 +445,7 @@ pub struct ExtensionUIContext {
     >,
     /// Show a multi-line editor dialog (matching TS `ui.editor(title, prefill?)`).
     pub editor: Arc<
-        dyn Fn(
-                &str,
-                Option<&str>,
-            ) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>
+        dyn Fn(&str, Option<&str>) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>
             + Send
             + Sync,
     >,
@@ -1008,7 +1009,7 @@ pub struct ExtensionRegistry {
 }
 
 impl ExtensionRegistry {
-#[must_use]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hook_runner: HookRunner::new(),
@@ -1149,8 +1150,8 @@ impl Default for ExtensionRegistry {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use async_trait::async_trait;
     use super::*;
+    use async_trait::async_trait;
 
     #[test]
     fn test_extension_registry_collect_tools() {
@@ -1165,16 +1166,22 @@ mod tests {
             }
 
             fn register_tools(&self, tools: &mut ToolRegistry) {
-                tools.register("test_tool", ToolDefinition {
-                    name: "test_tool".into(),
-                    description: "A test tool".into(),
-                    ..Default::default()
-                });
+                tools.register(
+                    "test_tool",
+                    ToolDefinition {
+                        name: "test_tool".into(),
+                        description: "A test tool".into(),
+                        ..Default::default()
+                    },
+                );
             }
         }
 
         let mut reg = ExtensionRegistry::new();
-        reg.register(Box::new(ToolHandler), create_builtin_source_info("tool_handler"));
+        reg.register(
+            Box::new(ToolHandler),
+            create_builtin_source_info("tool_handler"),
+        );
 
         let tools = reg.collect_tools();
         assert_eq!(tools.len(), 1);
@@ -1197,18 +1204,24 @@ mod tests {
                 "provenance"
             }
             fn register_tools(&self, tools: &mut ToolRegistry) {
-                tools.register("t", ToolDefinition {
-                    name: "t".into(),
-                    description: "t".into(),
-                    ..Default::default()
-                });
+                tools.register(
+                    "t",
+                    ToolDefinition {
+                        name: "t".into(),
+                        description: "t".into(),
+                        ..Default::default()
+                    },
+                );
             }
             fn register_commands(&self, commands: &mut hook::CommandRegistry) {
-                commands.register("c", CommandRegistration {
-                    description: "c".into(),
-                    execute: std::sync::Arc::new(|_, _| Box::pin(async {})),
-                    get_argument_completions: None,
-                });
+                commands.register(
+                    "c",
+                    CommandRegistration {
+                        description: "c".into(),
+                        execute: std::sync::Arc::new(|_, _| Box::pin(async {})),
+                        get_argument_completions: None,
+                    },
+                );
             }
         }
 
@@ -1237,7 +1250,7 @@ mod tests {
     /// `RegisteredCommand.getArgumentCompletions`.
     #[tokio::test]
     async fn test_command_argument_completions_callback() {
-        use hook::{CommandRegistry, CommandRegistration, HookHandler};
+        use hook::{CommandRegistration, CommandRegistry, HookHandler};
 
         struct CompHandler;
 
@@ -1252,21 +1265,22 @@ mod tests {
                         if prefix.is_empty() {
                             None
                         } else {
-                            Some(vec![
-                                AutocompleteItem {
-                                    value: format!("{prefix}-a"),
-                                    label: format!("A for {prefix}"),
-                                    description: None,
-                                },
-                            ])
+                            Some(vec![AutocompleteItem {
+                                value: format!("{prefix}-a"),
+                                label: format!("A for {prefix}"),
+                                description: None,
+                            }])
                         }
                     })
                 });
-                commands.register("comp", CommandRegistration {
-                    description: "comp".into(),
-                    execute: std::sync::Arc::new(|_, _| Box::pin(async {})),
-                    get_argument_completions: Some(cb),
-                });
+                commands.register(
+                    "comp",
+                    CommandRegistration {
+                        description: "comp".into(),
+                        execute: std::sync::Arc::new(|_, _| Box::pin(async {})),
+                        get_argument_completions: Some(cb),
+                    },
+                );
             }
         }
 

@@ -175,9 +175,8 @@ fn sgr_modifier(m: ratatui::style::Modifier) -> String {
 pub fn buffer_to_lines(buf: &ratatui::buffer::Buffer) -> Vec<String> {
     let mut lines = Vec::with_capacity(buf.area.height as usize);
     for y in 0..buf.area.height {
-        let row: Vec<ratatui::buffer::Cell> = (0..buf.area.width)
-            .map(|x| buf[(x, y)].clone())
-            .collect();
+        let row: Vec<ratatui::buffer::Cell> =
+            (0..buf.area.width).map(|x| buf[(x, y)].clone()).collect();
         lines.push(buffer_row_to_ansi(&row));
     }
     lines
@@ -305,7 +304,10 @@ mod tests {
         ]);
         let out = buffer_row_to_ansi(&r);
         assert!(out.contains("\x1b[48;2;52;53;65m"), "bg emitted: {out:?}");
-        assert!(out.ends_with("  \x1b[0m"), "trailing bg spaces kept: {out:?}");
+        assert!(
+            out.ends_with("  \x1b[0m"),
+            "trailing bg spaces kept: {out:?}"
+        );
     }
 
     /// Wide characters: the continuation cell must not be emitted (no gap

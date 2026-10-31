@@ -277,8 +277,7 @@ pub fn normalize_for_fuzzy_match(text: &str) -> String {
         .replace('\u{201B}', "'");
 
     // Smart double quotes → "
-    result = result
-        .replace(['\u{201C}', '\u{201D}', '\u{201E}', '\u{201F}'], "\"");
+    result = result.replace(['\u{201C}', '\u{201D}', '\u{201E}', '\u{201F}'], "\"");
 
     // Various dashes/hyphens → -
     for ch in [
@@ -506,7 +505,9 @@ fn apply_replacements_preserving_unchanged_lines(
     let base_lines = get_line_spans(base_content);
 
     if original_lines.len() != base_lines.len() {
-        panic!("Cannot preserve unchanged lines because the base content has a different line count.");
+        panic!(
+            "Cannot preserve unchanged lines because the base content has a different line count."
+        );
     }
 
     // Group replacements by the line ranges they touch
@@ -549,7 +550,11 @@ fn apply_replacements_preserving_unchanged_lines(
         let group_start_offset = base_lines[group.start_line].start;
         let group_end_offset = base_lines[group.end_line - 1].end;
         let group_content = &base_content[group_start_offset..group_end_offset];
-        result.push_str(&apply_replacements(group_content, &group.replacements, group_start_offset));
+        result.push_str(&apply_replacements(
+            group_content,
+            &group.replacements,
+            group_start_offset,
+        ));
 
         original_line_index = group.end_line;
     }
@@ -755,7 +760,10 @@ pub fn generate_diff_string(
                         } else {
                             ""
                         };
-                        if old_line == old_start && new_line == new_start || i < context_lines || i >= len - context_lines {
+                        if old_line == old_start && new_line == new_start
+                            || i < context_lines
+                            || i >= len - context_lines
+                        {
                             let ln = pad_number(old_line, line_num_width);
                             output.push(format!(" {} {}", ln, line));
                         } else if i == context_lines {

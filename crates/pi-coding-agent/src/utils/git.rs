@@ -2,8 +2,8 @@
 //!
 //! Mirrors packages/coding-agent/src/utils/git.ts
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Parsed git source information.
 #[derive(Debug, Clone)]
@@ -16,8 +16,7 @@ pub struct GitSource {
 }
 
 #[allow(clippy::unwrap_used)] // literal patterns, compilation is infallible
-static SCP_LIKE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^git@([^:]+):(.+)$").unwrap());
+static SCP_LIKE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^git@([^:]+):(.+)$").unwrap());
 
 #[allow(clippy::unwrap_used)] // literal pattern, compilation is infallible
 static PROTOCOL_RE: LazyLock<Regex> =
@@ -69,7 +68,10 @@ fn split_ref(url: &str) -> (String, Option<String>) {
             let repo_path = &path_part[..at_pos];
             let ref_str = &path_part[at_pos + 1..];
             if !repo_path.is_empty() && !ref_str.is_empty() {
-                return (format!("{}/{}", host_part, repo_path), Some(ref_str.to_string()));
+                return (
+                    format!("{}/{}", host_part, repo_path),
+                    Some(ref_str.to_string()),
+                );
             }
         }
     }
@@ -92,7 +94,12 @@ fn has_unsafe_part(value: &str, allow_slash: bool) -> bool {
 }
 
 /// Build a GitSource from validated parts.
-fn build_git_source(repo: String, host: String, path: String, r#ref: Option<String>) -> Option<GitSource> {
+fn build_git_source(
+    repo: String,
+    host: String,
+    path: String,
+    r#ref: Option<String>,
+) -> Option<GitSource> {
     if path.starts_with('/') {
         return None;
     }

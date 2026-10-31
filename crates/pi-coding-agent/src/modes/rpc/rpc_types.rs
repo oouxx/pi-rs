@@ -290,8 +290,6 @@ pub enum RpcOutput {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-
-
 }
 
 /// Session state returned by get_state.
@@ -328,7 +326,11 @@ pub struct RpcSessionState {
 }
 
 /// Helper to create a success response.
-pub fn rpc_success(id: Option<String>, command: &str, data: Option<serde_json::Value>) -> RpcOutput {
+pub fn rpc_success(
+    id: Option<String>,
+    command: &str,
+    data: Option<serde_json::Value>,
+) -> RpcOutput {
     RpcOutput::Response {
         id,
         command: command.to_string(),

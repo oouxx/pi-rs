@@ -25,7 +25,10 @@ pub fn is_separator(c: char) -> bool {
     }
     // The punctuation the original lists explicitly that lives outside those
     // blocks.
-    matches!(c, '\u{2026}' | '\u{2014}' | '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')
+    matches!(
+        c,
+        '\u{2026}' | '\u{2014}' | '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}'
+    )
 }
 
 /// TS `toDisplayPath`: normalize separators to `/`.
@@ -56,7 +59,11 @@ fn find_unclosed_quote_start(text: &str) -> Option<usize> {
             }
         }
     }
-    if in_quotes { quote_start } else { None }
+    if in_quotes {
+        quote_start
+    } else {
+        None
+    }
 }
 
 fn is_token_start(text: &str, index: usize) -> bool {
@@ -94,7 +101,12 @@ pub fn parse_path_prefix(prefix: &str) -> (String, bool, bool) {
 }
 
 /// TS `buildCompletionValue`.
-pub fn build_completion_value(path: &str, is_directory: bool, is_at_prefix: bool, is_quoted_prefix: bool) -> String {
+pub fn build_completion_value(
+    path: &str,
+    is_directory: bool,
+    is_at_prefix: bool,
+    is_quoted_prefix: bool,
+) -> String {
     let _ = is_directory; // 路径本身已带尾随 `/`，无需再拼
     let needs_quotes = is_quoted_prefix || path.chars().any(is_separator);
     let prefix = if is_at_prefix { "@" } else { "" };
@@ -226,11 +238,20 @@ pub fn file_suggestions(cwd: &str, prefix: &str) -> Vec<CompletionItem> {
         };
 
         let relative_path = to_display_path(&relative_path);
-        let path_value = if is_directory { format!("{relative_path}/") } else { relative_path };
-        let value = build_completion_value(&path_value, is_directory, is_at_prefix, is_quoted_prefix);
+        let path_value = if is_directory {
+            format!("{relative_path}/")
+        } else {
+            relative_path
+        };
+        let value =
+            build_completion_value(&path_value, is_directory, is_at_prefix, is_quoted_prefix);
         suggestions.push(CompletionItem {
             value,
-            label: if is_directory { format!("{name}/") } else { name },
+            label: if is_directory {
+                format!("{name}/")
+            } else {
+                name
+            },
             description: String::new(),
         });
     }
@@ -281,7 +302,10 @@ mod cjk_separator_tests {
             build_completion_value("我的，文档/", true, true, false),
             "@\"我的，文档/\""
         );
-        assert_eq!(build_completion_value("src/main.rs", false, true, false), "@src/main.rs");
+        assert_eq!(
+            build_completion_value("src/main.rs", false, true, false),
+            "@src/main.rs"
+        );
         assert_eq!(
             build_completion_value("my dir/", true, true, false),
             "@\"my dir/\""
@@ -343,11 +367,7 @@ fn scoped_path_for_display(display_base: &str, relative_path: &str) -> String {
 
 /// TS `walkDirectoryWithFd` 的 Rust 等价（`ignore` 遍历）：
 /// 文件+目录、hidden、follow、排除 `.git`、最多 `max_results` 条命中。
-fn walk_with_ignore(
-    base_dir: &Path,
-    query: &str,
-    max_results: usize,
-) -> Vec<(String, bool)> {
+fn walk_with_ignore(base_dir: &Path, query: &str, max_results: usize) -> Vec<(String, bool)> {
     let mut results: Vec<(String, bool)> = Vec::new();
     let mut scanned = 0usize;
     let walker = ignore::WalkBuilder::new(base_dir)
@@ -372,7 +392,11 @@ fn walk_with_ignore(
         let display = to_display_path(&rel.to_string_lossy());
         let path_for_score = display.trim_end_matches('/');
         if query.is_empty() || score_entry(path_for_score, query, is_dir) > 0 {
-            let value = if is_dir { format!("{display}/") } else { display };
+            let value = if is_dir {
+                format!("{display}/")
+            } else {
+                display
+            };
             results.push((value, is_dir));
         }
     }
@@ -400,27 +424,48 @@ pub fn fuzzy_file_suggestions(
             let score = if fd_query.is_empty() {
                 1
             } else {
-                let p = if is_dir { path.trim_end_matches('/') } else { &path };
+                let p = if is_dir {
+                    path.trim_end_matches('/')
+                } else {
+                    &path
+                };
                 score_entry(p, &fd_query, is_dir)
             };
-            if score <= 0 { None } else { Some((score, path, is_dir)) }
+            if score <= 0 {
+                None
+            } else {
+                Some((score, path, is_dir))
+            }
         })
         .collect();
     scored.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
 
     let mut suggestions = Vec::new();
     for (_, path, is_dir) in scored.into_iter().take(max_results.max(1)) {
-        let path_without_slash = if is_dir { path.trim_end_matches('/').to_string() } else { path.clone() };
+        let path_without_slash = if is_dir {
+            path.trim_end_matches('/').to_string()
+        } else {
+            path.clone()
+        };
         let display_path = match &display_base {
             Some(base) => scoped_path_for_display(base, &path_without_slash),
             None => path_without_slash.clone(),
         };
         let entry_name = basename_display(&path_without_slash).to_string();
-        let completion_path = if is_dir { format!("{display_path}/") } else { display_path.clone() };
-        let value = build_completion_value(&completion_path, is_dir, is_at_prefix, is_quoted_prefix);
+        let completion_path = if is_dir {
+            format!("{display_path}/")
+        } else {
+            display_path.clone()
+        };
+        let value =
+            build_completion_value(&completion_path, is_dir, is_at_prefix, is_quoted_prefix);
         suggestions.push(CompletionItem {
             value,
-            label: if is_dir { format!("{entry_name}/") } else { entry_name },
+            label: if is_dir {
+                format!("{entry_name}/")
+            } else {
+                entry_name
+            },
             description: display_path,
         });
     }
@@ -441,8 +486,14 @@ mod tests {
 
     #[test]
     fn build_value_quotes_when_needed() {
-        assert_eq!(build_completion_value("src/main.rs", false, true, false), "@src/main.rs");
-        assert_eq!(build_completion_value("a b.txt", false, true, false), "@\"a b.txt\"");
+        assert_eq!(
+            build_completion_value("src/main.rs", false, true, false),
+            "@src/main.rs"
+        );
+        assert_eq!(
+            build_completion_value("a b.txt", false, true, false),
+            "@\"a b.txt\""
+        );
         assert_eq!(build_completion_value("src/", true, false, false), "src/");
     }
 
@@ -456,10 +507,19 @@ mod tests {
 
         // 列出根目录：目录优先（src/ 在 README.md 前）。
         let root_items = file_suggestions(&cwd, "");
-        assert_eq!(root_items.first().map(|i| i.value.as_str()), Some("src/"), "目录优先: {root_items:?}");
+        assert_eq!(
+            root_items.first().map(|i| i.value.as_str()),
+            Some("src/"),
+            "目录优先: {root_items:?}"
+        );
         // 带目录前缀：列出该目录内容。
         let items = file_suggestions(&cwd, "src/");
-        assert!(items.iter().any(|i| i.value == "src/main.rs" && i.label == "main.rs"), "got: {items:?}");
+        assert!(
+            items
+                .iter()
+                .any(|i| i.value == "src/main.rs" && i.label == "main.rs"),
+            "got: {items:?}"
+        );
     }
 
     #[test]

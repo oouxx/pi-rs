@@ -135,7 +135,10 @@ impl FileAuthStorageBackend {
     }
 
     fn with_lock_impl<T>(&self, f: &mut dyn FnMut(Option<&str>) -> LockResult<T>) -> T {
-        let _guard = self.mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = self
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_parent_dir();
         self.ensure_file_exists();
         let current = self.read_content();
@@ -160,7 +163,10 @@ impl InMemoryAuthStorageBackend {
     }
 
     fn with_lock_impl<T>(&self, f: &mut dyn FnMut(Option<&str>) -> LockResult<T>) -> T {
-        let mut guard = self.value.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .value
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current: Option<&str> = match guard.as_ref() {
             Some(s) => Some(s.as_str()),
             None => None,
@@ -287,14 +293,9 @@ impl AuthStorage {
             return Some(key.clone());
         }
         match self.data.get(provider) {
-            Some(AuthCredential::ApiKey { key, env }) => key
-                .as_deref()
-                .and_then(|k| {
-                    crate::core::resolve_config_value::resolve_config_value_with_env(
-                        k,
-                        env.as_ref(),
-                    )
-                }),
+            Some(AuthCredential::ApiKey { key, env }) => key.as_deref().and_then(|k| {
+                crate::core::resolve_config_value::resolve_config_value_with_env(k, env.as_ref())
+            }),
             _ => None,
         }
     }
@@ -418,11 +419,7 @@ impl AuthStorage {
 
         let cred = self.data.get(provider_id);
 
-        if let Some(AuthCredential::ApiKey {
-            key: Some(k),
-            env,
-        }) = cred
-        {
+        if let Some(AuthCredential::ApiKey { key: Some(k), env }) = cred {
             // Provider-scoped env values stored in the credential override
             // the ambient process environment during `${ENV}` resolution
             // (match TS `overlayEnvAuthContext`).
@@ -490,8 +487,20 @@ mod tests {
     #[test]
     fn test_list() {
         let mut storage = AuthStorage::in_memory(AuthStorageData::new());
-        storage.set("a", AuthCredential::ApiKey { key: Some("k1".into()), env: None });
-        storage.set("b", AuthCredential::ApiKey { key: Some("k2".into()), env: None });
+        storage.set(
+            "a",
+            AuthCredential::ApiKey {
+                key: Some("k1".into()),
+                env: None,
+            },
+        );
+        storage.set(
+            "b",
+            AuthCredential::ApiKey {
+                key: Some("k2".into()),
+                env: None,
+            },
+        );
         let providers = storage.list();
         assert_eq!(providers.len(), 2);
         assert!(providers.contains(&"a".to_string()));
@@ -543,7 +552,10 @@ mod tests {
                 key: Some("sk-${ANTHROPIC_API_KEY}".into()),
                 env: Some({
                     let mut m = HashMap::new();
-                    m.insert("ANTHROPIC_API_KEY".to_string(), "from-credential".to_string());
+                    m.insert(
+                        "ANTHROPIC_API_KEY".to_string(),
+                        "from-credential".to_string(),
+                    );
                     m
                 }),
             },
@@ -574,7 +586,9 @@ mod tests {
             Some(AuthCredential::ApiKey { key, env }) => {
                 assert_eq!(key.as_deref(), Some("cf-${CLOUDFLARE_ACCOUNT_ID}"));
                 assert_eq!(
-                    env.as_ref().and_then(|m| m.get("CLOUDFLARE_ACCOUNT_ID")).map(String::as_str),
+                    env.as_ref()
+                        .and_then(|m| m.get("CLOUDFLARE_ACCOUNT_ID"))
+                        .map(String::as_str),
                     Some("acct-1")
                 );
             }

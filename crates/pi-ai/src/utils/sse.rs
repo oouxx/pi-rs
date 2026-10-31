@@ -89,7 +89,7 @@ fn next_line_break_index(text: &str) -> Option<usize> {
 /// Returns `Some((line, rest))` where `line` does NOT include the line
 /// terminator and `rest` is everything after it (including `\r\n` consumed as one).
 /// Returns `None` if no complete line is available yet.
-#[must_use] 
+#[must_use]
 pub fn consume_line(text: &str) -> Option<(&str, &str)> {
     let line_break_idx = next_line_break_index(text)?;
 
@@ -103,7 +103,6 @@ pub fn consume_line(text: &str) -> Option<(&str, &str)> {
     }
     let line_len = line_break_idx;
 
-
     Some((&text[..line_len], &text[next_idx..]))
 }
 
@@ -111,7 +110,7 @@ pub fn consume_line(text: &str) -> Option<(&str, &str)> {
 ///
 /// This is a synchronous function that takes the complete response body
 /// as bytes and returns all parsed events. Useful for testing.
-#[must_use] 
+#[must_use]
 pub fn parse_sse_body(body: &[u8]) -> Vec<ServerSentEvent> {
     let text = String::from_utf8_lossy(body);
     let mut state = SseDecoderState::default();
@@ -139,7 +138,6 @@ pub fn parse_sse_body(body: &[u8]) -> Vec<ServerSentEvent> {
 
     events
 }
-
 
 /// A `Stream` of SSE events decoded incrementally from a reqwest byte stream.
 ///

@@ -52,10 +52,10 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
     // Ctrl+C is handled by the terminal / tokio's ctrl_c below.
     #[cfg(unix)]
     let term_handler = {
-        let mut term_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .ok();
-        let mut hang_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-            .ok();
+        let mut term_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        let mut hang_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
 
         tokio::spawn(async move {
             tokio::select! {
@@ -97,7 +97,16 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
 
     let result = match options.mode {
         "json" => run_json_mode(session, options.message, options.messages, images).await,
-        _ => run_text_mode(session, options.message, options.messages, images, options.verbose).await,
+        _ => {
+            run_text_mode(
+                session,
+                options.message,
+                options.messages,
+                images,
+                options.verbose,
+            )
+            .await
+        }
     };
 
     term_handler.abort();
@@ -132,8 +141,7 @@ async fn run_text_mode(
                     tool_name, args, ..
                 } => {
                     if verbose {
-                        let args_str =
-                            serde_json::to_string(&args).unwrap_or_default();
+                        let args_str = serde_json::to_string(&args).unwrap_or_default();
                         let clipped = if args_str.len() > 150 {
                             format!("{}...", &args_str[..150])
                         } else {
@@ -286,7 +294,9 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
                         }
                     })
                     .collect();
-                *output_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = text;
+                *output_text
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
             }
         })
     });
@@ -298,7 +308,10 @@ pub async fn run_quiet_text_mode(session: AgentSession, message: &str) -> i32 {
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let text = final_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let text = final_text
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     if !text.is_empty() {
         println!("{text}");
         0

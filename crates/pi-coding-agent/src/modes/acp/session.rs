@@ -21,10 +21,10 @@ use crate::core::agent_session::AgentSession;
 use crate::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
 use super::slash_commands::{
-    ResolvedCommand, load_slash_commands, resolve_command, substitute_args,
+    load_slash_commands, resolve_command, substitute_args, ResolvedCommand,
 };
-use crate::core::slash_commands::parse_slash_command;
 use super::translate::EventTranslator;
+use crate::core::slash_commands::parse_slash_command;
 
 /// MCP connection handle. A no-op (unit) type when the `mcp` feature is off,
 /// so session/registry code stays feature-agnostic.
@@ -40,7 +40,13 @@ pub type McpConnection = ();
 #[cfg(feature = "mcp")]
 async fn connect_mcp_servers(
     mcp_servers: &[acp::McpServer],
-) -> Result<(Vec<crate::core::extensions::ToolDefinition>, Vec<McpConnection>), String> {
+) -> Result<
+    (
+        Vec<crate::core::extensions::ToolDefinition>,
+        Vec<McpConnection>,
+    ),
+    String,
+> {
     let mut connections = Vec::new();
     for config in mcp_servers {
         match crate::core::mcp::McpConnection::connect(config).await {
@@ -58,7 +64,13 @@ async fn connect_mcp_servers(
 #[cfg(not(feature = "mcp"))]
 async fn connect_mcp_servers(
     _mcp_servers: &[acp::McpServer],
-) -> Result<(Vec<crate::core::extensions::ToolDefinition>, Vec<McpConnection>), String> {
+) -> Result<
+    (
+        Vec<crate::core::extensions::ToolDefinition>,
+        Vec<McpConnection>,
+    ),
+    String,
+> {
     Ok((Vec::new(), Vec::new()))
 }
 
@@ -97,7 +109,9 @@ pub enum SessionCommand {
         reply: oneshot::Sender<Vec<acp::AvailableCommand>>,
     },
     /// Set the startup-info block to emit as the first chunk of the next prompt.
-    SetStartupInfo { text: String },
+    SetStartupInfo {
+        text: String,
+    },
     Shutdown,
 }
 
@@ -115,7 +129,9 @@ impl SessionHandle {
 
     /// Send a command to the session task.
     pub fn send(&self, cmd: SessionCommand) -> Result<(), String> {
-        self.cmd_tx.send(cmd).map_err(|_| "session task closed".to_string())
+        self.cmd_tx
+            .send(cmd)
+            .map_err(|_| "session task closed".to_string())
     }
 }
 
@@ -215,7 +231,10 @@ impl SessionRegistry {
         let _ = std::fs::create_dir_all(&acp_dir);
         let _ = std::fs::File::create(&session_file);
 
-        let ui = Some(Self::create_acp_ui_context(notif_tx.clone(), session_id.clone()));
+        let ui = Some(Self::create_acp_ui_context(
+            notif_tx.clone(),
+            session_id.clone(),
+        ));
         let (session, mcp_connections) = self
             .build_session(
                 cwd,
@@ -309,7 +328,10 @@ impl SessionRegistry {
         // The client's cwd overrides the recorded one (matching pi-acp's
         // `opts?.cwd ?? stored.cwd`).
         let cwd = cwd_override.unwrap_or(&persisted.cwd).to_string();
-        let ui = Some(Self::create_acp_ui_context(notif_tx.clone(), session_id.clone()));
+        let ui = Some(Self::create_acp_ui_context(
+            notif_tx.clone(),
+            session_id.clone(),
+        ));
         let (session, mcp_connections) = self
             .build_session(
                 &cwd,
@@ -413,7 +435,9 @@ impl SessionRegistry {
             set_widget: {
                 let send_ui = send_ui.clone();
                 std::sync::Arc::new(
-                    move |key: &str, lines: Option<&[String]>, _opts: Option<&serde_json::Value>| {
+                    move |key: &str,
+                          lines: Option<&[String]>,
+                          _opts: Option<&serde_json::Value>| {
                         send_ui(serde_json::json!({
                             "type": "extension_ui_request",
                             "method": "setWidget",
@@ -586,7 +610,10 @@ impl SessionRegistry {
         match serde_json::to_string_pretty(&self.persisted) {
             Ok(content) => {
                 if let Err(e) = std::fs::write(&self.map_path, content) {
-                    eprintln!("[pi] ACP: failed to write session map {}: {e}", self.map_path.display());
+                    eprintln!(
+                        "[pi] ACP: failed to write session map {}: {e}",
+                        self.map_path.display()
+                    );
                 }
             }
             Err(e) => {
@@ -676,7 +703,11 @@ impl SessionTask {
         }
         loop {
             match self.next_event().await {
-                NextEvent::Command(Some(SessionCommand::Prompt { text, images, reply })) => {
+                NextEvent::Command(Some(SessionCommand::Prompt {
+                    text,
+                    images,
+                    reply,
+                })) => {
                     self.on_prompt(text, images, reply).await;
                 }
                 NextEvent::Command(Some(SessionCommand::Cancel)) => {
@@ -723,9 +754,9 @@ impl SessionTask {
                     let _ = self.emit_queue_depth(self.prompt_queue.len(), false).await;
                     if outcome.is_err() {
                         while let Some(queued) = self.prompt_queue.pop_front() {
-                            let _ = queued.reply.send(Err(
-                                "session is busy processing a prompt".to_string(),
-                            ));
+                            let _ = queued
+                                .reply
+                                .send(Err("session is busy processing a prompt".to_string()));
                         }
                     } else if let Some(queued) = self.prompt_queue.pop_front() {
                         // Announce the queued message is starting (matching
@@ -857,10 +888,7 @@ impl SessionTask {
                             // exit code. Both keys go into ONE `meta()` (it replaces,
                             // not merges).
                             let id = update.tool_call_id.0.clone();
-                            let mut meta = super::translate::bash_terminal_output_meta(
-                                &id,
-                                &text,
-                            );
+                            let mut meta = super::translate::bash_terminal_output_meta(&id, &text);
                             for (k, v) in super::translate::bash_terminal_exit_meta(
                                 &id,
                                 if is_error { 1 } else { 0 },
@@ -869,11 +897,10 @@ impl SessionTask {
                             }
                             update = update.meta(meta);
                         } else {
-                            update.fields.content = Some(vec![acp::ToolCallContent::Content(
-                                acp::Content::new(acp::ContentBlock::Text(acp::TextContent::new(
-                                    text,
-                                ))),
-                            )]);
+                            update.fields.content =
+                                Some(vec![acp::ToolCallContent::Content(acp::Content::new(
+                                    acp::ContentBlock::Text(acp::TextContent::new(text)),
+                                ))]);
                         }
                         let notif = acp::SessionNotification::new(
                             self.session_id.clone(),
@@ -912,19 +939,23 @@ impl SessionTask {
                 }
             }
         }
-        let prompt = QueuedPrompt { text, images, reply };
+        let prompt = QueuedPrompt {
+            text,
+            images,
+            reply,
+        };
         if self.turn_done_rx.is_some() {
             if self.interrupt_on_prompt {
                 // Interrupt mode (PI_ACP_INTERRUPT_ON_PROMPT=1): abort the
                 // current turn — killing the in-flight tool's process tree —
                 // and run this prompt next instead of queueing behind a
                 // possibly-stuck turn (Codex-CLI-style behavior).
-                self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.cancelled
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 let session = Arc::clone(&self.session);
-                let fut: futures::future::LocalBoxFuture<'static, ()> =
-                    Box::pin(async move {
-                        session.abort().await;
-                    });
+                let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(async move {
+                    session.abort().await;
+                });
                 (self.spawn)(fut);
                 // Clear any previously queued prompts (matching pi-acp's
                 // cancel semantics: queued turns resolve as cancelled).
@@ -984,9 +1015,9 @@ impl SessionTask {
                                 Some(self.session.get_extension_context()),
                             )
                             .await;
-                            let _ = prompt.reply.send(Ok(acp::PromptResponse::new(
-                                acp::StopReason::EndTurn,
-                            )));
+                            let _ = prompt
+                                .reply
+                                .send(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)));
                             return;
                         }
                     }
@@ -1026,7 +1057,8 @@ impl SessionTask {
         let (turn_done_tx, turn_done_rx) = mpsc::channel::<Result<(), String>>(1);
         self.turn_done_rx = Some(turn_done_rx);
         // A cancel flag from a previous turn must not leak into this one.
-        self.cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.cancelled
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         // Publish the queue depth (matching pi-acp's `startTurn`, which emits
         // `{queueDepth: remaining, running: true}` when a turn starts).
         let depth = self.prompt_queue.len();
@@ -1053,9 +1085,7 @@ impl SessionTask {
             );
             let notif = acp::SessionNotification::new(
                 session_id,
-                acp::SessionUpdate::SessionInfoUpdate(
-                    acp::SessionInfoUpdate::new().meta(meta),
-                ),
+                acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().meta(meta)),
             );
             let (ack_tx, ack_rx) = oneshot::channel();
             if notif_tx.send((notif, ack_tx)).is_ok() {
@@ -1074,7 +1104,8 @@ impl SessionTask {
             // Nothing is running — no-op.
             return;
         }
-        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         // Signal the run to stop. `abort()` waits for the agent to become
         // idle, so it runs as a separate task; the turn task observes the
         // abort, settles, and replies `cancelled`.
@@ -1108,9 +1139,7 @@ impl SessionTask {
         );
         let notif = acp::SessionNotification::new(
             self.session_id.clone(),
-            acp::SessionUpdate::SessionInfoUpdate(
-                acp::SessionInfoUpdate::new().meta(meta),
-            ),
+            acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().meta(meta)),
         );
         let (ack_tx, ack_rx) = oneshot::channel();
         self.notif_tx
@@ -1123,9 +1152,9 @@ impl SessionTask {
     async fn emit_text(&self, text: &str) -> Result<(), String> {
         let notif = acp::SessionNotification::new(
             self.session_id.clone(),
-            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                acp::ContentBlock::Text(acp::TextContent::new(text.to_string())),
-            )),
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
+                acp::TextContent::new(text.to_string()),
+            ))),
         );
         let (ack_tx, ack_rx) = oneshot::channel();
         self.notif_tx
@@ -1138,9 +1167,9 @@ impl SessionTask {
     async fn emit_user_chunk(&self, text: &str) -> Result<(), String> {
         let notif = acp::SessionNotification::new(
             self.session_id.clone(),
-            acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
-                acp::ContentBlock::Text(acp::TextContent::new(text.to_string())),
-            )),
+            acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
+                acp::TextContent::new(text.to_string()),
+            ))),
         );
         let (ack_tx, ack_rx) = oneshot::channel();
         self.notif_tx
@@ -1194,20 +1223,26 @@ impl SessionTask {
                 let mut settings = self.session.get_compaction_settings();
                 settings.compact_on_threshold = next;
                 self.session.set_compaction_settings(settings);
-                self.emit_text(&format!("Auto-compaction: {}", if next { "on" } else { "off" }))
-                    .await
+                self.emit_text(&format!(
+                    "Auto-compaction: {}",
+                    if next { "on" } else { "off" }
+                ))
+                .await
             }
             "export" => {
                 // Export into the session cwd with a stable name, matching
                 // pi-acp's `pi-session-{id}.html` in the session cwd, and emit
                 // a resource link so clients render a clickable file.
-                let safe_id = self
-                    .session_id
-                    .0
-                    .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "_");
+                let safe_id = self.session_id.0.replace(
+                    |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
+                    "_",
+                );
                 let output_path = std::path::Path::new(self.session.get_cwd())
                     .join(format!("pi-session-{safe_id}.html"));
-                match self.session.export_html_to_file(Some(&output_path.to_string_lossy())) {
+                match self
+                    .session
+                    .export_html_to_file(Some(&output_path.to_string_lossy()))
+                {
                     Ok(path) => {
                         let uri = format!("file://{path}");
                         let _ = self.emit_text("Session exported: ").await;
@@ -1225,7 +1260,9 @@ impl SessionTask {
                             )),
                         );
                         let (ack_tx, ack_rx) = oneshot::channel();
-                        self.notif_tx.send((notif, ack_tx)).map_err(|_| "client disconnected".to_string())?;
+                        self.notif_tx
+                            .send((notif, ack_tx))
+                            .map_err(|_| "client disconnected".to_string())?;
                         ack_rx.await.map_err(|_| "client disconnected".to_string())
                     }
                     Err(e) => self.emit_text(&format!("Export failed: {e}")).await,
@@ -1279,9 +1316,12 @@ impl SessionTask {
                     ),
                 );
                 let (ack_tx, ack_rx) = oneshot::channel();
-                self.notif_tx.send((notif, ack_tx)).map_err(|_| "client disconnected".to_string())?;
+                self.notif_tx
+                    .send((notif, ack_tx))
+                    .map_err(|_| "client disconnected".to_string())?;
                 let _ = ack_rx.await;
-                self.emit_text(&format!("Session name set to: {name}")).await
+                self.emit_text(&format!("Session name set to: {name}"))
+                    .await
             }
             "queue" => {
                 let mode = match args.first().map(|s| s.as_str()) {
@@ -1298,8 +1338,15 @@ impl SessionTask {
                 };
                 self.session.set_steering_mode(mode).await;
                 self.session.set_follow_up_mode(mode).await;
-                self.emit_text(&format!("Queue mode: {}", if mode == QueueMode::All { "all" } else { "one-at-a-time" }))
-                    .await
+                self.emit_text(&format!(
+                    "Queue mode: {}",
+                    if mode == QueueMode::All {
+                        "all"
+                    } else {
+                        "one-at-a-time"
+                    }
+                ))
+                .await
             }
             "steering" => {
                 if let Some(mode) = args.first() {
@@ -1308,14 +1355,20 @@ impl SessionTask {
                         "one-at-a-time" => QueueMode::OneAtATime,
                         other => {
                             return self
-                                .emit_text(&format!("Usage: /steering all|one-at-a-time (got: {other})"))
+                                .emit_text(&format!(
+                                    "Usage: /steering all|one-at-a-time (got: {other})"
+                                ))
                                 .await;
                         }
                     };
                     self.session.set_steering_mode(mode).await;
                 }
                 let current = self.session.steering_mode().await;
-                let label = if current == QueueMode::All { "all" } else { "one-at-a-time" };
+                let label = if current == QueueMode::All {
+                    "all"
+                } else {
+                    "one-at-a-time"
+                };
                 self.emit_text(&format!("Steering mode: {label}")).await
             }
             "follow-up" => {
@@ -1325,14 +1378,20 @@ impl SessionTask {
                         "one-at-a-time" => QueueMode::OneAtATime,
                         other => {
                             return self
-                                .emit_text(&format!("Usage: /follow-up all|one-at-a-time (got: {other})"))
+                                .emit_text(&format!(
+                                    "Usage: /follow-up all|one-at-a-time (got: {other})"
+                                ))
                                 .await;
                         }
                     };
                     self.session.set_follow_up_mode(mode).await;
                 }
                 let current = self.session.follow_up_mode().await;
-                let label = if current == QueueMode::All { "all" } else { "one-at-a-time" };
+                let label = if current == QueueMode::All {
+                    "all"
+                } else {
+                    "one-at-a-time"
+                };
                 self.emit_text(&format!("Follow-up mode: {label}")).await
             }
             "changelog" => {
@@ -1373,10 +1432,7 @@ impl SessionTask {
                 // Label includes the provider prefix (matching pi-acp's
                 // `name: \`${provider}/${name}\``) so the client's dropdown
                 // shows which provider each model belongs to.
-                acp::SessionConfigSelectOption::new(
-                    id,
-                    format!("{}/{}", m.provider, m.name),
-                )
+                acp::SessionConfigSelectOption::new(id, format!("{}/{}", m.provider, m.name))
             })
             .collect();
         let model_option = acp::SessionConfigOption::new(
@@ -1400,10 +1456,7 @@ impl SessionTask {
             .iter()
             .map(|l| {
                 // Label matches pi-acp's `name: \`Thinking: ${id}\``.
-                acp::SessionConfigSelectOption::new(
-                    l.to_string(),
-                    format!("Thinking: {l}"),
-                )
+                acp::SessionConfigSelectOption::new(l.to_string(), format!("Thinking: {l}"))
             })
             .collect();
         let level_option = acp::SessionConfigOption::new(
@@ -1471,7 +1524,11 @@ async fn run_prompt_turn(
     turn_done: mpsc::Sender<Result<(), String>>,
     prompt: QueuedPrompt,
 ) {
-    let QueuedPrompt { text, images, reply } = prompt;
+    let QueuedPrompt {
+        text,
+        images,
+        reply,
+    } = prompt;
     let response =
         run_single_prompt(&session, &session_id, &notif_tx, &cancelled, &text, images).await;
     let outcome = response.as_ref().map(|_| ()).map_err(|e| e.clone());
@@ -1493,11 +1550,10 @@ async fn run_single_prompt(
 ) -> Result<acp::PromptResponse, String> {
     let (event_tx, mut event_rx) =
         mpsc::unbounded_channel::<crate::core::agent_session::AgentSessionEvent>();
-    let listener: Arc<
-        dyn Fn(crate::core::agent_session::AgentSessionEvent) + Send + Sync,
-    > = Arc::new(move |event| {
-        let _ = event_tx.send(event);
-    });
+    let listener: Arc<dyn Fn(crate::core::agent_session::AgentSessionEvent) + Send + Sync> =
+        Arc::new(move |event| {
+            let _ = event_tx.send(event);
+        });
     let handle = session.subscribe_session_events(listener);
 
     let prompt_options = crate::core::agent_session::PromptOptions {
@@ -1669,9 +1725,7 @@ fn walk_jsonl_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             walk_jsonl_files(&path, out);
-        } else if path.is_file()
-            && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-        {
+        } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             out.push(path);
         }
     }
@@ -1798,7 +1852,10 @@ mod tests {
         let sid;
         {
             let mut reg = SessionRegistry::with_base_dir(base_path.clone());
-            sid = reg.create("/tmp", &[], notif_tx(), &spawn, false, None, None).await.expect("create");
+            sid = reg
+                .create("/tmp", &[], notif_tx(), &spawn, false, None, None)
+                .await
+                .expect("create");
             let acp_dir = base_path.join("acp");
             assert!(
                 acp_dir.join(format!("{}.jsonl", sid.0)).exists(),
@@ -1823,11 +1880,18 @@ mod tests {
         assert_eq!(reg.list()[0].session_id, sid);
 
         // Loading by ID resumes it.
-        reg.load(&sid, &[], notif_tx(), &spawn, None).await.expect("load cross-process");
-        assert!(reg.get(&sid).is_some(), "session should be loaded after restart");
+        reg.load(&sid, &[], notif_tx(), &spawn, None)
+            .await
+            .expect("load cross-process");
+        assert!(
+            reg.get(&sid).is_some(),
+            "session should be loaded after restart"
+        );
 
         // Loading again is a no-op (already running in memory).
-        reg.load(&sid, &[], notif_tx(), &spawn, None).await.expect("re-load is a no-op");
+        reg.load(&sid, &[], notif_tx(), &spawn, None)
+            .await
+            .expect("re-load is a no-op");
     }
 
     /// `session/load` of an unknown ID (never created, or from an unrelated
@@ -1838,7 +1902,10 @@ mod tests {
         let spawn = noop_spawn();
         let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
         let unknown = acp::SessionId::new(Uuid::new_v4().to_string());
-        let err = reg.load(&unknown, &[], notif_tx(), &spawn, None).await.unwrap_err();
+        let err = reg
+            .load(&unknown, &[], notif_tx(), &spawn, None)
+            .await
+            .unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
     }
 
@@ -1849,12 +1916,18 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         let spawn = noop_spawn();
         let mut reg = SessionRegistry::with_base_dir(base.path().to_path_buf());
-        let sid = reg.create("/tmp", &[], notif_tx(), &spawn, false, None, None).await.expect("create");
+        let sid = reg
+            .create("/tmp", &[], notif_tx(), &spawn, false, None, None)
+            .await
+            .expect("create");
         let session_file = base.path().join("acp").join(format!("{}.jsonl", sid.0));
         assert!(session_file.exists(), "session file must exist");
 
         reg.delete(&sid);
-        assert!(reg.get(&sid).is_none(), "session must be removed from registry");
+        assert!(
+            reg.get(&sid).is_none(),
+            "session must be removed from registry"
+        );
         assert!(!session_file.exists(), "session file must be deleted");
         assert_eq!(reg.list().len(), 0, "session must not be listed");
 
@@ -1946,19 +2019,20 @@ mod tests {
     /// check in `prompt()` passes without env vars.
     fn fake_model_registry() -> crate::core::model_registry::ModelRegistry {
         let registry = crate::core::model_registry::ModelRegistry::new(vec![fake_model()]);
-        registry.register_provider(
-            "test-provider",
-            crate::core::model_registry::ProviderConfig {
-                name: Some("Test Provider".into()),
-                base_url: None,
-                api_key: Some("test-key".into()),
-                api: Some("test-api".into()),
-                headers: None,
-                auth_header: None,
-                models: None,
-            },
-        )
-        .expect("register fake provider");
+        registry
+            .register_provider(
+                "test-provider",
+                crate::core::model_registry::ProviderConfig {
+                    name: Some("Test Provider".into()),
+                    base_url: None,
+                    api_key: Some("test-key".into()),
+                    api: Some("test-api".into()),
+                    headers: None,
+                    auth_header: None,
+                    models: None,
+                },
+            )
+            .expect("register fake provider");
         registry
     }
 
@@ -2163,11 +2237,7 @@ mod tests {
                                     let _ = Box::pin(rx.changed()).await;
                                 }
                             }
-                            if signal
-                                .as_ref()
-                                .map(|rx| *rx.borrow())
-                                .unwrap_or(false)
-                            {
+                            if signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false) {
                                 return Some((fake_aborted_event(&model), call + 1));
                             }
                             None
@@ -2228,10 +2298,7 @@ mod tests {
 
     /// Wait until `calls` reaches the given count (the turn has actually
     /// started), yielding to the LocalSet so the session/turn tasks run.
-    async fn wait_for_calls(
-        calls: &Arc<std::sync::atomic::AtomicUsize>,
-        expected: usize,
-    ) {
+    async fn wait_for_calls(calls: &Arc<std::sync::atomic::AtomicUsize>, expected: usize) {
         for _ in 0..200 {
             if calls.load(std::sync::atomic::Ordering::SeqCst) >= expected {
                 return;
@@ -2433,9 +2500,7 @@ mod tests {
                 // empty fallback the old busy-rejection used).
                 let (reply_tx, reply_rx_cfg) = oneshot::channel();
                 cmd_tx
-                    .send(SessionCommand::GetConfigOptions {
-                        reply: reply_tx,
-                    })
+                    .send(SessionCommand::GetConfigOptions { reply: reply_tx })
                     .unwrap();
                 let options = reply_rx_cfg.await.expect("config options reply");
                 assert!(
@@ -2514,8 +2579,7 @@ mod tests {
                     ])
                     .await;
 
-                let (_cmd_tx, notifs) =
-                    spawn_session_task(&local, &spawn, session, true, false);
+                let (_cmd_tx, notifs) = spawn_session_task(&local, &spawn, session, true, false);
 
                 // Let the replay run to completion.
                 tokio::task::yield_now().await;
@@ -2526,9 +2590,7 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
                 let bash_tool_call = collected.iter().find_map(|n| match &n.update {
-                    acp::SessionUpdate::ToolCall(tc)
-                        if tc.tool_call_id.0.as_ref() == "b1" =>
-                    {
+                    acp::SessionUpdate::ToolCall(tc) if tc.tool_call_id.0.as_ref() == "b1" => {
                         Some(tc.clone())
                     }
                     _ => None,
@@ -2606,7 +2668,10 @@ mod tests {
         let state = session.get_agent().state().await;
         let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
         for tool in ["web_search", "web_fetch", "subagent"] {
-            assert!(names.contains(&tool.to_string()), "missing {tool}: {names:?}");
+            assert!(
+                names.contains(&tool.to_string()),
+                "missing {tool}: {names:?}"
+            );
         }
 
         // 禁用（--no-extensions）：无任何扩展工具。
@@ -2617,7 +2682,10 @@ mod tests {
         let state = session.get_agent().state().await;
         let names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
         for tool in ["web_search", "web_fetch", "subagent"] {
-            assert!(!names.contains(&tool.to_string()), "unexpected {tool}: {names:?}");
+            assert!(
+                !names.contains(&tool.to_string()),
+                "unexpected {tool}: {names:?}"
+            );
         }
         // 内置基础工具不受影响。
         assert!(names.contains(&"bash".to_string()));
@@ -2627,8 +2695,8 @@ mod tests {
     /// executed inline (beyond pi-acp, which does not support them yet).
     #[tokio::test(flavor = "current_thread")]
     async fn extension_slash_command_executes() {
-        use pi_extension_api::hook::{CommandRegistry, HookHandler};
         use pi_extension_api::create_builtin_source_info;
+        use pi_extension_api::hook::{CommandRegistry, HookHandler};
 
         struct CmdHandler(std::sync::Arc<std::sync::atomic::AtomicBool>);
         impl HookHandler for CmdHandler {
@@ -2679,13 +2747,10 @@ mod tests {
                 cmd_tx
                     .send(SessionCommand::GetCommands { reply: reply_tx })
                     .expect("send GetCommands");
-                let commands = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    reply_rx,
-                )
-                .await
-                .expect("GetCommands reply must arrive")
-                .expect("reply channel");
+                let commands = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx)
+                    .await
+                    .expect("GetCommands reply must arrive")
+                    .expect("reply channel");
                 assert!(
                     commands.iter().any(|c| c.name.as_str() == "hello"),
                     "extension command must be advertised: {:?}",
@@ -2693,14 +2758,11 @@ mod tests {
                 );
 
                 let reply_rx = send_prompt(&cmd_tx, "/hello world");
-                let response = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    reply_rx,
-                )
-                .await
-                .expect("prompt reply must arrive")
-                .expect("reply channel")
-                .expect("no error");
+                let response = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx)
+                    .await
+                    .expect("prompt reply must arrive")
+                    .expect("reply channel")
+                    .expect("no error");
                 assert_eq!(
                     response.stop_reason,
                     acp::StopReason::EndTurn,

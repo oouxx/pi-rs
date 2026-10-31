@@ -2,9 +2,9 @@
 //!
 //! Mirrors packages/coding-agent/src/utils/ansi.ts
 
-const ESC: u8 = 27;  // \x1b
+const ESC: u8 = 27; // \x1b
 const CSI: u8 = 155; // \x9b
-const BEL: u8 = 7;   // \x07
+const BEL: u8 = 7; // \x07
 
 /// Check if a string contains ANSI escape sequences.
 /// Looks for ESC[ (CSI) sequences.

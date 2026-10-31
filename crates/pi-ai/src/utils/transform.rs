@@ -7,7 +7,8 @@
 use crate::types::{ContentBlock, Message, Model, StopReason};
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 
 /// 对齐 TS `replaceImagesWithPlaceholder`。
 fn replace_images_with_placeholder(
@@ -135,9 +136,8 @@ pub fn transform_messages(
                 provider_thinking_level,
                 timestamp,
             } => {
-                let is_same_model = provider == &model.provider
-                    && api == &model.api
-                    && msg_model == &model.id;
+                let is_same_model =
+                    provider == &model.provider && api == &model.api && msg_model == &model.id;
 
                 let transformed_content: Vec<ContentBlock> = content
                     .iter()
@@ -190,8 +190,7 @@ pub fn transform_messages(
                                     normalize_tool_call_id(id, model, provider, api);
                                 if normalized_id != *id {
                                     tool_call_id_map.insert(id.clone(), normalized_id.clone());
-                                    if let ContentBlock::ToolCall { id: nid, .. } =
-                                        &mut normalized
+                                    if let ContentBlock::ToolCall { id: nid, .. } = &mut normalized
                                     {
                                         *nid = normalized_id;
                                     }
@@ -227,30 +226,35 @@ pub fn transform_messages(
     let mut existing_tool_result_ids: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
-    let insert_synthetic_tool_results = |result: &mut Vec<Message>,
-                                             pending: &mut Vec<(String, String)>,
-                                             existing: &mut std::collections::HashSet<String>| {
-        if !pending.is_empty() {
-            for (id, name) in pending.drain(..) {
-                if !existing.contains(&id) {
-                    result.push(Message::ToolResult {
-                        tool_call_id: id,
-                        tool_name: name,
-                        content: vec![ContentBlock::text("No result provided")],
-                        details: None,
-                        is_error: true,
-                        usage: None,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    });
+    let insert_synthetic_tool_results =
+        |result: &mut Vec<Message>,
+         pending: &mut Vec<(String, String)>,
+         existing: &mut std::collections::HashSet<String>| {
+            if !pending.is_empty() {
+                for (id, name) in pending.drain(..) {
+                    if !existing.contains(&id) {
+                        result.push(Message::ToolResult {
+                            tool_call_id: id,
+                            tool_name: name,
+                            content: vec![ContentBlock::text("No result provided")],
+                            details: None,
+                            is_error: true,
+                            usage: None,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        });
+                    }
                 }
+                existing.clear();
             }
-            existing.clear();
-        }
-    };
+        };
 
     for msg in &transformed {
         match msg {
-            Message::Assistant { content, stop_reason, .. } => {
+            Message::Assistant {
+                content,
+                stop_reason,
+                ..
+            } => {
                 insert_synthetic_tool_results(
                     &mut result,
                     &mut pending_tool_calls,
@@ -263,9 +267,7 @@ pub fn transform_messages(
                 let tool_calls: Vec<(String, String)> = content
                     .iter()
                     .filter_map(|b| match b {
-                        ContentBlock::ToolCall { id, name, .. } => {
-                            Some((id.clone(), name.clone()))
-                        }
+                        ContentBlock::ToolCall { id, name, .. } => Some((id.clone(), name.clone())),
                         _ => None,
                     })
                     .collect();
@@ -458,7 +460,10 @@ mod tests {
         )];
         let out = transform_messages(&msgs, &model, &noop_normalize);
         assert_eq!(out.len(), 2, "assistant + synthetic toolResult");
-        if let Message::ToolResult { content, is_error, .. } = &out[1] {
+        if let Message::ToolResult {
+            content, is_error, ..
+        } = &out[1]
+        {
             assert!(*is_error);
             assert_eq!(content[0], ContentBlock::text("No result provided"));
         } else {

@@ -54,7 +54,10 @@ pub fn normalize_tool_result_images(
             normalized.push(block);
             continue;
         };
-        if processed.data == *data && processed.mime_type == *mime_type && processed.hints.is_empty() {
+        if processed.data == *data
+            && processed.mime_type == *mime_type
+            && processed.hints.is_empty()
+        {
             normalized.push(block);
             continue;
         }
@@ -119,7 +122,11 @@ mod tests {
         };
         let normalized =
             normalize_tool_result_images(content, true, Some(&profile)).expect("changed");
-        assert_eq!(normalized.len(), 3, "image + hints text appended: {normalized:?}");
+        assert_eq!(
+            normalized.len(),
+            3,
+            "image + hints text appended: {normalized:?}"
+        );
         let ContentBlock::Image { data, .. } = &normalized[1] else {
             panic!("expected image block, got {:?}", normalized[1]);
         };
@@ -127,7 +134,11 @@ mod tests {
             .decode(data)
             .expect("b64");
         let img = image::load_from_memory(&bytes).expect("decode");
-        assert_eq!((img.width(), img.height()), (100, 44), "resized, aspect kept");
+        assert_eq!(
+            (img.width(), img.height()),
+            (100, 44),
+            "resized, aspect kept"
+        );
         let ContentBlock::Text { text, .. } = &normalized[2] else {
             panic!("expected hints text");
         };

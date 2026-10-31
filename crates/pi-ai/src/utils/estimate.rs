@@ -3,7 +3,6 @@
 //! Used by `clampMaxTokensToContext` (simple streaming options) to keep the
 //! requested output under the model's context window.
 
-
 use serde_json::json;
 
 use crate::types::{ContentBlock, Context, Message, StopReason, Tool, Usage};
@@ -100,7 +99,9 @@ pub fn estimate_message_tokens(message: &Message) -> u64 {
         return total;
     }
     let chars = match message {
-        Message::User { content, .. } | Message::ToolResult { content, .. } => content_chars(content),
+        Message::User { content, .. } | Message::ToolResult { content, .. } => {
+            content_chars(content)
+        }
         Message::Assistant { content, .. } => content
             .iter()
             .map(|block| match block {

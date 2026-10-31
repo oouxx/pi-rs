@@ -472,5 +472,4 @@ mod tests {
         assert!(file_ops.read.is_empty());
         assert!(file_ops.edited.is_empty());
     }
-
 }

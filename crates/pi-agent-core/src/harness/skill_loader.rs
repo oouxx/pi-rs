@@ -105,7 +105,14 @@ async fn load_skills_from_directory(
     }
 
     let mut ignore_matcher = IgnoreMatcher::new();
-    add_ignore_rules(env, &mut ignore_matcher, directory, directory, &mut diagnostics).await;
+    add_ignore_rules(
+        env,
+        &mut ignore_matcher,
+        directory,
+        directory,
+        &mut diagnostics,
+    )
+    .await;
 
     let entries = match env.list_dir(directory).await {
         Ok(entries) => entries,
@@ -167,7 +174,15 @@ async fn load_skills_from_directory(
         }
 
         if kind == "directory" {
-            let result = load_skills_from_dir_internal(env, full_path, false, &mut ignore_matcher, directory, &mut diagnostics).await;
+            let result = load_skills_from_dir_internal(
+                env,
+                full_path,
+                false,
+                &mut ignore_matcher,
+                directory,
+                &mut diagnostics,
+            )
+            .await;
             skills.extend(result);
             continue;
         }
@@ -267,7 +282,15 @@ async fn load_skills_from_dir_internal(
         }
 
         if kind == "directory" {
-            let sub_skills = Box::pin(load_skills_from_dir_internal(env, full_path, false, ignore_matcher, root_dir, diagnostics)).await;
+            let sub_skills = Box::pin(load_skills_from_dir_internal(
+                env,
+                full_path,
+                false,
+                ignore_matcher,
+                root_dir,
+                diagnostics,
+            ))
+            .await;
             skills.extend(sub_skills);
             continue;
         }
@@ -286,7 +309,11 @@ async fn load_skills_from_dir_internal(
 }
 
 /// Resolve the kind of a file system entry, following symlinks.
-async fn resolve_kind(env: &dyn ExecutionEnv, info: &FileInfoType, diagnostics: &mut Vec<SkillDiagnostic>) -> Option<String> {
+async fn resolve_kind(
+    env: &dyn ExecutionEnv,
+    info: &FileInfoType,
+    diagnostics: &mut Vec<SkillDiagnostic>,
+) -> Option<String> {
     if info.kind == "file" || info.kind == "directory" {
         return Some(info.kind.clone());
     }
@@ -350,7 +377,9 @@ async fn add_ignore_rules(
                 }
             }
             Err(e) => {
-                if e.code.to_lowercase().contains("not_found") || e.code.to_lowercase().contains("not found") {
+                if e.code.to_lowercase().contains("not_found")
+                    || e.code.to_lowercase().contains("not found")
+                {
                     continue;
                 }
                 diagnostics.push(SkillDiagnostic {
@@ -504,7 +533,11 @@ async fn load_skill_from_file(
         });
     }
 
-                if description.as_deref().map(|d| d.trim().is_empty()).unwrap_or(true) {
+    if description
+        .as_deref()
+        .map(|d| d.trim().is_empty())
+        .unwrap_or(true)
+    {
         return SkillLoadResult {
             skill: None,
             diagnostics,

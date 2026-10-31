@@ -8,11 +8,11 @@ use pi_agent_core::types::{AgentTool, AgentToolResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
+use super::truncate::{format_size, TruncationResult, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES};
 use crate::core::tools::output_accumulator::{OutputAccumulator, OutputAccumulatorOptions};
 use crate::utils::shell::{
     kill_process_tree, track_detached_child_pid, untrack_detached_child_pid,
 };
-use super::truncate::{format_size, TruncationResult, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES};
 
 // ============================================================================
 // Constants
@@ -363,10 +363,10 @@ impl BashOperations for LocalBashOperations {
             Ok(t) => t,
             Err(e) => {
                 return Box::pin(async move {
-                    Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        e,
-                    )) as Box<dyn std::error::Error + Send + Sync>)
+                    Err(
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+                            as Box<dyn std::error::Error + Send + Sync>,
+                    )
                 });
             }
         };
@@ -383,7 +383,8 @@ impl BashOperations for LocalBashOperations {
                         "Working directory does not exist: {}\nCannot execute bash commands.",
                         cwd
                     ),
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             // Check if aborted before starting
@@ -392,17 +393,18 @@ impl BashOperations for LocalBashOperations {
                     return Err(Box::new(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "aborted",
-                    )) as Box<dyn std::error::Error + Send + Sync>);
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
                 }
             }
 
             let shell_config = match get_shell_config(options.shell_path.as_deref()) {
                 Ok(config) => config,
                 Err(e) => {
-                    return Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        e,
-                    )) as Box<dyn std::error::Error + Send + Sync>);
+                    return Err(
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+                            as Box<dyn std::error::Error + Send + Sync>,
+                    );
                 }
             };
             let env = options.env.unwrap_or_else(get_shell_env);
@@ -620,12 +622,14 @@ impl BashOperations for LocalBashOperations {
                 Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
                     "aborted",
-                )) as Box<dyn std::error::Error + Send + Sync>)
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>)
             } else if timed_out {
                 Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     format!("timeout:{}", options.timeout.unwrap_or(0.0)),
-                )) as Box<dyn std::error::Error + Send + Sync>)
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>)
             } else {
                 Ok(BashExecResult {
                     exit_code: exited.flatten(),
@@ -669,9 +673,8 @@ pub struct BashSessionEnv {
 /// Async provider for [`BashSessionEnv`], resolved at each command start so
 /// model/thinking-level changes are picked up (match TS #6967).
 pub type BashSessionEnvProvider = Arc<
-    dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = BashSessionEnv> + Send>,
-        > + Send
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = BashSessionEnv> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -702,12 +705,21 @@ impl fmt::Debug for BashToolOptions {
         f.debug_struct("BashToolOptions")
             .field("command_prefix", &self.command_prefix)
             .field("shell_path", &self.shell_path)
-            .field("spawn_hook", &self.spawn_hook.as_ref().map(|_| "BashSpawnHook"))
+            .field(
+                "spawn_hook",
+                &self.spawn_hook.as_ref().map(|_| "BashSpawnHook"),
+            )
             .field(
                 "session_env_provider",
-                &self.session_env_provider.as_ref().map(|_| "BashSessionEnvProvider"),
+                &self
+                    .session_env_provider
+                    .as_ref()
+                    .map(|_| "BashSessionEnvProvider"),
             )
-            .field("expose_session_environment", &self.expose_session_environment)
+            .field(
+                "expose_session_environment",
+                &self.expose_session_environment,
+            )
             .finish()
     }
 }
@@ -768,7 +780,10 @@ fn format_output(
 
     if truncation.truncated {
         let full_output_path = snapshot.full_output_path.as_deref().unwrap_or("");
-        let start_line = truncation.total_lines.saturating_sub(truncation.output_lines) + 1;
+        let start_line = truncation
+            .total_lines
+            .saturating_sub(truncation.output_lines)
+            + 1;
         let end_line = truncation.total_lines;
 
         let notice = if truncation.last_line_partial {
@@ -840,9 +855,7 @@ pub fn create_bash_tool(
             DEFAULT_MAX_BYTES / 1024
         ),
         label: "bash".to_string(),
-        prompt_snippet: Some(
-            "Execute bash commands (ls, grep, find, etc.)".to_string(),
-        ),
+        prompt_snippet: Some("Execute bash commands (ls, grep, find, etc.)".to_string()),
         prompt_guidelines: if expose_session_environment {
             Some(vec![
                 "You can inspect PI_* environment variables for current model and session details."
@@ -942,7 +955,9 @@ pub fn create_bash_tool(
                             // snapshot re-locks (std::sync::Mutex isn't reentrant, so
                             // holding it would deadlock the reader tasks).
                             {
-                                let mut acc = on_data_output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let mut acc = on_data_output
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 acc.append(data);
                             }
 
@@ -958,7 +973,9 @@ pub fn create_bash_tool(
                                     on_data_last_update.store(now, Ordering::SeqCst);
                                     on_data_dirty.store(false, Ordering::SeqCst);
                                     let snapshot = {
-                                        let acc = on_data_output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        let acc = on_data_output
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                                         acc.snapshot(true)
                                     };
                                     if let Some(ref cb) = on_data_cb {
@@ -1003,17 +1020,23 @@ pub fn create_bash_tool(
 
                     // Finish output accumulation
                     {
-                        let mut acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let mut acc = output
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.finish();
                     }
 
                     // Final snapshot (matching TS `finishOutput`).
                     let snapshot = {
-                        let acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let acc = output
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.snapshot(true)
                     };
                     let last_line_bytes = {
-                        let acc = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let acc = output
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         acc.get_last_line_bytes()
                     };
                     let final_details: Option<BashToolDetails> = if snapshot.truncation.truncated {
@@ -1045,26 +1068,28 @@ pub fn create_bash_tool(
 
                     match result {
                         Ok(exec_result) => {
-                            let (output_text, details) = format_output(&snapshot, last_line_bytes, "(no output)");
+                            let (output_text, details) =
+                                format_output(&snapshot, last_line_bytes, "(no output)");
 
                             // Non-zero (or null) exit code → error carrying the FULL
                             // output + status (TS `appendStatus`), so it lands in the
                             // tool result and ACP terminal. Null = failure.
                             let exit_code = match exec_result.exit_code {
                                 None => {
-                                    return Err(Box::new(std::io::Error::other(
-                                        append_status(
-                                            &output_text,
-                                            "Command terminated without an exit code",
-                                        ),
-                                    )) as Box<dyn std::error::Error + Send + Sync>);
+                                    return Err(Box::new(std::io::Error::other(append_status(
+                                        &output_text,
+                                        "Command terminated without an exit code",
+                                    )))
+                                        as Box<dyn std::error::Error + Send + Sync>);
                                 }
                                 Some(code) => code,
                             };
                             if exit_code != 0 {
-                                return Err(Box::new(std::io::Error::other(
-                                    append_status(&output_text, &format!("Command exited with code {}", exit_code)),
-                                )) as Box<dyn std::error::Error + Send + Sync>);
+                                return Err(Box::new(std::io::Error::other(append_status(
+                                    &output_text,
+                                    &format!("Command exited with code {}", exit_code),
+                                )))
+                                    as Box<dyn std::error::Error + Send + Sync>);
                             }
 
                             Ok(AgentToolResult {
@@ -1093,9 +1118,8 @@ pub fn create_bash_tool(
                                 err_msg
                             };
 
-                            Err(Box::new(std::io::Error::other(
-                                final_text,
-                            )) as Box<dyn std::error::Error + Send + Sync>)
+                            Err(Box::new(std::io::Error::other(final_text))
+                                as Box<dyn std::error::Error + Send + Sync>)
                         }
                     }
                 })
@@ -1183,10 +1207,7 @@ mod tests {
             .clone();
         let bin_dir = crate::config::get_agent_dir().join("bin");
         let entries: Vec<std::path::PathBuf> = std::env::split_paths(&path_val).collect();
-        assert!(
-            !entries.is_empty(),
-            "PATH must not be empty"
-        );
+        assert!(!entries.is_empty(), "PATH must not be empty");
         // The bin dir must be present at the front (or the only entry).
         assert_eq!(
             entries[0], bin_dir,
@@ -1291,7 +1312,8 @@ mod tests {
         assert_eq!(tool.name, "bash");
         assert_eq!(tool.label, "bash");
         assert!(
-            tool.description.contains("in the current working directory"),
+            tool.description
+                .contains("in the current working directory"),
             "description must match TS wording: {}",
             tool.description
         );
@@ -1316,7 +1338,7 @@ mod tests {
     /// process group). Regression guard: `child.kill()` alone only kills the
     /// shell, leaving spawned children running as orphans.
     #[cfg(unix)]
-#[tokio::test]
+    #[tokio::test]
     async fn abort_kills_process_tree() {
         if cfg!(target_os = "windows") {
             return; // process groups behave differently on Windows
@@ -1329,23 +1351,25 @@ mod tests {
 
         // Spawn a background child (`sleep`) that writes its PID to a file,
         // then wait on it — the child must die together with the shell.
-        let pid_file = std::env::temp_dir().join(format!(
-            "pi-bash-tree-test-{}.pid",
-            std::process::id()
-        ));
+        let pid_file =
+            std::env::temp_dir().join(format!("pi-bash-tree-test-{}.pid", std::process::id()));
         let _ = std::fs::remove_file(&pid_file);
         let cmd = format!(
             "sleep 61.5 & echo $! > {}; wait",
             pid_file.to_string_lossy()
         );
 
-        let exec_fut = ops.exec(&cmd, "/tmp", BashExecOptions {
-            on_data: None,
-            signal: Some(rx),
-            timeout: None,
-            env: None,
-            shell_path: None,
-        });
+        let exec_fut = ops.exec(
+            &cmd,
+            "/tmp",
+            BashExecOptions {
+                on_data: None,
+                signal: Some(rx),
+                timeout: None,
+                env: None,
+                shell_path: None,
+            },
+        );
         tokio::pin!(exec_fut);
 
         // Poll the exec future while the shell starts the child and writes
@@ -1364,9 +1388,7 @@ mod tests {
         // Abort — the shell must be killed together with its child.
         tx.send(true).expect("send abort");
         let result = exec_fut.await;
-        let err = result
-            .expect_err("abort must fail the exec")
-            .to_string();
+        let err = result.expect_err("abort must fail the exec").to_string();
         assert!(err.contains("aborted"), "unexpected error: {err}");
 
         // The background child must no longer be alive (killed with the group).
@@ -1391,23 +1413,25 @@ mod tests {
         // Serialize against other tests sharing the global TRACKED_PIDS set.
         let _guard = crate::utils::shell::TEST_TRACK_LOCK.lock().await;
 
-        let pid_file = std::env::temp_dir().join(format!(
-            "pi-bash-timeout-test-{}.pid",
-            std::process::id()
-        ));
+        let pid_file =
+            std::env::temp_dir().join(format!("pi-bash-timeout-test-{}.pid", std::process::id()));
         let _ = std::fs::remove_file(&pid_file);
         let cmd = format!(
             "sleep 61.5 & echo $! > {}; wait",
             pid_file.to_string_lossy()
         );
 
-        let exec_fut = ops.exec(&cmd, "/tmp", BashExecOptions {
-            on_data: None,
-            signal: None,
-            timeout: Some(1.0),
-            env: None,
-            shell_path: None,
-        });
+        let exec_fut = ops.exec(
+            &cmd,
+            "/tmp",
+            BashExecOptions {
+                on_data: None,
+                signal: None,
+                timeout: Some(1.0),
+                env: None,
+                shell_path: None,
+            },
+        );
         tokio::pin!(exec_fut);
 
         tokio::select! {
@@ -1416,12 +1440,13 @@ mod tests {
         }
         let pid_text = std::fs::read_to_string(&pid_file).expect("pid file");
         let child_pid: i32 = pid_text.trim().parse().expect("pid");
-        assert!(process_alive(child_pid), "child must be running before timeout");
+        assert!(
+            process_alive(child_pid),
+            "child must be running before timeout"
+        );
 
         let result = exec_fut.await;
-        let err = result
-            .expect_err("timeout must fail the exec")
-            .to_string();
+        let err = result.expect_err("timeout must fail the exec").to_string();
         assert!(err.contains("timeout:"), "unexpected error: {err}");
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1448,18 +1473,13 @@ mod tests {
         // Serialize against other tests sharing the global TRACKED_PIDS set.
         let _guard = crate::utils::shell::TEST_TRACK_LOCK.lock().await;
 
-        let pid_file = std::env::temp_dir().join(format!(
-            "pi-bash-pipe-test-{}.pid",
-            std::process::id()
-        ));
+        let pid_file =
+            std::env::temp_dir().join(format!("pi-bash-pipe-test-{}.pid", std::process::id()));
         let _ = std::fs::remove_file(&pid_file);
         // The shell exits immediately but the background `sleep` inherits the
         // stdout pipe and keeps it open without writing — the exact case TS
         // waitForChildProcess handles via its idle grace timer.
-        let cmd = format!(
-            "sleep 61.5 & echo $! > {}",
-            pid_file.to_string_lossy()
-        );
+        let cmd = format!("sleep 61.5 & echo $! > {}", pid_file.to_string_lossy());
 
         let start = std::time::Instant::now();
         let result = ops

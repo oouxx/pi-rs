@@ -1,18 +1,21 @@
 pub mod action_bus;
 pub mod api;
 pub mod dispatcher;
-pub mod types;
 pub mod loader;
+pub mod types;
 
-pub use api::{
-    ArgumentCompletionsFn, AutocompleteItem, CommandRegistry, CommandRegistration, EventPublisher,
-    ExtensionContext, ExtensionRegistry, ExtensionUIContext, FlagRegistry, HookHandler, HookResult,
-    HookRunner, RegisteredCommand, RegisteredFlag, RegisteredShortcut, RegisteredTool, RuntimeHandle,
-    SendMessageOptions, SendUserMessageOptions, ShortcutRegistry, ToolCallOutput, ToolDefinition,
-    ToolInfo, ToolRegistry,
-};
-pub use api::{create_builtin_source_info, create_source_info, create_synthetic_source_info, SourceInfo, SourceOrigin, SourceScope};
 pub use api::ResourcesDiscoverResult;
+pub use api::{
+    create_builtin_source_info, create_source_info, create_synthetic_source_info, SourceInfo,
+    SourceOrigin, SourceScope,
+};
+pub use api::{
+    ArgumentCompletionsFn, AutocompleteItem, CommandRegistration, CommandRegistry, EventPublisher,
+    ExtensionContext, ExtensionRegistry, ExtensionUIContext, FlagRegistry, HookHandler, HookResult,
+    HookRunner, RegisteredCommand, RegisteredFlag, RegisteredShortcut, RegisteredTool,
+    RuntimeHandle, SendMessageOptions, SendUserMessageOptions, ShortcutRegistry, ToolCallOutput,
+    ToolDefinition, ToolInfo, ToolRegistry,
+};
 pub use api::{ProjectTrustDecision, ProjectTrustResult, UserBashResult};
 
 // Loader (runtime-agnostic discovery + cache). The factory-invocation half
@@ -46,8 +49,10 @@ pub fn install_register_provider_hook(
     registry: crate::core::model_registry::ModelRegistry,
 ) {
     handle.register_provider = std::sync::Arc::new(move |payload| {
-        let RegisterProviderPayload { provider_id, config } =
-            serde_json::from_value(payload).map_err(|e| e.to_string())?;
+        let RegisterProviderPayload {
+            provider_id,
+            config,
+        } = serde_json::from_value(payload).map_err(|e| e.to_string())?;
         registry.register_provider(&provider_id, config)
     });
 }
@@ -106,7 +111,9 @@ pub fn builtin_extension_registry(
     }
     if is_enabled("web_search") {
         reg.register(
-            Box::new(pi_extensions::web_search::WebSearchExtension::from_config(web_search)),
+            Box::new(pi_extensions::web_search::WebSearchExtension::from_config(
+                web_search,
+            )),
             create_builtin_source_info("web_search"),
         );
     }
@@ -126,9 +133,9 @@ mod tests {
             .iter()
             .map(|id| ((*id).to_string(), true))
             .collect();
-        let reg = builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
-        let tools: Vec<&str> =
-            reg.tools().iter().map(|t| t.name.as_str()).collect();
+        let reg =
+            builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
+        let tools: Vec<&str> = reg.tools().iter().map(|t| t.name.as_str()).collect();
         for name in ["subagent", "web_search", "web_fetch"] {
             assert!(tools.contains(&name), "missing tool {name}: {tools:?}");
         }
@@ -146,8 +153,12 @@ mod tests {
     /// 内置扩展默认关闭：空的 `extensionsEnabled` 不注册任何扩展（opt-in）。
     #[test]
     fn test_builtin_extension_registry_defaults_to_disabled() {
-        let reg = builtin_extension_registry(true, &std::collections::HashMap::new(), &Default::default())
-            .expect("registry");
+        let reg = builtin_extension_registry(
+            true,
+            &std::collections::HashMap::new(),
+            &Default::default(),
+        )
+        .expect("registry");
         assert!(reg.tools().is_empty(), "built-ins must be opt-in");
         assert_eq!(reg.handler_count(), 0);
     }
@@ -157,7 +168,8 @@ mod tests {
     fn test_builtin_extension_registry_respects_enabled_map() {
         let mut enabled = std::collections::HashMap::new();
         enabled.insert("subagent".to_string(), true);
-        let reg = builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
+        let reg =
+            builtin_extension_registry(true, &enabled, &Default::default()).expect("registry");
         let tools: Vec<&str> = reg.tools().iter().map(|t| t.name.as_str()).collect();
         assert!(tools.contains(&"subagent"), "subagent on: {tools:?}");
         assert!(!tools.contains(&"web_search"), "web_search off: {tools:?}");
@@ -165,7 +177,8 @@ mod tests {
         // 显式 false 与缺失等价，但可覆盖上层 scope 的 true。
         let mut disabled = std::collections::HashMap::new();
         disabled.insert("subagent".to_string(), false);
-        let reg = builtin_extension_registry(true, &disabled, &Default::default()).expect("registry");
+        let reg =
+            builtin_extension_registry(true, &disabled, &Default::default()).expect("registry");
         assert!(reg.tools().is_empty());
     }
 

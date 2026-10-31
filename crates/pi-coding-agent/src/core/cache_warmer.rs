@@ -345,9 +345,7 @@ impl CacheWarmSession for ManagerCacheWarmSession {
 
 /// Callback run before each refresh; returns the (possibly overridden) action.
 pub type DecideFn = Arc<
-    dyn Fn(
-            CacheWarmingDecisionEvent,
-        ) -> Pin<Box<dyn Future<Output = CacheWarmingAction> + Send>>
+    dyn Fn(CacheWarmingDecisionEvent) -> Pin<Box<dyn Future<Output = CacheWarmingAction> + Send>>
         + Send
         + Sync,
 >;
@@ -646,10 +644,7 @@ impl CacheWarmer {
             } else {
                 "cache economics unavailable"
             };
-            self.stop(
-                reason,
-                Some((Some(decision), Some(extension_override))),
-            );
+            self.stop(reason, Some((Some(decision), Some(extension_override))));
             return;
         }
 
@@ -772,7 +767,8 @@ impl CacheWarmer {
         } else {
             1.0
         };
-        let economics_available = prompt_tokens > 0 && (cache_hit_cost > 0.0 || cache_miss_cost > 0.0);
+        let economics_available =
+            prompt_tokens > 0 && (cache_hit_cost > 0.0 || cache_miss_cost > 0.0);
         let expected_savings = continuation_probability * miss_cost - warm_cost;
         CacheWarmingDecision {
             phase: run.phase,
@@ -816,7 +812,11 @@ pub fn format_cache_warming_economics(decision: &CacheWarmingDecision) -> String
     }
     let probability = (decision.continuation_probability * 100.0).round() as i64;
     let probability_text = if probability >= 100 {
-        format!("cache read {} vs miss {}", format_dollars(decision.warm_cost), format_dollars(decision.miss_cost))
+        format!(
+            "cache read {} vs miss {}",
+            format_dollars(decision.warm_cost),
+            format_dollars(decision.miss_cost)
+        )
     } else {
         format!(
             "{}% chance of a request within the window: {} to warm vs {} if it misses",
@@ -853,7 +853,10 @@ pub fn format_cache_warming_decision_time(next_warm_at: Option<u64>, now: u64) -
 pub fn format_cache_warming_status(status: &CacheWarmingStatus, now: u64) -> String {
     match status.state {
         WarmingState::Inactive => {
-            format!("inactive ({})", status.reason.as_deref().unwrap_or("unknown"))
+            format!(
+                "inactive ({})",
+                status.reason.as_deref().unwrap_or("unknown")
+            )
         }
         WarmingState::Scheduled => {
             let decision = status
@@ -898,8 +901,8 @@ mod tests {
     use super::*;
     use crate::core::session_manager::{SessionEntry, SessionManager};
     use pi_ai::types::AssistantMessage;
-    use std::sync::Mutex;
     use pi_ai::types::{ModelCost, ModelPromptCache};
+    use std::sync::Mutex;
 
     fn now() -> u64 {
         now_ms()
@@ -984,13 +987,8 @@ mod tests {
 
     fn session_with_prompt(prompt_tokens: u64) -> Arc<dyn CacheWarmSession> {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SessionManager::new(
-            "/tmp/test",
-            dir.path().to_str().unwrap(),
-            None,
-            false,
-            None,
-        );
+        let mut mgr =
+            SessionManager::new("/tmp/test", dir.path().to_str().unwrap(), None, false, None);
         mgr.append_message(serde_json::json!({
             "role": "assistant",
             "content": [{"type": "text", "text": "ok"}],
@@ -1001,10 +999,7 @@ mod tests {
         Arc::new(RealSession(Mutex::new(mgr)))
     }
 
-    fn warmer(
-        session: Arc<dyn CacheWarmSession>,
-        mode: CacheWarmingMode,
-    ) -> CacheWarmer {
+    fn warmer(session: Arc<dyn CacheWarmSession>, mode: CacheWarmingMode) -> CacheWarmer {
         CacheWarmer::new(
             Arc::new(NoModels),
             session,
@@ -1170,7 +1165,10 @@ mod tests {
         current.store(false, std::sync::atomic::Ordering::SeqCst);
         let status = w.status();
         assert_eq!(status.state, WarmingState::Inactive);
-        assert_eq!(status.reason.as_deref(), Some("conversation context changed"));
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("conversation context changed")
+        );
     }
 
     /// Prompt size comes from the last assistant usage on the branch, and the
@@ -1212,7 +1210,12 @@ mod tests {
         let idle = w.evaluate(run);
         assert_eq!(idle.phase, WarmingPhase::Idle);
         assert!((idle.continuation_probability - IDLE_CONTINUATION_PROBABILITY).abs() < 1e-9);
-        assert!((idle.expected_savings - (IDLE_CONTINUATION_PROBABILITY * idle.miss_cost - idle.warm_cost)).abs() < 1e-9);
+        assert!(
+            (idle.expected_savings
+                - (IDLE_CONTINUATION_PROBABILITY * idle.miss_cost - idle.warm_cost))
+                .abs()
+                < 1e-9
+        );
         assert!(
             idle.expected_savings < CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS,
             "a small idle prompt is not worth warming"
@@ -1255,7 +1258,8 @@ mod tests {
                 model: Model,
                 _context: Context,
                 options: SimpleStreamOptions,
-            ) -> Pin<Box<dyn Future<Output = Result<AssistantMessage, String>> + Send>> {
+            ) -> Pin<Box<dyn Future<Output = Result<AssistantMessage, String>> + Send>>
+            {
                 self.0
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1318,9 +1322,15 @@ mod tests {
         let generation = w.run.as_ref().unwrap().generation;
         w.refresh(generation).await;
 
-        let sent = calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sent = calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(sent.len(), 1, "one warm request");
-        assert_eq!(sent[0].base.max_tokens, Some(1), "replay caps output at one token");
+        assert_eq!(
+            sent[0].base.max_tokens,
+            Some(1),
+            "replay caps output at one token"
+        );
         assert_eq!(sent[0].base.max_retries, Some(0));
         drop(sent);
 

@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock};
 use pi_agent_core::pi_ai_types::Model;
 
 use crate::config;
-use pi_agent_core::pi_ai_types::get_env_api_key;
 use pi_agent_core::pi_ai_types::find_env_keys;
+use pi_agent_core::pi_ai_types::get_env_api_key;
 
 use serde::Deserialize;
 
@@ -179,15 +179,18 @@ impl ModelRegistry {
     pub fn wire_auth_resolver(&mut self, auth_path: std::path::PathBuf) {
         self.set_api_key_resolver(Arc::new(move |provider| {
             let storage = crate::core::auth_storage::AuthStorage::create(auth_path.clone());
-            storage.get(provider).and_then(|credential| match credential {
-                crate::core::auth_storage::AuthCredential::ApiKey { key: Some(key), env } => {
-                    crate::core::resolve_config_value::resolve_config_value_with_env(
+            storage
+                .get(provider)
+                .and_then(|credential| match credential {
+                    crate::core::auth_storage::AuthCredential::ApiKey {
+                        key: Some(key),
+                        env,
+                    } => crate::core::resolve_config_value::resolve_config_value_with_env(
                         key,
                         env.as_ref(),
-                    )
-                }
-                _ => None,
-            })
+                    ),
+                    _ => None,
+                })
         }));
     }
 
@@ -275,10 +278,8 @@ impl ModelRegistry {
         model: &Model,
         context: &pi_agent_core::pi_ai_types::Context,
         mut options: pi_agent_core::pi_ai_types::SimpleStreamOptions,
-    ) -> Result<
-        pi_agent_core::pi_ai::utils::event_stream::AssistantMessageEventStream,
-        String,
-    > {
+    ) -> Result<pi_agent_core::pi_ai::utils::event_stream::AssistantMessageEventStream, String>
+    {
         let auth = self.get_api_key_and_headers(model).await?;
         if !auth.ok {
             return Err(auth.error);
@@ -381,12 +382,17 @@ impl ModelRegistry {
             return result;
         };
         if !path.exists() {
-            result
-                .errors
-                .insert("_models.json".to_string(), "models.json does not exist".to_string());
+            result.errors.insert(
+                "_models.json".to_string(),
+                "models.json does not exist".to_string(),
+            );
             return result;
         }
-        let mut models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let mut models = self
+            .models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let providers = Self::load_models_from_path(&mut models, &path, provider_filter.as_ref());
         if let Some(rx) = options.and_then(|o| o.signal.as_ref()) {
             if *rx.borrow() {
@@ -394,7 +400,10 @@ impl ModelRegistry {
                 return result;
             }
         }
-        let mut models_guard = self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut models_guard = self
+            .models
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *models_guard = models;
         let mut providers_guard = self
             .models_json_providers
@@ -425,7 +434,10 @@ impl ModelRegistry {
     }
 
     pub fn find(&self, provider: &str, model_id: &str) -> Option<Model> {
-        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let models = self
+            .models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         models
             .iter()
             .find(|m| m.provider == provider && m.id == model_id)
@@ -433,13 +445,19 @@ impl ModelRegistry {
     }
 
     pub fn get_models(&self) -> Vec<Model> {
-        self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Merge remote-catalog models for a provider into the registry: replace
     /// same-id models, append new ones (match TS `mergeModels`).
     pub fn upsert_models(&self, provider: &str, models: &[Model]) -> usize {
-        let mut models_lock = self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut models_lock = self
+            .models
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed = 0;
         for model in models {
             if model.provider != provider {
@@ -465,7 +483,10 @@ impl ModelRegistry {
     }
 
     pub fn get_models_for_provider(&self, provider: &str) -> Vec<Model> {
-        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let models = self
+            .models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         models
             .iter()
             .filter(|m| m.provider == provider)
@@ -474,7 +495,10 @@ impl ModelRegistry {
     }
 
     pub fn get_providers(&self) -> Vec<String> {
-        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let models = self
+            .models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut providers: Vec<String> = models.iter().map(|m| m.provider.clone()).collect();
         providers.sort();
         providers.dedup();
@@ -482,7 +506,10 @@ impl ModelRegistry {
     }
 
     pub fn get_available(&self) -> Vec<Model> {
-        let models = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let models = self
+            .models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         models
             .iter()
             .filter(|m| self.has_configured_auth(m))
@@ -508,7 +535,10 @@ impl ModelRegistry {
             return true;
         }
         // Check registered providers (from register_provider calls)
-        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let providers = self
+            .registered_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(provider) {
             if config.api_key.is_some() {
                 return true;
@@ -520,7 +550,10 @@ impl ModelRegistry {
             }
         }
         // Check models.json provider configs
-        let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let json_providers = self
+            .models_json_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(provider) {
             if config.api_key.is_some() {
                 return true;
@@ -553,12 +586,14 @@ impl ModelRegistry {
             return Some(key);
         }
         // Check registered providers (from register_provider calls)
-        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let providers = self
+            .registered_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(provider) {
             if let Some(key) = &config.api_key {
                 // `${ENV}` template resolution (match TS ConfigValue).
-                if let Some(resolved) =
-                    crate::core::resolve_config_value::resolve_config_value(key)
+                if let Some(resolved) = crate::core::resolve_config_value::resolve_config_value(key)
                 {
                     return Some(resolved);
                 }
@@ -567,11 +602,13 @@ impl ModelRegistry {
         drop(providers);
 
         // Check models.json provider configs
-        let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let json_providers = self
+            .models_json_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(provider) {
             if let Some(key) = &config.api_key {
-                if let Some(resolved) =
-                    crate::core::resolve_config_value::resolve_config_value(key)
+                if let Some(resolved) = crate::core::resolve_config_value::resolve_config_value(key)
                 {
                     return Some(resolved);
                 }
@@ -593,7 +630,10 @@ impl ModelRegistry {
         let mut needs_auth_header = false;
 
         // Check registered providers first (higher priority)
-        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let providers = self
+            .registered_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = providers.get(&model.provider) {
             if api_key.is_none() {
                 // models.json / registered `apiKey` supports `${ENV}` templates
@@ -613,7 +653,10 @@ impl ModelRegistry {
         drop(providers);
 
         // Then check models.json provider configs (lower priority)
-        let json_providers = self.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let json_providers = self
+            .models_json_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(config) = json_providers.get(&model.provider) {
             if api_key.is_none() {
                 api_key = config
@@ -712,7 +755,9 @@ impl ModelRegistry {
         // rejected registration leaves the registry untouched, like TS
         // `validateExtensionProvider` which throws before publishing.
         let replacement = match config.models.as_ref() {
-            Some(definitions) => Some(self.build_extension_models(provider_name, &config, definitions)?),
+            Some(definitions) => {
+                Some(self.build_extension_models(provider_name, &config, definitions)?)
+            }
             None => None,
         };
 
@@ -872,14 +917,20 @@ impl ModelRegistry {
     /// Get the config for a registered provider (from `register_provider`).
     #[must_use]
     pub fn get_provider_config(&self, provider_name: &str) -> Option<ProviderConfig> {
-        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let providers = self
+            .registered_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.get(provider_name).cloned()
     }
 
     /// List all registered provider names (from `register_provider`).
     #[must_use]
     pub fn get_registered_providers(&self) -> Vec<String> {
-        let providers = self.registered_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let providers = self
+            .registered_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         providers.keys().cloned().collect()
     }
 
@@ -1017,8 +1068,8 @@ impl ModelRegistry {
                                             .as_ref()
                                             .map(|c| c.cache_write)
                                             .unwrap_or(0.0),
-                                                tiers: vec![],
-},
+                                        tiers: vec![],
+                                    },
                                     context_window: model_def.context_window.unwrap_or(128000),
                                     max_tokens: model_def.max_tokens.unwrap_or(16384),
                                     sampling_params: model_def.sampling_params.clone(),
@@ -1325,8 +1376,8 @@ pub fn builtin_models() -> Vec<Model> {
             output: 0.0,
             cache_read: 0.0,
             cache_write: 0.0,
-                    tiers: vec![],
-},
+            tiers: vec![],
+        },
         reasoning: false,
         name: String::new(),
         base_url: String::new(),
@@ -1384,14 +1435,19 @@ mod tests {
     fn runtime_accessors_align_with_ts() {
         pi_agent_core::pi_ai::providers::register_builtins::register_built_in_api_providers();
         let registry = ModelRegistry::new(ModelRegistry::builtin_models_list());
-        assert!(registry.get_model("anthropic", "claude-sonnet-4-6").is_some());
+        assert!(registry
+            .get_model("anthropic", "claude-sonnet-4-6")
+            .is_some());
         let _snapshot = registry.get_available_snapshot();
         let _ids = registry.get_registered_provider_ids();
 
         let base = registry.find("anthropic", "claude-sonnet-4-6").unwrap();
         let mut kimi = base.clone();
         kimi.provider = "kimi-coding".to_string();
-        assert!(registry.is_using_subscription(&kimi), "kimi-coding is subscription-backed");
+        assert!(
+            registry.is_using_subscription(&kimi),
+            "kimi-coding is subscription-backed"
+        );
         let mut plain = base.clone();
         plain.provider = "anthropic".to_string();
         assert!(!registry.is_using_subscription(&plain));
@@ -1505,7 +1561,10 @@ mod tests {
         assert_eq!(ds.base_url, "http://localhost:11434/v1");
         assert!(ds.reasoning, "deepseek-r1:7b should have reasoning=true");
 
-        let json_providers = registry.models_json_providers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let json_providers = registry
+            .models_json_providers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ollama_config = json_providers.get("ollama");
         assert!(
             ollama_config.is_some(),
@@ -1557,8 +1616,8 @@ mod tests {
                 output: 0.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
-                        tiers: vec![],
-},
+                tiers: vec![],
+            },
             reasoning: false,
             name: "GPT-4o".into(),
             base_url: "https://api.openai.com".into(),
@@ -1640,7 +1699,10 @@ mod tests {
             headers: None,
             compat: None,
         }));
-        assert_eq!(registry.get_api_key_for_provider("test-provider-xyz"), Some("sk-stored-123".to_string()));
+        assert_eq!(
+            registry.get_api_key_for_provider("test-provider-xyz"),
+            Some("sk-stored-123".to_string())
+        );
         assert_eq!(registry.get_api_key_for_provider("anthropic"), None);
     }
 
@@ -1676,7 +1738,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("auth.json");
-        std::fs::write(&path, r#"{"opencode-go":{"type":"api_key","key":"sk-test"}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"opencode-go":{"type":"api_key","key":"sk-test"}}"#,
+        )
+        .unwrap();
         let mut registry = ModelRegistry::new(vec![]);
         registry.wire_auth_resolver(path.clone());
         assert!(registry.is_provider_configured("opencode-go"));
@@ -1697,7 +1763,10 @@ mod tests {
         let configured = registry.is_provider_configured("anthropic");
         let key = registry.get_api_key_for_provider("anthropic");
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
-        assert!(configured, "ANTHROPIC_AUTH_TOKEN should count as configured auth");
+        assert!(
+            configured,
+            "ANTHROPIC_AUTH_TOKEN should count as configured auth"
+        );
         assert!(
             key.is_none(),
             "ANTHROPIC_AUTH_TOKEN must not be returned as an API key"
@@ -1712,10 +1781,12 @@ mod tests {
         let registry = ModelRegistry::new(vec![]);
         // Cancelled signal → aborted, no error.
         let (tx, rx) = tokio::sync::watch::channel(true);
-        let result = registry.refresh(Some(&ModelsRefreshOptions {
-            providers: None,
-            signal: Some(rx),
-        })).await;
+        let result = registry
+            .refresh(Some(&ModelsRefreshOptions {
+                providers: None,
+                signal: Some(rx),
+            }))
+            .await;
         assert!(result.aborted, "cancelled refresh must report aborted");
         assert!(result.errors.is_empty());
         drop(tx);
@@ -1748,7 +1819,10 @@ mod tests {
         source.insert("x-custom".into(), Some("v".into()));
         apply_headers_with_deletions(&mut target, &source);
 
-        assert!(!target.contains_key("authorization"), "null marker must delete the header");
+        assert!(
+            !target.contains_key("authorization"),
+            "null marker must delete the header"
+        );
         assert_eq!(target.get("x-api-key").map(|s| s.as_str()), Some("sk-new"));
         assert_eq!(target.get("x-custom").map(|s| s.as_str()), Some("v"));
     }
@@ -1857,7 +1931,9 @@ mod tests {
 
         registry.register_provider("lim", config).unwrap();
         let model = registry.find("lim", "img-1").expect("model");
-        let limits = model.input_limits.expect("inputLimits survives registration");
+        let limits = model
+            .input_limits
+            .expect("inputLimits survives registration");
         assert_eq!(limits.max_request_bytes, Some(1_048_576));
         let images = limits.images.expect("images limits");
         assert_eq!(images.max_per_request, Some(12));
@@ -1890,7 +1966,10 @@ mod tests {
         let error = registry
             .register_provider("extp", missing_api)
             .expect_err("missing api must fail");
-        assert!(error.contains("no \"api\" specified"), "unexpected error: {error}");
+        assert!(
+            error.contains("no \"api\" specified"),
+            "unexpected error: {error}"
+        );
 
         let missing_base_url: ProviderConfig = serde_json::from_value(serde_json::json!({
             "api": "openai-completions",
@@ -2084,8 +2163,18 @@ mod tests {
     fn test_register_provider_models_use_find_model_defaults_chain() {
         let registry = ModelRegistry::new_with_models_path(
             vec![
-                model_with("extp", "openai-ish", "openai-completions", "https://oa.example.com"),
-                model_with("extp", "anthropic-ish", "anthropic-messages", "https://an.example.com"),
+                model_with(
+                    "extp",
+                    "openai-ish",
+                    "openai-completions",
+                    "https://oa.example.com",
+                ),
+                model_with(
+                    "extp",
+                    "anthropic-ish",
+                    "anthropic-messages",
+                    "https://an.example.com",
+                ),
             ],
             std::path::Path::new("/nonexistent/models.json"),
         );
@@ -2156,7 +2245,9 @@ mod tests {
         let model = registry.find("extp", "m").expect("model");
         let sampling = model.sampling_params.expect("sampling_params");
         assert_eq!(
-            sampling.get("temperature").and_then(serde_json::Value::as_f64),
+            sampling
+                .get("temperature")
+                .and_then(serde_json::Value::as_f64),
             Some(0.25)
         );
     }

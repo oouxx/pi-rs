@@ -80,7 +80,8 @@ impl SseClientTransport {
                     Err(_) => break,
                 };
                 if event.event.as_deref() == Some("endpoint") {
-                    if let (Some(sender), Some(data)) = (endpoint_tx.take(), event.data.as_deref()) {
+                    if let (Some(sender), Some(data)) = (endpoint_tx.take(), event.data.as_deref())
+                    {
                         match base.join(data.trim()) {
                             Ok(resolved) => {
                                 let _ = sender.send(Ok(resolved));
@@ -136,8 +137,8 @@ impl Transport<RoleClient> for SseClientTransport {
         let endpoint = self.endpoint.clone();
         let headers = self.headers.clone();
         async move {
-            let body =
-                serde_json::to_string(&item).map_err(|e| SseTransportError::Decode(e.to_string()))?;
+            let body = serde_json::to_string(&item)
+                .map_err(|e| SseTransportError::Decode(e.to_string()))?;
             let mut request = client
                 .post(endpoint)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")

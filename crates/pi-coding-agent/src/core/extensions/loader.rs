@@ -201,11 +201,8 @@ pub fn discover_extension_paths(
         ..PathOptions::default()
     };
     let resolved_cwd = PathBuf::from(resolve_path(cwd, cwd, &PathOptions::default()));
-    let resolved_agent_dir = PathBuf::from(resolve_path(
-        agent_dir,
-        agent_dir,
-        &PathOptions::default(),
-    ));
+    let resolved_agent_dir =
+        PathBuf::from(resolve_path(agent_dir, agent_dir, &PathOptions::default()));
 
     let mut all_paths: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -230,7 +227,11 @@ pub fn discover_extension_paths(
 
     // 3. Explicitly configured paths
     for p in configured_paths {
-        let resolved = PathBuf::from(resolve_path(p, &resolved_cwd.to_string_lossy(), &normalize_opts));
+        let resolved = PathBuf::from(resolve_path(
+            p,
+            &resolved_cwd.to_string_lossy(),
+            &normalize_opts,
+        ));
         if resolved.is_dir() {
             // Directory: check for package.json manifest / index, else scan.
             if let Some(entries) = resolve_extension_entries(&resolved) {
@@ -495,11 +496,17 @@ mod tests {
     #[test]
     fn test_discover_subdir_with_manifest() {
         let dir = make_temp_dir(&[
-            ("pkg/package.json", r#"{"pi":{"extensions":["src/main.ts"]}}"#),
+            (
+                "pkg/package.json",
+                r#"{"pi":{"extensions":["src/main.ts"]}}"#,
+            ),
             ("pkg/src/main.ts", ""),
         ]);
         let found = discover_extensions_in_dir(dir.path());
-        assert_eq!(found, vec![dir.path().join("pkg").join("src").join("main.ts")]);
+        assert_eq!(
+            found,
+            vec![dir.path().join("pkg").join("src").join("main.ts")]
+        );
     }
 
     #[test]
@@ -532,17 +539,21 @@ mod tests {
         // create the .pi-rs/extensions layout under cwd
         fs::create_dir_all(local.path().join(CONFIG_DIR_NAME).join("extensions")).expect("mkdir");
         fs::write(
-            local.path().join(CONFIG_DIR_NAME).join("extensions").join("local.ts"),
+            local
+                .path()
+                .join(CONFIG_DIR_NAME)
+                .join("extensions")
+                .join("local.ts"),
             "",
         )
         .expect("write");
 
-        let configured = vec![cfg.path().join("configured.ts").to_string_lossy().to_string()];
-        let result = discover_extension_paths(
-            &configured,
-            &cwd,
-            &global.path().to_string_lossy(),
-        );
+        let configured = vec![cfg
+            .path()
+            .join("configured.ts")
+            .to_string_lossy()
+            .to_string()];
+        let result = discover_extension_paths(&configured, &cwd, &global.path().to_string_lossy());
 
         let expected_local = local
             .path()

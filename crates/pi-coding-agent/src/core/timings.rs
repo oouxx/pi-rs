@@ -87,5 +87,4 @@ mod tests {
         t.reset();
         assert!(t.timings().is_empty());
     }
-
 }

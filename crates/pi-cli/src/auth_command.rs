@@ -172,7 +172,10 @@ pub fn validate_auth_command_args(
             "--provider" => {
                 index += 1;
                 let Some(value) = command_args.get(index) else {
-                    return Err(format!("Missing value for --provider in \"{}\".", name(kind)));
+                    return Err(format!(
+                        "Missing value for --provider in \"{}\".",
+                        name(kind)
+                    ));
                 };
                 provider = Some(value.trim().to_string()).filter(|s| !s.is_empty());
             }
@@ -286,13 +289,17 @@ fn resolve_provider(
     if let Some(p) = provider {
         return Ok(p.to_string());
     }
-    let m = model.ok_or_else(|| "Auth commands require --provider <provider> or --model <model>".to_string())?;
+    let m = model.ok_or_else(|| {
+        "Auth commands require --provider <provider> or --model <model>".to_string()
+    })?;
     let found = registry
         .get_models()
         .iter()
         .find(|m2| m2.id == m)
         .map(|m2| m2.provider.clone())
-        .ok_or_else(|| format!("Model \"{m}\" not found. Use --list-models to see available models."))?;
+        .ok_or_else(|| {
+            format!("Model \"{m}\" not found. Use --list-models to see available models.")
+        })?;
     Ok(found)
 }
 
@@ -316,7 +323,11 @@ pub async fn run_auth_command(args: &[String]) -> i32 {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Error: {e}");
-            return if command.kind == AuthCommandKind::Check { 2 } else { 1 };
+            return if command.kind == AuthCommandKind::Check {
+                2
+            } else {
+                1
+            };
         }
     };
 
@@ -324,13 +335,25 @@ pub async fn run_auth_command(args: &[String]) -> i32 {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Error: Failed to initialize model registry: {e}");
-            return if command.kind == AuthCommandKind::Check { 2 } else { 1 };
+            return if command.kind == AuthCommandKind::Check {
+                2
+            } else {
+                1
+            };
         }
     };
 
     match command.kind {
         AuthCommandKind::ApiKey | AuthCommandKind::BearerToken => {
-            match print_credential(&registry, &provider, &model, command.kind, command.min_expiry_ms).await {
+            match print_credential(
+                &registry,
+                &provider,
+                &model,
+                command.kind,
+                command.min_expiry_ms,
+            )
+            .await
+            {
                 Ok(value) => {
                     println!("{value}");
                     0
@@ -365,7 +388,9 @@ async fn print_credential(
                             "Provider \"{provider_id}\" is configured with OAuth, not an API key"
                         ))
                     } else {
-                        Err(format!("No usable API key is configured for \"{provider_id}\""))
+                        Err(format!(
+                            "No usable API key is configured for \"{provider_id}\""
+                        ))
                     }
                 }
             }
@@ -508,27 +533,52 @@ mod tests {
     #[test]
     fn parse_auth_kinds() {
         assert!(parse_auth_command(&v(&["run", "code"])).unwrap().is_none());
-        let c = parse_auth_command(&v(&["auth", "check", "--provider", "ollama"])).unwrap().unwrap();
+        let c = parse_auth_command(&v(&["auth", "check", "--provider", "ollama"]))
+            .unwrap()
+            .unwrap();
         assert_eq!(c.kind, AuthCommandKind::Check);
         assert_eq!(c.args, v(&["--provider", "ollama"]));
-        let c = parse_auth_command(&v(&["auth", "print-api-key", "--provider", "x"])).unwrap().unwrap();
+        let c = parse_auth_command(&v(&["auth", "print-api-key", "--provider", "x"]))
+            .unwrap()
+            .unwrap();
         assert_eq!(c.kind, AuthCommandKind::ApiKey);
-        let c = parse_auth_command(&v(&["auth", "print-bearer-token", "--provider", "x", "--min-expiry", "30m"])).unwrap().unwrap();
+        let c = parse_auth_command(&v(&[
+            "auth",
+            "print-bearer-token",
+            "--provider",
+            "x",
+            "--min-expiry",
+            "30m",
+        ]))
+        .unwrap()
+        .unwrap();
         assert_eq!(c.kind, AuthCommandKind::BearerToken);
         assert_eq!(c.min_expiry_ms, Some(30 * 60_000));
     }
 
     #[test]
     fn parse_auth_command_flags() {
-        let c = parse_auth_command(&v(&["auth", "check", "--provider", "x", "--json", "--credentials", "--no-refresh"]))
-            .unwrap().unwrap();
+        let c = parse_auth_command(&v(&[
+            "auth",
+            "check",
+            "--provider",
+            "x",
+            "--json",
+            "--credentials",
+            "--no-refresh",
+        ]))
+        .unwrap()
+        .unwrap();
         assert!(c.json && c.credentials && c.no_refresh);
         // Flags restricted to check.
         assert!(parse_auth_command(&v(&["auth", "print-api-key", "--json"])).is_err());
         // --min-expiry restricted to bearer-token.
         assert!(parse_auth_command(&v(&["auth", "check", "--min-expiry", "1h"])).is_err());
         // Bad duration.
-        assert!(parse_auth_command(&v(&["auth", "print-bearer-token", "--min-expiry", "soon"])).is_err());
+        assert!(
+            parse_auth_command(&v(&["auth", "print-bearer-token", "--min-expiry", "soon"]))
+                .is_err()
+        );
     }
 
     #[test]
@@ -544,8 +594,13 @@ mod tests {
 
     #[test]
     fn validate_args_requires_provider_or_model() {
-        assert!(validate_auth_command_args(&v(&["--provider", "ollama"]), AuthCommandKind::Check).is_ok());
-        assert!(validate_auth_command_args(&v(&["--model", "gpt-5"]), AuthCommandKind::ApiKey).is_ok());
+        assert!(
+            validate_auth_command_args(&v(&["--provider", "ollama"]), AuthCommandKind::Check)
+                .is_ok()
+        );
+        assert!(
+            validate_auth_command_args(&v(&["--model", "gpt-5"]), AuthCommandKind::ApiKey).is_ok()
+        );
         assert!(validate_auth_command_args(&v(&[]), AuthCommandKind::Check).is_err());
         assert!(validate_auth_command_args(&v(&["--bogus"]), AuthCommandKind::Check).is_err());
     }

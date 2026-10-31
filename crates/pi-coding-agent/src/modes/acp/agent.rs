@@ -14,7 +14,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::config;
 
 use super::session::{SessionCommand, SessionHandle, SessionRegistry};
-use super::slash_commands::{builtin_available_commands, load_slash_commands, to_available_commands};
+use super::slash_commands::{
+    builtin_available_commands, load_slash_commands, to_available_commands,
+};
 
 /// The ACP agent: owns the session registry and the notification channel.
 pub struct PiAcpAgent {
@@ -163,8 +165,10 @@ impl acp::Agent for PiAcpAgent {
             )));
         }
         let cwd = args.cwd.to_string_lossy().to_string();
-        *self.last_session_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(cwd.clone());
+        *self
+            .last_session_cwd
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cwd.clone());
         let session_id = {
             let mut reg = self.registry.lock().await;
             reg.set_trust_policy(self.trust_override, self.default_project_trust);
@@ -214,8 +218,10 @@ impl acp::Agent for PiAcpAgent {
             )));
         }
         let cwd = args.cwd.to_string_lossy().to_string();
-        *self.last_session_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(cwd.clone());
+        *self
+            .last_session_cwd
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cwd.clone());
         // Load the session by ID, resuming its persisted messages. This works
         // across process restarts: sessions are recorded in the on-disk ACP
         // session map under `{sessions_dir}/acp/`.
@@ -233,7 +239,8 @@ impl acp::Agent for PiAcpAgent {
             .map_err(invalid_params_err)?;
         }
         // Advertise slash commands after the response is delivered.
-        self.emit_available_commands(args.session_id.clone(), &cwd).await;
+        self.emit_available_commands(args.session_id.clone(), &cwd)
+            .await;
         // Return the initial config options (matching pi-acp's `loadSession`
         // response).
         let config_options = self
@@ -243,10 +250,7 @@ impl acp::Agent for PiAcpAgent {
         Ok(acp::LoadSessionResponse::new().config_options(config_options))
     }
 
-    async fn prompt(
-        &self,
-        args: acp::PromptRequest,
-    ) -> Result<acp::PromptResponse, acp::Error> {
+    async fn prompt(&self, args: acp::PromptRequest) -> Result<acp::PromptResponse, acp::Error> {
         let handle = self.handle(&args.session_id).await?;
         let (text, images) = extract_prompt(&args.prompt);
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -282,9 +286,7 @@ impl acp::Agent for PiAcpAgent {
         // to the last session cwd to emulate pi's `/resume` picker
         // (project-scoped), matching pi-acp.
         let effective_cwd: Option<String> = if args.cwd.is_some() {
-            args.cwd
-                .clone()
-                .map(|p| p.to_string_lossy().to_string())
+            args.cwd.clone().map(|p| p.to_string_lossy().to_string())
         } else {
             self.last_session_cwd
                 .lock()
@@ -348,8 +350,8 @@ impl acp::Agent for PiAcpAgent {
                 info
             })
             .collect();
-        let next_cursor = (offset + PAGE_SIZE < filtered.len())
-            .then(|| (offset + PAGE_SIZE).to_string());
+        let next_cursor =
+            (offset + PAGE_SIZE < filtered.len()).then(|| (offset + PAGE_SIZE).to_string());
         Ok(acp::ListSessionsResponse::new(sessions).next_cursor(next_cursor))
     }
 
@@ -372,7 +374,8 @@ impl acp::Agent for PiAcpAgent {
             .map_err(internal_err)?;
         // Keep the client's model dropdown in sync (matching pi-acp's
         // `emitConfigOptionsUpdate` after `setSessionModel`).
-        self.emit_config_options_update(args.session_id.clone()).await?;
+        self.emit_config_options_update(args.session_id.clone())
+            .await?;
         Ok(acp::SetSessionModelResponse::default())
     }
 
@@ -402,7 +405,8 @@ impl acp::Agent for PiAcpAgent {
             args.session_id.clone(),
             acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(level)),
         );
-        self.emit_config_options_update(args.session_id.clone()).await?;
+        self.emit_config_options_update(args.session_id.clone())
+            .await?;
         Ok(acp::SetSessionModeResponse::default())
     }
 
@@ -475,9 +479,7 @@ impl acp::Agent for PiAcpAgent {
         handle
             .send(SessionCommand::GetConfigOptions { reply: reply_tx })
             .map_err(|_| internal_err("session closed"))?;
-        let options = reply_rx
-            .await
-            .map_err(|_| internal_err("session closed"))?;
+        let options = reply_rx.await.map_err(|_| internal_err("session closed"))?;
         self.emit_notification(
             args.session_id.clone(),
             acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(options.clone())),
@@ -505,21 +507,20 @@ impl PiAcpAgent {
         handle
             .send(SessionCommand::GetConfigOptions { reply: reply_tx })
             .map_err(|_| internal_err("session closed"))?;
-        reply_rx
-            .await
-            .map_err(|_| internal_err("session closed"))
+        reply_rx.await.map_err(|_| internal_err("session closed"))
     }
 
     /// Emit a `config_options_update` notification for a session.
-    async fn emit_config_options_update(&self, session_id: acp::SessionId) -> Result<(), acp::Error> {
+    async fn emit_config_options_update(
+        &self,
+        session_id: acp::SessionId,
+    ) -> Result<(), acp::Error> {
         let handle = self.handle(&session_id).await?;
         let (reply_tx, reply_rx) = oneshot::channel();
         handle
             .send(SessionCommand::GetConfigOptions { reply: reply_tx })
             .map_err(|_| internal_err("session closed"))?;
-        let options = reply_rx
-            .await
-            .map_err(|_| internal_err("session closed"))?;
+        let options = reply_rx.await.map_err(|_| internal_err("session closed"))?;
         self.emit_notification(
             session_id,
             acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(options)),
@@ -548,7 +549,9 @@ impl PiAcpAgent {
             let commands = match &handle {
                 Some(h) => {
                     let (reply_tx, reply_rx) = oneshot::channel();
-                    if h.send(SessionCommand::GetCommands { reply: reply_tx }).is_ok() {
+                    if h.send(SessionCommand::GetCommands { reply: reply_tx })
+                        .is_ok()
+                    {
                         reply_rx.await.unwrap_or_default()
                     } else {
                         fallback_commands(&cwd_owned)
@@ -587,7 +590,11 @@ fn build_startup_info(cwd: &str) -> String {
     md.push(String::new());
 
     let mut add_section = |title: &str, items: Vec<String>| {
-        let cleaned: Vec<String> = items.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let cleaned: Vec<String> = items
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         if cleaned.is_empty() {
             return;
         }
@@ -611,7 +618,9 @@ fn build_startup_info(cwd: &str) -> String {
     let mut skills = Vec::new();
     for root in [
         config::get_agent_dir().join("skills"),
-        std::path::Path::new(cwd).join(config::CONFIG_DIR_NAME).join("skills"),
+        std::path::Path::new(cwd)
+            .join(config::CONFIG_DIR_NAME)
+            .join("skills"),
     ] {
         collect_skill_md(&root, &mut skills);
     }
@@ -679,7 +688,9 @@ fn collect_skill_md(root: &std::path::Path, out: &mut Vec<String>) {
 /// matching pi-acp's `promptToPiMessage`: text is concatenated, resource
 /// links / embedded resources / audio become human-readable context markers,
 /// and images are passed through as pi content blocks.
-fn extract_prompt(prompt: &[acp::ContentBlock]) -> (String, Vec<pi_agent_core::pi_ai_types::ContentBlock>) {
+fn extract_prompt(
+    prompt: &[acp::ContentBlock],
+) -> (String, Vec<pi_agent_core::pi_ai_types::ContentBlock>) {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
     for block in prompt {
@@ -748,9 +759,7 @@ fn base64_decode_len(data: &str) -> usize {
 
 /// Resolve a `provider/model` string (or a bare model id, resolved via the
 /// builtin model list) to a pi `Model`, matching pi-acp's `setSessionModel`.
-async fn resolve_model(
-    value: &str,
-) -> Result<pi_agent_core::pi_ai_types::Model, acp::Error> {
+async fn resolve_model(value: &str) -> Result<pi_agent_core::pi_ai_types::Model, acp::Error> {
     let models = crate::core::model_registry::ModelRegistry::builtin_models_list();
     let registry = crate::core::model_registry::ModelRegistry::new(models);
     let (provider, model_id) = match value.split_once('/') {
@@ -824,7 +833,10 @@ mod tests {
                     acp::TextResourceContents::new("body".to_string(), "file:///b.md".to_string()),
                 ),
             )),
-            acp::ContentBlock::Audio(acp::AudioContent::new("AAAA".to_string(), "audio/mp3".to_string())),
+            acp::ContentBlock::Audio(acp::AudioContent::new(
+                "AAAA".to_string(),
+                "audio/mp3".to_string(),
+            )),
         ];
         let (text, images) = extract_prompt(&prompt);
         assert!(text.contains("[Context] file:///a.md"), "got: {text}");

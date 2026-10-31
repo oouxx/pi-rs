@@ -33,7 +33,9 @@ pub fn uuid_v7() -> String {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    let mut state = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sequence = if timestamp > state.last_timestamp {
         state.last_timestamp = timestamp;
         (u32::from(random[6]) << 24)
@@ -97,7 +99,12 @@ mod tests {
         // version nibble = 7
         assert_eq!(&parts[2][..1], "7");
         // variant bits = 10xx
-        assert!(parts[3].starts_with('8') || parts[3].starts_with('9') || parts[3].starts_with('a') || parts[3].starts_with('b'));
+        assert!(
+            parts[3].starts_with('8')
+                || parts[3].starts_with('9')
+                || parts[3].starts_with('a')
+                || parts[3].starts_with('b')
+        );
     }
 
     #[test]

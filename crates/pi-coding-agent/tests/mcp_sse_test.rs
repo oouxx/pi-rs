@@ -210,8 +210,7 @@ async fn config_file_sse_server_is_connected() {
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(specs.len(), 1);
 
-    let (tools, _connections, errors) =
-        pi_coding_agent::core::mcp::connect_specs(&specs).await;
+    let (tools, _connections, errors) = pi_coding_agent::core::mcp::connect_specs(&specs).await;
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "echo");

@@ -22,9 +22,7 @@ async fn stream_one(
     register_built_in_api_providers();
 
     let model = get_model(provider, model_id).unwrap_or_else(|| {
-        panic!(
-            "Model {provider}/{model_id} not found in generated catalog. Run build.rs first."
-        )
+        panic!("Model {provider}/{model_id} not found in generated catalog. Run build.rs first.")
     });
 
     let context = Context {

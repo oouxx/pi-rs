@@ -51,7 +51,9 @@ const DOWNLOAD_TIMEOUT_SECS: u64 = 120;
 
 /// Look up the `ToolConfig` for a tool name or binary name.
 fn get_tool_config(tool: &str) -> Option<&'static ToolConfig> {
-    TOOLS.iter().find(|c| c.name == tool || c.binary_name == tool)
+    TOOLS
+        .iter()
+        .find(|c| c.name == tool || c.binary_name == tool)
 }
 
 /// Check whether `cmd` exists in the system PATH.
@@ -76,13 +78,12 @@ fn binary_filename(name: &str) -> String {
 }
 
 /// Determine the GitHub release asset name for the given tool / version / platform.
-fn get_asset_name(
-    tool_name: &str,
-    version: &str,
-    plat: &str,
-    arch: &str,
-) -> Option<String> {
-    let arch_str = if arch == "aarch64" { "aarch64" } else { "x86_64" };
+fn get_asset_name(tool_name: &str, version: &str, plat: &str, arch: &str) -> Option<String> {
+    let arch_str = if arch == "aarch64" {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
 
     match tool_name {
         "fd" => match plat {
@@ -93,10 +94,12 @@ fn get_asset_name(
         },
         "ripgrep" => match plat {
             "macos" => Some(format!("ripgrep-{version}-{arch_str}-apple-darwin.tar.gz")),
-            "linux" if arch == "aarch64" => {
-                Some(format!("ripgrep-{version}-aarch64-unknown-linux-gnu.tar.gz"))
-            }
-            "linux" => Some(format!("ripgrep-{version}-x86_64-unknown-linux-musl.tar.gz")),
+            "linux" if arch == "aarch64" => Some(format!(
+                "ripgrep-{version}-aarch64-unknown-linux-gnu.tar.gz"
+            )),
+            "linux" => Some(format!(
+                "ripgrep-{version}-x86_64-unknown-linux-musl.tar.gz"
+            )),
             "windows" => Some(format!("ripgrep-{version}-{arch_str}-pc-windows-msvc.zip")),
             _ => None,
         },
@@ -106,7 +109,11 @@ fn get_asset_name(
 
 /// Build a curl subprocess command.
 fn curl_command() -> Command {
-    let exe = if cfg!(target_os = "windows") { "curl.exe" } else { "curl" };
+    let exe = if cfg!(target_os = "windows") {
+        "curl.exe"
+    } else {
+        "curl"
+    };
     let mut cmd = Command::new(exe);
     cmd.args(["-sS", "-L"]);
     cmd
@@ -423,15 +430,12 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
     }
 
     // Determine asset name for this platform.
-    let asset_name =
-        get_asset_name(config.name, &version, plat, architecture).ok_or_else(|| {
-            format!("Unsupported platform: {plat}/{architecture}")
-        })?;
+    let asset_name = get_asset_name(config.name, &version, plat, architecture)
+        .ok_or_else(|| format!("Unsupported platform: {plat}/{architecture}"))?;
 
     // Create bin directory.
     let bin_dir = config::get_bin_dir();
-    std::fs::create_dir_all(&bin_dir)
-        .map_err(|e| format!("Failed to create bin dir: {e}"))?;
+    std::fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to create bin dir: {e}"))?;
 
     let download_url = format!(
         "https://github.com/{repo}/releases/download/{prefix}{version}/{asset}",
@@ -441,7 +445,11 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
     );
 
     let archive_path = bin_dir.join(&asset_name);
-    let _binary_ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let _binary_ext = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let binary_path = bin_dir.join(binary_filename(config.binary_name));
 
     // Download the archive.
@@ -478,11 +486,15 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
 
         // Find the binary inside the extracted tree.
         // Some archives nest under a versioned subdirectory.
-        let expected_subdir_name = asset_name.trim_end_matches(".tar.gz").trim_end_matches(".zip");
+        let expected_subdir_name = asset_name
+            .trim_end_matches(".tar.gz")
+            .trim_end_matches(".zip");
         let expected_subdir = extract_dir.join(expected_subdir_name);
 
         let found = find_binary_recursively(&expected_subdir, &binary_filename(config.binary_name))
-            .or_else(|| find_binary_recursively(&extract_dir, &binary_filename(config.binary_name)));
+            .or_else(|| {
+                find_binary_recursively(&extract_dir, &binary_filename(config.binary_name))
+            });
 
         let src = found.ok_or_else(|| {
             format!(
@@ -492,8 +504,7 @@ fn download_tool(config: &ToolConfig) -> Result<String, String> {
             )
         })?;
 
-        std::fs::rename(&src, &binary_path)
-            .map_err(|e| format!("Failed to move binary: {e}"))?;
+        std::fs::rename(&src, &binary_path).map_err(|e| format!("Failed to move binary: {e}"))?;
 
         // Make executable on Unix.
         #[cfg(unix)]
@@ -565,7 +576,9 @@ mod tests {
     fn test_get_tool_path_system_tool_when_in_path() {
         // For a known tool, the function should either find it or return None.
         let path = get_tool_path("fd");
-        if let Some(p) = path { assert!(!p.is_empty(), "found path must not be empty") } // acceptable when tool is not installed
+        if let Some(p) = path {
+            assert!(!p.is_empty(), "found path must not be empty")
+        } // acceptable when tool is not installed
     }
 
     // -----------------------------------------------------------------------
@@ -719,43 +732,64 @@ mod tests {
     #[test]
     fn test_get_asset_name_fd_macos() {
         let name = get_asset_name("fd", "10.3.0", "macos", "x86_64");
-        assert_eq!(name.as_deref(), Some("fd-v10.3.0-x86_64-apple-darwin.tar.gz"));
+        assert_eq!(
+            name.as_deref(),
+            Some("fd-v10.3.0-x86_64-apple-darwin.tar.gz")
+        );
     }
 
     #[test]
     fn test_get_asset_name_fd_linux() {
         let name = get_asset_name("fd", "9.0.0", "linux", "x86_64");
-        assert_eq!(name.as_deref(), Some("fd-v9.0.0-x86_64-unknown-linux-gnu.tar.gz"));
+        assert_eq!(
+            name.as_deref(),
+            Some("fd-v9.0.0-x86_64-unknown-linux-gnu.tar.gz")
+        );
     }
 
     #[test]
     fn test_get_asset_name_fd_windows() {
         let name = get_asset_name("fd", "9.0.0", "windows", "x86_64");
-        assert_eq!(name.as_deref(), Some("fd-v9.0.0-x86_64-pc-windows-msvc.zip"));
+        assert_eq!(
+            name.as_deref(),
+            Some("fd-v9.0.0-x86_64-pc-windows-msvc.zip")
+        );
     }
 
     #[test]
     fn test_get_asset_name_rg_macos() {
         let name = get_asset_name("ripgrep", "14.1.0", "macos", "x86_64");
-        assert_eq!(name.as_deref(), Some("ripgrep-14.1.0-x86_64-apple-darwin.tar.gz"));
+        assert_eq!(
+            name.as_deref(),
+            Some("ripgrep-14.1.0-x86_64-apple-darwin.tar.gz")
+        );
     }
 
     #[test]
     fn test_get_asset_name_rg_linux() {
         let name = get_asset_name("ripgrep", "14.1.0", "linux", "x86_64");
-        assert_eq!(name.as_deref(), Some("ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz"));
+        assert_eq!(
+            name.as_deref(),
+            Some("ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz")
+        );
     }
 
     #[test]
     fn test_get_asset_name_rg_windows() {
         let name = get_asset_name("ripgrep", "14.1.0", "windows", "x86_64");
-        assert_eq!(name.as_deref(), Some("ripgrep-14.1.0-x86_64-pc-windows-msvc.zip"));
+        assert_eq!(
+            name.as_deref(),
+            Some("ripgrep-14.1.0-x86_64-pc-windows-msvc.zip")
+        );
     }
 
     #[test]
     fn test_get_asset_name_unsupported_platform() {
         assert_eq!(get_asset_name("fd", "1.0.0", "freebsd", "x86_64"), None);
-        assert_eq!(get_asset_name("ripgrep", "1.0.0", "freebsd", "x86_64"), None);
+        assert_eq!(
+            get_asset_name("ripgrep", "1.0.0", "freebsd", "x86_64"),
+            None
+        );
     }
 
     #[test]

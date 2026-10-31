@@ -19,13 +19,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::selection::{
-    columns_for_row, line_range, word_range, ClickTarget, Granularity, SelPoint, SelSpace, Selection,
-};
 use crate::components::{
-    Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger, Editor, Input, Markdown, SelectList,
+    Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger, Editor,
+    Input, Markdown, SelectList,
 };
 use crate::render::wrap::word_wrap_line_with_joiners;
+use crate::selection::{
+    columns_for_row, line_range, word_range, ClickTarget, Granularity, SelPoint, SelSpace,
+    Selection,
+};
 use crate::theme::Theme;
 
 // ============================================================================
@@ -104,7 +106,10 @@ fn intra_line_spans(
                     first_removed = false;
                 }
                 if !v.is_empty() {
-                    removed_line.push(Span::styled(v, removed_style.add_modifier(Modifier::REVERSED)));
+                    removed_line.push(Span::styled(
+                        v,
+                        removed_style.add_modifier(Modifier::REVERSED),
+                    ));
                 }
             }
             ChangeTag::Insert => {
@@ -118,7 +123,10 @@ fn intra_line_spans(
                     first_added = false;
                 }
                 if !v.is_empty() {
-                    added_line.push(Span::styled(v, added_style.add_modifier(Modifier::REVERSED)));
+                    added_line.push(Span::styled(
+                        v,
+                        added_style.add_modifier(Modifier::REVERSED),
+                    ));
                 }
             }
             ChangeTag::Equal => {
@@ -152,7 +160,13 @@ fn render_edit_diff_line(
 
     let Some((prefix, line_num, content)) = parse_diff_line(lines[i]) else {
         // Non-diff line (blank, "..." skips, unparseable): context color, verbatim.
-        render_boxed_row(frame, area, y, bg, vec![Span::styled(lines[i].to_string(), context_style)]);
+        render_boxed_row(
+            frame,
+            area,
+            y,
+            bg,
+            vec![Span::styled(lines[i].to_string(), context_style)],
+        );
         return 1;
     };
 
@@ -163,15 +177,23 @@ fn render_edit_diff_line(
             let mut removed: Vec<(String, String)> = Vec::new();
             let mut j = i;
             while j < lines.len() {
-                let Some((p, ln, c)) = parse_diff_line(lines[j]) else { break };
-                if p != '-' { break; }
+                let Some((p, ln, c)) = parse_diff_line(lines[j]) else {
+                    break;
+                };
+                if p != '-' {
+                    break;
+                }
                 removed.push((ln, c.to_string()));
                 j += 1;
             }
             let mut added: Vec<(String, String)> = Vec::new();
             while j < lines.len() {
-                let Some((p, ln, c)) = parse_diff_line(lines[j]) else { break };
-                if p != '+' { break; }
+                let Some((p, ln, c)) = parse_diff_line(lines[j]) else {
+                    break;
+                };
+                if p != '+' {
+                    break;
+                }
                 added.push((ln, c.to_string()));
                 j += 1;
             }
@@ -355,7 +377,8 @@ pub struct ToolCall {
     /// Agent-side tool call id — the row's identity for state/output
     /// updates. Two calls of the same tool never share a row.
     pub call_id: String,
-    pub name: String, pub state: ToolCallState,
+    pub name: String,
+    pub state: ToolCallState,
     /// JSON-serialized tool arguments (TS `JSON.stringify(args, null, 2)`
     /// — rendered below the title like the TS fallback tool component).
     pub args: String,
@@ -452,7 +475,12 @@ enum CustomRenderedBlock {
 }
 
 #[derive(Debug, Clone)]
-pub enum ToolCallState { Pending, Running, Done, Failed }
+pub enum ToolCallState {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
 
 /// One item of restored session history, used by
 /// [`Model::hydrate_transcript`] (TS `renderSessionItems`). The interactive
@@ -666,8 +694,21 @@ fn format_duration(ms: u128) -> String {
     format!("{}h {}m {remainder}s", minutes / 60, minutes % 60)
 }
 
-
-pub enum AppMode { Chat, Select { list: SelectList }, Editor { editor: Box<Editor>, title: String }, Secret { title: String, message: String, value: String } }
+pub enum AppMode {
+    Chat,
+    Select {
+        list: SelectList,
+    },
+    Editor {
+        editor: Box<Editor>,
+        title: String,
+    },
+    Secret {
+        title: String,
+        message: String,
+        value: String,
+    },
+}
 /// Terminal stop reason of an assistant message (TS `StopReason`), used to
 /// render the TS post-content notices (truncated/aborted/error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -732,9 +773,22 @@ impl Message {
     }
 }
 
-pub struct Dialog { pub title: String, pub message: String, pub buttons: Vec<DialogButton>, pub selected: usize }
-pub struct DialogButton { pub label: &'static str, pub action: DialogAction }
-pub enum DialogAction { Confirm, ConfirmAlways, Cancel, Custom(&'static str) }
+pub struct Dialog {
+    pub title: String,
+    pub message: String,
+    pub buttons: Vec<DialogButton>,
+    pub selected: usize,
+}
+pub struct DialogButton {
+    pub label: &'static str,
+    pub action: DialogAction,
+}
+pub enum DialogAction {
+    Confirm,
+    ConfirmAlways,
+    Cancel,
+    Custom(&'static str),
+}
 
 // ============================================================================
 // Model
@@ -750,12 +804,22 @@ pub struct WidgetBlock {
 }
 
 pub struct Model {
-    pub theme: Theme, pub width: u16, pub height: u16, pub mode: AppMode,
-    pub messages: Vec<Message>, pub is_streaming: bool,
-    pub input: Input, pub model_name: String, pub tick: u64,
-    pub active_tools: Vec<ToolCall>, pub dialog: Option<Dialog>,
-    pub completer: Completer, pub scroll_offset: usize, pub auto_scroll: bool,
-    pub cwd: String, pub git_branch: Option<String>,
+    pub theme: Theme,
+    pub width: u16,
+    pub height: u16,
+    pub mode: AppMode,
+    pub messages: Vec<Message>,
+    pub is_streaming: bool,
+    pub input: Input,
+    pub model_name: String,
+    pub tick: u64,
+    pub active_tools: Vec<ToolCall>,
+    pub dialog: Option<Dialog>,
+    pub completer: Completer,
+    pub scroll_offset: usize,
+    pub auto_scroll: bool,
+    pub cwd: String,
+    pub git_branch: Option<String>,
     /// Context usage percentage (TS `contextUsage.percent`, one decimal).
     pub context_usage_pct: f64,
     /// Whether context usage is known (TS shows `?/window` when null).
@@ -861,12 +925,25 @@ pub struct RetryStatus {
 impl Model {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
-            theme: Theme::default(), width, height, mode: AppMode::Chat, messages: Vec::new(),
-            is_streaming: false, input: Input::new(), model_name: String::new(),
-            tick: 0, active_tools: Vec::new(), dialog: None,
-            completer: Completer::new(), scroll_offset: 0, auto_scroll: true,
-            cwd: String::new(), git_branch: None, context_usage_pct: 0.0,
-            context_usage_known: false, elapsed_secs: 0,
+            theme: Theme::default(),
+            width,
+            height,
+            mode: AppMode::Chat,
+            messages: Vec::new(),
+            is_streaming: false,
+            input: Input::new(),
+            model_name: String::new(),
+            tick: 0,
+            active_tools: Vec::new(),
+            dialog: None,
+            completer: Completer::new(),
+            scroll_offset: 0,
+            auto_scroll: true,
+            cwd: String::new(),
+            git_branch: None,
+            context_usage_pct: 0.0,
+            context_usage_known: false,
+            elapsed_secs: 0,
             next_block_id: 0,
             session_name: None,
             usage_totals: UsageTotals::default(),
@@ -914,8 +991,13 @@ impl Model {
     /// auto-scroll.
     pub fn push_message(&mut self, role: impl Into<String>, text: impl Into<String>) {
         let id = self.alloc_block_id();
-        self.messages
-            .push(Message::new(id, role, text, self.width as usize, &self.theme));
+        self.messages.push(Message::new(
+            id,
+            role,
+            text,
+            self.width as usize,
+            &self.theme,
+        ));
         self.auto_scroll = true;
     }
 
@@ -937,7 +1019,12 @@ impl Model {
 
     /// 记录工具结果的 `details`（自定义渲染用）。
     pub fn set_tool_details(&mut self, call_id: &str, details: Option<serde_json::Value>) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
+        if let Some(tool) = self
+            .active_tools
+            .iter_mut()
+            .rev()
+            .find(|t| t.call_id == call_id)
+        {
             tool.details = details;
         }
     }
@@ -948,7 +1035,14 @@ impl Model {
     }
 
     pub fn update_tool_call(&mut self, call_id: &str, state: ToolCallState) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) { tool.state = state; }
+        if let Some(tool) = self
+            .active_tools
+            .iter_mut()
+            .rev()
+            .find(|t| t.call_id == call_id)
+        {
+            tool.state = state;
+        }
     }
 
     /// Replace a tool row's output with a full snapshot (the bridge sends
@@ -958,7 +1052,12 @@ impl Model {
     /// `\r`) — the raw tool result keeps ANSI for the model, only the TUI
     /// display cleans it.
     pub fn set_tool_output(&mut self, call_id: &str, text: &str) {
-        if let Some(tool) = self.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
+        if let Some(tool) = self
+            .active_tools
+            .iter_mut()
+            .rev()
+            .find(|t| t.call_id == call_id)
+        {
             tool.output = sanitize_output_text(text);
         }
     }
@@ -982,8 +1081,13 @@ impl Model {
                     error_message,
                 } => {
                     let id = self.alloc_block_id();
-                    let mut msg =
-                        Message::new(id, role.clone(), text.clone(), self.width as usize, &self.theme);
+                    let mut msg = Message::new(
+                        id,
+                        role.clone(),
+                        text.clone(),
+                        self.width as usize,
+                        &self.theme,
+                    );
                     if !thinking.is_empty() {
                         msg.append_thinking(thinking);
                     }
@@ -1114,7 +1218,8 @@ impl Model {
             SelSpace::Content => {
                 let area = self.body_area;
                 let rel = (event.row as i32 - area.top() as i32)
-                    .clamp(0, area.height.saturating_sub(1) as i32) as usize;
+                    .clamp(0, area.height.saturating_sub(1) as i32)
+                    as usize;
                 let row = (self.body_scroll + rel).min(self.content_height.saturating_sub(1));
                 let col = event
                     .column
@@ -1147,15 +1252,13 @@ impl Model {
             }
             _ => 1,
         };
-        self.selection.last_click = word.map(|(word_start, word_end)| {
-            ClickTarget {
-                timestamp: now,
-                count,
-                space: point.space,
-                row: point.row,
-                word_start,
-                word_end,
-            }
+        self.selection.last_click = word.map(|(word_start, word_end)| ClickTarget {
+            timestamp: now,
+            count,
+            space: point.space,
+            row: point.row,
+            word_start,
+            word_end,
         });
         count
     }
@@ -1188,15 +1291,29 @@ impl Model {
         let range = match click_count {
             2 => word.map(|(start, end)| {
                 (
-                    SelPoint { col: start, ..anchor },
-                    SelPoint { col: end, boundary: true, ..anchor },
+                    SelPoint {
+                        col: start,
+                        ..anchor
+                    },
+                    SelPoint {
+                        col: end,
+                        boundary: true,
+                        ..anchor
+                    },
                 )
             }),
             3 => {
                 let (start, end) = line_range(&line);
                 Some((
-                    SelPoint { col: start, ..anchor },
-                    SelPoint { col: end, boundary: true, ..anchor },
+                    SelPoint {
+                        col: start,
+                        ..anchor
+                    },
+                    SelPoint {
+                        col: end,
+                        boundary: true,
+                        ..anchor
+                    },
                 ))
             }
             _ => None,
@@ -1214,7 +1331,9 @@ impl Model {
     /// Primary-button drag: extend the focus and (transcript only) arm the
     /// viewport-edge autoscroll (TS drag branch).
     fn selection_drag(&mut self, event: &MouseEvent) {
-        let Some(anchor) = self.selection.anchor else { return };
+        let Some(anchor) = self.selection.anchor else {
+            return;
+        };
         if !self.selection.press_active {
             return;
         }
@@ -1284,10 +1403,12 @@ impl Model {
         }
         if let Some((x, y)) = self.selection.drag_pointer {
             let area = self.body_area;
-            let rel = (y as i32 - area.top() as i32)
-                .clamp(0, area.height.saturating_sub(1) as i32) as usize;
+            let rel = (y as i32 - area.top() as i32).clamp(0, area.height.saturating_sub(1) as i32)
+                as usize;
             let row = (next as usize + rel).min(self.content_height.saturating_sub(1));
-            let col = x.saturating_sub(area.left()).min(area.width.saturating_sub(1));
+            let col = x
+                .saturating_sub(area.left())
+                .min(area.width.saturating_sub(1));
             self.selection
                 .update_focus(SelPoint::character(SelSpace::Content, row, col));
         }
@@ -1323,7 +1444,9 @@ impl Model {
 // ============================================================================
 
 pub enum Msg {
-    Key(KeyEvent), Resize(u16, u16), Paste(String),
+    Key(KeyEvent),
+    Resize(u16, u16),
+    Paste(String),
     /// Non-wheel mouse events (press / drag / release) for app-owned text
     /// selection (TS `handleMouseEvent`).
     Mouse(MouseEvent),
@@ -1332,7 +1455,9 @@ pub enum Msg {
     FocusLost,
     /// TS `fullscreenCopyOnSelect` setting pushed in by the host.
     SetCopyOnSelect(bool),
-    NewMessage(String, String), StreamText(String), StreamEnd,
+    NewMessage(String, String),
+    StreamText(String),
+    StreamEnd,
     /// Finalize the streaming assistant message with the provider's final
     /// content, terminal stop reason and error message (TS `message_end` →
     /// `updateContent(finalMessage)`).
@@ -1342,29 +1467,45 @@ pub enum Msg {
         stop_reason: Option<StopReason>,
         error_message: Option<String>,
     },
-    OpenEditor(String, String), EditorDone(String),
+    OpenEditor(String, String),
+    EditorDone(String),
     /// Open a masked single-line input (e.g. `/login` API keys): the value is
     /// captured in memory and rendered as one bullet per character.
-    OpenSecretInput(String, String), SecretInputDone,
-    ToolStart(String, String, String), ToolEnd(String, String, bool),
+    OpenSecretInput(String, String),
+    SecretInputDone,
+    ToolStart(String, String, String),
+    ToolEnd(String, String, bool),
     Tick,
-    ScrollUp(u16), ScrollDown(u16), ScrollToBottom,
-    ShowDialog(Dialog), DismissDialog, DialogNext, DialogPrev, DialogConfirm,
-    SetGitBranch(Option<String>), SetContextUsage(f64), SetContextUsageKnown(bool),
-    SetElapsed(u64), SetModelName(String),
+    ScrollUp(u16),
+    ScrollDown(u16),
+    ScrollToBottom,
+    ShowDialog(Dialog),
+    DismissDialog,
+    DialogNext,
+    DialogPrev,
+    DialogConfirm,
+    SetGitBranch(Option<String>),
+    SetContextUsage(f64),
+    SetContextUsageKnown(bool),
+    SetElapsed(u64),
+    SetModelName(String),
     /// `/reload`: replace the slash-command completion list after resources
     /// were rediscovered (skills, prompt templates, extensions).
     SetCompletionCommands(Vec<crate::components::CompletionCommand>),
-    SetEditorText(String), ExitSelect,
+    SetEditorText(String),
+    ExitSelect,
     SetToolOutput(String, String, String),
     /// `(tool_call_id, details)` — 工具结果的 `details`（自定义渲染用）。
     SetToolDetails(String, Option<serde_json::Value>),
     SetToolTruncation(String, Option<ToolTruncation>),
-    ClearScreen, InputNewline, Cancel,
+    ClearScreen,
+    InputNewline,
+    Cancel,
     /// Agent run 生命周期（TS `isStreaming = _isAgentRunActive`）：run 开始
     /// 置位（含排队消息消费触发的续跑），结束复位。MessageEnd 只停单条
     /// 消息的 spinner，run 级别的 spinner 由这两个事件驱动。
-    AgentStart, AgentEnd,
+    AgentStart,
+    AgentEnd,
     // ── TS footer/header data ────────────────────────────────────────────
     SetSessionName(Option<String>),
     SetUsageTotals(UsageTotals),
@@ -1392,15 +1533,27 @@ pub enum Msg {
     SetTheme(Theme),
     /// 宿主异步计算的补全候选回填（`seq` 对齐 [`crate::components::Completer::request_seq`]，
     /// 过期结果被丢弃，等价 TS AbortController）。
-    CompletionResults { seq: u64, items: Vec<CompletionItem> },
+    CompletionResults {
+        seq: u64,
+        items: Vec<CompletionItem>,
+    },
     // ── TS 排队消息 / 压缩状态（消息排队对齐）──────────────────────────
     /// 会话层排队镜像更新（TS `queue_update` 事件 → `updatePendingMessagesDisplay`）。
-    SetPendingQueues { steering: Vec<String>, follow_up: Vec<String> },
+    SetPendingQueues {
+        steering: Vec<String>,
+        follow_up: Vec<String>,
+    },
     /// 压缩期间排队一条消息（TS `queueCompactionMessage`：入 TUI 层
     /// compaction 队列，压缩结束后 flush）。
-    QueueCompactionMessage { text: String, follow_up: bool },
+    QueueCompactionMessage {
+        text: String,
+        follow_up: bool,
+    },
     /// 压缩开始（TS `compaction_start` → CompactionStatusIndicator）。
-    CompactionStart { manual: bool, overflow: bool },
+    CompactionStart {
+        manual: bool,
+        overflow: bool,
+    },
     /// 压缩结束（TS `compaction_end` → 恢复 onEscape + 状态提示 +
     /// flushCompactionQueue）。
     CompactionEnd {
@@ -1420,7 +1573,11 @@ pub enum Msg {
         esc_aborts: bool,
     },
     /// 重试结束（TS `auto_retry_end`：清指示器；失败时 showError）。
-    RetryEnd { success: bool, attempt: u32, final_error: Option<String> },
+    RetryEnd {
+        success: bool,
+        attempt: u32,
+        final_error: Option<String>,
+    },
     /// 摘要重试的一次尝试开始（TS `summarization_retry_attempt_start`：清
     /// 倒计时，回落压缩指示器）。
     RetryAttemptStart,
@@ -1452,7 +1609,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             vec![]
         }
-        Msg::Resize(w, h) => { model.width = w; model.height = h; vec![] }
+        Msg::Resize(w, h) => {
+            model.width = w;
+            model.height = h;
+            vec![]
+        }
         Msg::Mouse(m) => model.handle_mouse(&m),
         Msg::FocusLost => {
             // TS FOCUS_OUT: only an in-progress grip is cancelled; a completed
@@ -1465,7 +1626,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             vec![]
         }
-        Msg::SetCopyOnSelect(enabled) => { model.copy_on_select = enabled; vec![] }
+        Msg::SetCopyOnSelect(enabled) => {
+            model.copy_on_select = enabled;
+            vec![]
+        }
         Msg::Paste(text) => {
             if let AppMode::Secret { value, .. } = &mut model.mode {
                 value.push_str(&normalize_secret_paste(&text));
@@ -1474,9 +1638,23 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             vec![]
         }
-        Msg::NewMessage(role, text) => { model.push_message(role, text); vec![] }
-        Msg::StreamText(delta) => { if let Some(m) = model.messages.last_mut() { m.text.push_str(&delta); m.md.append_text(&delta); } vec![] }
-        Msg::MessageEnd { text, thinking, stop_reason, error_message } => {
+        Msg::NewMessage(role, text) => {
+            model.push_message(role, text);
+            vec![]
+        }
+        Msg::StreamText(delta) => {
+            if let Some(m) = model.messages.last_mut() {
+                m.text.push_str(&delta);
+                m.md.append_text(&delta);
+            }
+            vec![]
+        }
+        Msg::MessageEnd {
+            text,
+            thinking,
+            stop_reason,
+            error_message,
+        } => {
             if let Some(m) = model.messages.last_mut() {
                 // Some provider wrappers synthesize an empty terminal error
                 // after streaming partial content. TS keeps the accumulated
@@ -1490,7 +1668,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 let keep_streamed_thinking = thinking.trim().is_empty() && !m.thinking.is_empty();
                 if !keep_streamed_thinking {
                     m.thinking = thinking;
-                    m.thinking_md = Markdown::with_theme(&m.thinking, model.width as usize, &model.theme);
+                    m.thinking_md =
+                        Markdown::with_theme(&m.thinking, model.width as usize, &model.theme);
                 }
                 m.stop_reason = stop_reason;
                 m.error_message = error_message;
@@ -1500,10 +1679,22 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             // 与工具执行之间保持 spinner，不随单条 MessageEnd 复位。
             vec![]
         }
-        Msg::StreamEnd => { model.is_streaming = false; vec![] }
-        Msg::AgentStart => { model.is_streaming = true; vec![] }
-        Msg::AgentEnd => { model.is_streaming = false; vec![] }
-        Msg::SetPendingQueues { steering, follow_up } => {
+        Msg::StreamEnd => {
+            model.is_streaming = false;
+            vec![]
+        }
+        Msg::AgentStart => {
+            model.is_streaming = true;
+            vec![]
+        }
+        Msg::AgentEnd => {
+            model.is_streaming = false;
+            vec![]
+        }
+        Msg::SetPendingQueues {
+            steering,
+            follow_up,
+        } => {
             model.pending_steering = steering;
             model.pending_follow_up = follow_up;
             vec![]
@@ -1518,8 +1709,17 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.compaction_overflow = overflow;
             vec![]
         }
-        Msg::CompactionEnd { .. } => { model.is_compacting = false; vec![] }
-        Msg::RetryCountdown { attempt, max_attempts, delay_ms, error_message: _, esc_aborts } => {
+        Msg::CompactionEnd { .. } => {
+            model.is_compacting = false;
+            vec![]
+        }
+        Msg::RetryCountdown {
+            attempt,
+            max_attempts,
+            delay_ms,
+            error_message: _,
+            esc_aborts,
+        } => {
             model.retry_status = Some(RetryStatus {
                 attempt,
                 max_attempts,
@@ -1529,21 +1729,64 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             });
             vec![]
         }
-        Msg::RetryEnd { .. } => { model.retry_status = None; vec![] }
-        Msg::RetryAttemptStart | Msg::RetryLoopEnd => { model.retry_status = None; vec![] }
-        Msg::OpenEditor(title, text) => { model.mode = AppMode::Editor { editor: Box::new(Editor::new(&text)), title }; vec![] }
-        Msg::EditorDone(_) => { model.mode = AppMode::Chat; vec![] }
-        Msg::OpenSecretInput(title, message) => { model.mode = AppMode::Secret { title, message, value: String::new() }; vec![] }
-        Msg::SecretInputDone => { model.mode = AppMode::Chat; vec![] }
-        Msg::ToolStart(call_id, name, args) => { model.add_tool_call(&call_id, &name, &args); vec![] }
+        Msg::RetryEnd { .. } => {
+            model.retry_status = None;
+            vec![]
+        }
+        Msg::RetryAttemptStart | Msg::RetryLoopEnd => {
+            model.retry_status = None;
+            vec![]
+        }
+        Msg::OpenEditor(title, text) => {
+            model.mode = AppMode::Editor {
+                editor: Box::new(Editor::new(&text)),
+                title,
+            };
+            vec![]
+        }
+        Msg::EditorDone(_) => {
+            model.mode = AppMode::Chat;
+            vec![]
+        }
+        Msg::OpenSecretInput(title, message) => {
+            model.mode = AppMode::Secret {
+                title,
+                message,
+                value: String::new(),
+            };
+            vec![]
+        }
+        Msg::SecretInputDone => {
+            model.mode = AppMode::Chat;
+            vec![]
+        }
+        Msg::ToolStart(call_id, name, args) => {
+            model.add_tool_call(&call_id, &name, &args);
+            vec![]
+        }
         Msg::ToolEnd(call_id, _name, is_error) => {
-            model.update_tool_call(&call_id, if is_error { ToolCallState::Failed } else { ToolCallState::Done });
-            if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
+            model.update_tool_call(
+                &call_id,
+                if is_error {
+                    ToolCallState::Failed
+                } else {
+                    ToolCallState::Done
+                },
+            );
+            if let Some(t) = model
+                .active_tools
+                .iter_mut()
+                .rev()
+                .find(|t| t.call_id == call_id)
+            {
                 t.ended_at = Some(std::time::Instant::now());
             }
             vec![]
         }
-        Msg::Tick => { model.tick += 1; vec![] }
+        Msg::Tick => {
+            model.tick += 1;
+            vec![]
+        }
         // TS ScrollView: `scroll_offset` = viewport-top offset (0 = top, max =
         // bottom); ScrollUp decreases it, ScrollDown increases. Reaching the
         // bottom re-engages follow (clamp+re-engage in render_body).
@@ -1556,24 +1799,87 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.scroll_offset = model.scroll_offset.saturating_add(amount as usize);
             vec![]
         }
-        Msg::ScrollToBottom => { model.auto_scroll = true; vec![] }
-        Msg::ShowDialog(d) => { model.dialog = Some(d); vec![] }
-        Msg::DismissDialog => { model.dialog = None; vec![] }
-        Msg::DialogNext => { if let Some(ref mut d) = model.dialog { if d.selected + 1 < d.buttons.len() { d.selected += 1; } } vec![] }
-        Msg::DialogPrev => { if let Some(ref mut d) = model.dialog { if d.selected > 0 { d.selected -= 1; } } vec![] }
-        Msg::DialogConfirm => { model.dialog.take(); vec![] }
-        Msg::SetGitBranch(b) => { model.git_branch = b; vec![] }
-        Msg::SetContextUsage(p) => { model.context_usage_pct = p; model.context_usage_known = true; vec![] }
-        Msg::SetContextUsageKnown(known) => { model.context_usage_known = known; vec![] }
-        Msg::SetElapsed(s) => { model.elapsed_secs = s; vec![] }
-        Msg::SetModelName(name) => { model.model_name = name; vec![] }
-        Msg::SetSessionName(name) => { model.session_name = name; vec![] }
-        Msg::SetUsageTotals(totals) => { model.usage_totals = totals; vec![] }
-        Msg::SetContextWindow(w) => { model.context_window = w; vec![] }
-        Msg::SetThinkingLevel(level) => { model.thinking_level = level; vec![] }
-        Msg::SetProvider(provider) => { model.provider = provider; vec![] }
-        Msg::SetReasoning(on) => { model.reasoning = on; vec![] }
-        Msg::SetUsingSubscription(on) => { model.using_subscription = on; vec![] }
+        Msg::ScrollToBottom => {
+            model.auto_scroll = true;
+            vec![]
+        }
+        Msg::ShowDialog(d) => {
+            model.dialog = Some(d);
+            vec![]
+        }
+        Msg::DismissDialog => {
+            model.dialog = None;
+            vec![]
+        }
+        Msg::DialogNext => {
+            if let Some(ref mut d) = model.dialog {
+                if d.selected + 1 < d.buttons.len() {
+                    d.selected += 1;
+                }
+            }
+            vec![]
+        }
+        Msg::DialogPrev => {
+            if let Some(ref mut d) = model.dialog {
+                if d.selected > 0 {
+                    d.selected -= 1;
+                }
+            }
+            vec![]
+        }
+        Msg::DialogConfirm => {
+            model.dialog.take();
+            vec![]
+        }
+        Msg::SetGitBranch(b) => {
+            model.git_branch = b;
+            vec![]
+        }
+        Msg::SetContextUsage(p) => {
+            model.context_usage_pct = p;
+            model.context_usage_known = true;
+            vec![]
+        }
+        Msg::SetContextUsageKnown(known) => {
+            model.context_usage_known = known;
+            vec![]
+        }
+        Msg::SetElapsed(s) => {
+            model.elapsed_secs = s;
+            vec![]
+        }
+        Msg::SetModelName(name) => {
+            model.model_name = name;
+            vec![]
+        }
+        Msg::SetSessionName(name) => {
+            model.session_name = name;
+            vec![]
+        }
+        Msg::SetUsageTotals(totals) => {
+            model.usage_totals = totals;
+            vec![]
+        }
+        Msg::SetContextWindow(w) => {
+            model.context_window = w;
+            vec![]
+        }
+        Msg::SetThinkingLevel(level) => {
+            model.thinking_level = level;
+            vec![]
+        }
+        Msg::SetProvider(provider) => {
+            model.provider = provider;
+            vec![]
+        }
+        Msg::SetReasoning(on) => {
+            model.reasoning = on;
+            vec![]
+        }
+        Msg::SetUsingSubscription(on) => {
+            model.using_subscription = on;
+            vec![]
+        }
         Msg::SetCompletionCommands(commands) => {
             model.completer.set_commands(commands);
             vec![]
@@ -1615,19 +1921,47 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             vec![]
         }
-        Msg::SetEditorText(text) => { model.input.set_value(&text); vec![] }
-        Msg::ExitSelect => { model.mode = AppMode::Chat; vec![] }
-        Msg::SetToolOutput(call_id, _name, text) => { model.set_tool_output(&call_id, &text); vec![] }
-        Msg::SetToolDetails(call_id, details) => { model.set_tool_details(&call_id, details); vec![] }
+        Msg::SetEditorText(text) => {
+            model.input.set_value(&text);
+            vec![]
+        }
+        Msg::ExitSelect => {
+            model.mode = AppMode::Chat;
+            vec![]
+        }
+        Msg::SetToolOutput(call_id, _name, text) => {
+            model.set_tool_output(&call_id, &text);
+            vec![]
+        }
+        Msg::SetToolDetails(call_id, details) => {
+            model.set_tool_details(&call_id, details);
+            vec![]
+        }
         Msg::SetToolTruncation(call_id, truncation) => {
-            if let Some(t) = model.active_tools.iter_mut().rev().find(|t| t.call_id == call_id) {
+            if let Some(t) = model
+                .active_tools
+                .iter_mut()
+                .rev()
+                .find(|t| t.call_id == call_id)
+            {
                 t.truncation = truncation;
             }
             vec![]
         }
-        Msg::ClearScreen => { model.messages.clear(); model.active_tools.clear(); model.scroll_offset = 0; vec![] }
-        Msg::InputNewline => { model.input.insert_char('\n'); vec![] }
-        Msg::Cancel => { model.mode = AppMode::Chat; vec![] }
+        Msg::ClearScreen => {
+            model.messages.clear();
+            model.active_tools.clear();
+            model.scroll_offset = 0;
+            vec![]
+        }
+        Msg::InputNewline => {
+            model.input.insert_char('\n');
+            vec![]
+        }
+        Msg::Cancel => {
+            model.mode = AppMode::Chat;
+            vec![]
+        }
     }
 }
 
@@ -1639,11 +1973,19 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     use crossterm::event::KeyCode;
     if key.kind != crossterm::event::KeyEventKind::Press
         && key.kind != crossterm::event::KeyEventKind::Release
-    { return vec![]; }
+    {
+        return vec![];
+    }
     if model.completer.visible {
         match key.code {
-            KeyCode::Down => { model.completer.next(); return vec![]; }
-            KeyCode::Up => { model.completer.prev(); return vec![]; }
+            KeyCode::Down => {
+                model.completer.next();
+                return vec![];
+            }
+            KeyCode::Up => {
+                model.completer.prev();
+                return vec![];
+            }
             // TS `tui.input.tab` / `tui.select.confirm`：Tab/Enter 都应用
             // 选中项（TS 中 Tab 是"应用"，不是"下一个"；Down 才是下一个）。
             KeyCode::Tab | KeyCode::Enter => {
@@ -1655,7 +1997,10 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 model.completer.deactivate();
                 return vec![];
             }
-            KeyCode::Esc => { model.completer.deactivate(); return vec![]; }
+            KeyCode::Esc => {
+                model.completer.deactivate();
+                return vec![];
+            }
             // Typing/editing keys fall through to the normal path below,
             // which inserts the character; `completion_request_after_key`
             // then re-queries（等价 TS updateAutocomplete）。
@@ -1677,7 +2022,9 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         // ——copy-on-select 关闭时优先复制当前选区（TS 只在 `!copyOnSelect &&
         // hasActiveSelection` 时走选区分支），否则复制最后一条 assistant
         // 消息（宿主 interactive 模式的 agent 任务）。
-        if key.code == KeyCode::Char('x') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+        if key.code == KeyCode::Char('x')
+            && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+        {
             if !model.copy_on_select {
                 if let Some(text) = model.selection.text() {
                     return vec![Cmd::CopySelection(text)];
@@ -1687,7 +2034,9 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
         // Ctrl+C: app.clear（对齐 TS `handleCtrlC`）——500ms 内连按两次退出，
         // 否则清空编辑器并关闭补全弹窗（TS setText 会 cancelAutocomplete）。
-        if key.code == KeyCode::Char('c') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+        {
             let now = std::time::Instant::now();
             if model
                 .last_ctrl_c
@@ -1706,7 +2055,9 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         // through to Chat's delete-char-forward.
         // Ctrl+V: paste an image if the clipboard holds one (temp-file path
         // inserted), else paste text via `handle_paste` (normalized/folded).
-        if key.code == KeyCode::Char('v') && key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+        if key.code == KeyCode::Char('v')
+            && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+        {
             // TS: when the clipboard holds an image, it is used exclusively
             // (a failed temp-file write is silently ignored, no text fallback).
             if let Some(image) = crate::clipboard::read_clipboard_image() {
@@ -1728,49 +2079,86 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             // never inserted as letters. Ctrl+B abort-bash is handled upstream.
             let editing_chord = matches!(key.code, KeyCode::Char(_))
                 && key.modifiers.intersects(
-                    crossterm::event::KeyModifiers::CONTROL
-                        | crossterm::event::KeyModifiers::ALT,
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
                 );
             if editing_chord && model.input.handle_readline_key(&key) {
                 return vec![];
             }
             match key.code {
-            KeyCode::Char(c) => {
-                // Plain characters always insert (TS editor behavior). Scroll
-                // top/bottom are Home/End (`tui.altScreen.top/bottom`), never
-                // vim-style `gg`/`G` — those are not bindings in the original
-                // and used to swallow a leading `g`/`G`.
-                model.input.insert_char(c);
-            }
-            KeyCode::Backspace => {
-                model.input.backspace();
-            }
-            KeyCode::Tab => {
-                // Tab 触发补全（对齐 TS `handleTabCompletion`）：请求在
-                // `completion_request_after_key` 里按 force 处理。
-            }
-            KeyCode::Enter => {
-                if key.modifiers == crossterm::event::KeyModifiers::SHIFT || key.modifiers == crossterm::event::KeyModifiers::ALT {
-                    model.input.insert_char('\n');
-                } else { model.input.clear(); model.completer.deactivate(); }
-            }
-            KeyCode::Delete => model.input.delete(),
-            KeyCode::Left => model.input.move_left(),
-            KeyCode::Right => model.input.move_right(),
-            // 空输入时方向键滚动 transcript（TS ScrollView 语义）：
-            // Up/PageUp/Home 看更早内容（offset 减），Down/PageDown/End 看
-            // 更新内容（offset 增，到底恢复跟随）。
-            KeyCode::Up => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_sub(1); model.auto_scroll = false; } else { model.input.move_left(); } }
-            KeyCode::Down => { if model.input.value().is_empty() { model.scroll_offset = model.scroll_offset.saturating_add(1); } else { model.input.move_right(); } }
-            KeyCode::Home => { if model.input.value().is_empty() { model.scroll_offset = 0; model.auto_scroll = false; } model.input.move_home(); }
-            KeyCode::End => { if model.input.value().is_empty() { model.auto_scroll = true; } model.input.move_end(); }
-            KeyCode::PageUp => { model.scroll_offset = model.scroll_offset.saturating_sub(20); model.auto_scroll = false; }
-            KeyCode::PageDown => { model.scroll_offset = model.scroll_offset.saturating_add(20); }
-            _ => {}
+                KeyCode::Char(c) => {
+                    // Plain characters always insert (TS editor behavior). Scroll
+                    // top/bottom are Home/End (`tui.altScreen.top/bottom`), never
+                    // vim-style `gg`/`G` — those are not bindings in the original
+                    // and used to swallow a leading `g`/`G`.
+                    model.input.insert_char(c);
+                }
+                KeyCode::Backspace => {
+                    model.input.backspace();
+                }
+                KeyCode::Tab => {
+                    // Tab 触发补全（对齐 TS `handleTabCompletion`）：请求在
+                    // `completion_request_after_key` 里按 force 处理。
+                }
+                KeyCode::Enter => {
+                    if key.modifiers == crossterm::event::KeyModifiers::SHIFT
+                        || key.modifiers == crossterm::event::KeyModifiers::ALT
+                    {
+                        model.input.insert_char('\n');
+                    } else {
+                        model.input.clear();
+                        model.completer.deactivate();
+                    }
+                }
+                KeyCode::Delete => model.input.delete(),
+                KeyCode::Left => model.input.move_left(),
+                KeyCode::Right => model.input.move_right(),
+                // 空输入时方向键滚动 transcript（TS ScrollView 语义）：
+                // Up/PageUp/Home 看更早内容（offset 减），Down/PageDown/End 看
+                // 更新内容（offset 增，到底恢复跟随）。
+                KeyCode::Up => {
+                    if model.input.value().is_empty() {
+                        model.scroll_offset = model.scroll_offset.saturating_sub(1);
+                        model.auto_scroll = false;
+                    } else {
+                        model.input.move_left();
+                    }
+                }
+                KeyCode::Down => {
+                    if model.input.value().is_empty() {
+                        model.scroll_offset = model.scroll_offset.saturating_add(1);
+                    } else {
+                        model.input.move_right();
+                    }
+                }
+                KeyCode::Home => {
+                    if model.input.value().is_empty() {
+                        model.scroll_offset = 0;
+                        model.auto_scroll = false;
+                    }
+                    model.input.move_home();
+                }
+                KeyCode::End => {
+                    if model.input.value().is_empty() {
+                        model.auto_scroll = true;
+                    }
+                    model.input.move_end();
+                }
+                KeyCode::PageUp => {
+                    model.scroll_offset = model.scroll_offset.saturating_sub(20);
+                    model.auto_scroll = false;
+                }
+                KeyCode::PageDown => {
+                    model.scroll_offset = model.scroll_offset.saturating_add(20);
+                }
+                _ => {}
             }
         }
-        AppMode::Select { list } => { list.handle_key(&key); }
-        AppMode::Editor { editor, .. } => { editor.handle_key(&key); }
+        AppMode::Select { list } => {
+            list.handle_key(&key);
+        }
+        AppMode::Editor { editor, .. } => {
+            editor.handle_key(&key);
+        }
         // Masked secret input: printable characters append, Backspace removes.
         // Submitting/cancelling is handled by the host (pi-coding-agent), which
         // owns the pending-login state.
@@ -1818,7 +2206,13 @@ fn completion_context(
                 0,
             ));
         }
-        return Some((CompletionTrigger::Slash, text.to_string(), after.to_string(), None, 0));
+        return Some((
+            CompletionTrigger::Slash,
+            text.to_string(),
+            after.to_string(),
+            None,
+            0,
+        ));
     }
 
     // `@` token（行首或空白后，对齐 TS `extractAtPrefix` + token 边界触发）。
@@ -1832,7 +2226,13 @@ fn completion_context(
         let start = last.map_or(0, |i| i + 1);
         let token = &text[start..];
         if !token.is_empty() {
-            return Some((CompletionTrigger::At, token.to_string(), token.to_string(), None, 0));
+            return Some((
+                CompletionTrigger::At,
+                token.to_string(),
+                token.to_string(),
+                None,
+                0,
+            ));
         }
     }
     None
@@ -1859,7 +2259,8 @@ fn at_token_prefix(text: &str) -> Option<(String, String)> {
 fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd> {
     let force = key.code == crossterm::event::KeyCode::Tab;
     let text = model.input.value().to_string();
-    let Some((trigger, prefix, query, command, debounce_ms)) = completion_context(&text, force) else {
+    let Some((trigger, prefix, query, command, debounce_ms)) = completion_context(&text, force)
+    else {
         if model.completer.visible {
             model.completer.deactivate();
         }
@@ -1870,13 +2271,7 @@ fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd
     if trigger == CompletionTrigger::Argument {
         let has = command
             .as_ref()
-            .and_then(|name| {
-                model
-                    .completer
-                    .commands
-                    .iter()
-                    .find(|c| c.name == *name)
-            })
+            .and_then(|name| model.completer.commands.iter().find(|c| c.name == *name))
             .is_some_and(|c| c.argument_completions.is_some());
         if !has {
             if model.completer.visible {
@@ -1955,7 +2350,8 @@ fn slash_completion_items(commands: &[CompletionCommand], query: &str) -> Vec<Co
 // ============================================================================
 
 pub fn view(model: &mut Model, frame: &mut Frame) {
-    let area = frame.area(); let t = model.theme.clone();
+    let area = frame.area();
+    let t = model.theme.clone();
     // ratatui 0.29 的 `Terminal` 每帧不重置当前 buffer：diff 渲染只重绘
     // 变化的 cell，未重绘的 cell 会保留两个帧前写入的内容。正文/工具块/
     // dock 的行高变化或 Span 被裁剪后，被空出的行必须显式清除，否则旧
@@ -1974,7 +2370,11 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     // Login dialogs replace the editor (match the original `editorContainer`).
     let secret = matches!(&model.mode, AppMode::Secret { .. });
     let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
-    let editor_h = if secret { 7u16.min(area.height.max(1)) } else { editor_h };
+    let editor_h = if secret {
+        7u16.min(area.height.max(1))
+    } else {
+        editor_h
+    };
     let above_h = widget_rows(model, false);
     let below_h = widget_rows(model, true);
     let chunks = Layout::new(
@@ -2009,7 +2409,8 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         let oa_h = (area.height / 2).clamp(1, area.height.max(1));
         let oa_y = (area.height.saturating_sub(oa_h)) / 2;
         let oa = Rect::new(area.width / 4, oa_y, area.width / 2, oa_h);
-        frame.render_widget(Clear, oa); list.render_to_frame(frame, oa, &t);
+        frame.render_widget(Clear, oa);
+        list.render_to_frame(frame, oa, &t);
     }
     // Selection highlight last (TS `applySelection` runs after overlays) and
     // then snapshot the screen text for `SelSpace::Screen` selections.
@@ -2019,7 +2420,9 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
 
 /// Invert the selected cells (TS `applySelectionHighlight`, `\x1b[7m`).
 fn apply_selection_highlight(model: &Model, buf: &mut Buffer, area: Rect) {
-    let Some((start, end)) = model.selection.bounds() else { return };
+    let Some((start, end)) = model.selection.bounds() else {
+        return;
+    };
     if start.space != end.space {
         return;
     }
@@ -2081,7 +2484,9 @@ fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16, u16) {
     let status_h = 2u16;
     let footer_h = 2u16;
 
-    let content = input_layout_rows(&model.input, editor_layout_width(area.width)).0.len() as u16;
+    let content = input_layout_rows(&model.input, editor_layout_width(area.width))
+        .0
+        .len() as u16;
     // The editor grows to `max(5, 30% of terminal rows)` — the TS editor
     // measures the screen (in alt-screen mode the frame is the screen).
     let rows = area.height.max(1);
@@ -2089,11 +2494,9 @@ fn dock_heights(model: &Model, area: Rect) -> (u16, u16, u16, u16) {
     let visible = content.clamp(1, max_visible);
     let completion = completer_rows(&model.completer);
     let editor_h = 1 + visible + completion + 1;
-    let available = area.height
-        .saturating_sub(1)
-        .saturating_sub(
-            status_h + footer_h + pending_h + widget_rows(model, true) + widget_rows(model, false),
-        );
+    let available = area.height.saturating_sub(1).saturating_sub(
+        status_h + footer_h + pending_h + widget_rows(model, true) + widget_rows(model, false),
+    );
     let editor_h = editor_h.min(available.max(3));
     (pending_h, status_h, editor_h.max(3), footer_h)
 }
@@ -2135,41 +2538,62 @@ fn render_widgets(model: &Model, frame: &mut Frame, area: Rect, t: &Theme, below
 /// truncated dim line; a spacer row leads and the dequeue hint trails.
 /// Zero height when nothing is queued (TS `minSize: 0`).
 fn pending_rows(model: &Model) -> u16 {
-    let n = model.pending_steering.len()
-        + model.pending_follow_up.len()
-        + model.compaction_queue.len();
-    if n == 0 { 0 } else { (1 + n + 1) as u16 }
+    let n =
+        model.pending_steering.len() + model.pending_follow_up.len() + model.compaction_queue.len();
+    if n == 0 {
+        0
+    } else {
+        (1 + n + 1) as u16
+    }
 }
 
 /// TS `updatePendingMessagesDisplay`: dim `Steering: …` / `Follow-up: …`
 /// lines (session queues first, then the compaction queue split by mode,
 /// matching `getAllQueuedMessages` order) + the `↳ alt+up` dequeue hint.
 fn render_pending_messages(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    if area.height == 0 { return; }
+    if area.height == 0 {
+        return;
+    }
     let dim = Style::new().fg(t.dim);
     // Leading spacer row (TS `new Spacer(1)` before the first entry).
     if area.height > 1 {
-        frame.render_widget(Paragraph::new(Line::raw("")), Rect::new(area.x, area.y, area.width, 1));
+        frame.render_widget(
+            Paragraph::new(Line::raw("")),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
     }
     let mut y = area.y + 1;
     let put = |y: &mut u16, text: String, frame: &mut Frame| {
-        if *y >= area.y + area.height.saturating_sub(1) { return; }
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), Rect::new(area.x, *y, area.width, 1));
+        if *y >= area.y + area.height.saturating_sub(1) {
+            return;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, dim))),
+            Rect::new(area.x, *y, area.width, 1),
+        );
         *y += 1;
     };
     for msg in &model.pending_steering {
         put(&mut y, format!("Steering: {msg}"), frame);
     }
     for (msg, follow_up) in &model.compaction_queue {
-        if !*follow_up { put(&mut y, format!("Steering: {msg}"), frame); }
+        if !*follow_up {
+            put(&mut y, format!("Steering: {msg}"), frame);
+        }
     }
     for msg in &model.pending_follow_up {
         put(&mut y, format!("Follow-up: {msg}"), frame);
     }
     for (msg, follow_up) in &model.compaction_queue {
-        if *follow_up { put(&mut y, format!("Follow-up: {msg}"), frame); }
+        if *follow_up {
+            put(&mut y, format!("Follow-up: {msg}"), frame);
+        }
     }
-    put(&mut y, "↳ alt+up to edit all queued messages".to_string(), frame);
+    put(
+        &mut y,
+        "↳ alt+up to edit all queued messages".to_string(),
+        frame,
+    );
 }
 
 /// Rows the completion menu occupies inside the editor (TS SelectList:
@@ -2196,7 +2620,9 @@ fn editor_layout_width(area_width: u16) -> usize {
 // ============================================================================
 
 fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    if area.height == 0 { return; }
+    if area.height == 0 {
+        return;
+    }
     let busy = model.is_streaming
         || model.is_compacting
         || model.retry_status.is_some()
@@ -2248,7 +2674,10 @@ fn render_status(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         } else {
             Line::raw("")
         };
-        frame.render_widget(Paragraph::new(line), Rect::new(area.x, area.y + 1, area.width, 1));
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
     }
 }
 
@@ -2478,7 +2907,13 @@ fn build_blocks(model: &mut Model, wrap_w: usize, t: &Theme) -> Vec<BlockView> {
     }
     for msg in &mut model.messages {
         let lines = msg.md.render(wrap_w).to_vec();
-        let role = if msg.role == "user" { "user" } else if msg.role == "system" { "system" } else { "assistant" };
+        let role = if msg.role == "user" {
+            "user"
+        } else if msg.role == "system" {
+            "system"
+        } else {
+            "assistant"
+        };
         let thinking_lines = if role == "assistant" && !msg.thinking.is_empty() {
             msg.thinking_md.render(wrap_w).to_vec()
         } else {
@@ -2544,7 +2979,9 @@ fn block_gaps(blocks: &[BlockView]) -> (Vec<u16>, Vec<u16>) {
 }
 
 fn render_body(model: &mut Model, frame: &mut Buffer, area: Rect, t: &Theme) {
-    let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
+    let wrap_w = (area.width as usize)
+        .saturating_sub((BOX_PAD_X * 2 + 2) as usize)
+        .max(10);
     let blocks = build_blocks(model, wrap_w, t);
     let expanded = model.tool_output_expanded;
     let heights: Vec<u16> = blocks
@@ -2584,11 +3021,33 @@ fn render_body(model: &mut Model, frame: &mut Buffer, area: Rect, t: &Theme) {
     model.body_scroll = scroll;
     model.body_max_scroll = max_scroll;
     model.content_height = total_h as usize;
-    render_blocks(frame, area, t, &blocks, &heights, &gaps, &leads, area.top() as i32 - scroll as i32, expanded, wrap_w);
+    render_blocks(
+        frame,
+        area,
+        t,
+        &blocks,
+        &heights,
+        &gaps,
+        &leads,
+        area.top() as i32 - scroll as i32,
+        expanded,
+        wrap_w,
+    );
 
     if blocks.is_empty() {
         // 空转录提示行。view() 开头已整屏 Clear，这里无需再擦除。
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(" No messages yet. Type and press Enter.", Style::new().fg(t.muted)))), Rect::new(area.x + BOX_PAD_X, area.y + 1, area.width.saturating_sub(2), 1));
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " No messages yet. Type and press Enter.",
+                Style::new().fg(t.muted),
+            ))),
+            Rect::new(
+                area.x + BOX_PAD_X,
+                area.y + 1,
+                area.width.saturating_sub(2),
+                1,
+            ),
+        );
     }
 }
 
@@ -2638,10 +3097,15 @@ fn transcript_content_lines(model: &mut Model) -> Vec<String> {
         return Vec::new();
     }
     let t = model.theme.clone();
-    let wrap_w = (area.width as usize).saturating_sub((BOX_PAD_X * 2 + 2) as usize).max(10);
+    let wrap_w = (area.width as usize)
+        .saturating_sub((BOX_PAD_X * 2 + 2) as usize)
+        .max(10);
     let expanded = model.tool_output_expanded;
     let blocks = build_blocks(model, wrap_w, &t);
-    let heights: Vec<u16> = blocks.iter().map(|b| block_height(b, expanded, wrap_w, &t)).collect();
+    let heights: Vec<u16> = blocks
+        .iter()
+        .map(|b| block_height(b, expanded, wrap_w, &t))
+        .collect();
     let (gaps, leads) = block_gaps(&blocks);
     let total_h: u16 = heights
         .iter()
@@ -2655,7 +3119,18 @@ fn transcript_content_lines(model: &mut Model) -> Vec<String> {
     let content_h = total_h.max(1);
     let content_area = Rect::new(0, 0, area.width, content_h);
     let mut buf = Buffer::empty(content_area);
-    render_blocks(&mut buf, content_area, &t, &blocks, &heights, &gaps, &leads, 0, expanded, wrap_w);
+    render_blocks(
+        &mut buf,
+        content_area,
+        &t,
+        &blocks,
+        &heights,
+        &gaps,
+        &leads,
+        0,
+        expanded,
+        wrap_w,
+    );
     (0..content_h)
         .map(|y| buffer_row_text(&buf, 0, y, area.width))
         .collect()
@@ -2928,7 +3403,11 @@ fn bash_warning_text(b: &BlockView) -> Option<String> {
             ));
         } else {
             // TS falls back to DEFAULT_MAX_BYTES when maxBytes is missing.
-            let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
+            let max_bytes = if t.max_bytes != 0 {
+                t.max_bytes
+            } else {
+                DEFAULT_MAX_BYTES
+            };
             warnings.push(format!(
                 "Truncated: {} lines shown ({} limit)",
                 t.output_lines,
@@ -2955,17 +3434,32 @@ fn read_warning_text(b: &BlockView) -> Option<String> {
         return None;
     }
     if t.first_line_exceeds_limit {
-        let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
-        return Some(format!("[First line exceeds {} limit]", format_size(max_bytes)));
+        let max_bytes = if t.max_bytes != 0 {
+            t.max_bytes
+        } else {
+            DEFAULT_MAX_BYTES
+        };
+        return Some(format!(
+            "[First line exceeds {} limit]",
+            format_size(max_bytes)
+        ));
     }
     if t.truncated_by.as_deref() == Some("lines") {
-        let max_lines = if t.max_lines != 0 { t.max_lines } else { DEFAULT_MAX_LINES };
+        let max_lines = if t.max_lines != 0 {
+            t.max_lines
+        } else {
+            DEFAULT_MAX_LINES
+        };
         return Some(format!(
             "[Truncated: showing {} of {} lines ({} line limit)]",
             t.output_lines, t.total_lines, max_lines
         ));
     }
-    let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
+    let max_bytes = if t.max_bytes != 0 {
+        t.max_bytes
+    } else {
+        DEFAULT_MAX_BYTES
+    };
     Some(format!(
         "[Truncated: {} lines shown ({} limit)]",
         t.output_lines,
@@ -2982,7 +3476,11 @@ fn grep_warning_text(b: &BlockView) -> Option<String> {
         warnings.push(format!("{ml} matches limit"));
     }
     if t.truncated {
-        let max_bytes = if t.max_bytes != 0 { t.max_bytes } else { DEFAULT_MAX_BYTES };
+        let max_bytes = if t.max_bytes != 0 {
+            t.max_bytes
+        } else {
+            DEFAULT_MAX_BYTES
+        };
         warnings.push(format!("{} limit", format_size(max_bytes)));
     }
     if t.lines_truncated == Some(true) {
@@ -3046,7 +3544,11 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize, t: &Theme) -> u16 
                     // visible: blank + up to 10 wrapped raw lines (all of
                     // them when expanded) + more hint + truncation warnings.
                     let content = if read_content_visible(b, expanded) {
-                        let limit = if expanded { usize::MAX } else { READ_PREVIEW_LINES };
+                        let limit = if expanded {
+                            usize::MAX
+                        } else {
+                            READ_PREVIEW_LINES
+                        };
                         let (rows, remaining) =
                             preview_wrapped(b.tool_output.trim_end(), wrap_w, limit);
                         let more = if remaining > 0 { 1 } else { 0 };
@@ -3063,7 +3565,8 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize, t: &Theme) -> u16 
                     let mut content = 0u16;
                     if !b.tool_output.trim().is_empty() {
                         let limit = if expanded { usize::MAX } else { 15 };
-                        let (rows, remaining) = preview_wrapped(b.tool_output.trim(), wrap_w, limit);
+                        let (rows, remaining) =
+                            preview_wrapped(b.tool_output.trim(), wrap_w, limit);
                         let more = if remaining > 0 { 1 } else { 0 };
                         let warns = if grep_warning_text(b).is_some() { 2 } else { 0 };
                         content = 1 + rows.len() as u16 + more + warns;
@@ -3119,7 +3622,11 @@ fn block_height(b: &BlockView, expanded: bool, wrap_w: usize, t: &Theme) -> u16 
                         content += 1 + args_rows as u16;
                     }
                     if !b.tool_output.is_empty() {
-                        let limit = if expanded { usize::MAX } else { FALLBACK_PREVIEW_LINES };
+                        let limit = if expanded {
+                            usize::MAX
+                        } else {
+                            FALLBACK_PREVIEW_LINES
+                        };
                         let (rows, remaining) = preview_wrapped(&b.tool_output, wrap_w, limit);
                         let more = if remaining > 0 { 1 } else { 0 };
                         // TS `formatToolExecution` separates args and output
@@ -3164,7 +3671,13 @@ fn render_bg_row(frame: &mut Buffer, area: Rect, y: i32, bg: Color) {
 /// One content row inside a background box: `BOX_PAD_X` left padding, the
 /// given spans, background fills the rest of the row (TS
 /// `applyBackgroundToLine`).
-fn render_boxed_row(frame: &mut Buffer, area: Rect, y: i32, bg: Color, mut spans: Vec<Span<'static>>) {
+fn render_boxed_row(
+    frame: &mut Buffer,
+    area: Rect,
+    y: i32,
+    bg: Color,
+    mut spans: Vec<Span<'static>>,
+) {
     if y >= area.top() as i32 && y < area.bottom() as i32 {
         let mut line = Line::raw(" ".repeat(BOX_PAD_X as usize));
         line.spans.append(&mut spans);
@@ -3198,19 +3711,39 @@ fn render_header_block(frame: &mut Buffer, area: Rect, item: &BlockView, mut ly:
 ///
 /// Output is plain `toolOutput` color in both paths (the TS renderers do
 /// not diff-colorize). Returns the next row.
-fn render_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize) -> i32 {
+fn render_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+) -> i32 {
     let bg = tool_bg(t, item.tool_state.as_ref());
     // Box top padding.
     render_bg_row(frame, area, ly, bg);
     ly += 1;
     match tool_renderer(item) {
-        ToolRenderer::Bash => ly = render_bash_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
-        ToolRenderer::Read => ly = render_read_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
-        ToolRenderer::Grep => ly = render_grep_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
-        ToolRenderer::Edit => ly = render_edit_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
-        ToolRenderer::Write => ly = render_write_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
+        ToolRenderer::Bash => {
+            ly = render_bash_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg)
+        }
+        ToolRenderer::Read => {
+            ly = render_read_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg)
+        }
+        ToolRenderer::Grep => {
+            ly = render_grep_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg)
+        }
+        ToolRenderer::Edit => {
+            ly = render_edit_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg)
+        }
+        ToolRenderer::Write => {
+            ly = render_write_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg)
+        }
         ToolRenderer::Custom => ly = render_custom_tool_block(frame, area, item, t, ly, wrap_w, bg),
-        ToolRenderer::Fallback => ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg),
+        ToolRenderer::Fallback => {
+            ly = render_fallback_tool_block(frame, area, item, expanded, t, ly, wrap_w, bg)
+        }
     }
     // Bottom padding.
     render_bg_row(frame, area, ly, bg);
@@ -3294,7 +3827,16 @@ fn into_static_line(line: Line<'_>) -> Line<'static> {
 }
 
 /// Bash renderer rows (title through the timer line).
-fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_bash_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
     // Title: `$ {command}` bold (+ `...` in toolOutput when empty/missing,
     // `[invalid arg]` in error when non-string), muted ` (timeout Ns)`
     // suffix (TS `formatShellCall`). Word-wrapped like the TS `Text`
@@ -3316,7 +3858,10 @@ fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({skipped} earlier lines, "), Style::new().fg(t.muted)),
+                    Span::styled(
+                        format!("... ({skipped} earlier lines, "),
+                        Style::new().fg(t.muted),
+                    ),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
@@ -3326,7 +3871,13 @@ fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
         let visual = visual_lines(&output, wrap_w);
         let start = visual.len() - shown;
         for line in visual.into_iter().skip(start) {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(line, Style::new().fg(t.tool_output))]);
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(line, Style::new().fg(t.tool_output))],
+            );
             ly += 1;
         }
     }
@@ -3345,14 +3896,19 @@ fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
     }
     // Timer: `Elapsed {x.x}s` while running (tick-driven re-render), else
     // `Took {x.x}s` (TS `formatDuration` = `(ms/1000).toFixed(1)` + "s").
-    let finished = matches!(item.tool_state, Some(ToolCallState::Done | ToolCallState::Failed));
+    let finished = matches!(
+        item.tool_state,
+        Some(ToolCallState::Done | ToolCallState::Failed)
+    );
     let ms: u128 = if finished {
         item.tool_ended_at
             .zip(item.tool_started_at)
             .map(|(e, s)| e.duration_since(s).as_millis())
             .unwrap_or(0)
     } else {
-        item.tool_started_at.map(|s| s.elapsed().as_millis()).unwrap_or(0)
+        item.tool_started_at
+            .map(|s| s.elapsed().as_millis())
+            .unwrap_or(0)
     };
     render_boxed_row(frame, area, ly, bg, vec![]);
     ly += 1;
@@ -3362,7 +3918,11 @@ fn render_bash_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
         ly,
         bg,
         vec![Span::styled(
-            format!("{} {}", if finished { "Took" } else { "Elapsed" }, format_duration(ms)),
+            format!(
+                "{} {}",
+                if finished { "Took" } else { "Elapsed" },
+                format_duration(ms)
+            ),
             Style::new().fg(t.muted),
         )],
     );
@@ -3426,7 +3986,16 @@ fn render_custom_tool_block(
     ly
 }
 
-fn render_fallback_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_fallback_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
     // Title row (word-wrapped like TS `Text`).
     let title = fallback_title_line(item, t);
     ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
@@ -3450,10 +4019,20 @@ fn render_fallback_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, 
             render_boxed_row(frame, area, ly, bg, vec![]);
             ly += 1;
         }
-        let limit = if expanded { usize::MAX } else { FALLBACK_PREVIEW_LINES };
+        let limit = if expanded {
+            usize::MAX
+        } else {
+            FALLBACK_PREVIEW_LINES
+        };
         let (rows, remaining) = preview_wrapped(&item.tool_output, wrap_w, limit);
         for row in rows {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(row, Style::new().fg(t.tool_output))],
+            );
             ly += 1;
         }
         if remaining > 0 {
@@ -3463,7 +4042,10 @@ fn render_fallback_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, 
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({remaining} more lines, "), Style::new().fg(t.muted)),
+                    Span::styled(
+                        format!("... ({remaining} more lines, "),
+                        Style::new().fg(t.muted),
+                    ),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
@@ -3495,7 +4077,10 @@ fn read_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
         _ => "...".to_string(),
     };
     let mut spans = vec![
-        Span::styled("read", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "read",
+            Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!(" {path_display}"), Style::new().fg(t.accent)),
     ];
     if offset.is_some() || limit.is_some() {
@@ -3516,7 +4101,16 @@ fn read_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
 /// success shows just the title, matching TS `formatReadResult` returning
 /// "" unless expanded). Content lines are word-wrapped like the TS Text
 /// renderer, and truncation warnings render below the preview.
-fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_read_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
     let title = read_title_line(item, t);
     ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     if read_content_visible(item, expanded) {
@@ -3524,10 +4118,20 @@ fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
         ly += 1;
         // TS `formatReadResult`: `maxLines = options.expanded ? lines.length : 10`
         // — expanded shows the whole result (ctrl+o actually expands).
-        let limit = if expanded { usize::MAX } else { READ_PREVIEW_LINES };
+        let limit = if expanded {
+            usize::MAX
+        } else {
+            READ_PREVIEW_LINES
+        };
         let (rows, remaining) = preview_wrapped(item.tool_output.trim_end(), wrap_w, limit);
         for row in rows {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(row, Style::new().fg(t.tool_output))],
+            );
             ly += 1;
         }
         if remaining > 0 {
@@ -3537,7 +4141,10 @@ fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({remaining} more lines, "), Style::new().fg(t.muted)),
+                    Span::styled(
+                        format!("... ({remaining} more lines, "),
+                        Style::new().fg(t.muted),
+                    ),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
@@ -3566,7 +4173,10 @@ fn render_read_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
 fn grep_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let v: serde_json::Value =
         serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
-    let pattern = v.get("pattern").and_then(|p| p.as_str()).map(str::to_string);
+    let pattern = v
+        .get("pattern")
+        .and_then(|p| p.as_str())
+        .map(str::to_string);
     let path = v
         .get("path")
         .and_then(|p| p.as_str())
@@ -3576,18 +4186,30 @@ fn grep_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let limit = v.get("limit").and_then(|l| l.as_u64());
 
     let mut spans = vec![
-        Span::styled("grep", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "grep",
+            Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!(" /{}/", pattern.unwrap_or_default()),
             Style::new().fg(t.accent),
         ),
-        Span::styled(format!(" in {}", shorten_path(&path, &item.cwd)), Style::new().fg(t.tool_output)),
+        Span::styled(
+            format!(" in {}", shorten_path(&path, &item.cwd)),
+            Style::new().fg(t.tool_output),
+        ),
     ];
     if let Some(g) = glob {
-        spans.push(Span::styled(format!(" ({g})"), Style::new().fg(t.tool_output)));
+        spans.push(Span::styled(
+            format!(" ({g})"),
+            Style::new().fg(t.tool_output),
+        ));
     }
     if let Some(n) = limit {
-        spans.push(Span::styled(format!(" limit {n}"), Style::new().fg(t.tool_output)));
+        spans.push(Span::styled(
+            format!(" limit {n}"),
+            Style::new().fg(t.tool_output),
+        ));
     }
     Line::from(spans)
 }
@@ -3596,7 +4218,16 @@ fn grep_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
 /// `grep /{pattern}/ in {path} ({glob}) limit {n}`, the output previewed
 /// to 15 wrapped raw lines, and the truncation warning
 /// `[Truncated: ...]` when the match/byte/line limits were hit.
-fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_grep_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
     let title = grep_title_line(item, t);
     ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     let output = item.tool_output.trim();
@@ -3606,7 +4237,13 @@ fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
         let limit = if expanded { usize::MAX } else { 15 };
         let (rows, remaining) = preview_wrapped(output, wrap_w, limit);
         for row in rows {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.tool_output))]);
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(row, Style::new().fg(t.tool_output))],
+            );
             ly += 1;
         }
         if remaining > 0 {
@@ -3616,7 +4253,10 @@ fn render_grep_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expa
                 ly,
                 bg,
                 vec![
-                    Span::styled(format!("... ({remaining} more lines, "), Style::new().fg(t.muted)),
+                    Span::styled(
+                        format!("... ({remaining} more lines, "),
+                        Style::new().fg(t.muted),
+                    ),
                     Span::styled("ctrl+o", Style::new().fg(t.dim)),
                     Span::styled(" to expand)", Style::new().fg(t.muted)),
                 ],
@@ -3696,7 +4336,10 @@ fn write_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
         }
     };
     Line::from(vec![
-        Span::styled("write", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "write",
+            Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         path_display,
     ])
@@ -3711,7 +4354,16 @@ fn write_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
 /// tool renderers resolve none). An invalid `content` arg renders the error
 /// `[invalid content arg - expected string]`; an error result renders the
 /// output in `error` color (TS `formatWriteResult`).
-fn render_write_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_write_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
     let (_path_arg, content_arg) = write_call_args(&item.tool_args);
     let title = write_title_line(item, t);
     ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
@@ -3779,11 +4431,18 @@ fn render_write_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, exp
     }
     // Error result (TS `formatWriteResult`): a blank line + the output in
     // error color; a successful result renders nothing extra.
-    if matches!(item.tool_state, Some(ToolCallState::Failed)) && !item.tool_output.trim().is_empty() {
+    if matches!(item.tool_state, Some(ToolCallState::Failed)) && !item.tool_output.trim().is_empty()
+    {
         render_boxed_row(frame, area, ly, bg, vec![]);
         ly += 1;
         for row in visual_lines(item.tool_output.trim(), wrap_w) {
-            render_boxed_row(frame, area, ly, bg, vec![Span::styled(row, Style::new().fg(t.error))]);
+            render_boxed_row(
+                frame,
+                area,
+                ly,
+                bg,
+                vec![Span::styled(row, Style::new().fg(t.error))],
+            );
             ly += 1;
         }
     }
@@ -3850,7 +4509,10 @@ fn edit_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
         .map(str::to_string)
         .unwrap_or_else(|| "...".to_string());
     Line::from(vec![
-        Span::styled("edit", Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "edit",
+            Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!(" {}", shorten_path(&path, &item.cwd)),
             Style::new().fg(t.accent),
@@ -3862,7 +4524,16 @@ fn edit_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
 /// text renders with diff syntax highlighting (TS `renderDiff`:
 /// `-`/`+`/context lines in toolDiffRemoved/toolDiffAdded/toolDiffContext,
 /// single-line modifications get intra-line word highlighting).
-fn render_edit_tool_block(frame: &mut Buffer, area: Rect, item: &BlockView, _expanded: bool, t: &Theme, mut ly: i32, wrap_w: usize, bg: Color) -> i32 {
+fn render_edit_tool_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    _expanded: bool,
+    t: &Theme,
+    mut ly: i32,
+    wrap_w: usize,
+    bg: Color,
+) -> i32 {
     let title = edit_title_line(item, t);
     ly += render_wrapped_title(frame, area, ly, bg, &title, wrap_w);
     if !item.tool_output.is_empty() {
@@ -3890,14 +4561,25 @@ fn tool_bg(t: &Theme, state: Option<&ToolCallState>) -> Color {
 /// User message: full-width box (`userMessageBg`, TS
 /// `UserMessageComponent`) with markdown content — never truncated (the
 /// transcript scrolls instead).
-fn render_user_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
+fn render_user_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    t: &Theme,
+    mut ly: i32,
+) -> i32 {
     let bg = t.user_message_bg;
     render_bg_row(frame, area, ly, bg);
     ly += 1;
     for line in &item.md_lines {
         let mut l = Line::raw(" ".repeat(BOX_PAD_X as usize));
         l.spans.extend(line.spans.clone());
-        render_body_row(frame, area, ly, Paragraph::new(l).style(Style::new().bg(bg)));
+        render_body_row(
+            frame,
+            area,
+            ly,
+            Paragraph::new(l).style(Style::new().bg(bg)),
+        );
         ly += 1;
     }
     render_bg_row(frame, area, ly, bg);
@@ -3909,7 +4591,13 @@ fn render_user_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme
 /// scrolls). Thinking content renders below the text in `thinkingText`
 /// italic (TS `AssistantMessageComponent`), and a terminal stop reason
 /// renders a TS-style notice in the error color.
-fn render_assistant_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
+fn render_assistant_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    t: &Theme,
+    mut ly: i32,
+) -> i32 {
     // Thinking section FIRST (TS `AssistantMessageComponent.updateContent`
     // renders `message.content` in order — the model emits thinking blocks
     // before the text, so thinking renders above the body). Blank separator
@@ -3923,9 +4611,7 @@ fn render_assistant_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &
             l.spans.extend(line.spans.iter().map(|s| {
                 Span::styled(
                     s.content.clone(),
-                    s.style
-                        .fg(t.thinking_text)
-                        .add_modifier(Modifier::ITALIC),
+                    s.style.fg(t.thinking_text).add_modifier(Modifier::ITALIC),
                 )
             }));
             render_body_row(frame, area, ly, Paragraph::new(l));
@@ -3959,7 +4645,12 @@ fn render_assistant_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &
         };
         render_body_row(frame, area, ly, Paragraph::new(Line::raw("")));
         ly += 1;
-        render_body_row(frame, area, ly, Paragraph::new(Line::from(Span::styled(msg, Style::new().fg(t.error)))));
+        render_body_row(
+            frame,
+            area,
+            ly,
+            Paragraph::new(Line::from(Span::styled(msg, Style::new().fg(t.error)))),
+        );
         ly += 1;
     }
     ly
@@ -3967,9 +4658,23 @@ fn render_assistant_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &
 
 /// System notice: plain text rows in muted (TS status notices are plain
 /// `Text` in dim/muted) — never truncated.
-fn render_system_block(frame: &mut Buffer, area: Rect, item: &BlockView, t: &Theme, mut ly: i32) -> i32 {
+fn render_system_block(
+    frame: &mut Buffer,
+    area: Rect,
+    item: &BlockView,
+    t: &Theme,
+    mut ly: i32,
+) -> i32 {
     for line in &item.plain_lines {
-        render_body_row(frame, area, ly, Paragraph::new(Line::from(Span::styled(line.clone(), Style::new().fg(t.muted)))));
+        render_body_row(
+            frame,
+            area,
+            ly,
+            Paragraph::new(Line::from(Span::styled(
+                line.clone(),
+                Style::new().fg(t.muted),
+            ))),
+        );
         ly += 1;
     }
     ly
@@ -4000,7 +4705,8 @@ fn input_layout_rows(input: &Input, layout_width: usize) -> (Vec<String>, usize,
             let row_end = row_start + bytes;
             if cursor >= row_start && cursor <= row_end {
                 cursor_row = row_idx;
-                cursor_col = unicode_width::UnicodeWidthStr::width(&line[within..(cursor - line_start)]);
+                cursor_col =
+                    unicode_width::UnicodeWidthStr::width(&line[within..(cursor - line_start)]);
             }
             rows.push(row_text);
             within += bytes;
@@ -4047,16 +4753,24 @@ fn render_input(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let completion = completer_rows(&model.completer);
     let content_rows = (area.height.saturating_sub(2).saturating_sub(completion)).max(1) as usize;
     let max_scroll = rows.len().saturating_sub(content_rows);
-    let scroll = cursor_row.saturating_sub(content_rows.saturating_sub(1)).min(max_scroll);
+    let scroll = cursor_row
+        .saturating_sub(content_rows.saturating_sub(1))
+        .min(max_scroll);
 
     let border_style = Style::new().fg(t.border_muted);
     let border_line = || Line::from(Span::styled("─".repeat(area.width as usize), border_style));
-    frame.render_widget(Paragraph::new(border_line()), Rect::new(area.x, area.y, area.width, 1));
+    frame.render_widget(
+        Paragraph::new(border_line()),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
 
     let mut content_used = 0usize;
     for (i, row) in rows.iter().enumerate().skip(scroll).take(content_rows) {
         let y = area.y + 1 + (i - scroll) as u16;
-        frame.render_widget(Paragraph::new(Line::raw(row.clone())), Rect::new(area.x, y, area.width, 1));
+        frame.render_widget(
+            Paragraph::new(Line::raw(row.clone())),
+            Rect::new(area.x, y, area.width, 1),
+        );
         content_used += 1;
     }
 
@@ -4064,7 +4778,10 @@ fn render_input(model: &mut Model, frame: &mut Frame, area: Rect, t: &Theme) {
     // before the autocomplete list).
     let bottom_y = area.y + 1 + content_used as u16;
     if bottom_y < area.y + area.height {
-        frame.render_widget(Paragraph::new(border_line()), Rect::new(area.x, bottom_y, area.width, 1));
+        frame.render_widget(
+            Paragraph::new(border_line()),
+            Rect::new(area.x, bottom_y, area.width, 1),
+        );
     }
 
     if model.completer.visible && completion > 0 {
@@ -4098,7 +4815,9 @@ pub(crate) fn truncate_to_width_suffix(s: &str, width: usize, suffix: &str) -> S
     let mut col = 0usize;
     for ch in s.chars() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if col + cw + sw > width { break; }
+        if col + cw + sw > width {
+            break;
+        }
         out.push(ch);
         col += cw;
     }
@@ -4145,7 +4864,9 @@ fn relative_path(from: &std::path::Path, to: &std::path::Path) -> Option<std::pa
     let from_comps: Vec<_> = from.components().collect();
     let to_comps: Vec<_> = to.components().collect();
     let mut common = 0usize;
-    while common < from_comps.len() && common < to_comps.len() && from_comps[common] == to_comps[common]
+    while common < from_comps.len()
+        && common < to_comps.len()
+        && from_comps[common] == to_comps[common]
     {
         common += 1;
     }
@@ -4178,9 +4899,7 @@ fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
     let rel_str = rel.to_string_lossy();
     let sep = std::path::MAIN_SEPARATOR;
     let is_inside = rel.as_os_str().is_empty()
-        || (rel_str != ".."
-            && !rel_str.starts_with(&format!("..{sep}"))
-            && !rel.is_absolute());
+        || (rel_str != ".." && !rel_str.starts_with(&format!("..{sep}")) && !rel.is_absolute());
     if !is_inside {
         return cwd.to_string();
     }
@@ -4205,7 +4924,11 @@ fn truncate_spans_to_width(
     if total <= width {
         return spans;
     }
-    let (target, suffix) = if width >= 3 { (width - 3, "...") } else { (width, "") };
+    let (target, suffix) = if width >= 3 {
+        (width - 3, "...")
+    } else {
+        (width, "")
+    };
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut col = 0usize;
     for s in spans {
@@ -4271,14 +4994,17 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
             pwd = format!("{pwd} \u{2022} {name}");
         }
         let pwd = truncate_to_width(&pwd, width);
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(pwd, Style::new().fg(t.dim)))), Rect::new(area.x, area.y, area.width, 1));
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(pwd, Style::new().fg(t.dim)))),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
     }
     if area.height > 1 {
-    // Line 2: stats left (dim, context % colorized by threshold) +
-    // right-aligned model label (dim).
-    let u = &model.usage_totals;
-    let mut left_spans: Vec<Span<'static>> = Vec::new();
-    let dim = |s: String| Span::styled(s, Style::new().fg(t.dim));
+        // Line 2: stats left (dim, context % colorized by threshold) +
+        // right-aligned model label (dim).
+        let u = &model.usage_totals;
+        let mut left_spans: Vec<Span<'static>> = Vec::new();
+        let dim = |s: String| Span::styled(s, Style::new().fg(t.dim));
         // TS joins the stats parts with a single space.
         let push_part = |spans: &mut Vec<Span<'static>>, s: String| {
             if !spans.is_empty() {
@@ -4287,16 +5013,25 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
             spans.push(dim(s));
         };
         if u.input > 0 {
-            push_part(&mut left_spans, format!("\u{2191}{}", footer_tokens(u.input)));
+            push_part(
+                &mut left_spans,
+                format!("\u{2191}{}", footer_tokens(u.input)),
+            );
         }
         if u.output > 0 {
-            push_part(&mut left_spans, format!("\u{2193}{}", footer_tokens(u.output)));
+            push_part(
+                &mut left_spans,
+                format!("\u{2193}{}", footer_tokens(u.output)),
+            );
         }
         if u.cache_read > 0 {
             push_part(&mut left_spans, format!("R{}", footer_tokens(u.cache_read)));
         }
         if u.cache_write > 0 {
-            push_part(&mut left_spans, format!("W{}", footer_tokens(u.cache_write)));
+            push_part(
+                &mut left_spans,
+                format!("W{}", footer_tokens(u.cache_write)),
+            );
         }
         if u.cache_read > 0 || u.cache_write > 0 {
             if let Some(rate) = u.cache_hit_rate {
@@ -4304,7 +5039,11 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
             }
         }
         if u.cost > 0.0 || model.using_subscription {
-            let sub = if model.using_subscription { " (sub)" } else { "" };
+            let sub = if model.using_subscription {
+                " (sub)"
+            } else {
+                ""
+            };
             push_part(&mut left_spans, format!("${:.3}{sub}", u.cost));
         }
         // Context display: `{pct}%/{window} (auto)` — colorized by
@@ -4351,7 +5090,10 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         };
         let mut right_side = model_name.clone();
         if model.reasoning {
-            let level = model.thinking_level.clone().unwrap_or_else(|| "off".to_string());
+            let level = model
+                .thinking_level
+                .clone()
+                .unwrap_or_else(|| "off".to_string());
             right_side = if level == "off" {
                 format!("{model_name} \u{2022} thinking off")
             } else {
@@ -4361,14 +5103,22 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         if model.available_provider_count > 1 {
             if let Some(provider) = &model.provider {
                 let with_provider = format!("({provider}) {right_side}");
-                let left_w: usize = left_spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
-                if left_w + 2 + unicode_width::UnicodeWidthStr::width(with_provider.as_str()) <= width {
+                let left_w: usize = left_spans
+                    .iter()
+                    .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum();
+                if left_w + 2 + unicode_width::UnicodeWidthStr::width(with_provider.as_str())
+                    <= width
+                {
                     right_side = with_provider;
                 }
             }
         }
 
-        let left_w: usize = left_spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
+        let left_w: usize = left_spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
         let right_w = unicode_width::UnicodeWidthStr::width(right_side.as_str());
         let min_pad = 2usize;
         let (right, right_w) = if left_w + min_pad + right_w <= width {
@@ -4384,7 +5134,10 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         left_spans.push(Span::raw(padding));
         left_spans.push(Span::styled(right, Style::new().fg(t.dim)));
         let line = Line::from(left_spans);
-        frame.render_widget(Paragraph::new(line), Rect::new(area.x, area.y + 1, area.width, 1));
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
     }
 }
 
@@ -4393,13 +5146,23 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
 // ============================================================================
 
 fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
-    let d = match &model.dialog { Some(d) => d, None => return };
+    let d = match &model.dialog {
+        Some(d) => d,
+        None => return,
+    };
     frame.render_widget(Clear, area);
-    let dw = (area.width / 3 * 2).max(40).min(area.width.saturating_sub(4));
+    let dw = (area.width / 3 * 2)
+        .max(40)
+        .min(area.width.saturating_sub(4));
     let dh = 7u16 + d.message.lines().count() as u16;
     // Center inside the visible screen (alt screen = the whole area).
     let dh = dh.min(area.height.max(3));
-    let da = Rect::new((area.width - dw) / 2, (area.height.saturating_sub(dh)) / 2, dw, dh);
+    let da = Rect::new(
+        (area.width - dw) / 2,
+        (area.height.saturating_sub(dh)) / 2,
+        dw,
+        dh,
+    );
     frame.render_widget(Clear, da);
     // Bordered modal window (TS modals draw a border around the overlay).
     frame.render_widget(
@@ -4414,30 +5177,71 @@ fn render_dialog(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
     let inner = da.inner(ratatui::layout::Margin::new(1, 1));
     let mut y = inner.y;
     for line in d.message.lines() {
-        if y < inner.y + inner.height { frame.render_widget(Paragraph::new(Line::from(Span::raw(line.to_string()))), Rect::new(inner.x, y, inner.width, 1)); y += 1; }
+        if y < inner.y + inner.height {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::raw(line.to_string()))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
     }
     let ba = Rect::new(inner.x, da.y + dh - 2, inner.width, 1);
-    let tw: usize = d.buttons.iter().map(|b| b.label.len() + 2 + if matches!(b.action, DialogAction::ConfirmAlways) { 2 } else { 0 }).sum();
+    let tw: usize = d
+        .buttons
+        .iter()
+        .map(|b| {
+            b.label.len()
+                + 2
+                + if matches!(b.action, DialogAction::ConfirmAlways) {
+                    2
+                } else {
+                    0
+                }
+        })
+        .sum();
     let sp = (inner.width as usize).saturating_sub(tw) / (d.buttons.len() + 1).max(1);
     let mut spans = vec![Span::raw(" ".repeat(sp))];
     for (i, btn) in d.buttons.iter().enumerate() {
         let s = if i == d.selected {
-            Style::new().fg(t.text).bg(t.selected_bg).add_modifier(Modifier::BOLD)
+            Style::new()
+                .fg(t.text)
+                .bg(t.selected_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(t.muted)
         };
-        let lbl = if matches!(btn.action, DialogAction::ConfirmAlways) { format!(" {} [A] ", btn.label) } else { format!(" {} ", btn.label) };
-        spans.push(Span::styled(lbl, s)); spans.push(Span::raw(" ".repeat(sp)));
+        let lbl = if matches!(btn.action, DialogAction::ConfirmAlways) {
+            format!(" {} [A] ", btn.label)
+        } else {
+            format!(" {} ", btn.label)
+        };
+        spans.push(Span::styled(lbl, s));
+        spans.push(Span::raw(" ".repeat(sp)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), ba);
 }
 
-fn render_fullscreen_editor(model: &mut Model, frame: &mut Frame, area: Rect, title: &str, t: &Theme) {
-    let AppMode::Editor { editor, .. } = &mut model.mode else { return };
+fn render_fullscreen_editor(
+    model: &mut Model,
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    t: &Theme,
+) {
+    let AppMode::Editor { editor, .. } = &mut model.mode else {
+        return;
+    };
     // Render via the vendored textarea widget (wrapped-line viewport,
     // selection, scrollbar) inside the title block. Block first so the
     // textarea never paints over the borders.
-    frame.render_widget(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(format!(" {title} ")).border_style(Style::new().fg(t.border_muted)), area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(format!(" {title} "))
+            .border_style(Style::new().fg(t.border_muted)),
+        area,
+    );
     let inner = area.inner(ratatui::layout::Margin::new(1, 1));
     frame.render_widget_ref(editor.textarea(), inner);
     if let Some((x, y)) = editor.textarea().cursor_pos(inner) {
@@ -4480,17 +5284,29 @@ pub fn normalize_secret_paste(text: &str) -> String {
 /// └──────────────────────────────────────────────┘
 /// ```
 fn render_secret_input(model: &Model, frame: &mut Frame, rect: Rect, t: &Theme) {
-    let AppMode::Secret { title, message, value } = &model.mode else { return };
+    let AppMode::Secret {
+        title,
+        message,
+        value,
+    } = &model.mode
+    else {
+        return;
+    };
     let input_line = format!("> {value}");
     let hint = "(escape/ctrl+c to cancel, enter to submit)";
     frame.render_widget(Clear, rect);
     frame.render_widget(
-        Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(t.border_muted)),
         rect,
     );
     let lines = vec![
-        Line::from(Span::styled(title.clone(), Style::new().fg(t.accent).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            title.clone(),
+            Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(Span::styled(message.clone(), Style::new().fg(t.text))),
         Line::from(Span::styled(input_line, Style::new().fg(t.text))),
@@ -4625,11 +5441,23 @@ mod tests {
     fn parse_diff_line_handles_padded_line_numbers() {
         // `+123 content` / `-123 content` / ` 123 content` (generateDiffString
         // pads line numbers to equal width).
-        assert_eq!(parse_diff_line("+123 abc"), Some(('+', "123".into(), "abc")));
-        assert_eq!(parse_diff_line("-123 abc"), Some(('-', "123".into(), "abc")));
-        assert_eq!(parse_diff_line(" 123 abc"), Some((' ', "123".into(), "abc")));
+        assert_eq!(
+            parse_diff_line("+123 abc"),
+            Some(('+', "123".into(), "abc"))
+        );
+        assert_eq!(
+            parse_diff_line("-123 abc"),
+            Some(('-', "123".into(), "abc"))
+        );
+        assert_eq!(
+            parse_diff_line(" 123 abc"),
+            Some((' ', "123".into(), "abc"))
+        );
         // Wide padding (3-digit padStart) is kept verbatim.
-        assert_eq!(parse_diff_line("-  1 abc"), Some(('-', "  1".into(), "abc")));
+        assert_eq!(
+            parse_diff_line("-  1 abc"),
+            Some(('-', "  1".into(), "abc"))
+        );
         // Line number may be missing (`- content`).
         assert_eq!(parse_diff_line("- abc"), Some(('-', String::new(), "abc")));
         // Content may be empty (` ` context line).
@@ -4672,7 +5500,11 @@ mod tests {
                 .map(|sp| sp.content.as_ref())
                 .collect::<String>()
         };
-        assert_eq!(inverted(&removed), "world", "changed removed token inverted");
+        assert_eq!(
+            inverted(&removed),
+            "world",
+            "changed removed token inverted"
+        );
         assert_eq!(inverted(&added), "rust", "changed added token inverted");
         // Leading whitespace of the first changed token stays plain (TS strips it).
         let (removed, _) = intra_line_spans(
@@ -4706,7 +5538,10 @@ mod tests {
         let plain: String = spans.concat();
         // Heading text present, but the `# ` marker is gone (parsed).
         assert!(plain.contains("Title"), "heading rendered: {plain}");
-        assert!(!plain.contains("# Title"), "heading marker must be parsed out");
+        assert!(
+            !plain.contains("# Title"),
+            "heading marker must be parsed out"
+        );
         // Bold emphasis parsed: asterisks removed, text present.
         assert!(plain.contains("bold"), "bold text present: {plain}");
         assert!(!plain.contains("**"), "emphasis markers must be parsed out");
@@ -4728,7 +5563,10 @@ mod tests {
     #[test]
     fn streaming_deltas_feed_the_markdown_pipeline() {
         let mut model = Model::new(120, 80);
-        update(&mut model, Msg::NewMessage("assistant".into(), "Hello".into()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), "Hello".into()),
+        );
         update(&mut model, Msg::StreamText(" **world**".into()));
         assert_eq!(model.messages[0].text, "Hello **world**");
 
@@ -4750,21 +5588,59 @@ mod tests {
     fn same_name_tools_keep_independent_state_and_output() {
         let mut model = Model::new(120, 80);
         // First bash: streams two snapshots, then finishes.
-        update(&mut model, Msg::ToolStart("tc-1".into(), "bash".into(), String::new()));
-        update(&mut model, Msg::SetToolOutput("tc-1".into(), "bash".into(), "step1\n".into()));
-        update(&mut model, Msg::SetToolOutput("tc-1".into(), "bash".into(), "step1\nstep2\n".into()));
-        update(&mut model, Msg::ToolEnd("tc-1".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-1".into(), "bash".into(), String::new()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "step1\n".into()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "step1\nstep2\n".into()),
+        );
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-1".into(), "bash".into(), false),
+        );
         // Second bash call starts while the first one's row exists.
-        update(&mut model, Msg::ToolStart("tc-2".into(), "bash".into(), String::new()));
-        update(&mut model, Msg::SetToolOutput("tc-2".into(), "bash".into(), "other\n".into()));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-2".into(), "bash".into(), String::new()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-2".into(), "bash".into(), "other\n".into()),
+        );
 
-        let first = model.active_tools.iter().find(|t| t.call_id == "tc-1").expect("first");
-        let second = model.active_tools.iter().find(|t| t.call_id == "tc-2").expect("second");
+        let first = model
+            .active_tools
+            .iter()
+            .find(|t| t.call_id == "tc-1")
+            .expect("first");
+        let second = model
+            .active_tools
+            .iter()
+            .find(|t| t.call_id == "tc-2")
+            .expect("second");
         // First bash: Done, snapshot replaced (no duplication), second untouched.
-        assert!(matches!(first.state, ToolCallState::Done), "first bash done");
-        assert_eq!(first.output, "step1\nstep2\n", "first output is the last snapshot, not doubled");
-        assert!(matches!(second.state, ToolCallState::Running), "second bash still running");
-        assert_eq!(second.output, "other\n", "second output lands on its own row");
+        assert!(
+            matches!(first.state, ToolCallState::Done),
+            "first bash done"
+        );
+        assert_eq!(
+            first.output, "step1\nstep2\n",
+            "first output is the last snapshot, not doubled"
+        );
+        assert!(
+            matches!(second.state, ToolCallState::Running),
+            "second bash still running"
+        );
+        assert_eq!(
+            second.output, "other\n",
+            "second output lands on its own row"
+        );
     }
 
     /// `hydrate_transcript` rebuilds restored history in order (assistant
@@ -4826,12 +5702,18 @@ mod tests {
             .iter()
             .find(|t| t.call_id == "tc-1")
             .expect("tool row restored");
-        assert!(matches!(tool.state, ToolCallState::Done), "result marks the row done");
+        assert!(
+            matches!(tool.state, ToolCallState::Done),
+            "result marks the row done"
+        );
         assert_eq!(tool.output, "file.txt\n");
         assert_eq!(tool.truncation.as_ref().map(|t| t.total_lines), Some(5));
         // The assistant message block precedes its tool row in the shared id
         // sequence, so the transcript interleaves them like a live run.
-        assert!(model.messages[1].id < tool.id, "assistant before its tool row");
+        assert!(
+            model.messages[1].id < tool.id,
+            "assistant before its tool row"
+        );
     }
 
     /// TS tool-output preview: a tool with more than `FALLBACK_PREVIEW_LINES`
@@ -4847,12 +5729,23 @@ mod tests {
         model.context_usage_known = true;
         let output: String = (1..=14).map(|i| format!("line{i}\n")).collect();
         // Tool without a registered renderer → TS fallback path.
-        update(&mut model, Msg::ToolStart("tc-1".into(), "search".into(), String::new()));
-        update(&mut model, Msg::SetToolOutput("tc-1".into(), "search".into(), output.clone()));
-        update(&mut model, Msg::ToolEnd("tc-1".into(), "search".into(), false));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-1".into(), "search".into(), String::new()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-1".into(), "search".into(), output.clone()),
+        );
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-1".into(), "search".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // The finished tool renders as a full box (never a one-row fold).
@@ -4862,7 +5755,10 @@ mod tests {
             .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "s")
             .expect("tool title");
 
-        assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "title bold");
+        assert!(
+            buf[(1, title_row)].modifier.contains(Modifier::BOLD),
+            "title bold"
+        );
         // First 10 output lines visible (box rows: col 0 = padding, col 1
         // = first char — plain toolOutput color, no prefix).
         assert_eq!(buf[(1, title_row + 1)].symbol(), "l", "output line 1");
@@ -4883,13 +5779,23 @@ mod tests {
 
         // Ctrl+O expands: full output (line 14 visible), no hint row.
         update(&mut model, Msg::ToggleToolExpansion);
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..24)
             .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "s")
             .expect("title after expand");
-        assert_eq!(buf[(1, title_row + 14)].symbol(), "l", "output line 14 after expand");
-        assert_ne!(buf[(1, title_row + 15)].symbol(), ".", "no hint after expand");
+        assert_eq!(
+            buf[(1, title_row + 14)].symbol(),
+            "l",
+            "output line 14 after expand"
+        );
+        assert_ne!(
+            buf[(1, title_row + 15)].symbol(),
+            ".",
+            "no hint after expand"
+        );
     }
 
     /// TS original renders every message in full (no folding/truncation) —
@@ -4908,19 +5814,32 @@ mod tests {
         update(&mut model, Msg::NewMessage("assistant".into(), long));
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 40)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // The block is never truncated: the first line's second char is at
         // col 1 (assistant text has no box padding).
-        let first_row = (0..30).find(|&y| buf[(0, y)].symbol() == "r").expect("first line");
+        let first_row = (0..30)
+            .find(|&y| buf[(0, y)].symbol() == "r")
+            .expect("first line");
         assert_eq!(buf[(1, first_row)].symbol(), "o", "row1 second char");
         // No fold/truncation hint anywhere: every row of the message is in
         // the layout (scrolling reveals the rest).
-        assert_eq!(model.messages[0].md.render(88).len(), 119, "60 rows + 59 blank separators");
+        assert_eq!(
+            model.messages[0].md.render(88).len(),
+            119,
+            "60 rows + 59 blank separators"
+        );
         for y in 0..30u16 {
-            let row: String = (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect();
-            assert!(!row.contains("more"), "no truncation hint on row {y}: {row}");
+            let row: String = (0..100u16)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            assert!(
+                !row.contains("more"),
+                "no truncation hint on row {y}: {row}"
+            );
         }
     }
 
@@ -4937,7 +5856,9 @@ mod tests {
 
         // Move the cursor to byte offset 4: row 0, column 4.
         input.move_home();
-        for _ in 0..4 { input.move_right(); }
+        for _ in 0..4 {
+            input.move_right();
+        }
         let (rows, row, col) = input_layout_rows(&input, 6);
         assert_eq!(rows.len(), 3);
         assert_eq!((row, col), (0, 4), "cursor in the first row");
@@ -4961,11 +5882,19 @@ mod tests {
         model.context_usage_pct = 42.0;
         model.context_usage_known = true;
         update(&mut model, Msg::NewMessage("user".into(), "hello".into()));
-        update(&mut model, Msg::ToolStart("tc-bash".into(), "read".into(), String::new()));
-        update(&mut model, Msg::SetToolOutput("tc-bash".into(), "read".into(), "done\n".into()));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-bash".into(), "read".into(), String::new()),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-bash".into(), "read".into(), "done\n".into()),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // ── Dock: status (2) + editor (3) + footer (2) at the bottom. ──
@@ -4975,7 +5904,11 @@ mod tests {
         // below it never draws `─`); the top border sits two rows above.
         let bottom_border = (0..30)
             .rev()
-            .find(|&y| buf[(50, y)].symbol() == "─" && buf[(50, y)].fg == theme::BORDER_MUTED && buf[(0, y)].symbol() == "─")
+            .find(|&y| {
+                buf[(50, y)].symbol() == "─"
+                    && buf[(50, y)].fg == theme::BORDER_MUTED
+                    && buf[(0, y)].symbol() == "─"
+            })
             .expect("editor bottom border");
         let top_border = bottom_border - 2;
         assert_eq!(buf[(50, top_border)].symbol(), "─", "editor top border");
@@ -5002,8 +5935,14 @@ mod tests {
         assert_eq!(buf[(0, 29)].symbol(), "4", "context % on the footer left");
 
         // ── User message box (bottom-up: it sits above the tool). ──
-        let hello_row = (0..24).find(|&y| buf[(1, y)].symbol() == "h").expect("user row");
-        assert_eq!(buf[(1, hello_row)].bg, theme::USER_MESSAGE_BG, "user text on userMessageBg");
+        let hello_row = (0..24)
+            .find(|&y| buf[(1, y)].symbol() == "h")
+            .expect("user row");
+        assert_eq!(
+            buf[(1, hello_row)].bg,
+            theme::USER_MESSAGE_BG,
+            "user text on userMessageBg"
+        );
         assert_eq!(
             buf[(1, hello_row - 1)].bg,
             theme::USER_MESSAGE_BG,
@@ -5019,9 +5958,20 @@ mod tests {
         let tool_row = (0..24)
             .find(|&y| buf[(1, y)].bg == theme::TOOL_PENDING_BG && buf[(1, y)].symbol() == "r")
             .expect("tool title row");
-        assert_eq!(buf[(1, tool_row)].bg, theme::TOOL_PENDING_BG, "running tool uses toolPendingBg");
-        assert!(buf[(1, tool_row)].modifier.contains(Modifier::BOLD), "tool title bold");
-        assert_eq!(buf[(1, tool_row + 1)].bg, theme::TOOL_PENDING_BG, "tool box pad");
+        assert_eq!(
+            buf[(1, tool_row)].bg,
+            theme::TOOL_PENDING_BG,
+            "running tool uses toolPendingBg"
+        );
+        assert!(
+            buf[(1, tool_row)].modifier.contains(Modifier::BOLD),
+            "tool title bold"
+        );
+        assert_eq!(
+            buf[(1, tool_row + 1)].bg,
+            theme::TOOL_PENDING_BG,
+            "tool box pad"
+        );
     }
 
     /// The slash-command menu renders TS-style (the original SelectList):
@@ -5048,18 +5998,33 @@ mod tests {
             crate::components::CompletionCommand::new("quit", "Quit Pi"),
             crate::components::CompletionCommand::new("help", "Show commands"),
         ]);
-        model.completer.begin(crate::components::CompletionTrigger::Slash, "/", "");
-        model.completer.apply_results(1, vec![
-            CompletionItem::new("model", "model", "<provider/model> — Select model (opens selector UI)"),
-            CompletionItem::new("new", "new", "Start a new session"),
-            CompletionItem::new("name", "name", "Set session display name"),
-            CompletionItem::new("reload", "reload", "Reload keybindings, extensions, skills, prompts, themes, and context files"),
-            CompletionItem::new("quit", "quit", "Quit Pi"),
-            CompletionItem::new("help", "help", "Show commands"),
-        ]);
+        model
+            .completer
+            .begin(crate::components::CompletionTrigger::Slash, "/", "");
+        model.completer.apply_results(
+            1,
+            vec![
+                CompletionItem::new(
+                    "model",
+                    "model",
+                    "<provider/model> — Select model (opens selector UI)",
+                ),
+                CompletionItem::new("new", "new", "Start a new session"),
+                CompletionItem::new("name", "name", "Set session display name"),
+                CompletionItem::new(
+                    "reload",
+                    "reload",
+                    "Reload keybindings, extensions, skills, prompts, themes, and context files",
+                ),
+                CompletionItem::new("quit", "quit", "Quit Pi"),
+                CompletionItem::new("help", "help", "Show commands"),
+            ],
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // The menu renders below the editor's bottom border (TS order):
@@ -5069,31 +6034,75 @@ mod tests {
             .expect("menu row");
         // Selected row: the whole line (`→ model` + description) is accent
         // (TS `selectedText` wraps prefix + label + spacing + description).
-        assert_eq!(buf[(0, menu_row)].symbol(), "\u{2192}", "accent arrow prefix");
+        assert_eq!(
+            buf[(0, menu_row)].symbol(),
+            "\u{2192}",
+            "accent arrow prefix"
+        );
         assert_eq!(buf[(0, menu_row)].fg, theme::ACCENT, "arrow in accent");
-        assert_eq!(buf[(2, menu_row)].symbol(), "m", "label follows the prefix (name, no slash)");
-        assert_eq!(buf[(2, menu_row)].fg, theme::ACCENT, "selected label in accent");
+        assert_eq!(
+            buf[(2, menu_row)].symbol(),
+            "m",
+            "label follows the prefix (name, no slash)"
+        );
+        assert_eq!(
+            buf[(2, menu_row)].fg,
+            theme::ACCENT,
+            "selected label in accent"
+        );
         // Description in accent (selected line), aligned after the primary
         // column (widest label `reload` = 6 + 2 gap, clamped up to min 12).
         let desc_col = 2 + 12;
-        assert_eq!(buf[(desc_col, menu_row)].symbol(), "<", "hint folded into description");
-        assert_eq!(buf[(desc_col, menu_row)].fg, theme::ACCENT, "selected description in accent");
+        assert_eq!(
+            buf[(desc_col, menu_row)].symbol(),
+            "<",
+            "hint folded into description"
+        );
+        assert_eq!(
+            buf[(desc_col, menu_row)].fg,
+            theme::ACCENT,
+            "selected description in accent"
+        );
         // Unselected row: two-space prefix, default text color, muted
         // description in the aligned column.
         let next_row = menu_row + 1;
-        assert_eq!(buf[(0, next_row)].symbol(), " ", "unselected prefix is spaces");
+        assert_eq!(
+            buf[(0, next_row)].symbol(),
+            " ",
+            "unselected prefix is spaces"
+        );
         assert_eq!(buf[(2, next_row)].symbol(), "n", "unselected label");
-        assert_eq!(buf[(2, next_row)].fg, theme::TEXT, "unselected label in text color");
-        assert_eq!(buf[(desc_col, next_row)].symbol(), "S", "unselected description column");
-        assert_eq!(buf[(desc_col, next_row)].fg, theme::MUTED, "unselected description muted");
+        assert_eq!(
+            buf[(2, next_row)].fg,
+            theme::TEXT,
+            "unselected label in text color"
+        );
+        assert_eq!(
+            buf[(desc_col, next_row)].symbol(),
+            "S",
+            "unselected description column"
+        );
+        assert_eq!(
+            buf[(desc_col, next_row)].fg,
+            theme::MUTED,
+            "unselected description muted"
+        );
         // Scroll info row `(1/6)` in muted (6 items, 5 visible).
         let scroll_row = menu_row + 5;
         assert_eq!(buf[(2, scroll_row)].symbol(), "(", "scroll info row");
         assert_eq!(buf[(2, scroll_row)].fg, theme::MUTED, "scroll info muted");
         // The editor top border is above the input, and the bottom border
         // sits between the input and the menu (menu below the box).
-        assert_eq!(buf[(50, menu_row - 3)].symbol(), "\u{2500}", "editor top border above input");
-        assert_eq!(buf[(50, menu_row - 1)].symbol(), "\u{2500}", "editor bottom border above menu");
+        assert_eq!(
+            buf[(50, menu_row - 3)].symbol(),
+            "\u{2500}",
+            "editor top border above input"
+        );
+        assert_eq!(
+            buf[(50, menu_row - 1)].symbol(),
+            "\u{2500}",
+            "editor bottom border above menu"
+        );
     }
 
     /// Regression: once the completion window scrolls (`start > 0`), the
@@ -5118,15 +6127,24 @@ mod tests {
             crate::components::CompletionCommand::new("quit", "Quit Pi"),
             crate::components::CompletionCommand::new("help", "Show commands"),
         ]);
-        model.completer.begin(crate::components::CompletionTrigger::Slash, "/", "");
-        model.completer.apply_results(1, vec![
-            CompletionItem::new("model", "model", "<provider/model> — Select model (opens selector UI)"),
-            CompletionItem::new("new", "new", "Start a new session"),
-            CompletionItem::new("name", "name", "Set session display name"),
-            CompletionItem::new("reload", "reload", "Reload extensions"),
-            CompletionItem::new("quit", "quit", "Quit Pi"),
-            CompletionItem::new("help", "help", "Show commands"),
-        ]);
+        model
+            .completer
+            .begin(crate::components::CompletionTrigger::Slash, "/", "");
+        model.completer.apply_results(
+            1,
+            vec![
+                CompletionItem::new(
+                    "model",
+                    "model",
+                    "<provider/model> — Select model (opens selector UI)",
+                ),
+                CompletionItem::new("new", "new", "Start a new session"),
+                CompletionItem::new("name", "name", "Set session display name"),
+                CompletionItem::new("reload", "reload", "Reload extensions"),
+                CompletionItem::new("quit", "quit", "Quit Pi"),
+                CompletionItem::new("help", "help", "Show commands"),
+            ],
+        );
         // Move the selection into the scrolled part of the window
         // (6 items, 5 visible -> start index becomes 1).
         for _ in 0..3 {
@@ -5134,7 +6152,9 @@ mod tests {
         }
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Anchor to the editor top border; the input occupies one content
@@ -5147,25 +6167,57 @@ mod tests {
 
         // After scrolling, the first visible item is `new` (index 1) at the
         // very top of the window — no blank row above it.
-        assert_eq!(buf[(2, window_top)].symbol(), "n", "top row is first visible item");
+        assert_eq!(
+            buf[(2, window_top)].symbol(),
+            "n",
+            "top row is first visible item"
+        );
         assert_eq!(buf[(3, window_top)].symbol(), "e", "top item is new");
         assert_eq!(buf[(4, window_top)].symbol(), "w", "top item is new");
-        assert_eq!(buf[(0, window_top)].symbol(), " ", "top row unselected prefix");
-        assert_eq!(buf[(2, window_top)].fg, theme::TEXT, "top item is not the selection");
+        assert_eq!(
+            buf[(0, window_top)].symbol(),
+            " ",
+            "top row unselected prefix"
+        );
+        assert_eq!(
+            buf[(2, window_top)].fg,
+            theme::TEXT,
+            "top item is not the selection"
+        );
         // The selected item (`reload`, index 3) is 2 rows down in the window.
         let sel_row = window_top + 2;
-        assert_eq!(buf[(0, sel_row)].symbol(), "\u{2192}", "selected item arrow");
-        assert_eq!(buf[(0, sel_row)].fg, theme::ACCENT, "selected arrow in accent");
+        assert_eq!(
+            buf[(0, sel_row)].symbol(),
+            "\u{2192}",
+            "selected item arrow"
+        );
+        assert_eq!(
+            buf[(0, sel_row)].fg,
+            theme::ACCENT,
+            "selected arrow in accent"
+        );
         assert_eq!(buf[(2, sel_row)].symbol(), "r", "selected label present");
         assert_eq!(buf[(3, sel_row)].symbol(), "e", "selected item is reload");
         // The fifth visible item (`help`, index 5) sits at window row 4 and
         // is followed by the `(n/m)` scroll row at row 5 — it must not be
         // clipped or overwritten.
         let last_item_row = window_top + 4;
-        assert_eq!(buf[(2, last_item_row)].symbol(), "h", "last visible item rendered");
-        assert_eq!(buf[(3, last_item_row)].symbol(), "e", "last visible item is help");
+        assert_eq!(
+            buf[(2, last_item_row)].symbol(),
+            "h",
+            "last visible item rendered"
+        );
+        assert_eq!(
+            buf[(3, last_item_row)].symbol(),
+            "e",
+            "last visible item is help"
+        );
         let scroll_row = window_top + 5;
-        assert_eq!(buf[(2, scroll_row)].symbol(), "(", "scroll info row after items");
+        assert_eq!(
+            buf[(2, scroll_row)].symbol(),
+            "(",
+            "scroll info row after items"
+        );
     }
 
     /// TS `SelectList` 的 slash 布局把主列宽下限钳到 12（短命令的描述也
@@ -5197,7 +6249,11 @@ mod tests {
         // The long label is truncated to 30 chars with NO ellipsis: col 32 is
         // the spacing gap before the description, not part of a `...`.
         assert_eq!(buf[(31, 2)].symbol(), "x", "long label kept to width 30");
-        assert_eq!(buf[(32, 2)].symbol(), " ", "gap after truncated label, no ellipsis");
+        assert_eq!(
+            buf[(32, 2)].symbol(),
+            " ",
+            "gap after truncated label, no ellipsis"
+        );
         let dots = (0..40).any(|x| buf[(x, 2)].symbol() == ".");
         assert!(!dots, "truncation must not append an ellipsis");
 
@@ -5217,7 +6273,11 @@ mod tests {
             .draw(|f| short.render_rows(f, f.area(), &theme))
             .expect("draw");
         let buf = terminal.backend().buffer();
-        assert_eq!(buf[(14, 0)].symbol(), "f", "min primary column 12 -> desc at col 14");
+        assert_eq!(
+            buf[(14, 0)].symbol(),
+            "f",
+            "min primary column 12 -> desc at col 14"
+        );
         assert_eq!(buf[(14, 1)].symbol(), "s", "descriptions aligned at col 14");
     }
 
@@ -5226,13 +6286,22 @@ mod tests {
     #[test]
     fn tab_applies_selected_completion() {
         let mut model = Model::new(100, 30);
-        model.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("new", "Start a new session"),
-        ]);
+        model
+            .completer
+            .set_commands(vec![crate::components::CompletionCommand::new(
+                "new",
+                "Start a new session",
+            )]);
         model.input.set_value("/n");
         model.completer.begin(CompletionTrigger::Slash, "/n", "n");
-        model.completer.apply_results(1, vec![CompletionItem::new("new", "/new", "Start a new session")]);
-        let tab = KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE);
+        model.completer.apply_results(
+            1,
+            vec![CompletionItem::new("new", "/new", "Start a new session")],
+        );
+        let tab = KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
         let _cmds = update(&mut model, Msg::Key(tab));
         assert_eq!(model.input.value(), "/new ", "Tab 应用选中项并加空格");
         assert!(!model.completer.visible, "应用后弹窗关闭");
@@ -5243,12 +6312,18 @@ mod tests {
     #[test]
     fn tab_without_popup_triggers_slash_completion() {
         let mut model = Model::new(100, 30);
-        model.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
-                .with_argument_hint("<provider/model>"),
-        ]);
+        model
+            .completer
+            .set_commands(vec![crate::components::CompletionCommand::new(
+                "model",
+                "Select model (opens selector UI)",
+            )
+            .with_argument_hint("<provider/model>")]);
         model.input.set_value("/mo");
-        let tab = KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE);
+        let tab = KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
         let _cmds = update(&mut model, Msg::Key(tab));
         assert!(model.completer.visible, "Tab 打开 slash 补全");
         assert_eq!(model.completer.query, "mo");
@@ -5268,12 +6343,24 @@ mod tests {
                 .with_argument_hint("<provider/model>"),
             crate::components::CompletionCommand::new("new", "Start a new session"),
         ]);
-        let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('/'), crossterm::event::KeyModifiers::NONE)));
+        let cmds = update(
+            &mut model,
+            Msg::Key(KeyEvent::new(
+                crossterm::event::KeyCode::Char('/'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
         assert!(model.completer.visible);
         assert_eq!(cmds.len(), 0, "slash 补全同步完成，无异步请求: {cmds:?}");
         assert_eq!(model.completer.results.len(), 2, "全部命令列出");
         // 继续输入 query 做 fuzzy 过滤。
-        update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('m'), crossterm::event::KeyModifiers::NONE)));
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(
+                crossterm::event::KeyCode::Char('m'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
         assert_eq!(model.completer.results.len(), 1, "fuzzy 'm' 只留 /model");
         assert_eq!(model.completer.results[0].value, "model");
     }
@@ -5282,7 +6369,13 @@ mod tests {
     #[test]
     fn at_at_token_boundary_triggers_with_debounce() {
         let mut model = Model::new(100, 30);
-        let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char('@'), crossterm::event::KeyModifiers::NONE)));
+        let cmds = update(
+            &mut model,
+            Msg::Key(KeyEvent::new(
+                crossterm::event::KeyCode::Char('@'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
         assert!(model.completer.visible, "@ 打开文件补全");
         let req = cmds.iter().find_map(|c| match c {
             Cmd::RequestCompletion(r) => Some(r),
@@ -5290,7 +6383,10 @@ mod tests {
         });
         let req = req.expect("at 请求");
         assert_eq!(req.trigger, CompletionTrigger::At);
-        assert_eq!(req.debounce_ms, 20, "附件补全 debounce 对齐 TS ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS");
+        assert_eq!(
+            req.debounce_ms, 20,
+            "附件补全 debounce 对齐 TS ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS"
+        );
     }
 
     /// `@` 在词中间不触发（对齐 TS token 边界）。
@@ -5298,7 +6394,13 @@ mod tests {
     fn at_mid_word_does_not_trigger() {
         let mut model = Model::new(100, 30);
         for ch in ['a', 'b', 'c', '@'] {
-            update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+            update(
+                &mut model,
+                Msg::Key(KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
         }
         assert!(!model.completer.visible, "abc@ 不应触发 @ 补全");
         assert_eq!(model.input.value(), "abc@");
@@ -5308,11 +6410,12 @@ mod tests {
     #[test]
     fn slash_argument_completion_only_when_registered() {
         let mut model = Model::new(100, 30);
-        let with_args = crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
-            .with_argument_hint("<provider/model>")
-            .with_argument_completions(std::sync::Arc::new(|_p: String| {
-                Box::pin(async { Some(Vec::new()) })
-            }));
+        let with_args =
+            crate::components::CompletionCommand::new("model", "Select model (opens selector UI)")
+                .with_argument_hint("<provider/model>")
+                .with_argument_completions(std::sync::Arc::new(|_p: String| {
+                    Box::pin(async { Some(Vec::new()) })
+                }));
         model.completer.set_commands(vec![
             with_args,
             crate::components::CompletionCommand::new("name", "Set session display name"),
@@ -5320,7 +6423,13 @@ mod tests {
         // `/cmd g` → Argument 请求。
         let mut last = Vec::new();
         for ch in ['/', 'm', 'o', 'd', 'e', 'l', ' ', 'g'] {
-            last = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+            last = update(
+                &mut model,
+                Msg::Key(KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
         }
         let req = last.iter().find_map(|c| match c {
             Cmd::RequestCompletion(r) => Some(r),
@@ -5333,11 +6442,20 @@ mod tests {
 
         // `/name x` → 无参数补全注册 → 弹窗关闭、无请求。
         let mut model2 = Model::new(100, 30);
-        model2.completer.set_commands(vec![
-            crate::components::CompletionCommand::new("name", "Set session display name"),
-        ]);
+        model2
+            .completer
+            .set_commands(vec![crate::components::CompletionCommand::new(
+                "name",
+                "Set session display name",
+            )]);
         for ch in ['/', 'n', 'a', 'm', 'e', ' ', 'x'] {
-            update(&mut model2, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+            update(
+                &mut model2,
+                Msg::Key(KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
         }
         assert!(!model2.completer.visible, "无参数补全不弹窗");
     }
@@ -5347,9 +6465,21 @@ mod tests {
     fn tab_forces_path_completion() {
         let mut model = Model::new(100, 30);
         for ch in ['s', 'r', 'c'] {
-            update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Char(ch), crossterm::event::KeyModifiers::NONE)));
+            update(
+                &mut model,
+                Msg::Key(KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
         }
-        let cmds = update(&mut model, Msg::Key(KeyEvent::new(crossterm::event::KeyCode::Tab, crossterm::event::KeyModifiers::NONE)));
+        let cmds = update(
+            &mut model,
+            Msg::Key(KeyEvent::new(
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
         assert!(model.completer.visible, "Tab 打开路径补全");
         let req = cmds.iter().find_map(|c| match c {
             Cmd::RequestCompletion(r) => Some(r),
@@ -5390,7 +6520,9 @@ mod tests {
         };
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Line 2 (y=29): stats start with `↑1.2k` (formatTokens(1234)).
@@ -5414,14 +6546,38 @@ mod tests {
         // Context display `42.5%/200k (auto)` — starts after the cost.
         let ctx_start = 30 + "$0.123".len() + 1;
         assert_eq!(buf[(ctx_start as u16, 29)].symbol(), "4", "context pct");
-        assert_eq!(buf[(ctx_start as u16 + 4, 29)].symbol(), "%", "context pct %");
-        assert_eq!(buf[(ctx_start as u16 + 5, 29)].symbol(), "/", "context window sep");
-        assert_eq!(buf[(ctx_start as u16 + 6, 29)].symbol(), "2", "context window");
-        assert_eq!(buf[(ctx_start as u16 + 9, 29)].symbol(), "k", "context window k");
+        assert_eq!(
+            buf[(ctx_start as u16 + 4, 29)].symbol(),
+            "%",
+            "context pct %"
+        );
+        assert_eq!(
+            buf[(ctx_start as u16 + 5, 29)].symbol(),
+            "/",
+            "context window sep"
+        );
+        assert_eq!(
+            buf[(ctx_start as u16 + 6, 29)].symbol(),
+            "2",
+            "context window"
+        );
+        assert_eq!(
+            buf[(ctx_start as u16 + 9, 29)].symbol(),
+            "k",
+            "context window k"
+        );
         // ` (auto)` suffix.
         assert_eq!(buf[(ctx_start as u16 + 10, 29)].symbol(), " ", "auto pad");
-        assert_eq!(buf[(ctx_start as u16 + 11, 29)].symbol(), "(", "auto indicator");
-        assert_eq!(buf[(ctx_start as u16 + 16, 29)].symbol(), ")", "auto indicator end");
+        assert_eq!(
+            buf[(ctx_start as u16 + 11, 29)].symbol(),
+            "(",
+            "auto indicator"
+        );
+        assert_eq!(
+            buf[(ctx_start as u16 + 16, 29)].symbol(),
+            ")",
+            "auto indicator end"
+        );
 
         // Right-aligned model label: `(openai) mock-model • low`.
         let right_label = "(openai) mock-model \u{2022} low";
@@ -5434,7 +6590,11 @@ mod tests {
         }
         assert_eq!(buf[(model_col, 29)].symbol(), "(", "provider prefix");
         assert_eq!(buf[(model_col + 9, 29)].symbol(), "m", "model name");
-        assert_eq!(buf[(model_col + 20, 29)].symbol(), "\u{2022}", "thinking bullet");
+        assert_eq!(
+            buf[(model_col + 20, 29)].symbol(),
+            "\u{2022}",
+            "thinking bullet"
+        );
         assert_eq!(buf[(model_col + 22, 29)].symbol(), "l", "thinking level");
     }
 
@@ -5451,7 +6611,9 @@ mod tests {
         model.session_name = Some("My Session".into());
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Line 1 (y=28): `/tmp (main) • My Session` in dim.
@@ -5480,7 +6642,10 @@ mod tests {
         );
         // No home (or an empty one) → cwd unchanged.
         assert_eq!(format_cwd_for_footer("/tmp/project", None), "/tmp/project");
-        assert_eq!(format_cwd_for_footer("/tmp/project", Some("")), "/tmp/project");
+        assert_eq!(
+            format_cwd_for_footer("/tmp/project", Some("")),
+            "/tmp/project"
+        );
     }
 
     /// A too-wide stats line is truncated with a dim `...` before the
@@ -5515,10 +6680,15 @@ mod tests {
         };
 
         let mut terminal = RatTerminal::new(TestBackend::new(120, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let line: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
-        assert!(line.contains("$1.234 (sub)"), "subscription marker: {line:?}");
+        assert!(
+            line.contains("$1.234 (sub)"),
+            "subscription marker: {line:?}"
+        );
         assert!(
             !line.contains("(kimi-coding)"),
             "single provider prefix hidden: {line:?}"
@@ -5539,7 +6709,9 @@ mod tests {
         model.context_window = 200_000;
 
         let mut terminal = RatTerminal::new(TestBackend::new(120, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let line: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
         assert!(line.contains("\u{2022} xp"), "experimental badge: {line:?}");
@@ -5558,7 +6730,9 @@ mod tests {
         model.context_window = 200_000;
 
         let mut terminal = RatTerminal::new(TestBackend::new(120, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let line: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
         assert!(line.contains("?/200k (auto)"), "unknown context: {line:?}");
@@ -5574,7 +6748,9 @@ mod tests {
 
         let mut model = Model::new(100, 30);
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Logo row: `Pi` wordmark in accent bold with a dim version label.
@@ -5601,13 +6777,19 @@ mod tests {
 
         // Ctrl+O expands: the full keybinding list appears.
         update(&mut model, Msg::ToggleToolExpansion);
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         assert_eq!(buf[(0, 1)].symbol(), "e", "expanded: escape to interrupt");
         assert_eq!(buf[(0, 2)].symbol(), "c", "expanded: ctrl+c to clear");
         assert_eq!(buf[(0, 3)].symbol(), "c", "expanded: ctrl+c twice to exit");
         assert_eq!(buf[(0, 4)].symbol(), "c", "expanded: ctrl+z to suspend");
-        assert_eq!(buf[(0, 5)].symbol(), "c", "expanded: ctrl+k to delete to end");
+        assert_eq!(
+            buf[(0, 5)].symbol(),
+            "c",
+            "expanded: ctrl+k to delete to end"
+        );
         assert_eq!(buf[(0, 6)].symbol(), "s", "expanded: shift+tab");
         assert_eq!(buf[(0, 7)].symbol(), "c", "expanded: ctrl+p");
         assert_eq!(buf[(0, 8)].symbol(), "c", "expanded: ctrl+l");
@@ -5642,19 +6824,28 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Title row: `search` bold on toolPendingBg.
         let title_row = (0..24)
             .find(|&y| buf[(1, y)].bg == theme::TOOL_PENDING_BG && buf[(1, y)].symbol() == "s")
             .expect("title row");
-        assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "title bold");
+        assert!(
+            buf[(1, title_row)].modifier.contains(Modifier::BOLD),
+            "title bold"
+        );
         // Blank separator row.
         assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank after title");
         // Args row: `{` in the default text color (no fg override).
         assert_eq!(buf[(1, title_row + 2)].symbol(), "{", "args row");
-        assert_eq!(buf[(1, title_row + 2)].fg, Color::Reset, "args in default text color");
+        assert_eq!(
+            buf[(1, title_row + 2)].fg,
+            Color::Reset,
+            "args in default text color"
+        );
         assert_eq!(buf[(1, title_row + 3)].symbol(), " ", "args indent");
         assert_eq!(buf[(3, title_row + 3)].symbol(), "\"", "args second row");
         assert_eq!(buf[(1, title_row + 4)].symbol(), "}", "args last row");
@@ -5680,11 +6871,19 @@ mod tests {
                 "{\n  \"command\": \"echo hi\",\n  \"timeout\": 30\n}".into(),
             ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-b".into(), "bash".into(), output));
-        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), output),
+        );
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-b".into(), "bash".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Title: `$ echo hi` bold + muted ` (timeout 30s)`.
@@ -5693,7 +6892,10 @@ mod tests {
             .expect("bash title");
         // `$ echo hi` — col 1 = `$`, col 3 = first command char.
         assert_eq!(buf[(3, title_row)].symbol(), "e", "$ command");
-        assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "title bold");
+        assert!(
+            buf[(1, title_row)].modifier.contains(Modifier::BOLD),
+            "title bold"
+        );
         assert_eq!(buf[(11, title_row)].symbol(), "(", "timeout suffix");
         assert_eq!(buf[(11, title_row)].fg, theme::MUTED, "timeout muted");
         assert_eq!(buf[(22, title_row)].symbol(), "s", "timeout unit");
@@ -5716,14 +6918,28 @@ mod tests {
 
         // Ctrl+O expands: all 9 lines, no hint, no skipped count.
         update(&mut model, Msg::ToggleToolExpansion);
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..20)
             .find(|&y| buf[(1, y)].bg == theme::TOOL_SUCCESS_BG && buf[(1, y)].symbol() == "$")
             .expect("bash title expanded");
-        assert_eq!(buf[(1, title_row + 2)].symbol(), "o", "expanded line 1 (out1)");
-        assert_eq!(buf[(1, title_row + 10)].symbol(), "o", "expanded line 9 (out9)");
-        assert_eq!(buf[(2, title_row + 3)].symbol(), "u", "expanded line 2 second char");
+        assert_eq!(
+            buf[(1, title_row + 2)].symbol(),
+            "o",
+            "expanded line 1 (out1)"
+        );
+        assert_eq!(
+            buf[(1, title_row + 10)].symbol(),
+            "o",
+            "expanded line 9 (out9)"
+        );
+        assert_eq!(
+            buf[(2, title_row + 3)].symbol(),
+            "u",
+            "expanded line 2 second char"
+        );
     }
 
     /// A running bash tool shows the live `Elapsed {x.x}s` line (the tick
@@ -5737,11 +6953,17 @@ mod tests {
         model.context_usage_known = true;
         update(
             &mut model,
-            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"sleep 1\"}".into()),
+            Msg::ToolStart(
+                "tc-b".into(),
+                "bash".into(),
+                "{\"command\": \"sleep 1\"}".into(),
+            ),
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Running → `Elapsed` (pending background).
@@ -5768,14 +6990,32 @@ mod tests {
         let mut model = Model::new(100, 60);
         model.context_usage_known = true;
         update(&mut model, Msg::NewMessage("user".into(), "first".into()));
-        update(&mut model, Msg::NewMessage("assistant".into(), "calling tool".into()));
-        update(&mut model, Msg::ToolStart("tc-1".into(), "bash".into(), "{\"command\": \"echo hi\"}".into()));
-        update(&mut model, Msg::SetToolOutput("tc-1".into(), "bash".into(), "hi\n".into()));
-        update(&mut model, Msg::ToolEnd("tc-1".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), "calling tool".into()),
+        );
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-1".into(),
+                "bash".into(),
+                "{\"command\": \"echo hi\"}".into(),
+            ),
+        );
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "hi\n".into()),
+        );
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-1".into(), "bash".into(), false),
+        );
         update(&mut model, Msg::NewMessage("user".into(), "second".into()));
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 60)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Scan the transcript rows (after the header) for the block order.
@@ -5813,13 +7053,19 @@ mod tests {
             Msg::ToolStart(
                 "tc-r".into(),
                 "read".into(),
-                "{\n  \"file_path\": \"/work/src/main.rs\",\n  \"offset\": 10,\n  \"limit\": 5\n}".into(),
+                "{\n  \"file_path\": \"/work/src/main.rs\",\n  \"offset\": 10,\n  \"limit\": 5\n}"
+                    .into(),
             ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-r".into(), "read".into(), "line1\nline2\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-r".into(), "read".into(), "line1\nline2\n".into()),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Title: `read /work/src/main.rs:10-14` — "read" bold, path
@@ -5827,24 +7073,37 @@ mod tests {
         let title_row = (0..20u16)
             .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
             .expect("read title");
-        assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "read bold");
+        assert!(
+            buf[(1, title_row)].modifier.contains(Modifier::BOLD),
+            "read bold"
+        );
         assert_eq!(buf[(6, title_row)].symbol(), "/", "path starts");
         assert_eq!(buf[(6, title_row)].fg, theme::ACCENT, "path accent");
         assert_eq!(buf[(23, title_row)].symbol(), ":", "range starts");
         assert_eq!(buf[(23, title_row)].fg, theme::WARNING, "range warning");
 
         // Collapsed: no output content (title only).
-        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "no content collapsed");
+        assert_eq!(
+            buf[(1, title_row + 1)].symbol(),
+            " ",
+            "no content collapsed"
+        );
         assert_ne!(buf[(1, title_row + 1)].symbol(), "l", "content hidden");
 
         // Expanded: content shows.
         update(&mut model, Msg::ToggleToolExpansion);
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..20u16)
             .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
             .expect("read title expanded");
-        assert_eq!(buf[(1, title_row + 2)].symbol(), "l", "content visible when expanded");
+        assert_eq!(
+            buf[(1, title_row + 2)].symbol(),
+            "l",
+            "content visible when expanded"
+        );
     }
 
     /// Expanded read output shows the **whole** result (TS `formatReadResult`:
@@ -5867,10 +7126,15 @@ mod tests {
             ),
         );
         let output: String = (0..30).map(|i| format!("line{i}\n")).collect();
-        update(&mut model, Msg::SetToolOutput("tc-r2".into(), "read".into(), output));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-r2".into(), "read".into(), output),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 40)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let collapsed = terminal
             .backend()
             .buffer()
@@ -5880,7 +7144,9 @@ mod tests {
             .collect::<String>();
 
         update(&mut model, Msg::ToggleToolExpansion);
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let expanded = terminal
             .backend()
             .buffer()
@@ -5890,10 +7156,16 @@ mod tests {
             .collect::<String>();
 
         // Collapsed: no content at all (title only).
-        assert!(!collapsed.contains("line0"), "collapsed read shows no content");
+        assert!(
+            !collapsed.contains("line0"),
+            "collapsed read shows no content"
+        );
         // Expanded: the last of the 30 lines is rendered, and the preview hint
         // is gone.
-        assert!(expanded.contains("line29"), "expanded read shows the tail of the result");
+        assert!(
+            expanded.contains("line29"),
+            "expanded read shows the tail of the result"
+        );
         assert!(
             !expanded.contains("more lines"),
             "expanded read must not keep the ctrl+o hint"
@@ -5921,7 +7193,9 @@ mod tests {
             ),
         );
         let mut terminal = RatTerminal::new(TestBackend::new(50, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let (rows, text) = collect_bold_title_rows(buf, 50, "r");
         assert!(rows >= 2, "read title must wrap, got {rows} row(s)");
@@ -5944,7 +7218,9 @@ mod tests {
             ),
         );
         let mut terminal = RatTerminal::new(TestBackend::new(50, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let (rows, text) = collect_bold_title_rows(buf, 50, "g");
         assert!(rows >= 2, "grep title must wrap, got {rows} row(s)");
@@ -5953,7 +7229,10 @@ mod tests {
             .filter(|c| !c.is_whitespace())
             .collect();
         let actual: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        assert_eq!(actual, expected, "wrapped grep title preserves pattern/path");
+        assert_eq!(
+            actual, expected,
+            "wrapped grep title preserves pattern/path"
+        );
     }
 
     /// Collect the consecutive non-blank boxed rows starting at the first row
@@ -5962,13 +7241,17 @@ mod tests {
     /// so callers compare with whitespace filtered out.
     fn collect_bold_title_rows(buf: &Buffer, width: u16, first: &str) -> (usize, String) {
         let start = (0..buf.area.height)
-            .find(|&y| buf[(1, y)].symbol() == first && buf[(1, y)].modifier.contains(Modifier::BOLD))
+            .find(|&y| {
+                buf[(1, y)].symbol() == first && buf[(1, y)].modifier.contains(Modifier::BOLD)
+            })
             .expect("tool title row");
         let mut rows = 0;
         let mut text = String::new();
         let mut y = start;
         while y < buf.area.height {
-            let line: String = (1..width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let line: String = (1..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 break;
@@ -5997,10 +7280,15 @@ mod tests {
                 "{\n  \"pattern\": \"TODO\",\n  \"path\": \"src\"\n}".into(),
             ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-g".into(), "grep".into(), "src/main.rs:1:TODO\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-g".into(), "grep".into(), "src/main.rs:1:TODO\n".into()),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..20u16)
@@ -6009,7 +7297,11 @@ mod tests {
         assert_eq!(buf[(6, title_row)].symbol(), "/", "pattern slashes");
         assert_eq!(buf[(6, title_row)].fg, theme::ACCENT, "pattern accent");
         assert_eq!(buf[(13, title_row)].symbol(), "i", "in path");
-        assert_eq!(buf[(13, title_row)].fg, theme::TOOL_OUTPUT, "in path toolOutput");
+        assert_eq!(
+            buf[(13, title_row)].fg,
+            theme::TOOL_OUTPUT,
+            "in path toolOutput"
+        );
         // Output renders below a blank line (grep shows output collapsed).
         assert_eq!(buf[(1, title_row + 2)].symbol(), "s", "grep result line");
     }
@@ -6025,9 +7317,16 @@ mod tests {
         model.context_usage_known = true;
         update(
             &mut model,
-            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"make\"}".into()),
+            Msg::ToolStart(
+                "tc-b".into(),
+                "bash".into(),
+                "{\"command\": \"make\"}".into(),
+            ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-b".into(), "bash".into(), "out\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), "out\n".into()),
+        );
         update(
             &mut model,
             Msg::SetToolTruncation(
@@ -6044,10 +7343,15 @@ mod tests {
                 }),
             ),
         );
-        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-b".into(), "bash".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..20u16)
@@ -6084,15 +7388,15 @@ mod tests {
         let footer = "\n\n[Showing lines 6-10 of 10. Full output: /tmp/pi-bash-x.log]";
         update(
             &mut model,
-            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"make\"}".into()),
+            Msg::ToolStart(
+                "tc-b".into(),
+                "bash".into(),
+                "{\"command\": \"make\"}".into(),
+            ),
         );
         update(
             &mut model,
-            Msg::SetToolOutput(
-                "tc-b".into(),
-                "bash".into(),
-                format!("alpha\nbeta{footer}"),
-            ),
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), format!("alpha\nbeta{footer}")),
         );
         update(
             &mut model,
@@ -6110,10 +7414,15 @@ mod tests {
                 }),
             ),
         );
-        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-b".into(), "bash".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..20u16)
@@ -6122,14 +7431,22 @@ mod tests {
         // The footer must not appear as output text: `S` (Showing) would be
         // its first char, but the only `[` in the block is the warning line.
         let output_row = title_row + 2;
-        assert_eq!(buf[(1, output_row)].symbol(), "a", "alpha first output line");
+        assert_eq!(
+            buf[(1, output_row)].symbol(),
+            "a",
+            "alpha first output line"
+        );
         let footer_start = (0..30u16).find(|&y| buf[(1, y)].symbol() == "S");
         assert_eq!(footer_start, None, "footer stripped from output");
         // The warning line still renders from details (one `[` row only).
         let warn_row = (0..30u16)
             .find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING)
             .expect("warning line");
-        assert_eq!(buf[(2, warn_row)].symbol(), "F", "warning starts Full output");
+        assert_eq!(
+            buf[(2, warn_row)].symbol(),
+            "F",
+            "warning starts Full output"
+        );
     }
 
     /// Tool output is sanitized for display exactly like the TS renderers'
@@ -6145,16 +7462,26 @@ mod tests {
         model.context_usage_known = true;
         update(
             &mut model,
-            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"echo hi\"}".into()),
+            Msg::ToolStart(
+                "tc-b".into(),
+                "bash".into(),
+                "{\"command\": \"echo hi\"}".into(),
+            ),
         );
         // `\x1b[31mred\x1b[0m`, a CRLF, and a raw NUL control char.
         update(
             &mut model,
-            Msg::SetToolOutput("tc-b".into(), "bash".into(), "\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok".into()),
+            Msg::SetToolOutput(
+                "tc-b".into(),
+                "bash".into(),
+                "\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok".into(),
+            ),
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..20u16)
@@ -6181,7 +7508,10 @@ mod tests {
         assert_eq!(visual_lines("aaaa bbbb", 4), vec!["aaaa", "bbbb"]);
         // Long token breaks at the column limit (CJK wide glyph = 2 cols):
         // chunks of ≤6 columns → "你好世"(6) / "界hell"(6) / "o"(1).
-        assert_eq!(visual_lines("你好世界hello", 6), vec!["你好世", "界hell", "o"]);
+        assert_eq!(
+            visual_lines("你好世界hello", 6),
+            vec!["你好世", "界hell", "o"]
+        );
         // Tabs expand to 3 spaces (TS `Text.render`).
         assert_eq!(visual_lines("a\tb", 20), vec!["a   b"]);
         // Trailing whitespace is trimmed.
@@ -6219,7 +7549,9 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let rows: Vec<u16> = (0..24u16)
@@ -6253,16 +7585,25 @@ mod tests {
         model.context_usage_known = true;
         update(
             &mut model,
-            Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"true\"}".into()),
+            Msg::ToolStart(
+                "tc-b".into(),
+                "bash".into(),
+                "{\"command\": \"true\"}".into(),
+            ),
         );
         update(
             &mut model,
             Msg::SetToolOutput("tc-b".into(), "bash".into(), "\n  \n".into()),
         );
-        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-b".into(), "bash".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..20u16)
@@ -6292,7 +7633,10 @@ mod tests {
                 "{\"file_path\": \"/tmp/a.rs\"}".into(),
             ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-r".into(), "read".into(), "line1\nline2\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-r".into(), "read".into(), "line1\nline2\n".into()),
+        );
         update(
             &mut model,
             Msg::SetToolTruncation(
@@ -6309,21 +7653,29 @@ mod tests {
                 }),
             ),
         );
-        update(&mut model, Msg::ToolEnd("tc-r".into(), "read".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-r".into(), "read".into(), false),
+        );
 
         // Collapsed: no content, no warning (TS `formatReadResult` = "").
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let _title_row = (0..20u16)
             .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_SUCCESS_BG)
             .expect("read title");
-        let warn = (0..30u16).find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING);
+        let warn =
+            (0..30u16).find(|&y| buf[(1, y)].symbol() == "[" && buf[(1, y)].fg == theme::WARNING);
         assert_eq!(warn, None, "no warning while collapsed");
 
         // Expanded: content + warning line.
         update(&mut model, Msg::ToggleToolExpansion);
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..20u16)
             .find(|&y| buf[(1, y)].symbol() == "r" && buf[(1, y)].bg == theme::TOOL_SUCCESS_BG)
@@ -6353,7 +7705,10 @@ mod tests {
                 "{\"pattern\": \"TODO\", \"path\": \"src\"}".into(),
             ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-g".into(), "grep".into(), "src/a.rs:1:TODO\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-g".into(), "grep".into(), "src/a.rs:1:TODO\n".into()),
+        );
         update(
             &mut model,
             Msg::SetToolTruncation(
@@ -6371,10 +7726,15 @@ mod tests {
                 }),
             ),
         );
-        update(&mut model, Msg::ToolEnd("tc-g".into(), "grep".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-g".into(), "grep".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let warn_row = (0..30u16)
@@ -6403,23 +7763,38 @@ mod tests {
         model.cwd = "/work".into();
         let content: String = (1..=12).map(|i| format!("line{i}\n")).collect();
         let args = serde_json::json!({"path": "/work/src/main.ts", "content": content}).to_string();
-        update(&mut model, Msg::ToolStart("tc-w".into(), "write".into(), args));
-        update(&mut model, Msg::ToolEnd("tc-w".into(), "write".into(), false));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-w".into(), "write".into(), args),
+        );
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-w".into(), "write".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..24u16)
             .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_SUCCESS_BG)
             .expect("write title");
-        assert!(buf[(1, title_row)].modifier.contains(Modifier::BOLD), "write bold");
+        assert!(
+            buf[(1, title_row)].modifier.contains(Modifier::BOLD),
+            "write bold"
+        );
         assert_eq!(buf[(7, title_row)].symbol(), "/", "path starts");
         assert_eq!(buf[(7, title_row)].fg, theme::ACCENT, "path accent");
         // Blank separator, then the first 10 content lines in toolOutput.
         assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank after title");
         assert_eq!(buf[(1, title_row + 2)].symbol(), "l", "content line 1");
-        assert_eq!(buf[(1, title_row + 2)].fg, theme::TOOL_OUTPUT, "content toolOutput");
+        assert_eq!(
+            buf[(1, title_row + 2)].fg,
+            theme::TOOL_OUTPUT,
+            "content toolOutput"
+        );
         assert_eq!(buf[(1, title_row + 11)].symbol(), "l", "content line 10");
         // More-hint (muted, dim key): `... (2 more lines, 12 total, ctrl+o
         // to expand)`.
@@ -6457,12 +7832,18 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..24u16)
             .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
             .expect("write title");
-        assert_eq!(buf[(7, title_row)].symbol(), "/", "file_path null → path used");
+        assert_eq!(
+            buf[(7, title_row)].symbol(),
+            "/",
+            "file_path null → path used"
+        );
         assert_eq!(buf[(7, title_row)].fg, theme::ACCENT, "path accent");
         // content null → empty string → title only (no invalid-arg error).
         assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "no invalid-arg text");
@@ -6486,23 +7867,43 @@ mod tests {
                 "{\"path\": \"a.txt\", \"content\": \"abc\"}".into(),
             ),
         );
-        update(&mut model, Msg::SetToolOutput("tc-w".into(), "write".into(), "Write error: boom\n".into()));
-        update(&mut model, Msg::ToolEnd("tc-w".into(), "write".into(), true));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-w".into(), "write".into(), "Write error: boom\n".into()),
+        );
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-w".into(), "write".into(), true),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         let title_row = (0..24u16)
             .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_ERROR_BG)
             .expect("write title");
         // Call content: blank + `abc`.
-        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank before content");
+        assert_eq!(
+            buf[(1, title_row + 1)].symbol(),
+            " ",
+            "blank before content"
+        );
         assert_eq!(buf[(1, title_row + 2)].symbol(), "a", "content");
         // Error result: blank + `Write error: boom` in error color.
-        assert_eq!(buf[(1, title_row + 3)].symbol(), " ", "blank before error result");
+        assert_eq!(
+            buf[(1, title_row + 3)].symbol(),
+            " ",
+            "blank before error result"
+        );
         assert_eq!(buf[(1, title_row + 4)].symbol(), "W", "error result");
-        assert_eq!(buf[(1, title_row + 4)].fg, theme::ERROR, "error result color");
+        assert_eq!(
+            buf[(1, title_row + 4)].fg,
+            theme::ERROR,
+            "error result color"
+        );
     }
 
     /// TS `normalizeDisplayText` (drop `\r`), `trimTrailingEmptyLines` and
@@ -6526,7 +7927,9 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..24u16)
             .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
@@ -6534,9 +7937,17 @@ mod tests {
         assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "blank");
         assert_eq!(buf[(1, title_row + 2)].symbol(), "a", "line 1");
         assert_eq!(buf[(1, title_row + 3)].symbol(), "b", "line 2 tab start");
-        assert_eq!(buf[(5, title_row + 3)].symbol(), "c", "tab expanded to 3 spaces");
+        assert_eq!(
+            buf[(5, title_row + 3)].symbol(),
+            "c",
+            "tab expanded to 3 spaces"
+        );
         // Trailing blank lines trimmed: no extra rows after line 2.
-        assert_eq!(buf[(1, title_row + 4)].symbol(), " ", "no trailing blank content");
+        assert_eq!(
+            buf[(1, title_row + 4)].symbol(),
+            " ",
+            "no trailing blank content"
+        );
 
         // Empty content → title only (TS `else if (fileContent)` is falsy).
         let mut model = Model::new(100, 30);
@@ -6550,13 +7961,23 @@ mod tests {
             ),
         );
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..24u16)
             .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
             .expect("write title empty");
-        assert_eq!(buf[(1, title_row + 1)].symbol(), " ", "empty content renders title only");
-        assert_eq!(buf[(1, title_row + 2)].symbol(), " ", "no content rows after");
+        assert_eq!(
+            buf[(1, title_row + 1)].symbol(),
+            " ",
+            "empty content renders title only"
+        );
+        assert_eq!(
+            buf[(1, title_row + 2)].symbol(),
+            " ",
+            "no content rows after"
+        );
     }
 
     /// A non-empty content string that normalizes to zero lines (all blank)
@@ -6580,7 +8001,9 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let title_row = (0..24u16)
             .find(|&y| buf[(1, y)].symbol() == "w" && buf[(1, y)].bg == theme::TOOL_PENDING_BG)
@@ -6599,7 +8022,10 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}[38;5;196mhi\u{1b}[m"), "hi");
         assert_eq!(strip_ansi("\u{1b}]0;title\u{07}plain"), "plain");
         assert_eq!(strip_ansi("no codes"), "no codes");
-        assert_eq!(sanitize_output_text("\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok"), "red\nok");
+        assert_eq!(
+            sanitize_output_text("\u{1b}[31mred\u{1b}[0m\r\n\u{0}ok"),
+            "red\nok"
+        );
     }
 
     /// ratatui 0.29 的 `Terminal` 每帧**不重置 buffer**：diff 渲染只重绘
@@ -6614,35 +8040,58 @@ mod tests {
 
         let mut model = Model::new(100, 30);
         model.context_usage_known = true;
-        update(&mut model, Msg::ToolStart("tc-b".into(), "bash".into(), "{\"command\": \"make\"}".into()));
+        update(
+            &mut model,
+            Msg::ToolStart(
+                "tc-b".into(),
+                "bash".into(),
+                "{\"command\": \"make\"}".into(),
+            ),
+        );
         update(
             &mut model,
             Msg::SetToolOutput("tc-b".into(), "bash".into(), "alpha\nbeta\ngamma\n".into()),
         );
-        update(&mut model, Msg::ToolEnd("tc-b".into(), "bash".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-b".into(), "bash".into(), false),
+        );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
 
         // Frame 1: full output (3 rows) visible.
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let beta_row = (0..30u16)
             .find(|&y| buf[(1, y)].symbol() == "b" && buf[(2, y)].symbol() == "e")
             .expect("beta row frame 1");
 
         // Output shrinks to one line (snapshot replacement semantics).
-        update(&mut model, Msg::SetToolOutput("tc-b".into(), "bash".into(), "alpha\n".into()));
+        update(
+            &mut model,
+            Msg::SetToolOutput("tc-b".into(), "bash".into(), "alpha\n".into()),
+        );
 
         // Frame 2: stale rows must be erased.
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         assert_eq!(buf[(1, beta_row)].symbol(), " ", "beta erased frame 2");
 
         // Frame 3: the erased rows must STAY erased (the old buffer must not
         // resurface the clipped content).
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
-        assert_eq!(buf[(1, beta_row)].symbol(), " ", "beta stays erased frame 3");
+        assert_eq!(
+            buf[(1, beta_row)].symbol(),
+            " ",
+            "beta stays erased frame 3"
+        );
     }
 
     /// 暴力残留检查：把同一最终状态渲染进（a）经历过多次增量绘制的
@@ -6656,13 +8105,32 @@ mod tests {
         fn build() -> (Model, RatTerminal<TestBackend>) {
             let mut model = Model::new(70, 24);
             model.context_usage_known = true;
-            update(&mut model, Msg::NewMessage("user".into(), "**bold** and `code` line with 中文".into()));
-            update(&mut model, Msg::NewMessage("assistant".into(), "Start".into()));
+            update(
+                &mut model,
+                Msg::NewMessage("user".into(), "**bold** and `code` line with 中文".into()),
+            );
+            update(
+                &mut model,
+                Msg::NewMessage("assistant".into(), "Start".into()),
+            );
             update(&mut model, Msg::StreamText(" streaming more words here to wrap across several rows and re-flow as it grows".into()));
             update(&mut model, Msg::StreamEnd);
-            update(&mut model, Msg::ToolStart("tc-1".into(), "bash".into(), "{\"command\":\"make\"}".into()));
-            update(&mut model, Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\ngamma\n".into()));
-            update(&mut model, Msg::ToolEnd("tc-1".into(), "bash".into(), false));
+            update(
+                &mut model,
+                Msg::ToolStart(
+                    "tc-1".into(),
+                    "bash".into(),
+                    "{\"command\":\"make\"}".into(),
+                ),
+            );
+            update(
+                &mut model,
+                Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\ngamma\n".into()),
+            );
+            update(
+                &mut model,
+                Msg::ToolEnd("tc-1".into(), "bash".into(), false),
+            );
             let terminal = RatTerminal::new(TestBackend::new(70, 24)).expect("backend");
             (model, terminal)
         }
@@ -6670,7 +8138,11 @@ mod tests {
         fn grid(term: &RatTerminal<TestBackend>) -> Vec<String> {
             let buf = term.backend().buffer();
             (0..buf.area.height)
-                .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
                 .collect()
         }
 
@@ -6693,10 +8165,16 @@ mod tests {
 
         // Fresh: same message sequence, drawn once.
         let (mut fresh, mut fterm) = build();
-        update(&mut fresh, Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\n".into()));
+        update(
+            &mut fresh,
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\n".into()),
+        );
         update(&mut fresh, Msg::StreamText(" MORE".into()));
         update(&mut fresh, Msg::ToggleToolExpansion);
-        update(&mut fresh, Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\n".into()));
+        update(
+            &mut fresh,
+            Msg::SetToolOutput("tc-1".into(), "bash".into(), "alpha\nbeta\n".into()),
+        );
         update(&mut fresh, Msg::ToggleToolExpansion);
         update(&mut fresh, Msg::ScrollDown(3));
         update(&mut fresh, Msg::ScrollToBottom);
@@ -6727,7 +8205,10 @@ mod tests {
             let mut model = Model::new(W, H);
             model.context_usage_known = true;
             update(&mut model, Msg::NewMessage("user".into(), "please".into()));
-            update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+            update(
+                &mut model,
+                Msg::NewMessage("assistant".into(), String::new()),
+            );
             for d in deltas {
                 update(&mut model, Msg::StreamText((*d).into()));
             }
@@ -6736,7 +8217,11 @@ mod tests {
             term.draw(|f| view(&mut model, f)).expect("fresh draw");
             let buf = term.backend().buffer();
             (0..buf.area.height)
-                .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
                 .collect()
         }
 
@@ -6755,7 +8240,10 @@ mod tests {
         let mut model = Model::new(W, H);
         model.context_usage_known = true;
         update(&mut model, Msg::NewMessage("user".into(), "please".into()));
-        update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), String::new()),
+        );
 
         let mut term = RatTerminal::new(TestBackend::new(W, H)).expect("backend");
         term.draw(|f| view(&mut model, f)).expect("draw0");
@@ -6768,17 +8256,22 @@ mod tests {
             let live = {
                 let buf = term.backend().buffer();
                 (0..buf.area.height)
-                    .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                    .map(|y| {
+                        (0..buf.area.width)
+                            .map(|x| buf[(x, y)].symbol().to_string())
+                            .collect::<String>()
+                    })
                     .collect::<Vec<String>>()
             };
             let fresh = fresh_grid(&seen);
             for (y, (a, b)) in live.iter().zip(fresh.iter()).enumerate() {
-                assert_eq!(a, b, "step {d:?} row {y} residue:\n live={a:?}\n fresh={b:?}");
+                assert_eq!(
+                    a, b,
+                    "step {d:?} row {y} residue:\n live={a:?}\n fresh={b:?}"
+                );
             }
         }
     }
-
-
 
     /// resize 残留检查：同一模型先以 60 列渲染（正文 + 代码块 + 超长代码
     /// 行被裁剪），再以 40 列渲染——结果必须与"全新模型直接以 40 列渲染"
@@ -6798,7 +8291,11 @@ mod tests {
         let grid = |term: &RatTerminal<TestBackend>| -> Vec<String> {
             let buf = term.backend().buffer();
             (0..buf.area.height)
-                .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
                 .collect()
         };
 
@@ -6816,7 +8313,10 @@ mod tests {
 
         let (a, b) = (grid(&t40), grid(&tfresh));
         for (y, (x1, x2)) in a.iter().zip(b.iter()).enumerate() {
-            assert_eq!(x1, x2, "resize residue at row {y}:\n live(40)={x1:?}\n fresh(40)={x2:?}");
+            assert_eq!(
+                x1, x2,
+                "resize residue at row {y}:\n live(40)={x1:?}\n fresh(40)={x2:?}"
+            );
         }
     }
 
@@ -6837,10 +8337,16 @@ mod tests {
         let cmds = handle_key(&mut model, ctrl('c'));
         assert!(cmds.is_empty(), "first ctrl+c must not quit");
         assert_eq!(model.input.value(), "", "ctrl+c clears the editor");
-        assert!(!model.completer.visible, "ctrl+c closes the completer (TS setText cancels autocomplete)");
+        assert!(
+            !model.completer.visible,
+            "ctrl+c closes the completer (TS setText cancels autocomplete)"
+        );
         // 500ms 内再按：退出。
         let cmds = handle_key(&mut model, ctrl('c'));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::Quit)), "second ctrl+c within 500ms quits");
+        assert!(
+            cmds.iter().any(|c| matches!(c, Cmd::Quit)),
+            "second ctrl+c within 500ms quits"
+        );
 
         // Ctrl+D：已移除 app 级拦截（见 DEVIATIONS.md）——无论输入是否为空都
         // 不再退出，而是走编辑器 readline 键位 delete-char-forward（删除光标
@@ -6851,7 +8357,11 @@ mod tests {
         model.input.move_left(); // cursor 在 'c' 与 'd' 之间
         let cmds = handle_key(&mut model, ctrl('d'));
         assert!(cmds.is_empty(), "ctrl+d must not quit");
-        assert_eq!(model.input.value(), "abce", "ctrl+d deletes the char after the cursor");
+        assert_eq!(
+            model.input.value(),
+            "abce",
+            "ctrl+d deletes the char after the cursor"
+        );
         model.input.clear();
         let cmds = handle_key(&mut model, ctrl('d'));
         assert!(cmds.is_empty(), "ctrl+d with empty input must not quit");
@@ -6862,25 +8372,45 @@ mod tests {
         model.input.set_value("");
         let cmds = handle_key(&mut model, ctrl('v'));
         assert!(cmds.is_empty());
-        assert_ne!(model.input.value(), "v", "ctrl+v must not insert a literal v");
+        assert_ne!(
+            model.input.value(),
+            "v",
+            "ctrl+v must not insert a literal v"
+        );
 
         // Ctrl+X：请求宿主复制最后一条 assistant 消息（TS `app.message.copy`）。
         let mut model = Model::new(100, 30);
         let cmds = handle_key(&mut model, ctrl('x'));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)), "ctrl+x requests copy");
+        assert!(
+            cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)),
+            "ctrl+x requests copy"
+        );
 
         // 门控：对话框（AppMode::Editor）打开时，Ctrl+C 不清聊天输入、
         // Ctrl+D 不退出——键交给对话框的 textarea 原生处理。
         let mut model = Model::new(100, 30);
         model.input.set_value("chat");
-        update(&mut model, Msg::OpenEditor("rename".into(), "dialog".into()));
+        update(
+            &mut model,
+            Msg::OpenEditor("rename".into(), "dialog".into()),
+        );
         let cmds = handle_key(&mut model, ctrl('c'));
         assert!(cmds.is_empty());
-        assert_eq!(model.input.value(), "chat", "ctrl+c in dialog mode leaves the chat input alone");
+        assert_eq!(
+            model.input.value(),
+            "chat",
+            "ctrl+c in dialog mode leaves the chat input alone"
+        );
         let cmds = handle_key(&mut model, ctrl('d'));
-        assert!(!cmds.iter().any(|c| matches!(c, Cmd::Quit)), "ctrl+d in dialog mode must not quit");
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Cmd::Quit)),
+            "ctrl+d in dialog mode must not quit"
+        );
         let cmds = handle_key(&mut model, ctrl('x'));
-        assert!(!cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)), "ctrl+x in dialog mode is not app.message.copy");
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Cmd::CopyLastMessage)),
+            "ctrl+x in dialog mode is not app.message.copy"
+        );
     }
 
     /// `ui.setWidget(key, lines, {placement})` renders the lines above/below
@@ -6910,7 +8440,9 @@ mod tests {
             },
         );
         let mut terminal = RatTerminal::new(TestBackend::new(60, 20)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let screen: String = terminal
             .backend()
             .buffer()
@@ -6918,8 +8450,12 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        let above = screen.find("above-widget-line").expect("above widget rendered");
-        let below = screen.find("below-widget-line").expect("below widget rendered");
+        let above = screen
+            .find("above-widget-line")
+            .expect("above widget rendered");
+        let below = screen
+            .find("below-widget-line")
+            .expect("below widget rendered");
         assert!(above < below, "aboveEditor renders first");
 
         // Removing a widget (lines: None) drops it.
@@ -6931,7 +8467,9 @@ mod tests {
                 below_editor: false,
             },
         );
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let screen: String = terminal
             .backend()
             .buffer()
@@ -6983,7 +8521,10 @@ mod tests {
 
         let mut model = Model::new(100, 30);
         model.context_usage_known = true;
-        update(&mut model, Msg::NewMessage("assistant".into(), "Answer text".into()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), "Answer text".into()),
+        );
         update(
             &mut model,
             Msg::MessageEnd {
@@ -6995,16 +8536,29 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
 
         // Thinking FIRST (TS renders content in order — thinking before
         // text): blank separator, then thinking in thinkingText italic.
-        let thinking_row = (0..24).find(|&y| buf[(0, y)].symbol() == "L").expect("thinking row");
-        assert_eq!(buf[(0, thinking_row)].fg, theme::THINKING_TEXT, "thinking color");
-        assert!(buf[(0, thinking_row)].modifier.contains(Modifier::ITALIC), "thinking italic");
+        let thinking_row = (0..24)
+            .find(|&y| buf[(0, y)].symbol() == "L")
+            .expect("thinking row");
+        assert_eq!(
+            buf[(0, thinking_row)].fg,
+            theme::THINKING_TEXT,
+            "thinking color"
+        );
+        assert!(
+            buf[(0, thinking_row)].modifier.contains(Modifier::ITALIC),
+            "thinking italic"
+        );
         // Trailing blank, then the text row.
-        let text_row = (0..24).find(|&y| buf[(0, y)].symbol() == "A").expect("text row");
+        let text_row = (0..24)
+            .find(|&y| buf[(0, y)].symbol() == "A")
+            .expect("text row");
         assert!(text_row > thinking_row, "text below thinking");
         // Blank separator, then the length notice in error color.
         let notice_row = text_row + 2;
@@ -7023,7 +8577,10 @@ mod tests {
 
         let mut model = Model::new(100, 30);
         model.context_usage_known = true;
-        update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), String::new()),
+        );
         update(
             &mut model,
             Msg::MessageEnd {
@@ -7035,13 +8592,11 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
-        let row_text = |y: u16| {
-            (0..100)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        };
+        let row_text = |y: u16| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>();
         let row = (0..30)
             .find(|&y| row_text(y).contains("Error: connection refused"))
             .expect("assistant error notice");
@@ -7060,7 +8615,10 @@ mod tests {
 
         let mut model = Model::new(100, 30);
         model.context_usage_known = true;
-        update(&mut model, Msg::NewMessage("assistant".into(), String::new()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), String::new()),
+        );
         update(
             &mut model,
             Msg::MessageEnd {
@@ -7072,7 +8630,9 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let text = (0..30)
             .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>())
@@ -7090,7 +8650,10 @@ mod tests {
 
         let mut model = Model::new(100, 30);
         model.context_usage_known = true;
-        update(&mut model, Msg::NewMessage("assistant".into(), "partial".into()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), "partial".into()),
+        );
         update(
             &mut model,
             Msg::MessageEnd {
@@ -7102,7 +8665,9 @@ mod tests {
         );
 
         let mut terminal = RatTerminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| view(&mut model, frame)).expect("draw");
+        terminal
+            .draw(|frame| view(&mut model, frame))
+            .expect("draw");
         let buf = terminal.backend().buffer();
         let text = (0..30)
             .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>())
@@ -7119,21 +8684,39 @@ mod tests {
         let mut model = Model::new(60, 12);
         // 造 20 条消息，让内容高度远超视口。
         for i in 0..20 {
-            update(&mut model, Msg::NewMessage("assistant".into(), format!("line-{i:02}")));
+            update(
+                &mut model,
+                Msg::NewMessage("assistant".into(), format!("line-{i:02}")),
+            );
         }
         // 强制低高度视口（6 行正文区）。
         // 跟随底部：可见窗口应显示最新内容（line-19），看不到最早消息。
         let text = render_text(&mut model, 60, 12);
-        assert!(text.contains("line-19"), "follow bottom shows newest: {text:?}");
-        assert!(!text.contains("line-00"), "follow bottom hides oldest: {text:?}");
+        assert!(
+            text.contains("line-19"),
+            "follow bottom shows newest: {text:?}"
+        );
+        assert!(
+            !text.contains("line-00"),
+            "follow bottom hides oldest: {text:?}"
+        );
 
         // 向上滚 6 行：line-13 应可见（line-19 被推出视口外）。
         update(&mut model, Msg::ScrollUp(6));
-        eprintln!("after ScrollUp(6): offset={} auto={}", model.scroll_offset, model.auto_scroll);
+        eprintln!(
+            "after ScrollUp(6): offset={} auto={}",
+            model.scroll_offset, model.auto_scroll
+        );
         let text = render_text(&mut model, 60, 12);
         eprintln!("scrolled text:\n{text}");
-        assert!(text.contains("line-13"), "scroll up shows earlier: {text:?}");
-        assert!(!text.contains("line-19"), "scroll up hides newest: {text:?}");
+        assert!(
+            text.contains("line-13"),
+            "scroll up shows earlier: {text:?}"
+        );
+        assert!(
+            !text.contains("line-19"),
+            "scroll up hides newest: {text:?}"
+        );
 
         // 继续向上滚到顶：最早内容（header）出现，最新内容被推出。
         update(&mut model, Msg::ScrollUp(100));
@@ -7145,17 +8728,29 @@ mod tests {
             text.contains(&version_marker),
             "scroll to top shows oldest (header): {text:?}"
         );
-        assert!(!text.contains("line-19"), "scroll to top hides newest: {text:?}");
+        assert!(
+            !text.contains("line-19"),
+            "scroll to top hides newest: {text:?}"
+        );
 
         // 向下滚回底部：恢复跟随（overscroll re-engage）。
         update(&mut model, Msg::ScrollDown(100));
         let text = render_text(&mut model, 60, 12);
-        assert!(text.contains("line-19"), "scroll down re-engages follow: {text:?}");
+        assert!(
+            text.contains("line-19"),
+            "scroll down re-engages follow: {text:?}"
+        );
 
         // 跟随态下新消息追加到可见底部。
-        update(&mut model, Msg::NewMessage("assistant".into(), "line-20".into()));
+        update(
+            &mut model,
+            Msg::NewMessage("assistant".into(), "line-20".into()),
+        );
         let text = render_text(&mut model, 60, 12);
-        assert!(text.contains("line-20"), "follow appends new content: {text:?}");
+        assert!(
+            text.contains("line-20"),
+            "follow appends new content: {text:?}"
+        );
     }
 
     /// 内容不足一屏时：不滚动，全部可见。
@@ -7163,11 +8758,17 @@ mod tests {
     fn internal_scrollback_fits_viewport_shows_all() {
         let mut model = Model::new(60, 12);
         for i in 0..3 {
-            update(&mut model, Msg::NewMessage("assistant".into(), format!("msg-{i}")));
+            update(
+                &mut model,
+                Msg::NewMessage("assistant".into(), format!("msg-{i}")),
+            );
         }
         let text = render_text(&mut model, 60, 12);
         for i in 0..3 {
-            assert!(text.contains(&format!("msg-{i}")), "msg-{i} visible: {text:?}");
+            assert!(
+                text.contains(&format!("msg-{i}")),
+                "msg-{i} visible: {text:?}"
+            );
         }
     }
 
@@ -7178,23 +8779,41 @@ mod tests {
     fn plain_g_inserts_and_home_end_scroll() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let mut model = Model::new(60, 12);
-        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)));
-        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)));
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)),
+        );
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
+        );
         assert_eq!(model.input.value(), "go", "leading g must be inserted");
         model.input.clear();
-        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE)));
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE)),
+        );
         assert_eq!(model.input.value(), "G", "G inserts literally");
 
         // 空输入时 Home/End 仍是转录滚动（TS altScreen top/bottom）。
         model.input.clear();
         for i in 0..20 {
-            update(&mut model, Msg::NewMessage("assistant".into(), format!("line-{i:02}")));
+            update(
+                &mut model,
+                Msg::NewMessage("assistant".into(), format!("line-{i:02}")),
+            );
         }
         let _ = render_text(&mut model, 60, 12);
-        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        );
         assert_eq!(model.scroll_offset, 0, "Home scrolls to top");
         assert!(!model.auto_scroll, "Home stops following");
-        update(&mut model, Msg::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        );
         assert!(model.auto_scroll, "End re-engages follow");
     }
 
@@ -7267,9 +8886,19 @@ mod tests {
     #[test]
     fn secret_input_mode_lifecycle() {
         let mut model = Model::new(100, 30);
-        update(&mut model, Msg::OpenSecretInput("Login to Anthropic".into(), "Enter Anthropic API key".into()));
+        update(
+            &mut model,
+            Msg::OpenSecretInput(
+                "Login to Anthropic".into(),
+                "Enter Anthropic API key".into(),
+            ),
+        );
         match &model.mode {
-            AppMode::Secret { title, message, value } => {
+            AppMode::Secret {
+                title,
+                message,
+                value,
+            } => {
                 assert_eq!(title, "Login to Anthropic");
                 assert_eq!(message, "Enter Anthropic API key");
                 assert!(value.is_empty());
@@ -7277,14 +8906,20 @@ mod tests {
             _ => panic!("expected AppMode::Secret"),
         }
         // Characters append to the masked value; Backspace removes them.
-        handle_key(&mut model, crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('k'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        handle_key(&mut model, crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Backspace,
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        handle_key(
+            &mut model,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('k'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        handle_key(
+            &mut model,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Backspace,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
         match &model.mode {
             AppMode::Secret { value, .. } => assert!(value.is_empty()),
             _ => panic!("expected AppMode::Secret"),
@@ -7300,7 +8935,10 @@ mod tests {
         let mut model = Model::new(100, 30);
         update(
             &mut model,
-            Msg::OpenSecretInput("Login to Anthropic".into(), "Enter Anthropic API key".into()),
+            Msg::OpenSecretInput(
+                "Login to Anthropic".into(),
+                "Enter Anthropic API key".into(),
+            ),
         );
         model.input.set_value("chat");
         update(&mut model, Msg::Paste("sk-ant-api\r\nkey\t".into()));
@@ -7308,7 +8946,11 @@ mod tests {
             AppMode::Secret { value, .. } => assert_eq!(value, "sk-ant-apikey    "),
             _ => panic!("expected AppMode::Secret"),
         }
-        assert_eq!(model.input.value(), "chat", "chat input untouched in secret mode");
+        assert_eq!(
+            model.input.value(),
+            "chat",
+            "chat input untouched in secret mode"
+        );
     }
 
     #[test]
@@ -7321,7 +8963,12 @@ mod tests {
     // ============================================================
 
     fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
-        MouseEvent { kind, column: col, row, modifiers: crossterm::event::KeyModifiers::NONE }
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
     }
 
     fn render_to_buffer(model: &mut Model) -> Buffer {
@@ -7392,7 +9039,10 @@ mod tests {
         let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 7, 0));
         match cmds.as_slice() {
             [Cmd::CopySelection(text)] => {
-                assert_eq!(text, "你好世界", "wide glyphs must not gain filler spaces: {text:?}")
+                assert_eq!(
+                    text, "你好世界",
+                    "wide glyphs must not gain filler spaces: {text:?}"
+                )
             }
             other => panic!("expected CopySelection, got {other:?}"),
         }
@@ -7563,7 +9213,11 @@ mod tests {
         let space = model.selection_space_at(col, row);
         assert_eq!(space, SelSpace::Screen, "editor dock is screen space");
         model.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), col, row));
-        model.handle_mouse(&mouse(MouseEventKind::Drag(MouseButton::Left), col + 11, row));
+        model.handle_mouse(&mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            col + 11,
+            row,
+        ));
         let cmds = model.handle_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), col + 11, row));
         match cmds.as_slice() {
             [Cmd::CopySelection(text)] => assert_eq!(text, "hello world"),
@@ -7576,31 +9230,36 @@ mod tests {
     #[test]
     fn custom_tool_render_draws_all_sections() {
         let mut model = Model::new(80, 24);
-        model.set_custom_tool_render(Some(Arc::new(
-            |input: &CustomToolRenderInput<'_>| {
-                let span = |style, text: String| CustomSpan { style, text };
-                Some(ToolCustomRender {
-                    title: vec![
-                        span(
-                            CustomTextStyle::Success,
-                            if input.expanded { "TITLE-x".into() } else { "TITLE-c".into() },
-                        ),
-                        span(CustomTextStyle::Accent, format!(" {}", input.name)),
-                    ],
-                    blocks: vec![
-                        CustomBlock::Line(vec![
-                            span(CustomTextStyle::Muted, "SUB details=".into()),
-                            span(CustomTextStyle::Dim, input.details.is_some().to_string()),
-                        ]),
-                        CustomBlock::Spacer,
-                        CustomBlock::Markdown(format!("**BODY** {}", input.output.trim())),
-                        CustomBlock::Spacer,
-                        CustomBlock::Line(vec![span(CustomTextStyle::Dim, "FOOT usage".into())]),
-                    ],
-                })
-            },
-        )));
-        update(&mut model, Msg::ToolStart("tc-1".into(), "subagent".into(), "{}".into()));
+        model.set_custom_tool_render(Some(Arc::new(|input: &CustomToolRenderInput<'_>| {
+            let span = |style, text: String| CustomSpan { style, text };
+            Some(ToolCustomRender {
+                title: vec![
+                    span(
+                        CustomTextStyle::Success,
+                        if input.expanded {
+                            "TITLE-x".into()
+                        } else {
+                            "TITLE-c".into()
+                        },
+                    ),
+                    span(CustomTextStyle::Accent, format!(" {}", input.name)),
+                ],
+                blocks: vec![
+                    CustomBlock::Line(vec![
+                        span(CustomTextStyle::Muted, "SUB details=".into()),
+                        span(CustomTextStyle::Dim, input.details.is_some().to_string()),
+                    ]),
+                    CustomBlock::Spacer,
+                    CustomBlock::Markdown(format!("**BODY** {}", input.output.trim())),
+                    CustomBlock::Spacer,
+                    CustomBlock::Line(vec![span(CustomTextStyle::Dim, "FOOT usage".into())]),
+                ],
+            })
+        })));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-1".into(), "subagent".into(), "{}".into()),
+        );
         update(
             &mut model,
             Msg::SetToolDetails("tc-1".into(), Some(serde_json::json!({ "mode": "single" }))),
@@ -7609,7 +9268,10 @@ mod tests {
             &mut model,
             Msg::SetToolOutput("tc-1".into(), "subagent".into(), "final answer\n".into()),
         );
-        update(&mut model, Msg::ToolEnd("tc-1".into(), "subagent".into(), false));
+        update(
+            &mut model,
+            Msg::ToolEnd("tc-1".into(), "subagent".into(), false),
+        );
 
         let buf = render_to_buffer(&mut model);
         let screen: String = (0..model.height)
@@ -7617,12 +9279,21 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(screen.contains("TITLE-c subagent"), "custom title: {screen}");
+        assert!(
+            screen.contains("TITLE-c subagent"),
+            "custom title: {screen}"
+        );
         assert!(screen.contains("SUB details=true"), "line block: {screen}");
-        assert!(screen.contains("BODY final answer"), "markdown block: {screen}");
+        assert!(
+            screen.contains("BODY final answer"),
+            "markdown block: {screen}"
+        );
         assert!(screen.contains("FOOT usage"), "footer block: {screen}");
         // 自定义 renderer 取代 fallback：不会再把 args JSON 打出来。
-        assert!(!screen.contains("{}"), "fallback args must not render: {screen}");
+        assert!(
+            !screen.contains("{}"),
+            "fallback args must not render: {screen}"
+        );
 
         // Ctrl+O（展开）会把 expanded 传给扩展，标题随之变化。
         update(&mut model, Msg::ToggleToolExpansion);
@@ -7631,17 +9302,21 @@ mod tests {
             .map(|y| buffer_row_text(&buf, 0, y, model.width))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(screen.contains("TITLE-x subagent"), "expanded flag: {screen}");
+        assert!(
+            screen.contains("TITLE-x subagent"),
+            "expanded flag: {screen}"
+        );
     }
 
     /// 自定义 renderer 返回 `None`（或未注册）时退回内置 fallback 渲染。
     #[test]
     fn custom_tool_render_none_falls_back() {
         let mut model = Model::new(80, 24);
-        model.set_custom_tool_render(Some(Arc::new(
-            |_input: &CustomToolRenderInput<'_>| None,
-        )));
-        update(&mut model, Msg::ToolStart("tc-1".into(), "weird".into(), "{\"a\":1}".into()));
+        model.set_custom_tool_render(Some(Arc::new(|_input: &CustomToolRenderInput<'_>| None)));
+        update(
+            &mut model,
+            Msg::ToolStart("tc-1".into(), "weird".into(), "{\"a\":1}".into()),
+        );
         let buf = render_to_buffer(&mut model);
         let screen: String = (0..model.height)
             .map(|y| buffer_row_text(&buf, 0, y, model.width))
@@ -7669,9 +9344,16 @@ mod tests {
                 details: Some(serde_json::json!({ "mode": "single" })),
             },
         ]);
-        let tool = model.active_tools.iter().find(|t| t.call_id == "tc-1").unwrap();
+        let tool = model
+            .active_tools
+            .iter()
+            .find(|t| t.call_id == "tc-1")
+            .unwrap();
         assert_eq!(
-            tool.details.as_ref().and_then(|d| d.get("mode")).and_then(|m| m.as_str()),
+            tool.details
+                .as_ref()
+                .and_then(|d| d.get("mode"))
+                .and_then(|m| m.as_str()),
             Some("single")
         );
     }

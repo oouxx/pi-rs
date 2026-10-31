@@ -48,7 +48,11 @@ pub fn build_initial_message(input: InitialMessageInput<'_>) -> InitialMessageRe
     }
 
     InitialMessageResult {
-        initial_message: if parts.is_empty() { None } else { Some(parts.join("")) },
+        initial_message: if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(""))
+        },
         initial_images: images,
     }
 }

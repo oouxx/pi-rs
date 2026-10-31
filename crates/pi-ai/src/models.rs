@@ -8,7 +8,9 @@ static MODEL_REGISTRY: std::sync::LazyLock<RwLock<HashMap<String, HashMap<String
 
 /// Register a single model in the runtime registry.
 pub fn register_model(model: Model) {
-    let mut reg = MODEL_REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reg = MODEL_REGISTRY
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reg.entry(model.provider.clone())
         .or_default()
         .insert(model.id.clone(), model);
@@ -23,19 +25,25 @@ pub fn register_models(models: Vec<Model>) {
 
 /// Look up a model by provider and model ID.
 pub fn get_model(provider: &str, model_id: &str) -> Option<Model> {
-    let reg = MODEL_REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reg = MODEL_REGISTRY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reg.get(provider)?.get(model_id).cloned()
 }
 
 /// List all known provider names.
 pub fn get_providers() -> Vec<String> {
-    let reg = MODEL_REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reg = MODEL_REGISTRY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reg.keys().cloned().collect()
 }
 
 /// List all models for a given provider.
 pub fn get_models(provider: &str) -> Vec<Model> {
-    let reg = MODEL_REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reg = MODEL_REGISTRY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reg.get(provider)
         .map(|m| m.values().cloned().collect())
         .unwrap_or_default()
@@ -79,7 +87,9 @@ pub fn calculate_cost(model: &Model, usage: &mut Usage) {
     let mut rates = CostRates::from_cost(&model.cost);
     let mut matched_threshold: i64 = -1;
     for tier in &model.cost.tiers {
-        if input_tokens > tier.input_tokens_above && tier.input_tokens_above as i64 > matched_threshold {
+        if input_tokens > tier.input_tokens_above
+            && tier.input_tokens_above as i64 > matched_threshold
+        {
             rates = CostRates::from_tier(tier);
             matched_threshold = tier.input_tokens_above as i64;
         }
@@ -89,17 +99,19 @@ pub fn calculate_cost(model: &Model, usage: &mut Usage) {
     usage.cost.input = (rates.input / 1_000_000.0) * usage.input as f64;
     usage.cost.output = (rates.output / 1_000_000.0) * usage.output as f64;
     usage.cost.cache_read = (rates.cache_read / 1_000_000.0) * usage.cache_read as f64;
-    usage.cost.cache_write =
-        (rates.cache_write * short_write as f64 + rates.input * 2.0 * long_write as f64) / 1_000_000.0;
+    usage.cost.cache_write = (rates.cache_write * short_write as f64
+        + rates.input * 2.0 * long_write as f64)
+        / 1_000_000.0;
     usage.cost.total =
         usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
 }
 
 /// Extended thinking levels in order from least to most thinking.
-pub const EXTENDED_THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const EXTENDED_THINKING_LEVELS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Get the thinking levels supported by a model.
-#[must_use] 
+#[must_use]
 pub fn get_supported_thinking_levels(model: &Model) -> Vec<&'static str> {
     if !model.reasoning {
         return vec!["off"];
@@ -121,7 +133,7 @@ pub fn get_supported_thinking_levels(model: &Model) -> Vec<&'static str> {
 }
 
 /// Clamp a requested thinking level to the nearest available level.
-#[must_use] 
+#[must_use]
 pub fn clamp_thinking_level(model: &Model, level: &str) -> String {
     let available = get_supported_thinking_levels(model);
     if available.contains(&level) {
@@ -145,7 +157,7 @@ pub fn clamp_thinking_level(model: &Model, level: &str) -> String {
 }
 
 /// Check if two models are equal by comparing both id and provider.
-#[must_use] 
+#[must_use]
 pub fn models_are_equal(a: Option<&Model>, b: Option<&Model>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => a.id == b.id && a.provider == b.provider,
@@ -202,7 +214,15 @@ mod tests {
         // short write = 100 - 40 = 60 at cacheWrite rate; long write = 40 at 2x input.
         let expected_cache_write = (6.0 * 60.0 + 3.0 * 2.0 * 40.0) / 1_000_000.0;
         assert!((usage.cost.cache_write - expected_cache_write).abs() < 1e-9);
-        assert!((usage.cost.total - (usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write)).abs() < 1e-9);
+        assert!(
+            (usage.cost.total
+                - (usage.cost.input
+                    + usage.cost.output
+                    + usage.cost.cache_read
+                    + usage.cost.cache_write))
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]

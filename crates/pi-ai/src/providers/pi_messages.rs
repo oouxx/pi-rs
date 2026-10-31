@@ -157,7 +157,7 @@ impl PiMessagesConverter {
     fn new(model: &Model) -> Self {
         Self {
             partial: AssistantMessage {
-        provider_thinking_level: None,
+                provider_thinking_level: None,
                 content: vec![],
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -218,7 +218,10 @@ impl PiMessagesConverter {
                     partial: self.partial.clone(),
                 }
             }
-            PiMessagesEvent::TextDelta { content_index, delta } => {
+            PiMessagesEvent::TextDelta {
+                content_index,
+                delta,
+            } => {
                 if let Some(ContentBlock::Text { text, .. }) =
                     self.partial.content.get_mut(content_index)
                 {
@@ -264,7 +267,10 @@ impl PiMessagesConverter {
                     partial: self.partial.clone(),
                 }
             }
-            PiMessagesEvent::ThinkingDelta { content_index, delta } => {
+            PiMessagesEvent::ThinkingDelta {
+                content_index,
+                delta,
+            } => {
                 if let Some(ContentBlock::Thinking { thinking, .. }) =
                     self.partial.content.get_mut(content_index)
                 {
@@ -320,10 +326,16 @@ impl PiMessagesConverter {
                     partial: self.partial.clone(),
                 }
             }
-            PiMessagesEvent::ToolcallDelta { content_index, delta } => {
+            PiMessagesEvent::ToolcallDelta {
+                content_index,
+                delta,
+            } => {
                 let json = format!(
                     "{}{}",
-                    self.tool_json.get(&content_index).cloned().unwrap_or_default(),
+                    self.tool_json
+                        .get(&content_index)
+                        .cloned()
+                        .unwrap_or_default(),
                     delta
                 );
                 self.tool_json.insert(content_index, json.clone());
@@ -697,7 +709,7 @@ pub fn stream_pi_messages(
                 StopReason::Error
             };
             let mut error_message = AssistantMessage {
-        provider_thinking_level: None,
+                provider_thinking_level: None,
                 content: vec![],
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -811,7 +823,7 @@ async fn stream_pi_messages_inner(
     }
     let response = {
         use crate::utils::provider_retry::{
-            ProviderHttpError, RetryProviderOptions, retry_provider_request,
+            retry_provider_request, ProviderHttpError, RetryProviderOptions,
         };
         let request = request.build()?;
         let request_ref = &request;
@@ -824,10 +836,9 @@ async fn stream_pi_messages_inner(
                     let req = request_ref.try_clone().ok_or_else(|| {
                         ProviderHttpError::new(None, "request body not cloneable")
                     })?;
-                    let response = client
-                        .execute(req)
-                        .await
-                        .map_err(|e| ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string()))?;
+                    let response = client.execute(req).await.map_err(|e| {
+                        ProviderHttpError::new(e.status().map(|s| s.as_u16()), e.to_string())
+                    })?;
                     let status = response.status();
                     let headers = response.headers().clone();
                     if !status.is_success() {
@@ -840,10 +851,8 @@ async fn stream_pi_messages_inner(
                             &status_text,
                             &body,
                         );
-                        let mut err = ProviderHttpError::new(
-                            Some(status.as_u16()),
-                            pme.to_string(),
-                        );
+                        let mut err =
+                            ProviderHttpError::new(Some(status.as_u16()), pme.to_string());
                         err.source = Some(Box::new(pme));
                         err.retry_after_ms = headers
                             .get("retry-after-ms")
@@ -928,7 +937,8 @@ pub fn stream_simple_pi_messages(
     // Route through the shared helper (match TS `buildBaseOptions`) so
     // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
     // `reasoning_effort` and `thinking_budgets` are preserved.
-    let full_opts = crate::providers::simple_options::build_base_options(model, context, options, None);
+    let full_opts =
+        crate::providers::simple_options::build_base_options(model, context, options, None);
     stream_pi_messages(model, context, Some(&full_opts))
 }
 
@@ -974,7 +984,10 @@ mod tests {
         let raw = "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"Hello\"}\n";
         let event = parse_pi_messages_event(raw).unwrap();
         match event {
-            PiMessagesEvent::TextDelta { content_index, delta } => {
+            PiMessagesEvent::TextDelta {
+                content_index,
+                delta,
+            } => {
                 assert_eq!(content_index, 0);
                 assert_eq!(delta, "Hello");
             }
@@ -1028,7 +1041,11 @@ mod tests {
             AssistantMessageEvent::Done { message, .. } => {
                 assert_eq!(message.content.len(), 1);
                 match &message.content[0] {
-                    ContentBlock::Text { text, text_signature, .. } => {
+                    ContentBlock::Text {
+                        text,
+                        text_signature,
+                        ..
+                    } => {
                         assert_eq!(text, "Hello world");
                         assert_eq!(text_signature.as_deref(), Some("sig-1"));
                     }
@@ -1083,21 +1100,24 @@ mod tests {
         }
         // toolcall_delta parses the accumulated JSON incrementally.
         match &converted[2] {
-            AssistantMessageEvent::ToolCallDelta { partial, .. } => {
-                match &partial.content[0] {
-                    ContentBlock::ToolCall { arguments, .. } => {
-                        assert_eq!(arguments, &json!({"city": "NYC"}));
-                    }
-                    _ => panic!("expected tool call block"),
+            AssistantMessageEvent::ToolCallDelta { partial, .. } => match &partial.content[0] {
+                ContentBlock::ToolCall { arguments, .. } => {
+                    assert_eq!(arguments, &json!({"city": "NYC"}));
                 }
-            }
+                _ => panic!("expected tool call block"),
+            },
             _ => panic!("expected toolcall_delta"),
         }
         match converted.last().unwrap() {
             AssistantMessageEvent::Done { message, .. } => {
                 assert_eq!(message.stop_reason, StopReason::ToolUse);
                 match &message.content[0] {
-                    ContentBlock::ToolCall { id, name, arguments, .. } => {
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } => {
                         assert_eq!(id, "call_1");
                         assert_eq!(name, "get_weather");
                         assert_eq!(arguments, &json!({"city": "NYC"}));
@@ -1147,7 +1167,8 @@ mod tests {
     fn test_error_body_parsing() {
         let body = r#"{"error":{"message":"bad request","code":"E123"}}"#;
         let error_body = parse_pi_messages_error_body(body).unwrap();
-        let message = format_pi_messages_response_error(400, "Bad Request", body, Some(&error_body));
+        let message =
+            format_pi_messages_response_error(400, "Bad Request", body, Some(&error_body));
         assert!(message.contains("bad request"));
         assert!(message.contains("E123"));
         // Non-object error field is not parsed.
@@ -1164,7 +1185,10 @@ mod tests {
             "Bad Gateway",
             r#"{"error":{"message":"upstream failed","code":"E_UPSTREAM"}}"#,
         );
-        assert_eq!(err.to_string(), "502 Bad Gateway: upstream failed (E_UPSTREAM)");
+        assert_eq!(
+            err.to_string(),
+            "502 Bad Gateway: upstream failed (E_UPSTREAM)"
+        );
         assert_eq!(err.code.as_deref(), Some("E_UPSTREAM"));
         let details = &err.diagnostic_details;
         assert_eq!(details["version"], 1);
@@ -1174,7 +1198,8 @@ mod tests {
         assert!(details.contains_key("error"));
         assert!(!details.contains_key("body"));
         // Non-JSON bodies attach the truncated body instead.
-        let err = create_pi_messages_response_error(&model, "u", 500, "Internal Server Error", "oops");
+        let err =
+            create_pi_messages_response_error(&model, "u", 500, "Internal Server Error", "oops");
         assert!(err.diagnostic_details.contains_key("body"));
         assert!(!err.diagnostic_details.contains_key("error"));
     }

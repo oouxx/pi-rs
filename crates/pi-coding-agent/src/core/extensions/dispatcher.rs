@@ -70,7 +70,10 @@ pub enum InputEventResult {
     /// Input was handled by an extension (e.g., a command).
     Handled,
     /// Input was not handled; continue with the original or modified text.
-    Continue { text: String, images: Option<Vec<ContentBlock>> },
+    Continue {
+        text: String,
+        images: Option<Vec<ContentBlock>>,
+    },
 }
 
 // ============================================================================
@@ -101,14 +104,12 @@ pub async fn dispatch_tool_call(
         .run_before_tool_call(ctx.tool_call.name.clone(), ctx.args.clone(), ext_ctx)
         .await;
     match result {
-        crate::core::extensions::HookResult::Cancel(reason) => {
-            Some(BeforeToolCallResult {
-                block: true,
-                reason: Some(reason),
-                modified_args: None,
-                terminate: None,
-            })
-        }
+        crate::core::extensions::HookResult::Cancel(reason) => Some(BeforeToolCallResult {
+            block: true,
+            reason: Some(reason),
+            modified_args: None,
+            terminate: None,
+        }),
         crate::core::extensions::HookResult::Continue((_name, args)) => {
             // Check if args were modified by the hook chain
             if args != ctx.args {
@@ -158,25 +159,38 @@ pub async fn dispatch_tool_result(
         .await;
     // Then run the modifying hook to allow extensions to merge content/details/isError
     // Convert ContentBlock → Value for the hook (pi-extension-api can't depend on pi-agent-core)
-    let content_json: Vec<serde_json::Value> = ctx.result.content
+    let content_json: Vec<serde_json::Value> = ctx
+        .result
+        .content
         .iter()
         .map(|c| serde_json::to_value(c).unwrap_or_default())
         .collect();
     let details = Some(ctx.result.details.clone());
     let result = registry
         .hook_runner()
-        .run_on_tool_result(&ctx.tool_call.name, content_json, details, ctx.is_error, ext_ctx)
+        .run_on_tool_result(
+            &ctx.tool_call.name,
+            content_json,
+            details,
+            ctx.is_error,
+            ext_ctx,
+        )
         .await;
     match result {
         HookResult::Continue((content_json, details, is_error)) => {
             // Convert Value → ContentBlock for AfterToolCallResult
-            let original_content_json: Vec<serde_json::Value> = ctx.result.content
+            let original_content_json: Vec<serde_json::Value> = ctx
+                .result
+                .content
                 .iter()
                 .map(|c| serde_json::to_value(c).unwrap_or_default())
                 .collect();
             let original_details = Some(ctx.result.details.clone());
             // Check if anything was actually modified
-            if content_json != original_content_json || details != original_details || is_error != ctx.is_error {
+            if content_json != original_content_json
+                || details != original_details
+                || is_error != ctx.is_error
+            {
                 let content: Vec<ContentBlock> = content_json
                     .into_iter()
                     .filter_map(|v| serde_json::from_value(v).ok())
@@ -355,10 +369,9 @@ pub async fn dispatch_session_before_compact(
 // ============================================================================
 
 /// Dispatch `session_compact` event to extensions via HookRunner.
-pub async fn dispatch_session_compact(
-    params: DispatchSessionCompactParams<'_>,
-) {
-    params.registry
+pub async fn dispatch_session_compact(params: DispatchSessionCompactParams<'_>) {
+    params
+        .registry
         .hook_runner()
         .fire_compact(params.summary, params.tokens_before, Some(params.ext_ctx))
         .await;
@@ -461,28 +474,41 @@ pub struct BeforeAgentStartResult {
 pub async fn dispatch_before_agent_start(
     params: DispatchBeforeAgentStartParams<'_>,
 ) -> BeforeAgentStartResult {
-    let prompt = params.messages.first().and_then(|m| {
-        if let AgentMessage::User { content, .. } = m {
-            content.first().and_then(|b| {
-                if let ContentBlock::Text { text, .. } = b {
-                    Some(text.clone())
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        }
-    }).unwrap_or_default();
+    let prompt = params
+        .messages
+        .first()
+        .and_then(|m| {
+            if let AgentMessage::User { content, .. } = m {
+                content.first().and_then(|b| {
+                    if let ContentBlock::Text { text, .. } = b {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
 
     // Convert images to Value for the hook system
     let images_value: Option<Vec<serde_json::Value>> = params.images.map(|imgs| {
-        imgs.iter().map(|img| serde_json::to_value(img).unwrap_or_default()).collect()
+        imgs.iter()
+            .map(|img| serde_json::to_value(img).unwrap_or_default())
+            .collect()
     });
 
-    let result = params.registry
+    let result = params
+        .registry
         .hook_runner()
-        .run_before_agent_start(prompt, images_value, params.system_prompt.to_string(), params.system_prompt_options.clone(), params.ext_ctx)
+        .run_before_agent_start(
+            prompt,
+            images_value,
+            params.system_prompt.to_string(),
+            params.system_prompt_options.clone(),
+            params.ext_ctx,
+        )
         .await;
     match result {
         HookResult::Cancel(_) => BeforeAgentStartResult {
@@ -502,7 +528,7 @@ pub async fn dispatch_before_agent_start(
                 system_prompt,
                 messages: msgs,
             }
-        },
+        }
     }
 }
 
@@ -514,15 +540,16 @@ pub async fn dispatch_before_agent_start(
 ///
 /// Returns `InputEventResult::Handled` if an extension handled the input,
 /// or `InputEventResult::Continue { text }` with the (possibly modified) text.
-pub async fn dispatch_input(
-    params: DispatchInputParams<'_>,
-) -> InputEventResult {
+pub async fn dispatch_input(params: DispatchInputParams<'_>) -> InputEventResult {
     // Convert images to Value for the hook system
     let images_value: Option<Vec<serde_json::Value>> = params.images.map(|imgs| {
-        imgs.iter().map(|img| serde_json::to_value(img).unwrap_or_default()).collect()
+        imgs.iter()
+            .map(|img| serde_json::to_value(img).unwrap_or_default())
+            .collect()
     });
 
-    let result = params.registry
+    let result = params
+        .registry
         .hook_runner()
         .run_on_input(
             params.text.to_string(),
@@ -543,9 +570,7 @@ pub async fn dispatch_input(
             });
             InputEventResult::Continue { text, images }
         }
-        crate::core::extensions::HookResult::Cancel(_reason) => {
-            InputEventResult::Handled
-        }
+        crate::core::extensions::HookResult::Cancel(_reason) => InputEventResult::Handled,
     }
 }
 
@@ -554,12 +579,16 @@ pub async fn dispatch_input(
 // ============================================================================
 
 /// Dispatch `model_select` event to extensions via HookRunner.
-pub async fn dispatch_model_select(
-    params: DispatchModelSelectParams<'_>,
-) {
-    params.registry
+pub async fn dispatch_model_select(params: DispatchModelSelectParams<'_>) {
+    params
+        .registry
         .hook_runner()
-        .fire_model_select(params.model, params.previous_model, params.source, Some(params.ext_ctx))
+        .fire_model_select(
+            params.model,
+            params.previous_model,
+            params.source,
+            Some(params.ext_ctx),
+        )
         .await;
 }
 
@@ -568,10 +597,9 @@ pub async fn dispatch_model_select(
 // ============================================================================
 
 /// Dispatch `thinking_level_select` event to extensions via HookRunner.
-pub async fn dispatch_thinking_level_select(
-    params: DispatchThinkingLevelSelectParams<'_>,
-) {
-    params.registry
+pub async fn dispatch_thinking_level_select(params: DispatchThinkingLevelSelectParams<'_>) {
+    params
+        .registry
         .hook_runner()
         .fire_thinking_level_select(params.level, params.previous_level, Some(params.ext_ctx))
         .await;
@@ -666,8 +694,6 @@ pub async fn dispatch_after_provider_response(
         .run_after_provider_response(status, headers, ext_ctx)
         .await;
 }
-
-
 
 // ============================================================================
 // Extension tool execution dispatch

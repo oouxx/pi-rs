@@ -63,8 +63,8 @@ async fn create_test_session(
                 output: 0.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
-                        tiers: vec![],
-},
+                tiers: vec![],
+            },
             context_window: 128000,
             max_tokens: 4096,
             sampling_params: None,
@@ -193,10 +193,7 @@ async fn test_extension_queue_follow_up_mirrors_text_for_editor_restore() {
     // 文本并清空镜像。
     let (steering, follow_up) = session.clear_all_queues().await;
     assert!(steering.is_empty());
-    assert_eq!(
-        follow_up,
-        vec!["queued continuation".to_string()]
-    );
+    assert_eq!(follow_up, vec!["queued continuation".to_string()]);
     assert_eq!(session.pending_message_count(), 0);
 }
 
@@ -472,9 +469,7 @@ async fn test_create_agent_session_runtime() {
 #[tokio::test]
 async fn test_extension_action_bus_drain_and_state_refresh() {
     use pi_coding_agent::core::agent_session::AgentSessionConfig;
-    use pi_coding_agent::core::extensions::action_bus::{
-        ExtensionAction, ExtensionActionSender,
-    };
+    use pi_coding_agent::core::extensions::action_bus::{ExtensionAction, ExtensionActionSender};
     use pi_coding_agent::core::extensions::ExtensionRegistry;
     use pi_coding_agent::core::model_registry::ModelRegistry;
 
@@ -551,8 +546,8 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
         extension_action_rx: Some(rx),
     };
 
-    let session = AgentSession::new(session_manager, settings_manager, model_registry, options)
-        .await;
+    let session =
+        AgentSession::new(session_manager, settings_manager, model_registry, options).await;
 
     // ── Write-actions: queue via the sender, apply via drain ──
     sender.send(ExtensionAction::SetSessionName("bus-test".to_string()));
@@ -623,10 +618,10 @@ async fn test_extension_action_bus_drain_and_state_refresh() {
 /// `session_mgr_switch` calls the callback wired by the SDK.
 #[tokio::test]
 async fn test_session_switch_invalidates_js_runtime() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use pi_coding_agent::core::agent_session::AgentSessionConfig;
     use pi_coding_agent::core::extensions::ExtensionRegistry;
     use pi_coding_agent::core::model_registry::ModelRegistry;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
@@ -686,8 +681,13 @@ async fn test_session_switch_invalidates_js_runtime() {
         extension_state_view: None,
         extension_action_rx: None,
     };
-    let mut session =
-        AgentSession::new(session_manager, settings_manager, ModelRegistry::new(ModelRegistry::builtin_models_list()), options).await;
+    let mut session = AgentSession::new(
+        session_manager,
+        settings_manager,
+        ModelRegistry::new(ModelRegistry::builtin_models_list()),
+        options,
+    )
+    .await;
 
     let invalidated = Arc::new(AtomicUsize::new(0));
     let inv = invalidated.clone();

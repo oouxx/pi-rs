@@ -107,7 +107,9 @@ pub fn print_help() {
     println!("OPTIONS:");
     println!("    -p, --print           Print mode (single-shot, output to stdout)");
     println!("    -i, --interactive     Interactive TUI mode");
-    println!("    --mode <MODE>         Output mode: text (default), json, rpc, acp, or interactive/tui");
+    println!(
+        "    --mode <MODE>         Output mode: text (default), json, rpc, acp, or interactive/tui"
+    );
     println!("    --acp                 ACP server mode (Agent Client Protocol over stdio)");
     println!("    -m, --model <MODEL>   Model to use (e.g. claude-sonnet-4-6)");
     println!("    -P, --provider <P>    Provider to use");
@@ -122,7 +124,9 @@ pub fn print_help() {
     println!("    --fork <ID>           Fork from an existing session");
     println!("    --no-session          Don't persist session");
     println!("    --session-dir <DIR>   Custom session directory");
-    println!("    --tools <LIST>        Allow specific tools (comma-separated, e.g. read,bash,edit)");
+    println!(
+        "    --tools <LIST>        Allow specific tools (comma-separated, e.g. read,bash,edit)"
+    );
     println!("    --tool <NAME>         Allow specific tool (can be repeated)");
     println!("    --exclude-tools <LIST> Exclude specific tools (comma-separated)");
     println!("    --exclude-tool <NAME> Exclude specific tool (can be repeated)");
@@ -151,7 +155,10 @@ pub fn print_help() {
     println!("    install <source>      Install a package/extension");
     println!("    remove <name>         Remove an extension");
     println!("    list                  List installed extensions");
-    println!("    update                Update {} to the latest GitHub release", config::APP_NAME);
+    println!(
+        "    update                Update {} to the latest GitHub release",
+        config::APP_NAME
+    );
     println!("    update --all          Update all extensions");
     println!("    config                Manage configuration");
     println!("    mcp                   Manage MCP servers (list/add/remove/enable/disable)");
@@ -412,7 +419,9 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 let name = s.trim_start_matches('-').to_string();
                 if let Some(eq) = name.find('=') {
                     let (k, v) = name.split_at(eq);
-                    result.unknown_flags.insert(k.to_string(), v[1..].to_string());
+                    result
+                        .unknown_flags
+                        .insert(k.to_string(), v[1..].to_string());
                 } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
                     i += 1;
                     result.unknown_flags.insert(name, args[i].clone());
@@ -517,7 +526,12 @@ mod tests {
 
     #[test]
     fn test_parse_tool_singular_still_works() {
-        let args = parse_args(&["--tool".into(), "read".into(), "--tool".into(), "bash".into()]);
+        let args = parse_args(&[
+            "--tool".into(),
+            "read".into(),
+            "--tool".into(),
+            "bash".into(),
+        ]);
         assert_eq!(args.tools, vec!["read", "bash"]);
     }
 
@@ -591,7 +605,10 @@ mod tests {
     #[test]
     fn test_parse_default_trust() {
         let args = parse_args(&["--default-trust".into(), "always".into()]);
-        assert_eq!(args.default_project_trust, Some(DefaultProjectTrust::Always));
+        assert_eq!(
+            args.default_project_trust,
+            Some(DefaultProjectTrust::Always)
+        );
 
         // Unset → None so the `defaultProjectTrust` setting stays in charge.
         assert_eq!(parse_args(&[]).default_project_trust, None);
@@ -619,7 +636,10 @@ mod tests {
 
         // bare --flag → boolean true (no value token follows)
         let args = parse_args(&["--another-flag".into()]);
-        assert_eq!(args.unknown_flags.get("another-flag"), Some(&"true".to_string()));
+        assert_eq!(
+            args.unknown_flags.get("another-flag"),
+            Some(&"true".to_string())
+        );
 
         // known flags are NOT collected as extension flags
         let args = parse_args(&["--print".into()]);

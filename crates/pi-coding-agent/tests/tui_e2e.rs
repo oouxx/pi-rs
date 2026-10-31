@@ -1,4 +1,8 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::field_reassign_with_default)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::field_reassign_with_default
+)]
 
 //! TUI end-to-end tests over a pseudo-terminal (no real TTY required).
 //!
@@ -121,79 +125,81 @@ fn partial_msg(text: &str) -> AssistantMessage {
 /// test). Long mode: keeps emitting deltas every 80 ms until the abort signal
 /// fires, then finishes with `Stop` (used by the Ctrl+C test).
 fn mock_stream_fn(long: bool) -> StreamFn {
-    Arc::new(move |_model, _context, _thinking, options: StreamFnOptions| {
-        Box::pin(async move {
-            let signal = options.signal;
-            let stream: StreamResponse = if long {
-                // Round 1 emits TextStart (agent_loop only forwards deltas
-                // once a Start was seen); subsequent rounds emit a delta
-                // every 200 ms until the abort signal fires, then Done.
-                let started = false;
-                Box::new(futures::stream::unfold(
-                    (started, String::new(), signal),
-                    |(mut started, mut text, signal)| {
-                        Box::pin(async move {
-                            if let Some(rx) = signal.as_ref() {
-                                if *rx.borrow() {
-                                    let mut final_msg = partial_msg(&text);
-                                    final_msg.stop_reason = StopReason::Aborted;
-                                    return Some((
-                                        AssistantMessageEvent::Done {
-                                            reason: StopReason::Aborted,
-                                            message: final_msg,
-                                        },
-                                        (started, text, signal),
-                                    ));
+    Arc::new(
+        move |_model, _context, _thinking, options: StreamFnOptions| {
+            Box::pin(async move {
+                let signal = options.signal;
+                let stream: StreamResponse = if long {
+                    // Round 1 emits TextStart (agent_loop only forwards deltas
+                    // once a Start was seen); subsequent rounds emit a delta
+                    // every 200 ms until the abort signal fires, then Done.
+                    let started = false;
+                    Box::new(futures::stream::unfold(
+                        (started, String::new(), signal),
+                        |(mut started, mut text, signal)| {
+                            Box::pin(async move {
+                                if let Some(rx) = signal.as_ref() {
+                                    if *rx.borrow() {
+                                        let mut final_msg = partial_msg(&text);
+                                        final_msg.stop_reason = StopReason::Aborted;
+                                        return Some((
+                                            AssistantMessageEvent::Done {
+                                                reason: StopReason::Aborted,
+                                                message: final_msg,
+                                            },
+                                            (started, text, signal),
+                                        ));
+                                    }
                                 }
-                            }
-                            let ev = if !started {
-                                started = true;
-                                AssistantMessageEvent::Start {
-                                    partial: partial_msg(""),
-                                }
-                            } else {
-                                text.push_str("chunk ");
-                                AssistantMessageEvent::TextDelta {
-                                    content_index: 0,
-                                    delta: "chunk ".to_string(),
-                                    partial: partial_msg(&text),
-                                }
-                            };
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            Some((ev, (started, text, signal)))
-                        })
-                    },
-                ))
-            } else {
-                let mut text = String::new();
-                let mut events = vec![AssistantMessageEvent::Start {
-                    partial: partial_msg(""),
-                }];
-                for word in MOCK_REPLY.split(' ') {
-                    text.push_str(word);
-                    text.push(' ');
-                    events.push(AssistantMessageEvent::TextDelta {
+                                let ev = if !started {
+                                    started = true;
+                                    AssistantMessageEvent::Start {
+                                        partial: partial_msg(""),
+                                    }
+                                } else {
+                                    text.push_str("chunk ");
+                                    AssistantMessageEvent::TextDelta {
+                                        content_index: 0,
+                                        delta: "chunk ".to_string(),
+                                        partial: partial_msg(&text),
+                                    }
+                                };
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                Some((ev, (started, text, signal)))
+                            })
+                        },
+                    ))
+                } else {
+                    let mut text = String::new();
+                    let mut events = vec![AssistantMessageEvent::Start {
+                        partial: partial_msg(""),
+                    }];
+                    for word in MOCK_REPLY.split(' ') {
+                        text.push_str(word);
+                        text.push(' ');
+                        events.push(AssistantMessageEvent::TextDelta {
+                            content_index: 0,
+                            delta: format!("{word} "),
+                            partial: partial_msg(text.trim_end()),
+                        });
+                    }
+                    events.push(AssistantMessageEvent::TextEnd {
                         content_index: 0,
-                        delta: format!("{word} "),
-                        partial: partial_msg(text.trim_end()),
+                        content: MOCK_REPLY.to_string(),
+                        partial: partial_msg(MOCK_REPLY),
                     });
-                }
-                events.push(AssistantMessageEvent::TextEnd {
-                    content_index: 0,
-                    content: MOCK_REPLY.to_string(),
-                    partial: partial_msg(MOCK_REPLY),
-                });
-                let mut final_msg = partial_msg(MOCK_REPLY);
-                final_msg.stop_reason = StopReason::Stop;
-                events.push(AssistantMessageEvent::Done {
-                    reason: StopReason::Stop,
-                    message: final_msg,
-                });
-                Box::new(futures::stream::iter(events))
-            };
-            Ok(stream as StreamResponse)
-        })
-    })
+                    let mut final_msg = partial_msg(MOCK_REPLY);
+                    final_msg.stop_reason = StopReason::Stop;
+                    events.push(AssistantMessageEvent::Done {
+                        reason: StopReason::Stop,
+                        message: final_msg,
+                    });
+                    Box::new(futures::stream::iter(events))
+                };
+                Ok(stream as StreamResponse)
+            })
+        },
+    )
 }
 
 /// Big-stream mock: one reply that grows to ~80 chunks (mixed CJK/ASCII,
@@ -201,36 +207,38 @@ fn mock_stream_fn(long: bool) -> StreamFn {
 /// frames), then completes on its own. Used to exercise the streaming
 /// churn without an abort.
 fn mock_big_stream_fn() -> StreamFn {
-    Arc::new(move |_model, _context, _thinking, _options: StreamFnOptions| {
-        Box::pin(async move {
-            let mut text = String::new();
-            let mut events = vec![AssistantMessageEvent::Start {
-                partial: partial_msg(""),
-            }];
-            for i in 0..80 {
-                let delta = format!("第{i}段数据：这是混排的中文与英文 padding padding padding padding 让行在终端宽度下换行。\n");
-                text.push_str(&delta);
-                events.push(AssistantMessageEvent::TextDelta {
+    Arc::new(
+        move |_model, _context, _thinking, _options: StreamFnOptions| {
+            Box::pin(async move {
+                let mut text = String::new();
+                let mut events = vec![AssistantMessageEvent::Start {
+                    partial: partial_msg(""),
+                }];
+                for i in 0..80 {
+                    let delta = format!("第{i}段数据：这是混排的中文与英文 padding padding padding padding 让行在终端宽度下换行。\n");
+                    text.push_str(&delta);
+                    events.push(AssistantMessageEvent::TextDelta {
+                        content_index: 0,
+                        delta,
+                        partial: partial_msg(&text),
+                    });
+                }
+                events.push(AssistantMessageEvent::TextEnd {
                     content_index: 0,
-                    delta,
+                    content: text.clone(),
                     partial: partial_msg(&text),
                 });
-            }
-            events.push(AssistantMessageEvent::TextEnd {
-                content_index: 0,
-                content: text.clone(),
-                partial: partial_msg(&text),
-            });
-            let mut final_msg = partial_msg(&text);
-            final_msg.stop_reason = StopReason::Stop;
-            events.push(AssistantMessageEvent::Done {
-                reason: StopReason::Stop,
-                message: final_msg,
-            });
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
-        })
-    })
+                let mut final_msg = partial_msg(&text);
+                final_msg.stop_reason = StopReason::Stop;
+                events.push(AssistantMessageEvent::Done {
+                    reason: StopReason::Stop,
+                    message: final_msg,
+                });
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+            })
+        },
+    )
 }
 
 /// Queue-stream mock: round 1 streams 15 deltas at 150 ms (a window for
@@ -239,47 +247,85 @@ fn mock_big_stream_fn() -> StreamFn {
 /// apart ("Reply number 1" = first run, etc.).
 fn queue_mock_stream_fn() -> StreamFn {
     let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(move |_model, _context, _thinking, _options: StreamFnOptions| {
-        let round = round.clone();
-        Box::pin(async move {
-            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            if n == 1 {
-                let stream = futures::stream::unfold(
-                    (false, String::new(), 0u32, false),
-                    move |(mut started, mut text, mut i, mut done)| {
-                        Box::pin(async move {
-                            if done {
-                                return None;
-                            }
-                            let ev = if i >= 15 {
-                                done = true;
-                                let mut final_msg = partial_msg(&text);
-                                final_msg.stop_reason = StopReason::Stop;
-                                AssistantMessageEvent::Done {
-                                    reason: StopReason::Stop,
-                                    message: final_msg,
+    Arc::new(
+        move |_model, _context, _thinking, _options: StreamFnOptions| {
+            let round = round.clone();
+            Box::pin(async move {
+                let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n == 1 {
+                    let stream = futures::stream::unfold(
+                        (false, String::new(), 0u32, false),
+                        move |(mut started, mut text, mut i, mut done)| {
+                            Box::pin(async move {
+                                if done {
+                                    return None;
                                 }
-                            } else if !started {
-                                started = true;
-                                AssistantMessageEvent::Start {
-                                    partial: partial_msg(""),
-                                }
-                            } else {
-                                i += 1;
-                                text.push_str("slow ");
-                                AssistantMessageEvent::TextDelta {
-                                    content_index: 0,
-                                    delta: "slow ".to_string(),
-                                    partial: partial_msg(&text),
-                                }
-                            };
-                            tokio::time::sleep(Duration::from_millis(150)).await;
-                            Some((ev, (started, text, i, done)))
-                        })
-                    },
-                );
-                Ok(Box::new(stream) as StreamResponse)
-            } else {
+                                let ev = if i >= 15 {
+                                    done = true;
+                                    let mut final_msg = partial_msg(&text);
+                                    final_msg.stop_reason = StopReason::Stop;
+                                    AssistantMessageEvent::Done {
+                                        reason: StopReason::Stop,
+                                        message: final_msg,
+                                    }
+                                } else if !started {
+                                    started = true;
+                                    AssistantMessageEvent::Start {
+                                        partial: partial_msg(""),
+                                    }
+                                } else {
+                                    i += 1;
+                                    text.push_str("slow ");
+                                    AssistantMessageEvent::TextDelta {
+                                        content_index: 0,
+                                        delta: "slow ".to_string(),
+                                        partial: partial_msg(&text),
+                                    }
+                                };
+                                tokio::time::sleep(Duration::from_millis(150)).await;
+                                Some((ev, (started, text, i, done)))
+                            })
+                        },
+                    );
+                    Ok(Box::new(stream) as StreamResponse)
+                } else {
+                    let reply = format!("Reply number {n}");
+                    let mut final_msg = partial_msg(&reply);
+                    final_msg.stop_reason = StopReason::Stop;
+                    let events = vec![
+                        AssistantMessageEvent::Start {
+                            partial: partial_msg(""),
+                        },
+                        AssistantMessageEvent::TextEnd {
+                            content_index: 0,
+                            content: reply.clone(),
+                            partial: partial_msg(&reply),
+                        },
+                        AssistantMessageEvent::Done {
+                            reason: StopReason::Stop,
+                            message: final_msg,
+                        },
+                    ];
+                    Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
+                }
+            })
+        },
+    )
+}
+
+/// Retry mock: stream call 1 fails with a retryable provider error (503),
+/// later calls succeed instantly with `Reply number {n}`. Exercises the
+/// auto-retry countdown display and Esc-abort (TS RetryStatusIndicator).
+fn retry_mock_stream_fn() -> StreamFn {
+    let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Arc::new(
+        move |_model, _context, _thinking, _options: StreamFnOptions| {
+            let round = round.clone();
+            Box::pin(async move {
+                let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n == 1 {
+                    return Err("provider returned error: 503 service unavailable".into());
+                }
                 let reply = format!("Reply number {n}");
                 let mut final_msg = partial_msg(&reply);
                 final_msg.stop_reason = StopReason::Stop;
@@ -298,43 +344,9 @@ fn queue_mock_stream_fn() -> StreamFn {
                     },
                 ];
                 Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
-            }
-        })
-    })
-}
-
-/// Retry mock: stream call 1 fails with a retryable provider error (503),
-/// later calls succeed instantly with `Reply number {n}`. Exercises the
-/// auto-retry countdown display and Esc-abort (TS RetryStatusIndicator).
-fn retry_mock_stream_fn() -> StreamFn {
-    let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(move |_model, _context, _thinking, _options: StreamFnOptions| {
-        let round = round.clone();
-        Box::pin(async move {
-            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            if n == 1 {
-                return Err("provider returned error: 503 service unavailable".into());
-            }
-            let reply = format!("Reply number {n}");
-            let mut final_msg = partial_msg(&reply);
-            final_msg.stop_reason = StopReason::Stop;
-            let events = vec![
-                AssistantMessageEvent::Start {
-                    partial: partial_msg(""),
-                },
-                AssistantMessageEvent::TextEnd {
-                    content_index: 0,
-                    content: reply.clone(),
-                    partial: partial_msg(&reply),
-                },
-                AssistantMessageEvent::Done {
-                    reason: StopReason::Stop,
-                    message: final_msg,
-                },
-            ];
-            Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
-        })
-    })
+            })
+        },
+    )
 }
 
 /// Retry-abort mock: first call fails with a retryable 503; the second call
@@ -342,64 +354,66 @@ fn retry_mock_stream_fn() -> StreamFn {
 /// to show the retry-attempt-aware abort wording.
 fn retry_abort_mock_stream_fn() -> StreamFn {
     let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(move |_model, _context, _thinking, options: StreamFnOptions| {
-        let round = round.clone();
-        let signal = options.signal;
-        Box::pin(async move {
-            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            if n == 1 {
-                return Err("provider returned error: 503 service unavailable".into());
-            }
-            let stream = futures::stream::unfold(
-                (0u8, String::new(), signal),
-                |(step, mut text, signal)| {
-                    Box::pin(async move {
-                        if let Some(rx) = signal.as_ref() {
-                            if *rx.borrow() {
-                                let mut partial = partial_msg(&text);
-                                partial.stop_reason = StopReason::Aborted;
-                                partial.error_message = Some("Request was aborted".into());
-                                return Some((
-                                    AssistantMessageEvent::Error {
-                                        reason: StopReason::Aborted,
-                                        error: partial,
-                                    },
-                                    (3, text, signal),
-                                ));
-                            }
-                        }
-                        let event = match step {
-                            0 => AssistantMessageEvent::Start {
-                                partial: partial_msg(""),
-                            },
-                            1 => {
-                                text.push_str("retry-stream");
-                                AssistantMessageEvent::TextDelta {
-                                    content_index: 0,
-                                    delta: "retry-stream".into(),
-                                    partial: partial_msg(&text),
+    Arc::new(
+        move |_model, _context, _thinking, options: StreamFnOptions| {
+            let round = round.clone();
+            let signal = options.signal;
+            Box::pin(async move {
+                let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n == 1 {
+                    return Err("provider returned error: 503 service unavailable".into());
+                }
+                let stream = futures::stream::unfold(
+                    (0u8, String::new(), signal),
+                    |(step, mut text, signal)| {
+                        Box::pin(async move {
+                            if let Some(rx) = signal.as_ref() {
+                                if *rx.borrow() {
+                                    let mut partial = partial_msg(&text);
+                                    partial.stop_reason = StopReason::Aborted;
+                                    partial.error_message = Some("Request was aborted".into());
+                                    return Some((
+                                        AssistantMessageEvent::Error {
+                                            reason: StopReason::Aborted,
+                                            error: partial,
+                                        },
+                                        (3, text, signal),
+                                    ));
                                 }
                             }
-                            _ => {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                                return Some((
-                                    AssistantMessageEvent::ThinkingDelta {
+                            let event = match step {
+                                0 => AssistantMessageEvent::Start {
+                                    partial: partial_msg(""),
+                                },
+                                1 => {
+                                    text.push_str("retry-stream");
+                                    AssistantMessageEvent::TextDelta {
                                         content_index: 0,
-                                        delta: String::new(),
+                                        delta: "retry-stream".into(),
                                         partial: partial_msg(&text),
-                                    },
-                                    (2, text, signal),
-                                ));
-                            }
-                        };
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        Some((event, (step + 1, text, signal)))
-                    })
-                },
-            );
-            Ok(Box::new(stream) as StreamResponse)
-        })
-    })
+                                    }
+                                }
+                                _ => {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    return Some((
+                                        AssistantMessageEvent::ThinkingDelta {
+                                            content_index: 0,
+                                            delta: String::new(),
+                                            partial: partial_msg(&text),
+                                        },
+                                        (2, text, signal),
+                                    ));
+                                }
+                            };
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            Some((event, (step + 1, text, signal)))
+                        })
+                    },
+                );
+                Ok(Box::new(stream) as StreamResponse)
+            })
+        },
+    )
 }
 
 /// Create an AgentSession wired to the mock LLM.
@@ -523,9 +537,12 @@ fn mock_two_bash_tools_stream_fn() -> StreamFn {
                     (msg, StopReason::Stop)
                 }
             };
-            Ok(Box::new(futures::stream::iter(vec![
-                AssistantMessageEvent::Done { reason, message: msg },
-            ])) as StreamResponse)
+            Ok(
+                Box::new(futures::stream::iter(vec![AssistantMessageEvent::Done {
+                    reason,
+                    message: msg,
+                }])) as StreamResponse,
+            )
         })
     })
 }
@@ -695,7 +712,11 @@ impl HookHandler for CustomRenderToolExt {
                             ToolTextStyle as Style,
                         };
                         // 展开态与折叠态给不同标题，父侧测试据此断言 expanded 透传。
-                        let state = if ctx.expanded { "EXPANDED" } else { "COLLAPSED" };
+                        let state = if ctx.expanded {
+                            "EXPANDED"
+                        } else {
+                            "COLLAPSED"
+                        };
                         Some(ToolRenderOutput {
                             title: vec![
                                 Span::new(Style::Success, "✓"),
@@ -814,10 +835,7 @@ fn slow_tool_stream_fn() -> StreamFn {
                 AssistantMessageEvent::Start {
                     partial: partial_msg(""),
                 },
-                AssistantMessageEvent::Done {
-                    reason,
-                    message,
-                },
+                AssistantMessageEvent::Done { reason, message },
             ];
             Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
         })
@@ -860,10 +878,7 @@ fn custom_tool_stream_fn() -> StreamFn {
                 AssistantMessageEvent::Start {
                     partial: partial_msg(""),
                 },
-                AssistantMessageEvent::Done {
-                    reason,
-                    message,
-                },
+                AssistantMessageEvent::Done { reason, message },
             ];
             Ok(Box::new(futures::stream::iter(events)) as StreamResponse)
         })
@@ -989,10 +1004,7 @@ impl Tui {
             cmd.env(REAL_ENV, "1");
             cmd.env("OPENAI_API_KEY", key);
         }
-        let child = pty
-            .slave
-            .spawn_command(cmd)
-            .expect("spawn child in pty");
+        let child = pty.slave.spawn_command(cmd).expect("spawn child in pty");
         drop(pty.slave);
 
         let master = pty.master;
@@ -1227,7 +1239,8 @@ fn tui_chat_flow_renders_mock_reply_and_quits() {
     // `isPersisted` 抑制条件）——与 `tui_quit_prints_resume_hint_for_persisted_session`
     // 成对，防止提示断言在“什么都没有被打印”的情况下也通过。
     assert!(
-        !out.replace(['\r', '\n'], "").contains("To resume this session:"),
+        !out.replace(['\r', '\n'], "")
+            .contains("To resume this session:"),
         "no resume hint for an in-memory session"
     );
 }
@@ -1385,7 +1398,10 @@ fn tui_message_queueing_flow() {
     tui.write(b"third");
     std::thread::sleep(Duration::from_millis(120));
     tui.write(b"\x1b\r");
-    assert!(tui.wait_for("Follow-up: third", TIMEOUT), "second pending line");
+    assert!(
+        tui.wait_for("Follow-up: third", TIMEOUT),
+        "second pending line"
+    );
 
     // Alt+Up restores all queued texts to the editor and clears the
     // pending area (byte history still contains the old rows — assert on
@@ -1420,9 +1436,18 @@ fn tui_message_queueing_flow() {
     std::thread::sleep(Duration::from_millis(300));
     pump(&mut tui, &mut screen);
     let snap = screen.snapshot();
-    assert!(!snap.iter().any(|r| r.contains("Follow-up:")), "pending area empty");
-    assert!(snap.iter().any(|r| r.contains("second")), "user bubble rendered");
-    assert!(snap.iter().any(|r| r.contains("Reply number 2")), "reply rendered");
+    assert!(
+        !snap.iter().any(|r| r.contains("Follow-up:")),
+        "pending area empty"
+    );
+    assert!(
+        snap.iter().any(|r| r.contains("second")),
+        "user bubble rendered"
+    );
+    assert!(
+        snap.iter().any(|r| r.contains("Reply number 2")),
+        "reply rendered"
+    );
 
     tui.quit();
     assert_eq!(tui.wait_exit(TIMEOUT), Some(0), "clean exit");
@@ -1663,7 +1688,10 @@ fn tui_extension_command_starts_run() {
 /// stream_fn → provider HTTP → Ollama Cloud → streamed reply → render.
 #[test]
 fn tui_chat_flow_real_ollama() {
-    let Some(key) = std::env::var("OLLAMA_API_KEY").ok().filter(|k| !k.is_empty()) else {
+    let Some(key) = std::env::var("OLLAMA_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+    else {
         eprintln!("SKIP: OLLAMA_API_KEY not set — real-LLM E2E skipped");
         return;
     };
@@ -2106,7 +2134,10 @@ impl TermScreen {
                                     terminated = true;
                                     break;
                                 }
-                                if pending[j] == 0x1b && j + 1 < pending.len() && pending[j + 1] == b'\\' {
+                                if pending[j] == 0x1b
+                                    && j + 1 < pending.len()
+                                    && pending[j + 1] == b'\\'
+                                {
                                     j += 2;
                                     terminated = true;
                                     break;
@@ -2267,7 +2298,6 @@ fn assert_screens_eq(a: &[String], b: &[String], ctx: &str) {
                 }
             }
             panic!("{ctx}: row {y} differs at {diffs:?}\n{rows}");
-
         }
     }
 }
@@ -2303,14 +2333,20 @@ fn tui_scroll_up_down_restores_exact_screen() {
             pump(&mut tui, &mut screen);
         }
         let up3 = screen.snapshot();
-        assert_ne!(up3, bottom, "amb={ambiguous_wide}: scrolling up changed the screen");
+        assert_ne!(
+            up3, bottom,
+            "amb={ambiguous_wide}: scrolling up changed the screen"
+        );
 
         // One more scroll up, then one scroll down: must return to `up3`.
         tui.write(b"\x1b[A");
         std::thread::sleep(Duration::from_millis(150));
         pump(&mut tui, &mut screen);
         let up4 = screen.snapshot();
-        assert_ne!(up4, up3, "amb={ambiguous_wide}: another scroll step moved the viewport");
+        assert_ne!(
+            up4, up3,
+            "amb={ambiguous_wide}: another scroll step moved the viewport"
+        );
 
         tui.write(b"\x1b[B");
         std::thread::sleep(Duration::from_millis(150));
@@ -2335,11 +2371,17 @@ fn tui_scroll_up_down_restores_exact_screen() {
         let after_g = screen.snapshot();
         if std::env::var("TUI_E2E_DEBUG").is_ok() {
             eprintln!("=== amb={ambiguous_wide} top (all rows) ===");
-            for (y, r) in top.iter().enumerate() { eprintln!("{y:2}: {r:?}"); }
+            for (y, r) in top.iter().enumerate() {
+                eprintln!("{y:2}: {r:?}");
+            }
             eprintln!("=== amb={ambiguous_wide} after G (all rows) ===");
-            for (y, r) in after_g.iter().enumerate() { eprintln!("{y:2}: {r:?}"); }
+            for (y, r) in after_g.iter().enumerate() {
+                eprintln!("{y:2}: {r:?}");
+            }
             eprintln!("=== amb={ambiguous_wide} bottom (all rows) ===");
-            for (y, r) in bottom.iter().enumerate() { eprintln!("{y:2}: {r:?}"); }
+            for (y, r) in bottom.iter().enumerate() {
+                eprintln!("{y:2}: {r:?}");
+            }
         }
         assert_screens_eq(
             &after_g,
@@ -2391,7 +2433,10 @@ fn tui_scroll_after_long_stream_restores_exact_screen() {
             pump(&mut tui, &mut screen);
         }
         let up3 = screen.snapshot();
-        assert_ne!(up3, bottom, "amb={ambiguous_wide}: streaming: scroll up changed the screen");
+        assert_ne!(
+            up3, bottom,
+            "amb={ambiguous_wide}: streaming: scroll up changed the screen"
+        );
 
         tui.write(b"\x1b[A");
         std::thread::sleep(Duration::from_millis(150));

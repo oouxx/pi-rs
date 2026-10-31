@@ -79,7 +79,11 @@ async fn fetch_latest_release(client: &reqwest::Client) -> Result<LatestRelease,
         .to_string();
     let version = tag.trim_start_matches('v').to_string();
 
-    let asset_name = format!("pi-rs-{}-{}", asset_os().unwrap_or("unknown"), asset_arch().unwrap_or("unknown"));
+    let asset_name = format!(
+        "pi-rs-{}-{}",
+        asset_os().unwrap_or("unknown"),
+        asset_arch().unwrap_or("unknown")
+    );
     let download_url = json
         .get("assets")
         .and_then(serde_json::Value::as_array)
@@ -90,14 +94,13 @@ async fn fetch_latest_release(client: &reqwest::Client) -> Result<LatestRelease,
                     a.get("name").and_then(serde_json::Value::as_str) == Some(asset_name.as_str())
                 })
                 .and_then(|a| {
-                    a.get("browser_download_url").and_then(serde_json::Value::as_str)
+                    a.get("browser_download_url")
+                        .and_then(serde_json::Value::as_str)
                 })
         })
         .map(str::to_string)
         .unwrap_or_else(|| {
-            format!(
-                "https://github.com/oouxx/pi-rs/releases/download/{tag}/{asset_name}"
-            )
+            format!("https://github.com/oouxx/pi-rs/releases/download/{tag}/{asset_name}")
         });
 
     Ok(LatestRelease {
@@ -128,8 +131,8 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> Result<()
 /// On Windows a running .exe cannot be replaced in place, so we stage the new
 /// binary next to it and report the path for the user to swap on next launch.
 fn replace_binary(downloaded: &Path) -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("cannot locate current executable: {e}"))?;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("cannot locate current executable: {e}"))?;
     let dir = exe
         .parent()
         .ok_or_else(|| "current executable has no parent directory".to_string())?;
@@ -171,7 +174,10 @@ fn replace_binary(downloaded: &Path) -> Result<(), String> {
 
 fn print_help() {
     println!("Usage: {} update [options]", config::APP_NAME);
-    println!("Update the {} binary to the latest GitHub release.", config::APP_NAME);
+    println!(
+        "Update the {} binary to the latest GitHub release.",
+        config::APP_NAME
+    );
     println!();
     println!("Options:");
     println!("  --check, -c   Only report whether an update is available");
@@ -309,14 +315,20 @@ pub async fn run_update(args: &[String]) -> i32 {
 
     let exe = std::env::current_exe()
         .map_err(|e| {
-            eprintln!("{} Cannot locate current executable: {e}", "Error:".red().bold());
+            eprintln!(
+                "{} Cannot locate current executable: {e}",
+                "Error:".red().bold()
+            );
         })
         .unwrap_or_default();
     if exe.as_os_str().is_empty() {
         return 1;
     }
     let Some(dir) = exe.parent() else {
-        eprintln!("{} Cannot determine install directory.", "Error:".red().bold());
+        eprintln!(
+            "{} Cannot determine install directory.",
+            "Error:".red().bold()
+        );
         return 1;
     };
     let file_name = exe.file_name().and_then(|n| n.to_str()).unwrap_or("pi-rs");
@@ -388,8 +400,16 @@ mod tests {
     fn asset_mapping_supports_build_target() {
         // install.sh only ships linux/macos/windows × x86_64/aarch64. This
         // guards that the running build maps to a published asset.
-        assert!(asset_os().is_some(), "unsupported OS: {}", std::env::consts::OS);
-        assert!(asset_arch().is_some(), "unsupported arch: {}", std::env::consts::ARCH);
+        assert!(
+            asset_os().is_some(),
+            "unsupported OS: {}",
+            std::env::consts::OS
+        );
+        assert!(
+            asset_arch().is_some(),
+            "unsupported arch: {}",
+            std::env::consts::ARCH
+        );
     }
 
     #[test]

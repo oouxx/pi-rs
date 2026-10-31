@@ -62,8 +62,14 @@ mod tests {
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("HTTPS_PROXY");
         apply_http_proxy_settings(Some("http://proxy.local:8080"));
-        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), "http://proxy.local:8080");
-        assert_eq!(std::env::var("HTTPS_PROXY").unwrap(), "http://proxy.local:8080");
+        assert_eq!(
+            std::env::var("HTTP_PROXY").unwrap(),
+            "http://proxy.local:8080"
+        );
+        assert_eq!(
+            std::env::var("HTTPS_PROXY").unwrap(),
+            "http://proxy.local:8080"
+        );
     }
 
     #[test]

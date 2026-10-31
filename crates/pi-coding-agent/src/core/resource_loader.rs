@@ -208,7 +208,10 @@ impl DefaultResourceLoader {
     }
 
     /// Load prompts from paths.
-    fn load_prompts_from_paths(&self, paths: &[String]) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
+    fn load_prompts_from_paths(
+        &self,
+        paths: &[String],
+    ) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
         if self.options.no_prompts && paths.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -340,7 +343,11 @@ impl ResourceLoader for DefaultResourceLoader {
         };
 
         // 5. Discover system prompts
-        let system_prompt = self.options.system_prompt.clone().or_else(|| self.discover_system_prompt());
+        let system_prompt = self
+            .options
+            .system_prompt
+            .clone()
+            .or_else(|| self.discover_system_prompt());
         let append_system_prompt = if !self.options.append_system_prompt.is_empty() {
             self.options.append_system_prompt.clone()
         } else {
@@ -363,7 +370,8 @@ impl ResourceLoader for DefaultResourceLoader {
     fn extend_resources(&mut self, paths: ResourceExtensionPaths) {
         // Store extension-contributed source infos
         for (path, info) in &paths.skill_paths {
-            self.extension_source_infos.push((path.clone(), info.clone()));
+            self.extension_source_infos
+                .push((path.clone(), info.clone()));
         }
         for (path, info) in &paths.prompt_paths {
             self.prompt_source_infos.push((path.clone(), info.clone()));
@@ -555,7 +563,8 @@ fn load_context_files_ancestors(cwd: &str, agent_dir: Option<&str>) -> Vec<Conte
 
     // 1. Load from agent dir (global)
     if let Some(agent) = agent_dir {
-        if let Some((path_str, content)) = first_context_file(Path::new(agent), &context_file_names) {
+        if let Some((path_str, content)) = first_context_file(Path::new(agent), &context_file_names)
+        {
             if seen_paths.insert(path_str.clone()) {
                 files.push(ContextFile {
                     path: path_str,
@@ -572,8 +581,8 @@ fn load_context_files_ancestors(cwd: &str, agent_dir: Option<&str>) -> Vec<Conte
     // Main repo context file shadowed by a nested linked worktree's own copy
     // (TS `findShadowedContextFile`): skip it so the context is not loaded
     // twice for the same logical repo scope (#7221).
-    let shadowed_context_file = find_shadowed_context_file(cwd)
-        .map(|p| crate::utils::paths::canonicalize_path(&p));
+    let shadowed_context_file =
+        find_shadowed_context_file(cwd).map(|p| crate::utils::paths::canonicalize_path(&p));
 
     while let Some(dir) = current_dir {
         if let Some((path_str, content)) = first_context_file(&dir, &context_file_names) {
@@ -611,7 +620,8 @@ fn load_context_files_ancestors(cwd: &str, agent_dir: Option<&str>) -> Vec<Conte
 fn deduplicate_prompts(
     prompts: Vec<PromptTemplate>,
 ) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
-    let mut seen: std::collections::HashMap<String, PromptTemplate> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, PromptTemplate> =
+        std::collections::HashMap::new();
     let mut diagnostics = Vec::new();
 
     for prompt in prompts {
@@ -718,7 +728,17 @@ mod tests {
             .map(|s| s.success())
             .unwrap_or(false)
             && std::process::Command::new("git")
-                .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"])
+                .args([
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "user.name=t",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "init",
+                ])
                 .current_dir(&main_repo)
                 .status()
                 .map(|s| s.success())
@@ -729,7 +749,14 @@ mod tests {
         }
         let worktree = main_repo.join("worktrees").join("feat");
         let add_ok = std::process::Command::new("git")
-            .args(["worktree", "add", "-q", "-b", "feat", &worktree.to_string_lossy()])
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat",
+                &worktree.to_string_lossy(),
+            ])
             .current_dir(&main_repo)
             .status()
             .map(|s| s.success())
@@ -868,7 +895,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // `.git` keeps the ancestor walk inside the fixture.
         fs::create_dir_all(dir.path().join(".git")).unwrap();
-        let skill_dir = dir.path().join(".agents").join("skills").join("agents-skill");
+        let skill_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("agents-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -908,11 +939,7 @@ mod tests {
         let prompts_dir = dir.path().join("prompts");
         fs::create_dir_all(&prompts_dir).unwrap();
         let prompt_file = prompts_dir.join("test-prompt.md");
-        fs::write(
-            &prompt_file,
-            "---\nname: test-prompt\n---\n# Test Prompt",
-        )
-        .unwrap();
+        fs::write(&prompt_file, "---\nname: test-prompt\n---\n# Test Prompt").unwrap();
 
         let opts = ResourceLoaderOptions {
             cwd: dir.path().to_string_lossy().to_string(),
@@ -923,7 +950,10 @@ mod tests {
         let mut loader = DefaultResourceLoader::new(opts);
         let resources = loader.reload();
 
-        assert!(!resources.prompt_templates.is_empty(), "should have loaded prompts");
+        assert!(
+            !resources.prompt_templates.is_empty(),
+            "should have loaded prompts"
+        );
     }
 
     #[test]
@@ -946,7 +976,10 @@ mod tests {
         let mut loader = DefaultResourceLoader::new(opts);
         let resources = loader.reload();
 
-        assert!(resources.skills.is_empty(), "no_skills should prevent skill loading");
+        assert!(
+            resources.skills.is_empty(),
+            "no_skills should prevent skill loading"
+        );
     }
 
     /// `--no-skills` disables default discovery but still permits an explicit
@@ -997,7 +1030,10 @@ mod tests {
         let mut loader = DefaultResourceLoader::new(opts);
         let resources = loader.reload();
 
-        assert!(resources.context_files.is_empty(), "no_context_files should prevent loading");
+        assert!(
+            resources.context_files.is_empty(),
+            "no_context_files should prevent loading"
+        );
     }
 
     #[test]
@@ -1011,7 +1047,10 @@ mod tests {
         let mut loader = DefaultResourceLoader::new(opts);
         let resources = loader.reload();
 
-        assert_eq!(resources.system_prompt.as_deref(), Some("Custom system prompt"));
+        assert_eq!(
+            resources.system_prompt.as_deref(),
+            Some("Custom system prompt")
+        );
     }
 
     #[test]
@@ -1089,7 +1128,10 @@ mod tests {
         loader.extend_resources(ext_paths);
 
         let resources = loader.get_resources();
-        assert!(!resources.skills.is_empty(), "should have loaded extension skills");
+        assert!(
+            !resources.skills.is_empty(),
+            "should have loaded extension skills"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1251,7 +1293,10 @@ mod tests {
         };
         let result = load_all_resources(&opts);
         assert!(
-            result.context_files.iter().any(|f| f.content == "# Test Context"),
+            result
+                .context_files
+                .iter()
+                .any(|f| f.content == "# Test Context"),
             "should find AGENTS.md content"
         );
     }

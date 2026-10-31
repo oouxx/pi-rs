@@ -34,7 +34,10 @@ fn pipe_to(program: &str, args: &[&str], text: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("spawn {program}: {e}"))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| format!("{program}: no stdin"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| format!("{program}: no stdin"))?;
     let _ = stdin.write_all(text.as_bytes());
     drop(stdin);
     let status = child.wait().map_err(|e| format!("wait {program}: {e}"))?;
@@ -73,7 +76,8 @@ fn copy_x11(text: &str) -> bool {
 fn linux_copy(text: &str) -> bool {
     // TS `copyToClipboard` Linux direct-write order, gated on the same env:
     // termux → Wayland → X11 (only when a display is exported).
-    if std::env::var("TERMUX_VERSION").is_ok() && pipe_to("termux-clipboard-set", &[], text).is_ok() {
+    if std::env::var("TERMUX_VERSION").is_ok() && pipe_to("termux-clipboard-set", &[], text).is_ok()
+    {
         return true;
     }
     if std::env::var("WAYLAND_DISPLAY").is_ok() && pipe_to("wl-copy", &[], text).is_ok() {
@@ -140,8 +144,7 @@ fn linux_read() -> Option<String> {
 
 /// Base64 (RFC 4648) — small encoder so pi-tui needs no extra dependency.
 fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -263,7 +266,10 @@ pub fn read_clipboard_text() -> Option<String> {
     #[cfg(target_os = "macos")]
     let read = read_from("pbpaste", &[]);
     #[cfg(target_os = "windows")]
-    let read = read_from("powershell.exe", &["-NoProfile", "-Command", "Get-Clipboard -Raw"]);
+    let read = read_from(
+        "powershell.exe",
+        &["-NoProfile", "-Command", "Get-Clipboard -Raw"],
+    );
     #[cfg(target_os = "linux")]
     let read = linux_read();
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -282,7 +288,14 @@ pub struct ClipboardImage {
 
 /// TS `extensionForImageMimeType`.
 fn extension_for_image_mime_type(mime_type: &str) -> Option<&'static str> {
-    match mime_type.split(';').next().unwrap_or(mime_type).trim().to_lowercase().as_str() {
+    match mime_type
+        .split(';')
+        .next()
+        .unwrap_or(mime_type)
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),
         "image/webp" => Some("webp"),

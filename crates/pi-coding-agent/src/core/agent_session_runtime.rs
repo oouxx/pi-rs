@@ -3,9 +3,7 @@ use std::sync::Arc;
 use crate::core::agent_session::AgentSession;
 /// Callback that rebinds a replaced session to its host (e.g. TUI listeners).
 type RebindSessionFn = Arc<
-    dyn Fn(
-            &AgentSession,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+    dyn Fn(&AgentSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
         + Sync,
 >;
@@ -183,10 +181,7 @@ impl AgentSessionRuntime {
 
     /// Set a callback that runs after session replacement to rebind the new
     /// session to the host (e.g., TUI event listeners).
-    pub fn set_rebind_session(
-        &mut self,
-        rebind_session: Option<RebindSessionFn>,
-    ) {
+    pub fn set_rebind_session(&mut self, rebind_session: Option<RebindSessionFn>) {
         self.rebind_session = rebind_session;
     }
 
@@ -303,10 +298,7 @@ impl AgentSessionRuntime {
     }
 
     /// Finish session replacement: call rebind_session.
-    async fn finish_session_replacement(
-        &self,
-        with_session: Option<WithSessionFn>,
-    ) {
+    async fn finish_session_replacement(&self, with_session: Option<WithSessionFn>) {
         if let Some(ref rebind) = self.rebind_session {
             rebind(&self.session).await;
         }

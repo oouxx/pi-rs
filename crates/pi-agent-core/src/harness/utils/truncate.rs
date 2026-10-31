@@ -204,7 +204,11 @@ pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
     let max = max_chars.unwrap_or(GREP_MAX_LINE_LENGTH);
     // Use char_indices to safely find the byte boundary of the max-th character.
     // This avoids panicking on multi-byte UTF-8 characters (e.g. CJK, emoji).
-    let byte_pos = line.char_indices().nth(max).map(|(pos, _)| pos).unwrap_or(line.len());
+    let byte_pos = line
+        .char_indices()
+        .nth(max)
+        .map(|(pos, _)| pos)
+        .unwrap_or(line.len());
     if byte_pos >= line.len() {
         return (line.to_string(), false);
     }
@@ -411,5 +415,4 @@ mod tests {
         assert_eq!(utf8_byte_length("🙂"), 4);
         assert_eq!(utf8_byte_length("aé🙂\nb"), 9);
     }
-
 }

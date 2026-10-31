@@ -182,7 +182,11 @@ fn resize_image(bytes: &[u8], mime_type: &str, profile: ResizeProfile) -> Option
     {
         // TS `mimeType.split("/")[1] ?? "png"`.
         let format = base_mime(mime_type);
-        let format = format.strip_prefix("image/").filter(|s| !s.is_empty()).unwrap_or("png").to_string();
+        let format = format
+            .strip_prefix("image/")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("png")
+            .to_string();
         let mime = if mime_type.is_empty() {
             format!("image/{format}")
         } else {
@@ -203,15 +207,15 @@ fn resize_image(bytes: &[u8], mime_type: &str, profile: ResizeProfile) -> Option
     let mut target_width = original_width;
     let mut target_height = original_height;
     if target_width > profile.max_width {
-        target_height =
-            ((u64::from(target_height) * u64::from(profile.max_width)) as f64 / f64::from(target_width))
-                .round() as u32;
+        target_height = ((u64::from(target_height) * u64::from(profile.max_width)) as f64
+            / f64::from(target_width))
+        .round() as u32;
         target_width = profile.max_width;
     }
     if target_height > profile.max_height {
-        target_width =
-            ((u64::from(target_width) * u64::from(profile.max_height)) as f64 / f64::from(target_height))
-                .round() as u32;
+        target_width = ((u64::from(target_width) * u64::from(profile.max_height)) as f64
+            / f64::from(target_height))
+        .round() as u32;
         target_height = profile.max_height;
     }
 
@@ -253,8 +257,16 @@ fn resize_image(bytes: &[u8], mime_type: &str, profile: ResizeProfile) -> Option
         if current_width == 1 && current_height == 1 {
             break;
         }
-        let next_width = if current_width == 1 { 1 } else { ((f64::from(current_width) * 0.75).floor() as u32).max(1) };
-        let next_height = if current_height == 1 { 1 } else { ((f64::from(current_height) * 0.75).floor() as u32).max(1) };
+        let next_width = if current_width == 1 {
+            1
+        } else {
+            ((f64::from(current_width) * 0.75).floor() as u32).max(1)
+        };
+        let next_height = if current_height == 1 {
+            1
+        } else {
+            ((f64::from(current_height) * 0.75).floor() as u32).max(1)
+        };
         if next_width == current_width && next_height == current_height {
             break;
         }
@@ -283,15 +295,18 @@ pub fn process_image(
             (bytes.to_vec(), m.to_string(), None)
         } else {
             let png = convert_to_png(bytes).ok_or_else(|| {
-                "[Image omitted: could not be converted to a supported inline image format.]".to_string()
+                "[Image omitted: could not be converted to a supported inline image format.]"
+                    .to_string()
             })?;
             (png, "image/png".to_string(), Some(base_mime(mime_type)))
         };
 
     if auto_resize {
-        let resized = resize_image(&normalized_bytes, &normalized_mime, profile).ok_or_else(|| {
-            "[Image omitted: could not be resized below the inline image size limit.]".to_string()
-        })?;
+        let resized =
+            resize_image(&normalized_bytes, &normalized_mime, profile).ok_or_else(|| {
+                "[Image omitted: could not be resized below the inline image size limit.]"
+                    .to_string()
+            })?;
         let mut hints = Vec::new();
         if let Some(hint) = conversion_hint(converted_from.as_deref(), &resized.mime_type) {
             hints.push(hint);
@@ -329,7 +344,9 @@ mod tests {
     }
 
     fn decode_dimensions(b64: &str) -> (u32, u32) {
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).expect("b64");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("b64");
         let img = image::load_from_memory(&bytes).expect("decode");
         (img.width(), img.height())
     }
@@ -349,11 +366,23 @@ mod tests {
         let bytes = png_bytes(3000, 1500);
         let out = process_image(&bytes, "image/png", true, None).expect("ok");
         let (w, h) = decode_dimensions(&out.data);
-        assert_eq!((w, h), (2000, 1000), "scaled to max width, aspect preserved");
+        assert_eq!(
+            (w, h),
+            (2000, 1000),
+            "scaled to max width, aspect preserved"
+        );
         assert_eq!(out.mime_type, "image/png", "small enough as PNG");
         assert_eq!(out.hints.len(), 1);
-        assert!(out.hints[0].contains("original 3000x1500"), "got: {:?}", out.hints);
-        assert!(out.hints[0].contains("displayed at 2000x1000"), "got: {:?}", out.hints);
+        assert!(
+            out.hints[0].contains("original 3000x1500"),
+            "got: {:?}",
+            out.hints
+        );
+        assert!(
+            out.hints[0].contains("displayed at 2000x1000"),
+            "got: {:?}",
+            out.hints
+        );
     }
 
     #[test]
@@ -367,7 +396,10 @@ mod tests {
         let out = process_image(bmp.get_ref(), "image/bmp", true, None).expect("ok");
         assert_eq!(out.mime_type, "image/png");
         assert_eq!(out.hints.len(), 1);
-        assert_eq!(out.hints[0], "[Image converted from image/bmp to image/png.]");
+        assert_eq!(
+            out.hints[0],
+            "[Image converted from image/bmp to image/png.]"
+        );
     }
 
     #[test]

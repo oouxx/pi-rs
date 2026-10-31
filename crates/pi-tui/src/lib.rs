@@ -5,12 +5,12 @@
 
 pub mod app;
 pub mod clipboard;
-pub mod line_screen;
 pub mod completion;
 pub mod components;
-pub mod fuzzy;
 pub mod detect;
+pub mod fuzzy;
 pub mod keymap;
+pub mod line_screen;
 pub mod render;
 pub mod selection;
 pub mod terminal;
@@ -22,15 +22,16 @@ pub use app::{
     CustomToolRenderInput, Dialog, DialogAction, DialogButton, Message, Model, Msg,
     ToolCustomRender,
 };
-pub use detect::{detect_terminal_background_theme, detect_theme_from_env, TerminalTheme};
-pub use theme::Theme;
 pub use components::{
     ArgumentCompletionsFn, Completer, CompletionCommand, CompletionItem, CompletionRequest,
-    CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown, MarkdownTheme, SelectList, TextComponent,
+    CompletionTrigger, DiffView, Editor, EditorMode, Input, Markdown, MarkdownTheme, SelectList,
+    TextComponent,
 };
+pub use detect::{detect_terminal_background_theme, detect_theme_from_env, TerminalTheme};
 pub use keymap::{Action, KeyBind, Keymap};
 pub use selection::{Granularity, SelPoint, SelSpace, Selection};
 pub use terminal::{ShutdownGuard, Terminal};
+pub use theme::Theme;
 
 /// Utility: render markdown text to styled lines through the vendored
 /// grok-build markdown pipeline (pulldown-cmark + syntect + width-aware wrap)

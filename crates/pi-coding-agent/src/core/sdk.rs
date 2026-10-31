@@ -1,17 +1,16 @@
 use pi_agent_core::pi_ai_types::{Model, ThinkingLevel};
 use pi_agent_core::types::{ConvertToLlmFn, StreamFn};
 
-
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
-use crate::core::tools::ToolsOptions;
+use crate::core::auth_storage::AuthStorage;
 use crate::core::extensions::{ExtensionRegistry, ToolDefinition};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{self, ScopedModel};
-use crate::core::auth_storage::AuthStorage;
 use crate::core::resource_loader::{self, ResourceLoader, ResourceLoaderOptions};
 use crate::core::session_manager::{SessionEntry, SessionManager};
 use crate::core::settings_manager::SettingsManager;
 use crate::core::system_prompt::{ContextFile, SkillInfo};
+use crate::core::tools::ToolsOptions;
 
 /// Create the default StreamFn that bridges to the pi-ai provider system.
 /// Public for testing.
@@ -85,26 +84,35 @@ pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::St
 
     std::sync::Arc::new(
         move |model: pi_agent_core::pi_ai_types::Model,
-         context: pi_agent_core::pi_ai_types::Context,
-         thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
-         options: pi_agent_core::types::StreamFnOptions| {
+              context: pi_agent_core::pi_ai_types::Context,
+              thinking: Option<pi_agent_core::pi_ai_types::ThinkingLevel>,
+              options: pi_agent_core::types::StreamFnOptions| {
             Box::pin(async move {
                 // Provider attribution headers (match TS `transformHeaders` →
                 // `mergeProviderAttributionHeaders`): `x-opencode-session` /
                 // `x-opencode-client` session affinity plus the telemetry-gated
                 // OpenRouter/NVIDIA/Cloudflare markers. Request headers override.
-                let request_headers: Vec<(String, String)> =
-                    options.headers.clone().unwrap_or_default().into_iter().collect();
-                let headers = crate::core::provider_attribution::merge_provider_attribution_headers(
-                    &crate::core::provider_attribution::ModelInfo {
-                        provider: model.provider.clone(),
-                        base_url: model.base_url.clone(),
-                    },
-                    has_telemetry,
-                    options.session_id.as_deref(),
-                    &[request_headers],
-                )
-                .map(|entries| entries.into_iter().collect::<std::collections::HashMap<_, _>>());
+                let request_headers: Vec<(String, String)> = options
+                    .headers
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                let headers =
+                    crate::core::provider_attribution::merge_provider_attribution_headers(
+                        &crate::core::provider_attribution::ModelInfo {
+                            provider: model.provider.clone(),
+                            base_url: model.base_url.clone(),
+                        },
+                        has_telemetry,
+                        options.session_id.as_deref(),
+                        &[request_headers],
+                    )
+                    .map(|entries| {
+                        entries
+                            .into_iter()
+                            .collect::<std::collections::HashMap<_, _>>()
+                    });
 
                 // Forward every request-affecting field (match TS `streamSimple`
                 // options spread). Dropping these silently lost temperature,
@@ -126,8 +134,6 @@ pub fn create_default_stream_fn(has_telemetry: bool) -> pi_agent_core::types::St
                     },
                     headers,
                 );
-
-
 
                 let event_stream =
                     pi_agent_core::pi_ai::stream::stream(&model, &context, Some(stream_opts));
@@ -428,13 +434,13 @@ pub mod prelude {
     };
 
     // ── Agent-core types (re-exported for convenience) ──────────────────────
-    /// Type alias matching the TypeScript `Tool` export.
-    pub use pi_agent_core::types::AgentTool as Tool;
     pub use pi_agent_core::types::AfterToolCallContext;
     pub use pi_agent_core::types::AfterToolCallResult;
     pub use pi_agent_core::types::AgentEvent;
     pub use pi_agent_core::types::AgentMessage;
     pub use pi_agent_core::types::AgentState;
+    /// Type alias matching the TypeScript `Tool` export.
+    pub use pi_agent_core::types::AgentTool as Tool;
     pub use pi_agent_core::types::AgentTool;
     pub use pi_agent_core::types::AgentToolResult;
     pub use pi_agent_core::types::BeforeToolCallContext;
@@ -462,7 +468,9 @@ pub fn collect_prompt_guidelines(
     let mut guidelines: Vec<String> = Vec::new();
     for t in tools {
         if let Some(gl) = &t.definition.prompt_guidelines {
-            for g in gl { guidelines.push(g.clone()); }
+            for g in gl {
+                guidelines.push(g.clone());
+            }
         }
     }
     if guidelines.is_empty() {
@@ -520,7 +528,10 @@ pub async fn create_agent_session(
 
     let default_provider = settings_manager.get_settings().default_provider.clone();
     let default_model_id = settings_manager.get_settings().default_model.clone();
-    let default_thinking_level = settings_manager.get_settings().default_thinking_level.clone();
+    let default_thinking_level = settings_manager
+        .get_settings()
+        .default_thinking_level
+        .clone();
 
     let scoped = options
         .scoped_models
@@ -586,8 +597,10 @@ pub async fn create_agent_session(
             match restored {
                 Some(m) => model = Some(m),
                 None => {
-                    fallback_message =
-                        Some(format!("Could not restore model {}/{}", saved.provider, saved.model_id));
+                    fallback_message = Some(format!(
+                        "Could not restore model {}/{}",
+                        saved.provider, saved.model_id
+                    ));
                 }
             }
         }
@@ -596,13 +609,14 @@ pub async fn create_agent_session(
     // Thinking level precedence (TS sdk.ts): explicit caller/CLI value, then the
     // session's recorded level, then the settings default. A scoped pattern's
     // explicit level is folded in here for new sessions.
-    let mut resolved_thinking_level: Option<String> = options.thinking_level.clone().or_else(|| {
-        if options.model.is_none() && !has_existing_session {
-            scoped.first().and_then(|s| s.thinking_level.clone())
-        } else {
-            None
-        }
-    });
+    let mut resolved_thinking_level: Option<String> =
+        options.thinking_level.clone().or_else(|| {
+            if options.model.is_none() && !has_existing_session {
+                scoped.first().and_then(|s| s.thinking_level.clone())
+            } else {
+                None
+            }
+        });
 
     if model.is_none() {
         let initial = model_resolver::find_initial_model(
@@ -776,15 +790,16 @@ pub async fn create_agent_session(
     // Load resources for context files and skills. The loader instance is
     // retained by the session so `reload()` can rescan from disk, matching
     // TS `resourceLoader.reload()`.
-    let resource_options = options
-        .resource_loader
-        .clone()
-        .unwrap_or_else(|| ResourceLoaderOptions {
-            cwd: cwd.clone(),
-            agent_dir: Some(agent_dir.clone()),
-            include_defaults: true,
-            ..Default::default()
-        });
+    let resource_options =
+        options
+            .resource_loader
+            .clone()
+            .unwrap_or_else(|| ResourceLoaderOptions {
+                cwd: cwd.clone(),
+                agent_dir: Some(agent_dir.clone()),
+                include_defaults: true,
+                ..Default::default()
+            });
     let mut resource_loader_instance =
         resource_loader::DefaultResourceLoader::new(resource_options);
     let resources = resource_loader_instance.reload();
@@ -916,8 +931,13 @@ pub async fn create_agent_session(
         extension_action_rx: Some(extension_action_rx),
     };
 
-    let session =
-        AgentSession::new(session_manager, settings_manager, model_registry, session_options).await;
+    let session = AgentSession::new(
+        session_manager,
+        settings_manager,
+        model_registry,
+        session_options,
+    )
+    .await;
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {
@@ -996,19 +1016,20 @@ mod tests {
         models_path: &std::path::Path,
     ) -> ModelRegistry {
         let registry = ModelRegistry::new_with_models_path(models, models_path);
-        registry.register_provider(
-            provider,
-            ProviderConfig {
-                name: None,
-                base_url: None,
-                api_key: Some("test-key".to_string()),
-                api: None,
-                headers: None,
-                auth_header: None,
-                models: None,
-            },
-        )
-        .unwrap();
+        registry
+            .register_provider(
+                provider,
+                ProviderConfig {
+                    name: None,
+                    base_url: None,
+                    api_key: Some("test-key".to_string()),
+                    api: None,
+                    headers: None,
+                    auth_header: None,
+                    models: None,
+                },
+            )
+            .unwrap();
         registry
     }
 
@@ -1293,7 +1314,11 @@ mod tests {
         .unwrap();
 
         let ext_registry = session.get_extension_registry().expect("registry");
-        let tools: Vec<&str> = ext_registry.tools().iter().map(|t| t.name.as_str()).collect();
+        let tools: Vec<&str> = ext_registry
+            .tools()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
         assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
         assert!(tools.contains(&"web_search"), "web_search on: {tools:?}");
     }

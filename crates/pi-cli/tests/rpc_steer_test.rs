@@ -12,7 +12,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
-fn spawn_rpc() -> (std::process::Child, std::io::BufWriter<std::process::ChildStdin>, BufReader<std::process::ChildStdout>) {
+fn spawn_rpc() -> (
+    std::process::Child,
+    std::io::BufWriter<std::process::ChildStdin>,
+    BufReader<std::process::ChildStdout>,
+) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pi-rs"))
         .arg("--mode")
         .arg("rpc")
@@ -40,7 +44,10 @@ fn send_and_read(
     loop {
         let mut buf = String::new();
         let n = stdout.read_line(&mut buf).expect("read line");
-        assert!(n > 0, "RPC process closed stdout while waiting for {want_id}");
+        assert!(
+            n > 0,
+            "RPC process closed stdout while waiting for {want_id}"
+        );
         let value: serde_json::Value = serde_json::from_str(buf.trim()).expect("valid JSON");
         let is_target = value.get("id").and_then(|v| v.as_str()) == Some(want_id);
         out.push(value);
@@ -56,7 +63,12 @@ fn steer_queues_message_and_reports_pending_count() {
 
     // steer → success response + a queue_update event with the message in the
     // steering queue.
-    let lines = send_and_read(&mut stdin, &mut stdout, r#"{"type":"steer","id":"s1","message":"stop and wait"}"#, "s1");
+    let lines = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        r#"{"type":"steer","id":"s1","message":"stop and wait"}"#,
+        "s1",
+    );
     let response = lines.last().expect("response");
     assert_eq!(response["command"], "steer");
     assert_eq!(response["success"], true, "steer must succeed: {response}");
@@ -64,11 +76,19 @@ fn steer_queues_message_and_reports_pending_count() {
         .iter()
         .find(|l| l["type"] == "queue_update")
         .expect("queue_update event must be emitted after steer");
-    assert_eq!(queue_update["steering"], serde_json::json!(["stop and wait"]));
+    assert_eq!(
+        queue_update["steering"],
+        serde_json::json!(["stop and wait"])
+    );
     assert_eq!(queue_update["followUp"], serde_json::json!([]));
 
     // get_state → pendingMessageCount reflects the queued steer message.
-    let lines = send_and_read(&mut stdin, &mut stdout, r#"{"type":"get_state","id":"s2"}"#, "s2");
+    let lines = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        r#"{"type":"get_state","id":"s2"}"#,
+        "s2",
+    );
     let state = lines.last().expect("response");
     assert_eq!(state["command"], "get_state");
     assert_eq!(state["data"]["pendingMessageCount"], 1);
@@ -84,15 +104,26 @@ fn steer_queues_message_and_reports_pending_count() {
 fn steer_non_extension_slash_text_is_not_rejected() {
     let (mut child, mut stdin, mut stdout) = spawn_rpc();
 
-    let lines = send_and_read(&mut stdin, &mut stdout, r#"{"type":"steer","id":"s1","message":"/nonexistent_cmd hello"}"#, "s1");
+    let lines = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        r#"{"type":"steer","id":"s1","message":"/nonexistent_cmd hello"}"#,
+        "s1",
+    );
     let response = lines.last().expect("response");
     assert_eq!(response["command"], "steer");
-    assert_eq!(response["success"], true, "unknown slash text must queue: {response}");
+    assert_eq!(
+        response["success"], true,
+        "unknown slash text must queue: {response}"
+    );
     let queue_update = lines
         .iter()
         .find(|l| l["type"] == "queue_update")
         .expect("queue_update event");
-    assert_eq!(queue_update["steering"], serde_json::json!(["/nonexistent_cmd hello"]));
+    assert_eq!(
+        queue_update["steering"],
+        serde_json::json!(["/nonexistent_cmd hello"])
+    );
 
     child.kill().expect("kill child");
     let _ = child.wait();
@@ -102,7 +133,12 @@ fn steer_non_extension_slash_text_is_not_rejected() {
 fn follow_up_queues_message_and_reports_pending_count() {
     let (mut child, mut stdin, mut stdout) = spawn_rpc();
 
-    let lines = send_and_read(&mut stdin, &mut stdout, r#"{"type":"follow_up","id":"f1","message":"continue when done"}"#, "f1");
+    let lines = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        r#"{"type":"follow_up","id":"f1","message":"continue when done"}"#,
+        "f1",
+    );
     let response = lines.last().expect("response");
     assert_eq!(response["command"], "follow_up");
     assert_eq!(response["success"], true);
@@ -111,9 +147,17 @@ fn follow_up_queues_message_and_reports_pending_count() {
         .find(|l| l["type"] == "queue_update")
         .expect("queue_update event must be emitted after follow_up");
     assert_eq!(queue_update["steering"], serde_json::json!([]));
-    assert_eq!(queue_update["followUp"], serde_json::json!(["continue when done"]));
+    assert_eq!(
+        queue_update["followUp"],
+        serde_json::json!(["continue when done"])
+    );
 
-    let lines = send_and_read(&mut stdin, &mut stdout, r#"{"type":"get_state","id":"f2"}"#, "f2");
+    let lines = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        r#"{"type":"get_state","id":"f2"}"#,
+        "f2",
+    );
     let state = lines.last().expect("response");
     assert_eq!(state["data"]["pendingMessageCount"], 1);
 

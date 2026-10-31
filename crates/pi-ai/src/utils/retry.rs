@@ -31,11 +31,7 @@ pub struct RetryPolicy {
 /// `maxAgentDelayMs` and saturated instead of overflowing
 /// (TS `retryDelayMs`).
 #[must_use]
-pub fn retry_delay_ms(
-    base_delay_ms: u64,
-    max_agent_delay_ms: Option<u64>,
-    attempt: u32,
-) -> u64 {
+pub fn retry_delay_ms(base_delay_ms: u64, max_agent_delay_ms: Option<u64>, attempt: u32) -> u64 {
     let exponent = attempt.saturating_sub(1);
     let delay = base_delay_ms.checked_shl(exponent).unwrap_or(u64::MAX);
     delay.min(max_agent_delay_ms.unwrap_or(DEFAULT_MAX_AGENT_RETRY_DELAY_MS))
@@ -201,7 +197,10 @@ where
         }
 
         attempt += 1;
-        let error_message = response.error_message.clone().unwrap_or_else(|| "Unknown error".to_string());
+        let error_message = response
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "Unknown error".to_string());
         last_retry = Some((attempt, error_message.clone()));
         let base_delay = policy.map(|p| p.base_delay_ms).unwrap_or(0);
         let delay_ms = retry_delay_ms(
@@ -295,11 +294,21 @@ mod tests {
     }
     #[test]
     fn test_is_retryable_assistant_error() {
-        assert!(is_retryable_assistant_error(&error_msg("stream ended before a terminal response event")));
-        assert!(is_retryable_assistant_error(&error_msg("Provider returned error: 503")));
-        assert!(is_retryable_assistant_error(&error_msg("connection refused")));
-        assert!(!is_retryable_assistant_error(&error_msg("insufficient_quota")));
-        assert!(!is_retryable_assistant_error(&error_msg("Monthly usage limit reached")));
+        assert!(is_retryable_assistant_error(&error_msg(
+            "stream ended before a terminal response event"
+        )));
+        assert!(is_retryable_assistant_error(&error_msg(
+            "Provider returned error: 503"
+        )));
+        assert!(is_retryable_assistant_error(&error_msg(
+            "connection refused"
+        )));
+        assert!(!is_retryable_assistant_error(&error_msg(
+            "insufficient_quota"
+        )));
+        assert!(!is_retryable_assistant_error(&error_msg(
+            "Monthly usage limit reached"
+        )));
         assert!(!is_retryable_assistant_error(&ok_msg()));
     }
 
@@ -418,5 +427,4 @@ mod tests {
         // Overflow saturates instead of wrapping.
         assert_eq!(retry_delay_ms(u64::MAX, None, 3), 60_000);
     }
-
 }

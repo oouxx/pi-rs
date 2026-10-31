@@ -35,7 +35,12 @@ pub struct SelPoint {
 
 impl SelPoint {
     pub fn character(space: SelSpace, row: usize, col: u16) -> Self {
-        Self { space, row, col, boundary: false }
+        Self {
+            space,
+            row,
+            col,
+            boundary: false,
+        }
     }
 }
 
@@ -123,9 +128,13 @@ impl Selection {
         if anchor.row == focus.row && anchor.col == focus.col {
             return None;
         }
-        let anchor_before = anchor.row < focus.row
-            || (anchor.row == focus.row && anchor.col < focus.col);
-        Some(if anchor_before { (anchor, focus) } else { (focus, anchor) })
+        let anchor_before =
+            anchor.row < focus.row || (anchor.row == focus.row && anchor.col < focus.col);
+        Some(if anchor_before {
+            (anchor, focus)
+        } else {
+            (focus, anchor)
+        })
     }
 
     /// The selected text, or `None` when empty (TS `getActiveSelectionText`).
@@ -149,22 +158,35 @@ impl Selection {
             self.focus = Some(point);
             return;
         }
-        let line = self.source_lines.get(point.row).map(String::as_str).unwrap_or("");
+        let line = self
+            .source_lines
+            .get(point.row)
+            .map(String::as_str)
+            .unwrap_or("");
         let range = match self.granularity {
             Granularity::Word => word_range(line, point.col),
             Granularity::Line => Some(line_range(line)),
             Granularity::Character => None,
         };
-        let Some((start_col, end_col)) = range else { return };
+        let Some((start_col, end_col)) = range else {
+            return;
+        };
         let initial = self.initial_range.unwrap_or((point, point));
-        let target_before = point.row < initial.0.row
-            || (point.row == initial.0.row && start_col < initial.0.col);
+        let target_before =
+            point.row < initial.0.row || (point.row == initial.0.row && start_col < initial.0.col);
         if target_before {
             self.anchor = Some(initial.1);
-            self.focus = Some(SelPoint { col: start_col, ..point });
+            self.focus = Some(SelPoint {
+                col: start_col,
+                ..point
+            });
         } else {
             self.anchor = Some(initial.0);
-            self.focus = Some(SelPoint { col: end_col, boundary: true, ..point });
+            self.focus = Some(SelPoint {
+                col: end_col,
+                boundary: true,
+                ..point
+            });
         }
     }
 }
@@ -297,8 +319,7 @@ pub fn extract_text(
     }
     // TS `getActiveSelectionText` runs after `getSelectionBounds`, which always
     // orders anchor/focus from top-left to bottom-right.
-    let selection = if first.row < second.row
-        || (first.row == second.row && first.col < second.col)
+    let selection = if first.row < second.row || (first.row == second.row && first.col < second.col)
     {
         (first, second)
     } else {
@@ -311,12 +332,20 @@ pub fn extract_text(
         rows.push(slice_columns(line, start, end).trim_end().to_string());
     }
     let text = rows.join("\n");
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::field_reassign_with_default
+    )]
     use super::*;
 
     fn content(row: usize, col: u16) -> SelPoint {
@@ -380,9 +409,16 @@ mod tests {
 
     #[test]
     fn extract_text_trims_trailing_padding_and_joins_rows() {
-        let lines = vec!["alpha   ".to_string(), "beta ".to_string(), "gamma".to_string()];
+        let lines = vec![
+            "alpha   ".to_string(),
+            "beta ".to_string(),
+            "gamma".to_string(),
+        ];
         let sel = (content(0, 0), content(1, 4));
-        assert_eq!(extract_text(&lines, sel, 0, 20).as_deref(), Some("alpha\nbeta"));
+        assert_eq!(
+            extract_text(&lines, sel, 0, 20).as_deref(),
+            Some("alpha\nbeta")
+        );
         // Zero-width selection yields nothing.
         let sel = (content(0, 1), content(0, 1));
         assert_eq!(extract_text(&lines, sel, 0, 20), None);

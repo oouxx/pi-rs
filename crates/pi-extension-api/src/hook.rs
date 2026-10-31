@@ -17,10 +17,7 @@ use std::sync::Arc;
 
 use crate::{ExtensionContext, SourceInfo, ToolCallOutput, ToolDefinition};
 type CommandFn = Arc<
-    dyn Fn(
-            String,
-            Option<&crate::ExtensionContext>,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send>>
+    dyn Fn(String, Option<&crate::ExtensionContext>) -> Pin<Box<dyn Future<Output = ()> + Send>>
         + Send
         + Sync,
 >;
@@ -47,7 +44,9 @@ pub struct AutocompleteItem {
 /// the argument text after the command name and returns `None` (no
 /// completions) or `Some(items)`.
 pub type ArgumentCompletionsFn = Arc<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<AutocompleteItem>>> + Send>> + Send + Sync,
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<AutocompleteItem>>> + Send>>
+        + Send
+        + Sync,
 >;
 
 // ============================================================================
@@ -425,7 +424,6 @@ pub trait HookHandler: Send + Sync {
         HookResult::Continue(_message)
     }
 
-
     /// 工具执行开始时触发。
     async fn on_tool_execution_start(
         &self,
@@ -446,7 +444,6 @@ pub trait HookHandler: Send + Sync {
         _ctx: Option<&crate::ExtensionContext>,
     ) {
     }
-
 
     /// 工具执行结束时触发。
     async fn on_tool_execution_end(
@@ -499,7 +496,12 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// 资源发现时触发。返回扩展提供的额外资源路径。
-    async fn on_resources_discover(&self, _cwd: &str, _reason: &str, _ctx: Option<&crate::ExtensionContext>) -> Option<crate::ResourcesDiscoverResult> {
+    async fn on_resources_discover(
+        &self,
+        _cwd: &str,
+        _reason: &str,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::ResourcesDiscoverResult> {
         None
     }
 
@@ -537,7 +539,14 @@ pub trait HookHandler: Send + Sync {
     }
 
     /// 用户 bash 执行时触发。
-    async fn on_user_bash(&self, _command: &str, _cwd: &str, _ctx: Option<&crate::ExtensionContext>) -> Option<crate::UserBashResult> { None }
+    async fn on_user_bash(
+        &self,
+        _command: &str,
+        _cwd: &str,
+        _ctx: Option<&crate::ExtensionContext>,
+    ) -> Option<crate::UserBashResult> {
+        None
+    }
 
     /// 每次 prompt 缓存刷新前触发（TS `cache_warming_decision`）。返回的
     /// `action` 覆盖 pi 自身的判断；返回 `None` 表示不干预。
@@ -710,10 +719,7 @@ impl SessionBeforeCompactEvent {
     /// Whether the compaction was already aborted by the user.
     #[must_use]
     pub fn is_aborted(&self) -> bool {
-        self.abort
-            .as_ref()
-            .map(|rx| *rx.borrow())
-            .unwrap_or(false)
+        self.abort.as_ref().map(|rx| *rx.borrow()).unwrap_or(false)
     }
 }
 
@@ -740,7 +746,9 @@ fn same_messages(left: &[Value], right: &[Value]) -> bool {
 /// (TS `restoreSystemMessages`).
 fn restore_system_messages(current: &[Value], returned: &[Value]) -> Vec<Value> {
     match pi_ai::utils::transcript::get_current_system_message(current) {
-        Some(head) => std::iter::once(head).chain(returned.iter().cloned()).collect(),
+        Some(head) => std::iter::once(head)
+            .chain(returned.iter().cloned())
+            .collect(),
         None => returned.to_vec(),
     }
 }
@@ -766,7 +774,8 @@ impl HookRunner {
     /// Register a hook handler. Maintains priority-sorted order.
     pub fn register(&mut self, handler: Box<dyn HookHandler>) {
         self.handlers.push(handler);
-        self.handlers.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+        self.handlers
+            .sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
     /// Check if any handlers are registered.
@@ -910,9 +919,7 @@ impl HookRunner {
         build_context: F,
     ) -> crate::BoundaryDispatchResult
     where
-        F: Fn(
-            &[crate::SessionBoundaryDraft],
-        ) -> Result<crate::BoundaryContextPreview, String>,
+        F: Fn(&[crate::SessionBoundaryDraft]) -> Result<crate::BoundaryContextPreview, String>,
     {
         if !self.has_boundary_handlers(kind) {
             return crate::BoundaryDispatchResult {
@@ -974,7 +981,9 @@ impl HookRunner {
     /// Whether any registered handler participates in the given boundary.
     #[must_use]
     pub fn has_boundary_handlers(&self, kind: crate::BoundaryKind) -> bool {
-        self.handlers.iter().any(|h| h.participates_in_boundary(kind))
+        self.handlers
+            .iter()
+            .any(|h| h.participates_in_boundary(kind))
     }
 
     /// Fire `on_message_start` to all handlers (parallel).
@@ -1071,7 +1080,6 @@ impl HookRunner {
         futures::future::join_all(futures).await;
     }
 
-
     /// Fire `on_tool_execution_end` to all handlers (parallel).
     pub async fn fire_tool_execution_end(
         &self,
@@ -1151,7 +1159,12 @@ impl HookRunner {
     }
 
     /// Fire `on_resources_discover` to all handlers (parallel).
-    pub async fn fire_resources_discover(&self, cwd: &str, reason: &str, ctx: Option<&crate::ExtensionContext>) -> crate::ResourcesDiscoverResult {
+    pub async fn fire_resources_discover(
+        &self,
+        cwd: &str,
+        reason: &str,
+        ctx: Option<&crate::ExtensionContext>,
+    ) -> crate::ResourcesDiscoverResult {
         let futures: Vec<_> = self
             .handlers
             .iter()
@@ -1298,7 +1311,10 @@ impl HookRunner {
     ) -> HookResult<(String, Value)> {
         let mut current = (tool_name, args);
         for handler in &self.handlers {
-            match handler.before_tool_call(current.0.clone(), current.1.clone(), ctx).await {
+            match handler
+                .before_tool_call(current.0.clone(), current.1.clone(), ctx)
+                .await
+            {
                 HookResult::Continue((name, args)) => {
                     current = (name, args);
                 }
@@ -1374,7 +1390,13 @@ impl HookRunner {
         let mut messages: Vec<Value> = Vec::new();
         for handler in &self.handlers {
             match handler
-                .before_agent_start(current.0.clone(), images.clone(), current.1.clone(), system_prompt_options.clone(), ctx)
+                .before_agent_start(
+                    current.0.clone(),
+                    images.clone(),
+                    current.1.clone(),
+                    system_prompt_options.clone(),
+                    ctx,
+                )
                 .await
             {
                 HookResult::Continue((p, s, msgs)) => {
@@ -1473,7 +1495,10 @@ impl HookRunner {
         ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
-            match handler.after_provider_response(status, headers.clone(), ctx).await {
+            match handler
+                .after_provider_response(status, headers.clone(), ctx)
+                .await
+            {
                 HookResult::Continue(()) => {}
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -1612,7 +1637,10 @@ mod tests {
             assert_eq!(event.reason, "manual");
             assert_eq!(event.preparation["tokensBefore"], 1234);
             assert_eq!(event.branch_entries.len(), 1);
-            assert_eq!(event.custom_instructions.as_deref(), Some("keep the API bits"));
+            assert_eq!(
+                event.custom_instructions.as_deref(),
+                Some("keep the API bits")
+            );
             HookResult::Continue(SessionBeforeCompactResult {
                 cancel: self.cancel,
                 compaction: self
@@ -1790,7 +1818,11 @@ mod tests {
             .await;
 
         assert!(result.valid);
-        assert_eq!(result.entries.len(), 1, "h1's entry is kept (h2 returned None)");
+        assert_eq!(
+            result.entries.len(),
+            1,
+            "h1's entry is kept (h2 returned None)"
+        );
         assert!(result.continue_, "h2 requested continuation");
         assert_eq!(*seen.lock().unwrap(), vec![1, 1]);
     }
@@ -1925,7 +1957,12 @@ mod tests {
             should_block: false,
         }));
 
-        let ctx = crate::ExtensionContext::new("t".into(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+        let ctx = crate::ExtensionContext::new(
+            "t".into(),
+            false,
+            crate::ExtensionUIContext::noop(),
+            crate::RuntimeHandle::noop(),
+        );
         let result = runner
             .run_before_tool_call("shell".into(), serde_json::json!({"cmd": "ls"}), &ctx)
             .await;
@@ -1938,7 +1975,12 @@ mod tests {
     #[tokio::test]
     async fn empty_runner_modifying_hooks_pass_through() {
         let runner = HookRunner::new();
-        let ctx = crate::ExtensionContext::new("t".into(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+        let ctx = crate::ExtensionContext::new(
+            "t".into(),
+            false,
+            crate::ExtensionUIContext::noop(),
+            crate::RuntimeHandle::noop(),
+        );
         let result = runner
             .run_before_tool_call("shell".into(), serde_json::json!({"cmd": "ls"}), &ctx)
             .await;
@@ -1966,8 +2008,8 @@ mod tests {
             }
             async fn on_agent_start(&self, _ctx: Option<&crate::ExtensionContext>) {
                 if let Ok(mut order) = self.execution_order.lock() {
-                order.push(self.name.clone());
-            }
+                    order.push(self.name.clone());
+                }
             }
         }
 
@@ -1992,7 +2034,9 @@ mod tests {
 
         runner.fire_agent_start(None).await;
 
-        let Ok(guard) = order.lock() else { return; };
+        let Ok(guard) = order.lock() else {
+            return;
+        };
         let order = &*guard;
         assert_eq!(order.len(), 3);
         assert!(order.contains(&"low".to_string()));
@@ -2041,15 +2085,26 @@ mod context_phase_tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(false));
         let mut runner = HookRunner::new();
         runner.register(Box::new(SeesConversationOnly { seen: seen.clone() }));
-        let ctx = ExtensionContext::new("/tmp".to_string(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+        let ctx = ExtensionContext::new(
+            "/tmp".to_string(),
+            false,
+            crate::ExtensionUIContext::noop(),
+            crate::RuntimeHandle::noop(),
+        );
 
         let messages = vec![system("prompt"), user("hi")];
         let out = match runner.run_on_context(messages.clone(), &ctx).await {
             HookResult::Continue(m) => m,
             HookResult::Cancel(r) => panic!("unexpected cancel: {r}"),
         };
-        assert!(*seen.lock().unwrap(), "handlers must not see system messages");
-        assert_eq!(out, messages, "an unchanged conversation keeps its system messages");
+        assert!(
+            *seen.lock().unwrap(),
+            "handlers must not see system messages"
+        );
+        assert_eq!(
+            out, messages,
+            "an unchanged conversation keeps its system messages"
+        );
     }
 
     /// A handler that prunes the conversation gets the replayed prompt and tool
@@ -2074,7 +2129,12 @@ mod context_phase_tests {
     async fn a_pruned_context_gets_the_prompt_back() {
         let mut runner = HookRunner::new();
         runner.register(Box::new(Prunes));
-        let ctx = ExtensionContext::new("/tmp".to_string(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+        let ctx = ExtensionContext::new(
+            "/tmp".to_string(),
+            false,
+            crate::ExtensionUIContext::noop(),
+            crate::RuntimeHandle::noop(),
+        );
 
         let out = match runner
             .run_on_context(vec![system("prompt"), user("a"), user("b")], &ctx)
@@ -2104,7 +2164,9 @@ mod context_phase_tests {
             _ctx: &ExtensionContext,
         ) -> Option<Vec<Value>> {
             assert!(
-                messages.iter().any(|m| m.get("role").and_then(Value::as_str) == Some("system")),
+                messages
+                    .iter()
+                    .any(|m| m.get("role").and_then(Value::as_str) == Some("system")),
                 "this phase sees system messages"
             );
             Some(messages.iter().skip(1).cloned().collect())
@@ -2115,7 +2177,12 @@ mod context_phase_tests {
     async fn context_with_system_sees_everything_and_reports_dropped_prompts() {
         let mut runner = HookRunner::new();
         runner.register(Box::new(DropsSystem));
-        let ctx = ExtensionContext::new("/tmp".to_string(), false, crate::ExtensionUIContext::noop(), crate::RuntimeHandle::noop());
+        let ctx = ExtensionContext::new(
+            "/tmp".to_string(),
+            false,
+            crate::ExtensionUIContext::noop(),
+            crate::RuntimeHandle::noop(),
+        );
 
         let (out, dropped) = runner
             .run_context_with_system(vec![system("prompt"), user("hi")], &ctx)

@@ -31,16 +31,10 @@ pub struct ReadToolDetails {
 /// Pluggable operations for the read tool.
 /// Override these to delegate file reading to remote systems (for example SSH).
 pub trait ReadOperations: Send + Sync {
-    fn read_file(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<Vec<u8>>;
+    fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<Vec<u8>>;
 
     /// Check if file is readable (throw if not).
-    fn access(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<()>;
+    fn access(&self, path: &str) -> crate::core::tools::AsyncOpResult<()>;
 }
 
 // ============================================================================
@@ -50,10 +44,7 @@ pub trait ReadOperations: Send + Sync {
 pub struct LocalReadOperations;
 
 impl ReadOperations for LocalReadOperations {
-    fn read_file(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<Vec<u8>> {
+    fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<Vec<u8>> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read(&path)
@@ -62,10 +53,7 @@ impl ReadOperations for LocalReadOperations {
         })
     }
 
-    fn access(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<()> {
+    fn access(&self, path: &str) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::metadata(&path)
@@ -152,10 +140,7 @@ fn read_parameters_schema() -> serde_json::Value {
 
 /// Polled abort check (TS reads `signal.aborted` at each step).
 fn aborted(signal: &Option<tokio::sync::watch::Receiver<bool>>) -> bool {
-    signal
-        .as_ref()
-        .map(|rx| *rx.borrow())
-        .unwrap_or(false)
+    signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false)
 }
 
 // ============================================================================
@@ -499,7 +484,10 @@ mod tests {
             other => panic!("expected text, got {other:?}"),
         };
         assert!(!text.contains("Binary file"), "got: {text}");
-        assert!(text.contains('\u{FFFD}'), "invalid bytes become U+FFFD: {text:?}");
+        assert!(
+            text.contains('\u{FFFD}'),
+            "invalid bytes become U+FFFD: {text:?}"
+        );
         assert!(text.contains("hi"), "valid bytes are preserved: {text:?}");
     }
 }

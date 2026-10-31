@@ -7,8 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Arc;
 use pi_agent_core::types::AgentTool;
+use std::sync::Arc;
 
 // ============================================================================
 // Helpers
@@ -70,8 +70,10 @@ async fn execute_tool(
     tool: &AgentTool<serde_json::Value, serde_json::Value>,
     call_id: &str,
     params: serde_json::Value,
-) -> Result<pi_agent_core::types::AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>
-{
+) -> Result<
+    pi_agent_core::types::AgentToolResult<serde_json::Value>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     (tool.execute)(call_id.to_string(), params, None, None).await
 }
 
@@ -102,10 +104,8 @@ async fn test_read_file_contents() {
     let content = "Hello, world!\nLine 2\nLine 3";
     tokio::fs::write(&file_path, content).await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": file_path.to_str().unwrap() });
     let result = execute_tool(&tool, "test-call-1", params).await.unwrap();
 
@@ -119,10 +119,8 @@ async fn test_read_nonexistent_file() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("nonexistent.txt");
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": file_path.to_str().unwrap() });
     // TS `ops.access()` throws -> tool error result (is_error), not a text result.
     let err = execute_tool(&tool, "test-call-2", params)
@@ -140,29 +138,40 @@ async fn test_read_truncation_details() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("large-file.txt");
     let lines: Vec<String> = (1..=2500).map(|i| format!("Line {}", i)).collect();
-    tokio::fs::write(&file_path, lines.join("\n")).await.unwrap();
+    tokio::fs::write(&file_path, lines.join("\n"))
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": file_path.to_str().unwrap() });
     let result = execute_tool(&tool, "test-call-9", params).await.unwrap();
 
     let details: serde_json::Value = result.details;
     assert!(!details.is_null());
     if let Some(truncation) = details.get("truncation") {
-        assert_eq!(truncation.get("truncated").and_then(serde_json::Value::as_bool), Some(true));
         assert_eq!(
-            truncation.get("truncated_by").and_then(serde_json::Value::as_str),
+            truncation
+                .get("truncated")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            truncation
+                .get("truncated_by")
+                .and_then(serde_json::Value::as_str),
             Some("lines")
         );
         assert_eq!(
-            truncation.get("total_lines").and_then(serde_json::Value::as_u64),
+            truncation
+                .get("total_lines")
+                .and_then(serde_json::Value::as_u64),
             Some(2500)
         );
         assert_eq!(
-            truncation.get("output_lines").and_then(serde_json::Value::as_u64),
+            truncation
+                .get("output_lines")
+                .and_then(serde_json::Value::as_u64),
             Some(2000)
         );
     }
@@ -174,20 +183,23 @@ async fn test_read_truncation_details() {
 async fn test_read_image_extension_non_image_content() {
     let dir = setup_test_dir();
     let test_file = dir.path().join("not-an-image.png");
-    tokio::fs::write(&test_file, "definitely not a png").await.unwrap();
+    tokio::fs::write(&test_file, "definitely not a png")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": test_file.to_str().unwrap() });
-    let result = execute_tool(&tool, "test-call-img-2", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-img-2", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("definitely not a png"));
-    let has_image = result.content.iter().any(|c| {
-        matches!(c, pi_agent_core::pi_ai_types::ContentBlock::Image { .. })
-    });
+    let has_image = result
+        .content
+        .iter()
+        .any(|c| matches!(c, pi_agent_core::pi_ai_types::ContentBlock::Image { .. }));
     assert!(!has_image);
 }
 
@@ -201,12 +213,12 @@ async fn test_read_truncate_by_bytes() {
     let lines: Vec<String> = (0..500)
         .map(|i| format!("Line {}: {}", i + 1, "x".repeat(200)))
         .collect();
-    tokio::fs::write(&file_path, lines.join("\n")).await.unwrap();
+    tokio::fs::write(&file_path, lines.join("\n"))
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": file_path.to_str().unwrap() });
     let result = execute_tool(&tool, "test-call-4", params).await.unwrap();
 
@@ -241,7 +253,8 @@ async fn test_read_image_mime_detection() {
         0x90, 0x77, 0x53, 0xDE, // IHDR CRC
         0x00, 0x00, 0x00, 0x0A, // IDAT chunk length
         0x49, 0x44, 0x41, 0x54, // "IDAT"
-        0x78, 0xDA, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE7, 0x27, 0xDA, // IDAT data
+        0x78, 0xDA, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE7, 0x27,
+        0xDA, // IDAT data
         0x00, 0x00, 0x00, 0x00, // IEND chunk length
         0x49, 0x45, 0x4E, 0x44, // "IEND"
         0xAE, 0x42, 0x60, 0x82, // IEND CRC
@@ -250,12 +263,12 @@ async fn test_read_image_mime_detection() {
     let test_file = dir.path().join("image.txt");
     tokio::fs::write(&test_file, &png_bytes).await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": test_file.to_str().unwrap() });
-    let result = execute_tool(&tool, "test-call-img-1", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-img-1", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // The Rust read tool may not have image detection yet, so just verify it handles the file
@@ -271,12 +284,12 @@ async fn test_read_bmp_as_png() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::read::create_read_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::read::create_read_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({ "path": test_file.to_str().unwrap() });
-    let result = execute_tool(&tool, "test-call-img-bmp", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-img-bmp", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // The Rust read tool may not have image detection yet, so just verify it handles the file
@@ -300,7 +313,9 @@ fn create_tiny_png_bytes() -> Vec<u8> {
 async fn test_read_image_notes_non_vision_model() {
     let dir = setup_test_dir();
     let test_file = dir.path().join("image.png");
-    tokio::fs::write(&test_file, &create_tiny_png_bytes()).await.unwrap();
+    tokio::fs::write(&test_file, &create_tiny_png_bytes())
+        .await
+        .unwrap();
 
     let text_only_model = || {
         Box::pin(async {
@@ -322,7 +337,10 @@ async fn test_read_image_notes_non_vision_model() {
                 headers: None,
                 compat: None,
             })
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>>
+        })
+            as std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>,
+            >
     };
     let vision_model = || {
         Box::pin(async {
@@ -344,7 +362,10 @@ async fn test_read_image_notes_non_vision_model() {
                 headers: None,
                 compat: None,
             })
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>>
+        })
+            as std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<pi_ai::types::Model>> + Send>,
+            >
     };
 
     let make_tool = |provider: pi_coding_agent::core::tools::read::ReadModelProvider| {
@@ -370,7 +391,9 @@ async fn test_read_image_notes_non_vision_model() {
     );
 
     let vision = make_tool(std::sync::Arc::new(vision_model));
-    let result = execute_tool(&vision, "test-call-vision", params).await.unwrap();
+    let result = execute_tool(&vision, "test-call-vision", params)
+        .await
+        .unwrap();
     let note = get_text_output(&result);
     assert!(
         !note.contains("Current model does not support images"),
@@ -398,7 +421,9 @@ async fn test_read_image_uses_model_resize_limits() {
     image::DynamicImage::ImageRgb8(img)
         .write_to(&mut out, image::ImageFormat::Png)
         .unwrap();
-    tokio::fs::write(&test_file, out.into_inner()).await.unwrap();
+    tokio::fs::write(&test_file, out.into_inner())
+        .await
+        .unwrap();
 
     let provider: pi_coding_agent::core::tools::read::ReadModelProvider =
         std::sync::Arc::new(|| {
@@ -446,7 +471,9 @@ async fn test_read_image_uses_model_resize_limits() {
         }),
     );
     let params = serde_json::json!({ "path": test_file.to_str().unwrap() });
-    let result = execute_tool(&tool, "test-call-limits", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-limits", params)
+        .await
+        .unwrap();
     let image = result
         .content
         .iter()
@@ -476,15 +503,15 @@ async fn test_write_file_contents() {
     let file_path = dir.path().join("write-test.txt");
     let content = "Test content";
 
-    let tool = pi_coding_agent::core::tools::write::create_write_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::write::create_write_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "content": content
     });
-    let result = execute_tool(&tool, "test-call-write-1", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-write-1", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("Successfully wrote"));
@@ -503,10 +530,8 @@ async fn test_write_error_is_tool_error() {
     tokio::fs::write(&blocker, "x").await.unwrap();
     let target = blocker.join("nested/file.txt");
 
-    let tool = pi_coding_agent::core::tools::write::create_write_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::write::create_write_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": target.to_str().unwrap(),
         "content": "boom"
@@ -529,15 +554,15 @@ async fn test_write_creates_parent_dirs() {
     let file_path = dir.path().join("nested").join("dir").join("test.txt");
     let content = "Nested content";
 
-    let tool = pi_coding_agent::core::tools::write::create_write_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::write::create_write_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "content": content
     });
-    let result = execute_tool(&tool, "test-call-write-2", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-write-2", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("Successfully wrote"));
@@ -557,25 +582,34 @@ async fn test_edit_replace_text() {
     let file_path = dir.path().join("edit-test.txt");
     tokio::fs::write(&file_path, "Hello, world!").await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "world", "newText": "testing"}]
     });
-    let result = execute_tool(&tool, "test-call-edit-1", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-edit-1", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("Successfully replaced"));
 
     let details: &serde_json::Value = &result.details;
     assert!(!details.is_null());
-    assert!(details.get("diff").and_then(serde_json::Value::as_str).is_some());
-    assert!(details.get("patch").and_then(serde_json::Value::as_str).is_some());
+    assert!(details
+        .get("diff")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
+    assert!(details
+        .get("patch")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
 
-    let patch = details.get("patch").and_then(serde_json::Value::as_str).unwrap();
+    let patch = details
+        .get("patch")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
     assert!(patch.contains("--- "));
     assert!(patch.contains("+++ "));
     assert!(patch.contains("@@"));
@@ -592,10 +626,8 @@ async fn test_edit_text_not_found() {
     let file_path = dir.path().join("edit-test.txt");
     tokio::fs::write(&file_path, "Hello, world!").await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "nonexistent", "newText": "testing"}]
@@ -613,10 +645,8 @@ async fn test_edit_file_not_found() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("missing.txt");
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "hello", "newText": "world"}]
@@ -634,10 +664,8 @@ async fn test_edit_multiple_occurrences() {
     let file_path = dir.path().join("edit-test.txt");
     tokio::fs::write(&file_path, "foo foo foo").await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "foo", "newText": "bar"}]
@@ -657,10 +685,8 @@ async fn test_edit_multi_disjoint_regions() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [
@@ -668,7 +694,9 @@ async fn test_edit_multi_disjoint_regions() {
             {"oldText": "gamma\n", "newText": "GAMMA\n"}
         ]
     });
-    let result = execute_tool(&tool, "test-call-edit-5", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-edit-5", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("Successfully replaced 2 block(s)"));
@@ -681,12 +709,12 @@ async fn test_edit_multi_disjoint_regions() {
 async fn test_edit_empty_edits() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("edit-empty-edits.txt");
-    tokio::fs::write(&file_path, "hello\nworld\n").await.unwrap();
+    tokio::fs::write(&file_path, "hello\nworld\n")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": []
@@ -702,12 +730,12 @@ async fn test_edit_empty_edits() {
 async fn test_edit_overlapping_regions() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("edit-overlap.txt");
-    tokio::fs::write(&file_path, "one\ntwo\nthree\n").await.unwrap();
+    tokio::fs::write(&file_path, "one\ntwo\nthree\n")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [
@@ -727,12 +755,12 @@ async fn test_edit_no_partial_apply() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("edit-no-partial.txt");
     let original_content = "alpha\nbeta\ngamma\n";
-    tokio::fs::write(&file_path, original_content).await.unwrap();
+    tokio::fs::write(&file_path, original_content)
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [
@@ -753,12 +781,12 @@ async fn test_edit_no_partial_apply() {
 async fn test_edit_match_against_original() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("edit-multi-original.txt");
-    tokio::fs::write(&file_path, "foo\nbar\nbaz\n").await.unwrap();
+    tokio::fs::write(&file_path, "foo\nbar\nbaz\n")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [
@@ -766,13 +794,13 @@ async fn test_edit_match_against_original() {
             {"oldText": "bar\n", "newText": "BAR\n"}
         ]
     });
-    let _result = execute_tool(&tool, "test-call-edit-9", params).await
+    let _result = execute_tool(&tool, "test-call-edit-9", params)
+        .await
         .expect("Edit should succeed");
 
     let written = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(written, "foo bar\nBAR\nbaz\n");
 }
-
 
 #[tokio::test]
 async fn test_edit_eacces_readonly() {
@@ -785,10 +813,8 @@ async fn test_edit_eacces_readonly() {
     perms.set_readonly(true);
     tokio::fs::set_permissions(&test_file, perms).await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": test_file.to_str().unwrap(),
         "edits": [{ "oldText": "hello", "newText": "world" }]
@@ -797,7 +823,9 @@ async fn test_edit_eacces_readonly() {
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("EACCES") || err.contains("Permission denied") || err.contains("readonly"));
+    assert!(
+        err.contains("EACCES") || err.contains("Permission denied") || err.contains("readonly")
+    );
 }
 
 #[tokio::test]
@@ -813,7 +841,8 @@ async fn test_edit_enoint_diff_preview() {
             new_text: "world".to_string(),
         }],
         dir.path().to_str().unwrap(),
-    ).await;
+    )
+    .await;
 
     assert!(result.is_err());
     let err = result.unwrap_err().error;
@@ -825,12 +854,12 @@ async fn test_edit_collapse_large_gaps() {
     let dir = setup_test_dir();
     let test_file = dir.path().join("edit-multi-large-gap.txt");
     let lines: Vec<String> = (0..600).map(|i| format!("line {:03}", i + 1)).collect();
-    tokio::fs::write(&test_file, format!("{}\n", lines.join("\n"))).await.unwrap();
+    tokio::fs::write(&test_file, format!("{}\n", lines.join("\n")))
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": test_file.to_str().unwrap(),
         "edits": [
@@ -868,8 +897,8 @@ async fn test_edit_original_error_message() {
     tokio::fs::write(&test_file, "hello\n").await.unwrap();
 
     // Create an edit tool with custom operations that fail on access
-    use std::sync::Arc;
     use pi_coding_agent::core::tools::edit::EditToolOptions;
+    use std::sync::Arc;
 
     struct FailingAccessOperations;
     impl pi_coding_agent::core::tools::edit::EditOperations for FailingAccessOperations {
@@ -878,12 +907,14 @@ async fn test_edit_original_error_message() {
             _path: &str,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                    + Send,
+                dyn std::future::Future<
+                        Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send,
             >,
         > {
             Box::pin(async move {
-                Err(Box::new(std::io::Error::other("disk offline")) as Box<dyn std::error::Error + Send + Sync>)
+                Err(Box::new(std::io::Error::other("disk offline"))
+                    as Box<dyn std::error::Error + Send + Sync>)
             })
         }
         fn read_file(
@@ -904,8 +935,9 @@ async fn test_edit_original_error_message() {
             _content: &str,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-                    + Send,
+                dyn std::future::Future<
+                        Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send,
             >,
         > {
             Box::pin(async move { Ok(()) })
@@ -949,7 +981,9 @@ async fn test_edit_eacces_diff_preview() {
         use std::os::unix::fs::PermissionsExt;
         let mut unix_perms = perms;
         unix_perms.set_mode(0o222);
-        tokio::fs::set_permissions(&test_file, unix_perms).await.unwrap();
+        tokio::fs::set_permissions(&test_file, unix_perms)
+            .await
+            .unwrap();
     }
     #[cfg(not(unix))]
     {
@@ -963,7 +997,8 @@ async fn test_edit_eacces_diff_preview() {
             new_text: "world".to_string(),
         }],
         dir.path().to_str().unwrap(),
-    ).await;
+    )
+    .await;
 
     assert!(result.is_err());
     let err = result.unwrap_err().error;
@@ -985,10 +1020,8 @@ async fn test_edit_fuzzy_smart_quotes() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "console.log('hello');", "newText": "console.log('world');"}]
@@ -1009,10 +1042,8 @@ async fn test_edit_fuzzy_unicode_dashes() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "range: 1-5\nbreak-here", "newText": "range: 10-50\nbreak--here"}]
@@ -1032,10 +1063,8 @@ async fn test_edit_fuzzy_prefer_exact_match() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "const x = 'exact';", "newText": "const x = 'changed';"}]
@@ -1055,10 +1084,8 @@ async fn test_edit_fuzzy_no_match() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "this does not exist", "newText": "replacement"}]
@@ -1074,14 +1101,15 @@ async fn test_edit_fuzzy_no_match() {
 async fn test_edit_fuzzy_multi_edit() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("fuzzy-multi.txt");
-    tokio::fs::write(&file_path, "console.log(\u{2018}hello\u{2019});\nhello\u{00A0}world\n")
-        .await
-        .unwrap();
+    tokio::fs::write(
+        &file_path,
+        "console.log(\u{2018}hello\u{2019});\nhello\u{00A0}world\n",
+    )
+    .await
+    .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [
@@ -1103,25 +1131,36 @@ async fn test_edit_fuzzy_preserve_correct_occurrence() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("fuzzy-preserve-duplicate-line.txt");
     // "replace me   " (with trailing spaces) followed by "after   " (with trailing spaces)
-    let original_content = "replace me\u{0020}\u{0020}\u{0020}\nafter\u{0020}\u{0020}\u{0020}\n".to_string();
-    tokio::fs::write(&file_path, &original_content).await.unwrap();
+    let original_content =
+        "replace me\u{0020}\u{0020}\u{0020}\nafter\u{0020}\u{0020}\u{0020}\n".to_string();
+    tokio::fs::write(&file_path, &original_content)
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "replace me\n", "newText": "after\n"}]
     });
-    let _result = execute_tool(&tool, "test-fuzzy-preserve-duplicate-line", params).await.unwrap();
+    let _result = execute_tool(&tool, "test-fuzzy-preserve-duplicate-line", params)
+        .await
+        .unwrap();
 
     // Fuzzy matching normalizes trailing whitespace, so the trailing spaces may be stripped
     let written = tokio::fs::read_to_string(&file_path).await.unwrap();
     // The first line should be "after" (the replacement), the second line should contain "after"
     let lines: Vec<&str> = written.lines().collect();
-    assert_eq!(lines[0], "after", "First line should be 'after', got: {:?}", lines);
-    assert!(lines[1].contains("after"), "Second line should contain 'after', got: {:?}", lines);
+    assert_eq!(
+        lines[0], "after",
+        "First line should be 'after', got: {:?}",
+        lines
+    );
+    assert!(
+        lines[1].contains("after"),
+        "Second line should contain 'after', got: {:?}",
+        lines
+    );
 }
 
 // Edit Tool — CRLF Handling Tests
@@ -1135,10 +1174,8 @@ async fn test_edit_crlf_match_lf_oldtext() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "line two\n", "newText": "replaced line\n"}]
@@ -1156,10 +1193,8 @@ async fn test_edit_crlf_preserve_endings() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "second\n", "newText": "REPLACED\n"}]
@@ -1173,12 +1208,12 @@ async fn test_edit_crlf_preserve_endings() {
 async fn test_edit_lf_preserve_endings() {
     let dir = setup_test_dir();
     let file_path = dir.path().join("lf-preserve.txt");
-    tokio::fs::write(&file_path, "first\nsecond\nthird\n").await.unwrap();
+    tokio::fs::write(&file_path, "first\nsecond\nthird\n")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "second\n", "newText": "REPLACED\n"}]
@@ -1196,10 +1231,8 @@ async fn test_edit_crlf_detect_duplicates_across_variants() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "hello\nworld\n", "newText": "replaced\n"}]
@@ -1219,10 +1252,8 @@ async fn test_edit_preserve_bom() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [{"oldText": "second\n", "newText": "REPLACED\n"}]
@@ -1240,10 +1271,8 @@ async fn test_edit_preserve_bom_crlf_multi() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::edit::create_edit_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::edit::create_edit_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "path": file_path.to_str().unwrap(),
         "edits": [
@@ -1251,7 +1280,9 @@ async fn test_edit_preserve_bom_crlf_multi() {
             {"oldText": "fourth\n", "newText": "FOURTH\n"}
         ]
     });
-    let _result = execute_tool(&tool, "test-crlf-multi", params).await.unwrap();
+    let _result = execute_tool(&tool, "test-crlf-multi", params)
+        .await
+        .unwrap();
     let written = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(written, "\u{FEFF}first\r\nSECOND\r\nthird\r\nFOURTH\r\n");
 }
@@ -1263,12 +1294,12 @@ async fn test_edit_preserve_bom_crlf_multi() {
 #[tokio::test]
 async fn test_bash_simple_command() {
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "echo 'test output'"});
-    let result = execute_tool(&tool, "test-call-bash-1", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-bash-1", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("test output"));
@@ -1277,16 +1308,18 @@ async fn test_bash_simple_command() {
 #[tokio::test]
 async fn test_bash_command_error() {
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "exit 1"});
     let result = execute_tool(&tool, "test-call-bash-2", params).await;
 
     assert!(result.is_err());
     let err_msg = format!("{}", result.err().unwrap());
-    assert!(err_msg.contains("Command failed") || err_msg.contains("code 1") || err_msg.contains("exit code"));
+    assert!(
+        err_msg.contains("Command failed")
+            || err_msg.contains("code 1")
+            || err_msg.contains("exit code")
+    );
 }
 
 /// TS a8b3dd199 (#9577): a signal-killed shell is not a success. Signal
@@ -1295,10 +1328,8 @@ async fn test_bash_command_error() {
 #[tokio::test]
 async fn test_bash_signal_termination_is_error() {
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     for (signal, code) in [("KILL", 137), ("TERM", 143)] {
         let params = serde_json::json!({
             "command": format!("printf 'before-kill\\n'; kill -{signal} $$")
@@ -1310,23 +1341,26 @@ async fn test_bash_signal_termination_is_error() {
             err_msg.contains(&format!("code {code}")),
             "signal {signal} -> code {code}: {err_msg}"
         );
-        assert!(err_msg.contains("before-kill"), "partial output preserved: {err_msg}");
+        assert!(
+            err_msg.contains("before-kill"),
+            "partial output preserved: {err_msg}"
+        );
     }
 }
 
 #[tokio::test]
 async fn test_bash_timeout() {
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "sleep 5", "timeout": 1});
     let result = execute_tool(&tool, "test-call-bash-3", params).await;
 
     assert!(result.is_err());
     let err_msg = format!("{}", result.err().unwrap());
-    assert!(err_msg.to_lowercase().contains("timed out") || err_msg.to_lowercase().contains("timeout"));
+    assert!(
+        err_msg.to_lowercase().contains("timed out") || err_msg.to_lowercase().contains("timeout")
+    );
 }
 
 #[tokio::test]
@@ -1406,7 +1440,10 @@ impl pi_coding_agent::core::tools::bash::BashOperations for ChattyMockOperations
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<pi_coding_agent::core::tools::bash::BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
+                    Output = Result<
+                        pi_coding_agent::core::tools::bash::BashExecResult,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
                 > + Send,
         >,
     > {
@@ -1433,7 +1470,10 @@ impl pi_coding_agent::core::tools::bash::BashOperations for TrailingNewlineMockO
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<pi_coding_agent::core::tools::bash::BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
+                    Output = Result<
+                        pi_coding_agent::core::tools::bash::BashExecResult,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
                 > + Send,
         >,
     > {
@@ -1460,7 +1500,10 @@ impl pi_coding_agent::core::tools::bash::BashOperations for SplitUtf8MockOperati
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<pi_coding_agent::core::tools::bash::BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
+                    Output = Result<
+                        pi_coding_agent::core::tools::bash::BashExecResult,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
                 > + Send,
         >,
     > {
@@ -1488,7 +1531,10 @@ impl pi_coding_agent::core::tools::bash::BashOperations for TimeoutMockOperation
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<pi_coding_agent::core::tools::bash::BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
+                    Output = Result<
+                        pi_coding_agent::core::tools::bash::BashExecResult,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
                 > + Send,
         >,
     > {
@@ -1498,7 +1544,10 @@ impl pi_coding_agent::core::tools::bash::BashOperations for TimeoutMockOperation
                     on_data(format!("{}\n", i).as_bytes());
                 }
             }
-            Err(Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout:5")) as Box<dyn std::error::Error + Send + Sync>)
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timeout:5",
+            )) as Box<dyn std::error::Error + Send + Sync>)
         })
     }
 }
@@ -1514,7 +1563,9 @@ async fn test_bash_coalesce_streaming_updates() {
         }),
     );
     let params = serde_json::json!({"command": "chatty"});
-    let result = execute_tool(&tool, "test-call-chatty-updates", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-chatty-updates", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("line 4999"));
@@ -1531,7 +1582,9 @@ async fn test_bash_trailing_newline_line_count() {
         }),
     );
     let params = serde_json::json!({"command": "many-lines"});
-    let result = execute_tool(&tool, "test-call-trailing-newline", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-trailing-newline", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // Should show lines 2001-4000 (last 2000 of 4000)
@@ -1553,7 +1606,9 @@ async fn test_bash_utf8_split_chunks() {
         }),
     );
     let params = serde_json::json!({"command": "split-utf8"});
-    let result = execute_tool(&tool, "test-call-split-utf8", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-split-utf8", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert_eq!(output.trim(), "€");
@@ -1597,7 +1652,10 @@ impl pi_coding_agent::core::tools::bash::BashOperations for SuccessMockBashOpera
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<pi_coding_agent::core::tools::bash::BashExecResult, Box<dyn std::error::Error + Send + Sync>>,
+                    Output = Result<
+                        pi_coding_agent::core::tools::bash::BashExecResult,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
                 > + Send,
         >,
     > {
@@ -1626,7 +1684,10 @@ async fn test_bash_process_spawn_errors() {
     if let Err(e) = result {
         let err_msg = e.to_string();
         assert!(
-            err_msg.contains("ENOENT") || err_msg.contains("No such file") || err_msg.contains("not found") || err_msg.contains("error"),
+            err_msg.contains("ENOENT")
+                || err_msg.contains("No such file")
+                || err_msg.contains("not found")
+                || err_msg.contains("error"),
             "Expected spawn error in: {}",
             err_msg
         );
@@ -1655,7 +1716,10 @@ async fn test_bash_shell_path() {
         let err_msg = e.to_string();
         // Should mention the custom shell path
         assert!(
-            err_msg.contains("custom") || err_msg.contains("shell") || err_msg.contains("path") || err_msg.contains("/custom/bash"),
+            err_msg.contains("custom")
+                || err_msg.contains("shell")
+                || err_msg.contains("path")
+                || err_msg.contains("/custom/bash"),
             "Expected error about custom shell path in: {}",
             err_msg
         );
@@ -1666,12 +1730,12 @@ async fn test_bash_shell_path() {
 async fn test_bash_local_operations() {
     let dir = setup_test_dir();
     // Test that local bash operations work
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "echo from-local-ops"});
-    let result = execute_tool(&tool, "test-call-local-ops", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-local-ops", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("from-local-ops"));
@@ -1681,27 +1745,31 @@ async fn test_bash_local_operations() {
 async fn test_bash_execute_bash_sanitization() {
     let dir = setup_test_dir();
     // Test that ANSI escape codes are sanitized
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "printf '\\\\033[31mred\\\\033[0m\\\\r\\\\n'"});
-    let result = execute_tool(&tool, "test-call-sanitize", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-sanitize", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // The output should contain "red" (the ANSI codes may or may not be stripped)
-    assert!(output.contains("red"), "Expected 'red' in sanitized output: {}", output);
+    assert!(
+        output.contains("red"),
+        "Expected 'red' in sanitized output: {}",
+        output
+    );
 }
 
 #[tokio::test]
 async fn test_bash_persist_full_output() {
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "seq 3000"});
-    let result = execute_tool(&tool, "test-call-line-truncation", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-line-truncation", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // Should have truncation info
@@ -1720,12 +1788,12 @@ async fn test_bash_persist_full_output() {
 #[tokio::test]
 async fn test_bash_execute_bash_persist_full_output() {
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::bash::create_bash_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::bash::create_bash_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"command": "seq 3000"});
-    let result = execute_tool(&tool, "test-call-execute-truncation", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-execute-truncation", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // Should have truncation info
@@ -1747,15 +1815,15 @@ async fn test_grep_filename_in_output() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "match",
         "path": file_path.to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-grep-1", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-grep-1", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("example.txt:2: match line"));
@@ -1769,17 +1837,17 @@ async fn test_grep_context_lines() {
     let content = "before\nmatch one\nafter\nmiddle\nmatch two\nafter two";
     tokio::fs::write(&file_path, content).await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "match",
         "path": file_path.to_str().unwrap(),
         "limit": 1,
         "context": 1
     });
-    let result = execute_tool(&tool, "test-call-grep-2", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-grep-2", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("context.txt-1- before"));
@@ -1788,7 +1856,11 @@ async fn test_grep_context_lines() {
     assert!(output.contains("[1 matches limit reached"));
     assert!(!output.contains("match two"));
     // No '--' block separators: TS only indents context lines around matches.
-    assert!(!output.contains("\n--\n"), "unexpected separator in: {}", output);
+    assert!(
+        !output.contains("\n--\n"),
+        "unexpected separator in: {}",
+        output
+    );
 }
 
 #[tokio::test]
@@ -1798,20 +1870,19 @@ async fn test_grep_flag_like_pattern() {
     let file_path = dir.path().join("target.txt");
     tokio::fs::write(&file_path, "target\n").await.unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "--pre=/etc/passwd",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-grep-injection", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-grep-injection", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("No matches found"));
 }
-
 
 #[tokio::test]
 async fn test_grep_gitignore() {
@@ -1819,20 +1890,28 @@ async fn test_grep_gitignore() {
     let dir = setup_test_dir();
     // ripgrep only applies .gitignore inside a git repository (default
     // `require_git`), exactly like the TS tool which also shells out to rg.
-    tokio::fs::create_dir_all(dir.path().join(".git")).await.unwrap();
-    tokio::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").await.unwrap();
-    tokio::fs::write(dir.path().join("ignored.txt"), "ignored").await.unwrap();
-    tokio::fs::write(dir.path().join("kept.txt"), "kept").await.unwrap();
+    tokio::fs::create_dir_all(dir.path().join(".git"))
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join(".gitignore"), "ignored.txt\n")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("ignored.txt"), "ignored")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("kept.txt"), "kept")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": ".",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-grep-gitignore", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-grep-gitignore", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("kept.txt"));
@@ -1848,20 +1927,22 @@ async fn test_grep_gitignore() {
 async fn test_grep_relative_paths_for_directory_search() {
     require_binary!("rg");
     let dir = setup_test_dir();
-    tokio::fs::create_dir_all(dir.path().join("sub")).await.unwrap();
+    tokio::fs::create_dir_all(dir.path().join("sub"))
+        .await
+        .unwrap();
     tokio::fs::write(dir.path().join("sub/nested.txt"), "needle\n")
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "needle",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-grep-relative", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-grep-relative", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // TS formatPath(): relative to the search root for directory searches.
@@ -1876,20 +1957,22 @@ async fn test_grep_relative_paths_for_directory_search() {
 async fn test_grep_searches_hidden_files() {
     require_binary!("rg");
     let dir = setup_test_dir();
-    tokio::fs::create_dir_all(dir.path().join(".hidden")).await.unwrap();
+    tokio::fs::create_dir_all(dir.path().join(".hidden"))
+        .await
+        .unwrap();
     tokio::fs::write(dir.path().join(".hidden/secret.txt"), "needle\n")
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "needle",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-grep-hidden", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-grep-hidden", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     // rg runs with --hidden (matching TS).
@@ -1904,12 +1987,12 @@ async fn test_grep_searches_hidden_files() {
 async fn test_grep_invalid_regex_reports_rg_error() {
     require_binary!("rg");
     let dir = setup_test_dir();
-    tokio::fs::write(dir.path().join("a.txt"), "needle\n").await.unwrap();
+    tokio::fs::write(dir.path().join("a.txt"), "needle\n")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::grep::create_grep_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::grep::create_grep_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "(unclosed",
         "path": dir.path().to_str().unwrap()
@@ -1928,19 +2011,25 @@ async fn test_grep_invalid_regex_reports_rg_error() {
 async fn test_find_gitignore() {
     require_binary!("fd");
     let dir = setup_test_dir();
-    tokio::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").await.unwrap();
-    tokio::fs::write(dir.path().join("ignored.txt"), "ignored").await.unwrap();
-    tokio::fs::write(dir.path().join("kept.txt"), "kept").await.unwrap();
+    tokio::fs::write(dir.path().join(".gitignore"), "ignored.txt\n")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("ignored.txt"), "ignored")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("kept.txt"), "kept")
+        .await
+        .unwrap();
 
-    let tool = pi_coding_agent::core::tools::find::create_find_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::find::create_find_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "**/*.txt",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-find-gitignore", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-find-gitignore", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("kept.txt"));
@@ -1956,10 +2045,8 @@ async fn test_find_gitignore() {
 async fn test_find_fd_glob_parse_error() {
     require_binary!("fd");
     let dir = setup_test_dir();
-    let tool = pi_coding_agent::core::tools::find::create_find_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::find::create_find_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "[",
         "path": dir.path().to_str().unwrap()
@@ -1989,25 +2076,31 @@ async fn test_find_hidden_files() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::find::create_find_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::find::create_find_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "**/*.txt",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-find-1", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-find-1", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
-    let output_lines: Vec<&str> = output.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let output_lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     assert!(
         output_lines.iter().any(|l| l.contains("visible.txt")),
         "Expected visible.txt in output: {:?}",
         output_lines
     );
     assert!(
-        output_lines.iter().any(|l| l.contains(".secret/hidden.txt")),
+        output_lines
+            .iter()
+            .any(|l| l.contains(".secret/hidden.txt")),
         "Expected .secret/hidden.txt in output: {:?}",
         output_lines
     );
@@ -2018,15 +2111,15 @@ async fn test_find_flag_like_pattern() {
     require_binary!("fd");
     let dir = setup_test_dir();
 
-    let tool = pi_coding_agent::core::tools::find::create_find_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool =
+        pi_coding_agent::core::tools::find::create_find_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({
         "pattern": "--help",
         "path": dir.path().to_str().unwrap()
     });
-    let result = execute_tool(&tool, "test-call-find-flag", params).await.unwrap();
+    let result = execute_tool(&tool, "test-call-find-flag", params)
+        .await
+        .unwrap();
 
     let output = get_text_output(&result);
     assert!(output.contains("No files found matching pattern"));
@@ -2046,10 +2139,7 @@ async fn test_ls_dotfiles_and_directories() {
         .await
         .unwrap();
 
-    let tool = pi_coding_agent::core::tools::ls::create_ls_tool(
-        dir.path().to_str().unwrap(),
-        None,
-    );
+    let tool = pi_coding_agent::core::tools::ls::create_ls_tool(dir.path().to_str().unwrap(), None);
     let params = serde_json::json!({"path": dir.path().to_str().unwrap()});
     let result = execute_tool(&tool, "test-call-ls-1", params).await.unwrap();
 

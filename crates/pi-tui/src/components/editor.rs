@@ -56,7 +56,10 @@ impl Editor {
     /// Cursor row (logical line index within the text, 0-based).
     pub fn cursor_row(&self) -> u16 {
         let cursor = self.ta.cursor();
-        self.ta.text()[..cursor].bytes().filter(|&b| b == b'\n').count() as u16
+        self.ta.text()[..cursor]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count() as u16
     }
 
     /// Cursor column within its logical line (byte offset).

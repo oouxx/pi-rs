@@ -18,7 +18,9 @@ static OVERFLOW_PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock:
         re(r"request_too_large"),
         re(r"input is too long for requested model"),
         re(r"exceeds the context window"),
-        re(r"exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))"),
+        re(
+            r"exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))",
+        ),
         re(r"input token count.*exceeds the maximum"),
         re(r"maximum prompt length is \d+"),
         re(r"reduce the length of the messages"),

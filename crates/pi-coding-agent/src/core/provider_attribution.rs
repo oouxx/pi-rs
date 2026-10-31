@@ -183,7 +183,8 @@ mod tests {
             provider: "opencode-go".into(),
             base_url: "https://opencode.ai/zen/go/v1".into(),
         };
-        let headers = merge_provider_attribution_headers(&model, false, Some("sess_1"), &[]).unwrap();
+        let headers =
+            merge_provider_attribution_headers(&model, false, Some("sess_1"), &[]).unwrap();
         assert!(headers.contains(&("x-opencode-session".to_string(), "sess_1".to_string())));
     }
 

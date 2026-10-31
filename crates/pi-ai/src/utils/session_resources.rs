@@ -28,12 +28,16 @@ static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 pub fn register_session_resource_cleanup(cleanup: CleanupFn) -> Box<dyn Fn() + Send> {
     let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     {
-        let mut cleanups = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cleanups = CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cleanups.push((id, cleanup));
     }
     let unregister_id = id;
     Box::new(move || {
-        let mut cleanups = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cleanups = CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cleanups.retain(|(cid, _)| *cid != unregister_id);
     })
 }
@@ -42,7 +46,9 @@ pub fn register_session_resource_cleanup(cleanup: CleanupFn) -> Box<dyn Fn() + S
 /// an error string with all collected errors is returned.
 pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String> {
     let cleanups = {
-        let mut c = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut c = CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::take(&mut *c)
     };
 
@@ -73,7 +79,8 @@ pub fn cleanup_session_resources(session_id: Option<&str>) -> Result<(), String>
 
 /// Clear all registered cleanup callbacks without invoking them.
 pub fn clear_cleanups() {
-    let mut cleanups = CLEANUPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cleanups = CLEANUPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cleanups.clear();
 }
-

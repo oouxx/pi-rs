@@ -113,10 +113,7 @@ fn normalize_optional_nulls(value: &mut serde_json::Value, schema: &serde_json::
             }
         }
         serde_json::Value::Object(obj) => {
-            let Some(properties) = schema
-                .get("properties")
-                .and_then(|p| p.as_object())
-            else {
+            let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
                 return;
             };
             let required: std::collections::HashSet<&str> = schema
@@ -569,9 +566,10 @@ async fn execute_tool_calls_parallel(
                     }
                     let executed =
                         execute_prepared_tool_call(&tool, &tc, &args, &sig, &emit_c).await;
-                    let finalized =
-                        finalize_executed_tool_call(&ctx, &msg, &tc, &args, executed, &after_fn, &sig)
-                            .await;
+                    let finalized = finalize_executed_tool_call(
+                        &ctx, &msg, &tc, &args, executed, &after_fn, &sig,
+                    )
+                    .await;
                     // TS emits `tool_execution_end` inside each thunk, so the
                     // order follows completion, not the call order.
                     emit_c(AgentEvent::ToolExecutionEnd {
@@ -817,9 +815,7 @@ async fn stream_assistant_response(
             llm_messages.insert(
                 0,
                 crate::pi_ai_types::Message::System {
-                    content: crate::pi_ai_types::SystemContent::Text(
-                        context.system_prompt.clone(),
-                    ),
+                    content: crate::pi_ai_types::SystemContent::Text(context.system_prompt.clone()),
                     sections: None,
                     tools_added: if declarations.is_empty() {
                         None
@@ -917,7 +913,9 @@ async fn stream_assistant_response(
                     let last_idx = context.messages.len() - 1;
                     context.messages[last_idx] = agent_message_from_assistant(&final_message);
                 } else {
-                    context.messages.push(agent_message_from_assistant(&final_message));
+                    context
+                        .messages
+                        .push(agent_message_from_assistant(&final_message));
                 }
                 if !added_partial {
                     emit(AgentEvent::MessageStart {
@@ -1174,7 +1172,9 @@ fn new_tool_change_system(
 }
 
 /// Build model-visible tool declarations from the executable tool set.
-fn tool_declarations(tools: Option<&[Arc<crate::types::DynTool>]>) -> Vec<crate::pi_ai_types::Tool> {
+fn tool_declarations(
+    tools: Option<&[Arc<crate::types::DynTool>]>,
+) -> Vec<crate::pi_ai_types::Tool> {
     tools
         .map(|tools| {
             tools
@@ -1192,7 +1192,10 @@ fn tool_declarations(tools: Option<&[Arc<crate::types::DynTool>]>) -> Vec<crate:
 
 /// Materialize the base prompt/tools as a leading transcript system message
 /// (TS `createInitialSystemMessage`). Returns `None` when both are empty.
-fn initial_system_message(system_prompt: &str, declarations: &[crate::pi_ai_types::Tool]) -> Option<AgentMessage> {
+fn initial_system_message(
+    system_prompt: &str,
+    declarations: &[crate::pi_ai_types::Tool],
+) -> Option<AgentMessage> {
     if system_prompt.is_empty() && declarations.is_empty() {
         return None;
     }
@@ -1277,9 +1280,13 @@ pub async fn run_agent_loop_continue(
 
     let mut current_context = context;
     // Materialize the base prompt/tools into the transcript (P1-7).
-    if !matches!(current_context.messages.first(), Some(AgentMessage::System { .. })) {
+    if !matches!(
+        current_context.messages.first(),
+        Some(AgentMessage::System { .. })
+    ) {
         let declarations = tool_declarations(current_context.tools.as_deref());
-        if let Some(initial) = initial_system_message(&current_context.system_prompt, &declarations) {
+        if let Some(initial) = initial_system_message(&current_context.system_prompt, &declarations)
+        {
             current_context.messages.insert(0, initial);
         }
     }
@@ -1439,13 +1446,12 @@ async fn run_loop(
                 // earlier poll returned nothing, otherwise one-at-a-time mode
                 // would deliver two messages in this turn.
                 if pending_messages.is_empty() {
-                    pending_messages = if let Some(get_steering) =
-                        &initial_config.get_steering_messages
-                    {
-                        get_steering().await
-                    } else {
-                        Vec::new()
-                    };
+                    pending_messages =
+                        if let Some(get_steering) = &initial_config.get_steering_messages {
+                            get_steering().await
+                        } else {
+                            Vec::new()
+                        };
                 }
                 emit(AgentEvent::TurnStart).await;
             }
@@ -1490,7 +1496,12 @@ async fn run_loop(
                 )
                 .await;
                 if let Some(update) = request_update {
-                    apply_request_update(update, current_context, &mut config_model, &mut config_reasoning);
+                    apply_request_update(
+                        update,
+                        current_context,
+                        &mut config_model,
+                        &mut config_reasoning,
+                    );
                 }
             }
 
@@ -1788,8 +1799,7 @@ mod tests {
         let stream_fn: StreamFn = Arc::new(move |_model, _context, _thinking, _opts| {
             let events = events.clone();
             Box::pin(async move {
-                Ok(Box::new(futures::stream::iter(events))
-                    as crate::pi_ai_types::StreamResponse)
+                Ok(Box::new(futures::stream::iter(events)) as crate::pi_ai_types::StreamResponse)
             })
         });
 
@@ -1834,16 +1844,15 @@ mod tests {
                 _ => None,
             })
             .expect("assistant usage");
-        assert_eq!(usage.input, 42, "partial usage survives the synthetic error");
+        assert_eq!(
+            usage.input, 42,
+            "partial usage survives the synthetic error"
+        );
 
         let events = captured.lock().unwrap();
         let end_content = events.iter().find_map(|event| match event {
             AgentEvent::MessageEnd {
-                message:
-                    AgentMessage::Assistant {
-                        content,
-                        ..
-                    },
+                message: AgentMessage::Assistant { content, .. },
             } => Some(content),
             _ => None,
         });
@@ -2034,10 +2043,18 @@ mod tests {
         };
 
         // Initial: [a, b] added, inserted before the user message.
-        let out = declare_tool_changes(&[], &[decl_tool("a"), decl_tool("b")], std::slice::from_ref(&user));
+        let out = declare_tool_changes(
+            &[],
+            &[decl_tool("a"), decl_tool("b")],
+            std::slice::from_ref(&user),
+        );
         assert_eq!(out.len(), 2);
         match &out[0] {
-            AgentMessage::System { tools_added, tools_removed, .. } => {
+            AgentMessage::System {
+                tools_added,
+                tools_removed,
+                ..
+            } => {
                 assert_eq!(tools_added.as_ref().unwrap().len(), 2);
                 assert!(tools_removed.is_none());
             }
@@ -2047,7 +2064,11 @@ mod tests {
 
         // Already declared: no new system message.
         let context = vec![out[0].clone()];
-        let out = declare_tool_changes(&context, &[decl_tool("a"), decl_tool("b")], std::slice::from_ref(&user));
+        let out = declare_tool_changes(
+            &context,
+            &[decl_tool("a"), decl_tool("b")],
+            std::slice::from_ref(&user),
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].role(), "user");
 
@@ -2055,7 +2076,11 @@ mod tests {
         let out = declare_tool_changes(&context, &[decl_tool("b")], std::slice::from_ref(&user));
         assert_eq!(out.len(), 2);
         match &out[0] {
-            AgentMessage::System { tools_removed, tools_added, .. } => {
+            AgentMessage::System {
+                tools_removed,
+                tools_added,
+                ..
+            } => {
                 assert_eq!(tools_removed.as_ref().unwrap()[0].name, "a");
                 assert!(tools_added.is_none());
             }
@@ -2092,11 +2117,16 @@ mod tests {
         let stream_fn: StreamFn = Arc::new(move |_model, _ctx, _thinking, opts| {
             *captured2.lock().unwrap() = Some(opts);
             Box::pin(async {
-                let events: Box<dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent> + Send + Unpin> =
-                    Box::new(stream::iter([crate::pi_ai_types::AssistantMessageEvent::Done {
+                let events: Box<
+                    dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent>
+                        + Send
+                        + Unpin,
+                > = Box::new(stream::iter([
+                    crate::pi_ai_types::AssistantMessageEvent::Done {
                         reason: crate::pi_ai_types::StopReason::Stop,
                         message: dummy_assistant_message_llm(),
-                    }]));
+                    },
+                ]));
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(events)
             })
         });
@@ -2188,7 +2218,10 @@ mod tests {
             ))
         ));
         assert_eq!(opts.service_tier.as_deref(), Some("flex"));
-        assert_eq!(opts.metadata.as_ref().and_then(|m| m.get("user_id")), Some(&serde_json::json!("u1")));
+        assert_eq!(
+            opts.metadata.as_ref().and_then(|m| m.get("user_id")),
+            Some(&serde_json::json!("u1"))
+        );
     }
 
     // ============================================================
@@ -2511,8 +2544,7 @@ mod tests {
         let msg = create_tool_result_message(&finalized);
         match msg {
             AgentMessage::ToolResult {
-                usage: msg_usage,
-                ..
+                usage: msg_usage, ..
             } => {
                 assert_eq!(msg_usage.as_ref(), Some(&usage));
             }
@@ -2585,7 +2617,17 @@ mod tests {
     /// follow-up model call.
     #[tokio::test]
     async fn test_blocked_tool_call_terminate_propagates() {
-        let ctx = dummy_context(vec![dummy_agent_tool("my_tool", serde_json::json!({"properties": {}}), None, Ok(AgentToolResult { content: vec![], details: serde_json::Value::Null, usage: None, terminate: None }))]);
+        let ctx = dummy_context(vec![dummy_agent_tool(
+            "my_tool",
+            serde_json::json!({"properties": {}}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::Value::Null,
+                usage: None,
+                terminate: None,
+            }),
+        )]);
         let before_fn: BeforeToolCallFn = Arc::new(|_ctx, _signal| {
             Box::pin(async {
                 Some(BeforeToolCallResult {
@@ -2725,7 +2767,10 @@ mod tests {
         let execute_result: Result<
             AgentToolResult<serde_json::Value>,
             Box<dyn std::error::Error + Send + Sync>,
-        > = Err(Box::new(ToolExecutionError::new(structured, "subagent failed")));
+        > = Err(Box::new(ToolExecutionError::new(
+            structured,
+            "subagent failed",
+        )));
         let tool = dummy_agent_tool("t1", serde_json::json!({}), None, execute_result);
         let call = dummy_tool_call("1", "t1", serde_json::json!({}));
 
@@ -2739,7 +2784,10 @@ mod tests {
         .await;
 
         assert!(outcome.is_error);
-        assert_eq!(outcome.result.details, serde_json::json!({"mode": "single", "exitCode": 1}));
+        assert_eq!(
+            outcome.result.details,
+            serde_json::json!({"mode": "single", "exitCode": 1})
+        );
         assert_eq!(outcome.result.terminate, Some(true));
         match &outcome.result.content[0] {
             ContentBlock::Text { text, .. } => {
@@ -3216,9 +3264,7 @@ mod tests {
         assert_eq!(batch.messages.len(), 1);
         match &batch.messages[0] {
             AgentMessage::ToolResult {
-                content,
-                is_error,
-                ..
+                content, is_error, ..
             } => {
                 assert!(is_error, "aborted call is an error result");
                 assert!(
@@ -3572,10 +3618,19 @@ mod tests {
         .unwrap();
 
         let log = order.lock().unwrap().clone();
-        let finish = log.iter().position(|s| s == "finish").expect("finishTurn ran");
+        let finish = log
+            .iter()
+            .position(|s| s == "finish")
+            .expect("finishTurn ran");
         let turn_end = log.iter().position(|s| s == "turn_end").expect("turn_end");
-        let agent_end = log.iter().position(|s| s == "agent_end").expect("agent_end");
-        assert!(finish < turn_end, "finishTurn runs before turn_end: {log:?}");
+        let agent_end = log
+            .iter()
+            .position(|s| s == "agent_end")
+            .expect("agent_end");
+        assert!(
+            finish < turn_end,
+            "finishTurn runs before turn_end: {log:?}"
+        );
         assert!(turn_end < agent_end, "turn_end before agent_end: {log:?}");
     }
 
@@ -3609,9 +3664,7 @@ mod tests {
                     Some(crate::types::AgentLoopTurnUpdate {
                         messages: Some(vec![AgentMessage::Custom {
                             custom_type: "steer".to_string(),
-                            content: crate::types::CustomContent::Text(
-                                "context note".to_string(),
-                            ),
+                            content: crate::types::CustomContent::Text("context note".to_string()),
                             display: false,
                             details: None,
                             timestamp: 0,
@@ -3652,7 +3705,14 @@ mod tests {
             })
         };
 
-        run_agent_loop(vec![user_prompt()], context, &config, &sink, &None, &stream_fn)
+        run_agent_loop(
+            vec![user_prompt()],
+            context,
+            &config,
+            &sink,
+            &None,
+            &stream_fn,
+        )
         .await
         .unwrap();
 
@@ -3662,7 +3722,9 @@ mod tests {
             "preparation runs once, for the turn that follows the tool call"
         );
 
-        let events = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let custom_events: Vec<&AgentEvent> = events
             .iter()
             .filter(|e| match e {
@@ -3792,11 +3854,20 @@ mod tests {
             })
         };
 
-        run_agent_loop(vec![user_prompt()], context, &config, &sink, &None, &stream_fn)
-            .await
-            .unwrap();
+        run_agent_loop(
+            vec![user_prompt()],
+            context,
+            &config,
+            &sink,
+            &None,
+            &stream_fn,
+        )
+        .await
+        .unwrap();
 
-        let events = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let declared_write = events.iter().any(|e| match e {
             AgentEvent::MessageStart { message } | AgentEvent::MessageEnd { message } => {
                 match message {
@@ -3960,7 +4031,9 @@ mod tests {
     > {
         Box::pin(async {
             let events: Box<
-                dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent> + Send + Unpin,
+                dyn futures::Stream<Item = crate::pi_ai_types::AssistantMessageEvent>
+                    + Send
+                    + Unpin,
             > = Box::new(futures::stream::iter([
                 crate::pi_ai_types::AssistantMessageEvent::Done {
                     reason: StopReason::Stop,

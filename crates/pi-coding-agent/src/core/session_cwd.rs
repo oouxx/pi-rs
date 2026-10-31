@@ -89,7 +89,6 @@ impl SessionCwdSource for crate::core::session_manager::SessionManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -157,4 +156,3 @@ mod tests {
         assert!(assert_session_cwd_exists(&source, "/fallback").is_ok());
     }
 }
-

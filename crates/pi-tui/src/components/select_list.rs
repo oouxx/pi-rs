@@ -18,7 +18,11 @@ impl SelectList {
     pub fn new(items: Vec<String>) -> Self {
         let mut state = ListState::default();
         state.select(if items.is_empty() { None } else { Some(0) });
-        Self { items, state, title: String::new() }
+        Self {
+            items,
+            state,
+            title: String::new(),
+        }
     }
 
     pub fn with_title(mut self, title: &str) -> Self {
@@ -26,21 +30,32 @@ impl SelectList {
         self
     }
 
-    pub fn selected_index(&self) -> Option<usize> { self.state.selected() }
+    pub fn selected_index(&self) -> Option<usize> {
+        self.state.selected()
+    }
     pub fn selected_item(&self) -> Option<&str> {
-        self.state.selected().and_then(|i| self.items.get(i)).map(String::as_str)
+        self.state
+            .selected()
+            .and_then(|i| self.items.get(i))
+            .map(String::as_str)
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) {
-        if key.kind != crossterm::event::KeyEventKind::Press { return; }
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 let i = self.state.selected().unwrap_or(0);
-                if i > 0 { self.state.select(Some(i - 1)); }
+                if i > 0 {
+                    self.state.select(Some(i - 1));
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let i = self.state.selected().unwrap_or(0);
-                if i + 1 < self.items.len() { self.state.select(Some(i + 1)); }
+                if i + 1 < self.items.len() {
+                    self.state.select(Some(i + 1));
+                }
             }
             KeyCode::Home => self.state.select(Some(0)),
             KeyCode::End => self.state.select(Some(self.items.len().saturating_sub(1))),
@@ -50,26 +65,40 @@ impl SelectList {
             }
             KeyCode::PageDown => {
                 let i = self.state.selected().unwrap_or(0);
-                self.state.select(Some((i + 5).min(self.items.len().saturating_sub(1))));
+                self.state
+                    .select(Some((i + 5).min(self.items.len().saturating_sub(1))));
             }
             _ => {}
         }
     }
 
     pub fn render_to_frame(&self, frame: &mut Frame, area: Rect, t: &crate::theme::Theme) {
-        let items: Vec<ListItem> = self.items.iter().map(|item| {
-            ListItem::new(Text::raw(item.clone())).style(Style::default())
-        }).collect();
+        let items: Vec<ListItem> = self
+            .items
+            .iter()
+            .map(|item| ListItem::new(Text::raw(item.clone())).style(Style::default()))
+            .collect();
         // TS select-list theme: accent prefix/text for the selection, muted
         // border, selectedBg highlight.
         let block = Block::default()
-            .borders(Borders::ALL).border_type(BorderType::Rounded)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(t.border_muted))
             .title_style(Style::new().fg(t.accent))
-            .title(if self.title.is_empty() { " Select " } else { &self.title });
+            .title(if self.title.is_empty() {
+                " Select "
+            } else {
+                &self.title
+            });
         frame.render_widget(Clear, area);
-        let list = List::new(items).block(block)
-            .highlight_style(Style::default().fg(t.accent).bg(t.selected_bg).add_modifier(Modifier::BOLD))
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(
+                Style::default()
+                    .fg(t.accent)
+                    .bg(t.selected_bg)
+                    .add_modifier(Modifier::BOLD),
+            )
             .highlight_symbol("\u{2192} ");
         // Clone state for rendering
         let mut state = ListState::default();

@@ -31,9 +31,8 @@ use serde::{Deserialize, Serialize};
 /// (read/ls/grep/find/bash/edit/write).
 pub type AsyncOpResult<T> = std::pin::Pin<
     Box<
-        dyn std::future::Future<
-                Output = Result<T, Box<dyn std::error::Error + Send + Sync>>,
-            > + Send,
+        dyn std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>
+            + Send,
     >,
 >;
 
@@ -237,7 +236,10 @@ mod sampling_tests {
             super::ls::create_ls_tool("/tmp", None).constrained_sampling,
         ];
         for (index, sampling) in unconstrained.iter().enumerate() {
-            assert!(sampling.is_none(), "grep/find/ls entry {index} must stay unconstrained");
+            assert!(
+                sampling.is_none(),
+                "grep/find/ls entry {index} must stay unconstrained"
+            );
         }
     }
 }

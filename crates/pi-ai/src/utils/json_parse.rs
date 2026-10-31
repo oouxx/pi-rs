@@ -18,7 +18,7 @@ fn escape_control_char(c: char) -> String {
 }
 
 /// Repair malformed JSON by escaping control characters and fixing invalid escape sequences.
-#[must_use] 
+#[must_use]
 pub fn repair_json(json: &str) -> String {
     let mut repaired = String::with_capacity(json.len());
     let chars: Vec<char> = json.chars().collect();
@@ -203,7 +203,7 @@ fn strip_comma_before_close(s: &mut String) {
 
 /// Parse potentially incomplete JSON from streaming responses.
 /// Always returns a valid Value, falling back to `Value::Object({})` on failure.
-#[must_use] 
+#[must_use]
 pub fn parse_streaming_json(partial_json: Option<&str>) -> Value {
     let json = match partial_json {
         Some(s) if !s.trim().is_empty() => s.trim(),
@@ -275,5 +275,4 @@ mod tests {
         // Should still parse partially
         assert!(result.is_object());
     }
-
 }

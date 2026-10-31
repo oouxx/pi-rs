@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use pi_extensions::web_search::WebSearchConfig;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -363,7 +363,10 @@ fn resolve_default_tools(entries: &[String]) -> Vec<String> {
     let mut tools: Vec<String> = if !plain.is_empty() || entries.is_empty() {
         plain
     } else {
-        DEFAULT_TOOL_NAMES.iter().map(|name| (*name).to_string()).collect()
+        DEFAULT_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect()
     };
     for entry in entries {
         if !is_tool_modifier(entry) {
@@ -391,8 +394,10 @@ fn resolve_default_tools(entries: &[String]) -> Vec<String> {
 /// Matches TS `deepMergeSettings` behavior exactly.
 #[allow(clippy::collapsible_if)]
 fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
-    let base_json = serde_json::to_value(base).unwrap_or(serde_json::Value::Object(Default::default()));
-    let overrides_json = serde_json::to_value(overrides).unwrap_or(serde_json::Value::Object(Default::default()));
+    let base_json =
+        serde_json::to_value(base).unwrap_or(serde_json::Value::Object(Default::default()));
+    let overrides_json =
+        serde_json::to_value(overrides).unwrap_or(serde_json::Value::Object(Default::default()));
 
     if let (serde_json::Value::Object(base_map), serde_json::Value::Object(overrides_map)) =
         (&base_json, &overrides_json)
@@ -406,8 +411,10 @@ fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
             // For nested objects, merge shallowly (TS: { ...baseValue, ...overrideValue })
             if let Some(base_value) = base_map.get(key) {
                 if value.is_object() && base_value.is_object() {
-                    if let (serde_json::Value::Object(base_obj), serde_json::Value::Object(overlay_obj)) =
-                        (base_value, &value)
+                    if let (
+                        serde_json::Value::Object(base_obj),
+                        serde_json::Value::Object(overlay_obj),
+                    ) = (base_value, &value)
                     {
                         let mut merged_obj = base_obj.clone();
                         for (k, v) in overlay_obj {
@@ -423,7 +430,9 @@ fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
             // For primitives and arrays, override wins
             result.insert(key.clone(), value.clone());
         }
-        if let Ok(mut merged) = serde_json::from_value::<Settings>(serde_json::Value::Object(result)) {
+        if let Ok(mut merged) =
+            serde_json::from_value::<Settings>(serde_json::Value::Object(result))
+        {
             // `defaultTools` merges specially (TS `mergeDefaultTools`): a
             // modifier-only overlay appends to the inherited list instead of
             // replacing it.
@@ -474,14 +483,26 @@ fn migrate_settings(settings: &mut serde_json::Value) {
         let skills_clone = map.get("skills").cloned();
         if let Some(skills_val) = skills_clone {
             if let Some(skills_obj) = skills_val.as_object() {
-                if let Some(enable_skill_commands) = skills_obj.get("enableSkillCommands").and_then(|v| v.as_bool()) {
+                if let Some(enable_skill_commands) = skills_obj
+                    .get("enableSkillCommands")
+                    .and_then(|v| v.as_bool())
+                {
                     if !map.contains_key("enableSkillCommands") {
-                        map.insert("enableSkillCommands".to_string(), serde_json::Value::Bool(enable_skill_commands));
+                        map.insert(
+                            "enableSkillCommands".to_string(),
+                            serde_json::Value::Bool(enable_skill_commands),
+                        );
                     }
                 }
-                if let Some(custom_dirs) = skills_obj.get("customDirectories").and_then(|v| v.as_array()) {
+                if let Some(custom_dirs) = skills_obj
+                    .get("customDirectories")
+                    .and_then(|v| v.as_array())
+                {
                     if !custom_dirs.is_empty() {
-                        map.insert("skills".to_string(), serde_json::Value::Array(custom_dirs.clone()));
+                        map.insert(
+                            "skills".to_string(),
+                            serde_json::Value::Array(custom_dirs.clone()),
+                        );
                     } else {
                         map.remove("skills");
                     }
@@ -527,11 +548,7 @@ pub enum SettingsScope {
 type SettingsLockFn = Box<dyn FnOnce(Option<&str>) -> Option<String> + Send>;
 
 pub trait SettingsStorage: Send + Sync {
-    fn with_lock(
-        &self,
-        scope: SettingsScope,
-        f: SettingsLockFn,
-    );
+    fn with_lock(&self, scope: SettingsScope, f: SettingsLockFn);
 }
 
 pub struct FileSettingsStorage {
@@ -560,11 +577,7 @@ impl FileSettingsStorage {
 }
 
 impl SettingsStorage for FileSettingsStorage {
-    fn with_lock(
-        &self,
-        scope: SettingsScope,
-        f: SettingsLockFn,
-    ) {
+    fn with_lock(&self, scope: SettingsScope, f: SettingsLockFn) {
         let path = self.path_for_scope(&scope);
         let dir = path
             .parent()
@@ -610,17 +623,15 @@ impl Default for InMemorySettingsStorage {
 }
 
 impl SettingsStorage for InMemorySettingsStorage {
-    fn with_lock(
-        &self,
-        scope: SettingsScope,
-        f: SettingsLockFn,
-    ) {
+    fn with_lock(&self, scope: SettingsScope, f: SettingsLockFn) {
         let mutex = match scope {
             SettingsScope::Global => &self.global,
             SettingsScope::Project => &self.project,
         };
 
-        let mut guard = mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_owned = guard.clone();
         let result = f(current_owned.as_deref());
 
@@ -693,8 +704,10 @@ impl SettingsManager {
     }
 
     pub fn from_storage(storage: Box<dyn SettingsStorage>) -> Self {
-        let (global_settings, global_error) = Self::load_from_storage(&*storage, SettingsScope::Global);
-        let (project_settings, project_error) = Self::load_from_storage(&*storage, SettingsScope::Project);
+        let (global_settings, global_error) =
+            Self::load_from_storage(&*storage, SettingsScope::Global);
+        let (project_settings, project_error) =
+            Self::load_from_storage(&*storage, SettingsScope::Project);
 
         let mut errors = Vec::new();
         if let Some(err) = global_error {
@@ -725,7 +738,10 @@ impl SettingsManager {
         }
     }
 
-    fn load_from_storage(storage: &dyn SettingsStorage, scope: SettingsScope) -> (Settings, Option<String>) {
+    fn load_from_storage(
+        storage: &dyn SettingsStorage,
+        scope: SettingsScope,
+    ) -> (Settings, Option<String>) {
         // Use a two-step approach: first get the raw content, then parse it.
         // This avoids lifetime issues with capturing local variables in the closure.
         let raw_content: Option<String> = {
@@ -734,13 +750,20 @@ impl SettingsManager {
             storage.with_lock(
                 scope,
                 Box::new(move |current| {
-                    *result_for_closure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = current.map(|s| s.to_string());
+                    *result_for_closure
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        current.map(|s| s.to_string());
                     None // don't write
                 }),
             );
             // After with_lock returns, the closure (and result_for_closure) has been dropped.
             // result is now the only reference. Use lock().unwrap().take() to get the value.
-            let x = result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(); x
+            let x = result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            x
         };
 
         match raw_content {
@@ -757,7 +780,10 @@ impl SettingsManager {
                             Err(e) => (Settings::default(), Some(format!("Parse error: {}", e))),
                         }
                     }
-                    Err(e) => (Settings::default(), Some(format!("JSON parse error: {}", e))),
+                    Err(e) => (
+                        Settings::default(),
+                        Some(format!("JSON parse error: {}", e)),
+                    ),
                 }
             }
             None => (Settings::default(), None),
@@ -809,7 +835,8 @@ impl SettingsManager {
             return;
         }
 
-        let (project_settings, _error) = Self::load_from_storage(&*self.storage, SettingsScope::Project);
+        let (project_settings, _error) =
+            Self::load_from_storage(&*self.storage, SettingsScope::Project);
         self.project_settings = project_settings;
         self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
     }
@@ -856,12 +883,14 @@ impl SettingsManager {
             ),
         };
 
-        let settings_json = serde_json::to_value(settings).unwrap_or(serde_json::Value::Object(Default::default()));
+        let settings_json =
+            serde_json::to_value(settings).unwrap_or(serde_json::Value::Object(Default::default()));
 
         let storage = &self.storage;
         let scope_clone = scope.clone();
         let modified_fields_clone: HashSet<String> = modified_fields.clone();
-        let modified_nested_fields_clone: HashMap<String, HashSet<String>> = modified_nested_fields.clone();
+        let modified_nested_fields_clone: HashMap<String, HashSet<String>> =
+            modified_nested_fields.clone();
 
         storage.with_lock(
             scope_clone,
@@ -882,10 +911,9 @@ impl SettingsManager {
                     for field in &modified_fields_clone {
                         if let Some(value) = settings_map.get(field) {
                             // Nested merge: only overwrite modified sub-keys
-                            if let (Some(nested_modified), Some(existing)) = (
-                                modified_nested_fields_clone.get(field),
-                                merged.get(field),
-                            ) {
+                            if let (Some(nested_modified), Some(existing)) =
+                                (modified_nested_fields_clone.get(field), merged.get(field))
+                            {
                                 if let (
                                     serde_json::Value::Object(existing_obj),
                                     serde_json::Value::Object(settings_obj),
@@ -897,7 +925,10 @@ impl SettingsManager {
                                             merged_obj.insert(nested_key.clone(), nv.clone());
                                         }
                                     }
-                                    merged.insert(field.clone(), serde_json::Value::Object(merged_obj));
+                                    merged.insert(
+                                        field.clone(),
+                                        serde_json::Value::Object(merged_obj),
+                                    );
                                     continue;
                                 }
                             }
@@ -906,7 +937,10 @@ impl SettingsManager {
                     }
                 }
 
-                Some(serde_json::to_string_pretty(&serde_json::Value::Object(merged)).unwrap_or_default())
+                Some(
+                    serde_json::to_string_pretty(&serde_json::Value::Object(merged))
+                        .unwrap_or_default(),
+                )
             }),
         );
     }
@@ -916,7 +950,8 @@ impl SettingsManager {
     // ========================================================================
 
     pub fn set_global(&mut self, key: &str, value: serde_json::Value) {
-        let json = serde_json::to_value(&self.global_settings).unwrap_or(serde_json::Value::Object(Default::default()));
+        let json = serde_json::to_value(&self.global_settings)
+            .unwrap_or(serde_json::Value::Object(Default::default()));
         if let serde_json::Value::Object(mut map) = json {
             map.insert(key.to_string(), value);
             if let Ok(s) = serde_json::from_value(serde_json::Value::Object(map)) {
@@ -929,7 +964,8 @@ impl SettingsManager {
     }
 
     pub fn set_project(&mut self, key: &str, value: serde_json::Value) {
-        let json = serde_json::to_value(&self.project_settings).unwrap_or(serde_json::Value::Object(Default::default()));
+        let json = serde_json::to_value(&self.project_settings)
+            .unwrap_or(serde_json::Value::Object(Default::default()));
         if let serde_json::Value::Object(mut map) = json {
             map.insert(key.to_string(), value);
             if let Ok(s) = serde_json::from_value(serde_json::Value::Object(map)) {
@@ -1141,7 +1177,10 @@ impl SettingsManager {
     /// All per-model thinking levels (TS `getAllModelThinkingLevels`).
     #[must_use]
     pub fn get_all_model_thinking_levels(&self) -> std::collections::HashMap<String, String> {
-        self.settings.model_thinking_levels.clone().unwrap_or_default()
+        self.settings
+            .model_thinking_levels
+            .clone()
+            .unwrap_or_default()
     }
 
     /// Persist a per-model default thinking level (TS `setModelThinkingLevel`).
@@ -1193,7 +1232,11 @@ impl SettingsManager {
     // --- compaction ---
 
     pub fn get_compaction_enabled(&self) -> bool {
-        self.settings.compaction.as_ref().and_then(|c| c.enabled).unwrap_or(true)
+        self.settings
+            .compaction
+            .as_ref()
+            .and_then(|c| c.enabled)
+            .unwrap_or(true)
     }
 
     pub fn set_compaction_enabled(&mut self, enabled: bool) {
@@ -1206,17 +1249,24 @@ impl SettingsManager {
     }
 
     pub fn get_compaction_reserve_tokens(&self) -> u64 {
-        self.settings.compaction.as_ref().and_then(|c| c.reserve_tokens).unwrap_or(16384)
+        self.settings
+            .compaction
+            .as_ref()
+            .and_then(|c| c.reserve_tokens)
+            .unwrap_or(16384)
     }
 
     pub fn get_compaction_keep_recent_tokens(&self) -> u64 {
-        self.settings.compaction.as_ref().and_then(|c| c.keep_recent_tokens).unwrap_or(20000)
+        self.settings
+            .compaction
+            .as_ref()
+            .and_then(|c| c.keep_recent_tokens)
+            .unwrap_or(20000)
     }
 
     pub fn get_compaction_settings(&self) -> CompactionSettings {
         self.settings.compaction.clone().unwrap_or_default()
     }
-
 
     // --- branchSummary ---
 
@@ -1225,13 +1275,21 @@ impl SettingsManager {
     }
 
     pub fn get_branch_summary_skip_prompt(&self) -> bool {
-        self.settings.branch_summary.as_ref().and_then(|b| b.skip_prompt).unwrap_or(false)
+        self.settings
+            .branch_summary
+            .as_ref()
+            .and_then(|b| b.skip_prompt)
+            .unwrap_or(false)
     }
 
     // --- retry ---
 
     pub fn get_retry_enabled(&self) -> bool {
-        self.settings.retry.as_ref().and_then(|r| r.enabled).unwrap_or(true)
+        self.settings
+            .retry
+            .as_ref()
+            .and_then(|r| r.enabled)
+            .unwrap_or(true)
     }
 
     pub fn set_retry_enabled(&mut self, enabled: bool) {
@@ -1394,7 +1452,6 @@ impl SettingsManager {
         self.settings.enable_install_telemetry.unwrap_or(true)
     }
 
-
     pub fn set_enable_install_telemetry(&mut self, enabled: bool) {
         self.global_settings.enable_install_telemetry = Some(enabled);
         self.mark_modified("enableInstallTelemetry", None);
@@ -1545,7 +1602,11 @@ impl SettingsManager {
     // --- terminal settings ---
 
     pub fn get_show_images(&self) -> bool {
-        self.settings.terminal.as_ref().and_then(|t| t.show_images).unwrap_or(true)
+        self.settings
+            .terminal
+            .as_ref()
+            .and_then(|t| t.show_images)
+            .unwrap_or(true)
     }
 
     pub fn set_show_images(&mut self, show: bool) {
@@ -1558,7 +1619,11 @@ impl SettingsManager {
     }
 
     pub fn get_image_width_cells(&self) -> u32 {
-        let width = self.settings.terminal.as_ref().and_then(|t| t.image_width_cells);
+        let width = self
+            .settings
+            .terminal
+            .as_ref()
+            .and_then(|t| t.image_width_cells);
         match width {
             Some(w) if w >= 1 => w,
             _ => 60,
@@ -1576,7 +1641,12 @@ impl SettingsManager {
     }
 
     pub fn get_clear_on_shrink(&self) -> bool {
-        if let Some(val) = self.settings.terminal.as_ref().and_then(|t| t.clear_on_shrink) {
+        if let Some(val) = self
+            .settings
+            .terminal
+            .as_ref()
+            .and_then(|t| t.clear_on_shrink)
+        {
             return val;
         }
         // Fall back to env var (matching TS behavior)
@@ -1593,7 +1663,11 @@ impl SettingsManager {
     }
 
     pub fn get_show_terminal_progress(&self) -> bool {
-        self.settings.terminal.as_ref().and_then(|t| t.show_terminal_progress).unwrap_or(false)
+        self.settings
+            .terminal
+            .as_ref()
+            .and_then(|t| t.show_terminal_progress)
+            .unwrap_or(false)
     }
 
     pub fn set_show_terminal_progress(&mut self, enabled: bool) {
@@ -1608,7 +1682,11 @@ impl SettingsManager {
     // --- image settings ---
 
     pub fn get_image_auto_resize(&self) -> bool {
-        self.settings.images.as_ref().and_then(|i| i.auto_resize).unwrap_or(true)
+        self.settings
+            .images
+            .as_ref()
+            .and_then(|i| i.auto_resize)
+            .unwrap_or(true)
     }
 
     pub fn set_image_auto_resize(&mut self, enabled: bool) {
@@ -1621,7 +1699,11 @@ impl SettingsManager {
     }
 
     pub fn get_block_images(&self) -> bool {
-        self.settings.images.as_ref().and_then(|i| i.block_images).unwrap_or(false)
+        self.settings
+            .images
+            .as_ref()
+            .and_then(|i| i.block_images)
+            .unwrap_or(false)
     }
 
     pub fn set_block_images(&mut self, blocked: bool) {
@@ -1649,7 +1731,10 @@ impl SettingsManager {
     // --- doubleEscapeAction ---
 
     pub fn get_double_escape_action(&self) -> DoubleEscapeAction {
-        self.settings.double_escape_action.clone().unwrap_or_default()
+        self.settings
+            .double_escape_action
+            .clone()
+            .unwrap_or_default()
     }
 
     pub fn set_double_escape_action(&mut self, action: DoubleEscapeAction) {
@@ -1755,7 +1840,9 @@ impl SettingsManager {
     // --- codeBlockIndent ---
 
     pub fn get_code_block_indent(&self) -> &str {
-        self.settings.markdown.as_ref()
+        self.settings
+            .markdown
+            .as_ref()
             .and_then(|m| m.code_block_indent.as_deref())
             .unwrap_or("  ")
     }
@@ -1906,7 +1993,10 @@ mod tests {
         let config = merged.web_search.expect("webSearch");
         assert_eq!(config.provider.as_deref(), Some("deepseek"));
         let deepseek = config.deepseek.expect("deepseek section kept");
-        assert_eq!(deepseek.base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert_eq!(
+            deepseek.base_url.as_deref(),
+            Some("https://api.deepseek.com")
+        );
         assert_eq!(deepseek.api_key.as_deref(), Some("${DEEPSEEK_API_KEY}"));
         assert_eq!(
             config.ollama.expect("ollama section kept").host.as_deref(),
@@ -2013,12 +2103,14 @@ mod tests {
                 &entries.iter().map(|e| (*e).to_string()).collect::<Vec<_>>(),
             )
         };
-        assert_eq!(resolve(&["+grep", "+find", "+ls"]), vec![
-            "read", "bash", "edit", "write", "grep", "find", "ls"
-        ]);
-        assert_eq!(resolve(&["-bash", "+powershell"]), vec![
-            "read", "edit", "write", "powershell"
-        ]);
+        assert_eq!(
+            resolve(&["+grep", "+find", "+ls"]),
+            vec!["read", "bash", "edit", "write", "grep", "find", "ls"]
+        );
+        assert_eq!(
+            resolve(&["-bash", "+powershell"]),
+            vec!["read", "edit", "write", "powershell"]
+        );
         // Plain names replace the defaults; modifiers then apply in order.
         assert_eq!(resolve(&["read", "grep"]), vec!["read", "grep"]);
         assert_eq!(resolve(&["read", "+bash", "-read"]), vec!["bash"]);
@@ -2044,7 +2136,11 @@ mod tests {
         );
         assert_eq!(
             mgr.get_default_tools(),
-            Some(vec!["read".to_string(), "bash".to_string(), "grep".to_string()])
+            Some(vec![
+                "read".to_string(),
+                "bash".to_string(),
+                "grep".to_string()
+            ])
         );
 
         let storage = Box::new(InMemorySettingsStorage::new());
@@ -2110,7 +2206,10 @@ mod tests {
             "queueMode": "all"
         });
         migrate_settings(&mut json);
-        assert_eq!(json.get("steeringMode").and_then(|v| v.as_str()), Some("all"));
+        assert_eq!(
+            json.get("steeringMode").and_then(|v| v.as_str()),
+            Some("all")
+        );
         assert!(json.get("queueMode").is_none());
     }
 
@@ -2120,7 +2219,10 @@ mod tests {
             "websockets": true
         });
         migrate_settings(&mut json);
-        assert_eq!(json.get("transport").and_then(|v| v.as_str()), Some("websocket"));
+        assert_eq!(
+            json.get("transport").and_then(|v| v.as_str()),
+            Some("websocket")
+        );
         assert!(json.get("websockets").is_none());
     }
 
@@ -2133,9 +2235,14 @@ mod tests {
             }
         });
         migrate_settings(&mut json);
-        assert_eq!(json.get("enableSkillCommands").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
-            json.get("skills").and_then(|v| v.as_array()).map(|a| a.len()),
+            json.get("enableSkillCommands").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            json.get("skills")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
             Some(1)
         );
     }
@@ -2164,9 +2271,7 @@ mod tests {
         // Pre-populate storage with settings
         storage.with_lock(
             SettingsScope::Global,
-            Box::new(|_| {
-                Some(r#"{"theme":"dark","defaultModel":"claude-sonnet"}"#.to_string())
-            }),
+            Box::new(|_| Some(r#"{"theme":"dark","defaultModel":"claude-sonnet"}"#.to_string())),
         );
 
         let mut mgr = SettingsManager::from_storage(storage);
@@ -2207,13 +2312,12 @@ mod tests {
                     .map(|a| a.len());
                 assert_eq!(enabled_models, Some(2));
                 assert_eq!(
-                    settings.get("defaultThinkingLevel").and_then(|v| v.as_str()),
+                    settings
+                        .get("defaultThinkingLevel")
+                        .and_then(|v| v.as_str()),
                     Some("high")
                 );
-                assert_eq!(
-                    settings.get("theme").and_then(|v| v.as_str()),
-                    Some("dark")
-                );
+                assert_eq!(settings.get("theme").and_then(|v| v.as_str()), Some("dark"));
                 assert_eq!(
                     settings.get("defaultModel").and_then(|v| v.as_str()),
                     Some("claude-sonnet")
@@ -2276,7 +2380,10 @@ mod tests {
         )
         .unwrap();
 
-        let mgr = SettingsManager::create(dir.path().to_str().unwrap(), Some(agent_dir.to_str().unwrap()));
+        let mgr = SettingsManager::create(
+            dir.path().to_str().unwrap(),
+            Some(agent_dir.to_str().unwrap()),
+        );
         assert_eq!(
             mgr.get_default_model(),
             Some("global-model"),

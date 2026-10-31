@@ -125,7 +125,10 @@ fn write_trust_file(path: &Path, data: &TrustFileData) -> Result<(), String> {
 }
 
 /// Execute a closure with an exclusive file lock on the trust file.
-fn with_trust_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+fn with_trust_file_lock<T>(
+    path: &Path,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     // Ensure parent directory exists for lock file
     let lock_dir = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(lock_dir)
@@ -175,10 +178,7 @@ fn with_trust_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T, String>) -
 // ============================================================================
 
 /// Find the nearest trust entry by walking up the directory tree.
-pub fn find_nearest_trust_entry(
-    data: &TrustFileData,
-    cwd: &str,
-) -> Option<ProjectTrustStoreEntry> {
+pub fn find_nearest_trust_entry(data: &TrustFileData, cwd: &str) -> Option<ProjectTrustStoreEntry> {
     let mut current = normalize_cwd(cwd);
 
     loop {
@@ -211,10 +211,7 @@ pub fn get_project_trust_parent_path(cwd: &str) -> Option<String> {
 }
 
 /// Generate trust options for the user to choose from (mirrors UI in original).
-pub fn get_project_trust_options(
-    cwd: &str,
-    include_session_only: bool,
-) -> Vec<ProjectTrustOption> {
+pub fn get_project_trust_options(cwd: &str, include_session_only: bool) -> Vec<ProjectTrustOption> {
     let trust_path = normalize_cwd(cwd);
     let mut options = Vec::new();
 
@@ -349,8 +346,7 @@ impl ProjectTrustStore {
 
     /// Get the trust decision for `cwd`, walking up parent directories if needed.
     pub fn get(&self, cwd: &str) -> ProjectTrustDecision {
-        self.get_entry(cwd)
-            .and_then(|e| e.decision)
+        self.get_entry(cwd).and_then(|e| e.decision)
     }
 
     /// Get the trust entry (path + decision) for `cwd`.

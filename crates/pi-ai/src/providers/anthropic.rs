@@ -179,7 +179,11 @@ fn get_cache_control(
             )
             .as_deref()
                 == Some("long"));
-    let ttl = if long && get_anthropic_compat(model).supports_long_cache_retention.unwrap_or(false) {
+    let ttl = if long
+        && get_anthropic_compat(model)
+            .supports_long_cache_retention
+            .unwrap_or(false)
+    {
         Some("1h".to_string())
     } else {
         None
@@ -381,7 +385,9 @@ fn normalize_tool_call_id(id: &str) -> String {
 /// 对齐 TS `convertContentBlocks`：纯文本 → 拼接字符串；有图 → block
 /// 数组（text + image），纯图无文本时前插 `"(see attached image)"`。
 fn convert_content_blocks(content: &[ContentBlock]) -> AnthropicToolResultContent {
-    let has_images = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+    let has_images = content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
     if !has_images {
         let text = content
             .iter()
@@ -437,7 +443,14 @@ pub(crate) fn convert_messages(
     cache_control: Option<&AnthropicCacheControl>,
     native_system_messages: bool,
 ) -> Vec<AnthropicMessageParam> {
-    convert_messages_full(messages, model, cache_control, native_system_messages, false).messages
+    convert_messages_full(
+        messages,
+        model,
+        cache_control,
+        native_system_messages,
+        false,
+    )
+    .messages
 }
 
 /// Result of `convert_messages_full`: the API messages plus the per-message
@@ -673,8 +686,7 @@ pub(crate) fn convert_messages_full(
             // them natively; otherwise the transcript is collapsed first.
             Message::System { .. } => {
                 if native_system_messages {
-                    let text =
-                        crate::utils::transcript::typed_render_system_message_update(msg);
+                    let text = crate::utils::transcript::typed_render_system_message_update(msg);
                     let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
                     if !text.is_empty() {
                         blocks.push(AnthropicContentBlock::Text {
@@ -728,16 +740,23 @@ pub(crate) fn convert_messages_full(
                 match &mut last.content {
                     AnthropicContent::String(s) => {
                         let s = s.clone();
-                        last.content = AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
-                            text: s,
-                            cache_control: Some(cc.clone()),
-                        }]);
+                        last.content =
+                            AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
+                                text: s,
+                                cache_control: Some(cc.clone()),
+                            }]);
                     }
                     AnthropicContent::Blocks(blocks) => {
                         if let Some(
-                            AnthropicContentBlock::Text { cache_control: c, .. }
-                            | AnthropicContentBlock::Image { cache_control: c, .. }
-                            | AnthropicContentBlock::ToolResult { cache_control: c, .. },
+                            AnthropicContentBlock::Text {
+                                cache_control: c, ..
+                            }
+                            | AnthropicContentBlock::Image {
+                                cache_control: c, ..
+                            }
+                            | AnthropicContentBlock::ToolResult {
+                                cache_control: c, ..
+                            },
                         ) = blocks.last_mut()
                         {
                             *c = Some(cc.clone());
@@ -1086,7 +1105,7 @@ pub fn stream_anthropic(
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
                 error: AssistantMessage {
-        provider_thinking_level: None,
+                    provider_thinking_level: None,
                     content: vec![],
                     api: model.api.clone(),
                     provider: model.provider.clone(),
@@ -1158,8 +1177,8 @@ async fn stream_anthropic_inner(
             .into_iter()
             .filter(|t| !initial_names.contains(&t.name))
             .collect();
-        let active = !initial.is_empty()
-            && !crate::utils::transcript::has_tool_redefinitions(&values);
+        let active =
+            !initial.is_empty() && !crate::utils::transcript::has_tool_redefinitions(&values);
         (initial, later, active)
     } else {
         (Vec::new(), Vec::new(), false)
@@ -1185,12 +1204,9 @@ async fn stream_anthropic_inner(
 
     // Allow extensions to modify HTTP request headers
     let mut header_map = std::collections::HashMap::new();
-    for (name, value) in anthropic_auth_headers(
-        &model.provider,
-        api_key.as_deref(),
-        auth_token,
-        use_bearer,
-    ) {
+    for (name, value) in
+        anthropic_auth_headers(&model.provider, api_key.as_deref(), auth_token, use_bearer)
+    {
         header_map.insert(name, value);
     }
     header_map.insert(
@@ -1217,9 +1233,8 @@ async fn stream_anthropic_inner(
     let mut beta_features: Vec<String> = Vec::new();
     // Claude Code OAuth requests advertise the identity betas (match TS
     // `getBetaFeatures`); Copilot auth is Bearer but not OAuth.
-    let is_oauth = !use_bearer
-        && model.provider != "github-copilot"
-        && is_oauth_token(api_key.as_deref());
+    let is_oauth =
+        !use_bearer && model.provider != "github-copilot" && is_oauth_token(api_key.as_deref());
     if is_oauth {
         beta_features.push(CLAUDE_CODE_BETA.to_string());
         beta_features.push(OAUTH_BETA.to_string());
@@ -1231,8 +1246,8 @@ async fn stream_anthropic_inner(
     // `model.reasoning && thinkingEnabled && (interleavedThinking ?? true) &&
     // compat.forceAdaptiveThinking !== true` — a non-reasoning model (or an
     // explicit `off` effort) must not advertise the beta.
-    let thinking_enabled = model.reasoning
-        && options.and_then(|o| o.reasoning_effort.as_deref()) != Some("off");
+    let thinking_enabled =
+        model.reasoning && options.and_then(|o| o.reasoning_effort.as_deref()) != Some("off");
     if thinking_enabled && compat.force_adaptive_thinking != Some(true) {
         beta_features.push(INTERLEAVED_THINKING_BETA.to_string());
     }
@@ -1248,10 +1263,7 @@ async fn stream_anthropic_inner(
         beta_features.push(SERVER_SIDE_FALLBACK_BETA.to_string());
     }
     if !beta_features.is_empty() {
-        header_map.insert(
-            "anthropic-beta".to_string(),
-            beta_features.join(","),
-        );
+        header_map.insert("anthropic-beta".to_string(), beta_features.join(","));
     }
     if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
         if compat.send_session_affinity_headers.unwrap_or(false) {
@@ -1272,15 +1284,16 @@ async fn stream_anthropic_inner(
         Some(client) => (*client).clone(),
         None => HttpClient::builder().build()?,
     };
-    let header_pairs: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = final_headers
-        .iter()
-        .filter_map(|(key, value)| {
-            Some((
-                reqwest::header::HeaderName::from_bytes(key.as_bytes()).ok()?,
-                reqwest::header::HeaderValue::from_str(value).ok()?,
-            ))
-        })
-        .collect();
+    let header_pairs: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> =
+        final_headers
+            .iter()
+            .filter_map(|(key, value)| {
+                Some((
+                    reqwest::header::HeaderName::from_bytes(key.as_bytes()).ok()?,
+                    reqwest::header::HeaderValue::from_str(value).ok()?,
+                ))
+            })
+            .collect();
 
     // Build request body
     let cache_control = get_cache_control(model, options);
@@ -1372,8 +1385,7 @@ async fn stream_anthropic_inner(
         )?;
         all_tools.push(AnthropicTool {
             name: "__pi_deferred_placeholder__".to_string(),
-            description: "Reserved placeholder. Never available. Never call this."
-                .to_string(),
+            description: "Reserved placeholder. Never available. Never call this.".to_string(),
             input_schema: json!({"type": "object", "properties": {}, "required": []}),
             cache_control: None,
             defer_loading: Some(true),
@@ -1448,13 +1460,12 @@ async fn stream_anthropic_inner(
                     // Budget-based thinking (match TS `streamSimple`): adjust
                     // maxTokens for the thinking budget and clamp it to the
                     // model's context window.
-                    let adjusted =
-                        crate::providers::simple_options::adjust_max_tokens_for_thinking(
-                            options.and_then(|o| o.max_tokens),
-                            model.max_tokens,
-                            level,
-                            options.and_then(|o| o.thinking_budgets.as_ref()),
-                        );
+                    let adjusted = crate::providers::simple_options::adjust_max_tokens_for_thinking(
+                        options.and_then(|o| o.max_tokens),
+                        model.max_tokens,
+                        level,
+                        options.and_then(|o| o.thinking_budgets.as_ref()),
+                    );
                     let effective_max_tokens =
                         crate::providers::simple_options::clamp_max_tokens_to_context(
                             model,
@@ -1496,11 +1507,11 @@ async fn stream_anthropic_inner(
                 body.insert("tool_choice".into(), json!({ "type": type_str }));
             }
             crate::types::ToolChoice::Specific { function, .. } => {
-                let name = function
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                body.insert("tool_choice".into(), json!({ "type": "tool", "name": name }));
+                let name = function.get("name").and_then(Value::as_str).unwrap_or("");
+                body.insert(
+                    "tool_choice".into(),
+                    json!({ "type": "tool", "name": name }),
+                );
             }
         }
     }
@@ -1679,11 +1690,11 @@ async fn stream_anthropic_inner(
 
         // Parse with the shared repair helper (match TS `parseJsonWithRepair`:
         // tolerate partial/repairable JSON).
-        let event: AnthropicSseEvent =
-            match crate::utils::json_parse::parse_json_with_repair(data) {
-                Ok(event) => event,
-                Err(_) => continue,
-            };
+        let event: AnthropicSseEvent = match crate::utils::json_parse::parse_json_with_repair(data)
+        {
+            Ok(event) => event,
+            Err(_) => continue,
+        };
 
         match event {
             AnthropicSseEvent::MessageStart { message } => {
@@ -1986,7 +1997,8 @@ pub fn stream_simple_anthropic(
     // Route through the shared helper (match TS `buildBaseOptions`) so
     // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
     // `reasoning_effort` and `thinking_budgets` are preserved.
-    let full_opts = crate::providers::simple_options::build_base_options(model, context, options, None);
+    let full_opts =
+        crate::providers::simple_options::build_base_options(model, context, options, None);
     stream_anthropic(model, context, Some(&full_opts))
 }
 
@@ -2071,10 +2083,8 @@ mod tests {
         let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
         // user, marker(low), assistant, user, marker(high)
         assert_eq!(roles, vec!["user", "system", "assistant", "user", "system"]);
-        let markers: Vec<serde_json::Value> = out
-            .iter()
-            .filter_map(|m| m.output_config.clone())
-            .collect();
+        let markers: Vec<serde_json::Value> =
+            out.iter().filter_map(|m| m.output_config.clone()).collect();
         assert_eq!(markers[0], serde_json::json!({"effort": "low"}));
         assert_eq!(markers[1], serde_json::json!({"effort": "high"}));
         // The marker message itself carries no content blocks.
@@ -2124,10 +2134,7 @@ mod tests {
         }];
         let converted = convert_messages_full(&messages, &model, None, true, false);
         assert!(converted.assistant_levels.is_empty());
-        assert!(converted
-            .messages
-            .iter()
-            .all(|m| m.output_config.is_none()));
+        assert!(converted.messages.iter().all(|m| m.output_config.is_none()));
     }
 
     /// Native tool changes emit `tool_removal`/`tool_addition` blocks in the
@@ -2165,13 +2172,7 @@ mod tests {
             tools_removed: Some(vec![crate::types::ToolReference { name: "a".into() }]),
             timestamp: 1,
         };
-        let out = convert_messages_full(
-            &[user, system, assistant],
-            &model,
-            None,
-            true,
-            true,
-        );
+        let out = convert_messages_full(&[user, system, assistant], &model, None, true, true);
         let vals = serde_json::to_value(&out.messages).unwrap();
         assert_eq!(vals[1]["role"], "system");
         assert_eq!(vals[1]["content"][0]["type"], "tool_removal");
@@ -2259,12 +2260,7 @@ mod tests {
         let roles: Vec<&str> = collapsed.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, vec!["user", "assistant"]);
 
-        let trailing = convert_messages(
-            &[user, assistant, system],
-            &model,
-            None,
-            true,
-        );
+        let trailing = convert_messages(&[user, assistant, system], &model, None, true);
         let roles: Vec<&str> = trailing.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, vec!["user", "assistant", "system"]);
     }
@@ -2306,12 +2302,7 @@ mod tests {
     /// `ANTHROPIC_OAUTH_TOKEN` outranks `ANTHROPIC_API_KEY`.
     #[test]
     fn test_resolve_anthropic_auth_oauth_token_beats_api_key() {
-        let auth = resolve_anthropic_auth(
-            None,
-            None,
-            Some("oauth".into()),
-            Some("env".into()),
-        );
+        let auth = resolve_anthropic_auth(None, None, Some("oauth".into()), Some("env".into()));
         assert_eq!(auth.api_key.as_deref(), Some("oauth"));
         assert!(!auth.use_bearer);
     }
@@ -2342,8 +2333,7 @@ mod tests {
     /// upgraded to a Bearer credential with Claude Code identity headers.
     #[test]
     fn test_anthropic_auth_headers_api_key_vs_oauth_token() {
-        let api_key =
-            anthropic_auth_headers("anthropic", Some("sk-ant-api03-key"), None, false);
+        let api_key = anthropic_auth_headers("anthropic", Some("sk-ant-api03-key"), None, false);
         assert_eq!(
             api_key,
             vec![("x-api-key".to_string(), "sk-ant-api03-key".to_string())]
@@ -2369,8 +2359,7 @@ mod tests {
     /// A gateway bearer token never also emits `x-api-key`.
     #[test]
     fn test_anthropic_auth_headers_bearer() {
-        let headers =
-            anthropic_auth_headers("anthropic", Some("ignored"), Some("gateway"), true);
+        let headers = anthropic_auth_headers("anthropic", Some("ignored"), Some("gateway"), true);
         assert_eq!(
             headers,
             vec![("authorization".to_string(), "Bearer gateway".to_string())]
@@ -2381,15 +2370,13 @@ mod tests {
     /// is not an `sk-ant-oat…` OAuth token and without Claude Code headers).
     #[test]
     fn test_anthropic_auth_headers_github_copilot_uses_bearer() {
-        let headers = anthropic_auth_headers(
-            "github-copilot",
-            Some("copilot-token"),
-            None,
-            false,
-        );
+        let headers = anthropic_auth_headers("github-copilot", Some("copilot-token"), None, false);
         assert_eq!(
             headers,
-            vec![("authorization".to_string(), "Bearer copilot-token".to_string())]
+            vec![(
+                "authorization".to_string(),
+                "Bearer copilot-token".to_string()
+            )]
         );
     }
 
@@ -2480,7 +2467,10 @@ mod tests {
         // TS throw → catch → error), not panic the stream task.
         let (reason, msg) = map_stop_reason("unknown_reason", None);
         assert_eq!(reason, StopReason::Error);
-        assert_eq!(msg.as_deref(), Some("Unhandled stop reason: unknown_reason"));
+        assert_eq!(
+            msg.as_deref(),
+            Some("Unhandled stop reason: unknown_reason")
+        );
     }
 
     // ============================================================
@@ -2725,20 +2715,21 @@ mod tests {
         let options = StreamOptions {
             api_key: Some("test-key".into()),
             // Cancels the request after recording the payload.
-            on_payload: Some(std::sync::Arc::new(
-                move |payload: serde_json::Value| {
-                    let sink = sink.clone();
-                    Box::pin(async move {
-                        *sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            Some(payload);
-                        None
-                    })
-                },
-            )),
+            on_payload: Some(std::sync::Arc::new(move |payload: serde_json::Value| {
+                let sink = sink.clone();
+                Box::pin(async move {
+                    *sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(payload);
+                    None
+                })
+            })),
             ..Default::default()
         };
 
-        let _ = stream_anthropic(&model, &context, Some(&options)).result().await;
+        let _ = stream_anthropic(&model, &context, Some(&options))
+            .result()
+            .await;
 
         let body = captured
             .lock()
@@ -2764,17 +2755,19 @@ mod tests {
         let model = Model {
             compat: Some(crate::types::ModelCompat::AnthropicMessages(
                 crate::types::AnthropicMessagesCompat {
-                    allowed_fallback_models: Some(vec![crate::types::AnthropicAllowedFallbackModel {
-                        provider: "anthropic".to_string(),
-                        model: "claude-opus-4-8".to_string(),
-                        cost: crate::types::ModelCost {
-                            input: 5.0,
-                            output: 25.0,
-                            cache_read: 0.5,
-                            cache_write: 6.25,
-                            tiers: vec![],
+                    allowed_fallback_models: Some(vec![
+                        crate::types::AnthropicAllowedFallbackModel {
+                            provider: "anthropic".to_string(),
+                            model: "claude-opus-4-8".to_string(),
+                            cost: crate::types::ModelCost {
+                                input: 5.0,
+                                output: 25.0,
+                                cache_read: 0.5,
+                                cache_write: 6.25,
+                                tiers: vec![],
+                            },
                         },
-                    }]),
+                    ]),
                     ..Default::default()
                 },
             )),
@@ -2793,15 +2786,18 @@ mod tests {
             on_payload: Some(std::sync::Arc::new(move |payload: serde_json::Value| {
                 let sink = sink.clone();
                 Box::pin(async move {
-                    *sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(payload);
+                    *sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(payload);
                     None
                 })
             })),
             ..Default::default()
         };
 
-        let _ = stream_anthropic(&model, &context, Some(&options)).result().await;
+        let _ = stream_anthropic(&model, &context, Some(&options))
+            .result()
+            .await;
 
         let body = captured
             .lock()
@@ -2834,15 +2830,18 @@ mod tests {
             on_payload: Some(std::sync::Arc::new(move |payload: serde_json::Value| {
                 let sink = sink.clone();
                 Box::pin(async move {
-                    *sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(payload);
+                    *sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(payload);
                     None
                 })
             })),
             ..Default::default()
         };
 
-        let _ = stream_anthropic(&test_model(), &context, Some(&options)).result().await;
+        let _ = stream_anthropic(&test_model(), &context, Some(&options))
+            .result()
+            .await;
 
         let body = captured
             .lock()
@@ -2851,7 +2850,6 @@ mod tests {
             .unwrap_or_else(|| panic!("request payload must be captured"));
         assert!(body.get("fallbacks").is_none(), "{body}");
     }
-
 }
 
 #[cfg(test)]
@@ -2946,5 +2944,4 @@ mod abort_tests {
             other => panic!("expected Error(Aborted), got {other:?}"),
         }
     }
-
 }

@@ -45,7 +45,10 @@ pub static DEFAULT_MODEL_PER_PROVIDER: LazyLock<HashMap<&'static str, &'static s
         m.insert("opencode-go", "kimi-k2.6");
         m.insert("kimi-coding", "kimi-for-coding");
         m.insert("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6");
-        m.insert("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
+        m.insert(
+            "cloudflare-ai-gateway",
+            "workers-ai/@cf/moonshotai/kimi-k2.6",
+        );
         m.insert("xiaomi", "mimo-v2.5-pro");
         m.insert("xiaomi-token-plan-cn", "mimo-v2.5-pro");
         m.insert("xiaomi-token-plan-ams", "mimo-v2.5-pro");
@@ -268,17 +271,29 @@ pub fn parse_model_pattern(
 
     if is_valid_thinking_level(suffix) {
         // Valid thinking level - recurse on prefix
-        let result = parse_model_pattern(prefix, available_models, allow_invalid_thinking_level_fallback);
+        let result = parse_model_pattern(
+            prefix,
+            available_models,
+            allow_invalid_thinking_level_fallback,
+        );
         if result.model.is_some() {
             return ParsedModelResult {
-                thinking_level: if result.warning.is_some() { None } else { Some(suffix.to_string()) },
+                thinking_level: if result.warning.is_some() {
+                    None
+                } else {
+                    Some(suffix.to_string())
+                },
                 ..result
             };
         }
         result
     } else if allow_invalid_thinking_level_fallback {
         // Invalid suffix - recurse on prefix and warn
-        let result = parse_model_pattern(prefix, available_models, allow_invalid_thinking_level_fallback);
+        let result = parse_model_pattern(
+            prefix,
+            available_models,
+            allow_invalid_thinking_level_fallback,
+        );
         if result.model.is_some() {
             return ParsedModelResult {
                 model: result.model,
@@ -363,7 +378,10 @@ pub fn resolve_model_scope_with_diagnostics(
             }
 
             for model in matching_models {
-                if !scoped_models.iter().any(|sm| sm.model.id == model.id && sm.model.provider == model.provider) {
+                if !scoped_models
+                    .iter()
+                    .any(|sm| sm.model.id == model.id && sm.model.provider == model.provider)
+                {
                     scoped_models.push(ScopedModel {
                         thinking_level: thinking_level.clone(),
                         model,
@@ -384,7 +402,10 @@ pub fn resolve_model_scope_with_diagnostics(
         }
 
         if let Some(model) = result.model {
-            if !scoped_models.iter().any(|sm| sm.model.id == model.id && sm.model.provider == model.provider) {
+            if !scoped_models
+                .iter()
+                .any(|sm| sm.model.id == model.id && sm.model.provider == model.provider)
+            {
                 scoped_models.push(ScopedModel {
                     thinking_level: result.thinking_level,
                     model,
@@ -466,7 +487,8 @@ pub fn resolve_cli_model(
             thinking_level: None,
             warning: None,
             error: Some(
-                "No models available. Check your installation or add models to models.json.".to_string(),
+                "No models available. Check your installation or add models to models.json."
+                    .to_string(),
             ),
         };
     }
@@ -477,8 +499,7 @@ pub fn resolve_cli_model(
         .map(|m| (m.provider.to_lowercase(), m.provider.clone()))
         .collect();
 
-    let mut provider = cli_provider
-        .and_then(|p| provider_map.get(&p.to_lowercase()).cloned());
+    let mut provider = cli_provider.and_then(|p| provider_map.get(&p.to_lowercase()).cloned());
 
     // If no explicit --provider, try to interpret "provider/model" format
     let mut pattern = cli_model;
@@ -522,7 +543,10 @@ pub fn resolve_cli_model(
     }
 
     let candidates: Vec<&Model> = if let Some(ref prov) = provider {
-        available_models.iter().filter(|m| m.provider == *prov).collect()
+        available_models
+            .iter()
+            .filter(|m| m.provider == *prov)
+            .collect()
     } else {
         available_models.iter().collect()
     };
@@ -569,10 +593,7 @@ pub fn resolve_cli_model(
         model: None,
         thinking_level: None,
         warning: None,
-        error: Some(format!(
-            "No model found matching \"{}\".",
-            cli_model
-        )),
+        error: Some(format!("No model found matching \"{}\".", cli_model)),
     }
 }
 
@@ -640,9 +661,7 @@ pub fn find_initial_model(
     // Sort for determinism: the registry's model order is HashMap-derived
     // (random per process), while TS iterates providers in registration
     // order. Sorting makes the "first available" pick stable.
-    available_models.sort_by(|a, b| {
-        (&a.provider, &a.id).cmp(&(&b.provider, &b.id))
-    });
+    available_models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
 
     if !available_models.is_empty() {
         // Try to find a default model from known providers (sorted for
@@ -767,19 +786,20 @@ mod tests {
             models,
             std::path::Path::new("/nonexistent/models.json"),
         );
-        registry.register_provider(
-            "test-provider-a",
-            ProviderConfig {
-                name: None,
-                base_url: None,
-                api_key: Some("key-a".to_string()),
-                api: None,
-                headers: None,
-                auth_header: None,
-                models: None,
-            },
-        )
-        .unwrap();
+        registry
+            .register_provider(
+                "test-provider-a",
+                ProviderConfig {
+                    name: None,
+                    base_url: None,
+                    api_key: Some("key-a".to_string()),
+                    api: None,
+                    headers: None,
+                    auth_header: None,
+                    models: None,
+                },
+            )
+            .unwrap();
         registry
     }
 
@@ -822,7 +842,10 @@ mod tests {
             &registry,
         );
         let model = result.model.expect("must fall back to a configured model");
-        assert_eq!(model.provider, "test-provider-a", "must pick the provider with auth");
+        assert_eq!(
+            model.provider, "test-provider-a",
+            "must pick the provider with auth"
+        );
     }
 
     /// TS findInitialModel step 3: a settings default whose provider has auth

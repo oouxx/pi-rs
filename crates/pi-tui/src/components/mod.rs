@@ -7,7 +7,8 @@ pub mod select_list;
 pub mod text;
 
 pub use completer::{
-    ArgumentCompletionsFn, Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger,
+    ArgumentCompletionsFn, Completer, CompletionCommand, CompletionItem, CompletionRequest,
+    CompletionTrigger,
 };
 pub use diff::DiffView;
 pub use editor::{Editor, EditorMode};

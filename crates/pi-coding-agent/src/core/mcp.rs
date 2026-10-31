@@ -161,7 +161,9 @@ impl McpConnection {
                 env,
                 cwd,
             } => connect_stdio(&spec.name, command, args, env, cwd.as_deref()).await?,
-            McpTransportSpec::Http { url, headers } => connect_http(&spec.name, url, headers).await?,
+            McpTransportSpec::Http { url, headers } => {
+                connect_http(&spec.name, url, headers).await?
+            }
             McpTransportSpec::Sse { url, headers } => connect_sse(&spec.name, url, headers).await?,
         };
         let tools = peer
@@ -198,8 +200,12 @@ impl McpConnection {
                     .description
                     .clone()
                     .map(|d| d.to_string())
-                    .unwrap_or_else(|| format!("MCP tool '{tool_name}' from server '{server_name}'"));
-                let parameters = Some(serde_json::Value::Object(tool.input_schema.as_ref().clone()));
+                    .unwrap_or_else(|| {
+                        format!("MCP tool '{tool_name}' from server '{server_name}'")
+                    });
+                let parameters = Some(serde_json::Value::Object(
+                    tool.input_schema.as_ref().clone(),
+                ));
                 let execute: pi_extension_api::ToolExecuteFn = Arc::new(
                     move |_tool_call_id: String,
                           params: serde_json::Value,
@@ -353,7 +359,10 @@ async fn connect_sse(
 /// Build an HTTP header map from string pairs, rejecting invalid names/values.
 fn to_header_map(
     headers: &BTreeMap<String, String>,
-) -> Result<std::collections::HashMap<reqwest::header::HeaderName, reqwest::header::HeaderValue>, String> {
+) -> Result<
+    std::collections::HashMap<reqwest::header::HeaderName, reqwest::header::HeaderValue>,
+    String,
+> {
     let mut map = std::collections::HashMap::new();
     for (name, value) in headers {
         let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
@@ -404,8 +413,10 @@ fn content_block_to_value(content: &rmcp::model::Content) -> serde_json::Value {
         return serde_json::to_value(text_block(text)).unwrap_or_default();
     }
     // Fallback: serialize the whole block to a string.
-    serde_json::to_value(text_block(serde_json::to_string(content).unwrap_or_default()))
-        .unwrap_or_default()
+    serde_json::to_value(text_block(
+        serde_json::to_string(content).unwrap_or_default(),
+    ))
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -464,10 +475,7 @@ mod tests {
 
     #[test]
     fn acp_sse_server_maps_to_sse_spec() {
-        let server = acp::McpServer::Sse(acp::McpServerSse::new(
-            "docs",
-            "https://example.com/sse",
-        ));
+        let server = acp::McpServer::Sse(acp::McpServerSse::new("docs", "https://example.com/sse"));
         let spec = McpServerSpec::from_acp(&server);
         assert_eq!(spec.name, "docs");
         match spec.transport {
@@ -489,9 +497,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires /tmp/mcp_test_server.py (see ACP docs)"]
     async fn stdio_server_tool_round_trip() {
-        let server = acp::McpServer::Stdio(
-            acp::McpServerStdio::new("test-mcp", "/tmp/mcp_test_server.py"),
-        );
+        let server = acp::McpServer::Stdio(acp::McpServerStdio::new(
+            "test-mcp",
+            "/tmp/mcp_test_server.py",
+        ));
         let conn = McpConnection::connect(&server).await.expect("connect");
         let defs = conn.tool_definitions();
         assert_eq!(defs.len(), 2, "server exposes echo + add");
@@ -506,7 +515,11 @@ mod tests {
         // add tool
         let add = defs.iter().find(|d| d.name == "add").expect("add tool");
         let exec = add.execute.clone().expect("add execute");
-        let fut = (exec)("id2".to_string(), serde_json::json!({ "a": 2, "b": 3 }), None);
+        let fut = (exec)(
+            "id2".to_string(),
+            serde_json::json!({ "a": 2, "b": 3 }),
+            None,
+        );
         let out = fut.await.expect("call add");
         assert_eq!(out.content[0]["text"], "sum:5");
     }

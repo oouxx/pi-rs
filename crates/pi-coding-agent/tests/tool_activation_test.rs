@@ -13,9 +13,7 @@
 use pi_agent_core::pi_ai_types::{Model, ModelCost};
 use pi_coding_agent::core::agent_session::AgentSession;
 use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
-use pi_coding_agent::core::settings_manager::{
-    InMemorySettingsStorage, Settings, SettingsManager,
-};
+use pi_coding_agent::core::settings_manager::{InMemorySettingsStorage, Settings, SettingsManager};
 
 fn make_model() -> Model {
     Model {
@@ -63,7 +61,11 @@ async fn default_session_registers_all_builtins_and_activates_four() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let session = create_session(&tmp, |_| {}).await;
 
-    let registered: Vec<String> = session.get_all_tools().into_iter().map(|t| t.name).collect();
+    let registered: Vec<String> = session
+        .get_all_tools()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
     for name in ["read", "bash", "edit", "write", "grep", "find", "ls"] {
         assert!(
             registered.contains(&name.to_string()),
@@ -190,7 +192,11 @@ async fn excluded_tools_are_not_registered() {
     .await;
 
     assert_eq!(session.get_active_tool_names().await, vec!["read", "edit"]);
-    let registered: Vec<String> = session.get_all_tools().into_iter().map(|t| t.name).collect();
+    let registered: Vec<String> = session
+        .get_all_tools()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
     assert!(!registered.contains(&"bash".to_string()));
     assert!(!registered.contains(&"write".to_string()));
 

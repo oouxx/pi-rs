@@ -53,10 +53,7 @@ pub struct FindToolDetails {
 /// Matching TS `FindOperations`: providing operations replaces the `fd` search.
 pub trait FindOperations: Send + Sync {
     /// Check if path exists.
-    fn exists(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool>;
+    fn exists(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Find files matching glob pattern. Returns paths.
     fn glob(
@@ -88,10 +85,7 @@ fn is_inside_git_repo(cwd: &std::path::Path) -> bool {
 pub struct LocalFindOperations;
 
 impl FindOperations for LocalFindOperations {
-    fn exists(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool> {
+    fn exists(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move { Ok(std::path::Path::new(&path).exists()) })
     }
@@ -221,7 +215,12 @@ fn relativize_find_result_path(result_path: &str, search_path: &str) -> String {
 }
 
 /// Build the `fd` argument vector, matching TS `createFindToolDefinition`.
-fn build_fd_args(pattern: &str, search_path: &str, limit: usize, inside_git_repo: bool) -> Vec<String> {
+fn build_fd_args(
+    pattern: &str,
+    search_path: &str,
+    limit: usize,
+    inside_git_repo: bool,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--glob".to_string(),
         "--color=never".to_string(),
@@ -465,10 +464,8 @@ pub fn create_find_tool(
                                 return Err("Operation aborted".to_string().into());
                             }
                         }
-                        let ignore_dirs = [
-                            "**/node_modules/**".to_string(),
-                            "**/.git/**".to_string(),
-                        ];
+                        let ignore_dirs =
+                            ["**/node_modules/**".to_string(), "**/.git/**".to_string()];
                         let results = ops
                             .glob(pattern, &search_path, &ignore_dirs, effective_limit)
                             .await?;
@@ -491,8 +488,8 @@ pub fn create_find_tool(
                         ));
                     }
 
-                    let lines = run_fd(&search_path, pattern, effective_limit, signal.clone())
-                        .await?;
+                    let lines =
+                        run_fd(&search_path, pattern, effective_limit, signal.clone()).await?;
                     if lines.is_empty() {
                         return Ok(text_result("No files found matching pattern"));
                     }

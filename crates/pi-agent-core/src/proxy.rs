@@ -123,7 +123,8 @@ pub fn stream_proxy(
         let client = reqwest::Client::new();
         let mut headers_map = reqwest::header::HeaderMap::new();
         let auth_header =
-            match reqwest::header::HeaderValue::from_str(&format!("Bearer {}", options.auth_token)) {
+            match reqwest::header::HeaderValue::from_str(&format!("Bearer {}", options.auth_token))
+            {
                 Ok(v) => v,
                 Err(e) => {
                     let error_message = format!("Invalid auth token: {e}");

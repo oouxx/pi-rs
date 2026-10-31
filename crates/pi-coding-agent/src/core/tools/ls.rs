@@ -33,22 +33,13 @@ pub struct LsToolDetails {
 /// Override these to delegate directory listing to remote systems (for example SSH).
 pub trait LsOperations: Send + Sync {
     /// Check if path exists.
-    fn exists(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool>;
+    fn exists(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Get file or directory metadata. Throws if not found.
-    fn is_directory(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool>;
+    fn is_directory(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Read directory entries.
-    fn read_dir(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<Vec<String>>;
+    fn read_dir(&self, path: &str) -> crate::core::tools::AsyncOpResult<Vec<String>>;
 }
 
 // ============================================================================
@@ -58,33 +49,26 @@ pub trait LsOperations: Send + Sync {
 pub struct LocalLsOperations;
 
 impl LsOperations for LocalLsOperations {
-    fn exists(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool> {
+    fn exists(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move { Ok(std::path::Path::new(&path).exists()) })
     }
 
-    fn is_directory(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool> {
+    fn is_directory(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move {
-            let meta = tokio::fs::metadata(&path).await
+            let meta = tokio::fs::metadata(&path)
+                .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             Ok(meta.is_dir())
         })
     }
 
-    fn read_dir(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<Vec<String>> {
+    fn read_dir(&self, path: &str) -> crate::core::tools::AsyncOpResult<Vec<String>> {
         let path = path.to_string();
         Box::pin(async move {
-            let mut entries = tokio::fs::read_dir(&path).await
+            let mut entries = tokio::fs::read_dir(&path)
+                .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             let mut names = Vec::new();
             while let Ok(Some(entry)) = entries.next_entry().await {

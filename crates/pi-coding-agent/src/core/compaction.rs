@@ -90,9 +90,7 @@ impl CompactionSettings {
         };
         Self {
             reserve_tokens: entry.reserve_tokens.unwrap_or(self.reserve_tokens),
-            keep_recent_tokens: entry
-                .keep_recent_tokens
-                .unwrap_or(self.keep_recent_tokens),
+            keep_recent_tokens: entry.keep_recent_tokens.unwrap_or(self.keep_recent_tokens),
             ..self.clone()
         }
     }
@@ -221,9 +219,9 @@ pub fn session_entry_to_context_messages(entry: &SessionEntry) -> Vec<AgentMessa
         } => {
             let content = match content {
                 serde_json::Value::String(s) => CustomContent::Text(s.clone()),
-                other => CustomContent::Blocks(
-                    serde_json::from_value(other.clone()).unwrap_or_default(),
-                ),
+                other => {
+                    CustomContent::Blocks(serde_json::from_value(other.clone()).unwrap_or_default())
+                }
             };
             vec![AgentMessage::Custom {
                 custom_type: custom_type.clone(),
@@ -533,8 +531,9 @@ pub fn prepare_compaction(
         } = prev
         {
             previous_summary = Some(summary.clone());
-            let first_kept_global =
-                path_entries.iter().position(|e| e.id() == *first_kept_entry_id);
+            let first_kept_global = path_entries
+                .iter()
+                .position(|e| e.id() == *first_kept_entry_id);
             boundary_start = match first_kept_global {
                 Some(i) => i,
                 None => prev_compaction_index as usize + 1,
@@ -879,12 +878,19 @@ pub fn estimate_agent_message_tokens(msg: &AgentMessage) -> u64 {
                 ContentBlock::Thinking { thinking, .. } => utf16_len(thinking),
                 ContentBlock::ToolCall {
                     name, arguments, ..
-                } => utf16_len(name)
-                    + utf16_len(&serde_json::to_string(arguments).unwrap_or_else(|_| "undefined".into())),
+                } => {
+                    utf16_len(name)
+                        + utf16_len(
+                            &serde_json::to_string(arguments)
+                                .unwrap_or_else(|_| "undefined".into()),
+                        )
+                }
                 _ => 0,
             })
             .sum(),
-        AgentMessage::BashExecution { command, output, .. } => utf16_len(command) + utf16_len(output),
+        AgentMessage::BashExecution {
+            command, output, ..
+        } => utf16_len(command) + utf16_len(output),
         AgentMessage::BranchSummary { summary, .. }
         | AgentMessage::CompactionSummary { summary, .. } => utf16_len(summary),
     };
@@ -917,14 +923,10 @@ pub struct ContextUsageEstimate {
 /// TS `getAssistantUsageInfo`: last assistant message with valid usage.
 /// Skips aborted / error / all-zero-usage messages, which carry no usable
 /// usage data.
-fn get_last_assistant_usage_info(
-    messages: &[AgentMessage],
-) -> Option<(usize, u64)> {
+fn get_last_assistant_usage_info(messages: &[AgentMessage]) -> Option<(usize, u64)> {
     for (i, msg) in messages.iter().enumerate().rev() {
         if let AgentMessage::Assistant {
-            usage,
-            stop_reason,
-            ..
+            usage, stop_reason, ..
         } = msg
         {
             if matches!(
@@ -947,9 +949,7 @@ fn get_last_assistant_usage_info(
 /// messages after it. If no assistant usage exists, estimate everything.
 /// The last assistant usage reflects the real context size, so this is far
 /// more accurate than re-estimating the whole transcript from scratch.
-pub fn estimate_context_tokens(
-    messages: &[AgentMessage],
-) -> ContextUsageEstimate {
+pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextUsageEstimate {
     if let Some((idx, usage_tokens)) = get_last_assistant_usage_info(messages) {
         let trailing = &messages[idx + 1..];
         let trailing_tokens = estimate_agent_messages_tokens(trailing);
@@ -982,10 +982,11 @@ pub fn estimate_context_tokens(
 pub fn compaction_trigger_tokens(messages: &[AgentMessage]) -> u64 {
     let direct = messages.iter().rev().find_map(|m| match m {
         AgentMessage::Assistant {
-            usage,
-            stop_reason,
-            ..
-        } => Some((stop_reason.clone(), calculate_context_tokens_from_usage(usage))),
+            usage, stop_reason, ..
+        } => Some((
+            stop_reason.clone(),
+            calculate_context_tokens_from_usage(usage),
+        )),
         _ => None,
     });
     match direct {
@@ -1151,7 +1152,7 @@ mod tests {
     #[test]
     fn test_should_compact() {
         let settings = CompactionSettings::default(); // reserve_tokens = 16384
-        // threshold = 100_000 - 16_384 = 83_616
+                                                      // threshold = 100_000 - 16_384 = 83_616
         assert!(should_compact(90_000, 100_000, &settings));
         assert!(!should_compact(80_000, 100_000, &settings));
     }
@@ -1576,7 +1577,9 @@ fn test_prepare_compaction_with_previous_summary() {
             parent_id: None,
             timestamp: "t0".into(),
             message: serde_json::to_value(AgentMessage::User {
-                content: vec![ContentBlock::text("first user message with plenty of context")],
+                content: vec![ContentBlock::text(
+                    "first user message with plenty of context",
+                )],
                 timestamp: 1,
             })
             .unwrap(),
@@ -1680,12 +1683,10 @@ fn test_prepare_compaction_nothing_to_compact() {
 
 #[test]
 fn test_prepare_compaction_returns_none_when_leaf_is_compaction() {
-    let mut entries = messages_to_entries(vec![
-        AgentMessage::User {
-            content: vec![ContentBlock::text("hello")],
-            timestamp: 1,
-        },
-    ]);
+    let mut entries = messages_to_entries(vec![AgentMessage::User {
+        content: vec![ContentBlock::text("hello")],
+        timestamp: 1,
+    }]);
     entries.push(SessionEntry::Compaction {
         id: "entry-c".into(),
         parent_id: Some("entry-0".into()),

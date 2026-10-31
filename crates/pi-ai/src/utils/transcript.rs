@@ -236,7 +236,10 @@ pub fn get_current_tools(messages: &[Value]) -> Vec<Tool> {
             by_name.insert(name, tool);
         }
     }
-    order.into_iter().filter_map(|n| by_name.remove(&n)).collect()
+    order
+        .into_iter()
+        .filter_map(|n| by_name.remove(&n))
+        .collect()
 }
 
 /// Serialize typed messages into the shape the transcript helpers read, or
@@ -263,10 +266,7 @@ fn shorthand_or_empty(shorthand: Option<&[Tool]>) -> Vec<Tool> {
 
 /// Tools a request must declare (TS `getCurrentTools(context.messages)`).
 #[must_use]
-pub fn request_tools(
-    messages: &[crate::types::Message],
-    shorthand: Option<&[Tool]>,
-) -> Vec<Tool> {
+pub fn request_tools(messages: &[crate::types::Message], shorthand: Option<&[Tool]>) -> Vec<Tool> {
     transcript_values(messages).map_or_else(
         || shorthand_or_empty(shorthand),
         |values| get_current_tools(&values),
@@ -294,10 +294,7 @@ pub fn transcript_request_tools(
 /// Every tool declared anywhere in the transcript
 /// (TS `getDeclaredTools(context.messages)`).
 #[must_use]
-pub fn declared_tools(
-    messages: &[crate::types::Message],
-    shorthand: Option<&[Tool]>,
-) -> Vec<Tool> {
+pub fn declared_tools(messages: &[crate::types::Message], shorthand: Option<&[Tool]>) -> Vec<Tool> {
     transcript_values(messages).map_or_else(
         || shorthand_or_empty(shorthand),
         |values| get_declared_tools(&values),
@@ -338,7 +335,10 @@ pub fn get_current_system_message(messages: &[Value]) -> Option<Value> {
         .filter_map(|(k, v)| v.map(|v| (k, json!(v))))
         .collect();
     if !live_sections.is_empty() {
-        obj.insert("sections".to_string(), Value::Object(live_sections.into_iter().collect()));
+        obj.insert(
+            "sections".to_string(),
+            Value::Object(live_sections.into_iter().collect()),
+        );
     }
     if !tools.is_empty() {
         obj.insert(
@@ -381,7 +381,10 @@ pub fn collapse_system_messages(messages: &[Value]) -> Vec<Value> {
 
 /// TS `resolveTranscript`: keep system messages when the model supports them,
 /// otherwise collapse.
-pub fn resolve_transcript(messages: &[Value], supports_mid_convo_system_messages: Option<bool>) -> Vec<Value> {
+pub fn resolve_transcript(
+    messages: &[Value],
+    supports_mid_convo_system_messages: Option<bool>,
+) -> Vec<Value> {
     if supports_mid_convo_system_messages.unwrap_or(false) {
         messages.to_vec()
     } else {
@@ -460,7 +463,10 @@ pub fn get_declared_tools(messages: &[Value]) -> Vec<Tool> {
             by_name.insert(name, tool);
         }
     }
-    order.into_iter().filter_map(|n| by_name.remove(&n)).collect()
+    order
+        .into_iter()
+        .filter_map(|n| by_name.remove(&n))
+        .collect()
 }
 
 /// TS `hasToolRedefinitions`: same name declared twice with different shape.
@@ -567,7 +573,10 @@ mod tests {
             json!({"role":"system","content":"","toolsAdded":[tool("a"), tool("b")],"timestamp":0}),
             json!({"role":"system","content":"","toolsRemoved":[{"name":"a"}],"toolsAdded":[tool("c")],"timestamp":1}),
         ];
-        let names: Vec<String> = get_current_tools(&messages).into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = get_current_tools(&messages)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
         assert_eq!(names, vec!["b", "c"]);
     }
 
@@ -643,7 +652,10 @@ mod tests {
             json!({"role":"system","content":"","toolsAdded":[tool("a")],"timestamp":0}),
             json!({"role":"system","content":"","toolsAdded":[tool("b")],"timestamp":1}),
         ];
-        let names: Vec<String> = get_declared_tools(&messages).into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = get_declared_tools(&messages)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
         assert_eq!(names, vec!["a", "b"]);
         assert!(!has_tool_redefinitions(&messages));
 

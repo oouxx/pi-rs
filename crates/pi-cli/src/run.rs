@@ -73,7 +73,11 @@ pub async fn run(args: &CliArgs) -> i32 {
     }
 
     if args.version {
-        println!("{} v{}", pi_coding_agent::config::APP_NAME, pi_coding_agent::config::VERSION);
+        println!(
+            "{} v{}",
+            pi_coding_agent::config::APP_NAME,
+            pi_coding_agent::config::VERSION
+        );
         return EXIT_SUCCESS;
     }
 
@@ -121,14 +125,20 @@ pub async fn run(args: &CliArgs) -> i32 {
     // --name requires a non-empty value (matching TS).
     if let Some(ref name) = args.name {
         if name.trim().is_empty() {
-            eprintln!("{} --name requires a non-empty value", "Error:".red().bold());
+            eprintln!(
+                "{} --name requires a non-empty value",
+                "Error:".red().bold()
+            );
             return EXIT_FAILURE;
         }
     }
 
     // validateForkFlags / validateSessionIdFlags (matching TS).
     if args.fork.is_some() {
-        let conflicts = conflicting_flags(args, &["--session", "--continue", "--resume", "--no-session"]);
+        let conflicts = conflicting_flags(
+            args,
+            &["--session", "--continue", "--resume", "--no-session"],
+        );
         if !conflicts.is_empty() {
             eprintln!(
                 "{} --fork cannot be combined with {}",
@@ -156,9 +166,17 @@ pub async fn run(args: &CliArgs) -> i32 {
         .unwrap_or_else(|_| "/tmp".to_string());
 
     if args.verbose {
-        eprintln!("{} pi-coding-agent v{}", "[pi]".dimmed(), pi_coding_agent::config::VERSION);
+        eprintln!(
+            "{} pi-coding-agent v{}",
+            "[pi]".dimmed(),
+            pi_coding_agent::config::VERSION
+        );
         eprintln!("{} cwd: {}", "[pi]".dimmed(), cwd);
-        eprintln!("{} agent_dir: {}", "[pi]".dimmed(), agent_dir.to_string_lossy());
+        eprintln!(
+            "{} agent_dir: {}",
+            "[pi]".dimmed(),
+            agent_dir.to_string_lossy()
+        );
     }
 
     // Resolve the app mode (matching TS `resolveAppMode`).
@@ -219,7 +237,8 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     // Build the initial message: stdin → @file text → first CLI message
     // (matching TS `prepareInitialMessage` + `buildInitialMessage`).
-    let (initial_message, initial_images) = prepare_initial_message(args, &cwd, stdin_content).await;
+    let (initial_message, initial_images) =
+        prepare_initial_message(args, &cwd, stdin_content).await;
 
     // ── Project trust ────────────────────────────────────────────────────
     // pi-rs intentionally does not gate project resources on trust (see
@@ -230,7 +249,10 @@ pub async fn run(args: &CliArgs) -> i32 {
 
     let message = initial_message.unwrap_or_default();
     if message.trim().is_empty() {
-        eprintln!("{} No message provided. Use -h for help.", "Error:".red().bold());
+        eprintln!(
+            "{} No message provided. Use -h for help.",
+            "Error:".red().bold()
+        );
         return EXIT_FAILURE;
     }
     // The first CLI message was consumed into `initial_message` (matching TS
@@ -291,10 +313,22 @@ pub async fn run(args: &CliArgs) -> i32 {
         } else {
             None
         },
-        tools: if args.tools.is_empty() { None } else { Some(args.tools.clone()) },
-        exclude_tools: if args.exclude_tools.is_empty() { None } else { Some(args.exclude_tools.clone()) },
+        tools: if args.tools.is_empty() {
+            None
+        } else {
+            Some(args.tools.clone())
+        },
+        exclude_tools: if args.exclude_tools.is_empty() {
+            None
+        } else {
+            Some(args.exclude_tools.clone())
+        },
         custom_prompt: args.system_prompt.clone(),
-        append_system_prompt: if args.append_system_prompt.is_empty() { None } else { Some(args.append_system_prompt.join("\n")) },
+        append_system_prompt: if args.append_system_prompt.is_empty() {
+            None
+        } else {
+            Some(args.append_system_prompt.join("\n"))
+        },
         session_name: args.name.clone(),
         stream_fn: None,
         convert_to_llm: None,
@@ -312,22 +346,24 @@ pub async fn run(args: &CliArgs) -> i32 {
         cli_model: args.model.clone(),
         auth_storage: None,
         model_registry: Some(model_registry),
-        resource_loader: Some(pi_coding_agent::core::resource_loader::ResourceLoaderOptions {
-            cwd: cwd.clone(),
-            agent_dir: Some(agent_dir.to_string_lossy().to_string()),
-            include_defaults: true,
-            skill_paths: args.skills.clone(),
-            prompt_paths: args.prompt_templates.clone(),
-            extension_paths: args.extensions.clone(),
-            theme_paths: args.themes.clone(),
-            no_extensions: args.no_extensions,
-            no_skills: args.no_skills,
-            no_prompts: args.no_prompt_templates,
-            no_themes: args.no_themes,
-            no_context_files: args.no_context_files,
-            system_prompt: args.system_prompt.clone(),
-            append_system_prompt: args.append_system_prompt.clone(),
-        }),
+        resource_loader: Some(
+            pi_coding_agent::core::resource_loader::ResourceLoaderOptions {
+                cwd: cwd.clone(),
+                agent_dir: Some(agent_dir.to_string_lossy().to_string()),
+                include_defaults: true,
+                skill_paths: args.skills.clone(),
+                prompt_paths: args.prompt_templates.clone(),
+                extension_paths: args.extensions.clone(),
+                theme_paths: args.themes.clone(),
+                no_extensions: args.no_extensions,
+                no_skills: args.no_skills,
+                no_prompts: args.no_prompt_templates,
+                no_themes: args.no_themes,
+                no_context_files: args.no_context_files,
+                system_prompt: args.system_prompt.clone(),
+                append_system_prompt: args.append_system_prompt.clone(),
+            },
+        ),
         session_manager,
         settings_manager: None,
         session_start_event: None,
@@ -362,7 +398,11 @@ pub async fn run(args: &CliArgs) -> i32 {
         mode: mode_str,
         message: &message,
         messages: &remaining_messages,
-        images: if initial_images.is_empty() { None } else { Some(&initial_images) },
+        images: if initial_images.is_empty() {
+            None
+        } else {
+            Some(&initial_images)
+        },
         session,
         verbose: args.verbose,
     };
@@ -401,10 +441,22 @@ async fn run_interactive_mode_with_session(cwd: &str, agent_dir: &str, args: &Cl
         } else {
             None
         },
-        tools: if args.tools.is_empty() { None } else { Some(args.tools.clone()) },
-        exclude_tools: if args.exclude_tools.is_empty() { None } else { Some(args.exclude_tools.clone()) },
+        tools: if args.tools.is_empty() {
+            None
+        } else {
+            Some(args.tools.clone())
+        },
+        exclude_tools: if args.exclude_tools.is_empty() {
+            None
+        } else {
+            Some(args.exclude_tools.clone())
+        },
         custom_prompt: args.system_prompt.clone(),
-        append_system_prompt: if args.append_system_prompt.is_empty() { None } else { Some(args.append_system_prompt.join("\n")) },
+        append_system_prompt: if args.append_system_prompt.is_empty() {
+            None
+        } else {
+            Some(args.append_system_prompt.join("\n"))
+        },
         session_name: args.name.clone(),
         stream_fn: None,
         convert_to_llm: None,
@@ -481,7 +533,9 @@ async fn resolve_session_opts(args: &CliArgs, cwd: &str) -> Result<ResolvedSessi
         }
     } else if (args.continue_session || args.resume_session) && !args.no_session {
         let sessions = SessionManager::list(cwd, args.session_dir.as_deref()).await;
-        sessions.first().map(|s| s.path.to_string_lossy().to_string())
+        sessions
+            .first()
+            .map(|s| s.path.to_string_lossy().to_string())
     } else {
         None
     };
@@ -522,16 +576,25 @@ async fn resolve_session_opts(args: &CliArgs, cwd: &str) -> Result<ResolvedSessi
                 }
             }
         } else {
-            let dir = session_dir
-                .clone()
-                .unwrap_or_else(|| SessionManager::default_session_dir(cwd, &pi_coding_agent::config::get_agent_dir().to_string_lossy()));
+            let dir = session_dir.clone().unwrap_or_else(|| {
+                SessionManager::default_session_dir(
+                    cwd,
+                    &pi_coding_agent::config::get_agent_dir().to_string_lossy(),
+                )
+            });
             Some(SessionManager::new(cwd, &dir, None, false, Some(opts)))
         }
     } else {
         None
     };
 
-    Ok((persist_session, session_file, fork_from, session_dir, session_manager))
+    Ok((
+        persist_session,
+        session_file,
+        fork_from,
+        session_dir,
+        session_manager,
+    ))
 }
 
 /// Whether `--session` / `--fork` should be treated as a file path rather than
@@ -635,7 +698,10 @@ async fn prepare_initial_message(
     args: &CliArgs,
     cwd: &str,
     stdin_content: Option<String>,
-) -> (Option<String>, Vec<pi_coding_agent::pi_agent_core::pi_ai_types::ContentBlock>) {
+) -> (
+    Option<String>,
+    Vec<pi_coding_agent::pi_agent_core::pi_ai_types::ContentBlock>,
+) {
     let (file_text, file_images) = if args.file_args.is_empty() {
         (None, Vec::new())
     } else {
@@ -651,10 +717,12 @@ async fn prepare_initial_message(
     let images: Vec<pi_coding_agent::pi_agent_core::pi_ai_types::ContentBlock> = result
         .initial_images
         .into_iter()
-        .map(|img| pi_coding_agent::pi_agent_core::pi_ai_types::ContentBlock::Image {
-            data: img.data,
-            mime_type: img.mime_type,
-        })
+        .map(
+            |img| pi_coding_agent::pi_agent_core::pi_ai_types::ContentBlock::Image {
+                data: img.data,
+                mime_type: img.mime_type,
+            },
+        )
         .collect();
     (result.initial_message, images)
 }
@@ -743,12 +811,8 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
 
     // Not handled by the package manager module
     match cmd {
-        "config" => {
-            handle_config_command(args, &cwd, &agent_dir.to_string_lossy()).await
-        }
-        "refresh" => {
-            handle_refresh_command(args, &cwd, &agent_dir).await
-        }
+        "config" => handle_config_command(args, &cwd, &agent_dir.to_string_lossy()).await,
+        "refresh" => handle_refresh_command(args, &cwd, &agent_dir).await,
         "mcp" => crate::mcp_cli::handle_mcp_command(args),
         _ => {
             eprintln!("{} Unknown subcommand: {cmd}", "Error:".red().bold());
@@ -801,7 +865,10 @@ async fn handle_refresh_command(args: &[String], cwd: &str, agent_dir: &std::pat
                 restored += registry.upsert_models(provider, &entry.models);
             }
         }
-        println!("Restored {restored} cached models from {}", store_path.display());
+        println!(
+            "Restored {restored} cached models from {}",
+            store_path.display()
+        );
         return EXIT_SUCCESS;
     }
 
@@ -809,13 +876,9 @@ async fn handle_refresh_command(args: &[String], cwd: &str, agent_dir: &std::pat
         "Refreshing model catalogs from {} (force: {})…",
         catalog_base_url, force
     );
-    let summary = remote_catalog::refresh_remote_catalog(
-        &registry,
-        &catalog_base_url,
-        &store_path,
-        force,
-    )
-    .await;
+    let summary =
+        remote_catalog::refresh_remote_catalog(&registry, &catalog_base_url, &store_path, force)
+            .await;
 
     println!(
         "Checked {} providers: {} updated ({} models added/changed), {} failed",
@@ -828,7 +891,10 @@ async fn handle_refresh_command(args: &[String], cwd: &str, agent_dir: &std::pat
         eprintln!("  {e}");
     }
     if summary.providers_failed > 0 {
-        eprintln!("{} Some catalog refreshes failed; cached catalogs were kept.", "Warning:".yellow().bold());
+        eprintln!(
+            "{} Some catalog refreshes failed; cached catalogs were kept.",
+            "Warning:".yellow().bold()
+        );
     }
 
     let _ = cwd;
@@ -880,7 +946,10 @@ async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i
             }
         }
     } else {
-        eprintln!("{} Usage: pi config [list|<key> <value>]", "Error:".red().bold());
+        eprintln!(
+            "{} Usage: pi config [list|<key> <value>]",
+            "Error:".red().bold()
+        );
         EXIT_FAILURE
     }
 }
@@ -959,10 +1028,8 @@ mod tests {
         };
         assert_eq!(run(&args).await, EXIT_FAILURE);
 
-        let parsed = crate::args::parse_args(&[
-            "--default-trust".to_string(),
-            "--version".to_string(),
-        ]);
+        let parsed =
+            crate::args::parse_args(&["--default-trust".to_string(), "--version".to_string()]);
         assert_eq!(run(&parsed).await, EXIT_FAILURE);
     }
 }

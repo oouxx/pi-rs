@@ -45,24 +45,19 @@ pub async fn run_acp_mode(
             let (notif_tx, mut notif_rx) =
                 mpsc::unbounded_channel::<(acp::SessionNotification, oneshot::Sender<()>)>();
 
-            let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                Arc::new(|fut| {
-                    tokio::task::spawn_local(fut);
-                });
+            let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                tokio::task::spawn_local(fut);
+            });
             let spawn_for_agent = spawn.clone();
 
             let agent = PiAcpAgent::new(notif_tx, spawn_for_agent)
                 .with_extensions(enable_extensions)
                 .with_model(cli_provider, cli_model)
                 .with_trust(trust_override, default_project_trust);
-            let (conn, handle_io) = acp::AgentSideConnection::new(
-                agent,
-                outgoing,
-                incoming,
-                move |fut| {
+            let (conn, handle_io) =
+                acp::AgentSideConnection::new(agent, outgoing, incoming, move |fut| {
                     spawn(fut);
-                },
-            );
+                });
 
             // Forward session notifications from session tasks to the client.
             tokio::task::spawn_local(async move {
@@ -128,11 +123,11 @@ mod tests {
         ) -> acp::Result<acp::RequestPermissionResponse> {
             Err(acp::Error::method_not_found())
         }
-        async fn session_notification(
-            &self,
-            args: acp::SessionNotification,
-        ) -> acp::Result<()> {
-            self.notifications.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(args);
+        async fn session_notification(&self, args: acp::SessionNotification) -> acp::Result<()> {
+            self.notifications
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(args);
             Ok(())
         }
     }
@@ -141,9 +136,7 @@ mod tests {
     /// Returns the client-side connection (implements `Agent`) for the test
     /// to drive, and keeps the agent-side connection (implements `Client`)
     /// inside a task that forwards session notifications.
-    fn wire(
-        spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)>,
-    ) -> acp::ClientSideConnection {
+    fn wire(spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)>) -> acp::ClientSideConnection {
         wire_with(spawn, TestClient)
     }
 
@@ -197,10 +190,9 @@ mod tests {
         let local_set = tokio::task::LocalSet::new();
         local_set
             .run_until(async {
-                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                    Arc::new(|fut| {
-                        tokio::task::spawn_local(fut);
-                    });
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                    tokio::task::spawn_local(fut);
+                });
                 let client_conn = wire(spawn);
 
                 // initialize
@@ -265,10 +257,9 @@ mod tests {
         let local_set = tokio::task::LocalSet::new();
         local_set
             .run_until(async {
-                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                    Arc::new(|fut| {
-                        tokio::task::spawn_local(fut);
-                    });
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                    tokio::task::spawn_local(fut);
+                });
                 let client = RecordingClient::default();
                 let notifications = client.notifications.clone();
                 let client_conn = wire_with(spawn, client);
@@ -337,10 +328,9 @@ mod tests {
         let local_set = tokio::task::LocalSet::new();
         local_set
             .run_until(async {
-                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                    Arc::new(|fut| {
-                        tokio::task::spawn_local(fut);
-                    });
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                    tokio::task::spawn_local(fut);
+                });
                 let client_conn = wire(spawn);
 
                 let resp = client_conn
@@ -370,10 +360,7 @@ mod tests {
                         acp::SessionConfigSelectOptions::Ungrouped(opts) => opts,
                         _ => panic!("model selector must be ungrouped"),
                     };
-                    assert!(
-                        !opts.is_empty(),
-                        "model selector must list models"
-                    );
+                    assert!(!opts.is_empty(), "model selector must list models");
                     for opt in opts {
                         assert!(
                             opt.name.contains('/'),
@@ -395,10 +382,9 @@ mod tests {
         let local_set = tokio::task::LocalSet::new();
         local_set
             .run_until(async {
-                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                    Arc::new(|fut| {
-                        tokio::task::spawn_local(fut);
-                    });
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                    tokio::task::spawn_local(fut);
+                });
                 let client_conn = wire(spawn);
 
                 let err = client_conn
@@ -417,10 +403,9 @@ mod tests {
         let local_set = tokio::task::LocalSet::new();
         local_set
             .run_until(async {
-                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                    Arc::new(|fut| {
-                        tokio::task::spawn_local(fut);
-                    });
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                    tokio::task::spawn_local(fut);
+                });
                 let client_conn = wire(spawn);
 
                 let resp = client_conn
@@ -455,10 +440,9 @@ mod tests {
         let local_set = tokio::task::LocalSet::new();
         local_set
             .run_until(async {
-                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> =
-                    Arc::new(|fut| {
-                        tokio::task::spawn_local(fut);
-                    });
+                let spawn: Arc<dyn Fn(LocalBoxFuture<'static, ()>)> = Arc::new(|fut| {
+                    tokio::task::spawn_local(fut);
+                });
                 let client = RecordingClient::default();
                 let notifications = client.notifications.clone();
                 let client_conn = wire_with(spawn, client);

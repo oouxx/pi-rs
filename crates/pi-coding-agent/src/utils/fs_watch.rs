@@ -20,10 +20,7 @@ impl FsWatcher {
     /// Create a new file watcher for the given path.
     /// `on_change` is called when the file changes.
     /// `on_error` is called when an error occurs.
-    pub fn watch(
-        path: &str,
-        on_change: Box<dyn Fn() + Send + 'static>,
-    ) -> Result<Self, String> {
+    pub fn watch(path: &str, on_change: Box<dyn Fn() + Send + 'static>) -> Result<Self, String> {
         let file_path = path.to_string();
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop_flag.clone();
@@ -72,7 +69,8 @@ impl FsWatcher {
 
     /// Close the watcher.
     pub fn close(&mut self) {
-        self.stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -92,10 +90,7 @@ mod tests {
 
     #[test]
     fn test_watch_nonexistent() {
-        let result = FsWatcher::watch(
-            "/nonexistent/path",
-            Box::new(|| {}),
-        );
+        let result = FsWatcher::watch("/nonexistent/path", Box::new(|| {}));
         assert!(result.is_err());
     }
 }

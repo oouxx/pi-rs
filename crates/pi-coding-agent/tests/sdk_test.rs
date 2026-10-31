@@ -10,8 +10,8 @@ use pi_agent_core::pi_ai_types::{
 };
 use pi_agent_core::types::{AgentMessage, StreamFn};
 
-use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 use pi_coding_agent::core::model_registry::{ModelRegistry, ProviderConfig};
+use pi_coding_agent::core::sdk::{create_agent_session, CreateAgentSessionOptions};
 
 use pi_extension_api::{
     create_builtin_source_info, ExtensionContext, ExtensionRegistry, ExtensionUIContext,
@@ -89,7 +89,10 @@ impl HookHandler for TestToolExtension {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        (ctx.ui.notify)(&format!("test_echo ran: {text}"), &serde_json::json!({"level": "info"}));
+        (ctx.ui.notify)(
+            &format!("test_echo ran: {text}"),
+            &serde_json::json!({"level": "info"}),
+        );
         Some(ToolCallOutput {
             content: vec![serde_json::json!({ "type": "text", "text": format!("echo: {text}") })],
             details: None,
@@ -246,7 +249,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                 content,
                                 details,
                                 is_error,
-                                        usage,
+                                usage,
                                 timestamp,
                             } => pi_agent_core::pi_ai::types::Message::ToolResult {
                                 tool_call_id: tool_call_id.clone(),
@@ -1582,9 +1585,9 @@ async fn test_multi_turn_tool_communication() {
 /// changes were silently lost — see PORTING_MISTAKES.md).
 #[tokio::test]
 async fn test_state_mutations_persist_to_agent() {
-    use std::collections::HashMap;
-    use pi_coding_agent::core::model_registry::ProviderConfig;
     use pi_coding_agent::core::agent_session::CustomMessageOptions;
+    use pi_coding_agent::core::model_registry::ProviderConfig;
+    use std::collections::HashMap;
 
     // Thinking-capable model so set_thinking_level("high") is a real change.
     let mut model = make_model();
@@ -1634,19 +1637,21 @@ async fn test_state_mutations_persist_to_agent() {
     .expect("create_agent_session failed");
 
     // ── set_model: register a keyed provider so the auth pre-check passes ──
-    session.get_model_registry().register_provider(
-        "openrouter",
-        ProviderConfig {
-            name: None,
-            base_url: Some("https://openrouter.ai/api/v1".to_string()),
-            api_key: Some("test-key".to_string()),
-            api: Some("openai-completions".to_string()),
-            headers: None,
-            auth_header: None,
-            models: None,
-        },
-    )
-    .expect("register openrouter provider");
+    session
+        .get_model_registry()
+        .register_provider(
+            "openrouter",
+            ProviderConfig {
+                name: None,
+                base_url: Some("https://openrouter.ai/api/v1".to_string()),
+                api_key: Some("test-key".to_string()),
+                api: Some("openai-completions".to_string()),
+                headers: None,
+                auth_header: None,
+                models: None,
+            },
+        )
+        .expect("register openrouter provider");
     let mut new_model = make_model();
     new_model.reasoning = true;
     new_model.thinking_level_map = Some(HashMap::new());
@@ -1671,7 +1676,9 @@ async fn test_state_mutations_persist_to_agent() {
     );
 
     // ── set_active_tools_by_name ──
-    session.set_active_tools_by_name(&["read".to_string()]).await;
+    session
+        .set_active_tools_by_name(&["read".to_string()])
+        .await;
     let active = session.get_active_tool_names().await;
     assert_eq!(active, vec!["read"], "active tools must reflect the change");
 
@@ -1692,7 +1699,10 @@ async fn test_state_mutations_persist_to_agent() {
             matches!(c, ContentBlock::Text { text, .. } if text == "custom payload text")
         }))
     });
-    assert!(found, "custom message must be appended to the agent's messages");
+    assert!(
+        found,
+        "custom message must be appended to the agent's messages"
+    );
 }
 
 /// Regression test: `prompt()` must propagate the "no API key" error instead
@@ -1713,19 +1723,20 @@ async fn test_prompt_returns_error_when_no_api_key() {
     model.id = "zzz-no-api-key-model".to_string();
 
     let registry = ModelRegistry::new(vec![]);
-    registry.register_provider(
-        "zzz-no-api-key-provider",
-        ProviderConfig {
-            name: None,
-            base_url: None,
-            api_key: None,
-            api: None,
-            headers: None,
-            auth_header: Some(true),
-            models: None,
-        },
-    )
-    .expect("register provider");
+    registry
+        .register_provider(
+            "zzz-no-api-key-provider",
+            ProviderConfig {
+                name: None,
+                base_url: None,
+                api_key: None,
+                api: None,
+                headers: None,
+                auth_header: Some(true),
+                models: None,
+            },
+        )
+        .expect("register provider");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let (session, _result) = create_agent_session(CreateAgentSessionOptions {
@@ -1877,10 +1888,7 @@ async fn test_default_project_trust_override_reaches_extension_context() {
     let trust_store = pi_coding_agent::core::trust_manager::ProjectTrustStore::new(
         agent_dir.path().to_str().expect("agent dir"),
     );
-    trust_store.set(
-        project.path().to_str().expect("project dir"),
-        Some(false),
-    );
+    trust_store.set(project.path().to_str().expect("project dir"), Some(false));
     let (session, _result) = create_agent_session(build(
         project.path().to_string_lossy().to_string(),
         agent_dir.path().to_string_lossy().to_string(),
@@ -1938,8 +1946,8 @@ async fn test_services_settings_manager_drives_trust_fallback() {
         None,
     );
 
-    let (session, _services, _result) = create_agent_session_from_services(
-        CreateAgentSessionFromServicesOptions {
+    let (session, _services, _result) =
+        create_agent_session_from_services(CreateAgentSessionFromServicesOptions {
             services,
             session_manager,
             model: Some(make_model()),
@@ -1956,10 +1964,9 @@ async fn test_services_settings_manager_drives_trust_fallback() {
             ui_context: None,
             trust_override: None,
             default_project_trust: None,
-        },
-    )
-    .await
-    .expect("create_agent_session_from_services failed");
+        })
+        .await
+        .expect("create_agent_session_from_services failed");
 
     assert!(
         session.get_extension_context().is_project_trusted,

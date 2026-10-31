@@ -639,9 +639,12 @@ fn tool_call_at(
     content_index: usize,
 ) -> Option<(String, String, serde_json::Value)> {
     match partial.content.get(content_index) {
-        Some(pi_agent_core::pi_ai_types::ContentBlock::ToolCall { id, name, arguments, .. }) => {
-            Some((id.clone(), name.clone(), arguments.clone()))
-        }
+        Some(pi_agent_core::pi_ai_types::ContentBlock::ToolCall {
+            id,
+            name,
+            arguments,
+            ..
+        }) => Some((id.clone(), name.clone(), arguments.clone())),
         _ => None,
     }
 }
@@ -654,7 +657,9 @@ fn tool_result_to_text(value: &serde_json::Value) -> String {
         return String::new();
     }
     let obj = value.as_object();
-    let details = obj.and_then(|o| o.get("details")).and_then(|d| d.as_object());
+    let details = obj
+        .and_then(|o| o.get("details"))
+        .and_then(|d| d.as_object());
 
     // `details.diff` — pi's edit tool returns the unified diff there.
     if let Some(diff) = details.and_then(|d| d.get("diff")).and_then(|d| d.as_str()) {
@@ -664,7 +669,10 @@ fn tool_result_to_text(value: &serde_json::Value) -> String {
     }
 
     // `content: [{ type: "text", text: "..." }, ...]`
-    if let Some(content) = obj.and_then(|o| o.get("content")).and_then(|c| c.as_array()) {
+    if let Some(content) = obj
+        .and_then(|o| o.get("content"))
+        .and_then(|c| c.as_array())
+    {
         let texts: Vec<&str> = content
             .iter()
             .filter_map(|c| {
@@ -699,11 +707,21 @@ fn tool_result_to_text(value: &serde_json::Value) -> String {
         .and_then(|o| o.get("exitCode"))
         .and_then(|v| v.as_i64())
         .or_else(|| obj.and_then(|o| o.get("code")).and_then(|v| v.as_i64()))
-        .or_else(|| details.and_then(|d| d.get("exitCode")).and_then(|v| v.as_i64()))
+        .or_else(|| {
+            details
+                .and_then(|d| d.get("exitCode"))
+                .and_then(|v| v.as_i64())
+        })
         .or_else(|| details.and_then(|d| d.get("code")).and_then(|v| v.as_i64()));
 
-    let has_stdout = stdout.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
-    let has_stderr = stderr.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_stdout = stdout
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let has_stderr = stderr
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     if has_stdout || has_stderr {
         let mut parts = Vec::new();
         if let Some(s) = stdout {
@@ -770,10 +788,15 @@ fn bash_result_text(value: &serde_json::Value) -> String {
         return String::new();
     }
     let obj = value.as_object();
-    let details = obj.and_then(|o| o.get("details")).and_then(|d| d.as_object());
+    let details = obj
+        .and_then(|o| o.get("details"))
+        .and_then(|d| d.as_object());
 
     // `content: [{ type: "text", text: "..." }, ...]`
-    if let Some(content) = obj.and_then(|o| o.get("content")).and_then(|c| c.as_array()) {
+    if let Some(content) = obj
+        .and_then(|o| o.get("content"))
+        .and_then(|c| c.as_array())
+    {
         let texts: Vec<&str> = content
             .iter()
             .filter_map(|c| {
@@ -817,7 +840,9 @@ fn bash_result_text(value: &serde_json::Value) -> String {
 /// falling back to 1 on error / 0 on success.
 fn bash_exit_code(result: &serde_json::Value, is_error: bool) -> i64 {
     let obj = result.as_object();
-    let details = obj.and_then(|o| o.get("details")).and_then(|d| d.as_object());
+    let details = obj
+        .and_then(|o| o.get("details"))
+        .and_then(|d| d.as_object());
     for key in ["exitCode", "code"] {
         if let Some(serde_json::Value::Number(n)) = obj.and_then(|o| o.get(key)) {
             if let Some(i) = n.as_i64() {
@@ -882,10 +907,7 @@ impl EventTranslator {
     /// progress even for a silent, long-running command (e.g. a stalled
     /// `git clone` that produces no output). Returns `None` when nothing is
     /// running.
-    pub fn heartbeat(
-        &mut self,
-        session_id: &acp::SessionId,
-    ) -> Option<acp::SessionNotification> {
+    pub fn heartbeat(&mut self, session_id: &acp::SessionId) -> Option<acp::SessionNotification> {
         let now = now_epoch_ms();
         let mut running: Vec<(String, u64)> = Vec::new();
         for (id, status) in &self.tool_statuses {
@@ -951,7 +973,8 @@ mod tests {
                 "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
                 "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
                 "stopReason":"stop","timestamp":0
-            })).unwrap(),
+            }))
+            .unwrap(),
             assistant_message_event: AssistantMessageEvent::TextDelta {
                 content_index: 0,
                 delta: "hello".into(),
@@ -962,12 +985,10 @@ mod tests {
         let notif = t.translate(&sid(), &event).expect("should translate");
         assert_eq!(notif.session_id, sid());
         match notif.update {
-            acp::SessionUpdate::AgentMessageChunk(chunk) => {
-                match chunk.content {
-                    acp::ContentBlock::Text(t) => assert_eq!(t.text, "hello"),
-                    _ => panic!("expected text content"),
-                }
-            }
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => assert_eq!(t.text, "hello"),
+                _ => panic!("expected text content"),
+            },
             other => panic!("expected agent_message_chunk, got {other:?}"),
         }
     }
@@ -980,7 +1001,8 @@ mod tests {
                 "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
                 "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
                 "stopReason":"stop","timestamp":0
-            })).unwrap(),
+            }))
+            .unwrap(),
             assistant_message_event: AssistantMessageEvent::ThinkingDelta {
                 content_index: 0,
                 delta: "hmm".into(),
@@ -989,7 +1011,10 @@ mod tests {
         };
         let mut t = EventTranslator::new("/tmp");
         let notif = t.translate(&sid(), &event).expect("should translate");
-        assert!(matches!(notif.update, acp::SessionUpdate::AgentThoughtChunk(_)));
+        assert!(matches!(
+            notif.update,
+            acp::SessionUpdate::AgentThoughtChunk(_)
+        ));
     }
 
     #[test]
@@ -1023,7 +1048,10 @@ mod tests {
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
                 assert_eq!(tcu.tool_call_id.0.as_ref(), "t1");
                 assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::Completed));
-                assert_eq!(tcu.fields.raw_output, Some(serde_json::json!({"text": "file contents"})));
+                assert_eq!(
+                    tcu.fields.raw_output,
+                    Some(serde_json::json!({"text": "file contents"}))
+                );
             }
             other => panic!("expected tool_call_update, got {other:?}"),
         }
@@ -1144,7 +1172,10 @@ mod tests {
         match notif.update {
             acp::SessionUpdate::ToolCall(tc) => {
                 assert!(!tc.locations.is_empty(), "locations");
-                assert_eq!(tc.locations[0].line, None, "ambiguous oldText must not infer a line");
+                assert_eq!(
+                    tc.locations[0].line, None,
+                    "ambiguous oldText must not infer a line"
+                );
             }
             other => panic!("expected tool_call, got {other:?}"),
         }
@@ -1424,7 +1455,8 @@ mod tests {
                 "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
                 "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
                 "stopReason":"stop","timestamp":0
-            })).unwrap(),
+            }))
+            .unwrap(),
             assistant_message_event: AssistantMessageEvent::ToolCallStart {
                 content_index: 0,
                 partial,
@@ -1437,7 +1469,10 @@ mod tests {
                 assert_eq!(tc.tool_call_id.0.as_ref(), "tc1");
                 assert_eq!(tc.status, acp::ToolCallStatus::Pending);
                 assert!(!tc.locations.is_empty(), "locations");
-                assert_eq!(tc.locations[0].path, std::path::PathBuf::from("/proj/a.txt"));
+                assert_eq!(
+                    tc.locations[0].path,
+                    std::path::PathBuf::from("/proj/a.txt")
+                );
             }
             other => panic!("expected tool_call, got {other:?}"),
         }
@@ -1451,7 +1486,10 @@ mod tests {
             AgentSessionEvent::TurnStart,
             AgentSessionEvent::AgentSettled,
         ] {
-            assert!(t.translate(&sid(), &event).is_none(), "unexpected translation");
+            assert!(
+                t.translate(&sid(), &event).is_none(),
+                "unexpected translation"
+            );
         }
     }
 
@@ -1473,7 +1511,9 @@ mod tests {
             },
         };
         let mut t = EventTranslator::new("/tmp");
-        let notif = t.translate(&sid(), &event).expect("error must be translated");
+        let notif = t
+            .translate(&sid(), &event)
+            .expect("error must be translated");
         match notif.update {
             acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
                 acp::ContentBlock::Text(t) => {
@@ -1821,7 +1861,8 @@ mod tests {
                 "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
                 "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
                 "stopReason":"stop","timestamp":0
-            })).unwrap(),
+            }))
+            .unwrap(),
             assistant_message_event: AssistantMessageEvent::ToolCallStart {
                 content_index: 0,
                 partial,

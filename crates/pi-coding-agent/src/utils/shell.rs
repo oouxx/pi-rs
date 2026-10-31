@@ -167,10 +167,7 @@ mod tests {
             "sh"
         };
         let result = run_path_probe(probe, arg);
-        assert!(
-            result.is_some(),
-            "probe for {arg} must succeed on {probe}"
-        );
+        assert!(result.is_some(), "probe for {arg} must succeed on {probe}");
     }
 
     #[test]

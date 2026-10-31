@@ -86,7 +86,9 @@ fn build_rules(
         if has_bash && has_powershell {
             add_rule("Use bash or PowerShell for file operations like listing, searching, and finding files");
         } else if has_powershell {
-            add_rule("Use PowerShell for file operations like listing, searching, and finding files");
+            add_rule(
+                "Use PowerShell for file operations like listing, searching, and finding files",
+            );
         } else {
             add_rule("Use bash for file operations like ls, rg, find");
         }
@@ -138,15 +140,12 @@ pub fn build_system_prompt_sections(
     }
 
     let custom_prompt = options.custom_prompt.as_deref();
-    let selected_tools: Vec<String> = options
-        .selected_tools
-        .clone()
-        .unwrap_or_else(|| {
-            ["read", "bash", "edit", "write"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
-        });
+    let selected_tools: Vec<String> = options.selected_tools.clone().unwrap_or_else(|| {
+        ["read", "bash", "edit", "write"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    });
     let tool_snippets = options.tool_snippets.clone().unwrap_or_default();
     let tool_guidelines = options.tool_guidelines.clone().unwrap_or_default();
     let prompt_guidelines = options.prompt_guidelines.clone().unwrap_or_default();
@@ -167,7 +166,10 @@ pub fn build_system_prompt_sections(
                 visible
                     .iter()
                     .map(|name| {
-                        let snippet = tool_snippets.get(name.as_str()).cloned().unwrap_or_default();
+                        let snippet = tool_snippets
+                            .get(name.as_str())
+                            .cloned()
+                            .unwrap_or_default();
                         format!("- {name}: {snippet}")
                     })
                     .collect::<Vec<_>>()
@@ -181,7 +183,11 @@ pub fn build_system_prompt_sections(
             );
             sections.insert(
                 "rules".to_string(),
-                Some(build_rules(&selected_tools, &tool_guidelines, &prompt_guidelines)),
+                Some(build_rules(
+                    &selected_tools,
+                    &tool_guidelines,
+                    &prompt_guidelines,
+                )),
             );
             "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string()
         }
@@ -209,10 +215,7 @@ pub fn build_system_prompt_sections(
             }
         }
     }
-    sections.insert(
-        "cwd".to_string(),
-        Some(options.cwd.replace('\\', "/")),
-    );
+    sections.insert("cwd".to_string(), Some(options.cwd.replace('\\', "/")));
     if let Some(custom) = &options.sections {
         for (name, content) in custom {
             if !content.is_empty() {
@@ -368,7 +371,10 @@ mod tests {
             ..base()
         };
         let prompt = build_system_prompt(&opts);
-        assert!(prompt.starts_with("You are Exact.\n\n<cwd>"), "got: {prompt}");
+        assert!(
+            prompt.starts_with("You are Exact.\n\n<cwd>"),
+            "got: {prompt}"
+        );
         // Custom prompt replaces tools/rules.
         assert!(!prompt.contains("<tools>"));
     }
@@ -439,7 +445,10 @@ mod tests {
     fn diff_reports_changes_and_removals() {
         let mut previous: IndexMap<String, Option<String>> = IndexMap::new();
         previous.insert("cwd".to_string(), Some("<cwd>\n/a\n</cwd>".to_string()));
-        previous.insert("skills".to_string(), Some("<skills>old</skills>".to_string()));
+        previous.insert(
+            "skills".to_string(),
+            Some("<skills>old</skills>".to_string()),
+        );
         let mut current: SystemPromptSections = IndexMap::new();
         current.insert("cwd".to_string(), Some("<cwd>\n/b\n</cwd>".to_string()));
         let patch = diff_system_prompt_sections(&previous, &current).unwrap();

@@ -3,8 +3,8 @@
 //! Provides table-formatted output with context/max-token formatting
 //! and optional fuzzy search filtering.
 
-use pi_coding_agent::pi_ai_types::Model;
 use pi_coding_agent::core::model_registry::ModelRegistry;
+use pi_coding_agent::pi_ai_types::Model;
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
@@ -85,10 +85,7 @@ pub fn calculate_column_widths(models: &[Model]) -> ColumnWidths {
 /// The search performs a case-insensitive match against model provider and id
 /// (not name). Results are sorted by provider then by id.
 /// Returns `EXIT_SUCCESS` (0) or `EXIT_FAILURE` (1).
-pub async fn list_models(
-    model_registry: &ModelRegistry,
-    search_pattern: Option<&str>,
-) -> i32 {
+pub async fn list_models(model_registry: &ModelRegistry, search_pattern: Option<&str>) -> i32 {
     // NOTE: unlike TS (which lists only models with configured auth via
     // `get_available()`), this lists ALL known models via `get_models()` to aid
     // discovery.
@@ -119,11 +116,7 @@ pub async fn list_models(
     }
 
     // Sort by provider then by id
-    matched.sort_by(|a, b| {
-        a.provider
-            .cmp(&b.provider)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    matched.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
 
     let widths = calculate_column_widths(&matched);
 
@@ -146,11 +139,16 @@ pub async fn list_models(
 
     // ── Separator ───────────────────────────────────────────────────────
     let total = widths.provider
-        + 2 + widths.model
-        + 2 + widths.context
-        + 2 + widths.max_out
-        + 2 + widths.thinking
-        + 2 + widths.images;
+        + 2
+        + widths.model
+        + 2
+        + widths.context
+        + 2
+        + widths.max_out
+        + 2
+        + widths.thinking
+        + 2
+        + widths.images;
     println!("{}", "-".repeat(total));
 
     // ── Rows ────────────────────────────────────────────────────────────

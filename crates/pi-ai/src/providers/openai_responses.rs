@@ -393,7 +393,6 @@ fn convert_responses_messages_inner(
     // Loaded tool names, deduplicated across the whole message list (TS
     // `loadedToolNames` at `convertResponsesMessages` scope).
 
-
     // Map of grammar-constrained tool name -> input property.
     let supports_openai_grammar_tools = compat.supports_openai_grammar_tools.unwrap_or(false);
     let grammar_tool_input_properties =
@@ -627,8 +626,7 @@ fn convert_responses_messages_inner(
                         .unwrap_or_default(),
                     }));
                 } else if deferred_tools_mode == Some("tool-search") {
-                    let names: Vec<String> =
-                        additions.iter().map(|t| t.name.clone()).collect();
+                    let names: Vec<String> = additions.iter().map(|t| t.name.clone()).collect();
                     let search_call_id = format!(
                         "pi_tool_load_{}",
                         short_hash(&format!("{msg_index}:{}", names.join(",")))
@@ -954,10 +952,7 @@ fn convert_responses_tools(
         // nullable) while the original tool definition stays untouched.
         obj.insert(
             "parameters".into(),
-            crate::utils::strict_schema::get_json_schema_tool_parameters(
-                &tool.parameters,
-                strict,
-            )?,
+            crate::utils::strict_schema::get_json_schema_tool_parameters(&tool.parameters, strict)?,
         );
         if defer_loading {
             obj.insert("defer_loading".into(), json!(true));
@@ -2040,7 +2035,7 @@ pub fn stream_openai_responses(
             let _ = tx.send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
                 error: AssistantMessage {
-        provider_thinking_level: None,
+                    provider_thinking_level: None,
                     content: vec![],
                     api: model.api.clone(),
                     provider: model.provider.clone(),
@@ -2247,7 +2242,8 @@ pub fn stream_simple_openai_responses(
     // Route through the shared helper (match TS `buildBaseOptions`) so
     // hooks, `http_client`, `sampling_params`, `tool_choice`, `service_tier`,
     // `reasoning_effort` and `thinking_budgets` are preserved.
-    let full_opts = crate::providers::simple_options::build_base_options(model, context, options, None);
+    let full_opts =
+        crate::providers::simple_options::build_base_options(model, context, options, None);
     stream_openai_responses(model, context, Some(&full_opts))
 }
 
@@ -2421,12 +2417,8 @@ mod tests {
             }],
             tools: None,
         };
-        let items = convert_responses_messages(
-            &model,
-            &context,
-            false,
-            &get_compat(&model),
-        ).unwrap();
+        let items =
+            convert_responses_messages(&model, &context, false, &get_compat(&model)).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "developer");
         assert_eq!(items[0]["content"], "You are helpful");
@@ -2450,12 +2442,8 @@ mod tests {
             }],
             tools: None,
         };
-        let items = convert_responses_messages(
-            &model,
-            &context,
-            false,
-            &get_compat(&model),
-        ).unwrap();
+        let items =
+            convert_responses_messages(&model, &context, false, &get_compat(&model)).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
@@ -2596,8 +2584,8 @@ mod tests {
         // Invalid grammar input must error (match TS throw), not send empty input.
         for invalid in [serde_json::json!({}), serde_json::json!({ "payload": 42 })] {
             let ctx = make_context(invalid);
-            let err = convert_responses_messages(&model, &ctx, false, &get_compat(&model))
-                .unwrap_err();
+            let err =
+                convert_responses_messages(&model, &ctx, false, &get_compat(&model)).unwrap_err();
             assert!(
                 err.contains("requires argument \"payload\" to be a string"),
                 "unexpected error: {err}"
@@ -2606,16 +2594,19 @@ mod tests {
 
         // Valid input replays as a custom_tool_call + custom_tool_call_output.
         let ctx = make_context(serde_json::json!({ "payload": "abc" }));
-        let items = convert_responses_messages(&model, &ctx, false, &get_compat(&model))
-            .unwrap();
-        assert!(items.iter().any(|i| i.get("type") == Some(&json!("custom_tool_call"))
-            && i.get("call_id") == Some(&json!("call_1"))
-            && i.get("id") == Some(&json!("ctc_1"))
-            && i.get("name") == Some(&json!("sample_tool"))
-            && i.get("input") == Some(&json!("abc"))));
-        assert!(items.iter().any(|i| i.get("type") == Some(&json!("custom_tool_call_output"))
-            && i.get("call_id") == Some(&json!("call_1"))
-            && i.get("output") == Some(&json!("done"))));
+        let items = convert_responses_messages(&model, &ctx, false, &get_compat(&model)).unwrap();
+        assert!(items
+            .iter()
+            .any(|i| i.get("type") == Some(&json!("custom_tool_call"))
+                && i.get("call_id") == Some(&json!("call_1"))
+                && i.get("id") == Some(&json!("ctc_1"))
+                && i.get("name") == Some(&json!("sample_tool"))
+                && i.get("input") == Some(&json!("abc"))));
+        assert!(items
+            .iter()
+            .any(|i| i.get("type") == Some(&json!("custom_tool_call_output"))
+                && i.get("call_id") == Some(&json!("call_1"))
+                && i.get("output") == Some(&json!("done"))));
     }
 
     #[test]
@@ -2886,7 +2877,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable_provider_error() {
-        use crate::utils::provider_retry::{ProviderHttpError, is_retryable_provider_error};
+        use crate::utils::provider_retry::{is_retryable_provider_error, ProviderHttpError};
         let mk = |status: Option<u16>| ProviderHttpError::new(status, "err");
         assert!(is_retryable_provider_error(&mk(None)));
         assert!(is_retryable_provider_error(&mk(Some(408))));
@@ -2898,15 +2889,19 @@ mod tests {
         // x-should-retry header overrides
         let mut err = crate::utils::provider_retry::ProviderHttpError::new(Some(400), "err");
         err.should_retry = Some("true".to_string());
-        assert!(crate::utils::provider_retry::is_retryable_provider_error(&err));
+        assert!(crate::utils::provider_retry::is_retryable_provider_error(
+            &err
+        ));
         let mut err = crate::utils::provider_retry::ProviderHttpError::new(Some(400), "err");
         err.should_retry = Some("false".to_string());
-        assert!(!crate::utils::provider_retry::is_retryable_provider_error(&err));
+        assert!(!crate::utils::provider_retry::is_retryable_provider_error(
+            &err
+        ));
     }
 
     #[test]
     fn test_get_retry_delay_exponential() {
-        use crate::utils::provider_retry::{ProviderHttpError, get_retry_delay_ms};
+        use crate::utils::provider_retry::{get_retry_delay_ms, ProviderHttpError};
         let err = ProviderHttpError::new(Some(429), "err");
         // retryIndex 0: 0.5s * jitter(0.75..1.0)
         let d0 = get_retry_delay_ms(&err, 0, None).unwrap();
@@ -2921,7 +2916,7 @@ mod tests {
 
     #[test]
     fn test_get_retry_delay_server_header() {
-        use crate::utils::provider_retry::{ProviderHttpError, get_retry_delay_ms};
+        use crate::utils::provider_retry::{get_retry_delay_ms, ProviderHttpError};
         let mut err = ProviderHttpError::new(Some(429), "err");
         err.retry_after_ms = Some(1500.0);
         assert_eq!(get_retry_delay_ms(&err, 0, None).unwrap(), 1500);
@@ -3218,5 +3213,4 @@ mod abort_tests {
             other => panic!("expected Error(Aborted), got {other:?}"),
         }
     }
-
-    }
+}

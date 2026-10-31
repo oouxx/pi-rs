@@ -199,7 +199,10 @@ pub async fn create_agent_session_services(
 /// is the single session-creation entry point.
 pub async fn create_agent_session_from_services(
     options: CreateAgentSessionFromServicesOptions,
-) -> Result<(AgentSession, AgentSessionServices, CreateAgentSessionResult), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<
+    (AgentSession, AgentSessionServices, CreateAgentSessionResult),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let services = options.services;
     let cwd = services.cwd.clone();
     let agent_dir = services.agent_dir.clone();

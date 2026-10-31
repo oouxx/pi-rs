@@ -337,7 +337,9 @@ fn round_cost(value: f64) -> f64 {
     (value * 1_000_000.0).round() / 1_000_000.0
 }
 
-fn fetch_openrouter_models(client: &reqwest::blocking::Client) -> Result<Vec<OpenRouterModelRecord>> {
+fn fetch_openrouter_models(
+    client: &reqwest::blocking::Client,
+) -> Result<Vec<OpenRouterModelRecord>> {
     let resp = client
         .get("https://openrouter.ai/api/v1/models")
         .send()
@@ -505,19 +507,29 @@ fn get_cost_with_tiers(model: &serde_json::Value) -> BuildModelCost {
     {
         for tier in tiers {
             let context = tier.get("tier");
-            if context.and_then(|c| c.get("type")).and_then(serde_json::Value::as_str)
+            if context
+                .and_then(|c| c.get("type"))
+                .and_then(serde_json::Value::as_str)
                 != Some("context")
             {
                 continue;
             }
-            let Some(size) = context.and_then(|c| c.get("size")).and_then(serde_json::Value::as_u64)
+            let Some(size) = context
+                .and_then(|c| c.get("size"))
+                .and_then(serde_json::Value::as_u64)
             else {
                 continue;
             };
             cost.tiers.push(BuildModelCostTier {
                 input_tokens_above: size,
-                input: tier.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
-                output: tier.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                input: tier
+                    .get("input")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                output: tier
+                    .get("output")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
                 cache_read: tier
                     .get("cache_read")
                     .and_then(serde_json::Value::as_f64)
@@ -650,10 +662,10 @@ fn push_simple_providers(
     }
 }
 
-
 // ---- provider 级 compat / thinkingLevelMap helper（对齐原版） ----
 
-const TOGETHER_REASONING_ONLY_MODELS: &[&str] = &["deepseek-ai/DeepSeek-R1", "MiniMaxAI/MiniMax-M2.7"];
+const TOGETHER_REASONING_ONLY_MODELS: &[&str] =
+    &["deepseek-ai/DeepSeek-R1", "MiniMaxAI/MiniMax-M2.7"];
 const TOGETHER_REASONING_EFFORT_MODELS: &[&str] = &["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 const TOGETHER_TOGGLE_REASONING_EFFORT_MODELS: &[&str] = &["deepseek-ai/DeepSeek-V4-Pro"];
 const OPENCODE_LONG_CACHE_UNSUPPORTED: &[&str] = &[
@@ -688,10 +700,14 @@ fn get_together_compat(id: &str, reasoning: bool) -> Compat {
         return together_base_compat();
     }
     if TOGETHER_REASONING_EFFORT_MODELS.contains(&id) {
-        return together_base_compat().reasoning_effort(true).thinking_format("openai");
+        return together_base_compat()
+            .reasoning_effort(true)
+            .thinking_format("openai");
     }
     if TOGETHER_TOGGLE_REASONING_EFFORT_MODELS.contains(&id) {
-        return together_base_compat().reasoning_effort(true).thinking_format("together");
+        return together_base_compat()
+            .reasoning_effort(true)
+            .thinking_format("together");
     }
     if TOGETHER_REASONING_ONLY_MODELS.contains(&id) {
         return together_base_compat();
@@ -736,7 +752,6 @@ fn set_thinking_level_map(model: &mut BuildModel, map: Option<serde_json::Value>
 }
 
 // ---- models.dev 转换（provider 列表对齐原版） -------------------------------
-
 
 fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     let mut models = Vec::new();
@@ -908,7 +923,9 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             {
                 continue;
             }
-            let compat = (model.get("structured_output").and_then(serde_json::Value::as_bool)
+            let compat = (model
+                .get("structured_output")
+                .and_then(serde_json::Value::as_bool)
                 == Some(true))
             .then(|| Compat::new().strict_mode(true));
             models.push(build_model(
@@ -976,7 +993,8 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 };
                 let compat = affinity.then(|| Compat::new().session_affinity(true));
                 gateway_ids.insert(id.to_string());
-                let mut entry = build_model(id, model, api, "cloudflare-ai-gateway", base_url, compat);
+                let mut entry =
+                    build_model(id, model, api, "cloudflare-ai-gateway", base_url, compat);
                 entry.name = model_name(model, id);
                 models.push(entry);
             }
@@ -1017,31 +1035,29 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             if !is_tool_call(model) || is_deprecated(model) {
                 continue;
             }
-            if (provider == "opencode" || provider == "opencode-go") && id == "gpt-5.3-codex-spark" {
+            if (provider == "opencode" || provider == "opencode-go") && id == "gpt-5.3-codex-spark"
+            {
                 continue;
             }
             let npm = model
                 .get("provider")
                 .and_then(|p| p.get("npm"))
                 .and_then(serde_json::Value::as_str);
-            let (mut api, mut base_url, mut compat): (&str, String, Option<Compat>) =
-                match npm {
-                    Some("@ai-sdk/openai") => (
-                        "openai-responses",
-                        format!("{base_path}/v1"),
-                        Some(Compat::new().set("sessionAffinityFormat", "openai-nosession")),
-                    ),
-                    Some("@ai-sdk/anthropic") => ("anthropic-messages", base_path.to_string(), None),
-                    Some("@ai-sdk/google") => {
-                        ("google-generative-ai", format!("{base_path}/v1"), None)
-                    }
-                    Some("@ai-sdk/alibaba") => (
-                        "openai-completions",
-                        format!("{base_path}/v1"),
-                        Some(Compat::new().set("cacheControlFormat", "anthropic")),
-                    ),
-                    _ => ("openai-completions", format!("{base_path}/v1"), None),
-                };
+            let (mut api, mut base_url, mut compat): (&str, String, Option<Compat>) = match npm {
+                Some("@ai-sdk/openai") => (
+                    "openai-responses",
+                    format!("{base_path}/v1"),
+                    Some(Compat::new().set("sessionAffinityFormat", "openai-nosession")),
+                ),
+                Some("@ai-sdk/anthropic") => ("anthropic-messages", base_path.to_string(), None),
+                Some("@ai-sdk/google") => ("google-generative-ai", format!("{base_path}/v1"), None),
+                Some("@ai-sdk/alibaba") => (
+                    "openai-completions",
+                    format!("{base_path}/v1"),
+                    Some(Compat::new().set("cacheControlFormat", "anthropic")),
+                ),
+                _ => ("openai-completions", format!("{base_path}/v1"), None),
+            };
             if provider == "opencode" && id == "grok-build-0.1" {
                 compat = Some(
                     compat
@@ -1067,17 +1083,15 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 }
             }
             if api == "openai-completions" {
-                let mut c = compat.unwrap_or_else(Compat::new).max_tokens_field("max_tokens");
-                if OPENCODE_LONG_CACHE_UNSUPPORTED
-                    .contains(&format!("{provider}:{id}").as_str())
-                {
+                let mut c = compat
+                    .unwrap_or_else(Compat::new)
+                    .max_tokens_field("max_tokens");
+                if OPENCODE_LONG_CACHE_UNSUPPORTED.contains(&format!("{provider}:{id}").as_str()) {
                     c = c.long_cache_retention(false);
                 }
                 compat = Some(c);
             }
-            models.push(build_model(
-                id, model, api, provider, &base_url, compat,
-            ));
+            models.push(build_model(id, model, api, provider, &base_url, compat));
         }
     }
 
@@ -1217,16 +1231,17 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
             if !is_tool_call(model) {
                 continue;
             }
-            let options = model.get("reasoning_options").cloned().unwrap_or(serde_json::Value::Null);
+            let options = model
+                .get("reasoning_options")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let mut thinking_level_map = get_effort_thinking_level_map(&options);
             if let Some(serde_json::Value::Object(map)) = &mut thinking_level_map {
                 if id == "glm-5.2" || id == "glm-5.2-highspeed" {
                     map.insert("off".into(), serde_json::json!("none"));
                 }
             }
-            let mut compat = Compat::new()
-                .developer_role(false)
-                .thinking_format("zai");
+            let mut compat = Compat::new().developer_role(false).thinking_format("zai");
             if thinking_level_map.is_some() {
                 compat = compat.reasoning_effort(true);
             }
@@ -1234,7 +1249,12 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 compat = compat.zai_tool_stream(true);
             }
             let mut entry = build_model(
-                id, model, "openai-completions", provider, base_url, Some(compat),
+                id,
+                model,
+                "openai-completions",
+                provider,
+                base_url,
+                Some(compat),
             );
             // Reference cost: data.zai.models[id].cost when present.
             if let Some(reference) = data
@@ -1244,8 +1264,14 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 .and_then(|m| m.get("cost"))
             {
                 entry.cost = BuildModelCost {
-                    input: reference.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
-                    output: reference.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                    input: reference
+                        .get("input")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0),
+                    output: reference
+                        .get("output")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0),
                     cache_read: reference
                         .get("cache_read")
                         .and_then(serde_json::Value::as_f64)
@@ -1285,11 +1311,17 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 (true, true) => base_compat()
                     .reasoning_effort(true)
                     .thinking_format("baseten")
-                    .set("chatTemplateArgs", serde_json::json!({"enable_thinking": {"$var": "thinking.enabled"}})),
-                (true, false) => base_compat()
-                    .thinking_format("baseten")
-                    .set("chatTemplateArgs", serde_json::json!({"enable_thinking": {"$var": "thinking.enabled"}})),
-                (false, true) => base_compat().reasoning_effort(true).thinking_format("openai"),
+                    .set(
+                        "chatTemplateArgs",
+                        serde_json::json!({"enable_thinking": {"$var": "thinking.enabled"}}),
+                    ),
+                (true, false) => base_compat().thinking_format("baseten").set(
+                    "chatTemplateArgs",
+                    serde_json::json!({"enable_thinking": {"$var": "thinking.enabled"}}),
+                ),
+                (false, true) => base_compat()
+                    .reasoning_effort(true)
+                    .thinking_format("openai"),
                 (false, false) => base_compat(),
             };
             let thinking_level_map = if is_glm52 {
@@ -1303,7 +1335,12 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     "high": "high", "xhigh": null, "max": null
                 }))
             } else {
-                get_effort_thinking_level_map(&model.get("reasoning_options").cloned().unwrap_or(serde_json::Value::Null))
+                get_effort_thinking_level_map(
+                    &model
+                        .get("reasoning_options")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                )
             };
             let mut entry = build_model(
                 id,
@@ -1338,9 +1375,12 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 nvidia_compat(),
             );
             entry.headers = Some(
-                [(NVIDIA_HEADER_POLL_SECONDS.0.to_string(), NVIDIA_HEADER_POLL_SECONDS.1.to_string())]
-                    .into_iter()
-                    .collect(),
+                [(
+                    NVIDIA_HEADER_POLL_SECONDS.0.to_string(),
+                    NVIDIA_HEADER_POLL_SECONDS.1.to_string(),
+                )]
+                .into_iter()
+                .collect(),
             );
             models.push(entry);
         }
@@ -1363,7 +1403,11 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                         .set("requiresReasoningContentOnAssistantMessages", true)
                         .thinking_format("openai")
                 }
-                ("openai-completions", "https://api.fireworks.ai/inference/v1", Some(compat))
+                (
+                    "openai-completions",
+                    "https://api.fireworks.ai/inference/v1",
+                    Some(compat),
+                )
             } else {
                 let force_adaptive = has_reasoning_option(model, "effort")
                     || FIREWORKS_ADAPTIVE_THINKING_FALLBACK_MODELS.contains(&id.as_str());
@@ -1376,17 +1420,22 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                 if force_adaptive {
                     compat = compat.set("forceAdaptiveThinking", true);
                 }
-                ("anthropic-messages", "https://api.fireworks.ai/inference", Some(compat))
+                (
+                    "anthropic-messages",
+                    "https://api.fireworks.ai/inference",
+                    Some(compat),
+                )
             };
-            models.push(build_model(
-                id, model, api, "fireworks", base_url, compat,
-            ));
+            models.push(build_model(id, model, api, "fireworks", base_url, compat));
         }
     }
 
     // ---- Alibaba Token Plan → qwen-token-plan / -individual / -cn ----
     {
-        let individual: BTreeSet<&str> = QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS.iter().copied().collect();
+        let individual: BTreeSet<&str> = QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS
+            .iter()
+            .copied()
+            .collect();
         for (source, provider, base_url, filter) in [
             (
                 "alibaba-token-plan",
@@ -1419,9 +1468,13 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                         continue;
                     }
                 }
-                let options = model.get("reasoning_options").cloned().unwrap_or(serde_json::Value::Null);
+                let options = model
+                    .get("reasoning_options")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 let thinking_level_map = get_effort_thinking_level_map(&options).or_else(|| {
-                    QWEN_TOKEN_PLAN_REASONING_EFFORT_FALLBACK.contains(&id.as_str())
+                    QWEN_TOKEN_PLAN_REASONING_EFFORT_FALLBACK
+                        .contains(&id.as_str())
                         .then(|| {
                             serde_json::json!({
                                 "minimal": null, "low": null, "medium": null,
@@ -1429,8 +1482,10 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                             })
                         })
                 });
-                let compat = qwen_compat().map(|c| c.reasoning_effort(thinking_level_map.is_some()));
-                let mut entry = build_model(id, model, "openai-completions", provider, base_url, compat);
+                let compat =
+                    qwen_compat().map(|c| c.reasoning_effort(thinking_level_map.is_some()));
+                let mut entry =
+                    build_model(id, model, "openai-completions", provider, base_url, compat);
                 set_thinking_level_map(&mut entry, thinking_level_map);
                 models.push(entry);
             }
@@ -1440,7 +1495,11 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
     // ---- Moonshot AI（kimi-k3 有特殊 compat） ----
     for (key, provider, base_url) in [
         ("moonshotai", "moonshotai", "https://api.moonshot.ai/v1"),
-        ("moonshotai-cn", "moonshotai-cn", "https://api.moonshot.cn/v1"),
+        (
+            "moonshotai-cn",
+            "moonshotai-cn",
+            "https://api.moonshot.cn/v1",
+        ),
     ] {
         let Some(items) = models_object(data, key) else {
             continue;
@@ -1462,7 +1521,14 @@ fn process_models_dev(data: &serde_json::Value) -> Vec<BuildModel> {
                     .thinking_format("openai")
                     .reasoning_effort(true);
             }
-            let mut entry = build_model(id, model, "openai-completions", provider, base_url, Some(compat));
+            let mut entry = build_model(
+                id,
+                model,
+                "openai-completions",
+                provider,
+                base_url,
+                Some(compat),
+            );
             if id == "kimi-k3" {
                 entry.reasoning = true;
             }
@@ -1871,7 +1937,12 @@ fn manual_models() -> Vec<BuildModel> {
             "anthropic-messages",
             [4.0, 20.0, 0.2, 5.0],
         ),
-        ("gpt-6-sol", "GPT-6 Sol", "openai-responses", [2.0, 10.0, 0.2, 2.5]),
+        (
+            "gpt-6-sol",
+            "GPT-6 Sol",
+            "openai-responses",
+            [2.0, 10.0, 0.2, 2.5],
+        ),
         (
             "gpt-6-luna",
             "GPT-6 Luna",
@@ -1995,7 +2066,9 @@ fn process_nvidia_models(
 // ---- OpenRouter 转换 --------------------------------------------------------
 
 /// TS `getOpenRouterThinkingLevelMap`.
-fn openrouter_thinking_level_map(reasoning: Option<&OpenRouterReasoning>) -> Option<serde_json::Value> {
+fn openrouter_thinking_level_map(
+    reasoning: Option<&OpenRouterReasoning>,
+) -> Option<serde_json::Value> {
     let reasoning = reasoning?;
     let efforts = reasoning.supported_efforts.clone().unwrap_or_default();
     if efforts.is_empty() {
@@ -2075,14 +2148,12 @@ fn process_openrouter_models(raw: Vec<OpenRouterModelRecord>) -> Vec<BuildModel>
                             * 1_000_000.0,
                     ),
                     cache_read: round_cost(
-                        parse_price(
-                            &m.pricing.as_ref().and_then(|p| p.input_cache_read.clone()),
-                        ) * 1_000_000.0,
+                        parse_price(&m.pricing.as_ref().and_then(|p| p.input_cache_read.clone()))
+                            * 1_000_000.0,
                     ),
                     cache_write: round_cost(
-                        parse_price(
-                            &m.pricing.as_ref().and_then(|p| p.input_cache_write.clone()),
-                        ) * 1_000_000.0,
+                        parse_price(&m.pricing.as_ref().and_then(|p| p.input_cache_write.clone()))
+                            * 1_000_000.0,
                     ),
                     tiers: Vec::new(),
                 },
@@ -2114,7 +2185,10 @@ pub fn run(out: &std::path::Path, check_only: bool) -> Result<()> {
 
     let openrouter_raw = fetch_openrouter_models(&client)?;
     let openrouter_models = process_openrouter_models(openrouter_raw);
-    eprintln!("OpenRouter: {} tool-capable models", openrouter_models.len());
+    eprintln!(
+        "OpenRouter: {} tool-capable models",
+        openrouter_models.len()
+    );
 
     let models_dev = fetch_models_dev(&client)?;
     let live_nvidia_ids = fetch_nvidia_nim_ids(&client).unwrap_or_default();
@@ -2220,7 +2294,6 @@ pub fn run(out: &std::path::Path, check_only: bool) -> Result<()> {
     );
     Ok(())
 }
-
 
 // ============================================================================
 // 深层元数据管线（对齐 generate-models.ts 的 apply* 系列）
@@ -2331,7 +2404,9 @@ fn openai_completions_default_compat() -> serde_json::Map<String, serde_json::Va
     .unwrap_or_default()
 }
 
-fn detect_openai_completions_compat(model: &BuildModel) -> serde_json::Map<String, serde_json::Value> {
+fn detect_openai_completions_compat(
+    model: &BuildModel,
+) -> serde_json::Map<String, serde_json::Value> {
     let provider = model.provider.as_str();
     let base_url = model.base_url.as_str();
     let id = model.id.as_str();
@@ -2478,7 +2553,11 @@ fn apply_openai_completions_compat_metadata(model: &mut BuildModel) {
     if let Some(existing) = &model.compat {
         merged.merge(existing.to_value());
     }
-    model.compat = if merged.is_empty() { None } else { Some(merged) };
+    model.compat = if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    };
 }
 
 fn supports_direct_reasoning_effort(model: &BuildModel) -> bool {
@@ -2493,7 +2572,9 @@ fn supports_direct_reasoning_effort(model: &BuildModel) -> bool {
             if let Some(existing) = &model.compat {
                 merged.merge(existing.to_value());
             }
-            let thinking = merged.get("thinkingFormat").and_then(serde_json::Value::as_str);
+            let thinking = merged
+                .get("thinkingFormat")
+                .and_then(serde_json::Value::as_str);
             thinking == Some("openai") && merged.get_bool("supportsReasoningEffort")
         }
         _ => false,
@@ -2529,8 +2610,7 @@ fn supports_anthropic_mid_convo_effort(model_id: &str) -> bool {
     // TS `/^claude-opus-(?:5|5[.-]5)(?:-\d{8})?$/`: the bare id, the 5.5 ids,
     // and either with a date suffix.
     let date_suffix = |suffix: &str| {
-        suffix.is_empty()
-            || (suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()))
+        suffix.is_empty() || (suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()))
     };
     let is_opus_5 = id.strip_prefix("claude-opus-5").is_some_and(|suffix| {
         date_suffix(suffix)
@@ -2549,8 +2629,11 @@ fn supports_anthropic_mid_convo_system_messages(model_id: &str) -> bool {
     use std::sync::OnceLock;
     static OPUS: OnceLock<Option<regex::Regex>> = OnceLock::new();
     static FABLE: OnceLock<Option<regex::Regex>> = OnceLock::new();
-    let opus = OPUS.get_or_init(|| regex::Regex::new(r"^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$").ok());
-    let fable = FABLE.get_or_init(|| regex::Regex::new(r"^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$").ok());
+    let opus = OPUS
+        .get_or_init(|| regex::Regex::new(r"^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$").ok());
+    let fable = FABLE.get_or_init(|| {
+        regex::Regex::new(r"^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$").ok()
+    });
     opus.as_ref().is_some_and(|r| r.is_match(model_id))
         || fable.as_ref().is_some_and(|r| r.is_match(model_id))
 }
@@ -2562,7 +2645,9 @@ fn get_anthropic_messages_compat(provider: &str, model_id: &str) -> Option<serde
     {
         compat.insert("supportsMidConvoEffort".into(), b(true));
     }
-    if provider == "anthropic" && supports_anthropic_mid_convo_system_messages(&model_id.to_lowercase()) {
+    if provider == "anthropic"
+        && supports_anthropic_mid_convo_system_messages(&model_id.to_lowercase())
+    {
         compat.insert("supportsMidConvoSystemMessages".into(), b(true));
         compat.insert("supportsMidConvoToolChanges".into(), b(true));
     }
@@ -2607,8 +2692,20 @@ fn apply_anthropic_messages_compat_metadata(model: &mut BuildModel) {
 
 fn is_anthropic_adaptive_thinking_model(model_id: &str) -> bool {
     [
-        "opus-4-6", "opus-4.6", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5",
-        "sonnet-4-6", "sonnet-4.6", "sonnet-5", "sonnet.5", "fable-5", "mythos-5",
+        "opus-4-6",
+        "opus-4.6",
+        "opus-4-7",
+        "opus-4.7",
+        "opus-4-8",
+        "opus-4.8",
+        "opus-5",
+        "opus.5",
+        "sonnet-4-6",
+        "sonnet-4.6",
+        "sonnet-5",
+        "sonnet.5",
+        "fable-5",
+        "mythos-5",
     ]
     .iter()
     .any(|needle| model_id.contains(needle))
@@ -2616,15 +2713,24 @@ fn is_anthropic_adaptive_thinking_model(model_id: &str) -> bool {
 
 fn is_anthropic_temperature_unsupported_model(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
-    ["opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5"]
-        .iter()
-        .any(|needle| id.contains(needle))
+    [
+        "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5",
+    ]
+    .iter()
+    .any(|needle| id.contains(needle))
 }
 
 fn supports_open_ai_xhigh(model_id: &str) -> bool {
-    ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-astra"]
-        .iter()
-        .any(|needle| model_id.contains(needle))
+    [
+        "gpt-5.2",
+        "gpt-5.3",
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6",
+        "gpt-6-astra",
+    ]
+    .iter()
+    .any(|needle| model_id.contains(needle))
 }
 
 fn supports_open_ai_max(model: &BuildModel) -> bool {
@@ -2659,12 +2765,15 @@ fn is_gemma4(model_id: &str) -> bool {
     id.contains("gemma4") || id.contains("gemma-4")
 }
 
-fn thinking_values<'a>(
-    pairs: &'a [(&'a str, Option<&str>)],
-) -> Vec<(&'a str, serde_json::Value)> {
+fn thinking_values<'a>(pairs: &'a [(&'a str, Option<&str>)]) -> Vec<(&'a str, serde_json::Value)> {
     pairs
         .iter()
-        .map(|(key, value)| (*key, value.map_or(serde_json::Value::Null, |v| serde_json::json!(v))))
+        .map(|(key, value)| {
+            (
+                *key,
+                value.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
+            )
+        })
         .collect()
 }
 
@@ -2722,7 +2831,10 @@ fn apply_thinking_level_metadata(model: &mut BuildModel) {
     if provider == "xai" && api == "openai-responses" && model.thinking_level_map.is_none() {
         merge_thinking(
             model,
-            &[("off", serde_json::Value::Null), ("minimal", serde_json::Value::Null)],
+            &[
+                ("off", serde_json::Value::Null),
+                ("minimal", serde_json::Value::Null),
+            ],
         );
     }
     if supports_open_ai_xhigh(&id) {
@@ -2758,7 +2870,10 @@ fn apply_thinking_level_metadata(model: &mut BuildModel) {
     {
         merge_thinking(
             model,
-            &[("xhigh", serde_json::json!("xhigh")), ("max", serde_json::json!("max"))],
+            &[
+                ("xhigh", serde_json::json!("xhigh")),
+                ("max", serde_json::json!("max")),
+            ],
         );
     }
     if id.contains("fable-5") {
@@ -2861,7 +2976,12 @@ fn apply_thinking_level_metadata(model: &mut BuildModel) {
         merge_thinking(model, &[("xhigh", serde_json::json!("xhigh"))]);
     }
     if provider == "fireworks" {
-        if api == "anthropic-messages" && model.compat.as_ref().is_some_and(|c| c.get_bool("forceAdaptiveThinking")) {
+        if api == "anthropic-messages"
+            && model
+                .compat
+                .as_ref()
+                .is_some_and(|c| c.get_bool("forceAdaptiveThinking"))
+        {
             if id == "accounts/fireworks/models/qwen3p8-max" && model.thinking_level_map.is_none() {
                 model.thinking_level_map = get_effort_thinking_level_map(&serde_json::json!([
                     { "type": "effort", "values": ["low", "medium", "xhigh"] }
@@ -2872,8 +2992,9 @@ fn apply_thinking_level_metadata(model: &mut BuildModel) {
                 .as_ref()
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|opts| {
-                    opts.iter()
-                        .any(|o| o.get("type").and_then(serde_json::Value::as_str) == Some("toggle"))
+                    opts.iter().any(|o| {
+                        o.get("type").and_then(serde_json::Value::as_str) == Some("toggle")
+                    })
                 })
                 || id == "accounts/fireworks/models/qwen3p8-2p4t-a95b";
             if has_toggle {
@@ -2963,12 +3084,18 @@ fn apply_thinking_level_metadata(model: &mut BuildModel) {
         );
     }
     if provider == "github-copilot" {
-        type ThinkingOverride = (&'static str, &'static [(&'static str, Option<&'static str>)]);
+        type ThinkingOverride = (
+            &'static str,
+            &'static [(&'static str, Option<&'static str>)],
+        );
         let overrides: &[ThinkingOverride] = &[
             ("claude-opus-4.7", &[("minimal", Some("low"))]),
             ("claude-opus-4.8", &[("minimal", Some("low"))]),
             ("claude-opus-5", &[("minimal", Some("low"))]),
-            ("claude-sonnet-4.6", &[("minimal", Some("low")), ("max", Some("max"))]),
+            (
+                "claude-sonnet-4.6",
+                &[("minimal", Some("low")), ("max", Some("max"))],
+            ),
         ];
         if let Some((_, pairs)) = overrides.iter().find(|(model_id, _)| *model_id == id) {
             merge_thinking(model, &thinking_values(pairs));
@@ -3044,13 +3171,15 @@ const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS: &[&str] = &[
 fn apply_openai_tool_search_metadata(model: &mut BuildModel) {
     let is_openai_responses = model.provider == "openai" && model.api == "openai-responses";
     let is_openai_codex = model.provider == "openai-codex" && model.api == "openai-codex-responses";
-    if !(is_openai_responses || is_openai_codex) || !OPENAI_TOOL_SEARCH_MODEL_IDS.contains(&model.id.as_str())
+    if !(is_openai_responses || is_openai_codex)
+        || !OPENAI_TOOL_SEARCH_MODEL_IDS.contains(&model.id.as_str())
     {
         return;
     }
     let supports_additional = (is_openai_responses
         && OPENAI_TOOL_SEARCH_MODEL_IDS.contains(&model.id.as_str()))
-        || (is_openai_codex && OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS.contains(&model.id.as_str()));
+        || (is_openai_codex
+            && OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS.contains(&model.id.as_str()));
     if supports_additional {
         merge_compat(model, &[("supportsAdditionalTools", b(true))]);
     }
@@ -3085,7 +3214,9 @@ fn apply_anthropic_allowed_fallback_model_metadata(models: &mut [BuildModel]) {
                 (
                     m.provider.clone(),
                     m.cost.clone(),
-                    m.compat.as_ref().is_some_and(|c| c.get_bool("supportsMidConvoEffort")),
+                    m.compat
+                        .as_ref()
+                        .is_some_and(|c| c.get_bool("supportsMidConvoEffort")),
                 ),
             )
         })
@@ -3111,11 +3242,13 @@ fn apply_anthropic_allowed_fallback_model_metadata(models: &mut [BuildModel]) {
         if allowed.is_empty() {
             continue;
         }
-        if let Some(model) = models
-            .iter_mut()
-            .find(|m| m.provider == "anthropic" && m.api == "anthropic-messages" && m.id == *model_id)
-        {
-            merge_compat_value(model, serde_json::json!({ "allowedFallbackModels": allowed }));
+        if let Some(model) = models.iter_mut().find(|m| {
+            m.provider == "anthropic" && m.api == "anthropic-messages" && m.id == *model_id
+        }) {
+            merge_compat_value(
+                model,
+                serde_json::json!({ "allowedFallbackModels": allowed }),
+            );
         }
     }
 }
@@ -3217,7 +3350,8 @@ fn apply_overrides(model: &mut BuildModel) {
     let id = model.id.clone();
     let provider = model.provider.clone();
 
-    if provider == "github-copilot" && GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS.contains(&id.as_str()) {
+    if provider == "github-copilot" && GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS.contains(&id.as_str())
+    {
         model.context_window = 1_000_000;
     }
     if matches!(provider.as_str(), "anthropic" | "opencode" | "opencode-go")

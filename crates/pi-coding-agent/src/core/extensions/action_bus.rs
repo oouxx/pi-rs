@@ -59,7 +59,11 @@ impl ExtensionActionSender {
     /// Create the channel + shared state view. The caller passes the receiver
     /// and the state-view `Arc` into the `AgentSession` (via config), and
     /// keeps this sender for the bind_core closures.
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<ExtensionAction>, Arc<Mutex<ExtensionStateView>>) {
+    pub fn new() -> (
+        Self,
+        mpsc::UnboundedReceiver<ExtensionAction>,
+        Arc<Mutex<ExtensionStateView>>,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
         let state = Arc::new(Mutex::new(ExtensionStateView::default()));
         (

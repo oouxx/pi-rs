@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use xai_ratatui_textarea::{EditBuffer, EditCommand, classify_key_event};
+use xai_ratatui_textarea::{classify_key_event, EditBuffer, EditCommand};
 
 /// A single-line text input field.
 pub struct Input {
@@ -25,11 +25,19 @@ pub struct Input {
 
 impl Input {
     pub fn new() -> Self {
-        Self { buf: EditBuffer::new(), pastes: HashMap::new(), paste_counter: 0 }
+        Self {
+            buf: EditBuffer::new(),
+            pastes: HashMap::new(),
+            paste_counter: 0,
+        }
     }
 
-    pub fn value(&self) -> &str { self.buf.text() }
-    pub fn cursor_pos(&self) -> usize { self.buf.cursor_byte() }
+    pub fn value(&self) -> &str {
+        self.buf.text()
+    }
+    pub fn cursor_pos(&self) -> usize {
+        self.buf.cursor_byte()
+    }
 
     /// Cursor position in display columns (CJK = 2, ASCII = 1).
     pub fn cursor_display_col(&self) -> u16 {
@@ -88,7 +96,8 @@ impl Input {
             .collect();
         // 3. File-path space prepending (TS: starts with / ~ . and the char
         //    before the cursor is a word char).
-        if normalized.starts_with('/') || normalized.starts_with('~') || normalized.starts_with('.') {
+        if normalized.starts_with('/') || normalized.starts_with('~') || normalized.starts_with('.')
+        {
             let char_before = self.buf[..self.buf.cursor_byte()].chars().next_back();
             if let Some(c) = char_before {
                 if c.is_ascii_alphanumeric() || c == '_' {
@@ -159,15 +168,19 @@ impl Input {
         // TS `segment()` only merges markers whose id is still in the registry
         // (`segmentWithMarkers(text, …, validPasteIds())`), so a marker left
         // without an entry is ordinary text and backspace deletes one grapheme.
-        if let Some((target_id, marker_len)) = marker_before_cursor(before)
-            .filter(|(id, _)| self.pastes.contains_key(id))
+        if let Some((target_id, marker_len)) =
+            marker_before_cursor(before).filter(|(id, _)| self.pastes.contains_key(id))
         {
             // Drop the paste, decrement the counter, shift higher ids down
             // and renumber markers (TS `handleBackspace`).
             self.pastes.remove(&target_id);
             self.paste_counter = self.paste_counter.saturating_sub(1);
-            let mut higher: Vec<u64> =
-                self.pastes.keys().copied().filter(|id| *id > target_id).collect();
+            let mut higher: Vec<u64> = self
+                .pastes
+                .keys()
+                .copied()
+                .filter(|id| *id > target_id)
+                .collect();
             higher.sort_unstable();
             for id in higher {
                 if let Some(content) = self.pastes.remove(&id) {
@@ -207,8 +220,8 @@ impl Input {
     /// marker-aware `segment(text, "grapheme")`).
     pub fn move_left(&mut self) {
         let cursor = self.buf.cursor_byte();
-        if let Some((_, marker_len)) = marker_before_cursor(&self.buf[..cursor])
-            .filter(|(id, _)| self.pastes.contains_key(id))
+        if let Some((_, marker_len)) =
+            marker_before_cursor(&self.buf[..cursor]).filter(|(id, _)| self.pastes.contains_key(id))
         {
             let _ = self.buf.set_cursor_byte(cursor - marker_len);
             return;
@@ -229,17 +242,25 @@ impl Input {
         }
         let _ = self.buf.apply(EditCommand::MoveGraphemeRight);
     }
-    pub fn move_home(&mut self) { let _ = self.buf.set_cursor_byte(0); }
+    pub fn move_home(&mut self) {
+        let _ = self.buf.set_cursor_byte(0);
+    }
     pub fn move_end(&mut self) {
         let end = self.buf.text().len();
         let _ = self.buf.set_cursor_byte(end);
     }
-    pub fn clear(&mut self) { self.buf = EditBuffer::new(); self.clear_pastes(); }
+    pub fn clear(&mut self) {
+        self.buf = EditBuffer::new();
+        self.clear_pastes();
+    }
 
     /// TS `setText`: replaces the text **and** drops the paste registry, because
     /// the new text is unrelated to the old one (programmatic set, restore,
     /// extension-driven editor text).
-    pub fn set_value(&mut self, value: &str) { self.buf = EditBuffer::from_text(value); self.clear_pastes(); }
+    pub fn set_value(&mut self, value: &str) {
+        self.buf = EditBuffer::from_text(value);
+        self.clear_pastes();
+    }
 
     /// Replace the text while keeping the paste registry — for edits derived
     /// from the current text that still carry its paste markers (TS applies
@@ -316,7 +337,9 @@ fn marker_before_cursor(before: &str) -> Option<(u64, usize)> {
 }
 
 impl Default for Input {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -383,7 +406,10 @@ mod tests {
     #[test]
     fn handle_paste_collapses_large_paste_into_marker() {
         let mut input = Input::new();
-        let big = (0..11).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..11)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         input.handle_paste(&big);
         assert_eq!(input.value(), "[paste #1 +11 lines]");
         assert_eq!(input.expanded_value(), big);
@@ -492,14 +518,14 @@ mod tests {
 
         // 多行形式同理，且在中间（前后都有文本）。
         let mut multi = Input::new();
-        let lines = (0..11).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let lines = (0..11)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         multi.insert_str("before ");
         multi.handle_paste(&lines);
         multi.insert_str(" after");
-        assert_eq!(
-            multi.expanded_value(),
-            format!("before {lines} after")
-        );
+        assert_eq!(multi.expanded_value(), format!("before {lines} after"));
     }
 
     /// 保留粘贴表的文本替换（补全应用路径用）：marker 仍能展开。
@@ -544,7 +570,10 @@ mod tests {
     #[test]
     fn backspace_over_marker_removes_whole_marker() {
         let mut input = Input::new();
-        let big = (0..11).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..11)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         input.handle_paste(&big);
         assert_eq!(input.value(), "[paste #1 +11 lines]");
         input.backspace();
@@ -557,8 +586,14 @@ mod tests {
     #[test]
     fn backspace_over_marker_renumbers_higher_ids() {
         let mut input = Input::new();
-        let big1 = (0..11).map(|i| format!("a{i}")).collect::<Vec<_>>().join("\n");
-        let big2 = (0..11).map(|i| format!("b{i}")).collect::<Vec<_>>().join("\n");
+        let big1 = (0..11)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let big2 = (0..11)
+            .map(|i| format!("b{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         input.handle_paste(&big1);
         input.handle_paste(&big2);
         assert_eq!(input.value(), "[paste #1 +11 lines][paste #2 +11 lines]");
@@ -575,7 +610,11 @@ mod tests {
         );
         // Cursor is now right after the first marker. Backspace removes it.
         input.backspace();
-        assert_eq!(input.value(), "[paste #1 +11 lines]", "second marker renumbered to #1");
+        assert_eq!(
+            input.value(),
+            "[paste #1 +11 lines]",
+            "second marker renumbered to #1"
+        );
         assert_eq!(input.expanded_value(), big2);
     }
 
@@ -583,7 +622,10 @@ mod tests {
     #[test]
     fn clear_drops_paste_registry() {
         let mut input = Input::new();
-        let big = (0..11).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..11)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         input.handle_paste(&big);
         assert_eq!(input.value(), "[paste #1 +11 lines]");
         input.clear();

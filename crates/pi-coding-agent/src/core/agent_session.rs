@@ -220,9 +220,9 @@ pub type SendUserMessageFn = Box<dyn Fn(String, Option<SendUserMessageOptions>) 
 pub type PayloadHookFn = Arc<
     dyn Fn(
             serde_json::Value,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>>
+        + Send
         + Sync,
 >;
 /// Extension hook: transform provider request headers.
@@ -230,11 +230,7 @@ pub type HeadersHookFn = Arc<
     dyn Fn(
             std::collections::HashMap<String, String>,
         ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = std::collections::HashMap<String, String>,
-                    > + Send,
-            >,
+            Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>,
         > + Send
         + Sync,
 >;
@@ -257,9 +253,7 @@ pub type ToolExecuteFn = Arc<
             serde_json::Value,
             Option<tokio::sync::watch::Receiver<bool>>,
             Option<
-                Arc<
-                    dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync,
-                >,
+                Arc<dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>) + Send + Sync>,
             >,
         ) -> std::pin::Pin<
             Box<
@@ -330,10 +324,13 @@ pub struct AgentSessionConfig {
     pub tools_options: Option<tools::ToolsOptions>,
     /// Shared state snapshot for JS extension read-actions (getActiveTools,
     /// getSessionName, ...). Refreshed at drain points.
-    pub extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
+    pub extension_state_view:
+        Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
     /// Receiver for JS extension write-actions (sendMessage, setModel, ...),
     /// drained at turn boundaries.
-    pub extension_action_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>,
+    pub extension_action_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>,
+    >,
 }
 
 /// Options for AgentSession.prompt().
@@ -601,7 +598,8 @@ pub struct CompactionAbortHandle {
 
 impl CompactionAbortHandle {
     /// Cancel in-progress compaction (manual or auto), matching TS abortCompaction().
-    pub fn abort(&self) {        if let Some(sender) = self
+    pub fn abort(&self) {
+        if let Some(sender) = self
             .compaction
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -653,7 +651,10 @@ pub struct SessionEventUnsubscribeHandle {
 impl SessionEventUnsubscribeHandle {
     /// Remove the listener. After this call the listener will no longer receive events.
     pub fn unsubscribe(self) {
-        let mut listeners = self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.index < listeners.len() {
             // Replace with a no-op so the slot stays valid and Vec indices are not disturbed.
             listeners[self.index] = Arc::new(|_| {});
@@ -727,9 +728,18 @@ pub struct AgentSession {
     pending_bash_messages: std::sync::Mutex<Vec<serde_json::Value>>,
     /// Shared state snapshot for JS extension read-actions, refreshed at
     /// drain points (turn boundaries).
-    extension_state_view: Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
+    extension_state_view:
+        Option<Arc<std::sync::Mutex<crate::core::extensions::action_bus::ExtensionStateView>>>,
     /// Receiver for JS extension write-actions, drained at turn boundaries.
-    extension_action_rx: Option<Arc<std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::core::extensions::action_bus::ExtensionAction>>>>,
+    extension_action_rx: Option<
+        Arc<
+            std::sync::Mutex<
+                tokio::sync::mpsc::UnboundedReceiver<
+                    crate::core::extensions::action_bus::ExtensionAction,
+                >,
+            >,
+        >,
+    >,
     /// Extension error listener, matching TS `bindExtensions({ onError })`.
     /// Set via `bind_extensions()`; invoked when an extension raises an error.
     extension_error_listener: Arc<std::sync::Mutex<Option<ErrorListener>>>,
@@ -847,9 +857,7 @@ fn default_extension_ui() -> crate::core::extensions::ExtensionUIContext {
 /// TUI 备用屏幕/输入框）。这里让 `ctx.ui` 的每个方法调用时实时读取
 /// `binding`，等价于 TS 的 getter 语义。
 fn delegating_ui(
-    binding: Arc<
-        std::sync::RwLock<crate::core::extensions::ExtensionUIContext>,
-    >,
+    binding: Arc<std::sync::RwLock<crate::core::extensions::ExtensionUIContext>>,
 ) -> crate::core::extensions::ExtensionUIContext {
     use crate::core::extensions::ExtensionUIContext;
 
@@ -1022,8 +1030,7 @@ impl AgentSession {
     ) -> Self {
         // Shared with the agent's boundary hooks so they can report extension
         // errors without borrowing the session (still being constructed here).
-        let extension_error_listener: ErrorListenerHandle =
-            Arc::new(std::sync::Mutex::new(None));
+        let extension_error_listener: ErrorListenerHandle = Arc::new(std::sync::Mutex::new(None));
         // Also read by the boundary hooks, which run before the session exists.
         let pending_custom_messages: Arc<std::sync::Mutex<Vec<AgentMessage>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1049,9 +1056,9 @@ impl AgentSession {
                 cwd: &options.cwd,
                 trust_store: &ext_trust_store,
                 trust_override: options.trust_override,
-                default_project_trust: options.default_project_trust.unwrap_or_else(|| {
-                    settings_manager.get_default_project_trust().into()
-                }),
+                default_project_trust: options
+                    .default_project_trust
+                    .unwrap_or_else(|| settings_manager.get_default_project_trust().into()),
                 project_trust_context: crate::core::project_trust::ProjectTrustContext::new(
                     &options.cwd,
                     options.ui_context.is_some(),
@@ -1086,7 +1093,10 @@ impl AgentSession {
         // interactive 模式之后通过 set_extension_ui_context 换绑；两个扩展
         // 上下文都从这里实时读取（对齐 TS runner.uiContext + getter）。
         let extension_ui_binding = Arc::new(std::sync::RwLock::new(
-            options.ui_context.clone().unwrap_or_else(default_extension_ui),
+            options
+                .ui_context
+                .clone()
+                .unwrap_or_else(default_extension_ui),
         ));
         let mut ext_ctx = ExtensionContext::new(
             options.cwd.clone(),
@@ -1130,8 +1140,7 @@ impl AgentSession {
                     // Read session metadata in a scoped block so the MutexGuard
                     // is dropped before any await (keeps the future Send).
                     let (session_id, session_file) = {
-                        let sm_guard =
-                            sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let sm_guard = sm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         (
                             sm_guard.get_session_id().to_string(),
                             sm_guard
@@ -1271,8 +1280,7 @@ impl AgentSession {
                 let ext_tool_name = def.name.clone();
                 let ext_reg = Arc::clone(registry);
                 let ext_ctx_clone = Arc::clone(&shared_ext_ctx);
-                let execute: ToolExecuteFn =
-                    Arc::new(move |id, params, signal, on_update| {
+                let execute: ToolExecuteFn = Arc::new(move |id, params, signal, on_update| {
                     let reg = Arc::clone(&ext_reg);
                     let ctx = Arc::clone(&ext_ctx_clone);
                     let name = ext_tool_name.clone();
@@ -1281,19 +1289,21 @@ impl AgentSession {
                     // 此前这里用 `_signal, _on_update` 丢弃，导致扩展工具既
                     // 不能上报中间进度，也无法响应 Ctrl+C。
                     let on_update: pi_extension_api::ToolUpdateFn = match on_update {
-                        Some(callback) => Arc::new(move |output: pi_extension_api::ToolCallOutput| {
-                            let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
-                                .content
-                                .into_iter()
-                                .filter_map(|v| serde_json::from_value(v).ok())
-                                .collect();
-                            callback(AgentToolResult {
-                                content,
-                                details: output.details.unwrap_or(serde_json::Value::Null),
-                                usage: None,
-                                terminate: output.terminate,
-                            });
-                        }),
+                        Some(callback) => {
+                            Arc::new(move |output: pi_extension_api::ToolCallOutput| {
+                                let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
+                                    .content
+                                    .into_iter()
+                                    .filter_map(|v| serde_json::from_value(v).ok())
+                                    .collect();
+                                callback(AgentToolResult {
+                                    content,
+                                    details: output.details.unwrap_or(serde_json::Value::Null),
+                                    usage: None,
+                                    terminate: output.terminate,
+                                });
+                            })
+                        }
                         None => pi_extension_api::noop_tool_update(),
                     };
                     let invocation = pi_extension_api::ToolInvocation::new(id, signal, on_update);
@@ -1385,8 +1395,7 @@ impl AgentSession {
             if let Some(ref custom_tools) = options.custom_tools {
                 for def in custom_tools {
                     if let Some(ref snippet) = def.prompt_snippet {
-                        let normalized =
-                            snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let normalized = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
                         if !normalized.is_empty() {
                             map.insert(def.name.clone(), normalized);
                         }
@@ -1440,8 +1449,12 @@ impl AgentSession {
                 // means "no built-in tools").
                 settings_manager.resolved_default_tools()
             });
-        let allowed_names: std::collections::HashSet<String> =
-            options.allowed_tool_names.clone().unwrap_or_default().into_iter().collect();
+        let allowed_names: std::collections::HashSet<String> = options
+            .allowed_tool_names
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let custom_names: std::collections::HashSet<String> = options
             .custom_tools
             .as_ref()
@@ -1473,7 +1486,8 @@ impl AgentSession {
             skills: Some(options.skills),
             ..Default::default()
         };
-        let system_prompt_message = system_prompt::build_system_prompt_message(&system_prompt_options);
+        let system_prompt_message =
+            system_prompt::build_system_prompt_message(&system_prompt_options);
         let system_prompt = system_prompt::build_system_prompt(&system_prompt_options);
 
         let initial_state = AgentState {
@@ -1547,8 +1561,7 @@ impl AgentSession {
                                             };
                                             current.model.provider == request_model.provider
                                                 && current.model.id == request_model.id
-                                                && request_messages.len()
-                                                    <= current.messages.len()
+                                                && request_messages.len() <= current.messages.len()
                                                 && request_messages
                                                     .iter()
                                                     .zip(current.messages.iter())
@@ -1556,25 +1569,27 @@ impl AgentSession {
                                         })
                                     };
                                     let options = {
-                                        let transport = request_options.transport.as_ref().and_then(
-                                            |t| {
+                                        let transport =
+                                            request_options.transport.as_ref().and_then(|t| {
                                                 serde_json::from_value::<
                                                     pi_agent_core::pi_ai::types::Transport,
-                                                >(serde_json::json!(t))
+                                                >(
+                                                    serde_json::json!(
+                                                    t
+                                                )
+                                                )
                                                 .ok()
+                                            });
+                                        let base_options = crate::core::sdk::build_stream_options(
+                                            crate::core::sdk::StreamOptionsInput {
+                                                model: &request_model,
+                                                context: &context,
+                                                thinking: thinking.clone(),
+                                                options: request_options.clone(),
+                                                transport,
                                             },
+                                            request_options.headers.clone(),
                                         );
-                                        let base_options =
-                                            crate::core::sdk::build_stream_options(
-                                                crate::core::sdk::StreamOptionsInput {
-                                                    model: &request_model,
-                                                    context: &context,
-                                                    thinking: thinking.clone(),
-                                                    options: request_options.clone(),
-                                                    transport,
-                                                },
-                                                request_options.headers.clone(),
-                                            );
                                         pi_agent_core::pi_ai_types::SimpleStreamOptions {
                                             base: base_options,
                                             reasoning: thinking.clone(),
@@ -1605,19 +1620,22 @@ impl AgentSession {
         // is dispatched to extension handlers that may block it (before) or
         // transform its result (after).
 
-        let before_tool_call: Option<BeforeToolCallFn> = options.extension_registry.as_ref().map(|registry| {
-            let before_reg = Arc::clone(registry);
-            let before_ctx = Arc::clone(&shared_ext_ctx);
-            let before: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
-                let reg = Arc::clone(&before_reg);
-                let ctx_ref = Arc::clone(&before_ctx);
-                Box::pin(async move {
-                    crate::core::extensions::dispatcher::dispatch_tool_call(&reg, &ctx, &ctx_ref)
+        let before_tool_call: Option<BeforeToolCallFn> =
+            options.extension_registry.as_ref().map(|registry| {
+                let before_reg = Arc::clone(registry);
+                let before_ctx = Arc::clone(&shared_ext_ctx);
+                let before: BeforeToolCallFn = Arc::new(move |ctx, _signal| {
+                    let reg = Arc::clone(&before_reg);
+                    let ctx_ref = Arc::clone(&before_ctx);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_tool_call(
+                            &reg, &ctx, &ctx_ref,
+                        )
                         .await
-                })
+                    })
+                });
+                before
             });
-            before
-        });
 
         // `after_tool_call` is always installed: besides extension `tool_result`
         // hooks it normalizes image blocks a tool returned with the **current**
@@ -1757,49 +1775,51 @@ impl AgentSession {
         // the provider request payload before it is sent.
         // Wire the before_provider_request event: extensions can inspect/modify
         // the provider request payload before it is sent.
-        let on_payload: Option<PayloadHookFn> = options.extension_registry.as_ref().map(|registry| {
-            let payload_reg = Arc::clone(registry);
-            let ctx_clone = Arc::clone(&shared_ext_ctx);
-            let closure = move |payload: serde_json::Value| {
-                let reg = Arc::clone(&payload_reg);
-                let ctx_ref = Arc::clone(&ctx_clone);
-                Box::pin(async move {
-                    crate::core::extensions::dispatcher::dispatch_before_provider_request(
-                        &reg, payload, &ctx_ref,
-                    )
-                    .await
-                })
-                    as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
-                    >
-            };
-            Arc::new(closure) as PayloadHookFn
-        });
+        let on_payload: Option<PayloadHookFn> =
+            options.extension_registry.as_ref().map(|registry| {
+                let payload_reg = Arc::clone(registry);
+                let ctx_clone = Arc::clone(&shared_ext_ctx);
+                let closure = move |payload: serde_json::Value| {
+                    let reg = Arc::clone(&payload_reg);
+                    let ctx_ref = Arc::clone(&ctx_clone);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_before_provider_request(
+                            &reg, payload, &ctx_ref,
+                        )
+                        .await
+                    })
+                        as std::pin::Pin<
+                            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                        >
+                };
+                Arc::new(closure) as PayloadHookFn
+            });
 
         // Wire the before_provider_headers event: extensions can modify
         // HTTP request headers before they are sent to the provider.
-        let on_headers: Option<HeadersHookFn> = options.extension_registry.as_ref().map(|registry| {
-            let headers_reg = Arc::clone(registry);
-            let ctx_clone = Arc::clone(&shared_ext_ctx);
-            let closure = move |headers: std::collections::HashMap<String, String>| {
-                let reg = Arc::clone(&headers_reg);
-                let ctx_ref = Arc::clone(&ctx_clone);
-                Box::pin(async move {
-                    crate::core::extensions::dispatcher::dispatch_before_provider_headers(
-                        &reg, headers, &ctx_ref,
-                    )
-                    .await
-                })
-                    as std::pin::Pin<
-                        Box<
-                            dyn std::future::Future<
-                                    Output = std::collections::HashMap<String, String>,
-                                > + Send,
-                        >,
-                    >
-            };
-            Arc::new(closure) as HeadersHookFn
-        });
+        let on_headers: Option<HeadersHookFn> =
+            options.extension_registry.as_ref().map(|registry| {
+                let headers_reg = Arc::clone(registry);
+                let ctx_clone = Arc::clone(&shared_ext_ctx);
+                let closure = move |headers: std::collections::HashMap<String, String>| {
+                    let reg = Arc::clone(&headers_reg);
+                    let ctx_ref = Arc::clone(&ctx_clone);
+                    Box::pin(async move {
+                        crate::core::extensions::dispatcher::dispatch_before_provider_headers(
+                            &reg, headers, &ctx_ref,
+                        )
+                        .await
+                    })
+                        as std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = std::collections::HashMap<String, String>,
+                                    > + Send,
+                            >,
+                        >
+                };
+                Arc::new(closure) as HeadersHookFn
+            });
 
         // Wire the after_provider_response event: extensions can inspect
         // provider HTTP response status and headers.
@@ -1807,16 +1827,17 @@ impl AgentSession {
             options.extension_registry.as_ref().map(|registry| {
                 let resp_reg = Arc::clone(registry);
                 let ctx_clone = Arc::clone(&shared_ext_ctx);
-                let closure = move |status: u16, headers: std::collections::HashMap<String, String>| {
-                    let reg = Arc::clone(&resp_reg);
-                    let ctx_ref = Arc::clone(&ctx_clone);
-                    tokio::spawn(async move {
-                        crate::core::extensions::dispatcher::dispatch_after_provider_response(
-                            &reg, status, headers, &ctx_ref,
-                        )
-                        .await;
-                    });
-                };
+                let closure =
+                    move |status: u16, headers: std::collections::HashMap<String, String>| {
+                        let reg = Arc::clone(&resp_reg);
+                        let ctx_ref = Arc::clone(&ctx_clone);
+                        tokio::spawn(async move {
+                            crate::core::extensions::dispatcher::dispatch_after_provider_response(
+                                &reg, status, headers, &ctx_ref,
+                            )
+                            .await;
+                        });
+                    };
                 Arc::new(closure) as ProviderResponseHookFn
             });
 
@@ -2152,9 +2173,7 @@ impl AgentSession {
                 }
                 let mut def = rt.definition;
                 def.source_info = Some(rt.source_info);
-                tool_definitions
-                    .entry(def.name.clone())
-                    .or_insert(def);
+                tool_definitions.entry(def.name.clone()).or_insert(def);
             }
         }
 
@@ -2172,9 +2191,7 @@ impl AgentSession {
                 reserve_tokens: reserve,
                 compact_on_threshold: enabled,
                 keep_recent_tokens: keep_recent,
-                model_overrides: settings_manager
-                    .get_compaction_settings()
-                    .model_overrides,
+                model_overrides: settings_manager.get_compaction_settings().model_overrides,
             }
         };
 
@@ -2198,7 +2215,8 @@ impl AgentSession {
                 let ext_cwd = session_cwd_for_ext.clone();
                 ext_runtime_handle.get_cwd = std::sync::Arc::new(move || ext_cwd.clone());
                 let ext_agent_dir = session_agent_dir.clone();
-                ext_runtime_handle.get_agent_dir = std::sync::Arc::new(move || ext_agent_dir.clone());
+                ext_runtime_handle.get_agent_dir =
+                    std::sync::Arc::new(move || ext_agent_dir.clone());
                 install_ext_agent_state_getters(
                     &mut ext_runtime_handle,
                     &ext_agent_ref,
@@ -2431,9 +2449,7 @@ impl AgentSession {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .append_message(serde_json::to_value(&message).unwrap_or_default());
-                        agent
-                            .update_state(|s| s.messages.push(message))
-                            .await;
+                        agent.update_state(|s| s.messages.push(message)).await;
                     });
                 })
             };
@@ -2458,8 +2474,8 @@ impl AgentSession {
             // Esc 中断时 TUI 靠它把排队消息还原回编辑器，且 message_start
             // 消费时会从镜像移除，不会残留。
             let follow_up_mirror = session.follow_up_messages.clone();
-            session.ext_ctx.runtime.queue_follow_up = std::sync::Arc::new(
-                move |content: String| {
+            session.ext_ctx.runtime.queue_follow_up =
+                std::sync::Arc::new(move |content: String| {
                     let message = AgentMessage::User {
                         content: vec![pi_agent_core::pi_ai_types::text_block(&content)],
                         timestamp: chrono::Utc::now().timestamp_millis(),
@@ -2473,20 +2489,18 @@ impl AgentSession {
                             .push(content.clone());
                         q.enqueue(message);
                     }
-                },
-            );
+                });
             // 会话 custom entry 通道（对齐原版 sessionManager 的
             // appendCustomEntry / getEntries，供扩展持久化自定义状态，
             // 如扩展自己的状态条目——跨 compaction 保留、重启可恢复）。
             let sm_for_append = session.session_manager.clone();
-            session.ext_ctx.runtime.append_custom_entry = std::sync::Arc::new(
-                move |custom_type: &str, data: Option<serde_json::Value>| {
+            session.ext_ctx.runtime.append_custom_entry =
+                std::sync::Arc::new(move |custom_type: &str, data: Option<serde_json::Value>| {
                     sm_for_append
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .append_custom_entry(custom_type, data);
-                },
-            );
+                });
             let sm_for_entries = session.session_manager.clone();
             session.ext_ctx.runtime.get_custom_entries = std::sync::Arc::new(move || {
                 use crate::core::session_manager::SessionEntry;
@@ -2496,12 +2510,12 @@ impl AgentSession {
                 sm.get_entries()
                     .iter()
                     .filter_map(|e| match e {
-                        SessionEntry::Custom { custom_type, data, .. } => {
-                            Some(serde_json::json!({
-                                "customType": custom_type,
-                                "data": data,
-                            }))
-                        }
+                        SessionEntry::Custom {
+                            custom_type, data, ..
+                        } => Some(serde_json::json!({
+                            "customType": custom_type,
+                            "data": data,
+                        })),
                         _ => None,
                     })
                     .collect()
@@ -2609,44 +2623,48 @@ impl AgentSession {
             let decide: crate::core::cache_warmer::DecideFn = {
                 let registry = session.extension_registry.clone();
                 let ext_ctx = session.ext_ctx.clone();
-                Arc::new(move |event: crate::core::cache_warmer::CacheWarmingDecisionEvent| {
-                    let registry = registry.clone();
-                    let ext_ctx = ext_ctx.clone();
-                    Box::pin(async move {
-                        let Some(registry) = registry else {
-                            return event.action;
-                        };
-                        let wire = pi_extension_api::CacheWarmingDecisionEvent {
-                            kind: event.kind.clone(),
-                            warm_cost: event.warm_cost,
-                            miss_cost: event.miss_cost,
-                            continuation_probability: event.continuation_probability,
-                            action: match event.action {
-                                crate::core::cache_warmer::CacheWarmingAction::Warm => {
-                                    pi_extension_api::CacheWarmingAction::Warm
+                Arc::new(
+                    move |event: crate::core::cache_warmer::CacheWarmingDecisionEvent| {
+                        let registry = registry.clone();
+                        let ext_ctx = ext_ctx.clone();
+                        Box::pin(async move {
+                            let Some(registry) = registry else {
+                                return event.action;
+                            };
+                            let wire = pi_extension_api::CacheWarmingDecisionEvent {
+                                kind: event.kind.clone(),
+                                warm_cost: event.warm_cost,
+                                miss_cost: event.miss_cost,
+                                continuation_probability: event.continuation_probability,
+                                action: match event.action {
+                                    crate::core::cache_warmer::CacheWarmingAction::Warm => {
+                                        pi_extension_api::CacheWarmingAction::Warm
+                                    }
+                                    crate::core::cache_warmer::CacheWarmingAction::Stop => {
+                                        pi_extension_api::CacheWarmingAction::Stop
+                                    }
+                                },
+                            };
+                            match registry
+                                .hook_runner()
+                                .fire_cache_warming_decision(&wire, Some(&ext_ctx))
+                                .await
+                            {
+                                Some(pi_extension_api::CacheWarmingAction::Warm) => {
+                                    crate::core::cache_warmer::CacheWarmingAction::Warm
                                 }
-                                crate::core::cache_warmer::CacheWarmingAction::Stop => {
-                                    pi_extension_api::CacheWarmingAction::Stop
+                                Some(pi_extension_api::CacheWarmingAction::Stop) => {
+                                    crate::core::cache_warmer::CacheWarmingAction::Stop
                                 }
-                            },
-                        };
-                        match registry
-                            .hook_runner()
-                            .fire_cache_warming_decision(&wire, Some(&ext_ctx))
-                            .await
-                        {
-                            Some(pi_extension_api::CacheWarmingAction::Warm) => {
-                                crate::core::cache_warmer::CacheWarmingAction::Warm
+                                None => event.action,
                             }
-                            Some(pi_extension_api::CacheWarmingAction::Stop) => {
-                                crate::core::cache_warmer::CacheWarmingAction::Stop
-                            }
-                            None => event.action,
-                        }
-                    })
-                })
+                        })
+                    },
+                )
             };
-            let get_mode: Arc<dyn Fn() -> crate::core::settings_manager::CacheWarmingMode + Send + Sync> = {
+            let get_mode: Arc<
+                dyn Fn() -> crate::core::settings_manager::CacheWarmingMode + Send + Sync,
+            > = {
                 let settings = Arc::clone(&session.settings_manager);
                 Arc::new(move || {
                     settings
@@ -2770,7 +2788,9 @@ impl AgentSession {
                 // Reset overflow recovery on any new user message (matching TS)
                 if let AgentEvent::MessageStart { ref message } = event {
                     if let AgentMessage::User { .. } = message {
-                        *_overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+                        *_overflow
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
                     }
                     if let AgentMessage::User { ref content, .. } = message {
                         let message_text: String = content
@@ -2787,11 +2807,15 @@ impl AgentSession {
                         if !message_text.is_empty() {
                             // Check steering queue first
                             let (steer_idx, evt) = {
-                                let mut steer = steering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let mut steer = steering
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 let idx = steer.iter().position(|m| m == &message_text);
                                 if let Some(idx) = idx {
                                     steer.remove(idx);
-                                    let follow = follow_up.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let follow = follow_up
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                                     let evt = AgentSessionEvent::QueueUpdate {
                                         steering: steer.clone(),
                                         follow_up: follow.clone(),
@@ -2802,14 +2826,19 @@ impl AgentSession {
                                         None,
                                         AgentSessionEvent::QueueUpdate {
                                             steering: steer.clone(),
-                                            follow_up: follow_up.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+                                            follow_up: follow_up
+                                                .lock()
+                                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                                .clone(),
                                         },
                                     )
                                 }
                             };
                             if steer_idx.is_some() {
                                 let batch: Vec<_> = {
-                                    let l = listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let l = listeners
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                                     l.iter().cloned().collect()
                                 };
                                 for listener in batch {
@@ -2818,11 +2847,15 @@ impl AgentSession {
                             } else {
                                 // Check follow-up queue
                                 let evt = {
-                                    let mut follow = follow_up.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let mut follow = follow_up
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                                     let follow_idx = follow.iter().position(|m| m == &message_text);
                                     if let Some(idx) = follow_idx {
                                         follow.remove(idx);
-                                        let steer = steering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        let steer = steering
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                                         Some(AgentSessionEvent::QueueUpdate {
                                             steering: steer.clone(),
                                             follow_up: follow.clone(),
@@ -2833,7 +2866,9 @@ impl AgentSession {
                                 };
                                 if let Some(evt) = evt {
                                     let batch: Vec<_> = {
-                                        let l = listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        let l = listeners
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                                         l.iter().cloned().collect()
                                     };
                                     for listener in batch {
@@ -2850,7 +2885,9 @@ impl AgentSession {
                     let hr = registry.hook_runner();
                     match &event {
                         AgentEvent::AgentStart => {
-                            *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+                            *turn_index
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
                             hr.fire_agent_start(Some(&ext_ctx)).await;
                         }
                         AgentEvent::AgentEnd { messages } => {
@@ -2862,14 +2899,23 @@ impl AgentSession {
                             hr.fire_agent_end(&msgs, Some(&ext_ctx_ae)).await;
                         }
                         AgentEvent::TurnStart => {
-                            let ti = *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            hr.fire_turn_start(ti, chrono::Utc::now().timestamp_millis(), Some(&ext_ctx)).await;
+                            let ti = *turn_index
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            hr.fire_turn_start(
+                                ti,
+                                chrono::Utc::now().timestamp_millis(),
+                                Some(&ext_ctx),
+                            )
+                            .await;
                         }
                         AgentEvent::TurnEnd {
                             message,
                             tool_results,
                         } => {
-                            let ti = *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let ti = *turn_index
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             let tr_val: Vec<serde_json::Value> = tool_results
                                 .iter()
@@ -2884,7 +2930,9 @@ impl AgentSession {
                                 Some(&ext_ctx_te),
                             )
                             .await;
-                            *turn_index.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                            *turn_index
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
                         }
                         AgentEvent::MessageStart { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
@@ -2897,7 +2945,8 @@ impl AgentSession {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
                             let ame_val =
                                 serde_json::to_value(assistant_message_event).unwrap_or_default();
-                            hr.fire_message_update(&msg_val, &ame_val, Some(&ext_ctx)).await;
+                            hr.fire_message_update(&msg_val, &ame_val, Some(&ext_ctx))
+                                .await;
                         }
                         AgentEvent::MessageEnd { message } => {
                             let msg_val = serde_json::to_value(message).unwrap_or_default();
@@ -2999,17 +3048,14 @@ impl AgentSession {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .get_retry_settings();
-                        let retry_attempt =
-                            *_retry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let retry_attempt = *_retry
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         // TS passes this.model?.contextWindow ?? 0; the
                         // listener cannot await agent state, so usage-based
                         // overflow cases are disabled (error patterns only).
-                        let will_retry = will_retry_after_agent_end(
-                            messages,
-                            retry_attempt,
-                            &retry_settings,
-                            0,
-                        );
+                        let will_retry =
+                            will_retry_after_agent_end(messages, retry_attempt, &retry_settings, 0);
                         AgentSessionEvent::AgentEnd {
                             messages: messages.clone(),
                             will_retry,
@@ -3071,7 +3117,9 @@ impl AgentSession {
                 };
                 {
                     let batch: Vec<_> = {
-                        let l = listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let l = listeners
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         l.iter().cloned().collect::<Vec<_>>()
                     };
                     for listener in batch {
@@ -3128,12 +3176,19 @@ impl AgentSession {
 
                         // Track assistant message for auto-compaction
                         if let AgentMessage::Assistant { stop_reason, .. } = message {
-                            *last_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.clone());
+                            *last_assistant
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(message.clone());
                             // Reset overflow recovery and emit auto_retry_end on successful
                             // assistant response (matching TS _handleAgentEvent)
                             if stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
-                                *_overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
-                                let retry = *_retry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                *_overflow
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+                                let retry = *_retry
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 if retry > 0 {
                                     let evt = AgentSessionEvent::AutoRetryEnd {
                                         success: true,
@@ -3141,13 +3196,17 @@ impl AgentSession {
                                         final_error: None,
                                     };
                                     let batch: Vec<_> = {
-                                        let l = listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        let l = listeners
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                                         l.iter().cloned().collect()
                                     };
                                     for listener in &batch {
                                         listener(evt.clone());
                                     }
-                                    *_retry.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+                                    *_retry
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
                                 }
                             }
                         }
@@ -3190,7 +3249,10 @@ impl AgentSession {
         use crate::core::session_manager::SessionEntry;
 
         let agent_messages = {
-            let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mgr = self
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if mgr.get_session_file().is_none() {
                 return 0;
             }
@@ -3284,7 +3346,10 @@ impl AgentSession {
     }
 
     pub fn get_session_name(&self) -> Option<String> {
-        self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_session_name()
+        self.session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_session_name()
     }
 
     pub fn set_session_name(&self, name: &str) {
@@ -3354,7 +3419,10 @@ impl AgentSession {
         // After compaction, the last assistant usage reflects pre-compaction context size.
         // We can only trust usage from an assistant that responded after the latest compaction.
         // If no such assistant exists, context token count is unknown until the next LLM response.
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mgr = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let branch_entries = mgr.get_branch(None);
 
         // Find the latest compaction entry
@@ -3378,11 +3446,21 @@ impl AgentSession {
                                     .get("totalTokens")
                                     .and_then(|t| t.as_u64())
                                     .unwrap_or(0);
-                                let sum_tokens = usage.get("input").and_then(|v| v.as_u64()).unwrap_or(0)
+                                let sum_tokens = usage
+                                    .get("input")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0)
                                     + usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0)
                                     + usage.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0)
-                                    + usage.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let context_tokens = if total_tokens > 0 { total_tokens } else { sum_tokens };
+                                    + usage
+                                        .get("cacheWrite")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                let context_tokens = if total_tokens > 0 {
+                                    total_tokens
+                                } else {
+                                    sum_tokens
+                                };
                                 if context_tokens > 0 {
                                     has_post_compaction_usage = true;
                                     break;
@@ -3466,7 +3544,9 @@ impl AgentSession {
     }
 
     pub fn get_session_manager(&self) -> std::sync::MutexGuard<'_, SessionManager> {
-        self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Shared handle to the current session manager.
@@ -3651,9 +3731,7 @@ impl AgentSession {
                     if opts.trigger_turn {
                         agent.process(vec![app_message]).await.ok();
                     } else {
-                        agent
-                            .update_state(|s| s.messages.push(app_message))
-                            .await;
+                        agent.update_state(|s| s.messages.push(app_message)).await;
                     }
                 });
             })),
@@ -3691,9 +3769,7 @@ impl AgentSession {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .append_message(serde_json::to_value(&message).unwrap_or_default());
-                    agent
-                        .update_state(|s| s.messages.push(message))
-                        .await;
+                    agent.update_state(|s| s.messages.push(message)).await;
                 });
             })),
         }
@@ -3707,12 +3783,18 @@ impl AgentSession {
     }
 
     pub fn get_steering_messages(&self) -> Vec<String> {
-        self.steering_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.steering_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Get pending follow-up messages (read-only), matching TS getFollowUpMessages().
     pub fn get_follow_up_messages(&self) -> Vec<String> {
-        self.follow_up_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.follow_up_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Current steering mode, matching TS `get steeringMode()`.
@@ -3728,20 +3810,42 @@ impl AgentSession {
     /// Whether compaction or branch summarization is currently running,
     /// matching TS `get isCompacting()`.
     pub fn is_compacting(&self) -> bool {
-        self.compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
-            || self.auto_compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
-            || self.branch_summary_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+        self.compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+            || self
+                .auto_compaction_abort
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+            || self
+                .branch_summary_abort
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
     }
 
     /// Number of pending messages (steering + follow-up), matching TS `get pendingMessageCount()`.
     pub fn pending_message_count(&self) -> usize {
-        self.steering_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() + self.follow_up_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.steering_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            + self
+                .follow_up_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
     }
 
     /// Current retry attempt (0 if not retrying), matching TS `get retryAttempt()`.
     /// Whether a retry is currently in progress, matching TS `get isRetrying()`.
     pub fn is_retrying(&self) -> bool {
-        self.retry_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+        self.retry_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// Whether auto-retry is enabled, matching TS `get autoRetryEnabled()`
@@ -3815,7 +3919,10 @@ impl AgentSession {
     }
 
     pub fn retry_attempt(&self) -> u32 {
-        *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .retry_attempt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Shared retry-attempt counter for live event bridges. Reading it when a
@@ -3886,7 +3993,9 @@ impl AgentSession {
             .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
             .collect();
         // Write through the shared state — `state()` returns a clone.
-        self.agent.update_state(|s| s.tools = selected.clone()).await;
+        self.agent
+            .update_state(|s| s.tools = selected.clone())
+            .await;
 
         // Rebuild the base system prompt with the new tool set (matching TS
         // setActiveToolsByName which calls _rebuildSystemPrompt). Only names
@@ -4023,7 +4132,10 @@ impl AgentSession {
                             .and_then(|o| serde_json::from_str(o).ok());
                         self.send_custom_message(&custom_type, &content, opts).await;
                     }
-                    ExtensionAction::SendUserMessage { content, options_json } => {
+                    ExtensionAction::SendUserMessage {
+                        content,
+                        options_json,
+                    } => {
                         let opts = options_json
                             .as_deref()
                             .and_then(|o| serde_json::from_str(o).ok());
@@ -4039,7 +4151,10 @@ impl AgentSession {
                             );
                         }
                     }
-                    ExtensionAction::AppendEntry { custom_type, data_json } => {
+                    ExtensionAction::AppendEntry {
+                        custom_type,
+                        data_json,
+                    } => {
                         let data = data_json
                             .as_deref()
                             .and_then(|d| serde_json::from_str(d).ok());
@@ -4088,10 +4203,20 @@ impl AgentSession {
 
     /// Get session statistics, matching the original getSessionStats().
     pub fn get_session_stats(&self) -> SessionStats {
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mgr = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries = mgr.get_entries();
-        let (user_messages, assistant_messages, tool_calls, tool_results, total_messages, tokens, cost) =
-            compute_session_stats(entries);
+        let (
+            user_messages,
+            assistant_messages,
+            tool_calls,
+            tool_results,
+            total_messages,
+            tokens,
+            cost,
+        ) = compute_session_stats(entries);
 
         SessionStats {
             session_file: mgr
@@ -4153,7 +4278,10 @@ impl AgentSession {
 
         // Handle extension commands first (execute immediately, even during streaming),
         // matching TS prompt() which calls _tryExecuteExtensionCommand(text).
-        if expand_templates && text.starts_with("/") && self._try_execute_extension_command(text).await {
+        if expand_templates
+            && text.starts_with("/")
+            && self._try_execute_extension_command(text).await
+        {
             if let Some(cb) = &opts.preflight_result {
                 cb(true);
             }
@@ -4247,9 +4375,11 @@ impl AgentSession {
             if let Some(cb) = &opts.preflight_result {
                 cb(false);
             }
-            return Err(crate::core::auth_guidance::format_no_model_selected_message(
-                &crate::config::get_docs_path().to_string_lossy(),
-            ));
+            return Err(
+                crate::core::auth_guidance::format_no_model_selected_message(
+                    &crate::config::get_docs_path().to_string_lossy(),
+                ),
+            );
         }
         let auth_result = self
             .model_registry
@@ -4370,7 +4500,11 @@ impl AgentSession {
     /// Returns true if the caller should continue the agent (retry or compaction triggered).
     /// Matches TS _handlePostAgentRun().
     async fn _handle_post_agent_run(&self) -> bool {
-        let msg = self.last_assistant_message.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let msg = self
+            .last_assistant_message
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         let msg = match msg {
             Some(m) => m,
             None => return false,
@@ -4391,14 +4525,20 @@ impl AgentSession {
         } = &msg
         {
             if stop_reason == &Some(pi_agent_core::pi_ai_types::StopReason::Error) {
-                let retry = *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let retry = *self
+                    .retry_attempt
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if retry > 0 {
                     self._emit(AgentSessionEvent::AutoRetryEnd {
                         success: false,
                         attempt: retry,
                         final_error: error_message.clone(),
                     });
-                    *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+                    *self
+                        .retry_attempt
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
                 }
             }
         }
@@ -4462,10 +4602,7 @@ impl AgentSession {
         };
 
         // Look up the skill in the resource loader
-        let skills = self
-            .resource_loader()
-            .map(|r| r.skills)
-            .unwrap_or_default();
+        let skills = self.resource_loader().map(|r| r.skills).unwrap_or_default();
         if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
             match std::fs::read_to_string(&skill.file_path) {
                 Ok(content) => {
@@ -4494,11 +4631,7 @@ References are relative to {}.
                 Err(e) => {
                     // Emit the error like extension commands do (matching TS
                     // _expandSkillCommand which calls emitError).
-                    self.emit_extension_error(
-                        &skill.file_path,
-                        "skill_expansion",
-                        &e.to_string(),
-                    );
+                    self.emit_extension_error(&skill.file_path, "skill_expansion", &e.to_string());
                     text.to_string()
                 }
             }
@@ -4509,8 +4642,12 @@ References are relative to {}.
 
     /// Flush pending bash messages into agent state, matching TS _flushPendingBashMessages().
     async fn _flush_pending_bash_messages(&self) {
-        let messages: Vec<serde_json::Value> =
-            std::mem::take(&mut *self.pending_bash_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let messages: Vec<serde_json::Value> = std::mem::take(
+            &mut *self
+                .pending_bash_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         if messages.is_empty() {
             return;
         }
@@ -4531,7 +4668,10 @@ References are relative to {}.
         images: Option<Vec<ContentBlock>>,
         _source: &str,
     ) -> Result<(), String> {
-        *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
         // Extensions can cancel the agent start, modify the system prompt, or
@@ -4560,7 +4700,10 @@ References are relative to {}.
             )
             .await;
             if result.cancelled {
-                *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+                *self
+                    .is_agent_run_active
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
                 return Ok(());
             }
             // Apply the modified system prompt from extensions
@@ -4586,7 +4729,12 @@ References are relative to {}.
 
         // Inject any pending "nextTurn" messages as context alongside the user message,
         // matching TS prompt() which injects _pendingNextTurnMessages.
-        let pending = std::mem::take(&mut *self.pending_next_turn_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let pending = std::mem::take(
+            &mut *self
+                .pending_next_turn_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         messages.extend(pending);
 
         // User message is persisted by the event subscriber on MessageEnd
@@ -4618,7 +4766,11 @@ References are relative to {}.
     async fn _prepare_retry(&self, message: &AgentMessage) -> bool {
         // Read retry settings from settings manager, matching TS
         // settingsManager.getRetrySettings() (enabled + backoff).
-        let retry_settings = self.settings_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_retry_settings();
+        let retry_settings = self
+            .settings_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_retry_settings();
         if !retry_settings.enabled.unwrap_or(true) {
             return false;
         }
@@ -4626,8 +4778,10 @@ References are relative to {}.
         let base_delay_ms = retry_settings.base_delay_ms.unwrap_or(2000);
 
         let (retry_count, delay_ms) = {
-            let mut retry =
-                self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut retry = self
+                .retry_attempt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *retry += 1;
 
             if *retry > max_retries {
@@ -4663,7 +4817,10 @@ References are relative to {}.
 
         // Create abort controller for retry backoff, matching TS `this._retryAbortController = new AbortController()`
         let (tx, mut rx) = tokio::sync::watch::channel(false);
-        *self.retry_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        *self
+            .retry_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
         // Wait for backoff with abort support, matching TS await with AbortController
         tokio::select! {
@@ -4731,7 +4888,11 @@ References are relative to {}.
             // Skip compaction checks if this assistant message is older than the latest
             // compaction boundary. This prevents a stale pre-compaction usage/error
             // from retriggering compaction on the first prompt after compaction.
-            let branch_entries = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_branch(None);
+            let branch_entries = self
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_branch(None);
             let latest_compaction_ts = branch_entries.iter().rev().find_map(|e| {
                 if let crate::core::session_manager::SessionEntry::Compaction {
                     timestamp, ..
@@ -4780,9 +4941,9 @@ References are relative to {}.
                                 response_id: None,
                                 diagnostics: None,
                                 usage: usage.clone(),
-                                stop_reason: stop_reason.clone().unwrap_or(
-                                    pi_agent_core::pi_ai_types::StopReason::Stop,
-                                ),
+                                stop_reason: stop_reason
+                                    .clone()
+                                    .unwrap_or(pi_agent_core::pi_ai_types::StopReason::Stop),
                                 error_message: error_message.clone(),
                                 raw_stop_reason: None,
                                 end_turn: None,
@@ -4797,14 +4958,18 @@ References are relative to {}.
                     };
 
                     if is_overflow {
-                        let will_retry = stop_reason
-                            != &Some(pi_agent_core::pi_ai_types::StopReason::Stop);
+                        let will_retry =
+                            stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Stop);
 
                         if !will_retry {
                             return self._run_auto_compaction("overflow", false).await;
                         }
 
-                        if *self.overflow_recovery_attempted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+                        if *self
+                            .overflow_recovery_attempted
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        {
                             self._emit(AgentSessionEvent::CompactionEnd {
                                 reason: CompactionReason::Overflow,
                                 result: None,
@@ -4819,7 +4984,10 @@ References are relative to {}.
                             return false;
                         }
 
-                        *self.overflow_recovery_attempted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                        *self
+                            .overflow_recovery_attempted
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
                         // Remove the error message from agent state
                         let msgs = self.agent.messages().await;
                         if msgs.last().map(|m| m.role()) == Some("assistant") {
@@ -4856,7 +5024,10 @@ References are relative to {}.
         // preparation succeeds, which compact() re-checks).
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        *self.auto_compaction_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        *self
+            .auto_compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
         // Auto path must NOT use the full `compact()` wrapper (disconnect/abort/
         // wait-for-idle): `is_agent_run_active` is still set here, so `abort()`
@@ -5085,7 +5256,8 @@ References are relative to {}.
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             target_model
                 .and_then(|model| {
-                    settings.get_model_thinking_level(&model.provider, &model.id)
+                    settings
+                        .get_model_thinking_level(&model.provider, &model.id)
                         .map(std::string::ToString::to_string)
                 })
                 .or_else(|| {
@@ -5412,7 +5584,12 @@ References are relative to {}.
             reason: CompactionReason::Manual,
         });
         let result = self
-            ._compact_inner(custom_instructions, CompactionReason::Manual, false, Some(&rx))
+            ._compact_inner(
+                custom_instructions,
+                CompactionReason::Manual,
+                false,
+                Some(&rx),
+            )
             .await;
         let aborted = *rx.borrow();
         // Clear before emitting compaction_end so listeners see
@@ -5769,8 +5946,10 @@ References are relative to {}.
         }
 
         let result = {
-            let mut mgr =
-                self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut mgr = self
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match direction {
                 "up" | "parent" => mgr.navigate_to_parent(),
                 "root" => {
@@ -5802,7 +5981,10 @@ References are relative to {}.
 
     /// Get the session tree, matching the original getTree().
     pub fn get_tree(&self) -> Vec<crate::core::session_manager::SessionTreeNode> {
-        self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_tree()
+        self.session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_tree()
     }
 
     // =========================================================================
@@ -5835,7 +6017,11 @@ References are relative to {}.
         }
 
         // If streaming, use steer/followUp
-        if *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        if *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             if opts.deliver_as.as_deref() == Some("followUp") {
                 self.agent.follow_up(message).await;
             } else {
@@ -5860,9 +6046,7 @@ References are relative to {}.
         } else {
             // Just append to messages and emit events. Write through the
             // shared state — `state()` returns a clone.
-            self.agent
-                .update_state(|s| s.messages.push(message))
-                .await;
+            self.agent.update_state(|s| s.messages.push(message)).await;
         }
     }
 
@@ -5887,15 +6071,21 @@ References are relative to {}.
             self._throw_if_extension_command(text)?;
         }
         let expanded_text = self._expand_skill_command(text);
-        let expanded_text =
-            crate::core::prompt_templates::expand_prompt_template(&expanded_text, &self.prompt_templates());
+        let expanded_text = crate::core::prompt_templates::expand_prompt_template(
+            &expanded_text,
+            &self.prompt_templates(),
+        );
         self._queue_steer(&expanded_text, images).await;
         Ok(())
     }
 
     /// Queue a follow-up message (waits for the current stream), matching TS
     /// `followUp()`. Errors on extension commands; expands skills/templates.
-    pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), String> {
+    pub async fn follow_up(
+        &self,
+        text: &str,
+        images: Option<Vec<ContentBlock>>,
+    ) -> Result<(), String> {
         let Some((text, images)) = self.dispatch_queued_input(text, images).await? else {
             return Ok(());
         };
@@ -5904,8 +6094,10 @@ References are relative to {}.
             self._throw_if_extension_command(text)?;
         }
         let expanded_text = self._expand_skill_command(text);
-        let expanded_text =
-            crate::core::prompt_templates::expand_prompt_template(&expanded_text, &self.prompt_templates());
+        let expanded_text = crate::core::prompt_templates::expand_prompt_template(
+            &expanded_text,
+            &self.prompt_templates(),
+        );
         self._queue_follow_up(&expanded_text, images).await;
         Ok(())
     }
@@ -6032,7 +6224,10 @@ References are relative to {}.
     /// the session mirrors, keeping consumption matching and QueueUpdate
     /// events accurate.
     pub fn queue_mirror_handles(&self) -> (QueueMirrorHandle, QueueMirrorHandle) {
-        (self.steering_messages.clone(), self.follow_up_messages.clone())
+        (
+            self.steering_messages.clone(),
+            self.follow_up_messages.clone(),
+        )
     }
 
     /// Retry the last turn, matching original retry().
@@ -6046,11 +6241,19 @@ References are relative to {}.
     /// Abort in-progress retry, matching TS abortRetry().
     pub fn abort_retry(&self) {
         // Abort the retry backoff, matching TS abortRetry() which calls `this._retryAbortController?.abort()`.
-        if let Some(sender) = self.retry_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(sender) = self
+            .retry_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = sender.send(true);
         }
         // Reset retry state
-        *self.retry_attempt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+        *self
+            .retry_attempt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
     }
 
     /// Cancel in-progress compaction (manual or auto), matching TS abortCompaction().
@@ -6081,7 +6284,12 @@ References are relative to {}.
 
     /// Cancel in-progress branch summarization, matching TS abortBranchSummary().
     pub fn abort_branch_summary(&self) {
-        if let Some(sender) = self.branch_summary_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(sender) = self
+            .branch_summary_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = sender.send(true);
         }
     }
@@ -6211,8 +6419,14 @@ References are relative to {}.
 
     /// Emit a queue_update event with current steering and follow-up messages.
     fn _emit_queue_update(&self) {
-        let steering = self.steering_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let follow_up = self.follow_up_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let steering = self
+            .steering_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let follow_up = self
+            .follow_up_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self._emit(AgentSessionEvent::QueueUpdate {
             steering: steering.clone(),
             follow_up: follow_up.clone(),
@@ -6303,7 +6517,10 @@ References are relative to {}.
         let can_continue = build(&[]).map(|p| p.can_continue).unwrap_or(false);
         if !can_continue {
             if result.continue_ {
-                report_invalid_boundary_continuation(&self.extension_error_listener, "agent_before_settle");
+                report_invalid_boundary_continuation(
+                    &self.extension_error_listener,
+                    "agent_before_settle",
+                );
             }
             return false;
         }
@@ -6321,7 +6538,10 @@ References are relative to {}.
         if let Some(warmer) = &self.cache_warmer {
             warmer.lock().await.on_agent_settled();
         }
-        *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
         *self
             .is_emitting_agent_settled
             .lock()
@@ -6329,7 +6549,10 @@ References are relative to {}.
         // Fire agent_settled to extensions（携带 ctx，扩展可在空闲边界发送
         // 自动延续消息）。
         if let Some(ref registry) = self.extension_registry {
-            registry.hook_runner().fire_agent_settled(Some(&self.ext_ctx)).await;
+            registry
+                .hook_runner()
+                .fire_agent_settled(Some(&self.ext_ctx))
+                .await;
         }
         self._emit(AgentSessionEvent::AgentSettled);
         *self
@@ -6410,7 +6633,10 @@ References are relative to {}.
         &self,
         listener: AgentSessionEventListener,
     ) -> SessionEventUnsubscribeHandle {
-        let mut listeners = self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut listeners = self
+            .event_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let index = listeners.len();
         listeners.push(listener);
         SessionEventUnsubscribeHandle {
@@ -6420,7 +6646,10 @@ References are relative to {}.
     }
 
     pub fn export_html(&self) -> String {
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mgr = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         render_session_html(&mgr)
     }
     /// Export the session as HTML to a file, matching the original exportHTMLToFile().
@@ -6428,7 +6657,10 @@ References are relative to {}.
     pub fn export_html_to_file(&self, file_path: Option<&str>) -> Result<String, String> {
         let html = self.export_html();
         let path = file_path.map(|p| p.to_string()).unwrap_or_else(|| {
-            let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mgr = self
+                .session_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session_id = mgr.get_session_id();
             format!("session_{}.html", session_id)
         });
@@ -6441,7 +6673,10 @@ References are relative to {}.
     pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, String> {
         use crate::core::session_manager::CURRENT_SESSION_VERSION;
         use crate::utils::paths::{resolve_path, PathOptions};
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mgr = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cwd = mgr.get_cwd().to_string();
         let raw_path = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
@@ -6499,7 +6734,10 @@ References are relative to {}.
 
     /// Get all user messages from session for fork selector, matching TS getUserMessagesForForking().
     pub fn get_user_messages_for_forking(&self) -> Vec<(String, String)> {
-        let mgr = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mgr = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries = mgr.get_entries();
         let mut result = Vec::new();
 
@@ -6533,114 +6771,108 @@ pub fn render_session_html(mgr: &crate::core::session_manager::SessionManager) -
     let cwd = mgr.get_cwd();
 
     let mut html = String::new();
-        html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
-        html.push_str("<meta charset=\"UTF-8\">\n");
-        html.push_str(
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
-        );
-        html.push_str(&format!("<title>{}</title>\n", html_escape(&session_name)));
-        html.push_str("<style>\n");
-        html.push_str("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; color: #333; }\n");
-        html.push_str(".message { margin: 12px 0; padding: 12px; border-radius: 8px; }\n");
-        html.push_str(".message.user { background: #f0f7ff; border-left: 3px solid #4a90d9; }\n");
-        html.push_str(
-            ".message.assistant { background: #f5f5f5; border-left: 3px solid #6b7280; }\n",
-        );
-        html.push_str(".message.tool { background: #faf5ff; border-left: 3px solid #a855f7; font-family: monospace; font-size: 13px; }\n");
-        html.push_str(".message.error { background: #fef2f2; border-left: 3px solid #ef4444; }\n");
-        html.push_str(".message .role { font-weight: 600; font-size: 12px; text-transform: uppercase; color: #666; margin-bottom: 4px; }\n");
-        html.push_str(".message .content { white-space: pre-wrap; word-break: break-word; }\n");
-        html.push_str(".message .timestamp { font-size: 11px; color: #999; margin-top: 4px; }\n");
-        html.push_str(".header { text-align: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; }\n");
-        html.push_str(".header h1 { font-size: 20px; margin: 0; }\n");
-        html.push_str(".header .meta { font-size: 12px; color: #666; margin-top: 4px; }\n");
-        html.push_str("</style>\n</head>\n<body>\n");
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+    html.push_str("<meta charset=\"UTF-8\">\n");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+    html.push_str(&format!("<title>{}</title>\n", html_escape(&session_name)));
+    html.push_str("<style>\n");
+    html.push_str("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; color: #333; }\n");
+    html.push_str(".message { margin: 12px 0; padding: 12px; border-radius: 8px; }\n");
+    html.push_str(".message.user { background: #f0f7ff; border-left: 3px solid #4a90d9; }\n");
+    html.push_str(".message.assistant { background: #f5f5f5; border-left: 3px solid #6b7280; }\n");
+    html.push_str(".message.tool { background: #faf5ff; border-left: 3px solid #a855f7; font-family: monospace; font-size: 13px; }\n");
+    html.push_str(".message.error { background: #fef2f2; border-left: 3px solid #ef4444; }\n");
+    html.push_str(".message .role { font-weight: 600; font-size: 12px; text-transform: uppercase; color: #666; margin-bottom: 4px; }\n");
+    html.push_str(".message .content { white-space: pre-wrap; word-break: break-word; }\n");
+    html.push_str(".message .timestamp { font-size: 11px; color: #999; margin-top: 4px; }\n");
+    html.push_str(".header { text-align: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; }\n");
+    html.push_str(".header h1 { font-size: 20px; margin: 0; }\n");
+    html.push_str(".header .meta { font-size: 12px; color: #666; margin-top: 4px; }\n");
+    html.push_str("</style>\n</head>\n<body>\n");
 
-        // Header
-        html.push_str("<div class=\"header\">\n");
-        html.push_str(&format!("<h1>{}</h1>\n", html_escape(&session_name)));
-        html.push_str(&format!(
-            "<div class=\"meta\">Session: {} | CWD: {}</div>\n",
-            html_escape(session_id),
-            html_escape(cwd)
-        ));
-        html.push_str("</div>\n");
+    // Header
+    html.push_str("<div class=\"header\">\n");
+    html.push_str(&format!("<h1>{}</h1>\n", html_escape(&session_name)));
+    html.push_str(&format!(
+        "<div class=\"meta\">Session: {} | CWD: {}</div>\n",
+        html_escape(session_id),
+        html_escape(cwd)
+    ));
+    html.push_str("</div>\n");
 
-        // Messages
-        for entry in entries {
-            match entry {
-                crate::core::session_manager::SessionEntry::Message {
-                    message, timestamp, ..
-                } => {
-                    let role = message
-                        .get("role")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let content = message
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let css_class = match role {
-                        "user" => "user",
-                        "assistant" => "assistant",
-                        "toolResult" | "tool_result" => "tool",
-                        _ => "",
-                    };
-                    html.push_str(&format!("<div class=\"message {}\">\n", css_class));
-                    html.push_str(&format!(
-                        "<div class=\"role\">{}</div>\n",
-                        html_escape(role)
-                    ));
-                    html.push_str(&format!(
-                        "<div class=\"content\">{}</div>\n",
-                        html_escape(content)
-                    ));
-                    html.push_str(&format!(
-                        "<div class=\"timestamp\">{}</div>\n",
-                        html_escape(timestamp)
-                    ));
-                    html.push_str("</div>\n");
-                }
-                crate::core::session_manager::SessionEntry::Compaction {
-                    summary,
-                    timestamp,
-                    ..
-                } => {
-                    html.push_str("<div class=\"message\" style=\"background: #fffbeb; border-left: 3px solid #f59e0b;\">\n");
-                    html.push_str("<div class=\"role\">Compaction</div>\n");
-                    html.push_str(&format!(
-                        "<div class=\"content\">{}</div>\n",
-                        html_escape(summary)
-                    ));
-                    html.push_str(&format!(
-                        "<div class=\"timestamp\">{}</div>\n",
-                        html_escape(timestamp)
-                    ));
-                    html.push_str("</div>\n");
-                }
-                crate::core::session_manager::SessionEntry::BranchSummary {
-                    summary,
-                    timestamp,
-                    ..
-                } => {
-                    html.push_str("<div class=\"message\" style=\"background: #f0fdf4; border-left: 3px solid #22c55e;\">\n");
-                    html.push_str("<div class=\"role\">Branch Summary</div>\n");
-                    html.push_str(&format!(
-                        "<div class=\"content\">{}</div>\n",
-                        html_escape(summary)
-                    ));
-                    html.push_str(&format!(
-                        "<div class=\"timestamp\">{}</div>\n",
-                        html_escape(timestamp)
-                    ));
-                    html.push_str("</div>\n");
-                }
-                _ => {}
+    // Messages
+    for entry in entries {
+        match entry {
+            crate::core::session_manager::SessionEntry::Message {
+                message, timestamp, ..
+            } => {
+                let role = message
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let content = message
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let css_class = match role {
+                    "user" => "user",
+                    "assistant" => "assistant",
+                    "toolResult" | "tool_result" => "tool",
+                    _ => "",
+                };
+                html.push_str(&format!("<div class=\"message {}\">\n", css_class));
+                html.push_str(&format!(
+                    "<div class=\"role\">{}</div>\n",
+                    html_escape(role)
+                ));
+                html.push_str(&format!(
+                    "<div class=\"content\">{}</div>\n",
+                    html_escape(content)
+                ));
+                html.push_str(&format!(
+                    "<div class=\"timestamp\">{}</div>\n",
+                    html_escape(timestamp)
+                ));
+                html.push_str("</div>\n");
             }
+            crate::core::session_manager::SessionEntry::Compaction {
+                summary, timestamp, ..
+            } => {
+                html.push_str("<div class=\"message\" style=\"background: #fffbeb; border-left: 3px solid #f59e0b;\">\n");
+                html.push_str("<div class=\"role\">Compaction</div>\n");
+                html.push_str(&format!(
+                    "<div class=\"content\">{}</div>\n",
+                    html_escape(summary)
+                ));
+                html.push_str(&format!(
+                    "<div class=\"timestamp\">{}</div>\n",
+                    html_escape(timestamp)
+                ));
+                html.push_str("</div>\n");
+            }
+            crate::core::session_manager::SessionEntry::BranchSummary {
+                summary,
+                timestamp,
+                ..
+            } => {
+                html.push_str("<div class=\"message\" style=\"background: #f0fdf4; border-left: 3px solid #22c55e;\">\n");
+                html.push_str("<div class=\"role\">Branch Summary</div>\n");
+                html.push_str(&format!(
+                    "<div class=\"content\">{}</div>\n",
+                    html_escape(summary)
+                ));
+                html.push_str(&format!(
+                    "<div class=\"timestamp\">{}</div>\n",
+                    html_escape(timestamp)
+                ));
+                html.push_str("</div>\n");
+            }
+            _ => {}
         }
+    }
 
-        html.push_str("</body>\n</html>\n");
-        html
+    html.push_str("</body>\n</html>\n");
+    html
 }
 
 /// Extract plain text from a message's `content` field, which may be a
@@ -6719,7 +6951,6 @@ async fn consume_stream_to_message(
 }
 
 impl AgentSession {
-
     // =========================================================================
     // Extension Message Handling
     // =========================================================================
@@ -6792,7 +7023,10 @@ impl AgentSession {
 
         // Create abort signal, matching TS `this._bashAbortController = new AbortController()`
         let (tx, rx) = tokio::sync::watch::channel(false);
-        *self.bash_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        *self
+            .bash_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
 
         let executor = BashExecutor::new(&self.cwd);
         // Apply the configured shell path and command prefix (matching TS
@@ -6846,7 +7080,10 @@ impl AgentSession {
             .map_err(|e| e.to_string())?;
 
         // Clear abort controller, matching TS `this._bashAbortController = undefined`
-        *self.bash_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .bash_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
         // Record bash result in session history, matching TS recordBashResult()
         self.record_bash_result(
@@ -6865,7 +7102,10 @@ impl AgentSession {
 
     /// Whether a bash command is currently running, matching TS `get isBashRunning()`.
     pub fn is_bash_running(&self) -> bool {
-        self.bash_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+        self.bash_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// Record a bash execution result, matching TS `recordBashResult()`.
@@ -6894,9 +7134,16 @@ impl AgentSession {
         };
 
         // If agent is streaming, queue for later (matching TS _pendingBashMessages)
-        if *self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        if *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             let value = serde_json::to_value(&bash_message).unwrap_or_default();
-            self.pending_bash_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(value);
+            self.pending_bash_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(value);
         } else {
             // Not streaming: persist to the session and refresh the finalized
             // context (matching TS `recordBashResult` → `appendMessage` +
@@ -6911,19 +7158,31 @@ impl AgentSession {
     /// (TS `_refreshFinalizedContext`). Extension/session-side context edits take
     /// effect after this call.
     pub async fn refresh_context(&self) {
-        let messages = { self.get_session_manager().build_projected_context_messages() };
+        let messages = {
+            self.get_session_manager()
+                .build_projected_context_messages()
+        };
         self.agent.set_initial_messages(messages).await;
     }
 
     /// Whether there are pending bash messages waiting to be flushed,
     /// matching TS `get hasPendingBashMessages()`.
     pub fn has_pending_bash_messages(&self) -> bool {
-        !self.pending_bash_messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty()
+        !self
+            .pending_bash_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
     }
 
     /// Abort running bash command, matching TS `abortBash()`.
     pub fn abort_bash(&self) {
-        if let Some(sender) = self.bash_abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(sender) = self
+            .bash_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = sender.send(true);
         }
     }
@@ -6939,7 +7198,11 @@ impl AgentSession {
 
     /// Wait for the agent to finish processing (idle).
     pub async fn wait_for_idle(&self) {
-        if !*self.is_agent_run_active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        if !*self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             return;
         }
         self.idle_notify.notified().await;
@@ -7074,25 +7337,43 @@ impl AgentSession {
             loader.reload()
         };
 
-        let skills: Vec<SkillInfo> = loaded.skills.iter().map(|s| SkillInfo {
-            name: s.name.clone(),
-            description: s.description.clone(),
-            file_path: s.file_path.clone(),
-            base_dir: s.base_dir.clone(),
-        }).collect();
-        let context_files: Vec<ContextFile> = loaded.context_files.iter().map(|f| ContextFile {
-            path: f.path.clone(),
-            content: f.content.clone(),
-        }).collect();
+        let skills: Vec<SkillInfo> = loaded
+            .skills
+            .iter()
+            .map(|s| SkillInfo {
+                name: s.name.clone(),
+                description: s.description.clone(),
+                file_path: s.file_path.clone(),
+                base_dir: s.base_dir.clone(),
+            })
+            .collect();
+        let context_files: Vec<ContextFile> = loaded
+            .context_files
+            .iter()
+            .map(|f| ContextFile {
+                path: f.path.clone(),
+                content: f.content.clone(),
+            })
+            .collect();
 
         // TS `_rebuildSystemPrompt` reads the freshly loaded skills/context.
         if let Some(mut opts) = self.system_prompt_options.clone() {
-            let selected_tools = self.agent.state().await.tools.iter().map(|t| t.name.clone()).collect();
+            let selected_tools = self
+                .agent
+                .state()
+                .await
+                .tools
+                .iter()
+                .map(|t| t.name.clone())
+                .collect();
             opts.selected_tools = Some(selected_tools);
             opts.skills = Some(skills);
             opts.context_files = Some(context_files);
             let rebuilt = system_prompt::build_system_prompt(&opts);
-            *self.base_system_prompt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = rebuilt.clone();
+            *self
+                .base_system_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = rebuilt.clone();
             self.agent.set_system_prompt(rebuilt).await;
         }
     }
@@ -7127,7 +7408,10 @@ impl AgentSession {
     }
 
     pub fn subscribe(&self, listener: AgentSessionEventListener) -> SessionEventUnsubscribeHandle {
-        let mut listeners = self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut listeners = self
+            .event_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let index = listeners.len();
         listeners.push(listener);
         SessionEventUnsubscribeHandle {
@@ -7135,7 +7419,6 @@ impl AgentSession {
             index,
         }
     }
-
 
     /// Internal cleanup: abort in-flight operations, disconnect from agent,
     /// and clear event listeners.
@@ -7171,11 +7454,16 @@ impl AgentSession {
             warmer.cancel();
         }
         // Clear event listeners
-        self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        self.event_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Prompt cache warming status for `/session` (TS `get cacheWarmingStatus`).
-    pub async fn cache_warming_status(&self) -> Option<crate::core::cache_warmer::CacheWarmingStatus> {
+    pub async fn cache_warming_status(
+        &self,
+    ) -> Option<crate::core::cache_warmer::CacheWarmingStatus> {
         match &self.cache_warmer {
             Some(warmer) => Some(warmer.lock().await.status()),
             None => None,
@@ -7194,7 +7482,10 @@ impl AgentSession {
     /// This is a low-level operation; for full lifecycle management with
     /// extension events, use AgentSessionRuntime instead.
     pub fn replace_session_manager(&mut self, new_mgr: SessionManager) {
-        *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+        *self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
     }
 
     /// Create a new session (session manager level), matching the original
@@ -7212,19 +7503,28 @@ impl AgentSession {
             return false;
         }
 
-        let session_dir = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_session_dir().to_string_lossy().to_string();
-        let new_session_opts = parent_session.map(|p| {
-            crate::core::session_manager::NewSessionOptions {
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
+        let new_session_opts =
+            parent_session.map(|p| crate::core::session_manager::NewSessionOptions {
                 id: None,
                 parent_session: Some(p.to_string()),
-            }
-        });
+            });
         let new_mgr = SM::new(&self.cwd, &session_dir, None, true, new_session_opts);
-        let target_file = new_mgr.get_session_file().map(|p| p.to_string_lossy().into_owned());
+        let target_file = new_mgr
+            .get_session_file()
+            .map(|p| p.to_string_lossy().into_owned());
         // TS `teardownCurrent("new", target)`.
         self.dispatch_shutdown("new", target_file.as_deref()).await;
-        *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+        *self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
         true
     }
 
@@ -7235,7 +7535,11 @@ impl AgentSession {
     /// Fires `session_before_switch(reason="resume", target)` (can cancel) then
     /// `session_shutdown(reason="resume", target)`. `Ok(false)` means an
     /// extension cancelled the switch.
-    pub async fn session_mgr_switch(&self, session_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+    pub async fn session_mgr_switch(
+        &self,
+        session_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<bool, String> {
         use crate::core::session_manager::SessionManager as SM;
         let path = std::path::Path::new(session_path);
         if !path.exists() {
@@ -7245,16 +7549,27 @@ impl AgentSession {
             return Err(format!("Invalid session file: {}", session_path));
         }
         // TS `emitBeforeSwitch("resume", sessionPath)`.
-        if self.dispatch_before_switch("resume", Some(session_path)).await {
+        if self
+            .dispatch_before_switch("resume", Some(session_path))
+            .await
+        {
             return Ok(false);
         }
-        let session_dir = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_session_dir().to_string_lossy().to_string();
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
         let effective_cwd = cwd_override.unwrap_or(&self.cwd);
         let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
         // TS `teardownCurrent("resume", target)`.
         self.dispatch_shutdown("resume", Some(session_path)).await;
-        *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+        *self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
         self.load_messages_from_session().await;
         // The session changed: invalidate the JS extension runtime so stale
         // contexts are detected (assertActive / runtime.invalidate).
@@ -7290,7 +7605,8 @@ impl AgentSession {
             .cloned()
             .ok_or_else(|| format!("Invalid entry ID for forking: {entry_id}"))?;
 
-        let (target_leaf_id, selected_text): (Option<String>, Option<String>) = if position == "at" {
+        let (target_leaf_id, selected_text): (Option<String>, Option<String>) = if position == "at"
+        {
             (Some(entry.id().to_string()), None)
         } else {
             // TS: "before" requires a user message entry.
@@ -7382,13 +7698,25 @@ impl AgentSession {
     /// Switch without dispatching `session_before_switch`/`session_shutdown`
     /// (used internally by [`Self::session_mgr_fork`] which already emitted
     /// them with the correct `fork` reason).
-    async fn session_mgr_switch_inner(&self, session_path: &str, cwd_override: Option<&str>) -> Result<(), String> {
+    async fn session_mgr_switch_inner(
+        &self,
+        session_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<(), String> {
         use crate::core::session_manager::SessionManager as SM;
-        let session_dir = self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_session_dir().to_string_lossy().to_string();
+        let session_dir = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_session_dir()
+            .to_string_lossy()
+            .to_string();
         let effective_cwd = cwd_override.unwrap_or(&self.cwd);
         let new_mgr = SM::new(effective_cwd, &session_dir, Some(session_path), true, None);
-        *self.session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
+        *self
+            .session_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_mgr;
         self.load_messages_from_session().await;
         if let Some(ref invalidate) = self.js_invalidator {
             invalidate();
@@ -7460,7 +7788,10 @@ fn extract_user_message_text(message: &serde_json::Value) -> Option<String> {
         .iter()
         .filter_map(|block| {
             if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                block.get("text").and_then(|t| t.as_str()).map(str::to_string)
+                block
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
             } else {
                 None
             }
@@ -7635,9 +7966,9 @@ fn is_retryable_error(message: &AgentMessage, context_window: u64) -> bool {
                 response_id: None,
                 diagnostics: None,
                 usage: usage.clone(),
-                stop_reason: stop_reason.clone().unwrap_or(
-                    pi_agent_core::pi_ai_types::StopReason::Stop,
-                ),
+                stop_reason: stop_reason
+                    .clone()
+                    .unwrap_or(pi_agent_core::pi_ai_types::StopReason::Stop),
                 error_message: error_message.clone(),
                 raw_stop_reason: None,
                 end_turn: None,
@@ -7893,9 +8224,7 @@ mod tests {
     /// and deferral.
     /// Session whose manager is persisted into a temp dir (fork needs real
     /// session files).
-    async fn build_persisted_test_session(
-        dir: &tempfile::TempDir,
-    ) -> (AgentSession, ()) {
+    async fn build_persisted_test_session(dir: &tempfile::TempDir) -> (AgentSession, ()) {
         let cwd = dir.path().to_str().unwrap().to_string();
         let session_dir = dir.path().join("sessions");
         std::fs::create_dir_all(&session_dir).unwrap();
@@ -7982,7 +8311,7 @@ mod tests {
                 extension_registry: None,
                 session_start_reason: "startup".to_string(),
                 trust_override: None,
-            default_project_trust: None,
+                default_project_trust: None,
                 ui_context: None,
                 custom_tools: None,
                 tools_options: None,
@@ -8042,7 +8371,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(texts.iter().any(|t| t == "first"), "kept earlier turns: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t == "first"),
+            "kept earlier turns: {texts:?}"
+        );
         assert!(
             !texts.iter().any(|t| t == "second"),
             "the forked-before message must not be in the new session: {texts:?}"
@@ -8060,12 +8392,12 @@ mod tests {
             .map(str::to_string)
             .unwrap();
 
-        let outcome = session
-            .session_mgr_fork(&leaf, Some("at"))
-            .await
-            .unwrap();
+        let outcome = session.session_mgr_fork(&leaf, Some("at")).await.unwrap();
         assert!(!outcome.cancelled);
-        assert!(outcome.selected_text.is_none(), "at-fork has no selected text");
+        assert!(
+            outcome.selected_text.is_none(),
+            "at-fork has no selected text"
+        );
         let messages = session.get_messages().await;
         assert_eq!(messages.len(), 3, "all three entries kept: {messages:?}");
     }
@@ -8136,7 +8468,7 @@ mod tests {
                 extension_registry: registry,
                 session_start_reason: "startup".to_string(),
                 trust_override: None,
-            default_project_trust: None,
+                default_project_trust: None,
                 ui_context: None,
                 custom_tools: None,
                 tools_options: None,
@@ -8261,13 +8593,11 @@ mod tests {
 
         session._flush_pending_custom_messages().await;
 
-        assert!(
-            session
-                .pending_custom_messages
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty()
-        );
+        assert!(session
+            .pending_custom_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
         assert!(
             session
                 .get_session_manager()
@@ -8285,12 +8615,13 @@ mod tests {
     async fn thinking_level_changes_are_session_scoped() {
         let session = build_settle_test_session(None).await;
         let settings = Arc::clone(&session.settings_manager);
-        let default_level = |s: &Arc<std::sync::Mutex<crate::core::settings_manager::SettingsManager>>| {
-            s.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_default_thinking_level()
-                .map(std::string::ToString::to_string)
-        };
+        let default_level =
+            |s: &Arc<std::sync::Mutex<crate::core::settings_manager::SettingsManager>>| {
+                s.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_default_thinking_level()
+                    .map(std::string::ToString::to_string)
+            };
         assert_eq!(default_level(&settings), None, "fresh settings");
 
         session.set_thinking_level("high", false).await;
@@ -8548,7 +8879,10 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
 
-        session.prompt("from a settled handler", None).await.unwrap();
+        session
+            .prompt("from a settled handler", None)
+            .await
+            .unwrap();
 
         let queued = session
             .deferred_settled_actions
@@ -8769,7 +9103,11 @@ mod tests {
         .is_err());
     }
 
-    fn message_entry(role: &str, content: serde_json::Value, usage: Option<serde_json::Value>) -> SessionEntry {
+    fn message_entry(
+        role: &str,
+        content: serde_json::Value,
+        usage: Option<serde_json::Value>,
+    ) -> SessionEntry {
         let mut msg = serde_json::json!({ "role": role, "content": content });
         if let Some(u) = usage {
             msg["usage"] = u;
@@ -8797,7 +9135,11 @@ mod tests {
                 None,
             ),
             message_entry("toolResult", serde_json::json!([]), None),
-            message_entry("user", serde_json::json!([{ "type": "text", "text": "q" }]), None),
+            message_entry(
+                "user",
+                serde_json::json!([{ "type": "text", "text": "q" }]),
+                None,
+            ),
         ];
         let (user, assistant, tool_calls, tool_results, total, _, _) =
             compute_session_stats(entries.iter().collect());
@@ -8820,7 +9162,11 @@ mod tests {
             })
         };
         let entries = [
-            message_entry("assistant", serde_json::json!([]), Some(usage(100, 50, 0.5))),
+            message_entry(
+                "assistant",
+                serde_json::json!([]),
+                Some(usage(100, 50, 0.5)),
+            ),
             message_entry("toolResult", serde_json::json!([]), Some(usage(10, 0, 0.1))),
             SessionEntry::Compaction {
                 id: "c".into(),
@@ -8845,9 +9191,15 @@ mod tests {
     /// Quota/billing errors are not retryable; transient errors are.
     #[test]
     fn retryable_error_message_classification() {
-        assert!(is_retryable_error_message("529 overloaded_error: Overloaded"));
-        assert!(is_retryable_error_message("network error: connection refused"));
-        assert!(!is_retryable_error_message("insufficient_quota: out of credits"));
+        assert!(is_retryable_error_message(
+            "529 overloaded_error: Overloaded"
+        ));
+        assert!(is_retryable_error_message(
+            "network error: connection refused"
+        ));
+        assert!(!is_retryable_error_message(
+            "insufficient_quota: out of credits"
+        ));
         assert!(!is_retryable_error_message("billing issue on account"));
         assert!(!is_retryable_error_message("Monthly usage limit reached"));
         // opencode-go returns `server_error` (underscore) in the JSON type/code
@@ -8858,7 +9210,9 @@ mod tests {
         ));
         assert!(is_retryable_error_message("Service Unavailable"));
         assert!(is_retryable_error_message("rate_limit_exceeded"));
-        assert!(is_retryable_error_message("Request timed out: no data received for 300s"));
+        assert!(is_retryable_error_message(
+            "Request timed out: no data received for 300s"
+        ));
     }
 
     /// `extract_user_message_text` must handle both string content and
@@ -8893,6 +9247,9 @@ mod tests {
             })),
             None
         );
-        assert_eq!(extract_user_message_text(&serde_json::json!({"role": "user"})), None);
+        assert_eq!(
+            extract_user_message_text(&serde_json::json!({"role": "user"})),
+            None
+        );
     }
 }

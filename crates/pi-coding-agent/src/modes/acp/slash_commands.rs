@@ -47,12 +47,7 @@ fn parse_frontmatter(content: &str) -> (std::collections::HashMap<String, String
 }
 
 /// Recursively load `*.md` command files from `dir`.
-fn load_commands_from_dir(
-    dir: &Path,
-    source: &str,
-    subdir: &str,
-    out: &mut Vec<FileSlashCommand>,
-) {
+fn load_commands_from_dir(dir: &Path, source: &str, subdir: &str, out: &mut Vec<FileSlashCommand>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return, // silently skip unreadable dirs
@@ -87,10 +82,7 @@ fn load_commands_from_dir(
         } else {
             format!("({source}:{subdir})")
         };
-        let mut description = frontmatter
-            .get("description")
-            .cloned()
-            .unwrap_or_default();
+        let mut description = frontmatter.get("description").cloned().unwrap_or_default();
         if description.is_empty() {
             if let Some(first_line) = content.lines().find(|l| !l.trim().is_empty()) {
                 description = first_line.trim().to_string();
@@ -137,7 +129,10 @@ pub fn to_available_commands(file_commands: &[FileSlashCommand]) -> Vec<acp::Ava
         if !seen.insert(c.name.clone()) {
             continue;
         }
-        out.push(acp::AvailableCommand::new(c.name.clone(), c.description.clone()));
+        out.push(acp::AvailableCommand::new(
+            c.name.clone(),
+            c.description.clone(),
+        ));
     }
     out
 }
@@ -146,13 +141,22 @@ pub fn to_available_commands(file_commands: &[FileSlashCommand]) -> Vec<acp::Ava
 /// (mirrors pi-acp's `builtinAvailableCommands`).
 pub fn builtin_available_commands() -> Vec<acp::AvailableCommand> {
     [
-        ("compact", "Compact the session (optionally with custom instructions)"),
+        (
+            "compact",
+            "Compact the session (optionally with custom instructions)",
+        ),
         ("autocompact", "Toggle automatic compaction: on|off|toggle"),
         ("export", "Export the current session to HTML"),
-        ("session", "Show session stats (tokens/messages/cost/session file)"),
+        (
+            "session",
+            "Show session stats (tokens/messages/cost/session file)",
+        ),
         ("name", "Set session display name: /name <name>"),
         ("queue", "Set pi queue mode: all|one-at-a-time"),
-        ("changelog", "Print the installed pi changelog (best-effort)"),
+        (
+            "changelog",
+            "Print the installed pi changelog (best-effort)",
+        ),
         ("steering", "Get/set pi Steering Mode"),
         ("follow-up", "Get/set pi Follow-up Mode"),
     ]
@@ -295,13 +299,24 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         // User dir: {agent_dir}/prompts
         let agent_dir = base.path().join("agent");
-        write_cmd(&agent_dir.join("prompts"), "review.md", "---\ndescription: Code review\n---\nReview the code.\n");
+        write_cmd(
+            &agent_dir.join("prompts"),
+            "review.md",
+            "---\ndescription: Code review\n---\nReview the code.\n",
+        );
         // Project dir: {cwd}/.pi-rs/prompts (nested subdir)
         let cwd = base.path().join("proj");
-        write_cmd(&cwd.join(".pi-rs/prompts/frontend"), "fix.md", "Fix the frontend.\n");
+        write_cmd(
+            &cwd.join(".pi-rs/prompts/frontend"),
+            "fix.md",
+            "Fix the frontend.\n",
+        );
 
         // Point the agent dir at the temp location.
-        std::env::set_var("PI_CODING_AGENT_DIR", agent_dir.to_string_lossy().to_string());
+        std::env::set_var(
+            "PI_CODING_AGENT_DIR",
+            agent_dir.to_string_lossy().to_string(),
+        );
         let commands = load_slash_commands(&cwd.to_string_lossy());
         std::env::remove_var("PI_CODING_AGENT_DIR");
 

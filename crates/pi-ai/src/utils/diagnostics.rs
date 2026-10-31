@@ -41,5 +41,8 @@ pub fn append_assistant_message_diagnostic(
     message: &mut AssistantMessage,
     diagnostic: AssistantMessageDiagnostic,
 ) {
-    message.diagnostics.get_or_insert_with(Vec::new).push(diagnostic);
+    message
+        .diagnostics
+        .get_or_insert_with(Vec::new)
+        .push(diagnostic);
 }

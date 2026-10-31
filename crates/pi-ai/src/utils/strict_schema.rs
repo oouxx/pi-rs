@@ -37,10 +37,7 @@ fn is_structured_schema(schema: &Value) -> bool {
     }
     let types: Vec<&str> = match schema.get("type") {
         Some(Value::String(s)) => vec![s.as_str()],
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>(),
+        Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
         _ => Vec::new(),
     };
     types.iter().any(|t| *t == "object" || *t == "array")
@@ -247,14 +244,20 @@ mod tests {
         required.sort_unstable();
         assert_eq!(required, vec!["optional_field", "required_field"]);
         // Closed object.
-        assert_eq!(strict["additionalProperties"], serde_json::Value::Bool(false));
+        assert_eq!(
+            strict["additionalProperties"],
+            serde_json::Value::Bool(false)
+        );
         // Optional non-nullable property widened to anyOf [schema, null].
         assert_eq!(
             strict["properties"]["optional_field"],
             serde_json::json!({"anyOf": [{"type": "string"}, {"type": "null"}]})
         );
         // Required property untouched.
-        assert_eq!(strict["properties"]["required_field"], serde_json::json!({"type": "string"}));
+        assert_eq!(
+            strict["properties"]["required_field"],
+            serde_json::json!({"type": "string"})
+        );
     }
 
     #[test]
@@ -306,7 +309,10 @@ mod tests {
             schema
         );
         let strict = get_json_schema_tool_parameters(&schema, Some(true)).unwrap();
-        assert_eq!(strict["additionalProperties"], serde_json::Value::Bool(false));
+        assert_eq!(
+            strict["additionalProperties"],
+            serde_json::Value::Bool(false)
+        );
         assert_eq!(strict["required"], serde_json::json!([]));
     }
 }

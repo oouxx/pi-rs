@@ -9,8 +9,7 @@ use std::sync::Mutex;
 
 use super::*;
 use pi_extension_api::{
-    create_builtin_source_info, ExtensionContext, ExtensionUIContext, RuntimeHandle,
-    ToolInvocation,
+    create_builtin_source_info, ExtensionContext, ExtensionUIContext, RuntimeHandle, ToolInvocation,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

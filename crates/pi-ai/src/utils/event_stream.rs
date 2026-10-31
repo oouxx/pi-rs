@@ -27,7 +27,7 @@ impl AssistantMessageEventStream {
     }
 
     /// Create an event stream from a channel receiver.
-    #[must_use] 
+    #[must_use]
     pub fn from_receiver(rx: mpsc::UnboundedReceiver<AssistantMessageEvent>) -> Self {
         Self::new(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }

@@ -35,15 +35,14 @@ pub(crate) fn tool_call_output_to_agent_result(
         terminate: output.terminate,
     };
     if output.is_error {
-        let error: Box<dyn std::error::Error + Send + Sync> =
-            Box::new(ToolExecutionError::new(
-                result,
-                if message.is_empty() {
-                    "Tool execution failed".to_string()
-                } else {
-                    message
-                },
-            ));
+        let error: Box<dyn std::error::Error + Send + Sync> = Box::new(ToolExecutionError::new(
+            result,
+            if message.is_empty() {
+                "Tool execution failed".to_string()
+            } else {
+                message
+            },
+        ));
         Err(error)
     } else {
         Ok(result)
@@ -56,11 +55,7 @@ type ToolExecuteFn<TDetails> = Arc<
             String,
             serde_json::Value,
             Option<tokio::sync::watch::Receiver<bool>>,
-            Option<
-                Arc<
-                    dyn Fn(pi_agent_core::types::AgentToolResult<TDetails>) + Send + Sync,
-                >,
-            >,
+            Option<Arc<dyn Fn(pi_agent_core::types::AgentToolResult<TDetails>) + Send + Sync>>,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
@@ -88,13 +83,10 @@ where
         .parameters
         .clone()
         .unwrap_or(serde_json::Value::Null);
-    let exec_mode = definition
-        .execution_mode
-        .as_deref()
-        .and_then(|m| match m {
-            "sequential" => Some(pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential),
-            _ => None,
-        });
+    let exec_mode = definition.execution_mode.as_deref().and_then(|m| match m {
+        "sequential" => Some(pi_agent_core::pi_ai_types::ToolExecutionMode::Sequential),
+        _ => None,
+    });
 
     let execute: ToolExecuteFn<TDetails> = if let Some(ref tool_exec) = definition.execute {
         let exec = tool_exec.clone();
@@ -110,9 +102,8 @@ where
                 let details: TDetails = output
                     .details
                     .map(|v| {
-                        serde_json::from_value(v).unwrap_or_else(|e| {
-                            panic!("failed to deserialize tool details: {e}")
-                        })
+                        serde_json::from_value(v)
+                            .unwrap_or_else(|e| panic!("failed to deserialize tool details: {e}"))
                     })
                     .unwrap_or_else(|| {
                         serde_json::from_value(serde_json::Value::Null).unwrap_or_else(|e| {
@@ -133,11 +124,9 @@ where
                         usage: result.usage,
                         terminate: result.terminate,
                     };
-                    let error: Box<dyn std::error::Error + Send + Sync> =
-                        Box::new(ToolExecutionError::new(
-                            failure_result,
-                            "Tool execution failed",
-                        ));
+                    let error: Box<dyn std::error::Error + Send + Sync> = Box::new(
+                        ToolExecutionError::new(failure_result, "Tool execution failed"),
+                    );
                     Err(error)
                 } else {
                     Ok(result)
@@ -277,7 +266,7 @@ mod tests {
                 execution_mode: None,
                 execute: None,
                 render: None,
-            source_info: None,
+                source_info: None,
             },
             ToolDefinition {
                 constrained_sampling: None,
@@ -291,7 +280,7 @@ mod tests {
                 execution_mode: None,
                 execute: None,
                 render: None,
-            source_info: None,
+                source_info: None,
             },
         ];
 

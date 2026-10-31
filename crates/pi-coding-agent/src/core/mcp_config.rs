@@ -161,8 +161,11 @@ fn resolve_map(
 ) -> Result<BTreeMap<String, String>, String> {
     let mut resolved = BTreeMap::new();
     for (key, value) in map.iter().flat_map(|m| m.iter()) {
-        let value = resolve_config_value_or_throw(value, &format!("MCP server \"{name}\" {what} \"{key}\""))
-            .map_err(|e| format!("server \"{name}\": {e}"))?;
+        let value = resolve_config_value_or_throw(
+            value,
+            &format!("MCP server \"{name}\" {what} \"{key}\""),
+        )
+        .map_err(|e| format!("server \"{name}\": {e}"))?;
         resolved.insert(key.clone(), value);
     }
     Ok(resolved)
@@ -330,10 +333,7 @@ mod tests {
             r#"{"mcpServers":{"fs":{"url":"https://example.com/mcp"},"proj":{"command":"y"}}}"#,
         );
 
-        let (servers, errors) = load_servers(
-            cwd.to_str().unwrap(),
-            agent_dir.to_str().unwrap(),
-        );
+        let (servers, errors) = load_servers(cwd.to_str().unwrap(), agent_dir.to_str().unwrap());
         assert!(errors.is_empty(), "{errors:?}");
         let names: Vec<_> = servers.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["fs", "old", "proj"]);
@@ -350,8 +350,7 @@ mod tests {
             &agent_dir.join("mcp.json"),
             r#"{"mcpServers":{"on":{"command":"a"},"off":{"command":"b","enabled":false}}}"#,
         );
-        let (specs, errors) =
-            load_specs(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
+        let (specs, errors) = load_specs(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "on");
@@ -365,8 +364,7 @@ mod tests {
             &agent_dir.join("mcp.json"),
             r#"{"mcpServers":{"l":{"type":"sse","url":"https://example.com/sse"}}}"#,
         );
-        let (specs, errors) =
-            load_specs(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
+        let (specs, errors) = load_specs(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         assert!(errors.is_empty(), "{errors:?}");
         assert!(matches!(specs[0].transport, McpTransportSpec::Sse { .. }));
     }
@@ -379,8 +377,7 @@ mod tests {
             &agent_dir.join("mcp.json"),
             r#"{"mcpServers":{"bad":{"type":"sse","command":"x"},"good":{"command":"a"}}}"#,
         );
-        let (specs, errors) =
-            load_specs(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
+        let (specs, errors) = load_specs(dir.path().to_str().unwrap(), agent_dir.to_str().unwrap());
         assert_eq!(errors.len(), 1);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "good");

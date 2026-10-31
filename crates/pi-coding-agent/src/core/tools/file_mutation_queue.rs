@@ -81,7 +81,10 @@ mod tests {
                     prev
                 })
                 .await;
-                results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(val);
+                results
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(val);
             }));
         }
 
@@ -89,7 +92,10 @@ mod tests {
             h.await.unwrap();
         }
 
-        let final_results = results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let final_results = results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(final_results.len(), 5);
         for (i, &val) in final_results.iter().enumerate() {
             assert_eq!(val, i, "expected {} but got {} at position {}", i, val, i);
@@ -143,23 +149,38 @@ mod tests {
 
         let h1 = tokio::spawn(async move {
             with_file_mutation_queue(&target, || async {
-                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("target:start");
+                order1
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("target:start");
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("target:end");
+                order1
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("target:end");
             })
             .await;
         });
 
         let h2 = tokio::spawn(async move {
             with_file_mutation_queue(&symlink, || async {
-                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("alias:start");
-                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("alias:end");
+                order2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("alias:start");
+                order2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("alias:end");
             })
             .await;
         });
 
         let _ = tokio::join!(h1, h2);
-        let final_order = order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let final_order = order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             final_order,
             vec!["target:start", "target:end", "alias:start", "alias:end"]
@@ -170,7 +191,9 @@ mod tests {
     async fn test_parallel_edits_same_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let file_path = dir.path().join("parallel-edit.txt");
-        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n").await.unwrap();
+        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n")
+            .await
+            .unwrap();
 
         let path = file_path.to_string_lossy().to_string();
         let path2 = path.clone();
@@ -199,7 +222,11 @@ mod tests {
         let content = tokio::fs::read_to_string(&file_path).await.unwrap();
         // Both edits should be applied because the queue serializes them
         // The second edit reads the file after the first edit wrote it
-        assert_eq!(content, "ALPHA\nBETA\ngamma\n", "Unexpected content: {}", content);
+        assert_eq!(
+            content, "ALPHA\nBETA\ngamma\n",
+            "Unexpected content: {}",
+            content
+        );
     }
 
     // TS: "shares the queue between edit and write" — verifies that the same
@@ -218,12 +245,18 @@ mod tests {
         let p1 = path.clone();
         let h1 = tokio::spawn(async move {
             with_file_mutation_queue(&p1, || async {
-                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("edit:start");
+                order1
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("edit:start");
                 let content = tokio::fs::read_to_string(&p1).await.unwrap();
                 let new_content = content.replace("original", "edited");
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
                 tokio::fs::write(&p1, &new_content).await.unwrap();
-                order1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("edit:end");
+                order1
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("edit:end");
             })
             .await;
         });
@@ -234,23 +267,35 @@ mod tests {
         let p2 = path.clone();
         let h2 = tokio::spawn(async move {
             with_file_mutation_queue(&p2, || async {
-                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("write:start");
+                order2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("write:start");
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 tokio::fs::write(&p2, "replacement\n").await.unwrap();
-                order2.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("write:end");
+                order2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("write:end");
             })
             .await;
         });
 
         let _ = tokio::join!(h1, h2);
-        let final_order = order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let final_order = order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
 
         // Operations on the same file must be serialized
         assert_eq!(final_order.len(), 4);
         // The edit must complete before the write starts (or vice versa, but
         // since edit starts first, it should finish first)
         let edit_end_idx = final_order.iter().position(|s| s == &"edit:end").unwrap();
-        let write_start_idx = final_order.iter().position(|s| s == &"write:start").unwrap();
+        let write_start_idx = final_order
+            .iter()
+            .position(|s| s == &"write:start")
+            .unwrap();
         assert!(
             edit_end_idx < write_start_idx,
             "edit should complete before write starts, order: {:?}",
@@ -322,10 +367,16 @@ mod tests {
         let _ = tokio::join!(h1, h2);
 
         // The second operation should have started (eventually)
-        assert!(second_started.load(Ordering::SeqCst), "second operation should have started");
+        assert!(
+            second_started.load(Ordering::SeqCst),
+            "second operation should have started"
+        );
 
         let content = tokio::fs::read_to_string(&file_path).await.unwrap();
-        assert_eq!(content, "second\n", "second write should be the final content");
+        assert_eq!(
+            content, "second\n",
+            "second write should be the final content"
+        );
     }
 
     // TS: "keeps edit queue locked while an aborted edit write is still in flight"
@@ -383,10 +434,16 @@ mod tests {
 
         let _ = tokio::join!(h1, h2);
 
-        assert!(second_started.load(Ordering::SeqCst), "second edit should have started");
+        assert!(
+            second_started.load(Ordering::SeqCst),
+            "second edit should have started"
+        );
 
         // Both edits should be applied (serialized)
         let content = tokio::fs::read_to_string(&file_path).await.unwrap();
-        assert_eq!(content, "ALPHA\nBETA\n", "both edits should be applied in order");
+        assert_eq!(
+            content, "ALPHA\nBETA\n",
+            "both edits should be applied in order"
+        );
     }
 }

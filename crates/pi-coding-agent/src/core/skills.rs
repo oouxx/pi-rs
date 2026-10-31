@@ -74,9 +74,13 @@ fn validate_name(name: &str) -> Vec<String> {
         ));
     }
 
-    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
         errors.push(
-            "name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)".to_string(),
+            "name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)"
+                .to_string(),
         );
     }
 
@@ -170,11 +174,7 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String, bool) {
         }
     };
 
-    (
-        frontmatter,
-        body,
-        true,
-    )
+    (frontmatter, body, true)
 }
 
 // ============================================================================
@@ -201,10 +201,7 @@ pub fn create_skill_source_info(file_path: &str, base_dir: &str, source: &str) -
 // ============================================================================
 
 /// Load a single skill from a markdown file.
-fn load_skill_from_file(
-    file_path: &str,
-    source: &str,
-) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
+fn load_skill_from_file(file_path: &str, source: &str) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
     let mut diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
     let content = match std::fs::read_to_string(file_path) {
@@ -250,10 +247,7 @@ fn load_skill_from_file(
     }
 
     // Use name from frontmatter, or fall back to parent directory name
-    let name = frontmatter
-        .name
-        .clone()
-        .unwrap_or(parent_dir_name);
+    let name = frontmatter.name.clone().unwrap_or(parent_dir_name);
 
     // Validate name
     let name_errors = validate_name(&name);
@@ -344,7 +338,9 @@ fn load_ignore_rules(dir: &Path) -> IgnoreMatcher {
                 .lines()
                 .filter_map(|line| {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() || (trimmed.starts_with('#') && !trimmed.starts_with("\\#")) {
+                    if trimmed.is_empty()
+                        || (trimmed.starts_with('#') && !trimmed.starts_with("\\#"))
+                    {
                         return None;
                     }
                     let pattern = trimmed.to_string();
@@ -615,11 +611,8 @@ fn rebase_skill_source_info(
     source: &str,
 ) -> (Vec<Skill>, Vec<ResourceDiagnostic>) {
     for skill in &mut result.0 {
-        skill.source_info = create_skill_source_info(
-            &skill.file_path,
-            &base_dir.to_string_lossy(),
-            source,
-        );
+        skill.source_info =
+            create_skill_source_info(&skill.file_path, &base_dir.to_string_lossy(), source);
     }
     result
 }
@@ -1245,7 +1238,8 @@ mod tests {
         let cwd = repo.join("link").join("sub");
         let dirs = collect_ancestor_agents_skill_dirs(&cwd.to_string_lossy());
         assert!(
-            dirs.iter().any(|dir| Path::new(dir) == repo.join(".agents").join("skills")),
+            dirs.iter()
+                .any(|dir| Path::new(dir) == repo.join(".agents").join("skills")),
             "git root must remain in the lexical walk: {dirs:?}"
         );
     }
@@ -1375,4 +1369,5 @@ mod tests {
             .collect();
         assert_eq!(shared.len(), 1, "diagnostics: {:?}", result.diagnostics);
         assert_eq!(shared[0].source_info.scope, SourceScope::User);
-    }}
+    }
+}

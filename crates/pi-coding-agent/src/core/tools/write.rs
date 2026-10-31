@@ -26,16 +26,9 @@ pub struct WriteToolInput {
 /// Pluggable operations for the write tool.
 /// Override these to delegate file writing to remote systems (for example SSH).
 pub trait WriteOperations: Send + Sync {
-    fn write_file(
-        &self,
-        path: &str,
-        content: &str,
-    ) -> crate::core::tools::AsyncOpResult<()>;
+    fn write_file(&self, path: &str, content: &str) -> crate::core::tools::AsyncOpResult<()>;
 
-    fn mkdir(
-        &self,
-        dir: &str,
-    ) -> crate::core::tools::AsyncOpResult<()>;
+    fn mkdir(&self, dir: &str) -> crate::core::tools::AsyncOpResult<()>;
 }
 
 // ============================================================================
@@ -45,11 +38,7 @@ pub trait WriteOperations: Send + Sync {
 pub struct LocalWriteOperations;
 
 impl WriteOperations for LocalWriteOperations {
-    fn write_file(
-        &self,
-        path: &str,
-        content: &str,
-    ) -> crate::core::tools::AsyncOpResult<()> {
+    fn write_file(&self, path: &str, content: &str) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
@@ -59,10 +48,7 @@ impl WriteOperations for LocalWriteOperations {
         })
     }
 
-    fn mkdir(
-        &self,
-        dir: &str,
-    ) -> crate::core::tools::AsyncOpResult<()> {
+    fn mkdir(&self, dir: &str) -> crate::core::tools::AsyncOpResult<()> {
         let dir = dir.to_string();
         Box::pin(async move {
             tokio::fs::create_dir_all(&dir)
@@ -131,12 +117,15 @@ pub fn create_write_tool(
     AgentTool {
         constrained_sampling: super::preferred_json_schema_sampling(),
         name: "write".to_string(),
-        description: "Write content to a file. Creates the file if it doesn't exist, overwrites if \
+        description:
+            "Write content to a file. Creates the file if it doesn't exist, overwrites if \
                       it does. Automatically creates parent directories."
-            .to_string(),
+                .to_string(),
         label: "write".to_string(),
         prompt_snippet: Some("Create or overwrite files".to_string()),
-        prompt_guidelines: Some(vec!["Use write only for new files or complete rewrites.".to_string()]),
+        prompt_guidelines: Some(vec![
+            "Use write only for new files or complete rewrites.".to_string()
+        ]),
         parameters_schema: write_parameters_schema(),
         execution_mode: None,
         prepare_arguments: None,
@@ -172,7 +161,8 @@ pub fn create_write_tool(
                                         return Err(Box::new(std::io::Error::new(
                                             std::io::ErrorKind::Interrupted,
                                             "Operation aborted",
-                                        )) as Box<dyn std::error::Error + Send + Sync>);
+                                        ))
+                                            as Box<dyn std::error::Error + Send + Sync>);
                                     }
                                 }
                                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -191,17 +181,18 @@ pub fn create_write_tool(
                             ops.write_file(&abs_path, &cnt).await?;
                             throw_if_aborted()?;
 
-                            Ok::<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>(
-                                AgentToolResult {
-                                    content: vec![ContentBlock::text(format!(
-                                        "Successfully wrote to {}",
-                                        fp
-                                    ))],
-                                    details: serde_json::Value::Null,
-                                    usage: None,
-                                    terminate: None,
-                                }
-                            )
+                            Ok::<
+                                AgentToolResult<serde_json::Value>,
+                                Box<dyn std::error::Error + Send + Sync>,
+                            >(AgentToolResult {
+                                content: vec![ContentBlock::text(format!(
+                                    "Successfully wrote to {}",
+                                    fp
+                                ))],
+                                details: serde_json::Value::Null,
+                                usage: None,
+                                terminate: None,
+                            })
                         }
                     })
                     .await

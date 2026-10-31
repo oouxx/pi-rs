@@ -122,7 +122,10 @@ pub struct SourcedPromptTemplateDiagnostic<S: Clone = String> {
 pub async fn load_sourced_prompt_templates<S: Clone>(
     env: &dyn ExecutionEnv,
     inputs: &[SourcedTemplateInput<S>],
-) -> (Vec<(PromptTemplate, S)>, Vec<SourcedPromptTemplateDiagnostic<S>>) {
+) -> (
+    Vec<(PromptTemplate, S)>,
+    Vec<SourcedPromptTemplateDiagnostic<S>>,
+) {
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -195,14 +198,22 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
 
     re.replace_all(content, |caps: &regex::Captures| {
         if let Some(default_target) = caps.get(1) {
-            let value = if default_target.as_str() == "@" || default_target.as_str() == "ARGUMENTS" {
+            let value = if default_target.as_str() == "@" || default_target.as_str() == "ARGUMENTS"
+            {
                 all_args.clone()
             } else {
                 let num: usize = default_target.as_str().parse().unwrap_or(0);
                 args.get(num.saturating_sub(1)).cloned().unwrap_or_default()
             };
-            let default_value = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
-            return if value.is_empty() { default_value } else { value };
+            let default_value = caps
+                .get(2)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            return if value.is_empty() {
+                default_value
+            } else {
+                value
+            };
         }
 
         if let Some(slice_start) = caps.get(3) {
@@ -281,7 +292,9 @@ mod tests {
 
     /// Helper to create a temp dir with test template files using NodeExecutionEnv.
     async fn setup_test_env(dir_name: &str, files: &[(&str, &str)]) -> (NodeExecutionEnv, String) {
-        let base = std::env::temp_dir().join("pi_test_prompt_templates").join(dir_name);
+        let base = std::env::temp_dir()
+            .join("pi_test_prompt_templates")
+            .join(dir_name);
         let _ = fs::remove_dir_all(&base).await;
         fs::create_dir_all(&base).await.unwrap();
         for (name, content) in files {
@@ -474,9 +487,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_prompt_templates_with_file() {
-        let (env, path) = setup_test_env("with_file", &[
-            ("hello.md", "---\nname: hello\ndescription: Say hello\n---\nHello $1!"),
-        ]).await;
+        let (env, path) = setup_test_env(
+            "with_file",
+            &[(
+                "hello.md",
+                "---\nname: hello\ndescription: Say hello\n---\nHello $1!",
+            )],
+        )
+        .await;
         let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
         assert!(diagnostics.is_empty());
         assert_eq!(templates.len(), 1);
@@ -488,10 +506,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_prompt_templates_skips_no_frontmatter() {
-        let (env, path) = setup_test_env("skip_no_fm", &[
-            ("no_fm.md", "Just text without frontmatter"),
-            ("has_fm.md", "---\nname: ok\n---\nTemplate body"),
-        ]).await;
+        let (env, path) = setup_test_env(
+            "skip_no_fm",
+            &[
+                ("no_fm.md", "Just text without frontmatter"),
+                ("has_fm.md", "---\nname: ok\n---\nTemplate body"),
+            ],
+        )
+        .await;
         let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, "ok");
@@ -502,9 +524,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_prompt_templates_diagnostic_on_missing_name() {
-        let (env, path) = setup_test_env("missing_name", &[
-            ("no_name.md", "---\ndescription: no name\n---\nBody"),
-        ]).await;
+        let (env, path) = setup_test_env(
+            "missing_name",
+            &[("no_name.md", "---\ndescription: no name\n---\nBody")],
+        )
+        .await;
         let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
         assert!(templates.is_empty());
         assert_eq!(diagnostics.len(), 1);
@@ -514,16 +538,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_sourced_prompt_templates() {
-        let (env, path_a) = setup_test_env("sourced_a", &[
-            ("a.md", "---\nname: a\n---\nTemplate A"),
-        ]).await;
-        let (_, path_b) = setup_test_env("sourced_b", &[
-            ("b.md", "---\nname: b\n---\nTemplate B"),
-        ]).await;
+        let (env, path_a) =
+            setup_test_env("sourced_a", &[("a.md", "---\nname: a\n---\nTemplate A")]).await;
+        let (_, path_b) =
+            setup_test_env("sourced_b", &[("b.md", "---\nname: b\n---\nTemplate B")]).await;
 
         let inputs = vec![
-            SourcedTemplateInput { path: path_a.clone(), source: "source_a".to_string() },
-            SourcedTemplateInput { path: path_b.clone(), source: "source_b".to_string() },
+            SourcedTemplateInput {
+                path: path_a.clone(),
+                source: "source_a".to_string(),
+            },
+            SourcedTemplateInput {
+                path: path_b.clone(),
+                source: "source_b".to_string(),
+            },
         ];
 
         let (templates, diagnostics) = load_sourced_prompt_templates(&env, &inputs).await;

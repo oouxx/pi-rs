@@ -39,10 +39,17 @@ fn split_lines_for_counting(content: &str) -> Vec<&str> {
     if content.is_empty() {
         return vec![];
     }
-    let raw: Vec<&str> = content.split("
-").collect();
-    if content.ends_with("
-") && raw.len() > 1 {
+    let raw: Vec<&str> = content
+        .split(
+            "
+",
+        )
+        .collect();
+    if content.ends_with(
+        "
+",
+    ) && raw.len() > 1
+    {
         raw[..raw.len() - 1].to_vec()
     } else {
         raw
@@ -191,7 +198,11 @@ pub fn truncate_tail(content: &str, options: Option<TruncationOptions>) -> Trunc
     };
     let lines: Vec<String> = raw_lines
         .iter()
-        .take(if has_trailing_newline { raw_lines.len() - 1 } else { raw_lines.len() })
+        .take(if has_trailing_newline {
+            raw_lines.len() - 1
+        } else {
+            raw_lines.len()
+        })
         .map(|s| s.to_string())
         .collect();
 
@@ -273,7 +284,11 @@ pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
     let max = max_chars.unwrap_or(GREP_MAX_LINE_LENGTH);
     // Use char_indices to safely find the byte boundary of the max-th character.
     // This avoids panicking on multi-byte UTF-8 characters (e.g. CJK, emoji).
-    let byte_pos = line.char_indices().nth(max).map(|(pos, _)| pos).unwrap_or(line.len());
+    let byte_pos = line
+        .char_indices()
+        .nth(max)
+        .map(|(pos, _)| pos)
+        .unwrap_or(line.len());
     if byte_pos >= line.len() {
         return (line.to_string(), false);
     }
@@ -361,152 +376,157 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_truncate_line_utf8_multi_byte() {
-        // CJK characters are multi-byte in UTF-8
-        let cjk = "你好世界"; // 4 chars, 12 bytes
-        let (text, was_truncated) = truncate_line(cjk, Some(2));
-        assert!(was_truncated);
-        assert!(text.ends_with("[truncated]"));
-        // Should not panic (byte slicing would panic on multi-byte chars)
-        // Just verify it doesn't panic on multi-byte chars
-        assert_eq!(text, "你好... [truncated]");
-    }
+#[test]
+fn test_truncate_line_utf8_multi_byte() {
+    // CJK characters are multi-byte in UTF-8
+    let cjk = "你好世界"; // 4 chars, 12 bytes
+    let (text, was_truncated) = truncate_line(cjk, Some(2));
+    assert!(was_truncated);
+    assert!(text.ends_with("[truncated]"));
+    // Should not panic (byte slicing would panic on multi-byte chars)
+    // Just verify it doesn't panic on multi-byte chars
+    assert_eq!(text, "你好... [truncated]");
+}
 
-    #[test]
-    fn test_truncate_line_exact_boundary() {
-        let line = "a".repeat(500);
-        let (text, was_truncated) = truncate_line(&line, Some(500));
-        assert!(!was_truncated);
-        assert_eq!(text.len(), 500);
-    }
+#[test]
+fn test_truncate_line_exact_boundary() {
+    let line = "a".repeat(500);
+    let (text, was_truncated) = truncate_line(&line, Some(500));
+    assert!(!was_truncated);
+    assert_eq!(text.len(), 500);
+}
 
-    #[test]
-    fn test_truncate_line_one_over() {
-        let line = "a".repeat(501);
-        let (text, was_truncated) = truncate_line(&line, Some(500));
-        assert!(was_truncated);
-        assert!(text.ends_with("[truncated]"));
-    }
+#[test]
+fn test_truncate_line_one_over() {
+    let line = "a".repeat(501);
+    let (text, was_truncated) = truncate_line(&line, Some(500));
+    assert!(was_truncated);
+    assert!(text.ends_with("[truncated]"));
+}
 
-    #[test]
-    fn test_truncate_head_by_bytes() {
-        // Create content where byte limit is hit before line limit
-        let content = "short line\nanother short line\n";
-        let result = truncate_head(
-            content,
-            Some(TruncationOptions {
-                max_lines: Some(10),
-                max_bytes: Some(20),
-            }),
-        );
-        assert!(result.truncated);
-        assert_eq!(result.truncated_by, Some("bytes".to_string()));
-    }
+#[test]
+fn test_truncate_head_by_bytes() {
+    // Create content where byte limit is hit before line limit
+    let content = "short line\nanother short line\n";
+    let result = truncate_head(
+        content,
+        Some(TruncationOptions {
+            max_lines: Some(10),
+            max_bytes: Some(20),
+        }),
+    );
+    assert!(result.truncated);
+    assert_eq!(result.truncated_by, Some("bytes".to_string()));
+}
 
-    #[test]
-    fn test_truncate_tail_by_lines() {
-        let content = (1..=10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let result = truncate_tail(
-            &content,
-            Some(TruncationOptions {
-                max_lines: Some(3),
-                max_bytes: Some(1024),
-            }),
-        );
-        assert!(result.truncated);
-        assert_eq!(result.truncated_by, Some("lines".to_string()));
-        assert_eq!(result.output_lines, 3);
-        // Should keep last 3 lines
-        assert!(result.content.contains("line 8"));
-        assert!(result.content.contains("line 10"));
-    }
+#[test]
+fn test_truncate_tail_by_lines() {
+    let content = (1..=10)
+        .map(|i| format!("line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let result = truncate_tail(
+        &content,
+        Some(TruncationOptions {
+            max_lines: Some(3),
+            max_bytes: Some(1024),
+        }),
+    );
+    assert!(result.truncated);
+    assert_eq!(result.truncated_by, Some("lines".to_string()));
+    assert_eq!(result.output_lines, 3);
+    // Should keep last 3 lines
+    assert!(result.content.contains("line 8"));
+    assert!(result.content.contains("line 10"));
+}
 
-    #[test]
-    fn test_truncate_tail_by_bytes() {
-        let content = (1..=10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let result = truncate_tail(
-            &content,
-            Some(TruncationOptions {
-                max_lines: Some(10),
-                max_bytes: Some(30),
-            }),
-        );
-        assert!(result.truncated);
-        assert_eq!(result.truncated_by, Some("bytes".to_string()));
-    }
+#[test]
+fn test_truncate_tail_by_bytes() {
+    let content = (1..=10)
+        .map(|i| format!("line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let result = truncate_tail(
+        &content,
+        Some(TruncationOptions {
+            max_lines: Some(10),
+            max_bytes: Some(30),
+        }),
+    );
+    assert!(result.truncated);
+    assert_eq!(result.truncated_by, Some("bytes".to_string()));
+}
 
-    #[test]
-    fn test_truncate_tail_last_line_partial() {
-        // When the last line alone exceeds max_bytes, should take partial from end
-        let long_line = "a".repeat(200);
-        let content = format!("short\n{}", long_line);
-        let result = truncate_tail(
-            &content,
-            Some(TruncationOptions {
-                max_lines: Some(10),
-                max_bytes: Some(50),
-            }),
-        );
-        assert!(result.truncated);
-        assert!(result.last_line_partial);
-        assert_eq!(result.output_lines, 1);
-    }
+#[test]
+fn test_truncate_tail_last_line_partial() {
+    // When the last line alone exceeds max_bytes, should take partial from end
+    let long_line = "a".repeat(200);
+    let content = format!("short\n{}", long_line);
+    let result = truncate_tail(
+        &content,
+        Some(TruncationOptions {
+            max_lines: Some(10),
+            max_bytes: Some(50),
+        }),
+    );
+    assert!(result.truncated);
+    assert!(result.last_line_partial);
+    assert_eq!(result.output_lines, 1);
+}
 
-    #[test]
-    fn test_truncate_string_to_bytes_from_end() {
-        let s = "hello world";
-        let result = truncate_string_to_bytes_from_end(s, 5);
-        assert_eq!(result, "world");
+#[test]
+fn test_truncate_string_to_bytes_from_end() {
+    let s = "hello world";
+    let result = truncate_string_to_bytes_from_end(s, 5);
+    assert_eq!(result, "world");
 
-        // No truncation needed
-        let result = truncate_string_to_bytes_from_end(s, 100);
-        assert_eq!(result, s);
-    }
+    // No truncation needed
+    let result = truncate_string_to_bytes_from_end(s, 100);
+    assert_eq!(result, s);
+}
 
-    #[test]
-    fn test_truncate_string_to_bytes_from_end_utf8() {
-        // Multi-byte UTF-8: "你好世界" is 12 bytes
-        let s = "你好世界";
-        let result = truncate_string_to_bytes_from_end(s, 6);
-        // Should not split in the middle of a character
-        assert_eq!(result, "世界");
-    }
+#[test]
+fn test_truncate_string_to_bytes_from_end_utf8() {
+    // Multi-byte UTF-8: "你好世界" is 12 bytes
+    let s = "你好世界";
+    let result = truncate_string_to_bytes_from_end(s, 6);
+    // Should not split in the middle of a character
+    assert_eq!(result, "世界");
+}
 
-    #[test]
-    fn test_split_lines_for_counting() {
-        assert_eq!(split_lines_for_counting(""), Vec::<&str>::new());
-        assert_eq!(split_lines_for_counting("single"), vec!["single"]);
-        assert_eq!(split_lines_for_counting("a\nb\nc"), vec!["a", "b", "c"]);
-        // Trailing newline should be stripped
-        assert_eq!(split_lines_for_counting("a\nb\nc\n"), vec!["a", "b", "c"]);
-        // Empty lines should be preserved
-        assert_eq!(split_lines_for_counting("a\n\nc"), vec!["a", "", "c"]);
-    }
+#[test]
+fn test_split_lines_for_counting() {
+    assert_eq!(split_lines_for_counting(""), Vec::<&str>::new());
+    assert_eq!(split_lines_for_counting("single"), vec!["single"]);
+    assert_eq!(split_lines_for_counting("a\nb\nc"), vec!["a", "b", "c"]);
+    // Trailing newline should be stripped
+    assert_eq!(split_lines_for_counting("a\nb\nc\n"), vec!["a", "b", "c"]);
+    // Empty lines should be preserved
+    assert_eq!(split_lines_for_counting("a\n\nc"), vec!["a", "", "c"]);
+}
 
-    #[test]
-    fn test_format_size_edge_cases() {
-        assert_eq!(format_size(0), "0B");
-        assert_eq!(format_size(1023), "1023B");
-        assert_eq!(format_size(1024), "1.0KB");
-        assert_eq!(format_size(1536), "1.5KB");
-        assert_eq!(format_size(1024 * 1024), "1.0MB");
-        assert_eq!(format_size(1024 * 1024 * 2), "2.0MB");
-    }
+#[test]
+fn test_format_size_edge_cases() {
+    assert_eq!(format_size(0), "0B");
+    assert_eq!(format_size(1023), "1023B");
+    assert_eq!(format_size(1024), "1.0KB");
+    assert_eq!(format_size(1536), "1.5KB");
+    assert_eq!(format_size(1024 * 1024), "1.0MB");
+    assert_eq!(format_size(1024 * 1024 * 2), "2.0MB");
+}
 
-    #[test]
-    fn test_truncate_head_empty_content() {
-        let result = truncate_head("", None);
-        assert!(!result.truncated);
-        assert_eq!(result.total_lines, 0);
-        assert_eq!(result.content, "");
-    }
+#[test]
+fn test_truncate_head_empty_content() {
+    let result = truncate_head("", None);
+    assert!(!result.truncated);
+    assert_eq!(result.total_lines, 0);
+    assert_eq!(result.content, "");
+}
 
-    #[test]
-    fn test_truncate_tail_empty_content() {
-        let result = truncate_tail("", None);
-        assert!(!result.truncated);
-        assert_eq!(result.total_lines, 0);
-        assert_eq!(result.content, "");
-    }
-
+#[test]
+fn test_truncate_tail_empty_content() {
+    let result = truncate_tail("", None);
+    assert!(!result.truncated);
+    assert_eq!(result.total_lines, 0);
+    assert_eq!(result.content, "");
+}

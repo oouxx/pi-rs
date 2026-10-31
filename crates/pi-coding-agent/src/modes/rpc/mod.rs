@@ -2,8 +2,8 @@ pub mod handler;
 pub mod jsonl;
 pub mod rpc_types;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -154,70 +154,72 @@ fn create_rpc_ui_context(
 
     let select = {
         let dialog = dialog.clone();
-        Arc::new(move |title: &str, options: &[String], opts: Option<&serde_json::Value>| {
-            let dialog = dialog.clone();
-            let title = title.to_string();
-            let options: Vec<String> = options.to_vec();
-            let opts = opts.cloned();
-            Box::pin(async move {
-                let mut req = serde_json::json!({
-                    "type": "extension_ui_request",
-                    "method": "select",
-                    "title": title,
-                    "options": options,
-                });
-                if let Some(opts) = opts {
-                    if let Some(timeout) = opts.get("timeout") {
-                        req["timeout"] = timeout.clone();
+        Arc::new(
+            move |title: &str, options: &[String], opts: Option<&serde_json::Value>| {
+                let dialog = dialog.clone();
+                let title = title.to_string();
+                let options: Vec<String> = options.to_vec();
+                let opts = opts.cloned();
+                Box::pin(async move {
+                    let mut req = serde_json::json!({
+                        "type": "extension_ui_request",
+                        "method": "select",
+                        "title": title,
+                        "options": options,
+                    });
+                    if let Some(opts) = opts {
+                        if let Some(timeout) = opts.get("timeout") {
+                            req["timeout"] = timeout.clone();
+                        }
                     }
-                }
-                let resp = dialog(req).await;
-                if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
-                    None
-                } else {
-                    resp.get("value")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                }
-            }) as std::pin::Pin<
-                Box<dyn std::future::Future<Output = Option<String>> + Send>,
-            >
-        })
+                    let resp = dialog(req).await;
+                    if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
+                        None
+                    } else {
+                        resp.get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    }
+                })
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
+            },
+        )
     };
 
     let input = {
         let dialog = dialog.clone();
-        Arc::new(move |title: &str, placeholder: Option<&str>, opts: Option<&serde_json::Value>| {
-            let dialog = dialog.clone();
-            let title = title.to_string();
-            let placeholder = placeholder.map(|s| s.to_string());
-            let opts = opts.cloned();
-            Box::pin(async move {
-                let mut req = serde_json::json!({
-                    "type": "extension_ui_request",
-                    "method": "input",
-                    "title": title,
-                });
-                if let Some(p) = placeholder {
-                    req["placeholder"] = serde_json::Value::String(p);
-                }
-                if let Some(opts) = opts {
-                    if let Some(timeout) = opts.get("timeout") {
-                        req["timeout"] = timeout.clone();
+        Arc::new(
+            move |title: &str, placeholder: Option<&str>, opts: Option<&serde_json::Value>| {
+                let dialog = dialog.clone();
+                let title = title.to_string();
+                let placeholder = placeholder.map(|s| s.to_string());
+                let opts = opts.cloned();
+                Box::pin(async move {
+                    let mut req = serde_json::json!({
+                        "type": "extension_ui_request",
+                        "method": "input",
+                        "title": title,
+                    });
+                    if let Some(p) = placeholder {
+                        req["placeholder"] = serde_json::Value::String(p);
                     }
-                }
-                let resp = dialog(req).await;
-                if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
-                    None
-                } else {
-                    resp.get("value")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                }
-            }) as std::pin::Pin<
-                Box<dyn std::future::Future<Output = Option<String>> + Send>,
-            >
-        })
+                    if let Some(opts) = opts {
+                        if let Some(timeout) = opts.get("timeout") {
+                            req["timeout"] = timeout.clone();
+                        }
+                    }
+                    let resp = dialog(req).await;
+                    if resp.get("cancelled").and_then(|v| v.as_bool()) == Some(true) {
+                        None
+                    } else {
+                        resp.get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    }
+                })
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
+            },
+        )
     };
 
     // `ui.editor(title, prefill?)` → `{method: "editor"}` (TS `editor()`
@@ -245,9 +247,8 @@ fn create_rpc_ui_context(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 }
-            }) as std::pin::Pin<
-                Box<dyn std::future::Future<Output = Option<String>> + Send>,
-            >
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
         })
     };
 
@@ -284,15 +285,17 @@ fn create_rpc_ui_context(
 
     let set_widget = {
         let fire_and_forget = fire_and_forget.clone();
-        Arc::new(move |key: &str, lines: Option<&[String]>, _opts: Option<&serde_json::Value>| {
-            let req = serde_json::json!({
-                "type": "extension_ui_request",
-                "method": "setWidget",
-                "widgetKey": key,
-                "widgetLines": lines,
-            });
-            fire_and_forget(req);
-        })
+        Arc::new(
+            move |key: &str, lines: Option<&[String]>, _opts: Option<&serde_json::Value>| {
+                let req = serde_json::json!({
+                    "type": "extension_ui_request",
+                    "method": "setWidget",
+                    "widgetKey": key,
+                    "widgetLines": lines,
+                });
+                fire_and_forget(req);
+            },
+        )
     };
 
     let set_title = {
@@ -390,7 +393,6 @@ pub async fn run_rpc_mode(
 
     let ui_context = create_rpc_ui_context(output_tx.clone(), pending_extension_requests.clone());
 
-
     let sdk_options = CreateAgentSessionOptions {
         cwd: cwd.clone(),
         agent_dir: Some(agent_dir.to_string_lossy().to_string()),
@@ -447,15 +449,17 @@ pub async fn run_rpc_mode(
         let output_tx_for_errors = output_tx.clone();
         session
             .bind_extensions(crate::core::agent_session::ExtensionBindings {
-                on_error: Some(Box::new(move |err: &crate::core::agent_session::ExtensionError| {
-                    let line = serialize_json_line(&serde_json::json!({
-                        "type": "extension_error",
-                        "extensionPath": err.extension_path,
-                        "event": err.event,
-                        "error": err.error,
-                    }));
-                    let _ = output_tx_for_errors.send(line);
-                })),
+                on_error: Some(Box::new(
+                    move |err: &crate::core::agent_session::ExtensionError| {
+                        let line = serialize_json_line(&serde_json::json!({
+                            "type": "extension_error",
+                            "extensionPath": err.extension_path,
+                            "event": err.event,
+                            "error": err.error,
+                        }));
+                        let _ = output_tx_for_errors.send(line);
+                    },
+                )),
                 ..Default::default()
             })
             .await;
@@ -470,14 +474,10 @@ pub async fn run_rpc_mode(
 
     #[cfg(unix)]
     {
-        let mut term_signal = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .ok();
-        let mut hang_signal = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::hangup(),
-        )
-        .ok();
+        let mut term_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        let mut hang_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
 
         tokio::spawn(async move {
             tokio::select! {
@@ -519,23 +519,21 @@ pub async fn run_rpc_mode(
         let output_tx_for_session = output_tx.clone();
         let shutdown_flag_for_events = shutdown_requested.clone();
         let shutdown_tx_for_events = shutdown_tx.clone();
-        session.subscribe_session_events(
-            std::sync::Arc::new(move |event: AgentSessionEvent| {
-                // Serialize event to JSON and forward to output channel.
-                // Use to_json_event() to match the TS RPC wire shape exactly
-                // (type-discriminated union, camelCase fields, no `partial` snapshot).
-                let json = to_json_event(&event);
-                let line = serialize_json_line(&json);
-                let _ = output_tx_for_session.send(line);
-                // Check for agent_settled to trigger shutdown check (matching TS
-                // `checkShutdownRequested` which runs on agent_settled).
-                if matches!(event, AgentSessionEvent::AgentSettled)
-                    && shutdown_flag_for_events.load(Ordering::SeqCst)
-                {
-                    let _ = shutdown_tx_for_events.send(true);
-                }
-            }),
-        )
+        session.subscribe_session_events(std::sync::Arc::new(move |event: AgentSessionEvent| {
+            // Serialize event to JSON and forward to output channel.
+            // Use to_json_event() to match the TS RPC wire shape exactly
+            // (type-discriminated union, camelCase fields, no `partial` snapshot).
+            let json = to_json_event(&event);
+            let line = serialize_json_line(&json);
+            let _ = output_tx_for_session.send(line);
+            // Check for agent_settled to trigger shutdown check (matching TS
+            // `checkShutdownRequested` which runs on agent_settled).
+            if matches!(event, AgentSessionEvent::AgentSettled)
+                && shutdown_flag_for_events.load(Ordering::SeqCst)
+            {
+                let _ = shutdown_tx_for_events.send(true);
+            }
+        }))
     };
     let mut session_event_handle = subscribe_events(&session);
 
@@ -581,15 +579,27 @@ pub async fn run_rpc_mode(
         // Parse as generic Value first to extract id and type for error reporting,
         // and to check for extension_ui_response (matching TS behavior).
         let parsed_value: Option<serde_json::Value> = serde_json::from_str(&line).ok();
-        let cmd_type = parsed_value.as_ref().and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s.to_string()));
-        let cmd_id: Option<String> = parsed_value.as_ref().and_then(|v| v.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()));
+        let cmd_type = parsed_value.as_ref().and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        });
+        let cmd_id: Option<String> = parsed_value.as_ref().and_then(|v| {
+            v.get("id")
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        });
 
         // Check for extension_ui_response before parsing as RpcCommand
         // (matching TS: checks parsed.type === "extension_ui_response" first)
         if cmd_type.as_deref() == Some("extension_ui_response") {
             if let Some(ref response_id) = cmd_id {
                 if let Some(val) = parsed_value {
-                    let pending = handler_state.pending_extension_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(response_id);
+                    let pending = handler_state
+                        .pending_extension_requests
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(response_id);
                     if let Some(sender) = pending {
                         let _ = sender.send(val);
                     }
@@ -616,13 +626,8 @@ pub async fn run_rpc_mode(
         };
 
         // Handle command
-        let response = handle_command(
-            command,
-            &mut session,
-            &model_registry,
-            &mut handler_state,
-        )
-        .await;
+        let response =
+            handle_command(command, &mut session, &model_registry, &mut handler_state).await;
 
         // Re-subscribe events after a session replacement (matching TS
         // rebindSession which re-subscribes after new_session/switch_session).
@@ -660,7 +665,6 @@ pub async fn run_rpc_mode(
     0
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -693,7 +697,10 @@ mod tests {
     fn event_wire_format_matches_ts() {
         // unit variant -> {"type":"agent_start"}
         let e = AgentSessionEvent::AgentStart;
-        assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"type":"agent_start"}"#);
+        assert_eq!(
+            serde_json::to_string(&e).unwrap(),
+            r#"{"type":"agent_start"}"#
+        );
 
         // message_update -> type tag + camelCase fields
         let am = sample_assistant_message();
@@ -703,7 +710,8 @@ mod tests {
                 "model":"gpt-5.5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,
                 "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0}},
                 "stopReason":"stop","timestamp":0
-            })).unwrap(),
+            }))
+            .unwrap(),
             assistant_message_event: AssistantMessageEvent::TextDelta {
                 content_index: 0,
                 delta: "hi".into(),
@@ -738,9 +746,15 @@ mod tests {
         };
         let v4 = serde_json::to_value(&e4).unwrap();
         assert_eq!(v4["type"], "compaction_end");
-        assert!(v4.get("willRetry").is_some(), "compaction_end must use willRetry");
+        assert!(
+            v4.get("willRetry").is_some(),
+            "compaction_end must use willRetry"
+        );
         assert!(v4.get("will_retry").is_none());
-        assert!(v4.get("errorMessage").is_some(), "compaction_end must use errorMessage");
+        assert!(
+            v4.get("errorMessage").is_some(),
+            "compaction_end must use errorMessage"
+        );
     }
 
     /// `to_json_event` mirrors TS 0.84 `toJsonEvent()`: `message_update` is
@@ -756,7 +770,8 @@ mod tests {
                 "model":"gpt-5.5","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":0,
                 "cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},
                 "stopReason":"stop","timestamp":0
-            })).unwrap(),
+            }))
+            .unwrap(),
             assistant_message_event: AssistantMessageEvent::TextDelta {
                 content_index: 0,
                 delta: "hi".into(),

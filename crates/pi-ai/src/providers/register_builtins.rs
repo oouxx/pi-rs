@@ -162,7 +162,6 @@ mod tests {
         }
     }
 
-
     /// `compat` is parsed according to the model's `api` (not via the untagged
     /// enum, which would always pick `OpenAICompletions` and drop the
     /// provider-specific fields).
@@ -290,8 +289,7 @@ mod tests {
     #[test]
     fn test_generated_catalog_parses_and_has_entries() {
         let json = include_str!("../../data/models_generated.json");
-        let parsed: Result<HashMap<String, HashMap<String, Model>>, _> =
-            serde_json::from_str(json);
+        let parsed: Result<HashMap<String, HashMap<String, Model>>, _> = serde_json::from_str(json);
         let by_provider = match parsed {
             Ok(v) => v,
             Err(e) => panic!("catalog must parse: {e}"),
@@ -310,5 +308,4 @@ mod tests {
             "Expected at least one provider from generated models, got none."
         );
     }
-
 }

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::harness::types::{
-    CreateDirOptions, ExecResult, ExecutionEnv, ShellExecOptions, ExecutionError, FileError,
-    FileInfoType, ReadTextFileOptions, RemoveOptions, TempFileOptions,
+    CreateDirOptions, ExecResult, ExecutionEnv, ExecutionError, FileError, FileInfoType,
+    ReadTextFileOptions, RemoveOptions, ShellExecOptions, TempFileOptions,
 };
 
 pub struct NodeExecutionEnv {
@@ -67,10 +67,7 @@ impl ExecutionEnv for NodeExecutionEnv {
         Ok(content)
     }
 
-    async fn read_binary_file(
-        &self,
-        path: &str,
-    ) -> std::result::Result<Vec<u8>, FileError> {
+    async fn read_binary_file(&self, path: &str) -> std::result::Result<Vec<u8>, FileError> {
         let resolved = self.resolve_path(path);
         fs::read(&resolved)
             .await

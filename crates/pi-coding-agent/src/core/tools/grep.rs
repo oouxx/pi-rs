@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use super::path_utils;
-use super::truncate::{self, truncate_head_bytes_only, TruncationResult, DEFAULT_MAX_BYTES, GREP_MAX_LINE_LENGTH};
+use super::truncate::{
+    self, truncate_head_bytes_only, TruncationResult, DEFAULT_MAX_BYTES, GREP_MAX_LINE_LENGTH,
+};
 use super::wait_for_abort;
 use crate::utils::tools_manager;
 
@@ -68,16 +70,10 @@ struct GrepMatch {
 /// search itself always runs through `rg`.
 pub trait GrepOperations: Send + Sync {
     /// Check if path is a directory. Throws if path does not exist.
-    fn is_directory(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool>;
+    fn is_directory(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool>;
 
     /// Read file contents.
-    fn read_file(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<String>;
+    fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<String>;
 }
 
 // ============================================================================
@@ -87,22 +83,17 @@ pub trait GrepOperations: Send + Sync {
 pub struct LocalGrepOperations;
 
 impl GrepOperations for LocalGrepOperations {
-    fn is_directory(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<bool> {
+    fn is_directory(&self, path: &str) -> crate::core::tools::AsyncOpResult<bool> {
         let path = path.to_string();
         Box::pin(async move {
-            let meta = tokio::fs::metadata(&path).await
+            let meta = tokio::fs::metadata(&path)
+                .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             Ok(meta.is_dir())
         })
     }
 
-    fn read_file(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<String> {
+    fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<String> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read_to_string(&path)
@@ -653,7 +644,15 @@ mod tests {
         let minimal = build_rg_args("needle", "/tmp", None, false, false);
         assert_eq!(
             minimal,
-            vec!["--json", "--line-number", "--color=never", "--hidden", "--", "needle", "/tmp"]
+            vec![
+                "--json",
+                "--line-number",
+                "--color=never",
+                "--hidden",
+                "--",
+                "needle",
+                "/tmp"
+            ]
         );
     }
 
@@ -667,6 +666,9 @@ mod tests {
         // Outside the search root -> basename (TS `!relative.startsWith("..")`).
         assert_eq!(format_path("/tmp/other/a.txt", "/tmp/dir", true), "a.txt");
         // File search (isDirectory=false) -> basename.
-        assert_eq!(format_path("/tmp/dir/a.txt", "/tmp/dir/a.txt", false), "a.txt");
+        assert_eq!(
+            format_path("/tmp/dir/a.txt", "/tmp/dir/a.txt", false),
+            "a.txt"
+        );
     }
 }

@@ -42,10 +42,7 @@ impl Default for ProcessFileOptions {
 /// Each file argument is resolved relative to `cwd`. Text files have their
 /// content wrapped in `<file>` tags. Image files are detected via magic bytes
 /// and returned as image attachments with a text reference.
-pub fn process_file_arguments(
-    file_args: &[String],
-    cwd: &str,
-) -> ProcessedFiles {
+pub fn process_file_arguments(file_args: &[String], cwd: &str) -> ProcessedFiles {
     let mut text = String::new();
     let mut images = Vec::new();
 
@@ -63,7 +60,11 @@ pub fn process_file_arguments(
         let absolute_path = match std::fs::canonicalize(&resolved) {
             Ok(p) => p,
             Err(_) => {
-                eprintln!("{} File not found: {}", "Error:".red().bold(), resolved.display());
+                eprintln!(
+                    "{} File not found: {}",
+                    "Error:".red().bold(),
+                    resolved.display()
+                );
                 std::process::exit(1);
             }
         };
@@ -72,7 +73,11 @@ pub fn process_file_arguments(
         let metadata = match std::fs::metadata(&absolute_path) {
             Ok(m) => m,
             Err(_) => {
-                eprintln!("{} File not found: {}", "Error:".red().bold(), absolute_path.display());
+                eprintln!(
+                    "{} File not found: {}",
+                    "Error:".red().bold(),
+                    absolute_path.display()
+                );
                 std::process::exit(1);
             }
         };
@@ -107,13 +112,23 @@ pub fn process_file_arguments(
                         text.push_str(&format!("<file name=\"{path_str}\">\n{content}\n</file>\n"));
                     }
                     Err(e) => {
-                        eprintln!("{} Could not read file {}: {}", "Error:".red().bold(), path_str, e);
+                        eprintln!(
+                            "{} Could not read file {}: {}",
+                            "Error:".red().bold(),
+                            path_str,
+                            e
+                        );
                         std::process::exit(1);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("{} Error reading file {}: {}", "Error:".red().bold(), path_str, e);
+                eprintln!(
+                    "{} Error reading file {}: {}",
+                    "Error:".red().bold(),
+                    path_str,
+                    e
+                );
                 std::process::exit(1);
             }
         }
@@ -124,8 +139,7 @@ pub fn process_file_arguments(
 
 /// Read a text file's contents as UTF-8.
 fn read_text_file(path: &str) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open: {e}"))?;
     let mut content = String::new();
     file.read_to_string(&mut content)
         .map_err(|e| format!("Failed to read: {e}"))?;
@@ -141,8 +155,7 @@ const MAX_IMAGE_DIMENSION: u32 = 2048;
 /// scaled down to fit within that bound while maintaining aspect ratio.
 /// This matches the TS resizeImage behavior in file-processor.ts.
 fn read_image_file(path: &str) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open image: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open image: {e}"))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)
         .map_err(|e| format!("Failed to read image: {e}"))?;
@@ -156,7 +169,8 @@ fn read_image_file(path: &str) -> Result<String, String> {
             let new_h = (h as f64 * ratio) as u32;
             let resized = img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3);
             let mut output = std::io::Cursor::new(Vec::new());
-            resized.write_to(&mut output, image::ImageFormat::Png)
+            resized
+                .write_to(&mut output, image::ImageFormat::Png)
                 .map_err(|e| format!("Failed to encode resized image: {e}"))?;
             return Ok(base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
@@ -165,7 +179,10 @@ fn read_image_file(path: &str) -> Result<String, String> {
         }
     }
 
-    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buffer))
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &buffer,
+    ))
 }
 
 /// Process @file references embedded in a message string.

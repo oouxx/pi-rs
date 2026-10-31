@@ -7,9 +7,8 @@ use pi_agent_core::types::{AgentTool, AgentToolResult};
 use serde::{Deserialize, Serialize};
 
 use super::edit_diff::{
-    apply_edits_to_normalized_content, detect_line_ending,
-    generate_diff_string, generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom,
-    Edit,
+    apply_edits_to_normalized_content, detect_line_ending, generate_diff_string,
+    generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom, Edit,
 };
 use super::file_mutation_queue::with_file_mutation_queue;
 use super::path_utils;
@@ -48,22 +47,12 @@ pub struct EditToolDetails {
 /// Pluggable operations for the edit tool.
 /// Override these to delegate file editing to remote systems (for example SSH).
 pub trait EditOperations: Send + Sync {
-    fn read_file(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<Vec<u8>>;
+    fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<Vec<u8>>;
 
-    fn write_file(
-        &self,
-        path: &str,
-        content: &str,
-    ) -> crate::core::tools::AsyncOpResult<()>;
+    fn write_file(&self, path: &str, content: &str) -> crate::core::tools::AsyncOpResult<()>;
 
     /// Check if file is readable and writable (throw if not).
-    fn access(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<()>;
+    fn access(&self, path: &str) -> crate::core::tools::AsyncOpResult<()>;
 }
 
 // ============================================================================
@@ -73,10 +62,7 @@ pub trait EditOperations: Send + Sync {
 pub struct LocalEditOperations;
 
 impl EditOperations for LocalEditOperations {
-    fn read_file(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<Vec<u8>> {
+    fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<Vec<u8>> {
         let path = path.to_string();
         Box::pin(async move {
             tokio::fs::read(&path)
@@ -85,11 +71,7 @@ impl EditOperations for LocalEditOperations {
         })
     }
 
-    fn write_file(
-        &self,
-        path: &str,
-        content: &str,
-    ) -> crate::core::tools::AsyncOpResult<()> {
+    fn write_file(&self, path: &str, content: &str) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
@@ -99,10 +81,7 @@ impl EditOperations for LocalEditOperations {
         })
     }
 
-    fn access(
-        &self,
-        path: &str,
-    ) -> crate::core::tools::AsyncOpResult<()> {
+    fn access(&self, path: &str) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         Box::pin(async move {
             // Check if file exists and is readable
@@ -531,8 +510,14 @@ mod tests {
     fn test_edit_parameters_schema_no_legacy_fields() {
         let schema = edit_parameters_schema();
         let props = schema["properties"].as_object().unwrap();
-        assert!(!props.contains_key("oldText"), "schema should not contain oldText at top level");
-        assert!(!props.contains_key("newText"), "schema should not contain newText at top level");
+        assert!(
+            !props.contains_key("oldText"),
+            "schema should not contain oldText at top level"
+        );
+        assert!(
+            !props.contains_key("newText"),
+            "schema should not contain newText at top level"
+        );
     }
 
     // TS: "prepared args execute correctly" — integration test that verifies
@@ -554,14 +539,9 @@ mod tests {
         }));
 
         // Execute with prepared args
-        let result = (tool.execute)(
-            "tool-1".to_string(),
-            prepared,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let result = (tool.execute)("tool-1".to_string(), prepared, None, None)
+            .await
+            .unwrap();
 
         // Verify result message
         let has_success = result.content.iter().any(|block| {
@@ -571,7 +551,11 @@ mod tests {
                 false
             }
         });
-        assert!(has_success, "result should contain success message: {:?}", result.content);
+        assert!(
+            has_success,
+            "result should contain success message: {:?}",
+            result.content
+        );
 
         // Verify file content
         let content = tokio::fs::read_to_string(&file_path).await.unwrap();

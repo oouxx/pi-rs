@@ -2,7 +2,6 @@
 //!
 //! Mirrors packages/coding-agent/src/migrations.ts
 
-
 use crate::config;
 
 /// Run all pending migrations using the default agent directory.
@@ -133,7 +132,11 @@ mod tests {
         let oauth = serde_json::json!({
             "anthropic": { "access_token": "tok_123" }
         });
-        fs::write(agent_dir.join("oauth.json"), serde_json::to_string(&oauth).unwrap()).unwrap();
+        fs::write(
+            agent_dir.join("oauth.json"),
+            serde_json::to_string(&oauth).unwrap(),
+        )
+        .unwrap();
 
         let providers = migrate_auth_to_auth_json(Some(agent_dir.clone()));
         assert!(providers.contains(&"anthropic".to_string()));
@@ -141,5 +144,4 @@ mod tests {
         let auth_content = fs::read_to_string(agent_dir.join("auth.json")).unwrap();
         assert!(auth_content.contains("anthropic"));
     }
-
 }

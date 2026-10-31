@@ -616,9 +616,9 @@ pub type FinishTurnFn = Arc<
     dyn Fn(
             AgentTurnContext,
             Option<tokio::sync::watch::Receiver<bool>>,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<AgentTurnDecision>> + Send>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<AgentTurnDecision>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -737,7 +737,12 @@ mod wire_format_tests {
         });
         let msg: AgentMessage = serde_json::from_value(legacy).unwrap();
         match msg {
-            AgentMessage::ToolResult { tool_call_id, tool_name, is_error, .. } => {
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                is_error,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "tc1");
                 assert_eq!(tool_name, "bash");
                 assert!(!is_error);

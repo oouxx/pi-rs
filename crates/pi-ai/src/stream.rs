@@ -43,7 +43,7 @@ fn missing_api_provider_stream(model: &Model) -> AssistantMessageEventStream {
 }
 
 /// Stream a completion from the given model.
-#[must_use] 
+#[must_use]
 pub fn stream(
     model: &Model,
     context: &Context,
@@ -57,7 +57,11 @@ pub fn stream(
     // unset). `with_env_api_key` used to do this normalization before it was
     // removed in favour of provider-side resolution.
     let options = options.map(|mut opts| {
-        if opts.api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+        if opts
+            .api_key
+            .as_deref()
+            .is_some_and(|key| key.trim().is_empty())
+        {
             opts.api_key = None;
         }
         opts
@@ -75,7 +79,7 @@ pub async fn complete(
 }
 
 /// Stream a completion using simplified options (with reasoning support).
-#[must_use] 
+#[must_use]
 pub fn stream_simple(
     model: &Model,
     context: &Context,
@@ -96,7 +100,6 @@ pub async fn complete_simple(
 ) -> Result<AssistantMessage, String> {
     stream_simple(model, context, options).result().await
 }
-
 
 #[cfg(test)]
 mod tests {

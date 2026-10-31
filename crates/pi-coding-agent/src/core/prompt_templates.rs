@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::core::diagnostics::ResourceDiagnostic;
-use crate::core::source_info::{SourceInfo, create_synthetic_source_info};
+use crate::core::source_info::{create_synthetic_source_info, SourceInfo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptTemplate {
@@ -430,7 +430,10 @@ mod tests {
         assert_eq!(substitute_args("$1 and $2", &args), "one and two");
         // All args
         assert_eq!(substitute_args("all: $@", &args), "all: one two three");
-        assert_eq!(substitute_args("all: $ARGUMENTS", &args), "all: one two three");
+        assert_eq!(
+            substitute_args("all: $ARGUMENTS", &args),
+            "all: one two three"
+        );
         // Missing arg -> empty
         assert_eq!(substitute_args("$9", &args), "");
         // Default fallback: ${2:-fallback} when arg present uses the arg

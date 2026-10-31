@@ -5,7 +5,9 @@
 use colored::*;
 
 use pi_coding_agent::core::extensions::load_extension_now;
-use pi_coding_agent::core::package_manager::{is_npm_available, DefaultPackageManager, PackageManager};
+use pi_coding_agent::core::package_manager::{
+    is_npm_available, DefaultPackageManager, PackageManager,
+};
 
 /// Supported package commands.
 #[derive(Debug, Clone, PartialEq)]
@@ -98,7 +100,10 @@ pub async fn handle_package_command(args: &[String], cwd: &str, agent_dir: &str)
             };
 
             if !is_npm_available() {
-                eprintln!("{} npm is not available. Install Node.js first.", "Error:".red().bold());
+                eprintln!(
+                    "{} npm is not available. Install Node.js first.",
+                    "Error:".red().bold()
+                );
                 return 1;
             }
 
@@ -154,10 +159,13 @@ pub async fn handle_package_command(args: &[String], cwd: &str, agent_dir: &str)
             // List agent extensions (symlinked)
             let ext_dir = std::path::Path::new(agent_dir).join("extensions");
             let ext_links: Vec<String> = if ext_dir.is_dir() {
-                std::fs::read_dir(&ext_dir).ok()
-                    .map(|e| e.flatten()
-                        .map(|f| f.file_name().to_string_lossy().to_string())
-                        .collect())
+                std::fs::read_dir(&ext_dir)
+                    .ok()
+                    .map(|e| {
+                        e.flatten()
+                            .map(|f| f.file_name().to_string_lossy().to_string())
+                            .collect()
+                    })
                     .unwrap_or_default()
             } else {
                 vec![]
@@ -200,19 +208,30 @@ pub async fn handle_package_command(args: &[String], cwd: &str, agent_dir: &str)
 
 /// After installing a package, link it to the agent's extensions directory
 /// so the RPC sidecar can discover it automatically.
-fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: bool) -> Result<(), String> {
+fn link_extension_to_agent(
+    source: &str,
+    agent_dir: &str,
+    cwd: &str,
+    global: bool,
+) -> Result<(), String> {
     // Find the installed package path
-    let pkg_name = source.trim_start_matches("npm:").trim_start_matches("https://");
+    let pkg_name = source
+        .trim_start_matches("npm:")
+        .trim_start_matches("https://");
     let pkg_dir = if global {
         // Find global npm root
         let global_root = std::process::Command::new("npm")
             .args(["root", "-g"])
             .output()
             .map_err(|e| format!("npm root -g failed: {e}"))?;
-        let root = String::from_utf8_lossy(&global_root.stdout).trim().to_string();
+        let root = String::from_utf8_lossy(&global_root.stdout)
+            .trim()
+            .to_string();
         std::path::Path::new(&root).join(pkg_name)
     } else {
-        std::path::Path::new(cwd).join("node_modules").join(pkg_name)
+        std::path::Path::new(cwd)
+            .join("node_modules")
+            .join(pkg_name)
     };
 
     if !pkg_dir.join("package.json").exists() {
@@ -225,9 +244,7 @@ fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: boo
     let pkg: serde_json::Value = serde_json::from_str(&pkg_json)
         .map_err(|e| format!("Failed to parse package.json: {e}"))?;
 
-    let has_pi_extensions = pkg.get("pi")
-        .and_then(|pi| pi.get("extensions"))
-        .is_some();
+    let has_pi_extensions = pkg.get("pi").and_then(|pi| pi.get("extensions")).is_some();
 
     if !has_pi_extensions {
         return Ok(()); // Not a pi extension, nothing to link
@@ -235,8 +252,7 @@ fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: boo
 
     // Create agent extensions directory and symlink
     let ext_dir = std::path::Path::new(agent_dir).join("extensions");
-    std::fs::create_dir_all(&ext_dir)
-        .map_err(|e| format!("Failed to create {ext_dir:?}: {e}"))?;
+    std::fs::create_dir_all(&ext_dir).map_err(|e| format!("Failed to create {ext_dir:?}: {e}"))?;
 
     let pkg_name_short = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
     let link_path = ext_dir.join(format!("{pkg_name_short}.pkg"));
@@ -253,7 +269,10 @@ fn link_extension_to_agent(source: &str, agent_dir: &str, cwd: &str, global: boo
     }
     #[cfg(not(unix))]
     {
-        eprintln!("  {} Symlinking not supported on this platform", "!".yellow());
+        eprintln!(
+            "  {} Symlinking not supported on this platform",
+            "!".yellow()
+        );
     }
 
     Ok(())
@@ -288,7 +307,8 @@ mod tests {
 
     #[test]
     fn test_parse_install_command() {
-        let result = parse_package_command(&[String::from("install"), String::from("some-package")]);
+        let result =
+            parse_package_command(&[String::from("install"), String::from("some-package")]);
         assert!(result.is_some());
         let cmd = result.unwrap();
         assert_eq!(cmd.command, PackageCommand::Install);
@@ -304,7 +324,8 @@ mod tests {
 
     #[test]
     fn test_parse_remove_command() {
-        let result = parse_package_command(&[String::from("remove"), String::from("ext-to-remove")]);
+        let result =
+            parse_package_command(&[String::from("remove"), String::from("ext-to-remove")]);
         assert!(result.is_some());
         let cmd = result.unwrap();
         assert_eq!(cmd.command, PackageCommand::Remove);

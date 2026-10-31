@@ -7,11 +7,11 @@ use futures::Future;
 use tokio::sync::RwLock;
 
 use crate::harness::types::{
-    AbortResult, AgentHarnessOwnEvent, AgentHarnessPhase, AgentHarnessResources,
-    AgentHarnessStreamOptions, BeforeAgentStartHookResult, BranchSummaryEntry,
-    CompactResult, GenerateBranchSummaryOptions, HarnessError,
-    NavigateTreeResult, PendingSessionWrite, PromptTemplate, QueueMode, Session,
-    Skill, clone_stream_options, create_failure_message, create_user_message, merge_headers,
+    clone_stream_options, create_failure_message, create_user_message, merge_headers, AbortResult,
+    AgentHarnessOwnEvent, AgentHarnessPhase, AgentHarnessResources, AgentHarnessStreamOptions,
+    BeforeAgentStartHookResult, BranchSummaryEntry, CompactResult, GenerateBranchSummaryOptions,
+    HarnessError, NavigateTreeResult, PendingSessionWrite, PromptTemplate, QueueMode, Session,
+    Skill,
 };
 use crate::pi_ai_types::{ContentBlock, Model, ThinkingLevel};
 use crate::types::{AgentContext, AgentEvent, AgentMessage, StreamFn, StreamFnOptions};
@@ -20,13 +20,8 @@ use crate::types::{AgentContext, AgentEvent, AgentMessage, StreamFn, StreamFnOpt
 // Type aliases
 // ============================================================
 
-type HarnessListener<S, P> = Box<
-    dyn Fn(
-            AgentHarnessEvent<S, P>,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send>>
-        + Send
-        + Sync,
->;
+type HarnessListener<S, P> =
+    Box<dyn Fn(AgentHarnessEvent<S, P>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 type HarnessHookHandler = Arc<
     dyn Fn(serde_json::Value) -> Pin<Box<dyn Future<Output = Option<serde_json::Value>> + Send>>
@@ -108,8 +103,9 @@ pub struct AgentHarness<
 // Type aliases for option/providers
 // ============================================================
 
-pub type SystemPromptProvider<S, P> =
-    Arc<dyn Fn(SystemPromptContext<S, P>) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+pub type SystemPromptProvider<S, P> = Arc<
+    dyn Fn(SystemPromptContext<S, P>) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync,
+>;
 
 #[derive(Debug, Clone)]
 pub struct SystemPromptContext<S: Clone = Skill, P: Clone = PromptTemplate> {
@@ -122,8 +118,11 @@ pub struct SystemPromptContext<S: Clone = Skill, P: Clone = PromptTemplate> {
 }
 
 pub type GetApiKeyAndHeadersFn = Arc<
-    dyn Fn(&Model) -> Pin<Box<dyn Future<Output = Option<(String, Option<HashMap<String, String>>)>> + Send>>
-        + Send
+    dyn Fn(
+            &Model,
+        ) -> Pin<
+            Box<dyn Future<Output = Option<(String, Option<HashMap<String, String>>)>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -156,11 +155,7 @@ where
     S: serde::Serialize + serde::de::DeserializeOwned,
     P: serde::Serialize + serde::de::DeserializeOwned,
 {
-    pub fn new(
-        session: Session,
-        model: Model,
-        options: Option<AgentHarnessOptions<S, P>>,
-    ) -> Self {
+    pub fn new(session: Session, model: Model, options: Option<AgentHarnessOptions<S, P>>) -> Self {
         let opts = options.unwrap_or_default();
 
         let tool_names: Vec<String> = opts.tools.unwrap_or_default();
@@ -200,9 +195,7 @@ where
             tools: Arc::new(RwLock::new(tool_names)),
             active_tool_names: Arc::new(RwLock::new(active_tool_names)),
             steering_mode: Arc::new(RwLock::new(opts.steering_mode.unwrap_or(QueueMode::Queue))),
-            follow_up_mode: Arc::new(RwLock::new(
-                opts.follow_up_mode.unwrap_or(QueueMode::Queue),
-            )),
+            follow_up_mode: Arc::new(RwLock::new(opts.follow_up_mode.unwrap_or(QueueMode::Queue))),
             steer_queue: Arc::new(RwLock::new(Vec::new())),
             follow_up_queue: Arc::new(RwLock::new(Vec::new())),
             next_turn_queue: Arc::new(RwLock::new(Vec::new())),
@@ -234,12 +227,13 @@ where
                     .await
                     .map_err(HarnessError::Session)?;
             } else {
-                self.pending_session_writes.write().await.push(
-                    PendingSessionWrite::ModelChange {
+                self.pending_session_writes
+                    .write()
+                    .await
+                    .push(PendingSessionWrite::ModelChange {
                         provider: model.provider.clone(),
                         model_id: model.id.clone(),
-                    },
-                );
+                    });
             }
         }
         *self.model.write().await = model.clone();
@@ -267,12 +261,11 @@ where
                     .await
                     .map_err(HarnessError::Session)?;
             } else {
-                self.pending_session_writes
-                    .write()
-                    .await
-                    .push(PendingSessionWrite::ThinkingLevelChange {
+                self.pending_session_writes.write().await.push(
+                    PendingSessionWrite::ThinkingLevelChange {
                         thinking_level: level.clone(),
-                    });
+                    },
+                );
             }
         }
         *self.thinking_level.write().await = level.clone();
@@ -306,12 +299,11 @@ where
                     .await
                     .map_err(HarnessError::Session)?;
             } else {
-                self.pending_session_writes
-                    .write()
-                    .await
-                    .push(PendingSessionWrite::ActiveToolsChange {
+                self.pending_session_writes.write().await.push(
+                    PendingSessionWrite::ActiveToolsChange {
                         active_tool_names: active_tool_names.clone(),
-                    });
+                    },
+                );
             }
         }
         *self.tools.write().await = tools.clone();
@@ -343,12 +335,11 @@ where
                     .await
                     .map_err(HarnessError::Session)?;
             } else {
-                self.pending_session_writes
-                    .write()
-                    .await
-                    .push(PendingSessionWrite::ActiveToolsChange {
+                self.pending_session_writes.write().await.push(
+                    PendingSessionWrite::ActiveToolsChange {
                         active_tool_names: tool_names.clone(),
-                    });
+                    },
+                );
             }
         }
         let previous_tool_names = self.tools.read().await.clone();
@@ -445,7 +436,11 @@ where
         }
     }
 
-    async fn emit_hook(&self, event_type: &str, payload: serde_json::Value) -> Option<serde_json::Value> {
+    async fn emit_hook(
+        &self,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Option<serde_json::Value> {
         let handlers = self.handlers.read().await;
         let event_handlers = handlers.get(event_type)?;
         let mut last_result: Option<serde_json::Value> = None;
@@ -474,11 +469,13 @@ where
     // Steer / FollowUp / NextTurn
     // ========================================================
 
-    pub async fn steer(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), HarnessError> {
+    pub async fn steer(
+        &self,
+        text: &str,
+        images: Option<Vec<ContentBlock>>,
+    ) -> Result<(), HarnessError> {
         if *self.phase.read().await == AgentHarnessPhase::Idle {
-            return Err(HarnessError::InvalidState(
-                "Cannot steer while idle".into(),
-            ));
+            return Err(HarnessError::InvalidState("Cannot steer while idle".into()));
         }
         let mode = *self.steering_mode.read().await;
         let mut queue = self.steer_queue.write().await;
@@ -500,7 +497,11 @@ where
         Ok(())
     }
 
-    pub async fn follow_up(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), HarnessError> {
+    pub async fn follow_up(
+        &self,
+        text: &str,
+        images: Option<Vec<ContentBlock>>,
+    ) -> Result<(), HarnessError> {
         if *self.phase.read().await == AgentHarnessPhase::Idle {
             return Err(HarnessError::InvalidState(
                 "Cannot follow up while idle".into(),
@@ -526,7 +527,11 @@ where
         Ok(())
     }
 
-    pub async fn next_turn(&self, text: &str, images: Option<Vec<ContentBlock>>) -> Result<(), HarnessError> {
+    pub async fn next_turn(
+        &self,
+        text: &str,
+        images: Option<Vec<ContentBlock>>,
+    ) -> Result<(), HarnessError> {
         self.next_turn_queue
             .write()
             .await
@@ -581,9 +586,7 @@ where
             match factory.as_ref() {
                 Some(f) => {
                     let ctx = SystemPromptContext {
-                        env: crate::harness::types::ExecutionEnvInfo {
-                            cwd: String::new(),
-                        },
+                        env: crate::harness::types::ExecutionEnvInfo { cwd: String::new() },
                         session: crate::harness::types::SessionInfo {
                             id: metadata.id.clone(),
                             created_at: metadata.created_at.clone(),
@@ -677,81 +680,96 @@ where
         let session_id2 = session_id.clone();
         let model = turn_state.model.clone();
 
-        let stream_fn: StreamFn = Arc::new(move |model: Model, ctx: crate::pi_ai_types::Context, reasoning: Option<ThinkingLevel>, opts: StreamFnOptions| {
-            let get_ak_ah = get_ak_ah.clone();
-            let mut snapshot = clone_stream_options(&stream_snapshot);
-            let session_id = session_id.clone();
+        let stream_fn: StreamFn = Arc::new(
+            move |model: Model,
+                  ctx: crate::pi_ai_types::Context,
+                  reasoning: Option<ThinkingLevel>,
+                  opts: StreamFnOptions| {
+                let get_ak_ah = get_ak_ah.clone();
+                let mut snapshot = clone_stream_options(&stream_snapshot);
+                let session_id = session_id.clone();
 
-            Box::pin(async move {
-                let auth = {
-                    let get_auth = get_ak_ah.read().await;
-                    match get_auth.as_ref() {
-                        Some(f) => f(&model).await,
-                        None => None,
+                Box::pin(async move {
+                    let auth = {
+                        let get_auth = get_ak_ah.read().await;
+                        match get_auth.as_ref() {
+                            Some(f) => f(&model).await,
+                            None => None,
+                        }
+                    };
+                    if let Some((_api_key, auth_headers)) = &auth {
+                        snapshot.headers =
+                            merge_headers(&[snapshot.headers.clone(), auth_headers.clone()]);
                     }
-                };
-                if let Some((_api_key, auth_headers)) = &auth {
-                    snapshot.headers = merge_headers(&[snapshot.headers.clone(), auth_headers.clone()]);
-                }
 
-                // Build SimpleStreamOptions from our data
-                let simple_opts = pi_ai::types::SimpleStreamOptions {
-                    base: pi_ai::types::StreamOptions {
-                        temperature: snapshot.temperature,
-                        max_tokens: snapshot.max_tokens,
-                        sampling_params: None,
-                        http_client: None,
-                        signal: opts.signal.clone(),
-                        api_key: auth.as_ref().map(|(k, _)| k.clone()),
-                        transport: snapshot.transport.clone().map(|_| pi_ai::types::Transport::Websocket),
-                        cache_retention: snapshot.cache_retention.clone().and_then(|s| match s.to_lowercase().as_str() {
-                            "short" => Some(pi_ai::types::CacheRetention::Short),
-                            "long" => Some(pi_ai::types::CacheRetention::Long),
-                            _ => None,
-                        }),
-                        session_id: Some(session_id.clone()),
-                        headers: snapshot.headers.clone(),
-                        timeout_ms: snapshot.timeout_ms,
-                        websocket_connect_timeout_ms: None,
-                        max_retries: snapshot.max_retries,
-                        max_retry_delay_ms: snapshot.max_retry_delay_ms,
-                        metadata: None,
-                        tool_choice: None,
-                        service_tier: None,
-                        reasoning_effort: None,
-                        thinking_budgets: None,
+                    // Build SimpleStreamOptions from our data
+                    let simple_opts = pi_ai::types::SimpleStreamOptions {
+                        base: pi_ai::types::StreamOptions {
+                            temperature: snapshot.temperature,
+                            max_tokens: snapshot.max_tokens,
+                            sampling_params: None,
+                            http_client: None,
+                            signal: opts.signal.clone(),
+                            api_key: auth.as_ref().map(|(k, _)| k.clone()),
+                            transport: snapshot
+                                .transport
+                                .clone()
+                                .map(|_| pi_ai::types::Transport::Websocket),
+                            cache_retention: snapshot.cache_retention.clone().and_then(|s| match s
+                                .to_lowercase()
+                                .as_str()
+                            {
+                                "short" => Some(pi_ai::types::CacheRetention::Short),
+                                "long" => Some(pi_ai::types::CacheRetention::Long),
+                                _ => None,
+                            }),
+                            session_id: Some(session_id.clone()),
+                            headers: snapshot.headers.clone(),
+                            timeout_ms: snapshot.timeout_ms,
+                            websocket_connect_timeout_ms: None,
+                            max_retries: snapshot.max_retries,
+                            max_retry_delay_ms: snapshot.max_retry_delay_ms,
+                            metadata: None,
+                            tool_choice: None,
+                            service_tier: None,
+                            reasoning_effort: None,
+                            thinking_budgets: None,
+                            debug: None,
+                            env: opts.env.clone(),
+                            // Forward the caller's hooks (match TS harness
+                            // `assistant.ts`, which passes onPayload/onResponse
+                            // into `streamSimple`) instead of dropping them.
+                            on_payload: opts.on_payload.clone(),
+                            on_headers: opts.on_headers.clone(),
+                            on_provider_response: opts.on_provider_response.clone(),
+                        },
+                        reasoning: reasoning.clone(),
+                        thinking_budgets: opts.thinking_budgets.clone(),
                         debug: None,
-                        env: opts.env.clone(),
-                        // Forward the caller's hooks (match TS harness
-                        // `assistant.ts`, which passes onPayload/onResponse
-                        // into `streamSimple`) instead of dropping them.
-                        on_payload: opts.on_payload.clone(),
-                        on_headers: opts.on_headers.clone(),
-                        on_provider_response: opts.on_provider_response.clone(),
-                    },
-                    reasoning: reasoning.clone(),
-                    thinking_budgets: opts.thinking_budgets.clone(),
-                    debug: None,
-                };
+                    };
 
-                let event_stream = pi_ai::stream::stream_simple(&model, &ctx, Some(simple_opts));
+                    let event_stream =
+                        pi_ai::stream::stream_simple(&model, &ctx, Some(simple_opts));
 
-                // Bridge AssistantMessageEventStream (not Unpin) to StreamResponse (Unpin)
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::pi_ai_types::AssistantMessageEvent>();
-                tokio::spawn(async move {
-                    use futures::StreamExt;
-                    let mut stream = event_stream;
-                    while let Some(event) = stream.next().await {
-                        let _ = tx.send(event);
-                    }
-                });
+                    // Bridge AssistantMessageEventStream (not Unpin) to StreamResponse (Unpin)
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                        crate::pi_ai_types::AssistantMessageEvent,
+                    >();
+                    tokio::spawn(async move {
+                        use futures::StreamExt;
+                        let mut stream = event_stream;
+                        while let Some(event) = stream.next().await {
+                            let _ = tx.send(event);
+                        }
+                    });
 
-                let stream_response: crate::pi_ai_types::StreamResponse =
-                    Box::new(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
+                    let stream_response: crate::pi_ai_types::StreamResponse =
+                        Box::new(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
 
-                Ok(stream_response)
-            })
-        });
+                    Ok(stream_response)
+                })
+            },
+        );
 
         let emit = self.create_event_sink();
 
@@ -786,30 +804,39 @@ where
             metadata: None,
             tool_execution: crate::pi_ai_types::ToolExecutionMode::Parallel,
             convert_to_llm: Arc::new(crate::harness::messages::convert_to_llm),
-            transform_context: Some(Arc::new(move |msgs: Vec<AgentMessage>, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
-                let handlers = handlers.clone();
-                Box::pin(async move {
-                    let payload = serde_json::json!({ "messages": msgs });
-                    let result = {
-                        let h = handlers.read().await;
-                        let event_handlers = h.get("context");
-                        let mut last: Option<Vec<AgentMessage>> = None;
-                        if let Some(eh) = event_handlers {
-                            for handler in eh.iter() {
-                                if let Some(res) = handler(payload.clone()).await {
-                                    if let Ok(parsed) = serde_json::from_value::<serde_json::Value>(res) {
-                                        if let Some(msgs) = parsed.get("messages").and_then(|v| serde_json::from_value(v.clone()).ok()) {
-                                            last = Some(msgs);
+            transform_context: Some(Arc::new(
+                move |msgs: Vec<AgentMessage>,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+                    let handlers = handlers.clone();
+                    Box::pin(async move {
+                        let payload = serde_json::json!({ "messages": msgs });
+                        let result = {
+                            let h = handlers.read().await;
+                            let event_handlers = h.get("context");
+                            let mut last: Option<Vec<AgentMessage>> = None;
+                            if let Some(eh) = event_handlers {
+                                for handler in eh.iter() {
+                                    if let Some(res) = handler(payload.clone()).await {
+                                        if let Ok(parsed) =
+                                            serde_json::from_value::<serde_json::Value>(res)
+                                        {
+                                            if let Some(msgs) =
+                                                parsed.get("messages").and_then(|v| {
+                                                    serde_json::from_value(v.clone()).ok()
+                                                })
+                                            {
+                                                last = Some(msgs);
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        last
-                    };
-                    result.unwrap_or(msgs)
-                })
-            })),
+                            last
+                        };
+                        result.unwrap_or(msgs)
+                    })
+                },
+            )),
             get_api_key: None,
             get_steering_messages: Some(Arc::new(move || {
                 let q = steer_queue.clone();
@@ -819,10 +846,18 @@ where
                     let msgs: Vec<AgentMessage> = match mode {
                         QueueMode::Queue => guard.drain(..).collect(),
                         QueueMode::Replace => {
-                            if guard.is_empty() { Vec::new() } else { vec![guard.remove(0)] }
+                            if guard.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![guard.remove(0)]
+                            }
                         }
                         QueueMode::Drop => {
-                            if guard.is_empty() { Vec::new() } else { vec![guard.remove(0)] }
+                            if guard.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![guard.remove(0)]
+                            }
                         }
                     };
                     msgs
@@ -836,10 +871,18 @@ where
                     let msgs: Vec<AgentMessage> = match mode {
                         QueueMode::Queue => guard.drain(..).collect(),
                         QueueMode::Replace => {
-                            if guard.is_empty() { Vec::new() } else { vec![guard.remove(0)] }
+                            if guard.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![guard.remove(0)]
+                            }
                         }
                         QueueMode::Drop => {
-                            if guard.is_empty() { Vec::new() } else { vec![guard.remove(0)] }
+                            if guard.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![guard.remove(0)]
+                            }
                         }
                     };
                     msgs
@@ -848,68 +891,91 @@ where
             finish_turn: None,
             prepare_request: None,
             prepare_next_turn: None,
-            before_tool_call: Some(Arc::new(move |ctx: crate::types::BeforeToolCallContext, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
-                let handlers = handlers2.clone();
-                Box::pin(async move {
-                    let payload = serde_json::json!({
-                        "tool_call_id": ctx.tool_call.id,
-                        "tool_name": ctx.tool_call.name,
-                        "input": ctx.args,
-                    });
-                    let result = {
-                        let h = handlers.read().await;
-                        let event_handlers = h.get("tool_call");
-                        let mut last: Option<crate::types::BeforeToolCallResult> = None;
-                        if let Some(eh) = event_handlers {
-                            for handler in eh.iter() {
-                                if let Some(res) = handler(payload.clone()).await {
-                                    if let Ok(v) = serde_json::from_value::<serde_json::Value>(res) {
-                                        let block = v.get("block").and_then(|b| b.as_bool());
-                                        let reason = v.get("reason").and_then(|r| r.as_str().map(String::from));
-                                        last = Some(crate::types::BeforeToolCallResult { block: block.unwrap_or(false), reason, modified_args: None, terminate: None });
+            before_tool_call: Some(Arc::new(
+                move |ctx: crate::types::BeforeToolCallContext,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+                    let handlers = handlers2.clone();
+                    Box::pin(async move {
+                        let payload = serde_json::json!({
+                            "tool_call_id": ctx.tool_call.id,
+                            "tool_name": ctx.tool_call.name,
+                            "input": ctx.args,
+                        });
+                        let result = {
+                            let h = handlers.read().await;
+                            let event_handlers = h.get("tool_call");
+                            let mut last: Option<crate::types::BeforeToolCallResult> = None;
+                            if let Some(eh) = event_handlers {
+                                for handler in eh.iter() {
+                                    if let Some(res) = handler(payload.clone()).await {
+                                        if let Ok(v) =
+                                            serde_json::from_value::<serde_json::Value>(res)
+                                        {
+                                            let block = v.get("block").and_then(|b| b.as_bool());
+                                            let reason = v
+                                                .get("reason")
+                                                .and_then(|r| r.as_str().map(String::from));
+                                            last = Some(crate::types::BeforeToolCallResult {
+                                                block: block.unwrap_or(false),
+                                                reason,
+                                                modified_args: None,
+                                                terminate: None,
+                                            });
+                                        }
                                     }
                                 }
                             }
-                        }
-                        last
-                    };
-                    result
-                })
-            })),
-            after_tool_call: Some(Arc::new(move |ctx: crate::types::AfterToolCallContext, _signal: Option<tokio::sync::watch::Receiver<bool>>| {
-                let handlers = handlers3.clone();
-                Box::pin(async move {
-                    let payload = serde_json::json!({
-                        "tool_call_id": ctx.tool_call.id,
-                        "tool_name": ctx.tool_call.name,
-                        "input": ctx.args,
-                        "content": ctx.result.content,
-                        "details": ctx.result.details,
-                        "is_error": ctx.is_error,
-                    });
-                    let result = {
-                        let h = handlers.read().await;
-                        let event_handlers = h.get("tool_result");
-                        let mut last: Option<crate::types::AfterToolCallResult> = None;
-                        if let Some(eh) = event_handlers {
-                            for handler in eh.iter() {
-                                if let Some(res) = handler(payload.clone()).await {
-                                    if let Ok(v) = serde_json::from_value::<serde_json::Value>(res) {
-                                        last = Some(crate::types::AfterToolCallResult {
-                                            content: v.get("content").and_then(|c| serde_json::from_value(c.clone()).ok()),
-                                            details: v.get("details").cloned(),
-                                            is_error: v.get("is_error").and_then(|b| b.as_bool()),
-                                            terminate: v.get("terminate").and_then(|b| b.as_bool()),
-                                        });
+                            last
+                        };
+                        result
+                    })
+                },
+            )),
+            after_tool_call: Some(Arc::new(
+                move |ctx: crate::types::AfterToolCallContext,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>| {
+                    let handlers = handlers3.clone();
+                    Box::pin(async move {
+                        let payload = serde_json::json!({
+                            "tool_call_id": ctx.tool_call.id,
+                            "tool_name": ctx.tool_call.name,
+                            "input": ctx.args,
+                            "content": ctx.result.content,
+                            "details": ctx.result.details,
+                            "is_error": ctx.is_error,
+                        });
+                        let result = {
+                            let h = handlers.read().await;
+                            let event_handlers = h.get("tool_result");
+                            let mut last: Option<crate::types::AfterToolCallResult> = None;
+                            if let Some(eh) = event_handlers {
+                                for handler in eh.iter() {
+                                    if let Some(res) = handler(payload.clone()).await {
+                                        if let Ok(v) =
+                                            serde_json::from_value::<serde_json::Value>(res)
+                                        {
+                                            last = Some(crate::types::AfterToolCallResult {
+                                                content: v.get("content").and_then(|c| {
+                                                    serde_json::from_value(c.clone()).ok()
+                                                }),
+                                                details: v.get("details").cloned(),
+                                                is_error: v
+                                                    .get("is_error")
+                                                    .and_then(|b| b.as_bool()),
+                                                terminate: v
+                                                    .get("terminate")
+                                                    .and_then(|b| b.as_bool()),
+                                            });
+                                        }
                                     }
                                 }
                             }
-                        }
-                        last
-                    };
-                    result
-                })
-            })),
+                            last
+                        };
+                        result
+                    })
+                },
+            )),
             on_payload: None,
             on_headers: None,
             on_provider_response: None,
@@ -917,7 +983,10 @@ where
 
         let signal = Some(cancel_rx);
 
-        let result = crate::agent_loop::run_agent_loop(messages, context, &config, &emit, &signal, &stream_fn).await;
+        let result = crate::agent_loop::run_agent_loop(
+            messages, context, &config, &emit, &signal, &stream_fn,
+        )
+        .await;
 
         *self.abort_signal.write().await = None;
 
@@ -938,7 +1007,9 @@ where
             Err(e) => {
                 let was_aborted = signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false);
                 let failure_msg = create_failure_message(&model, &e.to_string(), was_aborted);
-                let failure_result = self.emit_run_failure(model.clone(), &e.to_string(), was_aborted).await;
+                let failure_result = self
+                    .emit_run_failure(model.clone(), &e.to_string(), was_aborted)
+                    .await;
                 match failure_result {
                     Ok(msgs) => {
                         for msg in msgs.iter().rev() {
@@ -1018,29 +1089,20 @@ where
                                 PendingSessionWrite::Message { message } => {
                                     s.append_message(message).await.map(|_| ())
                                 }
-                                PendingSessionWrite::ModelChange {
-                                    provider,
-                                    model_id,
-                                } => s.append_model_change(provider, model_id).await.map(|_| ()),
-                                PendingSessionWrite::ThinkingLevelChange {
-                                    thinking_level,
-                                } => s
+                                PendingSessionWrite::ModelChange { provider, model_id } => {
+                                    s.append_model_change(provider, model_id).await.map(|_| ())
+                                }
+                                PendingSessionWrite::ThinkingLevelChange { thinking_level } => s
                                     .append_thinking_level_change(thinking_level)
                                     .await
                                     .map(|_| ()),
-                                PendingSessionWrite::ActiveToolsChange {
-                                    active_tool_names,
-                                } => s
+                                PendingSessionWrite::ActiveToolsChange { active_tool_names } => s
                                     .append_active_tools_change(active_tool_names)
                                     .await
                                     .map(|_| ()),
-                                PendingSessionWrite::Custom {
-                                    custom_type,
-                                    data,
-                                } => s
-                                    .append_custom_entry(custom_type, data)
-                                    .await
-                                    .map(|_| ()),
+                                PendingSessionWrite::Custom { custom_type, data } => {
+                                    s.append_custom_entry(custom_type, data).await.map(|_| ())
+                                }
                                 PendingSessionWrite::CustomMessage {
                                     custom_type,
                                     content,
@@ -1066,10 +1128,7 @@ where
                     AgentEvent::AgentEnd { .. } => {
                         *phase.write().await = AgentHarnessPhase::Idle;
                         let _ = idle_notify.send(true);
-                        emit_own(AgentHarnessOwnEvent::Settled {
-                            next_turn_count: 0,
-                        })
-                        .await;
+                        emit_own(AgentHarnessOwnEvent::Settled { next_turn_count: 0 }).await;
                     }
                     _ => {}
                 }
@@ -1080,8 +1139,11 @@ where
     #[allow(clippy::type_complexity)]
     fn create_emit_own_fn(
         &self,
-    ) -> Arc<dyn Fn(AgentHarnessOwnEvent<S, P>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>
-    {
+    ) -> Arc<
+        dyn Fn(AgentHarnessOwnEvent<S, P>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+            + Send
+            + Sync,
+    > {
         let listeners = self.listeners.clone();
         Arc::new(move |event: AgentHarnessOwnEvent<S, P>| {
             let listeners = listeners.clone();
@@ -1105,12 +1167,11 @@ where
             let mut s = self.session.write().await;
             match write {
                 PendingSessionWrite::Message { message } => {
-                    s.append_message(message).await.map_err(HarnessError::Session)?;
+                    s.append_message(message)
+                        .await
+                        .map_err(HarnessError::Session)?;
                 }
-                PendingSessionWrite::ModelChange {
-                    provider,
-                    model_id,
-                } => {
+                PendingSessionWrite::ModelChange { provider, model_id } => {
                     s.append_model_change(provider, model_id)
                         .await
                         .map_err(HarnessError::Session)?;
@@ -1120,17 +1181,12 @@ where
                         .await
                         .map_err(HarnessError::Session)?;
                 }
-                PendingSessionWrite::ActiveToolsChange {
-                    active_tool_names,
-                } => {
+                PendingSessionWrite::ActiveToolsChange { active_tool_names } => {
                     s.append_active_tools_change(active_tool_names)
                         .await
                         .map_err(HarnessError::Session)?;
                 }
-                PendingSessionWrite::Custom {
-                    custom_type,
-                    data,
-                } => {
+                PendingSessionWrite::Custom { custom_type, data } => {
                     s.append_custom_entry(custom_type, data)
                         .await
                         .map_err(HarnessError::Session)?;
@@ -1175,9 +1231,7 @@ where
 
         *self.phase.write().await = AgentHarnessPhase::Turn;
 
-        let result = self
-            .prompt_inner(text, images)
-            .await;
+        let result = self.prompt_inner(text, images).await;
 
         match result {
             Ok(msg) => {
@@ -1232,10 +1286,11 @@ where
         *self.phase.write().await = AgentHarnessPhase::Turn;
 
         // Convert generic S to concrete Skill via JSON
-        let skill: Skill = serde_json::from_value(serde_json::to_value(&skill_entry).map_err(|_| {
-            HarnessError::InvalidArgument("Failed to serialize skill entry".into())
-        })?)
-        .map_err(|_| HarnessError::InvalidArgument("Failed to deserialize skill".into()))?;
+        let skill: Skill =
+            serde_json::from_value(serde_json::to_value(&skill_entry).map_err(|_| {
+                HarnessError::InvalidArgument("Failed to serialize skill entry".into())
+            })?)
+            .map_err(|_| HarnessError::InvalidArgument("Failed to deserialize skill".into()))?;
 
         let text = crate::harness::skills::format_skill_invocation(&skill, additional_instructions);
         let result = self.execute_turn(turn_state, text, None).await;
@@ -1279,14 +1334,16 @@ where
         *self.phase.write().await = AgentHarnessPhase::Turn;
 
         // Convert generic P to concrete PromptTemplate via JSON
-        let template: PromptTemplate = serde_json::from_value(serde_json::to_value(&template).map_err(|_| {
-            HarnessError::InvalidArgument("Failed to serialize prompt template".into())
-        })?)
-        .map_err(|_| HarnessError::InvalidArgument("Failed to deserialize prompt template".into()))?;
+        let template: PromptTemplate =
+            serde_json::from_value(serde_json::to_value(&template).map_err(|_| {
+                HarnessError::InvalidArgument("Failed to serialize prompt template".into())
+            })?)
+            .map_err(|_| {
+                HarnessError::InvalidArgument("Failed to deserialize prompt template".into())
+            })?;
 
-        let text = crate::harness::prompt_templates::format_prompt_template_invocation(
-            &template, args,
-        );
+        let text =
+            crate::harness::prompt_templates::format_prompt_template_invocation(&template, args);
         let result = self.execute_turn(turn_state, text, None).await;
 
         match result {
@@ -1313,7 +1370,8 @@ where
 
     pub async fn abort(&self) -> Result<AbortResult, HarnessError> {
         let cleared_steer: Vec<AgentMessage> = self.steer_queue.write().await.drain(..).collect();
-        let cleared_follow_up: Vec<AgentMessage> = self.follow_up_queue.write().await.drain(..).collect();
+        let cleared_follow_up: Vec<AgentMessage> =
+            self.follow_up_queue.write().await.drain(..).collect();
         self.next_turn_queue.write().await.clear();
 
         if let Some(cancel) = self.abort_signal.write().await.take() {
@@ -1393,12 +1451,9 @@ where
                 let api_key = {
                     let get_auth = self.get_api_key_and_headers.read().await;
                     match get_auth.as_ref() {
-                        Some(f) => f(&model)
-                            .await
-                            .map(|(k, _)| k)
-                            .or_else(|| {
-                                pi_ai::env_api_keys::get_env_api_key(&model.provider, None)
-                            }),
+                        Some(f) => f(&model).await.map(|(k, _)| k).or_else(|| {
+                            pi_ai::env_api_keys::get_env_api_key(&model.provider, None)
+                        }),
                         None => pi_ai::env_api_keys::get_env_api_key(&model.provider, None),
                     }
                 }
@@ -1465,9 +1520,7 @@ where
 
         *self.phase.write().await = AgentHarnessPhase::BranchSummary;
 
-        let result = self
-            .navigate_tree_inner(target_id, options)
-            .await;
+        let result = self.navigate_tree_inner(target_id, options).await;
 
         *self.phase.write().await = AgentHarnessPhase::Idle;
         result
@@ -1528,22 +1581,22 @@ where
                     .await
                     .map_err(HarnessError::Session)?;
 
-                let branch_summary_options =
-                    GenerateBranchSummaryOptions {
-                        model: model.clone(),
-                        reserve_tokens: None,
-                        custom_instructions: opts.custom_instructions.clone(),
-                        replace_instructions: Some(opts.replace_instructions),
-                        retry: None,
-                        callbacks: None,
-                    };
+                let branch_summary_options = GenerateBranchSummaryOptions {
+                    model: model.clone(),
+                    reserve_tokens: None,
+                    custom_instructions: opts.custom_instructions.clone(),
+                    replace_instructions: Some(opts.replace_instructions),
+                    retry: None,
+                    callbacks: None,
+                };
 
-                let branch_summary = crate::harness::compaction::branch_summarization::generate_branch_summary(
-                    &branch_entries,
-                    &branch_summary_options,
-                )
-                .await
-                .map_err(HarnessError::BranchSummary)?;
+                let branch_summary =
+                    crate::harness::compaction::branch_summarization::generate_branch_summary(
+                        &branch_entries,
+                        &branch_summary_options,
+                    )
+                    .await
+                    .map_err(HarnessError::BranchSummary)?;
 
                 summary_text = Some(branch_summary.summary.clone());
                 summary_details = Some(serde_json::json!({
@@ -1553,11 +1606,13 @@ where
             }
         }
 
-        let summary = summary_text.as_ref().map(|text| crate::harness::types::MoveToSummary {
-            summary: text.clone(),
-            details: summary_details,
-            from_hook: None,
-        });
+        let summary = summary_text
+            .as_ref()
+            .map(|text| crate::harness::types::MoveToSummary {
+                summary: text.clone(),
+                details: summary_details,
+                from_hook: None,
+            });
 
         let summary_id = self
             .session
@@ -1682,8 +1737,8 @@ mod tests {
                 output: 0.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
-                        tiers: vec![],
-},
+                tiers: vec![],
+            },
             context_window: 100_000,
             max_tokens: 4096,
             sampling_params: None,
@@ -1693,7 +1748,9 @@ mod tests {
         let msg = create_failure_message(&model, "something went wrong", false);
         match msg {
             AgentMessage::Assistant {
-                stop_reason, error_message, ..
+                stop_reason,
+                error_message,
+                ..
             } => {
                 assert_eq!(stop_reason, Some(StopReason::Error));
                 assert_eq!(error_message, Some("something went wrong".into()));

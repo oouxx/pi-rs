@@ -17,7 +17,9 @@ use pi_coding_agent::core::agent_session_services::{
 };
 use pi_coding_agent::core::extensions::ExtensionRegistry;
 use pi_coding_agent::core::model_registry::ModelRegistry;
-use pi_coding_agent::core::resource_loader::{DefaultResourceLoader, ResourceLoader, ResourceLoaderOptions};
+use pi_coding_agent::core::resource_loader::{
+    DefaultResourceLoader, ResourceLoader, ResourceLoaderOptions,
+};
 use pi_coding_agent::core::session_manager::SessionManager;
 
 fn test_model() -> pi_agent_core::pi_ai_types::Model {
@@ -65,7 +67,8 @@ async fn create_session(cwd: &str, agent_dir: &str) -> AgentSession {
     })
     .await;
 
-    let session_manager = SessionManager::new(cwd, &format!("{agent_dir}/sessions"), None, false, None);
+    let session_manager =
+        SessionManager::new(cwd, &format!("{agent_dir}/sessions"), None, false, None);
     let settings_manager =
         pi_coding_agent::core::settings_manager::SettingsManager::create(cwd, Some(agent_dir));
     let model_registry = ModelRegistry::new(ModelRegistry::builtin_models_list());

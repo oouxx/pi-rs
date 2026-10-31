@@ -27,11 +27,19 @@ impl Terminal {
         let backend = CrosstermBackend::new(stdout());
         let inner = ratatui::Terminal::new(backend)?;
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        Ok(Self { inner, columns: cols, rows })
+        Ok(Self {
+            inner,
+            columns: cols,
+            rows,
+        })
     }
 
-    pub fn columns(&self) -> u16 { self.columns }
-    pub fn rows(&self) -> u16 { self.rows }
+    pub fn columns(&self) -> u16 {
+        self.columns
+    }
+    pub fn rows(&self) -> u16 {
+        self.rows
+    }
 
     /// Enter raw mode, enable bracketed paste + mouse capture, start the
     /// input event loop. Returns (input_rx, shutdown_guard).
@@ -114,7 +122,12 @@ impl Terminal {
             );
         });
 
-        Ok((input_rx, ShutdownGuard { sender: Some(shutdown_tx) }))
+        Ok((
+            input_rx,
+            ShutdownGuard {
+                sender: Some(shutdown_tx),
+            },
+        ))
     }
 
     pub fn ratatui_terminal(&mut self) -> &mut ratatui::Terminal<CrosstermBackend<Stdout>> {

@@ -30,7 +30,11 @@ pub fn thinking_budget_for_level(level: &str, custom_budgets: Option<&ThinkingBu
         medium: Some(8192),
         high: Some(16_384),
     };
-    let level = if level == "xhigh" || level == "max" { "high" } else { level };
+    let level = if level == "xhigh" || level == "max" {
+        "high"
+    } else {
+        level
+    };
     let budget = match custom_budgets {
         Some(cb) => match level {
             "minimal" => cb.minimal.or(defaults.minimal),
@@ -130,16 +134,22 @@ pub fn build_base_options(
 
 /// Clamp reasoning effort — "xhigh" is treated as "high" for providers that
 /// don't support it natively.
-#[must_use] 
+#[must_use]
 #[allow(clippy::single_option_map)]
 pub fn clamp_reasoning(effort: Option<&str>) -> Option<String> {
-    effort.map(|e| if e == "xhigh" { "high".to_string() } else { e.to_string() })
+    effort.map(|e| {
+        if e == "xhigh" {
+            "high".to_string()
+        } else {
+            e.to_string()
+        }
+    })
 }
 
 /// Adjust `max_tokens` to accommodate a thinking budget.
 ///
 /// Returns the effective `max_tokens` and the `thinking_budget` in tokens.
-#[must_use] 
+#[must_use]
 pub fn adjust_max_tokens_for_thinking(
     base_max_tokens: Option<u64>,
     model_max_tokens: u64,
@@ -172,7 +182,9 @@ pub fn adjust_max_tokens_for_thinking(
     };
 
     let min_output_tokens = 1024;
-    let max_tokens = base_max_tokens.map_or(model_max_tokens, |bmt| (bmt + thinking_budget).min(model_max_tokens));
+    let max_tokens = base_max_tokens.map_or(model_max_tokens, |bmt| {
+        (bmt + thinking_budget).min(model_max_tokens)
+    });
 
     let thinking_budget = if max_tokens <= thinking_budget {
         max_tokens.saturating_sub(min_output_tokens)
@@ -329,7 +341,10 @@ mod tests {
         };
         let opts = build_base_options(&model, &empty_context(), Some(&simple), None);
         assert_eq!(
-            opts.env.as_ref().and_then(|e| e.get("PI_CACHE_RETENTION")).map(String::as_str),
+            opts.env
+                .as_ref()
+                .and_then(|e| e.get("PI_CACHE_RETENTION"))
+                .map(String::as_str),
             Some("long")
         );
     }
@@ -375,10 +390,27 @@ mod tests {
             thinking_budgets: None,
             debug: None,
         };
-        let opts = build_base_options(&model, &Context { system_prompt: None, messages: vec![], tools: None }, Some(&simple), None);
+        let opts = build_base_options(
+            &model,
+            &Context {
+                system_prompt: None,
+                messages: vec![],
+                tools: None,
+            },
+            Some(&simple),
+            None,
+        );
         let sp = opts.sampling_params.unwrap();
-        assert_eq!(sp.get("temperature").unwrap(), &serde_json::json!(0.2), "request overrides model");
-        assert_eq!(sp.get("repetition_penalty").unwrap(), &serde_json::json!(1.1), "model default kept");
+        assert_eq!(
+            sp.get("temperature").unwrap(),
+            &serde_json::json!(0.2),
+            "request overrides model"
+        );
+        assert_eq!(
+            sp.get("repetition_penalty").unwrap(),
+            &serde_json::json!(1.1),
+            "model default kept"
+        );
         assert_eq!(sp.get("top_p").unwrap(), &serde_json::json!(0.9));
     }
 
@@ -414,7 +446,16 @@ mod tests {
             thinking_budgets: None,
             debug: None,
         };
-        let opts = build_base_options(&model, &Context { system_prompt: None, messages: vec![], tools: None }, Some(&simple), None);
+        let opts = build_base_options(
+            &model,
+            &Context {
+                system_prompt: None,
+                messages: vec![],
+                tools: None,
+            },
+            Some(&simple),
+            None,
+        );
         assert!(
             std::sync::Arc::ptr_eq(opts.http_client.as_ref().unwrap(), &client),
             "custom http client must be preserved"

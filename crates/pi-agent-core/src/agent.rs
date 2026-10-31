@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex, Notify, RwLock};
 
-use crate::pi_ai_types::{
-    ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage,
-};
+use crate::pi_ai_types::{ContentBlock, Model, ModelCost, StopReason, ThinkingLevel, Usage};
 use crate::types::{
     AfterToolCallFn, AgentContext, AgentEvent, AgentEventSink, AgentMessage, AgentState,
     AgentTurnContext, BeforeToolCallFn, ConvertToLlmFn, FinishTurnFn, GetApiKeyFn,
@@ -114,9 +112,31 @@ pub struct AgentOptions {
     pub transform_context: Option<TransformContextFn>,
     pub stream_fn: Option<StreamFn>,
     pub get_api_key: Option<GetApiKeyFn>,
-    pub on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
-    pub on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
-    pub on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
+    pub on_payload: Option<
+        Arc<
+            dyn Fn(
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
+    pub on_headers: Option<
+        Arc<
+            dyn Fn(
+                    std::collections::HashMap<String, String>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = std::collections::HashMap<String, String>>
+                            + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
+    >,
+    pub on_provider_response:
+        Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
     /// Takes an optional abort signal (no turn context). Matches TS `AgentOptions.prepareNextTurn`.
@@ -219,9 +239,31 @@ pub struct Agent {
     transform_context: Option<TransformContextFn>,
     stream_fn: StreamFn,
     get_api_key: Option<GetApiKeyFn>,
-    on_payload: Option<Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>> + Send + Sync>>,
-    on_headers: Option<Arc<dyn Fn(std::collections::HashMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::collections::HashMap<String, String>> + Send>> + Send + Sync>>,
-    on_provider_response: Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
+    on_payload: Option<
+        Arc<
+            dyn Fn(
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
+    on_headers: Option<
+        Arc<
+            dyn Fn(
+                    std::collections::HashMap<String, String>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = std::collections::HashMap<String, String>>
+                            + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
+    >,
+    on_provider_response:
+        Option<Arc<dyn Fn(u16, std::collections::HashMap<String, String>) + Send + Sync>>,
     before_tool_call: Arc<tokio::sync::RwLock<Option<BeforeToolCallFn>>>,
     after_tool_call: Option<AfterToolCallFn>,
     prepare_next_turn: Option<PrepareNextTurnOptionsFn>,
@@ -755,7 +797,9 @@ impl Agent {
             state.error_message = None;
         }
 
-        let result = self.run_with_lifecycle(messages, skip_initial_steering_poll).await;
+        let result = self
+            .run_with_lifecycle(messages, skip_initial_steering_poll)
+            .await;
         self.finish_run().await;
         result
     }
@@ -783,7 +827,10 @@ impl Agent {
         &self,
         cancel_rx: watch::Receiver<bool>,
         skip_initial_steering_poll: bool,
-    ) -> (crate::agent_loop::AgentLoopConfig, Option<watch::Receiver<bool>>) {
+    ) -> (
+        crate::agent_loop::AgentLoopConfig,
+        Option<watch::Receiver<bool>>,
+    ) {
         let steering_queue = self.steering_queue.clone();
         let follow_up_queue = self.follow_up_queue.clone();
         let skip_steering = Arc::new(tokio::sync::Mutex::new(skip_initial_steering_poll));
@@ -793,7 +840,11 @@ impl Agent {
             model: state.model.clone(),
             reasoning: {
                 let tl = state.thinking_level.clone();
-                if tl == "off" { None } else { Some(tl) }
+                if tl == "off" {
+                    None
+                } else {
+                    Some(tl)
+                }
             },
             api_key: None,
             session_id: self.session_id.clone(),
@@ -909,7 +960,9 @@ impl Agent {
         drop(state);
 
         let emit = self.create_event_sink();
-        let (config, signal) = self.create_loop_config(cancel_rx, skip_initial_steering_poll).await;
+        let (config, signal) = self
+            .create_loop_config(cancel_rx, skip_initial_steering_poll)
+            .await;
 
         let loop_result = crate::agent_loop::run_agent_loop(
             prompts,
@@ -1055,10 +1108,11 @@ impl Agent {
                             s.pending_tool_calls.remove(tool_call_id);
                         }
                         AgentEvent::TurnEnd {
-                            message: AgentMessage::Assistant {
-                                error_message: Some(err),
-                                ..
-                            },
+                            message:
+                                AgentMessage::Assistant {
+                                    error_message: Some(err),
+                                    ..
+                                },
                             ..
                         } => {
                             s.error_message = Some(err.clone());
@@ -1104,7 +1158,7 @@ impl Agent {
             *last = replacement;
         }
     }
-    
+
     pub async fn set_thinking_level(&self, level: ThinkingLevel) {
         self.state.write().await.thinking_level = level;
     }
@@ -1156,15 +1210,15 @@ pub fn create_agent(
 #[cfg(test)]
 #[allow(unnameable_test_items, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
+    use std::sync::Arc;
 
     use crate::pi_ai_types::{
-        AssistantMessage, AssistantMessageEvent, ContentBlock, Model, ModelCost, StopReason,
-        Usage,
+        AssistantMessage, AssistantMessageEvent, ContentBlock, Model, ModelCost, StopReason, Usage,
     };
-    use crate::types::{AgentEvent, AgentMessage, AgentState, QueueMode, StreamFn, StreamFnOptions};
+    use crate::types::{
+        AgentEvent, AgentMessage, AgentState, QueueMode, StreamFn, StreamFnOptions,
+    };
 
     use super::*;
 
@@ -1189,8 +1243,8 @@ mod tests {
                 output: 0.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
-                        tiers: vec![],
-},
+                tiers: vec![],
+            },
             context_window: 100_000,
             max_tokens: 4096,
             sampling_params: None,
@@ -1296,8 +1350,7 @@ mod tests {
     #[tokio::test]
     async fn test_prepend_before_tool_call_gates_then_delegates() {
         use crate::types::{
-            AgentContext, AgentMessage, AgentToolCall, BeforeToolCallContext,
-            BeforeToolCallResult,
+            AgentContext, AgentMessage, AgentToolCall, BeforeToolCallContext, BeforeToolCallResult,
         };
         use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -1436,13 +1489,14 @@ mod tests {
 
         let event_count = Arc::new(AtomicUsize::new(0));
         let count_clone = event_count.clone();
-        let _unsub = agent.subscribe(Arc::new(move |_event, _signal| {
-            let c = count_clone.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-            })
-        }))
-        .await;
+        let _unsub = agent
+            .subscribe(Arc::new(move |_event, _signal| {
+                let c = count_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                })
+            }))
+            .await;
 
         // No events yet
         assert_eq!(event_count.load(Ordering::SeqCst), 0);
@@ -1543,7 +1597,10 @@ mod tests {
         // Start prompt in background
         let agent_clone = agent.clone();
         let prompt_handle = tokio::spawn(async move {
-            agent_clone.prompt(PromptInput::Text("hello")).await.unwrap();
+            agent_clone
+                .prompt(PromptInput::Text("hello"))
+                .await
+                .unwrap();
         });
 
         // Give the prompt time to start and reach AgentEnd
@@ -1571,7 +1628,10 @@ mod tests {
         // Start a prompt
         let agent_clone = agent.clone();
         let handle = tokio::spawn(async move {
-            agent_clone.prompt(PromptInput::Text("hello")).await.unwrap();
+            agent_clone
+                .prompt(PromptInput::Text("hello"))
+                .await
+                .unwrap();
         });
 
         // wait_for_idle should complete after the prompt finishes
@@ -1619,19 +1679,21 @@ mod tests {
         let cc = call_count.clone();
 
         let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(move |_model, _context, _thinking, _opts: StreamFnOptions| {
-                cc.fetch_add(1, Ordering::SeqCst);
-                let msg = make_assistant_message("ok");
-                Box::pin(async move {
-                    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    let _ = _tx.send(AssistantMessageEvent::Done {
-                        message: msg,
-                        reason: StopReason::Stop,
-                    });
-                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+            stream_fn: Some(Arc::new(
+                move |_model, _context, _thinking, _opts: StreamFnOptions| {
+                    cc.fetch_add(1, Ordering::SeqCst);
+                    let msg = make_assistant_message("ok");
+                    Box::pin(async move {
+                        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        let _ = _tx.send(AssistantMessageEvent::Done {
+                            message: msg,
+                            reason: StopReason::Stop,
+                        });
+                        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                        Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
+                    })
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             steering_mode: Some(QueueMode::OneAtATime),
             ..Default::default()
@@ -1721,9 +1783,9 @@ mod tests {
 
         let messages = agent.messages().await;
         let has_follow_up = messages.iter().any(|m| match m {
-            AgentMessage::User { content, .. } => {
-                content.iter().any(|c| matches!(c, ContentBlock::Text { text, .. } if text == "Queued follow-up"))
-            }
+            AgentMessage::User { content, .. } => content.iter().any(
+                |c| matches!(c, ContentBlock::Text { text, .. } if text == "Queued follow-up"),
+            ),
             _ => false,
         });
         assert!(has_follow_up, "Follow-up message should be in context");
@@ -1741,58 +1803,60 @@ mod tests {
 
         // Verify abort works during streaming
         let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(|_model, _context, _thinking, opts: StreamFnOptions| {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
-                // Send start event immediately so streaming begins
-                let start_msg = AssistantMessage {
-                    provider_thinking_level: None,
-                    content: vec![ContentBlock::text("")],
-                    api: "test".into(),
-                    provider: "test".into(),
-                    model: "test".into(),
-                    response_model: None,
-                    response_id: None,
-                    diagnostics: None,
-                    usage: Usage::default(),
-                    stop_reason: StopReason::Stop,
-                    error_message: None,
-                    raw_stop_reason: None,
-                    end_turn: None,
-                    timestamp: 1000,
-                };
-                let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
-                // Watch the abort signal in a spawned task
-                if let Some(mut sig) = opts.signal.clone() {
-                    tokio::spawn(async move {
-                        let _ = sig.changed().await;
-                        if *sig.borrow() {
-                            let _ = tx.send(AssistantMessageEvent::Error {
-                                error: AssistantMessage {
-                                    provider_thinking_level: None,
-                                    content: vec![ContentBlock::text("Aborted")],
-                                    api: "test".into(),
-                                    provider: "test".into(),
-                                    model: "test".into(),
-                                    response_model: None,
-                                    response_id: None,
-                                    diagnostics: None,
-                                    usage: Usage::default(),
-                                    stop_reason: StopReason::Aborted,
-                                    error_message: Some("Aborted".into()),
-                                    raw_stop_reason: None,
-                                    end_turn: None,
-                                    timestamp: 1000,
-                                },
-                                reason: StopReason::Aborted,
-                            });
-                        }
-                    });
-                }
-                let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                Box::pin(async move {
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+            stream_fn: Some(Arc::new(
+                |_model, _context, _thinking, opts: StreamFnOptions| {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
+                    // Send start event immediately so streaming begins
+                    let start_msg = AssistantMessage {
+                        provider_thinking_level: None,
+                        content: vec![ContentBlock::text("")],
+                        api: "test".into(),
+                        provider: "test".into(),
+                        model: "test".into(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: Usage::default(),
+                        stop_reason: StopReason::Stop,
+                        error_message: None,
+                        raw_stop_reason: None,
+                        end_turn: None,
+                        timestamp: 1000,
+                    };
+                    let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
+                    // Watch the abort signal in a spawned task
+                    if let Some(mut sig) = opts.signal.clone() {
+                        tokio::spawn(async move {
+                            let _ = sig.changed().await;
+                            if *sig.borrow() {
+                                let _ = tx.send(AssistantMessageEvent::Error {
+                                    error: AssistantMessage {
+                                        provider_thinking_level: None,
+                                        content: vec![ContentBlock::text("Aborted")],
+                                        api: "test".into(),
+                                        provider: "test".into(),
+                                        model: "test".into(),
+                                        response_model: None,
+                                        response_id: None,
+                                        diagnostics: None,
+                                        usage: Usage::default(),
+                                        stop_reason: StopReason::Aborted,
+                                        error_message: Some("Aborted".into()),
+                                        raw_stop_reason: None,
+                                        end_turn: None,
+                                        timestamp: 1000,
+                                    },
+                                    reason: StopReason::Aborted,
+                                });
+                            }
+                        });
+                    }
+                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                    Box::pin(
+                        async move { Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse) },
+                    )
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             ..Default::default()
         });
@@ -1816,7 +1880,9 @@ mod tests {
         agent.abort().await;
 
         // Wait for prompt to complete (with timeout)
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await.unwrap_or(Ok(()));
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .unwrap_or(Ok(()));
 
         assert!(!agent.is_streaming().await);
     }
@@ -1824,14 +1890,16 @@ mod tests {
     #[tokio::test]
     async fn test_agent_throw_when_streaming() {
         let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(|_model, _context, _thinking, _opts: StreamFnOptions| {
-                Box::pin(async move {
-                    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    // Never send done - just hang
-                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+            stream_fn: Some(Arc::new(
+                |_model, _context, _thinking, _opts: StreamFnOptions| {
+                    Box::pin(async move {
+                        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        // Never send done - just hang
+                        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                        Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
+                    })
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             ..Default::default()
         });
@@ -1897,9 +1965,9 @@ mod tests {
 
         let messages = agent.messages().await;
         let has_follow_up = messages.iter().any(|m| match m {
-            AgentMessage::User { content, .. } => {
-                content.iter().any(|c| matches!(c, ContentBlock::Text { text, .. } if text == "Queued follow-up"))
-            }
+            AgentMessage::User { content, .. } => content.iter().any(
+                |c| matches!(c, ContentBlock::Text { text, .. } if text == "Queued follow-up"),
+            ),
             _ => false,
         });
         assert!(has_follow_up, "Follow-up message should be in context");
@@ -1915,19 +1983,21 @@ mod tests {
         let rc = response_count.clone();
 
         let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(move |_model, _context, _thinking, _opts: StreamFnOptions| {
-                let count = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                let msg = make_assistant_message(&format!("Processed {}", count));
-                Box::pin(async move {
-                    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    let _ = _tx.send(AssistantMessageEvent::Done {
-                        message: msg,
-                        reason: StopReason::Stop,
-                    });
-                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+            stream_fn: Some(Arc::new(
+                move |_model, _context, _thinking, _opts: StreamFnOptions| {
+                    let count = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                    let msg = make_assistant_message(&format!("Processed {}", count));
+                    Box::pin(async move {
+                        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        let _ = _tx.send(AssistantMessageEvent::Done {
+                            message: msg,
+                            reason: StopReason::Stop,
+                        });
+                        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                        Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
+                    })
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             steering_mode: Some(QueueMode::OneAtATime),
             ..Default::default()
@@ -1984,22 +2054,24 @@ mod tests {
 
         let agent = Agent::new(AgentOptions {
             session_id: Some("session-abc".into()),
-            stream_fn: Some(Arc::new(move |_model, _context, _thinking, opts: StreamFnOptions| {
-                let rid = rid.clone();
-                Box::pin(async move {
-                    if let Some(sid) = &opts.session_id {
-                        *rid.lock().await = Some(sid.to_string());
-                    }
-                    let msg = make_assistant_message("ok");
-                    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    let _ = _tx.send(AssistantMessageEvent::Done {
-                        message: msg,
-                        reason: StopReason::Stop,
-                    });
-                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+            stream_fn: Some(Arc::new(
+                move |_model, _context, _thinking, opts: StreamFnOptions| {
+                    let rid = rid.clone();
+                    Box::pin(async move {
+                        if let Some(sid) = &opts.session_id {
+                            *rid.lock().await = Some(sid.to_string());
+                        }
+                        let msg = make_assistant_message("ok");
+                        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        let _ = _tx.send(AssistantMessageEvent::Done {
+                            message: msg,
+                            reason: StopReason::Stop,
+                        });
+                        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                        Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
+                    })
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             ..Default::default()
         });
@@ -2050,46 +2122,50 @@ mod tests {
     #[tokio::test]
     async fn test_agent_reset_rejects_while_running() {
         let agent = std::sync::Arc::new(Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(|_model, _context, _thinking, opts: StreamFnOptions| {
-                // Block until aborted so the run stays active.
-                let signal = opts.signal.clone();
-                Box::pin(async move {
-                    if let Some(rx) = signal {
-                        loop {
-                            if *rx.borrow() {
-                                break;
+            stream_fn: Some(Arc::new(
+                |_model, _context, _thinking, opts: StreamFnOptions| {
+                    // Block until aborted so the run stays active.
+                    let signal = opts.signal.clone();
+                    Box::pin(async move {
+                        if let Some(rx) = signal {
+                            loop {
+                                if *rx.borrow() {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                         }
-                    }
-                    let mut out = AssistantMessage {
-                        provider_thinking_level: None,
-                        content: vec![],
-                        api: "openai-completions".into(),
-                        provider: "openai".into(),
-                        model: "gpt-5.5".into(),
-                        response_model: None,
-                        response_id: None,
-                        diagnostics: None,
-                        usage: pi_ai::types::Usage::default(),
-                        stop_reason: pi_ai::types::StopReason::Aborted,
-                        error_message: None,
-                        raw_stop_reason: None,
-                        end_turn: None,
-                        timestamp: 0,
-                    };
-                    out.content.push(ContentBlock::Text {
-                        text: "aborted".into(),
-                        text_signature: None,
-                    });
-                    Ok(Box::new(tokio_stream::once(pi_ai::types::AssistantMessageEvent::TextEnd {
-                        content_index: 0,
-                        content: "aborted".into(),
-                        partial: out,
-                    }))
-                        as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+                        let mut out = AssistantMessage {
+                            provider_thinking_level: None,
+                            content: vec![],
+                            api: "openai-completions".into(),
+                            provider: "openai".into(),
+                            model: "gpt-5.5".into(),
+                            response_model: None,
+                            response_id: None,
+                            diagnostics: None,
+                            usage: pi_ai::types::Usage::default(),
+                            stop_reason: pi_ai::types::StopReason::Aborted,
+                            error_message: None,
+                            raw_stop_reason: None,
+                            end_turn: None,
+                            timestamp: 0,
+                        };
+                        out.content.push(ContentBlock::Text {
+                            text: "aborted".into(),
+                            text_signature: None,
+                        });
+                        Ok(Box::new(tokio_stream::once(
+                            pi_ai::types::AssistantMessageEvent::TextEnd {
+                                content_index: 0,
+                                content: "aborted".into(),
+                                partial: out,
+                            },
+                        ))
+                            as crate::pi_ai_types::StreamResponse)
+                    })
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             ..Default::default()
         }));
@@ -2203,58 +2279,60 @@ mod tests {
     #[tokio::test]
     async fn test_agent_throw_when_continue_streaming() {
         let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(|_model, _context, _thinking, opts: StreamFnOptions| {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
-                // Send start event immediately so streaming begins
-                let start_msg = AssistantMessage {
-                    provider_thinking_level: None,
-                    content: vec![ContentBlock::text("")],
-                    api: "test".into(),
-                    provider: "test".into(),
-                    model: "test".into(),
-                    response_model: None,
-                    response_id: None,
-                    diagnostics: None,
-                    usage: Usage::default(),
-                    stop_reason: StopReason::Stop,
-                    error_message: None,
-                    raw_stop_reason: None,
-                    end_turn: None,
-                    timestamp: 1000,
-                };
-                let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
-                // Watch the abort signal in a spawned task
-                if let Some(mut sig) = opts.signal.clone() {
-                    tokio::spawn(async move {
-                        let _ = sig.changed().await;
-                        if *sig.borrow() {
-                            let _ = tx.send(AssistantMessageEvent::Error {
-                                error: AssistantMessage {
-                                    provider_thinking_level: None,
-                                    content: vec![ContentBlock::text("Aborted")],
-                                    api: "test".into(),
-                                    provider: "test".into(),
-                                    model: "test".into(),
-                                    response_model: None,
-                                    response_id: None,
-                                    diagnostics: None,
-                                    usage: Usage::default(),
-                                    stop_reason: StopReason::Aborted,
-                                    error_message: Some("Aborted".into()),
-                                    raw_stop_reason: None,
-                                    end_turn: None,
-                                    timestamp: 1000,
-                                },
-                                reason: StopReason::Aborted,
-                            });
-                        }
-                    });
-                }
-                let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                Box::pin(async move {
-                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-                })
-            })),
+            stream_fn: Some(Arc::new(
+                |_model, _context, _thinking, opts: StreamFnOptions| {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
+                    // Send start event immediately so streaming begins
+                    let start_msg = AssistantMessage {
+                        provider_thinking_level: None,
+                        content: vec![ContentBlock::text("")],
+                        api: "test".into(),
+                        provider: "test".into(),
+                        model: "test".into(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: Usage::default(),
+                        stop_reason: StopReason::Stop,
+                        error_message: None,
+                        raw_stop_reason: None,
+                        end_turn: None,
+                        timestamp: 1000,
+                    };
+                    let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
+                    // Watch the abort signal in a spawned task
+                    if let Some(mut sig) = opts.signal.clone() {
+                        tokio::spawn(async move {
+                            let _ = sig.changed().await;
+                            if *sig.borrow() {
+                                let _ = tx.send(AssistantMessageEvent::Error {
+                                    error: AssistantMessage {
+                                        provider_thinking_level: None,
+                                        content: vec![ContentBlock::text("Aborted")],
+                                        api: "test".into(),
+                                        provider: "test".into(),
+                                        model: "test".into(),
+                                        response_model: None,
+                                        response_id: None,
+                                        diagnostics: None,
+                                        usage: Usage::default(),
+                                        stop_reason: StopReason::Aborted,
+                                        error_message: Some("Aborted".into()),
+                                        raw_stop_reason: None,
+                                        end_turn: None,
+                                        timestamp: 1000,
+                                    },
+                                    reason: StopReason::Aborted,
+                                });
+                            }
+                        });
+                    }
+                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                    Box::pin(
+                        async move { Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse) },
+                    )
+                },
+            )),
             convert_to_llm: Some(default_convert_to_llm()),
             ..Default::default()
         });
@@ -2286,7 +2364,9 @@ mod tests {
 
         // Cleanup - abort to stop the stream
         agent.abort().await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await.unwrap_or(Ok(()));
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .unwrap_or(Ok(()));
     }
 
     #[tokio::test]
@@ -2297,16 +2377,194 @@ mod tests {
         let ss = saw_signal.clone();
 
         let agent = Agent::new(AgentOptions {
-            stream_fn: Some(Arc::new(move |_model, _context, _thinking, _opts: StreamFnOptions| {
-                let count = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
-                if count == 1 {
-                    // First call: return a tool use message
+            stream_fn: Some(Arc::new(
+                move |_model, _context, _thinking, _opts: StreamFnOptions| {
+                    let count = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AssistantMessageEvent>();
+                    if count == 1 {
+                        // First call: return a tool use message
+                        let msg = AssistantMessage {
+                            provider_thinking_level: None,
+                            content: vec![ContentBlock::ToolCall {
+                                id: "tool-1".into(),
+                                name: "noop".into(),
+                                arguments: serde_json::json!({}),
+                                thought_signature: None,
+                                namespace: None,
+                            }],
+                            api: "test".into(),
+                            provider: "test".into(),
+                            model: "test".into(),
+                            response_model: None,
+                            response_id: None,
+                            diagnostics: None,
+                            usage: Usage::default(),
+                            stop_reason: StopReason::ToolUse,
+                            error_message: None,
+                            raw_stop_reason: None,
+                            end_turn: None,
+                            timestamp: 1000,
+                        };
+                        let _ = tx.send(AssistantMessageEvent::Done {
+                            message: msg,
+                            reason: StopReason::ToolUse,
+                        });
+                    } else {
+                        // Second call: return a stop message
+                        let msg = AssistantMessage {
+                            provider_thinking_level: None,
+                            content: vec![ContentBlock::text("done")],
+                            api: "test".into(),
+                            provider: "test".into(),
+                            model: "test".into(),
+                            response_model: None,
+                            response_id: None,
+                            diagnostics: None,
+                            usage: Usage::default(),
+                            stop_reason: StopReason::Stop,
+                            error_message: None,
+                            raw_stop_reason: None,
+                            end_turn: None,
+                            timestamp: 1000,
+                        };
+                        let _ = tx.send(AssistantMessageEvent::Done {
+                            message: msg,
+                            reason: StopReason::Stop,
+                        });
+                    }
+                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                    Box::pin(
+                        async move { Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse) },
+                    )
+                },
+            )),
+            convert_to_llm: Some(default_convert_to_llm()),
+            prepare_next_turn: Some(Arc::new(
+                move |_signal: Option<tokio::sync::watch::Receiver<bool>>| {
+                    let ss = ss.clone();
+                    Box::pin(async move {
+                        ss.store(1, Ordering::SeqCst);
+                        None
+                    })
+                },
+            )),
+            ..Default::default()
+        });
+
+        // Register a noop tool so the tool call can be executed
+        use crate::types::AgentTool;
+        let noop_tool = AgentTool {
+            constrained_sampling: None,
+            name: "noop".into(),
+            label: "Noop".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
+            description: "A noop tool".into(),
+            parameters_schema: serde_json::json!({}),
+            execution_mode: None,
+            prepare_arguments: None,
+            execute:
+                Arc::new(
+                    |_tool_call_id: String,
+                     _params: serde_json::Value,
+                     _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                     _on_update: Option<
+                        crate::types::AgentToolUpdateCallback<serde_json::Value>,
+                    >| {
+                        Box::pin(async move {
+                            Ok(crate::types::AgentToolResult {
+                                content: vec![ContentBlock::text("ok")],
+                                details: serde_json::json!({}),
+                                usage: None,
+                                terminate: None,
+                            })
+                        })
+                    },
+                ),
+        };
+        agent.add_tools(vec![Arc::new(noop_tool)]).await;
+
+        agent.prompt(PromptInput::Text("start")).await.unwrap();
+
+        assert_eq!(
+            request_count.load(Ordering::SeqCst),
+            2,
+            "Should have made 2 stream calls"
+        );
+        assert_eq!(
+            saw_signal.load(Ordering::SeqCst),
+            1,
+            "prepare_next_turn should have been called"
+        );
+    }
+
+    // TS: "should ignore tool updates after the tool execution settles"
+    // Verifies that after a tool's execute function returns, late calls to
+    // onUpdate are ignored.
+    #[tokio::test]
+    async fn test_agent_ignore_tool_updates_after_settle() {
+        let delayed_update = Arc::new(tokio::sync::Mutex::new(
+            None::<crate::types::AgentToolUpdateCallback<serde_json::Value>>,
+        ));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let du = delayed_update.clone();
+
+        // Create a tool that captures the onUpdate callback
+        use crate::types::AgentTool;
+        let delayed_tool = AgentTool {
+            constrained_sampling: None,
+            name: "delayed_tool".into(),
+            label: "Delayed Tool".into(),
+            prompt_snippet: None,
+            prompt_guidelines: None,
+            description: "Captures progress callbacks".into(),
+            parameters_schema: serde_json::json!({}),
+            execution_mode: None,
+            prepare_arguments: None,
+            execute: Arc::new(
+                move |_tool_call_id: String,
+                      _params: serde_json::Value,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                      on_update: Option<
+                    crate::types::AgentToolUpdateCallback<serde_json::Value>,
+                >| {
+                    let du = du.clone();
+                    Box::pin(async move {
+                        // Store the on_update callback
+                        if let Some(cb) = on_update {
+                            let mut guard = du.lock().await;
+                            *guard = Some(cb.clone());
+                            // Call on_update during execution
+                            cb(crate::types::AgentToolResult {
+                                content: vec![ContentBlock::text("running")],
+                                details: serde_json::json!({"status": "running"}),
+                                usage: None,
+                                terminate: None,
+                            });
+                        }
+                        // Return immediately
+                        Ok(crate::types::AgentToolResult {
+                            content: vec![ContentBlock::text("ok")],
+                            details: serde_json::json!({"status": "done"}),
+                            usage: None,
+                            terminate: Some(true),
+                        })
+                    })
+                },
+            ),
+        };
+
+        // Create a stream that returns a tool_use message
+        let stream_fn: StreamFn =
+            Arc::new(|_model, _context, _thinking, _opts: StreamFnOptions| {
+                Box::pin(async move {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                     let msg = AssistantMessage {
                         provider_thinking_level: None,
                         content: vec![ContentBlock::ToolCall {
-                            id: "tool-1".into(),
-                            name: "noop".into(),
+                            id: "call-1".into(),
+                            name: "delayed_tool".into(),
                             arguments: serde_json::json!({}),
                             thought_signature: None,
                             namespace: None,
@@ -2328,158 +2586,10 @@ mod tests {
                         message: msg,
                         reason: StopReason::ToolUse,
                     });
-                } else {
-                    // Second call: return a stop message
-                    let msg = AssistantMessage {
-                        provider_thinking_level: None,
-                        content: vec![ContentBlock::text("done")],
-                        api: "test".into(),
-                        provider: "test".into(),
-                        model: "test".into(),
-                        response_model: None,
-                        response_id: None,
-                        diagnostics: None,
-                        usage: Usage::default(),
-                        stop_reason: StopReason::Stop,
-                        error_message: None,
-                        raw_stop_reason: None,
-                        end_turn: None,
-                        timestamp: 1000,
-                    };
-                    let _ = tx.send(AssistantMessageEvent::Done {
-                        message: msg,
-                        reason: StopReason::Stop,
-                    });
-                }
-                let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                Box::pin(async move {
+                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
                     Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
                 })
-            })),
-            convert_to_llm: Some(default_convert_to_llm()),
-            prepare_next_turn: Some(Arc::new(move |_signal: Option<tokio::sync::watch::Receiver<bool>>| {
-                let ss = ss.clone();
-                Box::pin(async move {
-                    ss.store(1, Ordering::SeqCst);
-                    None
-                })
-            })),
-            ..Default::default()
-        });
-
-        // Register a noop tool so the tool call can be executed
-        use crate::types::AgentTool;
-        let noop_tool = AgentTool {
-            constrained_sampling: None,
-            name: "noop".into(),
-            label: "Noop".into(),
-            prompt_snippet: None,
-            prompt_guidelines: None,
-            description: "A noop tool".into(),
-            parameters_schema: serde_json::json!({}),
-            execution_mode: None,
-            prepare_arguments: None,
-            execute: Arc::new(|_tool_call_id: String, _params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, _on_update: Option<crate::types::AgentToolUpdateCallback<serde_json::Value>>| {
-                Box::pin(async move {
-                    Ok(crate::types::AgentToolResult {
-                        content: vec![ContentBlock::text("ok")],
-                        details: serde_json::json!({}),
-                        usage: None,
-                        terminate: None,
-                    })
-                })
-            }),
-        };
-        agent.add_tools(vec![Arc::new(noop_tool)]).await;
-
-        agent.prompt(PromptInput::Text("start")).await.unwrap();
-
-        assert_eq!(request_count.load(Ordering::SeqCst), 2, "Should have made 2 stream calls");
-        assert_eq!(saw_signal.load(Ordering::SeqCst), 1, "prepare_next_turn should have been called");
-    }
-
-    // TS: "should ignore tool updates after the tool execution settles"
-    // Verifies that after a tool's execute function returns, late calls to
-    // onUpdate are ignored.
-    #[tokio::test]
-    async fn test_agent_ignore_tool_updates_after_settle() {
-        let delayed_update = Arc::new(tokio::sync::Mutex::new(None::<crate::types::AgentToolUpdateCallback<serde_json::Value>>));
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-
-        let du = delayed_update.clone();
-
-        // Create a tool that captures the onUpdate callback
-        use crate::types::AgentTool;
-        let delayed_tool = AgentTool {
-            constrained_sampling: None,
-            name: "delayed_tool".into(),
-            label: "Delayed Tool".into(),
-            prompt_snippet: None,
-            prompt_guidelines: None,
-            description: "Captures progress callbacks".into(),
-            parameters_schema: serde_json::json!({}),
-            execution_mode: None,
-            prepare_arguments: None,
-            execute: Arc::new(move |_tool_call_id: String, _params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, on_update: Option<crate::types::AgentToolUpdateCallback<serde_json::Value>>| {
-                let du = du.clone();
-                Box::pin(async move {
-                    // Store the on_update callback
-                    if let Some(cb) = on_update {
-                        let mut guard = du.lock().await;
-                        *guard = Some(cb.clone());
-                        // Call on_update during execution
-                        cb(crate::types::AgentToolResult {
-                            content: vec![ContentBlock::text("running")],
-                            details: serde_json::json!({"status": "running"}),
-                            usage: None,
-                            terminate: None,
-                        });
-                    }
-                    // Return immediately
-                    Ok(crate::types::AgentToolResult {
-                        content: vec![ContentBlock::text("ok")],
-                        details: serde_json::json!({"status": "done"}),
-                        usage: None,
-                        terminate: Some(true),
-                    })
-                })
-            }),
-        };
-
-        // Create a stream that returns a tool_use message
-        let stream_fn: StreamFn = Arc::new(|_model, _context, _thinking, _opts: StreamFnOptions| {
-            Box::pin(async move {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let msg = AssistantMessage {
-                    provider_thinking_level: None,
-                    content: vec![ContentBlock::ToolCall {
-                        id: "call-1".into(),
-                        name: "delayed_tool".into(),
-                        arguments: serde_json::json!({}),
-                        thought_signature: None,
-                        namespace: None,
-                    }],
-                    api: "test".into(),
-                    provider: "test".into(),
-                    model: "test".into(),
-                    response_model: None,
-                    response_id: None,
-                    diagnostics: None,
-                    usage: Usage::default(),
-                    stop_reason: StopReason::ToolUse,
-                    error_message: None,
-                    raw_stop_reason: None,
-                    end_turn: None,
-                    timestamp: 1000,
-                };
-                let _ = tx.send(AssistantMessageEvent::Done {
-                    message: msg,
-                    reason: StopReason::ToolUse,
-                });
-                let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-            })
-        });
+            });
 
         let agent = Agent::new(AgentOptions {
             stream_fn: Some(stream_fn),
@@ -2520,9 +2630,19 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let final_events = events.lock().unwrap();
-        let update_count = final_events.iter().filter(|e| matches!(e, AgentEvent::ToolExecutionUpdate { .. })).count();
-        assert_eq!(update_count, 1, "should have exactly 1 tool_execution_update");
-        assert_eq!(final_events.len(), event_count_after_prompt, "no new events after settle");
+        let update_count = final_events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolExecutionUpdate { .. }))
+            .count();
+        assert_eq!(
+            update_count, 1,
+            "should have exactly 1 tool_execution_update"
+        );
+        assert_eq!(
+            final_events.len(),
+            event_count_after_prompt,
+            "no new events after settle"
+        );
     }
 
     // TS: "should ignore a settled parallel tool update while another tool is still running"
@@ -2530,7 +2650,9 @@ mod tests {
     // updates from the finished tool are ignored.
     #[tokio::test]
     async fn test_agent_ignore_parallel_tool_update_while_another_running() {
-        let settled_update = Arc::new(tokio::sync::Mutex::new(None::<crate::types::AgentToolUpdateCallback<serde_json::Value>>));
+        let settled_update = Arc::new(tokio::sync::Mutex::new(
+            None::<crate::types::AgentToolUpdateCallback<serde_json::Value>>,
+        ));
         let slow_release = Arc::new(tokio::sync::Notify::new());
         let slow_started = Arc::new(tokio::sync::Notify::new());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2550,21 +2672,28 @@ mod tests {
             parameters_schema: serde_json::json!({}),
             execution_mode: None,
             prepare_arguments: None,
-            execute: Arc::new(move |_tool_call_id: String, _params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, on_update: Option<crate::types::AgentToolUpdateCallback<serde_json::Value>>| {
-                let su = su.clone();
-                Box::pin(async move {
-                    if let Some(cb) = on_update {
-                        let mut guard = su.lock().await;
-                        *guard = Some(cb);
-                    }
-                    Ok(crate::types::AgentToolResult {
-                        content: vec![ContentBlock::text("done")],
-                        details: serde_json::json!({"status": "done"}),
-                        usage: None,
-                        terminate: Some(true),
+            execute: Arc::new(
+                move |_tool_call_id: String,
+                      _params: serde_json::Value,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                      on_update: Option<
+                    crate::types::AgentToolUpdateCallback<serde_json::Value>,
+                >| {
+                    let su = su.clone();
+                    Box::pin(async move {
+                        if let Some(cb) = on_update {
+                            let mut guard = su.lock().await;
+                            *guard = Some(cb);
+                        }
+                        Ok(crate::types::AgentToolResult {
+                            content: vec![ContentBlock::text("done")],
+                            details: serde_json::json!({"status": "done"}),
+                            usage: None,
+                            terminate: Some(true),
+                        })
                     })
-                })
-            }),
+                },
+            ),
         };
 
         let slow_started_for_closure = slow_started.clone();
@@ -2581,65 +2710,73 @@ mod tests {
             parameters_schema: serde_json::json!({}),
             execution_mode: None,
             prepare_arguments: None,
-            execute: Arc::new(move |_tool_call_id: String, _params: serde_json::Value, _signal: Option<tokio::sync::watch::Receiver<bool>>, _on_update: Option<crate::types::AgentToolUpdateCallback<serde_json::Value>>| {
-                let ss = slow_started_for_closure.clone();
-                let sr = slow_release_for_move.clone();
-                Box::pin(async move {
-                    ss.notify_one();
-                    sr.notified().await;
-                    Ok(crate::types::AgentToolResult {
-                        content: vec![ContentBlock::text("done")],
-                        details: serde_json::json!({"status": "done"}),
-                        usage: None,
-                        terminate: Some(true),
+            execute: Arc::new(
+                move |_tool_call_id: String,
+                      _params: serde_json::Value,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                      _on_update: Option<
+                    crate::types::AgentToolUpdateCallback<serde_json::Value>,
+                >| {
+                    let ss = slow_started_for_closure.clone();
+                    let sr = slow_release_for_move.clone();
+                    Box::pin(async move {
+                        ss.notify_one();
+                        sr.notified().await;
+                        Ok(crate::types::AgentToolResult {
+                            content: vec![ContentBlock::text("done")],
+                            details: serde_json::json!({"status": "done"}),
+                            usage: None,
+                            terminate: Some(true),
+                        })
                     })
-                })
-            }),
+                },
+            ),
         };
 
         // Create a stream that returns both tool calls
-        let stream_fn: StreamFn = Arc::new(|_model, _context, _thinking, _opts: StreamFnOptions| {
-            Box::pin(async move {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let msg = AssistantMessage {
-                    provider_thinking_level: None,
-                    content: vec![
-                        ContentBlock::ToolCall {
-                            id: "call-1".into(),
-                            name: "settled_tool".into(),
-                            arguments: serde_json::json!({}),
-                            thought_signature: None,
-                            namespace: None,
-                        },
-                        ContentBlock::ToolCall {
-                            id: "call-2".into(),
-                            name: "slow_tool".into(),
-                            arguments: serde_json::json!({}),
-                            thought_signature: None,
-                            namespace: None,
-                        },
-                    ],
-                    api: "test".into(),
-                    provider: "test".into(),
-                    model: "test".into(),
-                    response_model: None,
-                    response_id: None,
-                    diagnostics: None,
-                    usage: Usage::default(),
-                    stop_reason: StopReason::ToolUse,
-                    error_message: None,
-                    raw_stop_reason: None,
-                    end_turn: None,
-                    timestamp: 1000,
-                };
-                let _ = tx.send(AssistantMessageEvent::Done {
-                    message: msg,
-                    reason: StopReason::ToolUse,
-                });
-                let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
-            })
-        });
+        let stream_fn: StreamFn =
+            Arc::new(|_model, _context, _thinking, _opts: StreamFnOptions| {
+                Box::pin(async move {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let msg = AssistantMessage {
+                        provider_thinking_level: None,
+                        content: vec![
+                            ContentBlock::ToolCall {
+                                id: "call-1".into(),
+                                name: "settled_tool".into(),
+                                arguments: serde_json::json!({}),
+                                thought_signature: None,
+                                namespace: None,
+                            },
+                            ContentBlock::ToolCall {
+                                id: "call-2".into(),
+                                name: "slow_tool".into(),
+                                arguments: serde_json::json!({}),
+                                thought_signature: None,
+                                namespace: None,
+                            },
+                        ],
+                        api: "test".into(),
+                        provider: "test".into(),
+                        model: "test".into(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: Usage::default(),
+                        stop_reason: StopReason::ToolUse,
+                        error_message: None,
+                        raw_stop_reason: None,
+                        end_turn: None,
+                        timestamp: 1000,
+                    };
+                    let _ = tx.send(AssistantMessageEvent::Done {
+                        message: msg,
+                        reason: StopReason::ToolUse,
+                    });
+                    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+                    Ok(Box::new(stream) as crate::pi_ai_types::StreamResponse)
+                })
+            });
 
         let agent = Agent::new(AgentOptions {
             stream_fn: Some(stream_fn),
@@ -2663,12 +2800,17 @@ mod tests {
             }))
             .await;
 
-        agent.add_tools(vec![Arc::new(settled_tool), Arc::new(slow_tool)]).await;
+        agent
+            .add_tools(vec![Arc::new(settled_tool), Arc::new(slow_tool)])
+            .await;
 
         // Start prompt in background
         let agent_clone = agent.clone();
         let prompt_handle = tokio::spawn(async move {
-            agent_clone.prompt(PromptInput::Text("run tools")).await.unwrap();
+            agent_clone
+                .prompt(PromptInput::Text("run tools"))
+                .await
+                .unwrap();
         });
 
         // Wait for slow tool to start and settled tool to end
@@ -2696,7 +2838,11 @@ mod tests {
         // No new events should have been added
         {
             let final_events = events.lock().unwrap();
-            assert_eq!(final_events.len(), event_count_before_late, "no new events after settled tool's late update");
+            assert_eq!(
+                final_events.len(),
+                event_count_before_late,
+                "no new events after settled tool's late update"
+            );
         }
 
         // Release the slow tool
@@ -2707,7 +2853,13 @@ mod tests {
 
         // Final check: no tool_execution_update events at all
         let final_events = events.lock().unwrap();
-        let update_count = final_events.iter().filter(|e| matches!(e, AgentEvent::ToolExecutionUpdate { .. })).count();
-        assert_eq!(update_count, 0, "should have 0 tool_execution_update events");
+        let update_count = final_events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolExecutionUpdate { .. }))
+            .count();
+        assert_eq!(
+            update_count, 0,
+            "should have 0 tool_execution_update events"
+        );
     }
 }

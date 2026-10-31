@@ -39,7 +39,11 @@ pub struct CompletionItem {
 }
 
 impl CompletionItem {
-    pub fn new(value: impl Into<String>, label: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        value: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             value: value.into(),
             label: label.into(),
@@ -50,7 +54,9 @@ impl CompletionItem {
 
 /// 命令参数补全回调（对齐 TS `getArgumentCompletions`）。
 pub type ArgumentCompletionsFn = Arc<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<CompletionItem>>> + Send>> + Send + Sync,
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<CompletionItem>>> + Send>>
+        + Send
+        + Sync,
 >;
 
 /// 补全菜单里的一个命令。字段对齐 TS `SlashCommand`（`autocomplete.ts`）：
@@ -227,12 +233,18 @@ impl Completer {
 
     pub fn prev(&mut self) {
         if self.visible && !self.results.is_empty() {
-            self.selected = if self.selected == 0 { self.results.len() - 1 } else { self.selected - 1 };
+            self.selected = if self.selected == 0 {
+                self.results.len() - 1
+            } else {
+                self.selected - 1
+            };
         }
     }
 
     pub fn selected_item(&self) -> Option<&CompletionItem> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         self.results.get(self.selected)
     }
 
@@ -241,7 +253,12 @@ impl Completer {
     /// `@` 文件补全非目录加空格、目录不加（继续补全）。
     pub fn apply_selected(&self, input_value: &str) -> Option<String> {
         let item = self.selected_item()?;
-        Some(apply_completion(input_value, self.trigger?, &self.prefix, item))
+        Some(apply_completion(
+            input_value,
+            self.trigger?,
+            &self.prefix,
+            item,
+        ))
     }
 
     /// Render the completion list TS-style (the original `SelectList` used
@@ -258,12 +275,21 @@ impl Completer {
         let width = area.width as usize;
         let mut row = |y: u16, spans: Vec<Span<'static>>| {
             if y < area.y + area.height {
-                frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, y, area.width, 1));
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)),
+                    Rect::new(area.x, y, area.width, 1),
+                );
             }
         };
 
         if self.results.is_empty() {
-            row(area.y, vec![Span::styled("  No matching commands", Style::new().fg(t.muted))]);
+            row(
+                area.y,
+                vec![Span::styled(
+                    "  No matching commands",
+                    Style::new().fg(t.muted),
+                )],
+            );
             return;
         }
 
@@ -288,7 +314,13 @@ impl Completer {
             .min(total.saturating_sub(max_visible));
         let end = (start + max_visible).min(total);
 
-        for (i, item) in self.results.iter().enumerate().skip(start).take(end - start) {
+        for (i, item) in self
+            .results
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end - start)
+        {
             let selected = i == self.selected;
             let prefix = if selected { "\u{2192} " } else { "  " };
             let prefix_w = 2usize;
@@ -341,7 +373,10 @@ impl Completer {
         if start > 0 || end < total {
             let info = format!("  ({}/{})", self.selected + 1, total);
             let info = crate::app::truncate_to_width_suffix(&info, width.saturating_sub(2), "");
-            row(area.y + (end - start) as u16, vec![Span::styled(info, Style::new().fg(t.muted))]);
+            row(
+                area.y + (end - start) as u16,
+                vec![Span::styled(info, Style::new().fg(t.muted))],
+            );
         }
     }
 }
@@ -366,7 +401,12 @@ fn normalize_single_line(text: &str) -> String {
 }
 
 /// 应用选中项（对齐 TS `applyCompletion`）。
-pub fn apply_completion(input_value: &str, trigger: CompletionTrigger, prefix: &str, item: &CompletionItem) -> String {
+pub fn apply_completion(
+    input_value: &str,
+    trigger: CompletionTrigger,
+    prefix: &str,
+    item: &CompletionItem,
+) -> String {
     let prefix_len = prefix.chars().count();
     let total_chars: Vec<char> = input_value.chars().collect();
     let cut = total_chars.len().saturating_sub(prefix_len);
@@ -387,5 +427,7 @@ pub fn apply_completion(input_value: &str, trigger: CompletionTrigger, prefix: &
 }
 
 impl Default for Completer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

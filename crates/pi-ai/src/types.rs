@@ -21,10 +21,7 @@ pub enum ContentBlock {
     #[serde(rename = "thinking")]
     Thinking {
         thinking: String,
-        #[serde(
-            alias = "thinking_signature",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(alias = "thinking_signature", skip_serializing_if = "Option::is_none")]
         thinking_signature: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         redacted: Option<bool>,
@@ -34,10 +31,7 @@ pub enum ContentBlock {
         id: String,
         name: String,
         arguments: serde_json::Value,
-        #[serde(
-            alias = "thought_signature",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(alias = "thought_signature", skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
         /// OpenAI Responses namespace for calls to dynamically loaded or
         /// namespaced tools (TS `ToolCall.namespace`).
@@ -853,9 +847,9 @@ impl<'de> Deserialize<'de> for Model {
         let repr = ModelRepr::deserialize(deserializer)?;
         let compat = match repr.compat {
             None => None,
-            Some(value) => Some(
-                deserialize_model_compat(&repr.api, value).map_err(serde::de::Error::custom)?,
-            ),
+            Some(value) => {
+                Some(deserialize_model_compat(&repr.api, value).map_err(serde::de::Error::custom)?)
+            }
         };
         Ok(Model {
             id: repr.id,
@@ -992,13 +986,21 @@ impl Context {
     pub fn collapsed(&self) -> Context {
         // A `Context` built only from shorthand (no System messages) returns the
         // shorthand unchanged, avoiding a needless message rewrite.
-        if !self.messages.iter().any(|m| matches!(m, Message::System { .. })) {
+        if !self
+            .messages
+            .iter()
+            .any(|m| matches!(m, Message::System { .. }))
+        {
             return self.clone();
         }
         let prompt = self.effective_system_prompt();
         let tools = self.effective_tools();
         Context {
-            system_prompt: if prompt.is_empty() { None } else { Some(prompt) },
+            system_prompt: if prompt.is_empty() {
+                None
+            } else {
+                Some(prompt)
+            },
             messages: self
                 .messages
                 .iter()
@@ -1387,7 +1389,11 @@ mod tests {
 
         let head = crate::utils::transcript::get_current_system_message(&[value]).unwrap();
         assert_eq!(head["content"], "base");
-        assert_eq!(crate::utils::transcript::get_current_tools(&[serde_json::to_value(&message).unwrap()]).len(), 1);
+        assert_eq!(
+            crate::utils::transcript::get_current_tools(&[serde_json::to_value(&message).unwrap()])
+                .len(),
+            1
+        );
     }
 
     /// `Context::collapsed` folds transcript system messages into the leading
@@ -1422,9 +1428,7 @@ mod tests {
                     content: SystemContent::Text(String::new()),
                     sections: None,
                     tools_added: None,
-                    tools_removed: Some(vec![ToolReference {
-                        name: "a".into(),
-                    }]),
+                    tools_removed: Some(vec![ToolReference { name: "a".into() }]),
                     timestamp: 2,
                 },
                 Message::System {
@@ -1457,7 +1461,12 @@ mod tests {
         let mut env = std::collections::HashMap::new();
         env.insert("PI_CACHE_RETENTION".to_string(), "long".to_string());
         let opts = StreamOptions {
-            sampling_params: Some(serde_json::json!({"temperature": 0.5}).as_object().unwrap().clone()),
+            sampling_params: Some(
+                serde_json::json!({"temperature": 0.5})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
             env: Some(env),
             http_client: Some(std::sync::Arc::new(reqwest::Client::new())),
             ..Default::default()
@@ -1466,7 +1475,11 @@ mod tests {
         assert!(cloned.sampling_params.is_some());
         assert!(cloned.http_client.is_some());
         assert_eq!(
-            cloned.env.as_ref().and_then(|e| e.get("PI_CACHE_RETENTION")).map(String::as_str),
+            cloned
+                .env
+                .as_ref()
+                .and_then(|e| e.get("PI_CACHE_RETENTION"))
+                .map(String::as_str),
             Some("long")
         );
     }

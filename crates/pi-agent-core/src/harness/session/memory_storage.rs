@@ -415,7 +415,11 @@ mod tests {
         }
     }
 
-    fn compaction_entry(id: &str, parent: Option<&str>, retained_tail: Option<Vec<crate::types::AgentMessage>>) -> SessionTreeEntry {
+    fn compaction_entry(
+        id: &str,
+        parent: Option<&str>,
+        retained_tail: Option<Vec<crate::types::AgentMessage>>,
+    ) -> SessionTreeEntry {
         SessionTreeEntry::Compaction {
             id: id.to_string(),
             parent_id: parent.map(|s| s.to_string()),

@@ -3,18 +3,18 @@
 # Enable once per clone:
 #   pre-commit install
 #
-# The rustfmt hook formats only the Rust files staged for this commit and
-# re-stages them. It deliberately does not run `cargo fmt --all`: parts of the
-# existing tree are not byte-identical to the current rustfmt output, and a
-# workspace-wide format would silently rewrite unrelated files on every commit.
+# Runs `cargo fmt` (workspace-wide) before a commit that stages Rust files.
+# Note: the hook formats the whole workspace, so it may rewrite files outside
+# the current change. When that happens pre-commit reports "files were modified
+# by this hook" and aborts the commit; review the formatting diff, `git add -u`,
+# and commit again.
 
 repos:
   - repo: local
     hooks:
-      - id: rustfmt-staged
-        name: rustfmt (staged Rust files)
-        description: Format staged .rs files with rustfmt and re-stage them.
-        entry: scripts/pre-commit-fmt.sh
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
         language: system
-        files: '\.rs$'
+        types: [rust]
         pass_filenames: false

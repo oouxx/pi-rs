@@ -309,6 +309,17 @@ behind the `js-runtime` feature and have no TS counterpart as Rust APIs
 | Source match key — local | `local:{resolvePath(path)}` vs `local:{resolvePathFromBase(path, baseDir)}` | `local:{resolve_path(path, cwd)}` vs `local:{resolve_path(path, base_dir)}` | 是 |
 | No SettingsManager | N/A (TS always has SettingsManager) | Returns `false` (no-op) when `settings_manager` is `None` | 是（有意偏差：Rust 允许无 SettingsManager 运行） |
 
+## 图片识别（`utils/mime.rs`）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| JPEG 识别 | `FF D8 FF`；`FF D8 FF F7`（JPEG 2000）拒绝 | 同左 | 是 | 修复见 PORTING_MISTAKES.md #173 |
+| PNG 识别 | 签名 + IHDR（长度 13）；IDAT 前出现 `acTL`（APNG）拒绝 | 同左 | 是 | 同上 |
+| GIF 识别 | v0.87.1 只校验 `GIF` 三字节；上游 TS #9755 收紧为完整 `GIF87a`/`GIF89a` | 完整 `GIF87a`/`GIF89a` | 是（对齐 TS #9755） | 见 PORTING_MISTAKES.md「GIF 魔数」条 |
+| WebP 识别 | `RIFF....WEBP` | 同左 | 是 | — |
+| BMP 识别 | `BM` + DIB 头校验（声明文件大小、像素偏移、planes=1、bpp ∈ {1,4,8,16,24,32}） | 同左 | 是 | 修复见 PORTING_MISTAKES.md #173 |
+| 扩展名推断 | TS 无此函数 | 已删除 `detect_mime_type_from_extension`（无调用方） | 是 | 见 PORTING_MISTAKES.md #173 |
+
 ## find 工具（`core/tools/find.rs`）
 
 | 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |

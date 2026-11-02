@@ -596,11 +596,11 @@ fn migrate_v1_to_v2(entries: Vec<FileEntry>, _file_path: &Path) -> Result<Vec<Fi
                 let timestamp = val
                     .get("timestamp")
                     .and_then(|v| v.as_str())
+                    .map(str::to_string)
                     .unwrap_or_else(|| {
                         // Use current time if no timestamp
-                        Box::leak(Utc::now().to_rfc3339().into_boxed_str())
-                    })
-                    .to_string();
+                        Utc::now().to_rfc3339()
+                    });
 
                 // Determine the entry type from the raw JSON
                 let entry_type = val

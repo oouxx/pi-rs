@@ -320,6 +320,17 @@ pub fn process_image(
             hints,
         })
     } else {
+        // `autoResizeImages=false` means "don't shrink the image", not "store
+        // it without a bound": the full base64 payload lives in the session
+        // history, so an arbitrarily large file would be retained forever.
+        // Refuse anything above the same inline limit the resize path targets
+        // (deliberate deviation from TS, see DEVIATIONS.md).
+        if base64_size(normalized_bytes.len()) > profile.max_bytes {
+            return Err(format!(
+                "[Image omitted: image exceeds the inline size limit ({} bytes base64) and auto-resize is disabled.]",
+                profile.max_bytes
+            ));
+        }
         let mut hints = Vec::new();
         if let Some(hint) = conversion_hint(converted_from.as_deref(), &normalized_mime) {
             hints.push(hint);
@@ -410,6 +421,26 @@ mod tests {
         assert!(out.hints.is_empty());
         // No resize → original bytes base64.
         assert_eq!(out.data, encode_base64(&bytes));
+    }
+
+    /// Regression: with `autoResizeImages=false` the full base64 payload is
+    /// kept in session history, so an over-limit file must be omitted instead
+    /// of being stored without a bound.
+    #[test]
+    fn non_resize_path_rejects_image_over_byte_limit() {
+        let bytes = png_bytes(64, 64);
+        let profile = pi_ai::types::ModelImageResizeOptions {
+            max_width: None,
+            max_height: None,
+            max_bytes: Some(16),
+            jpeg_quality: None,
+        };
+        let err = process_image(&bytes, "image/png", false, Some(&profile))
+            .expect_err("over-limit image must be omitted");
+        assert!(
+            err.contains("auto-resize is disabled"),
+            "unexpected message: {err}"
+        );
     }
 
     /// A per-model profile (`inputLimits.images.resize`) narrows the limits

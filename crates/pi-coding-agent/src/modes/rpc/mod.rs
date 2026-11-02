@@ -30,6 +30,27 @@ fn to_json_event(event: &AgentSessionEvent) -> serde_json::Value {
     crate::modes::json_event::to_json_event(event)
 }
 
+/// Removes a pending extension-dialog entry when the awaiting future is
+/// dropped (abort/cancel) instead of leaving the oneshot sender in the map
+/// forever. Removal is idempotent with the normal response/timeout paths.
+struct PendingDialogGuard {
+    id: String,
+    pending: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>,
+        >,
+    >,
+}
+
+impl Drop for PendingDialogGuard {
+    fn drop(&mut self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
 /// Build the RPC-mode extension UI context, matching TS
 /// `createExtensionUIContext()`: dialog methods (`select`, `input`) emit an
 /// `extension_ui_request` on stdout and block until the client replies with
@@ -37,7 +58,7 @@ fn to_json_event(event: &AgentSessionEvent) -> serde_json::Value {
 /// `set_widget`, `set_title`, `set_editor_text`) emit the request without
 /// waiting.
 fn create_rpc_ui_context(
-    output_tx: mpsc::UnboundedSender<String>,
+    output_tx: std::sync::mpsc::SyncSender<String>,
     pending: std::sync::Arc<
         std::sync::Mutex<
             std::collections::HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>,
@@ -77,6 +98,10 @@ fn create_rpc_ui_context(
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .insert(id.clone(), tx);
+                let _pending_guard = PendingDialogGuard {
+                    id: id.clone(),
+                    pending: pending.clone(),
+                };
                 let line = serialize_json_line(&request);
                 let _ = output_tx.send(line);
                 let resolved = match timeout_ms {
@@ -365,13 +390,19 @@ pub async fn run_rpc_mode(
     // Both event streaming and synchronous responses go through this channel,
     // ensuring no interleaving on stdout. Created before the session so the
     // extension UI context can emit `extension_ui_request` lines.
-    let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
+    //
+    // Bounded on purpose: a client that stops reading used to let queued
+    // event lines grow without bound. Senders block once the buffer is full
+    // (the same backpressure TS applies via `waitForRawStdoutBackpressure`).
+    let (output_tx, output_rx) = std::sync::mpsc::sync_channel::<String>(1024);
 
-    // Spawn a single writer task that owns stdout
-    tokio::spawn(async move {
+    // A dedicated writer thread owns stdout. A blocking `send` from the
+    // command loop/event listeners is what makes the bound effective.
+    std::thread::spawn(move || {
         use std::io::Write;
-        while let Some(line) = output_rx.recv().await {
-            let mut handle = std::io::stdout().lock();
+        let stdout = std::io::stdout();
+        while let Ok(line) = output_rx.recv() {
+            let mut handle = stdout.lock();
             let _ = handle.write_all(line.as_bytes());
             let _ = handle.flush();
         }
@@ -432,13 +463,16 @@ pub async fn run_rpc_mode(
         tools_options: None,
     };
 
-    let (mut session, _result) = match create_agent_session(sdk_options).await {
+    let (session, _result) = match create_agent_session(sdk_options).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("RPC init error: {e}");
             return 1;
         }
     };
+    // Shared so the prompt command can run in its own task while the command
+    // loop keeps reading stdin (TS does not await `session.prompt`).
+    let session = Arc::new(session);
 
     let rpc_builtins = ModelRegistry::builtin_models_list();
     let model_registry = ModelRegistry::new(rpc_builtins);
@@ -535,12 +569,40 @@ pub async fn run_rpc_mode(
             }
         }))
     };
-    let mut session_event_handle = subscribe_events(&session);
+    let mut session_event_handle = subscribe_events(session.as_ref());
 
-    // ── Main loop: read JSON commands from stdin ──────────────────────
-    let stdin = tokio::io::stdin();
-    let reader = BufReader::new(stdin);
-    let mut lines = reader.lines();
+    // ── Stdin reader task ────────────────────────────────────────────
+    // Read commands on their own task so `extension_ui_response` can resolve a
+    // pending extension dialog while the main loop is inside another command
+    // (the prompt is spawned, but `compact` and friends still await). The
+    // queue is bounded; extension responses bypass it entirely.
+    let (line_tx, mut line_rx) = mpsc::channel::<String>(256);
+    {
+        let pending = pending_extension_requests.clone();
+        tokio::spawn(async move {
+            let stdin = tokio::io::stdin();
+            let mut lines = BufReader::new(stdin).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if value.get("type").and_then(|t| t.as_str()) == Some("extension_ui_response") {
+                        if let Some(id) = value.get("id").and_then(|i| i.as_str()) {
+                            let sender = pending
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(id);
+                            if let Some(sender) = sender {
+                                let _ = sender.send(value);
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if line_tx.send(line).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
     let mut shutdown = false;
 
     // Shutdown re-entrancy guard (matching TS `shuttingDown` flag)
@@ -559,7 +621,7 @@ pub async fn run_rpc_mode(
         // (signaled by the agent_settled event handler when a prompt was
         // running — matching TS `checkShutdownRequested` on agent_settled).
         let line = tokio::select! {
-            line = lines.next_line() => line,
+            line = line_rx.recv() => line,
             _ = shutdown_rx.changed() => {
                 shutdown = true;
                 continue;
@@ -567,17 +629,15 @@ pub async fn run_rpc_mode(
         };
 
         let line = match line {
-            Ok(Some(l)) => l,
-            Ok(None) => break, // EOF
-            Err(_) => break,
+            Some(l) => l,
+            None => break, // stdin EOF
         };
 
         if line.trim().is_empty() {
             continue;
         }
 
-        // Parse as generic Value first to extract id and type for error reporting,
-        // and to check for extension_ui_response (matching TS behavior).
+        // Parse as generic Value first to extract id and type for error reporting.
         let parsed_value: Option<serde_json::Value> = serde_json::from_str(&line).ok();
         let cmd_type = parsed_value.as_ref().and_then(|v| {
             v.get("type")
@@ -589,24 +649,6 @@ pub async fn run_rpc_mode(
                 .and_then(|id| id.as_str())
                 .map(|s| s.to_string())
         });
-
-        // Check for extension_ui_response before parsing as RpcCommand
-        // (matching TS: checks parsed.type === "extension_ui_response" first)
-        if cmd_type.as_deref() == Some("extension_ui_response") {
-            if let Some(ref response_id) = cmd_id {
-                if let Some(val) = parsed_value {
-                    let pending = handler_state
-                        .pending_extension_requests
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(response_id);
-                    if let Some(sender) = pending {
-                        let _ = sender.send(val);
-                    }
-                }
-            }
-            continue;
-        }
 
         // Parse command (matching TS: command = parsed as RpcCommand)
         let command: RpcCommand = match serde_json::from_str(&line) {
@@ -626,15 +668,14 @@ pub async fn run_rpc_mode(
         };
 
         // Handle command
-        let response =
-            handle_command(command, &mut session, &model_registry, &mut handler_state).await;
+        let response = handle_command(command, &session, &model_registry, &mut handler_state).await;
 
         // Re-subscribe events after a session replacement (matching TS
         // rebindSession which re-subscribes after new_session/switch_session).
         if let Some(RpcOutput::Response { command, .. }) = &response {
             if command == "new_session" || command == "switch_session" {
                 session_event_handle.unsubscribe();
-                session_event_handle = subscribe_events(&session);
+                session_event_handle = subscribe_events(session.as_ref());
             }
         }
 

@@ -118,7 +118,7 @@ fn emit_to_error_listener(
 /// (TS `_appendCustomMessage`).
 async fn append_custom_message(
     session_manager: &Arc<std::sync::Mutex<crate::core::session_manager::SessionManager>>,
-    listeners: &Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    listeners: &Arc<std::sync::Mutex<SessionListenerRegistry>>,
     agent: &Arc<pi_agent_core::agent::Agent>,
     message: AgentMessage,
 ) {
@@ -158,7 +158,7 @@ async fn append_custom_message(
 async fn flush_pending_custom_messages(
     pending: &Arc<std::sync::Mutex<Vec<AgentMessage>>>,
     session_manager: &Arc<std::sync::Mutex<crate::core::session_manager::SessionManager>>,
-    listeners: &Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    listeners: &Arc<std::sync::Mutex<SessionListenerRegistry>>,
     agent: &Arc<pi_agent_core::agent::Agent>,
 ) {
     let messages = {
@@ -172,9 +172,41 @@ async fn flush_pending_custom_messages(
     }
 }
 
+/// Session-level event listeners, addressed by monotonic id.
+///
+/// Unsubscribing removes the entry (instead of leaving a no-op tombstone and a
+/// growing `Vec`), so repeated subscribe/unsubscribe cycles — every ACP prompt,
+/// every RPC session switch — do not accumulate slots.
+#[derive(Default)]
+struct SessionListenerRegistry {
+    next_id: u64,
+    listeners: Vec<(u64, AgentSessionEventListener)>,
+}
+
+impl SessionListenerRegistry {
+    fn subscribe(&mut self, listener: AgentSessionEventListener) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.listeners.push((id, listener));
+        id
+    }
+
+    fn unsubscribe(&mut self, id: u64) {
+        self.listeners.retain(|(listener_id, _)| *listener_id != id);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &AgentSessionEventListener> {
+        self.listeners.iter().map(|(_, listener)| listener)
+    }
+
+    fn clear(&mut self) {
+        self.listeners.clear();
+    }
+}
+
 /// Publishes a session event to every bound listener.
 fn emit_session_event(
-    listeners: &Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    listeners: &Arc<std::sync::Mutex<SessionListenerRegistry>>,
     event: AgentSessionEvent,
 ) {
     let batch = {
@@ -644,8 +676,8 @@ impl RetryAbortHandle {
 /// Handle returned by [`AgentSession::subscribe_session_events`].
 /// Call `unsubscribe()` to stop receiving events.
 pub struct SessionEventUnsubscribeHandle {
-    listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
-    index: usize,
+    listeners: Arc<std::sync::Mutex<SessionListenerRegistry>>,
+    id: u64,
 }
 
 impl SessionEventUnsubscribeHandle {
@@ -655,10 +687,7 @@ impl SessionEventUnsubscribeHandle {
             .listeners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.index < listeners.len() {
-            // Replace with a no-op so the slot stays valid and Vec indices are not disturbed.
-            listeners[self.index] = Arc::new(|_| {});
-        }
+        listeners.unsubscribe(self.id);
     }
 }
 
@@ -748,7 +777,7 @@ pub struct AgentSession {
     /// SDK; absent when no JS extension runtime is loaded.
     js_invalidator: Option<Arc<dyn Fn() + Send + Sync>>,
     // ── Event subscription state ──
-    event_listeners: Arc<std::sync::Mutex<Vec<AgentSessionEventListener>>>,
+    event_listeners: Arc<std::sync::Mutex<SessionListenerRegistry>>,
     /// Handle to the internal agent event subscription. Mutex so
     /// `_disconnect_from_agent` / `_reconnect_to_agent` (called from `&self`
     /// methods like `compact`) can swap it.
@@ -2262,7 +2291,7 @@ impl AgentSession {
                 .map(|rx| Arc::new(std::sync::Mutex::new(rx))),
             js_invalidator: None,
             extension_error_listener: Arc::clone(&extension_error_listener),
-            event_listeners: Arc::new(std::sync::Mutex::new(Vec::new())),
+            event_listeners: Arc::new(std::sync::Mutex::new(SessionListenerRegistry::default())),
             _agent_subscription: Arc::new(std::sync::Mutex::new(None)),
             turn_index: Arc::new(std::sync::Mutex::new(0)),
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
@@ -2761,7 +2790,12 @@ impl AgentSession {
         let _inner_is_active = self.is_agent_run_active.clone();
         let _inner_idle = self.idle_notify.clone();
         let inner_ext_ctx = self.ext_ctx.clone();
-        let inner_agent = self.agent.clone();
+        // Weak on purpose: the listener is stored in the agent's own listener
+        // registry, so capturing a strong `Arc<Agent>` here creates an
+        // `Agent -> listeners -> closure -> Agent` cycle that keeps the whole
+        // conversation alive even after the session is dropped without
+        // `dispose_inner()`.
+        let inner_agent = std::sync::Arc::downgrade(&self.agent);
         let inner_pending_custom = self.pending_custom_messages.clone();
         let inner_settings = self.settings_manager.clone();
         let turn_index = self.turn_index.clone();
@@ -2784,6 +2818,9 @@ impl AgentSession {
             let inner_settings = inner_settings.clone();
 
             Box::pin(async move {
+                let Some(agent) = agent.upgrade() else {
+                    return;
+                };
                 // ── 1. Handle queue updates and state resets ──
                 // Reset overflow recovery on any new user message (matching TS)
                 if let AgentEvent::MessageStart { ref message } = event {
@@ -5342,7 +5379,7 @@ References are relative to {}.
 
     /// Cycle to the next thinking level, matching TS cycleThinkingLevel().
     /// Returns the new level, or None if the model doesn't support thinking.
-    pub async fn cycle_thinking_level(&mut self) -> Option<String> {
+    pub async fn cycle_thinking_level(&self) -> Option<String> {
         if !self.supports_thinking().await {
             return None;
         }
@@ -5363,7 +5400,7 @@ References are relative to {}.
     /// Sets the model on the agent, persists to session and settings, re-clamps thinking level.
     /// Returns the new model and thinking level, and whether it's a scoped model.
     pub async fn cycle_model(
-        &mut self,
+        &self,
         direction: &str,
     ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
         // Scoped models (from --models flag) take precedence, otherwise cycle
@@ -5376,7 +5413,7 @@ References are relative to {}.
 
     /// Cycle through scoped models, matching TS `_cycleScopedModel()`.
     async fn _cycle_scoped_model(
-        &mut self,
+        &self,
         direction: &str,
     ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
         if self.scoped_models.is_empty() {
@@ -5455,7 +5492,7 @@ References are relative to {}.
 
     /// Cycle through all available models, matching TS `_cycleAvailableModel()`.
     async fn _cycle_available_model(
-        &mut self,
+        &self,
         direction: &str,
     ) -> Option<(Model, Option<ThinkingLevel>, bool)> {
         let available_models = self.model_registry.get_models();
@@ -6637,11 +6674,10 @@ References are relative to {}.
             .event_listeners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = listeners.len();
-        listeners.push(listener);
+        let id = listeners.subscribe(listener);
         SessionEventUnsubscribeHandle {
             listeners: self.event_listeners.clone(),
-            index,
+            id,
         }
     }
 
@@ -7412,11 +7448,10 @@ impl AgentSession {
             .event_listeners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = listeners.len();
-        listeners.push(listener);
+        let id = listeners.subscribe(listener);
         SessionEventUnsubscribeHandle {
             listeners: self.event_listeners.clone(),
-            index,
+            id,
         }
     }
 
@@ -8218,6 +8253,19 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::core::session_manager::SessionEntry;
+
+    /// Regression: session-event unsubscribe used to replace the slot with a
+    /// no-op, so repeated subscribe/unsubscribe (ACP per prompt, RPC session
+    /// switches) grew the listener list for the session's lifetime.
+    #[test]
+    fn session_listener_unsubscribe_removes_slot() {
+        let mut registry = SessionListenerRegistry::default();
+        let id = registry.subscribe(Arc::new(|_event| {}));
+        assert_eq!(registry.iter().count(), 1);
+        registry.unsubscribe(id);
+        assert_eq!(registry.iter().count(), 0);
+        assert!(registry.listeners.is_empty());
+    }
 
     /// Minimal session for the settle-path tests. No provider is reachable, so
     /// a run that actually starts fails; the tests only observe dispatch order

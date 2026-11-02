@@ -733,16 +733,19 @@ impl SessionTask {
                     self.startup_info = Some(text);
                 }
                 NextEvent::Command(Some(SessionCommand::Shutdown)) | NextEvent::Command(None) => {
-                    // Stop any in-flight turn before the session task exits so
-                    // it doesn't keep running against a torn-down session.
-                    if self.turn_done_rx.is_some() {
-                        let session = Arc::clone(&self.session);
-                        let fut: futures::future::LocalBoxFuture<'static, ()> =
-                            Box::pin(async move {
-                                session.abort().await;
-                            });
-                        (self.spawn)(fut);
-                    }
+                    // Tear the session down before the task exits. `AgentSession`
+                    // holds an agent listener that captures the agent itself
+                    // (an `Arc` cycle), so merely dropping the last `Arc` would
+                    // keep the whole conversation (messages + SessionManager)
+                    // alive. `dispose_inner` aborts in-flight work and
+                    // unsubscribes, breaking the cycle. Run it through `spawn`
+                    // so the task can exit without waiting for the turn to
+                    // settle.
+                    let session = Arc::clone(&self.session);
+                    let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(async move {
+                        session.dispose_inner().await;
+                    });
+                    (self.spawn)(fut);
                     break;
                 }
                 NextEvent::TurnDone(outcome) => {

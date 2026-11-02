@@ -2366,7 +2366,7 @@ fn spawn_agent_command_task(
         while !exit_flag.load(std::sync::atomic::Ordering::SeqCst) {
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
-                    let mut sess = session.lock().await;
+                    let sess = session.lock().await;
                     match cmd {
                         AgentCmd::SendMessage(text) => {
                             // Route through session.prompt() like ACP/print/RPC: it runs

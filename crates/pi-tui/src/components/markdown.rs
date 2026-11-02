@@ -178,18 +178,37 @@ fn syntect_for_theme(t: &Theme) -> Syntect {
     syntect
 }
 
+/// Process-wide `Syntect` per built-in theme.
+///
+/// `Syntect::new` deserialises the full two-face syntax set (~1.2 MB of heap);
+/// constructing one per markdown block made memory grow linearly with the
+/// transcript. pi-tui only has the built-in `dark`/`light` palettes (custom
+/// theme files are not supported — see `DEVIATIONS.md`), so one cached
+/// instance per name is enough. Unknown names fall back to dark, matching the
+/// host's theme resolution.
+fn shared_syntect_for_theme(t: &Theme) -> &'static Syntect {
+    static DARK: std::sync::OnceLock<Syntect> = std::sync::OnceLock::new();
+    static LIGHT: std::sync::OnceLock<Syntect> = std::sync::OnceLock::new();
+    match t.name {
+        "light" => LIGHT.get_or_init(|| syntect_for_theme(&Theme::light())),
+        _ => DARK.get_or_init(|| syntect_for_theme(&Theme::default())),
+    }
+}
+
 /// Shared theme-driven `Syntect` for the default (dark) palette, used by the
 /// free-standing [`crate::render_markdown`] helper (one syntax-set load).
 #[must_use]
 pub fn default_syntect() -> &'static Syntect {
-    static SYNTECT: std::sync::OnceLock<Syntect> = std::sync::OnceLock::new();
-    SYNTECT.get_or_init(|| syntect_for_theme(&Theme::default()))
+    shared_syntect_for_theme(&Theme::default())
 }
 
 /// Rendered markdown content with syntax-highlighted code blocks.
 pub struct Markdown {
     renderer: StreamingMarkdownRenderer,
-    syntect: Syntect,
+    /// Shared per-theme highlighter (see [`shared_syntect_for_theme`]); holding
+    /// an owned `Syntect` per block duplicated the ~1.2 MB syntax set for every
+    /// message and thinking block.
+    syntect: &'static Syntect,
     dirty: bool,
     wrapped: Vec<Line<'static>>,
     /// Soft-wrap joiners (one per wrapped row, from grok-build's
@@ -216,7 +235,7 @@ impl Markdown {
         renderer.push(source);
         let mut md = Self {
             renderer,
-            syntect: syntect_for_theme(theme),
+            syntect: shared_syntect_for_theme(theme),
             dirty: true,
             wrapped: Vec::new(),
             joiners: Vec::new(),
@@ -231,7 +250,7 @@ impl Markdown {
     /// reset), so existing blocks follow `/theme` without re-streaming.
     pub fn set_theme(&mut self, theme: &Theme) {
         self.renderer.set_style(style_from_theme(theme));
-        self.syntect.theme = syntect_theme(theme);
+        self.syntect = shared_syntect_for_theme(theme);
         self.dirty = true;
     }
 
@@ -253,7 +272,7 @@ impl Markdown {
         // Guard against degenerate widths (0 would make wrapping misbehave).
         let width = width.max(1);
         if self.dirty || self.wrap_width != width {
-            self.renderer.render(Some(&self.syntect));
+            self.renderer.render(Some(self.syntect));
             let logical = self.renderer.view().lines.to_vec();
             let (wrapped, joiners) = word_wrap_lines_with_joiners(logical, width);
             self.wrapped = wrapped;
@@ -295,6 +314,24 @@ mod tests {
         assert!(plain.contains("fn main()"), "code block rendered: {plain}");
         // Table borders: header row is rendered with │ separators.
         assert!(plain.contains('│'), "table borders rendered: {plain}");
+    }
+
+    /// Regression: each markdown block used to own a full `Syntect` (the
+    /// ~1.2 MB two-face syntax set), so transcript memory grew by ~2.5 MB per
+    /// message. All blocks of a theme must share one highlighter, and theme
+    /// switches must swap to the matching shared instance.
+    #[test]
+    fn markdown_blocks_share_one_highlighter_per_theme() {
+        let dark_a = Markdown::with_theme("a", 80, &Theme::default());
+        let dark_b = Markdown::with_theme("b", 80, &Theme::default());
+        assert!(std::ptr::eq(dark_a.syntect, dark_b.syntect));
+
+        let light = Markdown::with_theme("c", 80, &Theme::light());
+        assert!(!std::ptr::eq(dark_a.syntect, light.syntect));
+
+        let mut switched = Markdown::with_theme("d", 80, &Theme::default());
+        switched.set_theme(&Theme::light());
+        assert!(std::ptr::eq(switched.syntect, light.syntect));
     }
 
     #[test]

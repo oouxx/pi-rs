@@ -15,7 +15,7 @@ use super::rpc_types::*;
 /// Returns `None` for commands that produce output asynchronously (e.g. `prompt`).
 pub async fn handle_command(
     command: RpcCommand,
-    session: &mut AgentSession,
+    session: &Arc<AgentSession>,
     model_registry: &ModelRegistry,
     state: &mut RpcHandlerState,
 ) -> Option<RpcOutput> {
@@ -67,30 +67,38 @@ pub async fn handle_command(
             // response. prompt() returns Err when the run cannot start (no
             // model / no API key) — propagate the real error, matching TS
             // session.prompt().catch((e) => output(error(id, "prompt", e.message))).
-            match session.prompt(&message, Some(options)).await {
-                Ok(()) => {
-                    // If preflight never accepted the prompt, the run failed
-                    // to start (e.g. agent was already busy) and the RPC
-                    // client would hang waiting for a response.
-                    if !preflight.load(Ordering::SeqCst) {
-                        let err = rpc_error(
-                            id,
-                            "prompt",
-                            "Agent run failed to start or completed without preflight acceptance"
-                                .to_string(),
-                        );
-                        let _ = state.output_tx.send(serialize_json_line(&err));
+            //
+            // Do NOT await the run here (TS: `void session.prompt(...)`): the
+            // command loop must keep reading stdin so `steer`/`abort` and
+            // `extension_ui_response` (extension dialogs raised mid-run) are
+            // handled while the agent is streaming.
+            let session = Arc::clone(session);
+            let error_tx = state.output_tx.clone();
+            tokio::spawn(async move {
+                match session.prompt(&message, Some(options)).await {
+                    Ok(()) => {
+                        // If preflight never accepted the prompt, the run failed
+                        // to start (e.g. agent was already busy) and the RPC
+                        // client would hang waiting for a response.
+                        if !preflight.load(Ordering::SeqCst) {
+                            let err = rpc_error(
+                                id,
+                                "prompt",
+                                "Agent run failed to start or completed without preflight acceptance".to_string(),
+                            );
+                            let _ = error_tx.send(serialize_json_line(&err));
+                        }
+                    }
+                    Err(e) => {
+                        // preflight_result(false) was already invoked; only emit
+                        // the error if no success response was sent.
+                        if !preflight.load(Ordering::SeqCst) {
+                            let err = rpc_error(id, "prompt", e);
+                            let _ = error_tx.send(serialize_json_line(&err));
+                        }
                     }
                 }
-                Err(e) => {
-                    // preflight_result(false) was already invoked; only emit
-                    // the error if no success response was sent.
-                    if !preflight.load(Ordering::SeqCst) {
-                        let err = rpc_error(id, "prompt", e);
-                        let _ = state.output_tx.send(serialize_json_line(&err));
-                    }
-                }
-            }
+            });
 
             None
         }
@@ -692,7 +700,7 @@ fn serialize_tree_node(node: &crate::core::session_manager::SessionTreeNode) -> 
 /// Shared state for the RPC handler.
 pub struct RpcHandlerState {
     pub shutdown_requested: bool,
-    pub output_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub output_tx: std::sync::mpsc::SyncSender<String>,
     /// Pending extension UI requests waiting for client response.
     /// Maps request ID to a oneshot sender for the response value.
     pub pending_extension_requests: std::sync::Arc<
@@ -704,7 +712,7 @@ pub struct RpcHandlerState {
 
 impl RpcHandlerState {
     pub fn new(
-        output_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        output_tx: std::sync::mpsc::SyncSender<String>,
         pending_extension_requests: std::sync::Arc<
             std::sync::Mutex<
                 std::collections::HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>,

@@ -8,6 +8,11 @@ use tokio::sync::Mutex;
 /// Per-file semaphore ensuring only one mutation at a time per file path.
 type FileLocks = Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>>;
 
+fn file_locks() -> &'static FileLocks {
+    static LOCKS: OnceLock<FileLocks> = OnceLock::new();
+    LOCKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
 fn get_queue_key(file_path: &str) -> String {
     let path = Path::new(file_path);
     match path.canonicalize() {
@@ -23,14 +28,13 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    static LOCKS: OnceLock<FileLocks> = OnceLock::new();
-    let locks = LOCKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
+    let locks = file_locks();
 
     let key = get_queue_key(file_path);
 
     let semaphore = {
         let mut map = locks.lock().await;
-        map.entry(key)
+        map.entry(key.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone()
     };
@@ -41,7 +45,26 @@ where
         .await
         .unwrap_or_else(|_| panic!("semaphore closed"));
 
-    fn_().await
+    let result = fn_().await;
+
+    // Drop the entry once no other operation is queued for this file. The map
+    // is process-global, so keeping every path ever edited would grow without
+    // bound; the TS original deletes it in `finally` the same way. Holding the
+    // map lock makes the strong-count check race-free: a new caller must grab
+    // its `Arc` from this map, which would raise the count.
+    drop(_permit);
+    {
+        let mut map = locks.lock().await;
+        let is_last = map
+            .get(&key)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &semaphore))
+            && Arc::strong_count(&semaphore) == 2;
+        if is_last {
+            map.remove(&key);
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -444,6 +467,26 @@ mod tests {
         assert_eq!(
             content, "ALPHA\nBETA\n",
             "both edits should be applied in order"
+        );
+    }
+
+    /// Regression: the process-global map used to keep one entry per path ever
+    /// edited (TS deletes the entry once the queue drains), so a long-lived
+    /// process accumulated paths forever.
+    #[tokio::test]
+    async fn test_queue_entry_evicted_when_idle() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("evict.txt");
+        tokio::fs::write(&path, "x\n").await.unwrap();
+        let path = path.to_string_lossy().to_string();
+        let key = get_queue_key(&path);
+
+        with_file_mutation_queue(&path, || async {}).await;
+
+        let map = file_locks().lock().await;
+        assert!(
+            !map.contains_key(&key),
+            "idle queue entry must be removed or the global map grows forever"
         );
     }
 }

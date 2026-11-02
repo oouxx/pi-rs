@@ -662,7 +662,10 @@ where
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let cancel_clone = cancel_token.clone();
-        tokio::spawn(async move {
+        // Keep the handle so normal completion can abort this bridge; nothing
+        // cancels the token on a successful turn, which would leave the task
+        // parked forever (one per turn).
+        let cancel_bridge = tokio::spawn(async move {
             cancel_clone.cancelled().await;
             let _ = cancel_tx.send(true);
         });
@@ -989,6 +992,7 @@ where
         .await;
 
         *self.abort_signal.write().await = None;
+        cancel_bridge.abort();
 
         match result {
             Ok(new_messages) => {

@@ -368,16 +368,36 @@ impl ResourceLoader for DefaultResourceLoader {
     }
 
     fn extend_resources(&mut self, paths: ResourceExtensionPaths) {
-        // Store extension-contributed source infos
+        // Store extension-contributed source infos. `extend_resources` runs on
+        // every session reload, so the same contribution must not be appended
+        // again each time (the parallel path lists below are deduped too).
         for (path, info) in &paths.skill_paths {
-            self.extension_source_infos
-                .push((path.clone(), info.clone()));
+            if !self
+                .extension_source_infos
+                .iter()
+                .any(|(p, i)| p == path && i == info)
+            {
+                self.extension_source_infos
+                    .push((path.clone(), info.clone()));
+            }
         }
         for (path, info) in &paths.prompt_paths {
-            self.prompt_source_infos.push((path.clone(), info.clone()));
+            if !self
+                .prompt_source_infos
+                .iter()
+                .any(|(p, i)| p == path && i == info)
+            {
+                self.prompt_source_infos.push((path.clone(), info.clone()));
+            }
         }
         for (path, info) in &paths.theme_paths {
-            self.theme_source_infos.push((path.clone(), info.clone()));
+            if !self
+                .theme_source_infos
+                .iter()
+                .any(|(p, i)| p == path && i == info)
+            {
+                self.theme_source_infos.push((path.clone(), info.clone()));
+            }
         }
 
         // Reload skills if new skill paths were contributed
@@ -1131,6 +1151,44 @@ mod tests {
         assert!(
             !resources.skills.is_empty(),
             "should have loaded extension skills"
+        );
+    }
+
+    /// Regression: `extend_resources` runs on every `/reload`; appending the
+    /// same extension contribution unconditionally made the source-info lists
+    /// (and the linear scans over them) grow with the session lifetime.
+    #[test]
+    fn test_extend_resources_is_idempotent_across_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills-idem");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        let opts = ResourceLoaderOptions {
+            cwd: dir.path().to_string_lossy().to_string(),
+            include_defaults: false,
+            ..Default::default()
+        };
+        let mut loader = DefaultResourceLoader::new(opts);
+        loader.reload();
+
+        let source_info = create_source_info(
+            skills_dir.to_string_lossy().to_string(),
+            "extension".to_string(),
+            SourceScope::Temporary,
+            SourceOrigin::TopLevel,
+            None,
+        );
+        let ext_paths = ResourceExtensionPaths {
+            skill_paths: vec![(skills_dir.to_string_lossy().to_string(), source_info)],
+            ..Default::default()
+        };
+        loader.extend_resources(ext_paths.clone());
+        loader.extend_resources(ext_paths);
+
+        assert_eq!(
+            loader.extension_source_infos.len(),
+            1,
+            "repeated reloads must not duplicate extension source info"
         );
     }
 

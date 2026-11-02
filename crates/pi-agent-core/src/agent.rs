@@ -207,25 +207,50 @@ struct ActiveRun {
     cancel: tokio_util::sync::CancellationToken,
 }
 
+/// Registered agent event listeners.
+///
+/// Listeners are addressed by a monotonic id so an unsubscribe can actually
+/// remove the entry. The previous `Vec<Listener>` + index design had to leave a
+/// no-op tombstone behind to keep indices valid, so every
+/// subscribe/unsubscribe cycle (compaction, session switch) leaked a slot for
+/// the life of the agent.
+#[derive(Default)]
+struct ListenerRegistry {
+    next_id: u64,
+    listeners: Vec<(u64, AgentEventListener)>,
+}
+
+impl ListenerRegistry {
+    fn subscribe(&mut self, listener: AgentEventListener) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.listeners.push((id, listener));
+        id
+    }
+
+    fn unsubscribe(&mut self, id: u64) {
+        self.listeners.retain(|(listener_id, _)| *listener_id != id);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &AgentEventListener> {
+        self.listeners.iter().map(|(_, listener)| listener)
+    }
+}
+
 /// Handle returned by [`Agent::subscribe`]. Call `unsubscribe()` to stop
 /// receiving events. Dropping the handle does NOT unsubscribe — the listener
 /// remains registered, matching the original TypeScript behavior where dropping
 /// the unsubscribe function does not remove the listener.
 pub struct UnsubscribeHandle {
-    listeners: Arc<RwLock<Vec<AgentEventListener>>>,
-    index: usize,
+    listeners: Arc<RwLock<ListenerRegistry>>,
+    id: u64,
 }
 
 impl UnsubscribeHandle {
     /// Remove the listener from the agent. After this call the listener will
     /// no longer receive events.
     pub async fn unsubscribe(self) {
-        let mut listeners = self.listeners.write().await;
-        if self.index < listeners.len() {
-            // Replace with a no-op so the slot stays valid and Vec indices
-            // are not disturbed.
-            listeners[self.index] = Arc::new(|_, _| Box::pin(async {}));
-        }
+        self.listeners.write().await.unsubscribe(self.id);
     }
 }
 
@@ -233,7 +258,7 @@ impl UnsubscribeHandle {
 #[derive(Clone)]
 pub struct Agent {
     state: Arc<RwLock<AgentState>>,
-    listeners: Arc<RwLock<Vec<AgentEventListener>>>,
+    listeners: Arc<RwLock<ListenerRegistry>>,
     active_run: Arc<Mutex<Option<ActiveRun>>>,
     convert_to_llm: ConvertToLlmFn,
     transform_context: Option<TransformContextFn>,
@@ -377,7 +402,7 @@ impl Agent {
 
         Self {
             state: Arc::new(RwLock::new(state)),
-            listeners: Arc::new(RwLock::new(Vec::new())),
+            listeners: Arc::new(RwLock::new(ListenerRegistry::default())),
             active_run: Arc::new(Mutex::new(None)),
             convert_to_llm,
             transform_context: options.transform_context,
@@ -460,11 +485,10 @@ impl Agent {
     /// Returns an [`UnsubscribeHandle`] – call `handle.unsubscribe().await`
     /// to stop receiving events, or drop it for best-effort cleanup.
     pub async fn subscribe(&self, listener: AgentEventListener) -> UnsubscribeHandle {
-        let mut listeners = self.listeners.write().await;
-        listeners.push(listener);
+        let id = self.listeners.write().await.subscribe(listener);
         UnsubscribeHandle {
             listeners: self.listeners.clone(),
-            index: listeners.len() - 1,
+            id,
         }
     }
 
@@ -940,7 +964,11 @@ impl Agent {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
+        // Bridge `CancellationToken` -> the `watch` signal used by the loop.
+        // Keep the handle: on normal completion nothing cancels the token, so
+        // the task would otherwise park on `cancelled()` forever (one leaked
+        // task per prompt).
+        let cancel_bridge = tokio::spawn(async move {
             cancel.cancelled().await;
             let _ = cancel_tx.send(true);
         });
@@ -975,6 +1003,7 @@ impl Agent {
         .await;
 
         self.active_run.lock().await.take();
+        cancel_bridge.abort();
 
         let was_aborted = signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false);
 
@@ -994,7 +1023,9 @@ impl Agent {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
+        // See `run_with_lifecycle`: abort the bridge once the run finishes so
+        // a normal completion does not leave a parked task behind.
+        let cancel_bridge = tokio::spawn(async move {
             cancel.cancelled().await;
             let _ = cancel_tx.send(true);
         });
@@ -1026,6 +1057,7 @@ impl Agent {
         .await;
 
         self.active_run.lock().await.take();
+        cancel_bridge.abort();
 
         result
     }
@@ -1345,6 +1377,42 @@ mod tests {
         assert!(state.messages.is_empty());
         assert!(!state.is_streaming);
         assert!(state.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_removes_listener_slot() {
+        // Regression: unsubscribe used to overwrite the slot with a no-op
+        // closure, so subscribe/unsubscribe cycles (compaction, session
+        // switches) grew the listener Vec for the life of the agent.
+        let agent = Agent::new(AgentOptions {
+            stream_fn: Some(make_ok_stream_fn("hello")),
+            convert_to_llm: Some(default_convert_to_llm()),
+            ..Default::default()
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_listener = calls.clone();
+        let handle = agent
+            .subscribe(Arc::new(move |_event, _signal| {
+                let calls = calls_for_listener.clone();
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                })
+            }))
+            .await;
+
+        let sink = agent.create_event_sink();
+        sink(AgentEvent::AgentStart).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        handle.unsubscribe().await;
+        assert_eq!(agent.listeners.read().await.listeners.len(), 0);
+
+        sink(AgentEvent::AgentStart).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "unsubscribed listener must not receive further events"
+        );
     }
 
     #[tokio::test]

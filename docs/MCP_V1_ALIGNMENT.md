@@ -1,6 +1,7 @@
 # MCP v1.0.0 对齐分析（pi-rs ← pi TS）
 
-> 状态：**阶段一分析稿**（待用户确认范围后再进入阶段二）。
+> 状态：**历史分析稿**。2026-11-02 用户确认复刻范围与架构后，详细实施分析
+> 已移至 [`MCP_V1_PORTING.md`](MCP_V1_PORTING.md)，本文保留作为早期差距参考。
 > 基准：TS `packages/coding-agent`（MCP 在基线版本之后加入，commit `8562bcf66`
 > `feat(coding-agent): codemode and MCP`，后续 v1.0.0 形态）。pi-rs 当前基线见
 > 根目录 `.version`，本文是用户明确要求的「超前对齐」分析。

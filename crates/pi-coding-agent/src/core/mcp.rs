@@ -242,6 +242,7 @@ impl McpConnection {
                     execute: Some(execute),
                     render: None,
                     source_info: None,
+                    ..Default::default()
                 }
             })
             .collect()

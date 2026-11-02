@@ -161,7 +161,7 @@ pub fn print_help() {
     );
     println!("    update --all          Update all extensions");
     println!("    config                Manage configuration");
-    println!("    mcp                   Manage MCP servers (list/add/remove/enable/disable)");
+    println!("    mcp                   Manage MCP servers (list/add/remove/enable/disable/login/logout)");
     println!("    refresh               Refresh the remote model catalog");
     println!();
     println!("EXAMPLES:");

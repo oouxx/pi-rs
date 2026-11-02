@@ -12,6 +12,7 @@ pi-ai = { workspace = true }
 pi-extension-api = { workspace = true }
 pi-extensions = { workspace = true }
 pi-tui = { workspace = true }
+pi-mcp = { workspace = true, optional = true }
 crossterm = { workspace = true }
 serde = { workspace = true }
 indexmap = { workspace = true }
@@ -37,6 +38,8 @@ regex = { workspace = true }
 dirs = "6"
 similar = "2"
 unicode-normalization = "0.1"
+unicode-segmentation = "1"
+sha2 = "0.10"
 url = "2"
 fs2 = "0.4"
 base64 = "0.22"
@@ -67,7 +70,7 @@ libc = "0.2"
 # legacy SSE). Default-on. Disabling removes the rmcp dependency and the MCP
 # wiring (config files, ACP servers).
 default = ["mcp"]
-mcp = ["dep:rmcp", "dep:sse-stream"]
+mcp = ["dep:rmcp", "dep:sse-stream", "dep:pi-mcp"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

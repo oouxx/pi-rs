@@ -701,7 +701,7 @@ pub async fn create_agent_session(
     // An explicitly provided registry wins (tests / custom Rust extensions).
     // Otherwise build the built-in set, filtered by settings
     // `extensionsEnabled` (missing id = enabled).
-    let extension_registry = match options.extension_registry.take() {
+    let mut extension_registry = match options.extension_registry.take() {
         Some(registry) => registry,
         None => {
             // `web_search` backend comes from settings `webSearch`. An explicit
@@ -730,6 +730,22 @@ pub async fn create_agent_session(
             .unwrap_or_default()
         }
     };
+
+    // The built-in MCP extension provides `/mcp`. It is default-on like TS's
+    // built-in MCP extension; `--no-extensions` turns it off.
+    #[cfg(feature = "mcp")]
+    if options.enable_extensions
+        && !extension_registry
+            .hook_runner()
+            .handlers()
+            .iter()
+            .any(|handler| handler.name() == "mcp")
+    {
+        extension_registry.register(
+            Box::new(crate::core::mcp_extension::McpExtension::new()),
+            pi_extension_api::create_builtin_source_info("mcp"),
+        );
+    }
 
     // Collect prompt_guidelines BEFORE wrapping in Arc
     // (collect_tools() requires &mut self, which Arc doesn't provide).
@@ -874,29 +890,124 @@ pub async fn create_agent_session(
     );
 
     // MCP servers from `mcp.json` (global + project). Connection failures are
-    // non-fatal: the session starts with whatever connected. The tools keep
-    // their connections alive via an `Arc` in each execute closure.
+    // non-fatal: the session starts with whatever connected. Each tool's
+    // execute closure holds an `Arc` to its connection, keeping it alive.
     #[cfg(feature = "mcp")]
-    let custom_tools = {
-        let (specs, mut errors) = crate::core::mcp_config::load_specs(&cwd, &agent_dir);
+    let (custom_tools, mcp_section) = {
+        let mut loaded = crate::core::mcp_config::load_mcp_config(&cwd, &agent_dir);
+        let mut errors = loaded.errors.clone();
+        // Servers registered by extensions are added after `mcp.json`, which
+        // takes precedence for a name it defines.
+        for registration in extension_registry_arc.mcp_servers() {
+            if loaded
+                .servers
+                .iter()
+                .any(|server| server.name == registration.name)
+            {
+                continue;
+            }
+            match crate::core::mcp_servers::validate_mcp_server_config(
+                &registration.name,
+                &registration.config,
+            ) {
+                Ok(config) => loaded.servers.push(crate::core::mcp_servers::LoadedServer {
+                    name: registration.name.clone(),
+                    config,
+                    source: std::path::PathBuf::from(&registration.source_info.path),
+                    scope: crate::core::mcp_servers::McpScope::Extension,
+                    override_path: None,
+                }),
+                Err(error) => errors.push(format!(
+                    "{}: {error}",
+                    registration.source_info.path
+                )),
+            }
+        }
         let mut tools = options.custom_tools.take().unwrap_or_default();
-        if !specs.is_empty() {
-            let (mcp_tools, _connections, connect_errors) =
-                crate::core::mcp::connect_specs(&specs).await;
-            errors.extend(connect_errors);
-            tools.extend(mcp_tools);
+        let mut taken: std::collections::HashSet<String> =
+            tools.iter().map(|tool| tool.name.clone()).collect();
+        let mut resource_connections = Vec::new();
+        let mut resource_exposure = None;
+        let mut listings = Vec::new();
+        for server in loaded.servers.iter().filter(|server| server.config.is_enabled()) {
+            let connection = crate::core::mcp_runtime::McpServerConnection::with_agent_dir(
+                server.clone(),
+                cwd.clone(),
+                agent_dir.clone(),
+            );
+            match connection.get_client().await {
+                Ok(_) => {
+                    let exposure = server.config.exposure();
+                    if matches!(
+                        exposure,
+                        crate::core::mcp_servers::McpExposure::Codemode
+                            | crate::core::mcp_servers::McpExposure::Deferred
+                    ) {
+                        let summary = server
+                            .config
+                            .description
+                            .clone()
+                            .filter(|description| !description.trim().is_empty())
+                            .or_else(|| {
+                                connection
+                                    .instructions()
+                                    .map(|instructions| {
+                                        instructions.lines().next().unwrap_or("").to_string()
+                                    })
+                            })
+                            .unwrap_or_default();
+                        listings.push((server.name.clone(), exposure, summary));
+                    }
+                    if connection.has_resources() {
+                        resource_connections.push(connection.clone());
+                        resource_exposure = Some(match (resource_exposure, exposure) {
+                            (Some(crate::core::mcp_servers::McpExposure::Direct), _) => {
+                                crate::core::mcp_servers::McpExposure::Direct
+                            }
+                            (_, crate::core::mcp_servers::McpExposure::Direct) => {
+                                crate::core::mcp_servers::McpExposure::Direct
+                            }
+                            (Some(crate::core::mcp_servers::McpExposure::Codemode), _) => {
+                                crate::core::mcp_servers::McpExposure::Codemode
+                            }
+                            (_, crate::core::mcp_servers::McpExposure::Codemode) => {
+                                crate::core::mcp_servers::McpExposure::Codemode
+                            }
+                            _ => crate::core::mcp_servers::McpExposure::Deferred,
+                        });
+                    }
+                    for tool in connection.tools() {
+                        let name = crate::core::mcp_tools::create_mcp_tool_name(
+                            &server.name,
+                            &tool.name,
+                            |candidate| taken.contains(candidate),
+                        );
+                        taken.insert(name.clone());
+                        let exposure = server.config.tool_exposure(&tool.name);
+                        tools.push(crate::core::mcp_tools::create_mcp_tool_definition(
+                            &connection, &tool, name, exposure,
+                        ));
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        if !resource_connections.is_empty() {
+            tools.extend(crate::core::mcp_resources::create_mcp_resource_tool_definitions(
+                std::sync::Arc::new(resource_connections),
+                resource_exposure.unwrap_or(crate::core::mcp_servers::McpExposure::Deferred),
+            ));
         }
         for error in &errors {
             eprintln!("[pi] MCP: {error}");
         }
-        if tools.is_empty() {
-            None
-        } else {
-            Some(tools)
-        }
+        (
+            if tools.is_empty() { None } else { Some(tools) },
+            crate::core::mcp_servers::render_mcp_servers_section(&listings),
+        )
     };
     #[cfg(not(feature = "mcp"))]
-    let custom_tools = options.custom_tools;
+    let (custom_tools, mcp_section) = (options.custom_tools, None);
 
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
@@ -938,6 +1049,12 @@ pub async fn create_agent_session(
         session_options,
     )
     .await;
+
+    if let Some(section) = mcp_section {
+        session
+            .set_system_prompt_section("mcp_servers", Some(section))
+            .await;
+    }
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {
@@ -1321,5 +1438,73 @@ mod tests {
             .collect();
         assert!(!tools.contains(&"subagent"), "subagent off: {tools:?}");
         assert!(tools.contains(&"web_search"), "web_search on: {tools:?}");
+    }
+
+    /// `mcp.json` servers are connected during session creation and their tools
+    /// are registered with the configured exposure.
+    #[tokio::test]
+    async fn mcp_json_tools_are_registered_at_session_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let agent_dir = tmp.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let script = tmp.path().join("server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      id=$(printf '%s' "$line" | sed -E 's/.*"id":([^,}]+).*/\1/')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"sh","version":"1"}}}\n' "$id"
+      ;;
+    *'"method":"tools/list"'*)
+      id=$(printf '%s' "$line" | sed -E 's/.*"id":([^,}]+).*/\1/')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("mcp.json"),
+            serde_json::to_string(&serde_json::json!({
+                "mcpServers": {
+                    "echo": {"command": "/bin/sh", "args": [script.to_string_lossy()]}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let registry = registry_with(
+            vec![test_model("testp", "m1", false)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+        let settings = SettingsManager::create(&cwd, agent_dir.to_str());
+        let (session, _result) = create_agent_session(CreateAgentSessionOptions {
+            cwd: cwd.clone(),
+            agent_dir: Some(agent_dir.to_string_lossy().to_string()),
+            model: Some(test_model("testp", "m1", false)),
+            enable_extensions: false,
+            settings_manager: Some(settings),
+            model_registry: Some(registry),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let definition = session
+            .get_tool_definition("mcp__echo__echo")
+            .expect("MCP tool registered");
+        assert_eq!(
+            definition.exposure,
+            pi_extension_api::ToolExposure::Deferred
+        );
+        assert!(session
+            .get_all_tools()
+            .iter()
+            .any(|tool| tool.name == "mcp__echo__echo"));
     }
 }

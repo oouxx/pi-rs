@@ -2501,6 +2501,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -2524,6 +2526,7 @@ dependencies = [
  "pi-ai",
  "pi-extension-api",
  "pi-extensions",
+ "pi-mcp",
  "pi-tui",
  "portable-pty",
  "regex",
@@ -2532,6 +2535,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "similar",
  "sse-stream",
  "tempfile",
@@ -2539,6 +2543,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-normalization",
+ "unicode-segmentation",
  "url",
  "uuid",
 ]
@@ -2567,6 +2572,27 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "pi-mcp"
+version = "1.87.12"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "libc",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]

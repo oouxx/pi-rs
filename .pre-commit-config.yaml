@@ -3,17 +3,19 @@
 # Enable once per clone:
 #   pre-commit install
 #
-# Runs `cargo fmt --all -- --check` before a commit that stages Rust files.
-# The check is workspace-wide and non-destructive: if any file is not rustfmt
-# clean the hook fails and lists the files; run `cargo fmt --all`, review the
-# diff, and commit again.
+# Runs `scripts/fmt.sh -- --check` before a commit that stages Rust files.
+# The check covers the crates owned by this repository and skips
+# `crates/vendor/` (vendored sources stay byte-identical to upstream so future
+# re-syncs only contain real adaptations). It is non-destructive: if any file
+# is not rustfmt clean the hook fails and lists the files; run
+# `scripts/fmt.sh`, review the diff, and commit again.
 
 repos:
   - repo: local
     hooks:
       - id: cargo-fmt
-        name: cargo fmt --all -- --check
-        entry: cargo fmt --all -- --check
+        name: scripts/fmt.sh -- --check
+        entry: ./scripts/fmt.sh -- --check
         language: system
         types: [rust]
         pass_filenames: false

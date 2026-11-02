@@ -7,3 +7,11 @@
 
 ts_version=v0.87.1
 ts_commit=f07218c4d
+
+# Vendored grok-build 代码（crates/vendor/*）的同步基线。
+# vendor_rev 是 xai-org/grok-build 的提交（可直接 checkout）；
+# vendor_source_rev 是该仓库 SOURCE_REV 文件记录的 monorepo 提交，仅作对照。
+vendor_repo=https://github.com/xai-org/grok-build
+vendor_rev=97f190f644ae1ba07fd6ee185ef54c650e142666
+vendor_source_rev=559751fdcec02d413e4c57c8832ab275e4f44980
+vendor_commit_date=2026-09-29

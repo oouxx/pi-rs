@@ -9,7 +9,11 @@ description = "Vendored from xai-org/grok-build crates/codegen/xai-grok-markdown
 # - edition 2024 kept (upstream source uses let-chains, an edition-2024-only
 #   feature; rustc 1.85+ required — pi-rs builds with 1.97)
 # - ratatui 0.29 (matches pi-tui; upstream uses the same)
-# - removed playground feature + optional crossterm/xai-ratatui-textarea deps
+# - removed playground feature + optional crossterm/xai-ratatui-textarea deps,
+#   plus the bench and playground binaries (they need the upstream workspace)
+# - syntect/two-face use the onig (default) backend, matching upstream's
+#   build.rs dump; build.rs bakes the two-face set plus the Swift grammar into
+#   OUT_DIR
 # - crate name kept as `xai-grok-markdown` to preserve upstream paths in
 #   code comments and ease future re-syncs from SOURCE_REV.
 
@@ -25,13 +29,16 @@ linkify = "0.10"
 pulldown-cmark = "0.13"
 ratatui = "0.29"
 supports-color = "3.0"
-syntect = "5.3"
-two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 textwrap = "0.16"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2"
 url = "2"
 xai-grok-markdown-core = { path = "../xai-grok-markdown-core" }
+
+[build-dependencies]
+syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-onig"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

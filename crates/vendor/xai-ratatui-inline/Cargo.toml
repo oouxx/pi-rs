@@ -5,7 +5,8 @@ edition = "2024"
 license = "Apache-2.0"
 description = "Vendored from xai-org/grok-build crates/codegen/xai-ratatui-inline (inline scrolling render helpers)"
 
-# Adapted from upstream: edition 2024 -> 2021, ratatui 0.29, deps pinned.
+# Adapted from upstream: ratatui 0.29, deps pinned to crates.io versions; the
+# upstream `benches/` target is not vendored.
 
 [dependencies]
 anstyle-parse = "0.2"
@@ -24,3 +25,5 @@ termwiz = { version = "0.23", default-features = false }
 
 [features]
 scrolling-regions = ["ratatui/scrolling-regions"]
+test-support = []
+default-bazel = ["test-support"]

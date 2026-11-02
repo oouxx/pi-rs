@@ -1,4 +1,4 @@
-.PHONY: build run run-tui test test-all fmt lint check clean help version release-patch release-minor release-major
+.PHONY: build run run-tui test test-all fmt fmt-check lint check clean help version release-patch release-minor release-major
 
 APP_NAME := pi
 VERSION := $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
@@ -29,7 +29,10 @@ test-all:
 	cargo test --workspace
 
 fmt:
-	cargo fmt --all
+	./scripts/fmt.sh
+
+fmt-check:
+	./scripts/fmt.sh -- --check
 
 lint:
 	cargo clippy --workspace -- -D warnings
@@ -104,7 +107,8 @@ help:
 	@echo "Quality:"
 	@echo "  test            cargo test (all crates except pi-tui)"
 	@echo "  test-all        cargo test --workspace"
-	@echo "  fmt             cargo fmt"
+	@echo "  fmt             format first-party crates (crates/vendor excluded)"
+	@echo "  fmt-check       rustfmt check (crates/vendor excluded)"
 	@echo "  lint            cargo clippy (deny warnings)"
 	@echo "  check           fmt + lint + test"
 	@echo ""

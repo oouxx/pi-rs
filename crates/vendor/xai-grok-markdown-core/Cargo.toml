@@ -7,3 +7,4 @@ description = "Vendored from xai-org/grok-build crates/codegen/xai-grok-markdown
 
 [dependencies]
 pulldown-cmark = "0.13"
+strum = { version = "0.27", features = ["derive"] }

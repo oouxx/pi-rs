@@ -5368,11 +5368,12 @@ fn render_panel(
     t: &Theme,
 ) {
     frame.render_widget(Clear, rect);
+    // TS `DynamicBorder`: only a top and bottom accent rule, no side borders.
     frame.render_widget(
         Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(t.border_accent)),
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_type(BorderType::Plain)
+            .border_style(Style::new().fg(t.accent)),
         rect,
     );
     let mut lines: Vec<Line> = Vec::new();
@@ -5405,14 +5406,20 @@ fn render_panel(
         } else {
             0
         };
+        let label_width = panel
+            .items
+            .iter()
+            .map(|item| item.label.chars().count())
+            .max()
+            .unwrap_or(0);
         for (index, item) in panel.items.iter().enumerate().skip(start).take(max_visible) {
             let selected = index == panel.selected;
             let mut spans = vec![Span::styled(
-                if selected { "▶ " } else { "  " }.to_string(),
+                if selected { "→ " } else { "  " }.to_string(),
                 Style::new().fg(if selected { t.accent } else { t.dim }),
             )];
             spans.push(Span::styled(
-                item.label.clone(),
+                format!("{:<label_width$}", item.label),
                 Style::new()
                     .fg(if selected { t.accent } else { t.text })
                     .add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() }),
@@ -5420,7 +5427,7 @@ fn render_panel(
             if let Some(description) = &item.description {
                 if !description.is_empty() {
                     spans.push(Span::styled(
-                        format!("  {description}"),
+                        format!(" {description}"),
                         Style::new().fg(t.muted),
                     ));
                 }

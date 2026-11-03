@@ -169,7 +169,11 @@ impl McpUiState {
                         let error = connection.error();
                         let has_resources = connection.has_resources();
                         let instructions = connection.instructions();
-                        (Some(Arc::new(connection)), state, error, tools, has_resources, instructions)
+                        let connection = Arc::new(connection);
+                        if state != McpServerState::Connected {
+                            spawn_connect(Arc::clone(&connection), ui_tx.clone());
+                        }
+                        (Some(connection), state, error, tools, has_resources, instructions)
                     } else {
                         let connection = Arc::new(McpServerConnection::with_agent_dir(
                             entry.clone(),
@@ -343,7 +347,7 @@ impl McpUiState {
                 "No MCP servers configured. Add them to {}/mcp.json or .pi-rs/mcp.json.",
                 self.agent_dir
             )),
-            footer: Some("enter manage · esc close".to_string()),
+            footer: Some("enter manage • escape/ctrl+c close".to_string()),
             input: None,
         }
     }
@@ -353,7 +357,7 @@ impl McpUiState {
             return PanelState {
                 title: name.to_string(),
                 empty: Some("This server is no longer configured.".to_string()),
-                footer: Some("esc back".to_string()),
+                footer: Some("escape/ctrl+c back".to_string()),
                 ..Default::default()
             };
         };
@@ -368,7 +372,7 @@ impl McpUiState {
         let mut details = vec![
             describe_transport(&server.entry),
             format!("{}: {}", server.entry.scope.as_str(), server.entry.source.display()),
-            format!("State: {}", server.state_label()),
+            format!("State: {}", state_summary(server)),
         ];
         if let Some(override_path) = &server.entry.override_path {
             details.push(format!("Project override: {}", override_path.display()));
@@ -384,7 +388,7 @@ impl McpUiState {
             items,
             selected: self.selected.min(actions.len().saturating_sub(1)),
             empty: None,
-            footer: Some("enter select · esc back".to_string()),
+            footer: Some("enter select • escape/ctrl+c back".to_string()),
             input: None,
         }
     }
@@ -430,7 +434,7 @@ impl McpUiState {
             items,
             selected: self.selected,
             empty: Some("The server offers no tools.".to_string()),
-            footer: Some("enter/esc back".to_string()),
+            footer: Some("enter back • escape/ctrl+c back".to_string()),
             input: None,
         }
     }
@@ -463,7 +467,7 @@ impl McpUiState {
             items,
             selected: options.iter().position(|e| *e == current).unwrap_or(0),
             empty: None,
-            footer: Some("enter save · esc back".to_string()),
+            footer: Some("enter save • escape/ctrl+c back".to_string()),
             input: None,
         }
     }
@@ -491,7 +495,7 @@ impl McpUiState {
             items: Vec::new(),
             selected: 0,
             empty: None,
-            footer: Some("enter submit · esc cancel".to_string()),
+            footer: Some("enter submit • escape/ctrl+c cancel".to_string()),
             input: Some(PanelInput {
                 label: "redirect".to_string(),
                 value: sign_in.input.clone(),
@@ -650,6 +654,9 @@ impl McpUiState {
                     }
                     ServerActionKind::SetEnabled(enabled) => {
                         self.set_enabled(&name, enabled, ui_tx)
+                    }
+                    ServerActionKind::SetEnabledInProject(enabled) => {
+                        self.set_enabled_in_project(&name, enabled, ui_tx)
                     }
                 }
             }
@@ -812,8 +819,6 @@ impl McpUiState {
     }
 
     fn set_enabled(&mut self, name: &str, enabled: bool, ui_tx: &UnboundedSender<UiAction>) {
-        let cwd = self.cwd.clone();
-        let agent_dir = self.agent_dir.clone();
         let Some(server) = self.find(name) else {
             return;
         };
@@ -822,16 +827,35 @@ impl McpUiState {
             .override_path
             .clone()
             .unwrap_or_else(|| server.entry.source.clone());
+        let allow_override = server.entry.override_path.is_some();
+        self.apply_enabled(name, enabled, path, allow_override, ui_tx);
+    }
+
+    fn set_enabled_in_project(
+        &mut self,
+        name: &str,
+        enabled: bool,
+        ui_tx: &UnboundedSender<UiAction>,
+    ) {
+        let path = mcp_config::project_config_path(std::path::Path::new(&self.cwd));
+        self.apply_enabled(name, enabled, path, true, ui_tx);
+    }
+
+    fn apply_enabled(
+        &mut self,
+        name: &str,
+        enabled: bool,
+        path: std::path::PathBuf,
+        allow_override: bool,
+        ui_tx: &UnboundedSender<UiAction>,
+    ) {
+        let cwd = self.cwd.clone();
+        let agent_dir = self.agent_dir.clone();
         let patch = McpServerConfigPatch {
             enabled: Some(enabled),
             exposure: None,
         };
-        let message = match mcp_config::update_server(
-            &path,
-            name,
-            &patch,
-            server.entry.override_path.is_some(),
-        ) {
+        let message = match mcp_config::update_server(&path, name, &patch, allow_override) {
             Ok(_) => {
                 if enabled {
                     format!("Enabled MCP server \"{name}\".")
@@ -843,6 +867,9 @@ impl McpUiState {
         };
         if let Some(server) = self.find_mut(name) {
             server.entry.config.enabled = Some(enabled);
+            if allow_override {
+                server.entry.override_path = Some(path);
+            }
             server.message = Some(message.clone());
             if !enabled {
                 if let Some(connection) = &server.connection {
@@ -998,14 +1025,19 @@ enum ServerActionKind {
     SignOut,
     Exposure,
     SetEnabled(bool),
+    SetEnabledInProject(bool),
 }
 
 fn server_actions(server: &ServerUi) -> Vec<ServerAction> {
     let saved = if server.entry.scope.as_str() == "extension" {
         "for this session".to_string()
+    } else if server.entry.override_path.is_some() {
+        "saved to the project mcp.json".to_string()
     } else {
         format!("saved to the {} mcp.json", server.entry.scope.as_str())
     };
+    let in_project = server.entry.scope.as_str() == "global"
+        && server.entry.override_path.is_none();
     let mut actions = Vec::new();
     if !server.enabled() {
         actions.push(ServerAction {
@@ -1013,6 +1045,13 @@ fn server_actions(server: &ServerUi) -> Vec<ServerAction> {
             label: "Enable".to_string(),
             description: Some(saved),
         });
+        if in_project {
+            actions.push(ServerAction {
+                kind: ServerActionKind::SetEnabledInProject(true),
+                label: "Enable in this project".to_string(),
+                description: Some("saved to the project mcp.json".to_string()),
+            });
+        }
         return actions;
     }
     if server.state == McpServerState::NeedsAuth {
@@ -1034,7 +1073,9 @@ fn server_actions(server: &ServerUi) -> Vec<ServerAction> {
         label: "Reconnect".to_string(),
         description: None,
     });
-    if server.state == McpServerState::Connected && server_url(&server.entry).is_ok() {
+    if server.state == McpServerState::Connected
+        && mcp_oauth::server_uses_oauth(&server.entry.config)
+    {
         actions.push(ServerAction {
             kind: ServerActionKind::SignOut,
             label: "Sign out".to_string(),
@@ -1051,7 +1092,36 @@ fn server_actions(server: &ServerUi) -> Vec<ServerAction> {
         label: "Disable".to_string(),
         description: Some(saved),
     });
+    if in_project {
+        actions.push(ServerAction {
+            kind: ServerActionKind::SetEnabledInProject(false),
+            label: "Disable in this project".to_string(),
+            description: Some("saved to the project mcp.json".to_string()),
+        });
+    }
     actions
+}
+
+fn state_summary(server: &ServerUi) -> String {
+    if !server.enabled() {
+        return "disabled".to_string();
+    }
+    match server.state {
+        McpServerState::Connected => format!(
+            "connected · {} tools{}",
+            server.tools.len(),
+            if server.has_resources {
+                " · resources"
+            } else {
+                ""
+            }
+        ),
+        McpServerState::NeedsAuth => "needs sign-in".to_string(),
+        McpServerState::Failed => "failed".to_string(),
+        McpServerState::Connecting => "connecting…".to_string(),
+        McpServerState::Disconnected => "disconnected".to_string(),
+        McpServerState::Closed => "closed".to_string(),
+    }
 }
 
 fn server_url(entry: &LoadedServer) -> Result<url::Url, String> {

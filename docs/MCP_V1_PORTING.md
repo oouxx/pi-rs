@@ -20,6 +20,8 @@
 > - ✅ `auth.provider`：runtime 通过 model registry 的 provider token 回调接入。
 > - ✅ `tools/list_changed`：`core/runtime_tools.rs` 在运行时注册/移除工具，同步
 >   `tool_search` 索引与 active 集合。
+> - ✅ `/mcp` TUI：`AppMode::Panel` 多级管理器（服务列表、服务详情、工具、Exposure、
+>   登录、实时状态），复用会话 MCP 连接，交互与信息层级对齐原版 `McpManagerView`。
 > - ⏳ 待做：Phase 8 文档收尾；codemode 不在范围、CIMD 默认禁用。
 >
 > TS 参考：`origin/main` 的 `packages/mcp`（v1.0.0 形态）与

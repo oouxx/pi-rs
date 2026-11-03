@@ -19,8 +19,8 @@ pub mod theme;
 // Re-export key types
 pub use app::{
     AppMode, Cmd, CustomBlock, CustomSpan, CustomTextStyle, CustomToolRenderFn,
-    CustomToolRenderInput, Dialog, DialogAction, DialogButton, Message, Model, Msg,
-    ToolCustomRender,
+    CustomToolRenderInput, Dialog, DialogAction, DialogButton, Message, Model, Msg, PanelInput,
+    PanelItem, PanelState, ToolCustomRender,
 };
 pub use components::{
     ArgumentCompletionsFn, Completer, CompletionCommand, CompletionItem, CompletionRequest,

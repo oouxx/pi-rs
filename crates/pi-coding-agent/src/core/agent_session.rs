@@ -740,6 +740,12 @@ pub struct AgentSession {
     tool_registry: Vec<Arc<pi_agent_core::types::DynTool>>,
     /// Tools added after session construction (MCP `tools/list_changed`).
     runtime_tools: Arc<crate::core::runtime_tools::RuntimeToolManager>,
+    /// MCP connections owned by this session, exposed to the `/mcp` manager
+    /// so it shows and acts on the session's real connections.
+    #[cfg(feature = "mcp")]
+    mcp_connections: Arc<
+        std::sync::Mutex<Vec<crate::core::mcp_runtime::McpServerConnection>>,
+    >,
     /// Tool definitions registry, matching TS `_toolDefinitions` (used by
     /// getAllTools / getToolDefinition). Populated from custom_tools and
     /// extension tools at construction time.
@@ -2483,6 +2489,8 @@ impl AgentSession {
             extension_ui_binding,
             tool_registry,
             runtime_tools,
+            #[cfg(feature = "mcp")]
+            mcp_connections: Arc::new(std::sync::Mutex::new(Vec::new())),
             tool_definitions,
             resource_loader: std::sync::Mutex::new(options.resource_loader),
             system_prompt_options: Some({
@@ -3546,6 +3554,27 @@ impl AgentSession {
     /// Runtime tool registry for tools that appear after session start.
     pub fn runtime_tools(&self) -> Arc<crate::core::runtime_tools::RuntimeToolManager> {
         Arc::clone(&self.runtime_tools)
+    }
+
+    /// Replace the MCP connections exposed to the `/mcp` manager.
+    #[cfg(feature = "mcp")]
+    pub fn set_mcp_connections(
+        &self,
+        connections: Vec<crate::core::mcp_runtime::McpServerConnection>,
+    ) {
+        *self
+            .mcp_connections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = connections;
+    }
+
+    /// MCP connections owned by this session.
+    #[cfg(feature = "mcp")]
+    pub fn mcp_connections(&self) -> Vec<crate::core::mcp_runtime::McpServerConnection> {
+        self.mcp_connections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// The extension UI/context object passed to extension command handlers.

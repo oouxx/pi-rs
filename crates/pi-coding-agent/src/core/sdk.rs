@@ -1080,6 +1080,9 @@ pub async fn create_agent_session(
     }
 
     #[cfg(feature = "mcp")]
+    session.set_mcp_connections(mcp_connections.clone());
+
+    #[cfg(feature = "mcp")]
     if !mcp_connections.is_empty() {
         use std::collections::HashSet;
         use std::sync::{Arc, Mutex};

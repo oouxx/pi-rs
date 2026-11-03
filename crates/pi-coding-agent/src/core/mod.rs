@@ -40,6 +40,7 @@ pub mod provider_display_names;
 pub mod remote_catalog;
 pub mod resolve_config_value;
 pub mod resource_loader;
+pub mod runtime_tools;
 pub mod sdk;
 pub mod session_cwd;
 pub mod session_manager;

@@ -18,8 +18,9 @@
 >   `pi-rs mcp login/logout`、静态 `registerMcpServer`、legacy SSE transport。
 > - ✅ ACP `mcpServers` 已切到新 runtime；旧 rmcp 实现与依赖已删除。
 > - ✅ `auth.provider`：runtime 通过 model registry 的 provider token 回调接入。
-> - ⏳ 待做：`tools/list_changed` 动态重注册（当前只更新连接内工具列表）、
->   codemode（不在范围）、CIMD（默认禁用）、Phase 8 文档/全量回归。
+> - ✅ `tools/list_changed`：`core/runtime_tools.rs` 在运行时注册/移除工具，同步
+>   `tool_search` 索引与 active 集合。
+> - ⏳ 待做：Phase 8 文档收尾；codemode 不在范围、CIMD 默认禁用。
 >
 > TS 参考：`origin/main` 的 `packages/mcp`（v1.0.0 形态）与
 > `packages/coding-agent/src/extensions/mcp`。

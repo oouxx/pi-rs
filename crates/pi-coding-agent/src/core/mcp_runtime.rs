@@ -29,6 +29,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT_SECONDS: f64 = 60.0;
 const STDERR_TAIL_CHARS: usize = 2_000;
 
+/// Called with the new tool list after `tools/list_changed`.
+pub type ToolChangeListener = Arc<dyn Fn(Vec<Tool>) + Send + Sync>;
+
 /// Resolves a pi provider token for `auth.provider` servers.
 pub type ProviderTokenFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -63,12 +66,13 @@ impl McpServerState {
     }
 }
 
-struct Inner {
+pub(crate) struct Inner {
     entry: LoadedServer,
     cwd: String,
     agent_dir: String,
     log: Arc<crate::core::mcp_log::McpServerLog>,
     subscriptions: Mutex<Vec<Subscription>>,
+    change_listener: Mutex<Option<ToolChangeListener>>,
     token_provider: Option<ProviderTokenFn>,
     state: Mutex<McpServerState>,
     error: Mutex<Option<String>>,
@@ -151,6 +155,7 @@ impl McpServerConnection {
                 agent_dir,
                 log,
                 subscriptions: Mutex::new(Vec::new()),
+                change_listener: Mutex::new(None),
                 token_provider,
                 state: Mutex::new(McpServerState::Connecting),
                 error: Mutex::new(None),
@@ -186,6 +191,29 @@ impl McpServerConnection {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Weak handle for a change listener that must not keep the connection
+    /// alive on its own.
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<Inner> {
+        Arc::downgrade(&self.inner)
+    }
+
+    /// Upgrade a weak handle.
+    pub(crate) fn upgrade(weak: &std::sync::Weak<Inner>) -> Option<Self> {
+        weak.upgrade().map(|inner| Self { inner })
+    }
+
+    /// Register a listener called with the new tools after `list_changed`.
+    pub fn set_change_listener(
+        &self,
+        listener: Option<ToolChangeListener>,
+    ) {
+        *self
+            .inner
+            .change_listener
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = listener;
     }
 
     /// Tools enumerated at connect time.
@@ -351,7 +379,16 @@ impl McpServerConnection {
                     let client = Arc::clone(&notification_client);
                     tokio::spawn(async move {
                         if let Ok(tools) = client.list_tools(McpRequestOptions::default()).await {
-                            *connection.inner.tools() = tools;
+                            *connection.inner.tools() = tools.clone();
+                            let listener = connection
+                                .inner
+                                .change_listener
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .clone();
+                            if let Some(listener) = listener {
+                                listener(tools);
+                            }
                         }
                     });
                 }),
@@ -681,6 +718,28 @@ while IFS= read -r line; do
 done
 "#;
 
+    const CHANGE_SCRIPT: &str = r#"#!/bin/sh
+first=1
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      id=$(printf '%s' "$line" | sed -E 's/.*"id":([^,}]+).*/\1/')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"sh","version":"1"}}}\n' "$id"
+      ;;
+    *'"method":"tools/list"'*)
+      id=$(printf '%s' "$line" | sed -E 's/.*"id":([^,}]+).*/\1/')
+      if [ "$first" = "1" ]; then
+        first=0
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}\n' "$id"
+        (sleep 0.2; printf '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n') &
+      else
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}},{"name":"extra","inputSchema":{"type":"object"}}]}}\n' "$id"
+      fi
+      ;;
+  esac
+done
+"#;
+
     #[tokio::test]
     async fn stdio_connection_lists_tools() {
         let dir = tempfile::tempdir().unwrap();
@@ -703,6 +762,39 @@ done
         connection.get_client().await.expect("stdio server connects");
         assert_eq!(connection.tools().len(), 1);
         assert_eq!(connection.tools()[0].name, "echo");
+        connection.close().await;
+    }
+
+    #[tokio::test]
+    async fn tools_list_changed_notifies_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("server.sh");
+        std::fs::write(&script, CHANGE_SCRIPT).unwrap();
+        let config = validate_mcp_server_config(
+            "changing",
+            &json!({"command": "/bin/sh", "args": [script]}),
+        )
+        .unwrap();
+        let entry = LoadedServer {
+            name: "changing".to_string(),
+            config,
+            source: dir.path().join("mcp.json"),
+            scope: McpScope::Global,
+            override_path: None,
+        };
+        let cwd = dir.path().to_string_lossy().to_string();
+        let connection = McpServerConnection::with_agent_dir(entry, &cwd, &cwd);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        connection.set_change_listener(Some(Arc::new(move |tools| {
+            let _ = sender.send(tools);
+        })));
+        connection.get_client().await.expect("connects");
+        let tools = tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("list_changed arrives")
+            .expect("listener receives tools");
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().any(|tool| tool.name == "extra"));
         connection.close().await;
     }
 }

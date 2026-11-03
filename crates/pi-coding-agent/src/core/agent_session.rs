@@ -738,6 +738,8 @@ pub struct AgentSession {
     /// Full tool registry (all available tools, not just active ones),
     /// matching TS `_toolRegistry`. Used by `set_active_tools_by_name()`.
     tool_registry: Vec<Arc<pi_agent_core::types::DynTool>>,
+    /// Tools added after session construction (MCP `tools/list_changed`).
+    runtime_tools: Arc<crate::core::runtime_tools::RuntimeToolManager>,
     /// Tool definitions registry, matching TS `_toolDefinitions` (used by
     /// getAllTools / getToolDefinition). Populated from custom_tools and
     /// extension tools at construction time.
@@ -1446,6 +1448,9 @@ impl AgentSession {
                 )
             })
             .collect();
+        let runtime_tools = std::sync::Arc::new(
+            crate::core::runtime_tools::RuntimeToolManager::default(),
+        );
         if !searchable_tools.is_empty() {
             let documents: Vec<crate::core::tool_search::ToolSearchDocument> = searchable_tools
                 .iter()
@@ -1465,20 +1470,21 @@ impl AgentSession {
                     )
                 })
                 .collect();
-            let searchable_registry: Arc<
-                std::collections::HashMap<String, Arc<pi_agent_core::types::DynTool>>,
-            > = Arc::new(
-                searchable_tools
-                    .iter()
-                    .map(|tool| {
-                        (
-                            tool.name.clone(),
-                            Arc::new((*tool).clone()) as Arc<pi_agent_core::types::DynTool>,
-                        )
-                    })
-                    .collect(),
-            );
+            let searchable_registry: std::collections::HashMap<
+                String,
+                Arc<pi_agent_core::types::DynTool>,
+            > = searchable_tools
+                .iter()
+                .map(|tool| {
+                    (
+                        tool.name.clone(),
+                        Arc::new((*tool).clone()) as Arc<pi_agent_core::types::DynTool>,
+                    )
+                })
+                .collect();
+            runtime_tools.seed_search(documents, searchable_registry);
             let agent_slot = Arc::clone(&tool_search_agent);
+            let runtime_tools_for_search = Arc::clone(&runtime_tools);
             let execute = Arc::new(
                 move |_tool_call_id: String,
                       params: serde_json::Value,
@@ -1491,8 +1497,7 @@ impl AgentSession {
                             + Sync,
                     >,
                 >| {
-                    let documents = documents.clone();
-                    let registry = Arc::clone(&searchable_registry);
+                    let runtime_tools = Arc::clone(&runtime_tools_for_search);
                     let agent_slot = Arc::clone(&agent_slot);
                     let future: ToolSearchFuture = Box::pin(async move {
                         let query = params
@@ -1519,20 +1524,13 @@ impl AgentSession {
                         let state = agent.state().await;
                         let active: std::collections::HashSet<String> =
                             state.tools.iter().map(|tool| tool.name.clone()).collect();
-                        let candidates: Vec<crate::core::tool_search::ToolSearchDocument> = documents
-                            .into_iter()
-                            .filter(|document| !active.contains(&document.name))
+                        let matches = runtime_tools.search(&query, &active, limit);
+                        let additions: Vec<Arc<pi_agent_core::types::DynTool>> = matches
+                            .iter()
+                            .map(|(_, tool)| Arc::clone(tool))
                             .collect();
-                        let matches = crate::core::tool_search::Bm25Ranker::default()
-                            .rank(&query, &candidates, limit);
-                        let mut additions = Vec::new();
-                        let mut names = Vec::new();
-                        for matched in &matches {
-                            if let Some(tool) = registry.get(&matched.name) {
-                                additions.push(Arc::clone(tool));
-                                names.push(matched.name.clone());
-                            }
-                        }
+                        let names: Vec<String> =
+                            matches.iter().map(|(name, _)| name.clone()).collect();
                         if additions.is_empty() {
                             return Ok(pi_agent_core::types::AgentToolResult {
                                 content: vec![pi_agent_core::pi_ai_types::text_block(
@@ -2332,6 +2330,7 @@ impl AgentSession {
 
         let agent = Arc::new(Agent::new(agent_options));
         *tool_search_agent.lock().await = Some(Arc::clone(&agent));
+        runtime_tools.set_agent(Arc::clone(&agent));
         // Bind the agent reference used by the bash tool's session-env provider
         // (resolved at each command start, match TS #6967).
         *bash_agent_ref
@@ -2483,6 +2482,7 @@ impl AgentSession {
             // 实时 UI 绑定（工具/钩子闭包共享的上下文也通过它读取）。
             extension_ui_binding,
             tool_registry,
+            runtime_tools,
             tool_definitions,
             resource_loader: std::sync::Mutex::new(options.resource_loader),
             system_prompt_options: Some({
@@ -3543,6 +3543,11 @@ impl AgentSession {
         self.extension_registry.clone()
     }
 
+    /// Runtime tool registry for tools that appear after session start.
+    pub fn runtime_tools(&self) -> Arc<crate::core::runtime_tools::RuntimeToolManager> {
+        Arc::clone(&self.runtime_tools)
+    }
+
     /// The extension UI/context object passed to extension command handlers.
     pub fn get_extension_context(&self) -> &ExtensionContext {
         &self.ext_ctx
@@ -4221,8 +4226,11 @@ impl AgentSession {
     pub fn get_tool_definition(
         &self,
         name: &str,
-    ) -> Option<&crate::core::extensions::ToolDefinition> {
-        self.tool_definitions.get(name)
+    ) -> Option<crate::core::extensions::ToolDefinition> {
+        self.tool_definitions
+            .get(name)
+            .cloned()
+            .or_else(|| self.runtime_tools.definition(name))
     }
 
     /// 扩展工具的自定义渲染回调（TS `renderCall` / `renderResult`），按工具名
@@ -4230,16 +4238,27 @@ impl AgentSession {
     pub fn tool_render_fns(
         &self,
     ) -> std::collections::HashMap<String, pi_extension_api::ToolRenderFn> {
-        self.tool_definitions
+        let mut renderers: std::collections::HashMap<
+            String,
+            pi_extension_api::ToolRenderFn,
+        > = self
+            .tool_definitions
             .iter()
             .filter_map(|(name, def)| def.render.clone().map(|render| (name.clone(), render)))
-            .collect()
+            .collect();
+        for def in self.runtime_tools.definitions() {
+            if let Some(render) = def.render {
+                renderers.insert(def.name, render);
+            }
+        }
+        renderers
     }
 
     /// Get all configured tools with name, description, parameter schema,
     /// prompt guidelines, and source metadata, matching TS `getAllTools()`.
     pub fn get_all_tools(&self) -> Vec<crate::core::extensions::ToolInfo> {
-        self.tool_definitions
+        let mut tools: Vec<crate::core::extensions::ToolInfo> = self
+            .tool_definitions
             .values()
             .map(|def| crate::core::extensions::ToolInfo {
                 name: def.name.clone(),
@@ -4251,7 +4270,20 @@ impl AgentSession {
                 output_schema: def.output_schema.clone(),
                 source_info: def.source_info.clone(),
             })
-            .collect()
+            .collect();
+        tools.extend(self.runtime_tools.definitions().into_iter().map(|def| {
+            crate::core::extensions::ToolInfo {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                parameters: def.parameters.clone(),
+                prompt_guidelines: def.prompt_guidelines.clone(),
+                exposure: def.exposure,
+                namespace: def.namespace.clone(),
+                output_schema: def.output_schema.clone(),
+                source_info: def.source_info.clone(),
+            }
+        }));
+        tools
     }
 
     /// Set active tools by name, matching TS `setActiveToolsByName()`.
@@ -4267,7 +4299,13 @@ impl AgentSession {
     pub async fn set_active_tools_by_name(&self, tool_names: &[String]) {
         let selected: Vec<Arc<pi_agent_core::types::DynTool>> = tool_names
             .iter()
-            .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
+            .filter_map(|name| {
+                self.tool_registry
+                    .iter()
+                    .find(|t| t.name == *name)
+                    .cloned()
+                    .or_else(|| self.runtime_tools.tool(name))
+            })
             .collect();
         // Write through the shared state — `state()` returns a clone.
         self.agent

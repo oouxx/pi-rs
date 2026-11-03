@@ -894,6 +894,7 @@ pub async fn create_agent_session(
     // execute closure holds an `Arc` to its connection, keeping it alive.
     #[cfg(feature = "mcp")]
     let (custom_tools, mcp_section) = {
+        let mcp_model_registry = model_registry.clone();
         let mut loaded = crate::core::mcp_config::load_mcp_config(&cwd, &agent_dir);
         let mut errors = loaded.errors.clone();
         // Servers registered by extensions are added after `mcp.json`, which
@@ -929,11 +930,16 @@ pub async fn create_agent_session(
         let mut resource_connections = Vec::new();
         let mut resource_exposure = None;
         let mut listings = Vec::new();
+        let token_provider: crate::core::mcp_runtime::ProviderTokenFn =
+            std::sync::Arc::new(move |provider: &str| {
+                mcp_model_registry.get_api_key_for_provider(provider)
+            });
         for server in loaded.servers.iter().filter(|server| server.config.is_enabled()) {
-            let connection = crate::core::mcp_runtime::McpServerConnection::with_agent_dir(
+            let connection = crate::core::mcp_runtime::McpServerConnection::with_agent_dir_and_token_provider(
                 server.clone(),
                 cwd.clone(),
                 agent_dir.clone(),
+                Some(std::sync::Arc::clone(&token_provider)),
             );
             match connection.get_client().await {
                 Ok(_) => {

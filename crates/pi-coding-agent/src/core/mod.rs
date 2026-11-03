@@ -14,8 +14,6 @@ pub mod experimental;
 pub mod extensions;
 pub mod http_dispatcher;
 #[cfg(feature = "mcp")]
-pub mod mcp;
-#[cfg(feature = "mcp")]
 pub mod mcp_config;
 #[cfg(feature = "mcp")]
 pub mod mcp_extension;
@@ -29,8 +27,6 @@ pub mod mcp_resources;
 pub mod mcp_runtime;
 #[cfg(feature = "mcp")]
 pub mod mcp_servers;
-#[cfg(feature = "mcp")]
-pub mod mcp_sse;
 #[cfg(feature = "mcp")]
 pub mod mcp_tools;
 pub mod messages;

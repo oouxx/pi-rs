@@ -29,9 +29,73 @@ use crate::core::slash_commands::parse_slash_command;
 /// MCP connection handle. A no-op (unit) type when the `mcp` feature is off,
 /// so session/registry code stays feature-agnostic.
 #[cfg(feature = "mcp")]
-pub use crate::core::mcp::McpConnection;
+pub use crate::core::mcp_runtime::McpServerConnection as McpConnection;
 #[cfg(not(feature = "mcp"))]
 pub type McpConnection = ();
+
+/// Map an ACP `McpServer` to a coding-agent config entry. ACP tools are
+/// declared directly to the model (there is no codemode/tool_search UI in ACP).
+#[cfg(feature = "mcp")]
+fn acp_server_entry(config: &acp::McpServer) -> Option<crate::core::mcp_servers::LoadedServer> {
+    use crate::core::mcp_servers::{LoadedServer, McpExposure, McpScope, McpServerConfig};
+    let (name, config) = match config {
+        acp::McpServer::Stdio(server) => (
+            server.name.clone(),
+            McpServerConfig {
+                command: Some(server.command.to_string_lossy().to_string()),
+                args: Some(server.args.clone()),
+                env: Some(
+                    server
+                        .env
+                        .iter()
+                        .map(|variable| (variable.name.clone(), variable.value.clone()))
+                        .collect(),
+                ),
+                exposure: Some(McpExposure::Direct),
+                ..Default::default()
+            },
+        ),
+        acp::McpServer::Http(server) => (
+            server.name.clone(),
+            McpServerConfig {
+                url: Some(server.url.clone()),
+                headers: Some(
+                    server
+                        .headers
+                        .iter()
+                        .map(|header| (header.name.clone(), header.value.clone()))
+                        .collect(),
+                ),
+                exposure: Some(McpExposure::Direct),
+                ..Default::default()
+            },
+        ),
+        acp::McpServer::Sse(server) => (
+            server.name.clone(),
+            McpServerConfig {
+                kind: Some("sse".to_string()),
+                url: Some(server.url.clone()),
+                headers: Some(
+                    server
+                        .headers
+                        .iter()
+                        .map(|header| (header.name.clone(), header.value.clone()))
+                        .collect(),
+                ),
+                exposure: Some(McpExposure::Direct),
+                ..Default::default()
+            },
+        ),
+        _ => return None,
+    };
+    Some(LoadedServer {
+        name,
+        config,
+        source: PathBuf::from("<acp>"),
+        scope: McpScope::Extension,
+        override_path: None,
+    })
+}
 
 /// Connect to the given MCP servers and build pi tool definitions for their
 /// tools. Returns `(tool_definitions, connections)`: the definitions go into
@@ -40,6 +104,8 @@ pub type McpConnection = ();
 #[cfg(feature = "mcp")]
 async fn connect_mcp_servers(
     mcp_servers: &[acp::McpServer],
+    cwd: &str,
+    agent_dir: &str,
 ) -> Result<
     (
         Vec<crate::core::extensions::ToolDefinition>,
@@ -49,14 +115,30 @@ async fn connect_mcp_servers(
 > {
     let mut connections = Vec::new();
     for config in mcp_servers {
-        match crate::core::mcp::McpConnection::connect(config).await {
-            Ok(conn) => connections.push(conn),
-            Err(e) => eprintln!("[pi] ACP: MCP server connect failed: {e}"),
+        let Some(entry) = acp_server_entry(config) else {
+            continue;
+        };
+        let connection = McpConnection::with_agent_dir(entry, cwd, agent_dir);
+        match connection.get_client().await {
+            Ok(_) => connections.push(connection),
+            Err(error) => eprintln!("[pi] ACP: MCP server connect failed: {error}"),
         }
     }
     let mut tool_defs = Vec::new();
-    for conn in &connections {
-        tool_defs.extend(conn.tool_definitions());
+    let mut taken = std::collections::HashSet::new();
+    for connection in &connections {
+        for tool in connection.tools() {
+            let name = crate::core::mcp_tools::create_mcp_tool_name(
+                connection.name(),
+                &tool.name,
+                |candidate| taken.contains(candidate),
+            );
+            taken.insert(name.clone());
+            let exposure = connection.entry().config.tool_exposure(&tool.name);
+            tool_defs.push(crate::core::mcp_tools::create_mcp_tool_definition(
+                connection, &tool, name, exposure,
+            ));
+        }
     }
     Ok((tool_defs, connections))
 }
@@ -64,6 +146,8 @@ async fn connect_mcp_servers(
 #[cfg(not(feature = "mcp"))]
 async fn connect_mcp_servers(
     _mcp_servers: &[acp::McpServer],
+    _cwd: &str,
+    _agent_dir: &str,
 ) -> Result<
     (
         Vec<crate::core::extensions::ToolDefinition>,
@@ -492,13 +576,18 @@ impl SessionRegistry {
         cli_model: Option<String>,
         settings_manager: Option<crate::core::settings_manager::SettingsManager>,
     ) -> Result<(AgentSession, Vec<McpConnection>), String> {
-        let (mcp_tools, mcp_connections) = connect_mcp_servers(mcp_servers).await?;
+        let agent_dir = crate::config::get_agent_dir();
+        let (mcp_tools, mcp_connections) = connect_mcp_servers(
+            mcp_servers,
+            cwd,
+            &agent_dir.to_string_lossy(),
+        )
+        .await?;
         let custom_tools = if mcp_tools.is_empty() {
             None
         } else {
             Some(mcp_tools)
         };
-        let agent_dir = crate::config::get_agent_dir();
         let (cwd_owned, session_file_owned, session_dir_owned) = (
             cwd.to_string(),
             session_file.map(|s| s.to_string()),

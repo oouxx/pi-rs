@@ -216,58 +216,6 @@ pub fn load_servers(cwd: &str, agent_dir: &str) -> (Vec<LoadedServer>, Vec<Strin
     (loaded.servers, loaded.errors)
 }
 
-/// Compatibility mapping to the legacy rmcp specs used by ACP and the old
-/// `sdk.rs` path until the new runtime replaces them.
-pub fn load_specs(
-    cwd: &str,
-    agent_dir: &str,
-) -> (Vec<crate::core::mcp::McpServerSpec>, Vec<String>) {
-    let loaded = load_mcp_config(cwd, agent_dir);
-    let specs = loaded
-        .servers
-        .into_iter()
-        .filter(|server| server.config.is_enabled())
-        .map(|server| {
-            let config = server.config;
-            let transport = if let Some(command) = config.command {
-                crate::core::mcp::McpTransportSpec::Stdio {
-                    command,
-                    args: config.args.unwrap_or_default(),
-                    env: config
-                        .env
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect::<std::collections::BTreeMap<_, _>>(),
-                    cwd: config.cwd,
-                }
-            } else if config.kind.as_deref() == Some("sse") {
-                crate::core::mcp::McpTransportSpec::Sse {
-                    url: config.url.unwrap_or_default(),
-                    headers: config
-                        .headers
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect::<std::collections::BTreeMap<_, _>>(),
-                }
-            } else {
-                crate::core::mcp::McpTransportSpec::Http {
-                    url: config.url.unwrap_or_default(),
-                    headers: config
-                        .headers
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect::<std::collections::BTreeMap<_, _>>(),
-                }
-            };
-            crate::core::mcp::McpServerSpec {
-                name: server.name,
-                transport,
-            }
-        })
-        .collect();
-    (specs, loaded.errors)
-}
-
 /// Patch applied by `/mcp` and `pi-rs mcp enable/disable`.
 #[derive(Debug, Clone, Default)]
 pub struct McpServerConfigPatch {

@@ -9,10 +9,13 @@
 #![cfg(feature = "mcp")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use pi_coding_agent::core::mcp::{McpConnection, McpServerSpec, McpTransportSpec};
+use pi_coding_agent::core::mcp_config::load_mcp_config;
+use pi_coding_agent::core::mcp_runtime::McpServerConnection;
+use pi_coding_agent::core::mcp_servers::{
+    validate_mcp_server_config, LoadedServer, McpScope,
+};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -163,33 +166,39 @@ async fn write_chunk(
 #[tokio::test]
 async fn sse_server_tool_round_trip() {
     let url = spawn_mock_sse_server().await;
-    let spec = McpServerSpec {
+    let config = validate_mcp_server_config(
+        "mock",
+        &serde_json::json!({"type": "sse", "url": url}),
+    )
+    .expect("valid config");
+    let entry = LoadedServer {
         name: "mock".to_string(),
-        transport: McpTransportSpec::Sse {
-            url,
-            headers: BTreeMap::new(),
-        },
+        config,
+        source: std::path::PathBuf::from("<test>"),
+        scope: McpScope::Extension,
+        override_path: None,
     };
-
-    let connection = McpConnection::connect_spec(&spec)
-        .await
-        .expect("connect over SSE");
-    let tools = connection.tool_definitions();
+    let connection =
+        McpServerConnection::with_agent_dir(entry, std::env::temp_dir().to_string_lossy(), std::env::temp_dir().to_string_lossy());
+    connection.get_client().await.expect("connect over SSE");
+    let tools = connection.tools();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "echo");
 
-    let execute = tools[0].execute.clone().expect("execute");
-    let output = execute(
-        "call-1".to_string(),
-        serde_json::json!({ "text": "hello" }),
-        None,
-    )
-    .await
-    .expect("call tool");
-    assert_eq!(output.content[0]["text"], "echo:hello");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("text".to_string(), serde_json::json!("hello"));
+    let result = connection
+        .call_tool("echo", arguments, None)
+        .await
+        .expect("call tool");
+    match &result.content[0] {
+        pi_mcp::ContentBlock::Text { text, .. } => assert_eq!(text, "echo:hello"),
+        other => panic!("expected text content, got {other:?}"),
+    }
+    connection.close().await;
 }
 
-/// Config file → specs → connect: the whole path `create_agent_session` uses.
+/// Config file → runtime → connect: the whole path `create_agent_session` uses.
 #[tokio::test]
 async fn config_file_sse_server_is_connected() {
     let url = spawn_mock_sse_server().await;
@@ -203,15 +212,20 @@ async fn config_file_sse_server_is_connected() {
     )
     .expect("write mcp.json");
 
-    let (specs, errors) = pi_coding_agent::core::mcp_config::load_specs(
+    let loaded = load_mcp_config(
         cwd.to_str().unwrap(),
         agent_dir.to_str().unwrap(),
     );
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(specs.len(), 1);
-
-    let (tools, _connections, errors) = pi_coding_agent::core::mcp::connect_specs(&specs).await;
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "echo");
+    assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+    assert_eq!(loaded.servers.len(), 1);
+    let entry = loaded.servers[0].clone();
+    let connection = McpServerConnection::with_agent_dir(
+        entry,
+        cwd.to_string_lossy(),
+        agent_dir.to_string_lossy(),
+    );
+    connection.get_client().await.expect("connect configured SSE server");
+    assert_eq!(connection.tools().len(), 1);
+    assert_eq!(connection.tools()[0].name, "echo");
+    connection.close().await;
 }

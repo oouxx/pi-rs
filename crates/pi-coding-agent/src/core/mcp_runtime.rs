@@ -29,6 +29,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT_SECONDS: f64 = 60.0;
 const STDERR_TAIL_CHARS: usize = 2_000;
 
+/// Resolves a pi provider token for `auth.provider` servers.
+pub type ProviderTokenFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Connection state, matching the TS `ServerState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpServerState {
@@ -66,6 +69,7 @@ struct Inner {
     agent_dir: String,
     log: Arc<crate::core::mcp_log::McpServerLog>,
     subscriptions: Mutex<Vec<Subscription>>,
+    token_provider: Option<ProviderTokenFn>,
     state: Mutex<McpServerState>,
     error: Mutex<Option<String>>,
     tools: Mutex<Vec<Tool>>,
@@ -126,6 +130,16 @@ impl McpServerConnection {
         cwd: impl Into<String>,
         agent_dir: impl Into<String>,
     ) -> Self {
+        Self::with_agent_dir_and_token_provider(entry, cwd, agent_dir, None)
+    }
+
+    /// Create a connection with a provider-token callback (`auth.provider`).
+    pub fn with_agent_dir_and_token_provider(
+        entry: LoadedServer,
+        cwd: impl Into<String>,
+        agent_dir: impl Into<String>,
+        token_provider: Option<ProviderTokenFn>,
+    ) -> Self {
         let agent_dir = agent_dir.into();
         let log = Arc::new(crate::core::mcp_log::McpServerLog::new(
             std::path::Path::new(&agent_dir).join("mcp.log"),
@@ -137,6 +151,7 @@ impl McpServerConnection {
                 agent_dir,
                 log,
                 subscriptions: Mutex::new(Vec::new()),
+                token_provider,
                 state: Mutex::new(McpServerState::Connecting),
                 error: Mutex::new(None),
                 tools: Mutex::new(Vec::new()),
@@ -407,7 +422,14 @@ impl McpServerConnection {
         let url = Url::parse(url).map_err(|error| format!("invalid MCP server URL: {error}"))?;
         let mut options = StreamableHttpTransportOptions::new(url.clone());
         options.headers = headers;
-        if crate::core::mcp_oauth::server_uses_oauth(config) {
+        if let Some(auth) = &config.auth {
+            if let Some(token_provider) = &self.inner.token_provider {
+                options.auth = Some(Arc::new(ProviderTokenAuth {
+                    provider: auth.provider.clone(),
+                    token_provider: Arc::clone(token_provider),
+                }));
+            }
+        } else if crate::core::mcp_oauth::server_uses_oauth(config) {
             let settings = crate::core::mcp_oauth::McpOAuthSettings::from_config(
                 config.oauth.as_ref(),
                 self.name(),
@@ -561,6 +583,28 @@ impl McpServerConnection {
             let _ = client.close().await;
         }
         self.get_client().await.map(|_| ())
+    }
+}
+
+struct ProviderTokenAuth {
+    provider: String,
+    token_provider: ProviderTokenFn,
+}
+
+#[async_trait::async_trait]
+impl pi_mcp::auth::AuthProvider for ProviderTokenAuth {
+    async fn token(&self) -> Option<String> {
+        (self.token_provider)(&self.provider)
+    }
+
+    async fn on_unauthorized(
+        &self,
+        _context: pi_mcp::auth::UnauthorizedContext,
+    ) -> pi_mcp::Result<()> {
+        Err(McpError::AuthRequired {
+            www_authenticate: None,
+            body: String::new(),
+        })
     }
 }
 

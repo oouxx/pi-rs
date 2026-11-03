@@ -16,8 +16,10 @@
 >   MCP tool → pi tool、结果截断/临时文件、resources 三工具、OAuth 凭据存储 + 刷新锁 +
 >   auth provider、`mcp.log`、system prompt `mcp_servers` section、`/mcp` 菜单序列、
 >   `pi-rs mcp login/logout`、静态 `registerMcpServer`、legacy SSE transport。
-> - ⏳ 待做：ACP `mcpServers` 切到新 runtime、`tools/list_changed` 动态重注册、
->   `auth.provider`、codemode（不在范围）、CIMD（默认禁用）、Phase 8 文档/全量回归。
+> - ✅ ACP `mcpServers` 已切到新 runtime；旧 rmcp 实现与依赖已删除。
+> - ✅ `auth.provider`：runtime 通过 model registry 的 provider token 回调接入。
+> - ⏳ 待做：`tools/list_changed` 动态重注册（当前只更新连接内工具列表）、
+>   codemode（不在范围）、CIMD（默认禁用）、Phase 8 文档/全量回归。
 >
 > TS 参考：`origin/main` 的 `packages/mcp`（v1.0.0 形态）与
 > `packages/coding-agent/src/extensions/mcp`。
